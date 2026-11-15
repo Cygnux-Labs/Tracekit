@@ -293,13 +293,15 @@ the agent's own arguments). Values are read before redaction (only their HMACs a
 trusted stays trusted. `decide` answers `send_result` for an untrusted tool, so its adapter completes it with the
 result rather than a digest. `from: untrusted` rules match on the index, and every decision records which arguments
 carry untrusted-only values (field, kind, source record; never the value). The index is `partial` once an untrusted
-tool completes with a digest or no result, or a client's events skip a client_seq (a lost observe or result),
-`truncated` once a result carries more values than are read or the run's index is full, and a decision whose values
-take past its deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern
-does. A restart rebuilds each open run's index from its records and the content vault (_rebuilt), `partial` where an
-untrusted record's content can't be read whole, `unavailable` without a vault; a storage recovery keeps the index,
-`partial` once records it never read turn out to have reached the store, and a decision during the outage reads it
-as `partial`.
+tool completes with a digest or no result, or a client's events skip a client_seq (a lost observe or result), from
+its start for a run registered with `continues` (a later run of an agent session, whose model may still hold what an
+earlier run read; kept in the run state and snapshots, and in the reason its decisions record), `truncated` once a
+result carries more values than are read or the run's index is full, and a decision whose values take past its
+deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern does. A
+restart rebuilds each open run's index from its records and the content vault (_rebuilt), `partial` where an untrusted
+record's content can't be read whole, `unavailable` without a vault; a storage recovery keeps the index, `partial`
+once records it never read turn out to have reached the store, and a decision during the outage reads it as
+`partial`.
 """
 import argparse
 import base64
@@ -382,6 +384,7 @@ FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
 PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
+CONTINUES = "continues an earlier run of the session"   # register_run `continues`: the index's reason
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
@@ -2243,6 +2246,8 @@ class SignerService:
         and that redaction left whole: a mark may hide a value, whatever the record's count says. An untrusted record
         whose content can't be read so makes the index partial; trusted content left out only holds more calls."""
         prov, read, tools, head = {"state": "complete", "index": {}}, [], {}, ZERO_HASH
+        if self.log.runs[key].get("continues"):
+            prov.update(state="partial", reason=CONTINUES)
         policies = {self.policy.policy_hash: self.policy}   # policy_hash -> the policy (None: not kept)
         run, at, dk = {"prov": prov}, types.SimpleNamespace(set=dict.__setitem__), self._data_key(key)
         for r in self.log.storage.iter_run(*key):
@@ -2253,6 +2258,8 @@ class SignerService:
             head, seq, t = r["hash"], e["run_seq"], e["type"]
             if t == "policy.decision":
                 tools[d["decision_id"]] = d["tool"]
+                if d.get("provenance_reason") == CONTINUES:   # a crash since the last snapshot lost the run state's word
+                    degrade(at, prov, "partial", CONTINUES)
                 if d["policy_hash"] not in policies:
                     policies[d["policy_hash"]] = self._kept_policy(d["policy_hash"])
             elif t == "capture.gap" and d.get("kind") == "client_counter_gap":
@@ -2880,7 +2887,10 @@ class SignerService:
             tx.set(self.log.open_runs, count, n + 1)
             tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
-            tx.set(run, "prov", {"state": "complete", "index": {}})
+            if req.get("continues"):   # kept in the run state (and its snapshots) for the index's rebuild
+                tx.set(run, "continues", True)
+            tx.set(run, "prov", {"state": "partial", "reason": CONTINUES, "index": {}} if req.get("continues") else
+                   {"state": "complete", "index": {}})
             if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
                 tx.set(run, "rec", None)
             if imported:   # not reconciled (as pipeline replays it), and watched for the follower's heartbeats

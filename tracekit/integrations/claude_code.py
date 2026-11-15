@@ -39,7 +39,8 @@ run; with none when it parked itself (idle). A new session's run
 reads it from its first line; a later run of the session (after an idle close) has its tailer start where the hook last
 saw the transcripts while the earlier run was open (_seen), and a resumed session's first run, or one a session with no
 state left starts (Claude Code went on after a SessionEnd with no SessionStart), where its transcript ended then: the
-lines before are an earlier run's.
+lines before are an earlier run's. Each such later run is registered with `continues`: the model may still hold what an
+earlier run read, so the signer starts the run's provenance index `partial` (a fresh session's starts `complete`).
 
 At UserPromptSubmit, the typed part of the harness's prompt is recorded (`observe`, source <agent>:UserPromptSubmit,
 trusted); harness-wrapped parts are separate untrusted observations, and so is the whole of a turn Claude Code's payload
@@ -324,9 +325,10 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript` (the
     payload's): kept in the session state; each run of the session gets a tailer on it, which starts at the first line
-    of a new session's (`start`, the SessionStart source: startup or clear), at where it ends at registration for a
-    resumed or forked session or one with no state left, else where the session's earlier run was last seen open
-    (_seen; _tail for a run registered before its transcript was known).
+    of a new session's (`start`, a SessionStart's source: startup or clear; "" for none, None when the event is no
+    SessionStart), at where it ends at registration for a resumed or forked session or one with no state left, else
+    where the session's earlier run was last seen open (_seen; _tail for a run registered before its transcript was
+    known).
     `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain).
     `skip`: client_seq values left unsent before `send` (_send)."""
     path = _state(sid)
@@ -334,9 +336,13 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
+            # a session with no state is new at a SessionStart that doesn't say resume or fork, and at another
+            # harness's first event; Claude Code starts each session with SessionStart, so one of its sessions whose
+            # first event is another went on after its SessionEnd, and its model holds its earlier runs' content
+            fresh = st is None and start not in RESUMED and (start is not None or AGENT != "claude-code")
             # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
             st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
-                           _seen(transcript) if st is None or start in RESUMED else None)
+                           _seen(transcript) if st is None or start in RESUMED else None, continues=not fresh)
         if st and transcript:
             st["transcript"] = transcript
         if st and stated:
@@ -378,11 +384,14 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             return _send(client, path, st, send, fields, seen, skip)
 
 
-def _register(client, path, prev=None, offsets=None):
+def _register(client, path, prev=None, offsets=None, continues=True):
     """A new run for the session whose state was `prev` (None: its first), keeping its transcript and where the
-    earlier run was last seen open in it (`offsets` in place of that)."""
+    earlier run was last seen open in it (`offsets` in place of that). `continues`: the session had a run before (an
+    idle close, a resume), whose content its model may still hold: the signer starts the new run's provenance index
+    partial."""
     version = os.environ.get("CLAUDE_CODE_VERSION") if AGENT == "claude-code" else None
-    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
+    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})},
+                               **({"continues": True} if continues else {})})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
@@ -1227,7 +1236,7 @@ def _handle(client, p, event, sid, tid):
         return 1 if refused else 0   # shown to the person (FULL, on stderr), never blocking the prompt
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded
-    _run(client, sid, transcript=transcript, start=p.get("source") if event == "SessionStart" else None)
+    _run(client, sid, transcript=transcript, start=(p.get("source") or "") if event == "SessionStart" else None)
     return 0
 
 

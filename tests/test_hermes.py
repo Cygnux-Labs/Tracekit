@@ -458,6 +458,9 @@ class Plugin(unittest.TestCase):
         self.assertEqual(len(self.made), 3)
         self.assertEqual([len([e for e in self.service.log.storage.iter_run("default", r)
                                if e["event"]["type"] == "tool.result"]) for r in self.runs()], [1, 1, 1])
+        # the session's later run: its model may still hold what the closed one read
+        self.assertEqual([self.service.log.runs[("default", r)].get("prov", {}).get("state") for r in self.runs()[1:]],
+                         ["complete", "partial"])
 
     def test_two_sessions_calls_under_one_id_are_recorded_apart(self):
         """A provider may number its calls per response: one session's call_0 doesn't complete another's."""

@@ -991,6 +991,20 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def test_a_later_run_of_a_session_starts_its_provenance_index_partial(self):
+        """A session's run the signer closed (idle) is followed by a new one whose model may still hold what the closed
+        run read; a session's first run, which no SessionStart says was resumed, starts complete."""
+        call = {"session_id": "c", "hook_event_name": "PreToolUse", "tool_name": "shell", "tool_input": {"command": ["ls"]}}
+        self.assertEqual(self.hook("codex", dict(call, tool_use_id="l1"))[0], 0)
+        first = claude_code._load(claude_code._state("c"))
+        self.assertEqual(self.service.log.runs[("default", first["run_id"])]["prov"], {"state": "complete", "index": {}})
+        self.service.close_run({"request_id": "rq-close", "run_id": first["run_id"], "run_token": first["run_token"]})
+        self.assertEqual(self.hook("codex", dict(call, tool_use_id="l2"))[0], 0)
+        later = claude_code._load(claude_code._state("c"))["run_id"]
+        self.assertNotEqual(later, first["run_id"])
+        self.assertEqual(self.service.log.runs[("default", later)]["prov"],
+                         {"state": "partial", "reason": "continues an earlier run of the session", "index": {}})
+
     def test_a_codex_shell_command_that_isnt_text_is_held(self):
         """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reaches the signer as a list,
         which its shell parser can't read: held (TK-SHELL-PARSE), never allowed, as the v1 hook denies it. An argv of

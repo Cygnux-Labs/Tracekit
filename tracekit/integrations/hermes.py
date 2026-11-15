@@ -20,7 +20,8 @@ after Tracekit allowed it; as an error when the arguments it ran with are neithe
 type repair makes of them (another plugin's `modify`, or an edit in place).
 
 Each Hermes session is a run (agent "hermes"), registered at its first tool call and closed when Hermes exits; a run
-the signer closed after it was idle is replaced at the next call.
+the signer closed after it was idle is replaced at the next call, by one registered with `continues` (the model may
+still hold what the earlier run read: its provenance index starts partial).
 """
 import atexit
 import contextlib
@@ -89,7 +90,7 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
     `timeout_s()`: how long Hermes lets the hook run (hook_timeout_s); `coerce(tool, args)`: Hermes's repair of a
     call's argument types (tools/arg_coercion.py coerce_tool_args), which a concurrent batch's call runs with after
     its pre_tool_call saw the model's own. The signer is the one tracekit.sdk.client.Client finds."""
-    clients, runs, registering, lock = {}, {}, {}, threading.Lock()
+    clients, runs, registering, lock, had = {}, {}, {}, threading.Lock(), set()   # had: sessions that had a run
     calls, gone = {}, {}   # (session, call id) -> (run, decision, args, tool) let through; calls Hermes gave up on
 
     def run_of(session_id):
@@ -103,9 +104,10 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
                     return runs[session_id]
                 t = token()
                 client = clients[t] = clients.get(t) or Client(token=t)
-            run = client.run(AGENT)
+            run = client.run(AGENT, **({"continues": True} if session_id in had else {}))
             with lock:
                 runs[session_id] = run
+                had.add(session_id)
                 registering.pop(session_id, None)
             return run
 

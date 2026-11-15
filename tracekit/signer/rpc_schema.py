@@ -1,6 +1,7 @@
-"""The signer RPC contract, version 23: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 24: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 23 adds `export_run` (docs/remote-ingest.md): a run
+Frozen: a change to any schema here is a new RPC_VERSION. Version 24 adds register_run's `continues` (a later run of an
+agent session the client registered a run for before: its provenance index starts partial). Version 23 adds `export_run` (docs/remote-ingest.md): a run
 of the caller's tenant as the .tkb bundle the operator's `tracekit export --v2` writes, in chunks that each fit a frame.
 Version 22 adds intent grants (docs/intent-grants.md):
 `grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
@@ -40,7 +41,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 23
+RPC_VERSION = 24
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -306,6 +307,9 @@ REQUESTS = {
                          # a gateway registering the run of a client it serves: counted in its open runs for that client
                          caller=IDENTITY,
                          box=BOX,   # a box_daemons identity's box run (version 21)
+                         # a later run of an agent session that had a run before (an idle close, a resume): the
+                         # model may still hold what that run read, so its provenance index starts partial (version 24)
+                         continues={"const": True},
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,

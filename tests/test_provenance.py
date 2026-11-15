@@ -589,6 +589,20 @@ class Restart(Calls, unittest.TestCase):
         self.assertIn("whether http_get's results are untrusted is unknown",
                       self.held("tc-mail2", "ops@ours.example", "partial")["provenance_reason"])
 
+    def test_a_run_that_continues_a_session_stays_partial_across_restarts(self):
+        """register_run `continues`: the run's index starts partial and its rebuild keeps it so, from the run state a
+        snapshot kept, or after a crash that lost it from the reason its decisions recorded."""
+        self.run = self.s.register_run({"request_id": "reg-later", "agent": {"name": "a"}, "continues": True})
+        self.seq = -1
+        self.restart()   # before any decision: the snapshot's run state says so
+        self.held("tc-mail", "audit@vendor.example", "partial")
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))   # as a crash: a replay of the records alone
+        self.restart()
+        self.assertNotIn("continues", self.s.log.runs[(self.run["tenant"], self.run["run_id"])])
+        self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"],
+                         "continues an earlier run of the session")
+
     def test_only_records_bound_to_the_runs_head_are_read(self):
         """An observe altered to trusted before the last snapshot (which the replay doesn't read again) breaks the
         run's chain; records missing from the store end it before its head."""
