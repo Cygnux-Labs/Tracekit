@@ -315,7 +315,8 @@ def _parser():
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
-    p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
+    p.add_argument("--project", nargs="?", const=".", metavar="DIR", help="hooks in DIR/.claude/settings.json (DIR: "
+                   "the working directory when not given) instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true", help="install no agent hooks (an SDK agent, or the Claude Code "
                    "plugin's own hooks)")
     p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
@@ -371,9 +372,9 @@ def _parser():
                    "with it")
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
-    p.add_argument("--project", action="store_true",
-                   help="remove hooks from the selected agent's project settings file "
-                        "instead of its user settings file")
+    p.add_argument("--project", nargs="?", const=".", metavar="DIR",
+                   help="remove hooks from the selected agent's project settings file in DIR (the working directory "
+                        "when not given) instead of its user settings file")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
@@ -643,7 +644,7 @@ def _init_remote_v2(a, url):
             print(f"tracekit: cannot read {env[k]}", file=sys.stderr)
             return 2
     hooks = None if a.no_hooks or a.agent != "claude" else (
-        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else install.user_settings())
+        os.path.join(a.project, ".claude", "settings.json") if a.project else install.user_settings())
     try:
         on = hooks and install.install_hooks(hooks, module=install.V2_HOOK, signer=env,
                                              thinking=not a.no_thinking_summaries)
@@ -667,6 +668,10 @@ def _match_pending(pend, prefix):
 
 
 def _run(a):
+    if a.cmd in ("init", "uninstall") and a.project:   # --project [DIR]: a re-init names it, so it runs from anywhere
+        # DIR against os.getcwd() as init runs, as the code before --project took a DIR did: Windows' abspath asks the
+        # OS for the working directory itself (nt._getfullpathname)
+        a.project = os.path.normpath(os.path.join(os.getcwd(), a.project))
     if a.cmd in ("init", "uninstall") and a.agent in ("gptme", "jcode"):
         if a.project:
             print(f"tracekit: {a.agent} hooks use the user's config; omit --project", file=sys.stderr)
@@ -731,7 +736,7 @@ def _run(a):
                 print("tracekit: --v2 system mode needs --user AGENT, the user whose agent is traced", file=sys.stderr)
                 return 2
             try:
-                sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
+                sock, settings = install.init_system_v2(a.user, a.approver, a.policy, a.project,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness,
                                                         a.public_witness or (False if a.no_witness else None),
@@ -760,7 +765,7 @@ def _run(a):
                 return 2
             try:
                 anchoring = _init_dev_witness(a.no_witness, a.public_witness)
-                path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+                path = None if a.no_hooks else agent_hooks.install(a.agent, a.project, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
@@ -779,7 +784,7 @@ def _run(a):
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, None, fail_mode="closed" if a.fail_closed else None, signer=signer)
-                path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None)
+                path = None if a.no_hooks else agent_hooks.install(a.agent, a.project)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -791,7 +796,7 @@ def _run(a):
             return 0
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
-            hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
+            hooks = None if a.no_hooks else (os.path.join(a.project, ".claude", "settings.json") if a.project
                                             else install.user_settings())
             if a.v2:
                 if not _signer_extra():
@@ -799,7 +804,7 @@ def _run(a):
                 from .signer.service import dev_data_dir
                 anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
-                plugin = hooks and install.plugin_enabled()
+                plugin = hooks and install.plugin_enabled(project=a.project)
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin
                     print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, "
@@ -854,7 +859,7 @@ def _run(a):
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()
         try:
             cfg, settings = install.init_system(user, a.witness, a.checkpoint_every,
-                                                os.getcwd() if a.project else None, a.no_service, proxy=a.proxy,
+                                                a.project, a.no_service, proxy=a.proxy,
                                                 proxy_port=a.proxy_port, managed=a.managed, managed_only=a.managed_only,
                                                 fail_mode="closed" if a.fail_closed else None,
                                                 experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer,
@@ -928,14 +933,14 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        path = agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # says what it removed
+        path = agent_hooks.install(a.agent, a.project, uninstall=True)   # says what it removed
         for line in [] if a.project else _kept(path):
             print(line)
         return 0
     if a.cmd == "uninstall":
         from . import install
         try:
-            if install.uninstall(os.getcwd() if a.project else None) == "no settings file":   # else it said what it removed
+            if install.uninstall(a.project) == "no settings file":   # else it said what it removed
                 print("tracekit: no Claude Code settings file, so no hooks to remove")
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
