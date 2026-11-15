@@ -524,7 +524,7 @@ class Client:
     def _ensure_conn(self, timeout=CONNECT_TIMEOUT_S):
         if self._conn is None:
             if timeout <= 0:
-                raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
+                raise _TimeoutUnavailable("no time left after waiting for another call")
             self._conn = self._connect(timeout)
 
     def _poll(self, method, req, timeout):

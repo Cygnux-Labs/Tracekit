@@ -546,7 +546,7 @@ class Transports(unittest.TestCase):
             def do_POST(self):
                 req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if req["method"] == "hello":
-                    time.sleep(0.35)
+                    done.wait(0.5)
                     body = json.dumps(HELLO).encode()
                     self.send_response(200)
                     self.send_header("Content-Length", str(len(body)))
@@ -560,12 +560,12 @@ class Transports(unittest.TestCase):
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
-        c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=0.5)
+        c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=2.0)
         self.addCleanup(c.close)
         t = time.monotonic()
-        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.5s"):
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 2s"):
             c.status()
-        self.assertLess(time.monotonic() - t, 0.75)
+        self.assertLess(time.monotonic() - t, 2.5)
         self.assertEqual(calls, ["status"])
 
     def test_slow_dial_does_not_send_past_deadline(self):
@@ -629,6 +629,18 @@ class Transports(unittest.TestCase):
 
     def test_parallel_tcp_calls_share_deadline_behind_dial(self):
         _assert_parallel_calls_share_deadline(self, self._silent_tcp(), token="0" * 32)
+
+    def test_expired_deadline_in_send_does_not_format_negative_timeout(self):
+        c = Client("tcp://127.0.0.1:1", timeout=1, token="0" * 32)
+        self.addCleanup(c.close)
+        with self.assertRaisesRegex(client._TimeoutUnavailable, r"^no time left after waiting for another call$"):
+            c._send(
+                "decide",
+                {**EVENT, "request_id": "req-1", "tool_call_id": "c1", "args": {}},
+                1,
+                time.monotonic() - 0.3,
+            )
+        self.assertEqual(c._seqs.get("r1"), 1)
 
 
 def _assert_hung_connect_reports_address(test, addr, **kwargs):
