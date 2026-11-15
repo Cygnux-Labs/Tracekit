@@ -112,7 +112,9 @@ each call did: whether it was decided, consumed, refused or ended. A call that e
 whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). Resume a thread from one place at a
 time: of two resumes at once, one pass takes each call and the other is refused, and an approved call that goes on
 after its tool asked the person itself is claimed from the signer (`call_claim`), so a second process doesn't run it
-again. An identity with an explicit `authorize` list needs `call_state` and `call_claim` granted beside `decide` and
+again. After a signer restart such a call must be approved again: its resume is refused (`the signer restarted since
+this call's approval was used; ask again`). An identity with an explicit `authorize` list needs `call_state` and
+`call_claim` granted beside `decide` and
 `approval_consume`; without them the node decides each call again. Single calls under `create_agent` keep their own
 task and the per-call gate.
 

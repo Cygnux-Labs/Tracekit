@@ -259,11 +259,9 @@ class TracekitMiddleware(AgentMiddleware):
                                            "them runs"), p
             if p["state"] != "done" and event_hash({"tool": call["name"], "args": call["args"]}) != p["digest"]:
                 _done(p, self._refusal(call, "the call's arguments changed after the decision"))   # an outer wrapper's
-            return (p["out"] if p["state"] == "done" else self._claim(call, config, p)), p
+            return p["out"], p
         key, answered = (_ns(config), call["id"]), _answered(config)
-        p = _resumed(self._plans.get(key))
-        if p is not None and p["state"] == "running":
-            return self._refusal(call, RUNNING), p
+        p = _resumed(self._plans.get(key))   # one running in another pass of its node is refused by _claim
         if p is None and answered:
             p = self._recorded(call)
             if p is not None:
@@ -277,17 +275,20 @@ class TracekitMiddleware(AgentMiddleware):
             hint = resume.get("approval_id") if isinstance(resume, dict) else None
         if p["state"] == "decide":
             self._consume(call, p, hint)
-        return (p["out"] if p["state"] == "done" else self._claim(call, config, p)), p
+        return p["out"], p
 
-    def _claim(self, call, config, p):
+    def _claim(self, request, p):
         """(the refusal, or None when this pass runs the call): one pass takes a call to run. In this process the first
-        moves its plan to `running`, and another pass of the node (the thread resumed twice at once) is refused. A call
-        that goes on, consumed, after its tool paused the run itself is claimed from the signer too (call_claim), which
-        lets one pass in any process go on per pause; without its yes the call doesn't run."""
+        moves its plan to `running` and keeps it until the tool ends, and another pass of the node (the thread resumed
+        twice at once) is refused. A call that goes on, consumed, after its tool paused the run itself is claimed from
+        the signer too (call_claim), which lets one pass in any process go on per pause; without its yes the call
+        doesn't run."""
+        call, config = request.tool_call, request.runtime.config
         with self._lock:
             if p["state"] not in ("run", "paused"):
                 return self._refusal(call, RUNNING)
             goes_on, p["state"] = p["state"] == "paused", "running"
+            self._plans[_ns(config), call["id"]] = p
         if not goes_on:
             return None
         claim = getattr(self.signer, "call_claim", None)   # a SignerAPI of the app's own may have none
@@ -297,16 +298,14 @@ class TracekitMiddleware(AgentMiddleware):
             c = claim(req) if claim else {"ok": False, "reason": "the signer has no call_claim"}
         except (RPCError, SignerUnavailable) as e:
             c = {"ok": False, "reason": str(e)}
-        return None if c["ok"] else _done(p, self._refusal(call, c.get("reason") or "not claimed"))["out"]
+        if c["ok"]:
+            return None
+        self._ended(request, _done(p, self._refusal(call, c.get("reason") or "not claimed")))
+        return p["out"]
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
                            status="error")
-
-    def _start(self, request, p):
-        """The call's tool starts (its plan `running`, _claim): the plan is kept until the tool ends, so another pass
-        of its node finds it running, and one that finds it cut off has the signer judge it again (_resumed)."""
-        self._plans[_ns(request.runtime.config), request.tool_call["id"]] = p
 
     def _ended(self, request, p):
         """The call's tool ended: a single call's plan goes; a held pass's stays until its node ends."""
@@ -354,11 +353,15 @@ class TracekitMiddleware(AgentMiddleware):
             finally:
                 CALL_ID.reset(token)
         blocked, p = self._gate(request)
+        try:
+            blocked = blocked or self._claim(request, p)
+        except BaseException:   # cut off while it was claimed: the signer judges it again (_resumed)
+            _cut(p)
+            raise
         if blocked is not None:
             return blocked
         if p["d"] is not None and "args" in p["d"]:
             request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
-        self._start(request, p)
         try:
             out = handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
@@ -369,7 +372,7 @@ class TracekitMiddleware(AgentMiddleware):
             self._ended(request, p)
             raise
         except BaseException:   # cut off (a KeyboardInterrupt, SystemExit): the signer judges it again (_resumed)
-            p["state"] = "cut"
+            _cut(p)
             raise
         self._complete(request.tool_call, p, out)
         self._ended(request, p)
@@ -384,11 +387,15 @@ class TracekitMiddleware(AgentMiddleware):
             finally:
                 CALL_ID.reset(token)
         blocked, p = await asyncio.to_thread(self._gate, request)
+        try:
+            blocked = blocked or await asyncio.to_thread(self._claim, request, p)
+        except BaseException:   # cancelled while it was claimed: the signer judges it again (_resumed)
+            _cut(p)
+            raise
         if blocked is not None:
             return blocked
         if p["d"] is not None and "args" in p["d"]:
             request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
-        self._start(request, p)
         try:
             out = await handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
@@ -399,7 +406,7 @@ class TracekitMiddleware(AgentMiddleware):
             self._ended(request, p)
             raise
         except BaseException:   # cut off (its task cancelled): the signer judges it again (_resumed)
-            p["state"] = "cut"
+            _cut(p)
             raise
         await asyncio.to_thread(self._complete, request.tool_call, p, out)
         self._ended(request, p)
@@ -410,6 +417,12 @@ def _done(p, out):
     """Plan `p` is done: the model reads `out` (a refusal, or what the call gave) in each pass of its node."""
     p.update(state="done", out=out)
     return p
+
+
+def _cut(p):
+    """Plan `p`'s pass was cut off while the call was claimed or ran (_resumed), unless it is done (a refusal)."""
+    if p["state"] != "done":
+        p["state"] = "cut"
 
 
 def _resumed(p):

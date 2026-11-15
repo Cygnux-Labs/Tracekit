@@ -996,6 +996,9 @@ class SignerService:
             storage.close()
             raise
         self.log.respond = self._respond
+        # where the log stood when this process started: a consume before it may have run under a claim this process
+        # never saw (_call_claim)
+        self._started_at = self.log.head["seq"]
         self._suspensions = Suspensions(suspensions or os.path.join(data_dir, "suspensions.json"))
         start = storage.tail_state()["tree_size"]
         self._webhooks = [webhook.Sender(w["url"], set(w["events"]) - {"incident"}, w["secret"],
@@ -3808,6 +3811,7 @@ class SignerService:
                         raise RPCError("unavailable", f"the stored arguments of {aid} are gone")
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
+                tx.set(a, "consumed_at", self.log.head["seq"])   # the seq its approval.consumed takes (_call_claim)
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
@@ -4717,9 +4721,9 @@ class SignerService:
         """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
         under the approval this attempt consumed: the first claim after `answers` answered interrupts of the node is
         ok, any other is not (another resume of the same thread, in any process). A call this attempt didn't consume,
-        or that has a result, has nothing to go on with. Writes no record."""
-        # lean: claims are run state in memory, kept by no record or snapshot: after a signer restart a pause may be
-        # claimed once more; record them if threads are resumed twice at once across restarts
+        or that has a result, has nothing to go on with. Claims are run state in memory, so one whose approval was
+        consumed before this process started (it may have gone on under a claim a crash took with it) is refused: a
+        person approves the call again. Writes no record."""
         key, tcid, attempt = self._authorize(identity, req), req["tool_call_id"], req["attempt"]
         self.quotas.take_event(identity)
 
@@ -4729,6 +4733,8 @@ class SignerService:
             if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
                     and ran(a)[:2] == (tcid, attempt)):
                 return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            if a.get("consumed_at", -1) < self._started_at:
+                return {"ok": False, "reason": "the signer restarted since this call's approval was used; ask again"}
             claimed = f"{tcid}/{attempt}/{req['answers']}"
             if claimed in run.get("claims", {}):
                 return {"ok": False, "reason": f"{tcid} already went on after that pause: its thread was resumed twice "

@@ -659,6 +659,8 @@ class RecordLog:
             elif e["type"] in APPROVAL_ENDS:
                 a = approvals[e["data"]["approval_id"]]
                 a["state"] = APPROVAL_ENDS[e["type"]]
+                if e["type"] == "approval.consumed":
+                    a["consumed_at"] = e["seq"]   # SignerService._approval_consume
                 used = [e.get("tool_call_id"), e.get("attempt", 0)]
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)

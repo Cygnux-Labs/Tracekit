@@ -299,6 +299,38 @@ class TestService(unittest.TestCase):
         self.assertIsNotNone(s.log.storage.snapshot)   # it started from the edited snapshot
         self.assertEqual(states(s), before)
 
+    def test_call_claim_refuses_a_consume_from_before_the_signer_started(self):
+        """Claims are memory: a call whose approval was consumed before this signer process started may have gone on
+        under a claim a crash took with it, so it is refused (a person approves it again), from the snapshot and from
+        the records alone; one consumed since is claimed as before."""
+        s = self.snapshotting()
+        run = self.register(s)
+        tok = {"run_id": run["run_id"], "run_token": run["run_token"]}
+
+        def consumed(s, tcid, seq):
+            call = {**tok, "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": {"to": tcid}}
+            s.decide({**self.ev(run, seq), **call})
+            aid = s.approval_request({"request_id": f"r-{tcid}", **tok, "tool_call_id": tcid})["approval_id"]
+            s.call(OTHER, "approval_decide", {"request_id": f"ok-{tcid}", "approval_id": aid, "decision": "approve"})
+            self.assertTrue(s.approval_consume({"request_id": f"c-{tcid}", **call})["ok"])
+
+        def claim(s, tcid, answers=2):
+            return s.call(ME, "call_claim", {"request_id": uuid.uuid4().hex, **tok, "tool_call_id": tcid, "attempt": 0,
+                                             "answers": answers})
+        consumed(s, "before", 0)
+        self.assertTrue(claim(s, "before")["ok"])
+        s.close()
+        for snapshot in (True, False):
+            if not snapshot:
+                shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+            s = self.snapshotting()
+            self.assertEqual(claim(s, "before", 3), {
+                "ok": False, "reason": "the signer restarted since this call's approval was used; ask again"})
+            s.close()
+        s = self.snapshotting()
+        consumed(s, "since", 1)
+        self.assertEqual((claim(s, "since")["ok"], claim(s, "since")["ok"]), (True, False))
+
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()
         run = self.register(s)

@@ -783,6 +783,71 @@ class ToolPauses(Driven):
                     out, pauses = self.drive(runner(tool_graph(node), mode), message(calls), approve={"p"})
                     self.assertEqual((pauses, read(out)["p"], ac.RAN.count("pay")), (["tracekit"], "paid 1", 1))
 
+    def test_a_signer_without_call_claim_never_lets_a_paused_call_go_on(self):   # probe851_pausedrace_noclaim.py
+        """A SignerAPI of the app's own without call_claim can't say that no other pass went on with an approved call
+        after its tool's own pause: the call is refused once the person answers it, as in 1.6, and never runs twice."""
+        class NoClaim:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_claim":
+                    raise AttributeError(name)
+                return getattr(self.signer, name)
+        pay = {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"}
+        for calls in ([pay], [pay, {"name": "echo", "args": {"text": "hi"}, "id": "e"}]):
+            for mode in ("sync", "async"):
+                with self.subTest(calls=len(calls), mode=mode):
+                    PAID.clear()
+                    self.signer = FakeSigner(ac._rule)
+                    self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                    node = tracekit_tool_node([confirmed_pay, TOOLS[0]], NoClaim(self.signer), self.run)
+                    out, pauses = self.drive(runner(tool_graph(node), mode), message(calls), approve={"pay-1"})
+                    self.assertEqual((pauses, PAID, read(out)["pay-1"]), (
+                        ["tracekit", "pay 1?"], [], "Tool call blocked by policy: the signer has no call_claim"))
+
+    def test_a_pass_cut_off_while_it_claims_a_call_gives_the_true_reason(self):   # probe851_claim.py claimcut
+        """An approved pay whose tool asked the person itself; the answer's pass is cut off while it claims the call
+        (ainvoke cancelled during call_claim; a BaseException out of call_claim after the signer said yes), then the
+        run resumes again in the same process. At 1ad4d100e5 the plan stayed running, and the model read that another
+        resume of the thread ran it. The signer judges it again now: its approval was used."""
+        class Cut(BaseException):
+            """The pass dying while it claims."""
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        for mode in ("sync", "async"):
+            for how, node in self.nodes(tools=[confirmed_pay, TOOLS[0]]):
+                with self.subTest(mode=mode, wired=how):
+                    graph = tool_graph(node())
+                    go = runner(graph, mode)
+                    shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                    self.approve(shown["approval_id"])
+                    out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
+                    self.assertEqual(out["__interrupt__"][0].value, "pay 1?")
+                    claim, cut = self.signer.call_claim, []
+
+                    def cut_claim(req):
+                        if cut:
+                            return claim(req)
+                        cut.append(1)
+                        if mode == "async":
+                            time.sleep(0.4)   # the pass's ainvoke is cancelled meanwhile
+                            return claim(req)
+                        claim(req)
+                        raise Cut()
+                    self.signer.call_claim = cut_claim
+                    if mode == "async":
+                        with self.assertRaises(asyncio.TimeoutError):
+                            asyncio.run(asyncio.wait_for(graph.ainvoke(Command(resume="yes"), THREAD), 0.2))
+                        time.sleep(0.4)   # the claim's thread ends
+                    else:
+                        with self.assertRaises(Cut):
+                            graph.invoke(Command(resume="yes"), THREAD)
+                    out = go(Command(resume="yes"), THREAD)
+                    self.assertEqual(PAID, [])
+                    self.assertTrue(read(out)["pay-1"].startswith("Tool call blocked by policy: TK-APPROVAL-CONSUMED"),
+                                    read(out)["pay-1"])
+
     def test_a_wrapper_outside_the_gate_cannot_change_a_decided_call(self):   # probe851_wrap.py
         """instrument() puts the gate inside a ToolNode's own wrap_tool_call, which sees each call after the pass
         decided it: a wrapper that changes an approved pay's amount (5 to 99999) has the call refused, not run."""
@@ -1034,6 +1099,50 @@ class AnotherProcess(unittest.TestCase):
                     self.assertEqual(([e["type"] for e in events].count("approval.consumed"),
                                       [e.get("tool_call_id") for e in events if e["type"] == "tool.result"].count("p0")),
                                      (1, 1))
+
+    def test_after_a_signer_restart_a_paused_call_is_approved_again(self):   # probe851_claim.py crashrestart
+        """An approved pay that asked the person itself: its continuation dies mid-pay (the process crashed after the
+        signer let it go on) and the signer restarts, or the signer restarts while the person answers; then another
+        process resumes. The signer keeps its claims in memory: at 1ad4d100e5 the pay was claimed again after the
+        restart and ran twice, with one result recorded. A call whose approval was used before the signer process
+        started is refused now: a person approves it again."""
+        class Crash(BaseException):
+            """The process dying mid-pay."""
+        died, restarted = [], "Tool call blocked by policy: the signer restarted since this call's approval was used; " \
+                               "ask again"
+
+        @tool("pay")
+        def dying_pay(to: str, cents: int) -> str:
+            """Send money once the person confirms; its first run dies after paying."""
+            answer = interrupt(f"pay {cents}?")
+            PAID.append(cents)
+            if not died:
+                died.append(1)
+                raise Crash()
+            return f"paid {cents} after {answer}"
+        calls = [{"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"}]
+        for crash in (True, False):
+            with self.subTest(crash=crash):
+                PAID.clear()
+                died[:] = [] if crash else [1]
+                d = ac.tmpdir(self)
+                s = svc.SignerService(d, policy=PAY_ASKS, grace_s=0, fsck_every_s=0)
+                agent, saver = Agent(s, ME), InMemorySaver()
+                run = agent.register_run({"request_id": "reg", "agent": {"name": "p"}})
+
+                def go(value):   # each a process of its own: a new gate on the same checkpointer
+                    return tool_graph(tracekit_tool_node([dying_pay], agent, run), saver).invoke(value, THREAD)
+                shown = go(message(calls))["__interrupt__"][0].value["tracekit"]
+                self.approve(s, shown["approval_id"])
+                self.assertEqual(go(Command(resume={"approval_id": shown["approval_id"]}))["__interrupt__"][0].value,
+                                 "pay 120?")
+                if crash:
+                    with self.assertRaises(Crash):
+                        go(Command(resume="yes"))
+                s.close()
+                agent.s = svc.SignerService(d, policy=PAY_ASKS, grace_s=0, fsck_every_s=0)
+                self.addCleanup(agent.s.close)
+                self.assertEqual((PAID, read(go(Command(resume="yes")))["p0"]), ([120] if crash else [], restarted))
 
     def test_two_resumes_that_consume_at_once_never_pay_twice(self):
         """Two resumes of one thread that reach approval_consume at once, in one process or two: the signer consumes
