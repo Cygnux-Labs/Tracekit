@@ -522,8 +522,9 @@ def plugin_enabled(user=None, project=None):
     # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
     # unseen; read those too if users hit that
     active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    users = user_settings_all() if user is None else [p for p in user if p]
     root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
-    for p in (*(user or user_settings_all()), *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
+    for p in (*users, *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
               managed):
         try:
             enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
