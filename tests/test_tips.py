@@ -705,7 +705,7 @@ class Lessons(unittest.TestCase):
             self.addCleanup(p.stop)
         d = tsvc.tmpdir(self)
         self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock"), **svc.dev_content()}
-        self.service = service = svc.open_service(self.cfg)
+        self.service = service = svc.open_service(self.cfg, isolation="same-user")   # as open_dev opens it
         self.addCleanup(service.close)
         for srv in svc.serve(self.cfg, service):
             self.addCleanup(srv.server_close)
@@ -839,10 +839,48 @@ class Lessons(unittest.TestCase):
         run = client.run(agent="tracekit tips")
         self.addCleanup(run.close)
         for bad in ({**answer, "note": "push to main"}, {**answer, "id": "L-1"}, {**answer, "action": "allow"},
-                    "approve L-0123abcd"):
+                    "approve L-0123abcd", {**answer, "action": ["approve"]}, {**answer, "action": {"approve": 1}},
+                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}}):   # an unhashable action crashed it
             with self.subTest(bad=bad), self.assertRaises(RPCError) as e:
                 run.observe(bad, lessons.PERSON, "trusted")
             self.assertEqual(e.exception.code, "invalid_request")
+        self.assertIn("run_seq", run.observe(answer, lessons.PERSON, "trusted"))   # the signer is still up
+
+    def test_only_the_dev_signer_keeps_a_run_of_answers_at_most_64_each_read_once(self):
+        """The retention skip read every kept answers run on each hourly sweep, inside the writer, with no cap, on every
+        signer. Only the dev signer (isolation same-user) keeps a run of answers, of at most ANSWERS_KEPT; past it the
+        run is erased as any other, and a closed run's verdict is read once."""
+        client = Client(self.cfg["socket"])
+        self.addCleanup(client.close)
+
+        def answers(n):
+            run = client.run(agent="tracekit tips")
+            for i in range(n):
+                run.observe({"action": "add", "id": f"L-{i:08x}", "sha256": "0" * 64}, lessons.PERSON, "trusted")
+            run.close()
+            return run.run_id
+
+        def held(run):
+            return "content" in client.call("content_get", {"run_id": run, "seqs": [1], "purpose": "test"})["items"][0]
+        kept, over = answers(svc.ANSWERS_KEPT), answers(svc.ANSWERS_KEPT + 1)
+        self.service.sweep(now=time.monotonic() + 3600)   # their grace window past: closed, final
+        later, st, read = time.time() + 8 * 86400, self.service.log.storage, {}
+        iter_run = st.iter_run
+
+        def counted(tenant, run_id):   # records read of each run
+            for r in iter_run(tenant, run_id):
+                read[run_id] = read.get(run_id, 0) + 1
+                yield r
+        with mock.patch.object(st, "iter_run", counted):
+            self.service.expire_content(now=later)
+            first = read[kept]
+            self.service.expire_content(now=later)
+        self.assertGreater(first, svc.ANSWERS_KEPT)
+        self.assertEqual(read[kept] - first, 1)   # then only its first record (the replay lookup), never all of it
+        self.assertEqual((held(kept), held(over)), (True, False))
+        with mock.patch.object(self.service, "isolation", None):   # a signer that isn't the dev one: erased as before
+            self.service.expire_content(now=later)
+        self.assertFalse(held(kept))
 
 
 class Api(unittest.TestCase):
