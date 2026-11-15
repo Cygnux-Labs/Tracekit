@@ -5,6 +5,7 @@ import unittest
 import warnings
 from unittest import mock
 
+from factories import VersionCheckCases
 from tracekit.format.canon import event_hash
 from tracekit.integrations import crewai
 from tracekit.sdk import client
@@ -180,6 +181,14 @@ class RunHandleOutage(unittest.TestCase):
     def test_a_refusal_still_raises_from_decide(self):
         with mock.patch.object(Client, "call", side_effect=RPCError("forbidden", "no")), self.assertRaises(RPCError):
             self.handle({}).decide("c1", "pay", {})
+
+
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "crewai", "1.15.27"
+    message = "CrewAI 0.0.1 is wired but untested; Tracekit is tested with crewai>=1.15.27,<1.16"
+
+    def entries(self, integration):
+        return (lambda: integration.hooks(mock.Mock()),)
 
 
 if __name__ == "__main__":

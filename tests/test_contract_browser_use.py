@@ -22,6 +22,7 @@ import weakref
 from unittest import mock
 
 import adapter_contract as ac
+from factories import VersionCheckCases
 from tracekit.format.canon import event_hash
 from tracekit.integrations.browser_use import _mask, trace_tools
 from tracekit.policy2 import compile as pc
@@ -954,3 +955,13 @@ class OnRealTools1x(unittest.TestCase):
             asyncio.run(BrowserLoop().wrap_tool_execute(
                 ctx, call=types.SimpleNamespace(tool_name="python", tool_call_id="id-python"),
                 tool_def=types.SimpleNamespace(kind="function"), args={"code": "print(1)"}, handler=handler))
+
+
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "browser_use", "1.0.2"
+    message = "Browser Use 0.0.1 is wired but untested; Tracekit is tested with browser-use>=0.13.11,<1.1"
+
+    def entries(self, integration):
+        return (lambda: integration.trace_tools(
+            types.SimpleNamespace(registry=types.SimpleNamespace(execute_action=mock.AsyncMock())),
+            mock.Mock(), {"run_id": "r", "run_token": "t"}),)

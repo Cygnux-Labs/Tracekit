@@ -411,24 +411,39 @@ def wait_for(cond, timeout=10, interval=0.05):
 class VersionCheckCases:
     """The version check a hand-wired integration shares with the others (tracekit.integrations.version_check): a
     framework outside the versions Tracekit is tested with warns once when the integration is built, one inside the
-    range does not. A test class sets `module` (under tracekit.integrations), `inside` and `message`."""
+    range does not. A test class sets `module` (under tracekit.integrations), `inside` and `message`, and overrides
+    `entries` when its entry points are not `(Tracekit(run),)`."""
 
-    def warnings_for(self, version):
+    def entries(self, integration):
+        return (lambda: integration.Tracekit(mock.Mock()),)
+
+    def warnings_for(self, version, entry=None):
         import importlib
         import warnings
         from tracekit.integrations import version_check
-        integration = importlib.import_module("tracekit.integrations." + self.module)
+        if entry is None:
+            integration = importlib.import_module("tracekit.integrations." + self.module)
+            [entry] = self.entries(integration)
         with mock.patch.object(version_check, "_WARNED", set()), \
                 mock.patch.object(version_check, "_version", return_value=version), \
                 warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            integration.Tracekit(mock.Mock())
+            entry()
+            entry()
         return [str(x.message) for x in w if "is wired but untested" in str(x.message)]
 
     def test_it_warns_for_a_version_outside_the_tested_range(self):
-        msgs = self.warnings_for("0.0.1")
-        self.assertEqual(1, len(msgs))
-        self.assertIn(self.message, msgs[0])
+        import importlib
+        integration = importlib.import_module("tracekit.integrations." + self.module)
+        for i, entry in enumerate(self.entries(integration)):
+            with self.subTest(entry=i):
+                msgs = self.warnings_for("0.0.1", entry)
+                self.assertEqual(1, len(msgs))
+                self.assertIn(self.message, msgs[0])
 
     def test_it_does_not_warn_for_a_version_inside_the_tested_range(self):
-        self.assertEqual([], self.warnings_for(self.inside))
+        import importlib
+        integration = importlib.import_module("tracekit.integrations." + self.module)
+        for i, entry in enumerate(self.entries(integration)):
+            with self.subTest(entry=i):
+                self.assertEqual([], self.warnings_for(self.inside, entry))
