@@ -30,11 +30,13 @@ import warnings
 from html.entities import html5
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations import version_check
 from tracekit.integrations.held import HeldCalls
 from tracekit.sdk.client import Refused, SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Action blocked by policy: "
+_FRAMEWORK = version_check.framework("browser-use")
 _PLACEHOLDER = re.compile(r"<secret>(.*?)</secret>")
 PAGE_URL_S = 2   # how long reading the page's URL may take before the action is decided with page_url ""
 # lean: what the model read past this many characters of a page's text is not observed (Browser Use shows the model
@@ -63,6 +65,7 @@ def trace_tools(tools, signer, run, approval_wait_s=None):
     """Gate every action of `tools` (browser_use Tools, or a Controller) through the signer. Returns `tools`.
     `approval_wait_s`: how long an `ask` waits for a person; by default, and at most, five sixths of Browser Use's
     action timeout (150 s of 180 s), leaving the rest for the action itself."""
+    version_check.warn_untested(*_FRAMEWORK)
     return _wrap(tools, _actions(signer, run, approval_wait_s))
 
 

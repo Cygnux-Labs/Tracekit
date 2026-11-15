@@ -13,6 +13,7 @@ from unittest import mock
 
 import adapter_contract as ac
 import test_said as ts
+from factories import VersionCheckCases
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.testing import FakeSigner
 
@@ -324,6 +325,17 @@ class Said(unittest.TestCase):
         self.signer.model_event = mock.Mock(side_effect=SignerUnavailable("down"))
         with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):
             self.said(self.MESSAGE)
+
+
+@unittest.skipUnless(HAVE_SDK, "claude-agent-sdk not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "claude_agent_sdk", "0.2.165"
+    message = "Claude Agent SDK 0.0.1 is wired but untested; Tracekit is tested with claude-agent-sdk>=0.2.165,<0.3"
+
+    def entries(self, integration):
+        run = {"run_id": "r", "run_token": "t"}
+        return (lambda: integration.tracekit_hooks(mock.Mock(), run),
+                lambda: integration.TracekitSessionStore(mock.Mock(), mock.Mock(), run))
 
 
 if __name__ == "__main__":

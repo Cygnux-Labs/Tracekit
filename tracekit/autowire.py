@@ -199,14 +199,16 @@ def _openai_agents(run):
 def _langgraph(run):
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from .integrations.langchain import TracekitMiddleware, pausing, with_fallbacks
+    from .integrations.langchain import (TracekitMiddleware, pass_afunc, pass_arun_one, pass_func, pausing,
+                                         with_fallbacks)
     gate = TracekitMiddleware(run.client, run.run_id, run.run_token, run.registered.get("fail_modes"))
     init = ToolNode.__init__
 
     @functools.wraps(init)
     def gated(self, tools, *a, wrap_tool_call=None, awrap_tool_call=None, **kw):
         w, aw = wrap_tool_call, awrap_tool_call
-        if not isinstance(getattr(w, "__self__", None), TracekitMiddleware):   # tracekit_tool_node gates already
+        wired = not isinstance(getattr(w, "__self__", None), TracekitMiddleware)   # tracekit_tool_node gates already
+        if wired:
             wrap_tool_call = gate.wrap_tool_call if w is None else (
                 lambda req, h: w(req, lambda r: gate.wrap_tool_call(r, h)))
             # no async wrapper of its own: ToolNode runs the sync one, gate included, for async calls too
@@ -215,7 +217,10 @@ def _langgraph(run):
             if "handle_tool_errors" in kw:   # an ask pauses whatever the node's error handling
                 kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
         init(self, tools, *a, wrap_tool_call=wrap_tool_call, awrap_tool_call=awrap_tool_call, **kw)
+        if wired:
+            self._tracekit = gate, wrap_tool_call   # the gate plans each pass's calls together (pass_func)
     ToolNode.__init__ = gated
+    ToolNode._func, ToolNode._afunc, ToolNode._arun_one = pass_func, pass_afunc, pass_arun_one
     ToolNode.with_fallbacks = with_fallbacks   # and through the fallbacks the node is wrapped in
 
 
@@ -432,6 +437,7 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
+    from .integrations import version_check
     from .sdk.client import Client, SignerUnavailable, current_run
     from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
@@ -461,14 +467,18 @@ def instrument(agent=None):
         atexit.register(_close, run)
         _STATE["run"] = run   # before wiring: an instrument() called while a framework is imported gets this run
         for (label, dist, lo, hi, req, page, wire), version in found:
+            untested = not lo <= _release(version) < hi
+            claimed = untested and version_check.claim(label)
             try:
                 wire(run)
             except Exception as e:
+                if claimed:
+                    version_check.unclaim(label)
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
                               f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
-            if not lo <= _release(version) < hi:
+            if claimed:
                 warnings.warn(f"tracekit.instrument(): {_untested_warning(label, version, req)}", stacklevel=2)
         autotrace.instrument(run)
         return run
