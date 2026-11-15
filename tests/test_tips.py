@@ -1043,6 +1043,54 @@ class Codex(unittest.TestCase):
                     [usage(i, 60_000 + 3_000 * i) for i in range(300)])
         return d
 
+    def step(self, cached=60_000, write=3_000, out=200):
+        """A one-step Codex session (a rollout file of its own): (the signed records of a run of it, its folder)."""
+        sid = "9f0c9a11-0000-4000-8000-000000000001"
+        d = tmp(self)
+        write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T09-00-10-9f0c9a11.jsonl"),
+                    rollout(sid) + [usage(0, cached, write=write, out=out)])
+        return sid, d
+
+    def codex_run(self, run, cached=60_000, write=3_000, out=200, name="codex"):
+        """The signed records of one model exchange in run `run` (agent name `name`), signed at the session file's
+        step with its counts: a Codex record's input of its own is none (input_tokens counts the cached and written)."""
+        return rows(v2rec(1, "run.registered", {"agent": {"name": name}}, run=run),
+                    v2rec(2, "model.exchange", {"exchange_id": "x0", "phase": "response", "model": "gpt-6-astra",
+                                                "upstream": "openai",
+                                                "usage": {"input_tokens": 0, "output_tokens": out,
+                                                          "cache_read_tokens": cached, "cache_write_tokens": write}},
+                          run=run, ts="2026-10-10T09:00:10.000000Z"))
+
+    def test_a_claude_code_step_and_a_codex_session_step_with_the_same_counts_both_count(self):
+        """The 2nd review of #653: `_same` matched any signed step to any Codex session step with the same four counts
+        within MATCH_S, so a Claude Code record with a small turn's counts swallowed the Codex step and the real
+        signed step vanished from the total. A session joins only a Codex run's records."""
+        _sid, d = self.step()
+        out = tips.build(self.codex_run("sess-cc", name="claude-code"), codex=d, now=NOW)
+        s = out["sources"]
+        self.assertEqual((s["signed"]["steps"], s["signed"]["also"]["steps"], s["codex"]["steps"]), (1, 0, 1))
+
+    def test_a_codex_run_of_another_session_with_matching_counts_does_not_join(self):
+        """The 2nd review of #653: a Codex run joins only its own session's steps (the run's key is the session
+        file's session_meta id), never another session's, whatever their counts."""
+        _sid, d = self.step()
+        out = tips.build(self.codex_run("0e1d2c3b-0000-4000-8000-000000000002"), codex=d, now=NOW)
+        s = out["sources"]
+        self.assertEqual((s["signed"]["steps"], s["signed"]["also"]["steps"], s["codex"]["steps"]), (1, 0, 1))
+
+    def test_a_matched_step_counts_at_its_signed_counts_in_the_sessions_place(self):
+        """The 2nd review of #653: a joined step kept the session's unsigned counts; it counts at its signed counts,
+        in the session step's place, with `src` signed — what `_join` does for a transcript."""
+        sid, d = self.step(cached=40_000, out=250)
+        out = tips.build(self.codex_run(sid, cached=60_000, write=3_000, out=200), codex=d, now=NOW)
+        s = out["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]), (0, {"runs": 1, "steps": 1}))
+        signed = tips.signed_steps(self.codex_run(sid, cached=60_000, write=3_000, out=200), 0)
+        agents = tips.read_codex_sessions(d, 0)[0]
+        self.assertEqual(tips._same(signed, agents), {sid: {0}})
+        t = agents[sid]["steps"][0]
+        self.assertEqual((t["src"], tips._counts(t)), ("signed", (0, 200, 60_000, 3_000)))   # the signed counts, its own place
+
     def test_a_codex_only_week_reads_the_sessions_and_gets_the_context_tip(self):
         body = tips.build([], codex=self.week(), now=NOW)
         self.assertEqual(body["sources"]["codex"]["files"], 1)

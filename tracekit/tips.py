@@ -850,20 +850,19 @@ def _signed(t, s):
 
 def _same(signed, agents):
     """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: one that takes up
-    one session step no other step matched with the same token counts within MATCH_S (a Codex run's records name no
-    call ids, so the counts are all that can join them)."""
-    pool = collections.defaultdict(list)   # token counts -> the times of the session steps not matched yet
-    for a in agents.values():
-        for s in a["steps"]:
-            pool[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
+    one step of its own session no other step matched within MATCH_S (a Codex run's records name no call ids, so the
+    session is all that can join them: a run of another agent, or of another session — the run's key is the session
+    file's session_meta id — joins none of it) counts at its signed counts in the session step's place (_signed), and
+    the session step's `src` becomes `signed`."""
     held = collections.defaultdict(set)
     for k, a in signed.items():
+        own = agents.get(k.split("/")[0]) if a.get("name") == "codex" else None   # its own session, or none
+        left = list(own["steps"]) if own is not None else []
         for i, s in enumerate(a["steps"]):
-            times = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
-            j = next((j for j, t in enumerate(times) if abs(t - s["t"]) <= MATCH_S), None)
+            j = next((j for j, t in enumerate(left) if abs(t["t"] - s["t"]) <= MATCH_S), None)
             if j is not None:
                 held[k].add(i)
-                times.pop(j)
+                _signed(left.pop(j), s)
     return held
 
 
@@ -908,7 +907,7 @@ def build(rows, root=None, now=None, since=None, codex=None):
             refused += 1
     for a in signed.values():
         a["steps"] = [s for s in a["steps"] if id(s) not in drop]
-    cx = _same(signed, codex_agents)   # a signed Codex run its sessions also hold counts once
+    cx = _same(signed, codex_agents)   # a signed Codex run its sessions also hold counts once, in the session's place
     for k, idx in cx.items():
         signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
     also["runs"], also["steps"] = also["runs"] + len(cx), also["steps"] + sum(map(len, cx.values()))
