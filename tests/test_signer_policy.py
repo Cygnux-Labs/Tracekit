@@ -2829,6 +2829,40 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_open_interpreter_alias_tools_and_path_spellings_meet_the_rules_their_calls_do(self):
+        # review of #853: Open Interpreter runs bash and exec_shell as Bash, write and write_file as Write, edit and
+        # edit_file as Edit, read, read_file and ReadMediaFile as Read, and its Read, Write and Edit take path,
+        # file_path or filePath. Mapped as its hook maps them, each is decided as Claude Code's call to the same place
+        from tracekit import agent_hooks
+        hooks, toml, key = ("/home/u/.openinterpreter/hooks.json", "/home/u/.openinterpreter/config.toml",
+                            "/home/u/.ssh/id_rsa")
+        off = "[features]\nhooks = false\n"
+        same = ((("Bash", {"command": "sudo id"}), [("bash", {"command": "sudo id"}),
+                                                     ("exec_shell", {"command": "sudo id"})]),
+                (("Write", {"file_path": hooks, "content": "{}"}), [
+                    ("Write", {"filePath": hooks, "content": "{}"}), ("write", {"filePath": hooks, "content": "{}"}),
+                    ("write_file", {"path": hooks, "content": "{}"})]),
+                (("Write", {"file_path": toml, "content": off}), [("Write", {"filePath": toml, "content": off})]),
+                (("Edit", {"file_path": hooks, "old_string": "600", "new_string": "1"}), [
+                    ("Edit", {"filePath": hooks, "old_string": "600", "new_string": "1"}),
+                    ("edit", {"path": hooks, "oldString": "600", "newString": "1"}),
+                    ("edit_file", {"path": hooks, "search": "600", "replace": "1"})]),
+                (("Read", {"file_path": key}), [
+                    ("Read", {"filePath": key}), ("read", {"path": key}), ("read_file", {"path": key}),
+                    ("ReadMediaFile", {"path": key})]))
+        for pack, engine, e in self.every_pack():
+            for (tool, args), theirs in same:
+                want = e.decide(tool, args)
+                self.assertTrue(want["rule_ids"], (pack, tool, args))   # each meets a rule as Claude Code's call
+                for name, ti in theirs:
+                    with self.subTest(pack=pack, engine=engine, tool=name, args=ti):
+                        got = e.decide(*agent_hooks.tool("interpreter", name, ti))
+                        self.assertEqual((got["verdict"], sorted(got["rule_ids"])),
+                                         (want["verdict"], sorted(want["rule_ids"])))
+            # a decoy path beside the one the tool reads never replaces it
+            got = e.decide(*agent_hooks.tool("interpreter", "Read", {"file_path": "/w/notes.txt", "filePath": key}))
+            self.assertLessEqual(set(e.decide("Read", {"file_path": key})["rule_ids"]), set(got["rule_ids"]), pack)
+
     def test_crush_config_changes_are_harness_config_in_every_pack(self):
         # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
         # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged

@@ -123,7 +123,8 @@ class Mapping(HarnessCase):
     def test_interpreter_files_given_to_the_model_are_reads(self):
         """Built on a recorded spawn_agent payload: each file a call reads into the model's context (view_image's path,
         spawn_agent's and send_input's local_image, local_audio and skill items) is decided as a Read of it, never on a
-        decoy file_path beside it; a file item with no path Tracekit can read is denied in the hook."""
+        decoy file_path beside it; a file item with no path Tracekit can read is denied in the hook. send_input reaches
+        the hook as multi_agent_v1send_input (recorded)."""
         base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "spawn_agent")
         for name, ti, files in (
                 ("view_image", {"path": "/w/pic.png", "file_path": "/w/notes.txt"}, ["/w/pic.png"]),
@@ -131,7 +132,8 @@ class Mapping(HarnessCase):
                                            {"type": "skill", "path": "/w/.agents/skills/s/SKILL.md"},
                                            {"type": "mention", "path": "app://drive"}],
                                  "file_path": "/w/notes.txt"}, ["/w/a.wav", "/w/.agents/skills/s/SKILL.md"]),
-                ("send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]}, ["/w/.env"])):
+                ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
+                 ["/w/.env"])):
             with self.subTest(tool=name):
                 self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
                 sent = self.sent[-1]
@@ -142,12 +144,44 @@ class Mapping(HarnessCase):
         self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
         n = len(self.sent)
         for name, ti in (("view_image", {}), ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]}),
-                         ("send_input", {"items": [{"type": "skill"}]})):
+                         ("multi_agent_v1send_input", {"items": [{"type": "skill"}]})):
             with self.subTest(blocked=name):
                 code, out, err = self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))
                 self.assertEqual(code, CODEX_DENY, err)
                 self.assertIn(f"Open Interpreter's {name} call names a file without a path", out + err)
         self.assertEqual(len(self.sent), n)   # never sent to the signer
+
+    def test_interpreter_alias_tools_and_path_spellings_are_the_calls_they_run(self):
+        """Review of #853: every non-native harness (claude-code, which Open Interpreter picks by itself for Anthropic
+        models, included) registers bash, read, write, edit, glob and grep beside Claude Code's names; deepseek-tui
+        adds exec_shell, write_file, edit_file and read_file, and kimi-code ReadMediaFile (0.0.61's
+        add_harness_alias_tools). Read, Write and Edit take their path as path, file_path or filePath (serde aliases).
+        Each is decided as the Bash line or file call it runs, on every path it may read, an edit on the text it
+        writes. Built on a recorded claude-code payload."""
+        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "Write")
+        hooks, key = "/home/u/.openinterpreter/hooks.json", "/home/u/.ssh/id_rsa"
+        both = {"file_path": hooks, "paths": [hooks]}
+        for name, ti, tool, want in (
+                ("bash", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("exec_shell", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("Write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write_file", {"path": hooks, "content": "{}"}, "Write", both),
+                ("Edit", {"filePath": hooks, "old_string": "a", "new_string": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit", {"path": hooks, "oldString": "a", "newString": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit_file", {"path": hooks, "search": "a", "replace": "b"}, "Edit", dict(both, new_string="b")),
+                ("apply_patch", {"path": hooks, "patch": "@@\n-a\n+b\n"}, "Edit", both),   # deepseek-tui's (source)
+                ("Read", {"filePath": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read_file", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("ReadMediaFile", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("Read", {"file_path": "/w/notes.txt", "filePath": key}, "Read", {"paths": ["/w/notes.txt", key]}),
+                ("glob", {"pattern": "*.txt", "path": "/w"}, "Glob", {"pattern": "*.txt"}),
+                ("grep", {"pattern": "uno", "path": "/w"}, "Grep", {"pattern": "uno"})):
+            with self.subTest(tool=name, args=ti):
+                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], {k: sent["args"].get(k) for k in want}), (tool, want))
 
     def test_interpreter_results_prompts_and_session_events_answer_nothing(self):
         """Built from a recorded PreToolUse payload, with the fields each event adds in the recordings (PostToolUse's
@@ -1779,6 +1813,9 @@ class CodexHookTrust(unittest.TestCase):
             self.assertIn(f"Run interpreter with INTERPRETER_HOME={oi} in a terminal, type /hooks and trust "
                           f"Tracekit's hooks (Open Interpreter records that in {self.toml})", line)
             self.assertIn("`interpreter exec` never asks and skips them without a word", line)
+            self.assertTrue(line.endswith("These hooks are for Open Interpreter 0.0.x (the Rust CLI); the Python "
+                                          "open-interpreter 0.4.x runs no hooks, so Tracekit sees none of its calls"))
+            self.assertNotIn("open-interpreter 0.4.x", agent_hooks.codex_trust_line())
             with open(self.hooks) as f:
                 hooks = json.load(f)["hooks"]
             self.assertEqual(sorted(hooks), sorted(self.EVENTS.values()))
@@ -1873,6 +1910,26 @@ class CodexHookTrust(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             cli.main(["doctor", "--json"])
         self.assertEqual([r["status"] for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST"], ["warn"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Open Interpreter's config.toml")
+    def test_doctor_checks_open_interpreters_v1_hooks_trust_too(self):
+        """Review of #853: init --dev --agent interpreter (v1) writes hooks Open Interpreter skips just the same until
+        trusted, and only doctor's sweep of the v1 hooks sees them."""
+        oi = os.path.join(self.home, ".openinterpreter")
+        env = {k: v for k, v in os.environ.items() if k != "INTERPRETER_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "init_dev", return_value={"socket": "s"}):
+                self.assertEqual(cli.main(["init", "--dev", "--agent", "interpreter"]), 0)
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(self.home)
+            with mock.patch.object(client, "system_config", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cli.main(["doctor", "--json"])
+        got = [r for r in json.loads(out.getvalue()) if r["id"] == "D-INTERPRETER-HOOK-TRUST"]
+        self.assertEqual([r["status"] for r in got], ["warn"])
+        self.assertIn(f"hook(s) in {os.path.join(oi, 'hooks.json')}: nobody trusted them in Open Interpreter (",
+                      got[0]["detail"])
 
     def test_doctor_says_when_it_cant_tell(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10

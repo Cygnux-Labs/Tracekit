@@ -29,9 +29,12 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
     Open Interpreter  Codex's (a Codex fork, 0.0.61 recorded): Bash (its exec_command), apply_patch (the patch in
-            `command`), mcp__s__t, decided as Codex's are; view_image, and spawn_agent or send_input with file items
-            (local_image, local_audio, skill), as a Read of each file; get_goal and other tools, Claude Code's under
-            harness = "claude-code" among them, by name. A call from Code Mode's exec has an exec-<uuid> call id
+            `command`), mcp__s__t, decided as Codex's are; view_image, and spawn_agent or multi_agent_v1send_input
+            (send_input) with file items (local_image, local_audio, skill), as a Read of each file; under a non-native
+            harness, Claude Code's tools as Claude Code's, and bash, exec_shell, write, write_file, edit, edit_file,
+            read, read_file, ReadMediaFile, glob, grep as Bash, Write, Edit, Read, Glob, Grep; a Read, Write or Edit
+            on every path it names (path, file_path, filePath); get_goal and other tools by name. A call from Code
+            Mode's exec has an exec-<uuid> call id
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
             edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
             delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
@@ -328,11 +331,19 @@ CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9
 # CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
 CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
-# Open Interpreter (0.0.61): spawn_agent (the hook's name for the model's multi_agent_v1_spawn_agent, recorded) and
-# send_input take `items`; an item of these types names a file (`path`) read into the agent's context. A mention's path
-# is an app:// or plugin:// target, not a file
-INTERPRETER_ITEM_TOOLS = ("spawn_agent", "send_input")
+# Open Interpreter (0.0.61): spawn_agent (the hook's name for the model's multi_agent_v1_spawn_agent) and send_input
+# take `items`; an item of these types names a file (`path`) read into the agent's context. A mention's path is an
+# app:// or plugin:// target, not a file. send_input gets no hook name of its own (function_hook_tool_name): the hook
+# sees its namespace and name joined, multi_agent_v1send_input (both names recorded)
+INTERPRETER_ITEM_TOOLS = ("spawn_agent", "multi_agent_v1send_input")
 INTERPRETER_FILE_ITEMS = ("local_image", "local_audio", "skill")
+# the shell and file tools each non-native harness adds under other names (0.0.61's add_harness_alias_tools and
+# HarnessAliasHandler): exec_shell runs handle_bash, as bash does; ReadMediaFile reads `path` into the model's context
+INTERPRETER_TOOLS = {"bash": "Bash", "exec_shell": "Bash", "write": "Write", "write_file": "Write", "edit": "Edit",
+                     "edit_file": "Edit", "read": "Read", "read_file": "Read", "ReadMediaFile": "Read",
+                     "glob": "Glob", "grep": "Grep"}
+# the spellings its Read, Write and Edit handlers take a path under (serde aliases on ReadArgs, WriteArgs, EditArgs)
+INTERPRETER_PATH_KEYS = ("path", "file_path", "filePath")
 
 
 def _each(v, *keys):
@@ -583,6 +594,24 @@ def tool(harness, name, ti):
             ti["file_path"] = files[0] if files else None
         return (DROID_TOOLS if harness == "droid" else DEVIN_TOOLS).get(name, name), ti
     if harness == "interpreter":   # the files a call reads into the model's context, each decided as a Read of its path
+        sent, name = name, INTERPRETER_TOOLS.get(name, name)
+        if name in ("Read", "Write", "Edit"):   # every path the handler may read, so no spelling gets past the file rules
+            files = list(dict.fromkeys(ti[k] for k in INTERPRETER_PATH_KEYS if isinstance(ti.get(k), str) and ti[k]))
+            ti["paths"], ti["file_path"] = files, files[0] if files else None
+            # the text an edit writes, under Claude Code's name: EditArgs' newString, edit_file's replace
+            spellings = (("search", "old_string"), ("replace", "new_string")) if sent == "edit_file" else \
+                (("oldString", "old_string"), ("newString", "new_string"))
+            for theirs, ours in spellings if name == "Edit" else ():
+                if ours not in ti and theirs in ti:
+                    ti[ours] = ti[theirs]
+            return name, ti
+        if name == "apply_patch" and isinstance(ti.get("path"), str) and ti["path"]:
+            # deepseek-tui's apply_patch writes the file its `path` names (handle_deepseek_apply_patch), and its patch
+            # is a diff without the headers Codex's names files in
+            ti = tool("codex", name, ti)[1]
+            ti["paths"] = list(dict.fromkeys([ti["path"], *(ti.get("paths") or [])]))
+            ti["file_path"] = ti["path"]
+            return "Edit", ti
         if name == "view_image":
             ti.pop("paths", None)
             ti["file_path"] = ti.get("path")
@@ -1631,11 +1660,15 @@ def codex_trust_line(user=None, home=None, harness="codex"):
         run += f" {cmd} with {var}={os.environ[var]}"
     else:
         run += f" {cmd}"
+    # the Python open-interpreter (0.4.x, pip install open-interpreter) installs an `interpreter` command too, and
+    # runs no hooks
+    old = (". These hooks are for Open Interpreter 0.0.x (the Rust CLI); the Python open-interpreter 0.4.x runs no "
+           "hooks, so Tracekit sees none of its calls") if harness == "interpreter" else ""
     return (f"next, trust these hooks in {name}: it runs none of them until a person has, so until then no {name} call "
             f"is recorded or decided. {run} in a terminal, type /hooks and trust Tracekit's hooks ({name} records that "
             f"in {codex_trust_store(home, harness)}). Interactive {cmd} also asks at startup whenever they are new or "
             f"changed (as after tracekit init); `{cmd} exec` never asks and skips them without a word. `tracekit "
-            "doctor` says whether they are trusted")
+            "doctor` says whether they are trusted" + old)
 
 
 def _version(cmd):
