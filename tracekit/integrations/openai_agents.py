@@ -44,12 +44,14 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations import version_check
 from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
 _EVENTS = ("decide", "complete", "model_event")
+_FRAMEWORK = version_check.framework("openai-agents")
 MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one call
 
 
@@ -69,6 +71,7 @@ def _source(args):
 class TracekitAgents(RunHooks):
     def __init__(self, signer, run):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`)."""
+        version_check.warn_untested(*_FRAMEWORK)
         self.signer, self.run = signer, {"run_id": run["run_id"], "run_token": run["run_token"]}
         self.fail_modes = run.get("fail_modes")
         # lean: a new stream per instance, so each process that resumes the run opens one (the signer allows 64 per

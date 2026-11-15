@@ -4,11 +4,12 @@ import unittest
 import warnings
 from unittest import mock
 
+from tracekit import autowire
 from tracekit.integrations import version_check
 
 
 class Check(unittest.TestCase):
-    """The helper the five hand-wired integrations call."""
+    """The helper the hand-wired integrations call."""
 
     def test_it_warns_for_a_version_outside_the_tested_range(self):
         with mock.patch.object(version_check, "_WARNED", set()), \
@@ -61,3 +62,13 @@ class Check(unittest.TestCase):
             version_check.warn_untested("Fine", "fine>=1,<2")
             version_check.warn_untested("Also Fine", "also-fine>=1,<2")
         self.assertEqual(2, len([x for x in w if "is wired but untested" in str(x.message)]))
+
+    def test_framework_reads_labels_and_ranges_from_autowire(self):
+        for label, dist, lo, hi, *_ in autowire.FRAMEWORKS:
+            got_label, req = version_check.framework(dist)
+            self.assertEqual(got_label, label)
+            self.assertTrue(req.startswith(dist + ">="), req)
+            self.assertEqual(autowire._tested(dist, req), (lo, hi))
+        fake = (("Moved", "moved", (3, 1), (4, 0), "extra>=1,<2 moved>=3.1,<4.0", "custom", None),)
+        with mock.patch.object(autowire, "FRAMEWORKS", fake):
+            self.assertEqual(version_check.framework("moved"), ("Moved", "moved>=3.1,<4.0"))

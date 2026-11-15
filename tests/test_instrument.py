@@ -22,6 +22,7 @@ from quickstart_agents import AGENTS, REFUSED
 
 from tracekit import autowire
 from tracekit.format.canon import event_hash
+from tracekit.integrations import version_check
 from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
 from tracekit.wiki import wiki_url
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -160,9 +161,10 @@ class TestThreeSteps(DevSigner):
 
 class TestInstrument(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.dict(autowire._STATE, run=None)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.dict(autowire._STATE, run=None),
+                        mock.patch.object(version_check, "_WARNED", set())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_nothing_installed_warns_and_records_nothing(self):
         with mock.patch.object(autowire, "_version", return_value=None), \
@@ -215,6 +217,62 @@ class TestInstrument(unittest.TestCase):
                       "broken>=1,<2", msgs[0])
         self.assertIn(f"wire it by hand ({wiki_url('docs/custom.md')})", msgs[0])   # was docs/custom.md, a repo path
         self.assertIn("Fine 2.1rc1 is wired but untested", msgs[1])
+
+    def test_an_untested_framework_warns_once_not_again_in_its_entry_point(self):
+        """instrument() builds several integrations' entry points itself (some while wiring, some per session or agent
+        after): an untested framework warns once, from instrument(), not a second time from warn_untested."""
+        hooks_mod = types.SimpleNamespace(register_before_tool_call_hook=mock.Mock(),
+                                          register_after_tool_call_hook=mock.Mock())
+        pkg = types.ModuleType("crewai")
+        pkg.hooks = hooks_mod
+        versions = {"crewai": "0.0.1"}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        have_mcp = installed(AGENTS["mcp"][0])
+        if have_mcp:
+            from mcp import ClientSession
+
+            async def call_tool(gate, *a, **kw):
+                pass
+            versions["mcp"] = "0.0.1"
+            for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts",
+                         "initialize"):
+                if hasattr(ClientSession, name):
+                    stack.enter_context(mock.patch.object(ClientSession, name, getattr(ClientSession, name)))
+            stack.enter_context(mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool))
+        with mock.patch.dict(sys.modules, {"crewai": pkg, "crewai.hooks": hooks_mod}), \
+                mock.patch.object(autowire, "_version", side_effect=versions.get), \
+                mock.patch.object(version_check, "_version", side_effect=versions.get), \
+                mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
+                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            autowire.instrument()
+            if have_mcp:   # TracekitSession is built per session after instrument() returns
+                for _ in range(2):
+                    asyncio.run(object.__new__(ClientSession).call_tool("t", {}))
+        msgs = [str(x.message) for x in w if "is wired but untested" in str(x.message)]
+        self.assertEqual(len(msgs), len(versions), msgs)
+        self.assertTrue(all(m.startswith("tracekit.instrument(): ") for m in msgs), msgs)
+        self.assertTrue(any("CrewAI 0.0.1 is wired but untested" in m for m in msgs), msgs)
+        if have_mcp:
+            self.assertTrue(any("MCP client 0.0.1 is wired but untested" in m for m in msgs), msgs)
+
+    def test_an_untested_framework_that_fails_to_wire_still_warns_when_wired_by_hand(self):
+        from tracekit.integrations import crewai
+        versions = {"crewai": "0.0.1"}
+        with mock.patch.dict(sys.modules, {"crewai": types.ModuleType("crewai"), "crewai.hooks": None}), \
+                mock.patch.object(autowire, "_version", side_effect=versions.get), \
+                mock.patch.object(version_check, "_version", side_effect=versions.get), \
+                mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
+                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            autowire.instrument()
+            crewai.hooks(mock.Mock())
+        msgs = [str(x.message) for x in w]
+        self.assertEqual(len(msgs), 2, msgs)
+        self.assertIn("CrewAI 0.0.1 not wired", msgs[0])
+        self.assertIn("tracekit: CrewAI 0.0.1 is wired but untested; Tracekit is tested with crewai>=1.15.27,<1.16",
+                      msgs[1])
 
     def test_every_framework_names_a_docs_page(self):
         """Its not-wired warning sends people to that page's wiki URL."""

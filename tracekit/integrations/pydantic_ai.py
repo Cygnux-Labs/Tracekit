@@ -27,9 +27,11 @@ from pydantic_ai.messages import TextPart, ThinkingPart, ToolCallPart
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
-from tracekit.integrations import said
+from tracekit.integrations import said, version_check
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
+
+_FRAMEWORK = version_check.framework("pydantic-ai-slim")
 
 
 class Tracekit(AbstractCapability):
@@ -37,6 +39,7 @@ class Tracekit(AbstractCapability):
     `tracekit.instrument()`'s, which routes to the current run); an AsyncRunHandle works too."""
 
     def __init__(self, run):
+        version_check.warn_untested(*_FRAMEWORK)
         self.run = run_handle(run, instrument=True)
         # lean: one entry per call the capability ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a resumed deferral runs it again)
