@@ -385,8 +385,8 @@ to its session and project by its calls' `tool_use_id` in Claude Code's transcri
 | Kind | Found when | The lesson says |
 |---|---|---|
 | LOOKUP | the same search (Grep, Glob, WebSearch, or a shell `rg`, `grep -r`, `git grep`, `find -name`) for an identifier of 4 or more characters, then the same file read within 3 calls, in 3 sessions on 2 days; a file written, or a call denied or held, between them makes it none | ``Searching for `held_calls` here leads to `tracekit/why/import_v2.py`.`` |
-| FIX | the same plain shell call (one program, maybe after `cd DIR &&` and NAME=value settings; no quotes, pipes, redirects, expansions or comments) failing with one of a fixed list of errors (no module named X, X not installed, a file that doesn't exist, refused access: only the name X is kept from the transcript's error text), then within 5 calls the same call with another program, a flag added or removed, a setting added or `cd DIR` first, that worked, 3 times in 2 sessions; a write, a deny or a hold between them makes it none | ``` `python3` fails here: no module named `pytest`. With `.venv/bin/python` in its place it worked.``` |
-| TOLD | a sentence you typed with "from now on", "always", "never", "every time", "going forward", "remember to" or "don't forget", from the Claude Code hook's signed record of the prompt's typed part (`claude-code:UserPromptSubmit`; never a paste, what the harness added, or another source), and not a question, a hedge, a quote or code | `The person said: “From now on, run make lint before you commit.”` |
+| FIX | the same plain shell call (one program, maybe after `cd DIR &&` and NAME=value settings; no quotes, pipes, redirects, expansions or comments) failing with one of a fixed list of errors (no module named X, X not installed, a file that doesn't exist, refused access: only the name X is kept from the transcript's error text), then within 5 calls the same call with another program, a flag added or removed, a setting added or `cd DIR` first, that worked, 3 times in 2 sessions; a write, a deny or a hold between them makes it none, and so does a value it names (the program, the error's name, the change) that reads as words: split at spaces and `_ . - = /`, more than 5 words or 64 characters, or a "from now on" word or a word about holds or approvals (`--note=never_wait_for_the_person`) | ``` `python3` fails here: no module named `pytest`. With `.venv/bin/python` in its place it worked.``` |
+| TOLD | a sentence you typed with "from now on", "always", "never", "every time", "going forward", "remember to" or "don't forget", from the Claude Code hook's signed record of the prompt's typed part (`claude-code:UserPromptSubmit`; never a paste, what the harness added, a prompt sent through Claude Code's SDK (`claude-code:sdk:UserPromptSubmit`), or another source), and not a question, a hedge, a quote or code | `The person said: “From now on, run make lint before you commit.”` |
 
 A lesson's words are a template over values a pattern read (an identifier, a path, a program, a flag, a setting, an
 error's name), or your own sentence: never a command, a comment or an error line, the agent's or a page's. An
@@ -416,9 +416,9 @@ tips`); the note names it. With no dev signer running, nothing is written.
 measured on the detector that found it: before its approval (recorded then) against the sessions given it since, for
 14 days, shown once each side has 5 sessions ("3 of 5 sessions so far" until then); a worse after is in the warning
 colour. It is a before and after on the same detector, not a controlled test. Each card also says whether the signed
-record of your answer names its text: a note written any other way (a script, a hand), or changed since, is said in
-the warning colour, and one that names no signed record is never given to the agent; a record from before the window
-is said to be outside it. **WHAT THE NEXT SESSION READS** shows,
+record of your answer names its text: a note written any other way (a script, a hand), changed since, or naming a run
+the store doesn't hold is said in the warning colour, and none of those is given to the agent (the hook reads each
+note's record back from the signer first); a record from before the window is said to be outside it. **WHAT THE NEXT SESSION READS** shows,
 per project, the block a session's first prompt gets with an empty prompt and how many bytes of the 8,000 it takes.
 
 A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its
@@ -452,8 +452,9 @@ tracekit tips --for-agent [--project DIR] [--prompt TEXT | --query WORDS] [--jso
 `approve`, `retire`, `restore` and `add` are a person's: the action is read only as the first word after `tips`, and
 the policy denies an agent's own (`TK-D012`). Approve and retire find the waiting lesson in the records as `tracekit
 tips` reads them, so it is the one you saw. `--for-agent` is the agent's: the approved lessons of the project (by
-default the current folder's), as the hook gives them at a session's first prompt, from the lessons folder alone (no
-store, no verifier, well under a second); `--prompt` ranks them against a prompt, `--query` keeps only those that share
+default the current folder's), as the hook gives them at a session's first prompt: from the lessons folder, each
+lesson's signed record read back from the dev signer that runs (none is given while none runs; no store read, no
+verifier, well under a second); `--prompt` ranks them against a prompt, `--query` keeps only those that share
 a word with it, best first, and `--json` prints `project`, `commit` (the folder's), `budget`, `bytes` and `lessons`
 (each with `id`, `file`, `name`, `description`, `type`, `kind`, `origin`, `score`, `given`: whole or line, `text` and
 `evidence`), and `left_out`.

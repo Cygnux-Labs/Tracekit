@@ -1554,6 +1554,13 @@ class StoreFeed:
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
+def known_runs(feed):
+    """The ids of the store's client runs at the feed's latest refresh, None before its first (TIPS' lessons: a lesson
+    naming a run the store doesn't hold was written by hand)."""
+    with feed.lock:
+        return {run for _, run in feed.listed} or None
+
+
 def shown(feed):
     """The rows the live view holds now (a run being checked again holds RETRACTED in its rows' place)."""
     with feed.lock:
@@ -1984,7 +1991,8 @@ def main(argv=None):
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
                                       transcripts or (audit.default_root() if dev else None),
-                                      folder=lessons.Folder(os.path.join(cfg["data_dir"], "lessons")) if dev else None)
+                                      folder=lessons.Folder(os.path.join(cfg["data_dir"], "lessons")) if dev else None,
+                                      known=functools.partial(known_runs, feed))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None

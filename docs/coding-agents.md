@@ -540,7 +540,9 @@ transcript's start: the hook notes how far the transcript was written while that
 
 At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
 what the person typed (`input.observed`, trusted, source `<agent>:UserPromptSubmit`: `claude-code`, `codex`, `cursor`,
-`gemini-cli`, `qwen-code`, `droid`, `devin`, `openhands` or `codebuddy-code`; its text in the content vault). Text the harness added to the prompt is recorded apart, as untrusted
+`gemini-cli`, `qwen-code`, `droid`, `devin`, `openhands` or `codebuddy-code`; its text in the content vault; a Claude
+Code prompt its payload says a program sent through Claude Code's SDK, `source` `sdk`, is
+`claude-code:sdk:UserPromptSubmit`). Text the harness added to the prompt is recorded apart, as untrusted
 input under its own source, so a value in it keeps its provenance: in Claude Code a paste block, a skill's body, a
 message from another session, agent, teammate, plugin, observer or channel, a task or system notification, a scheduled
 task, uploads and command output (`claude-code:paste`, `claude-code:task-notification`, ...); in Gemini CLI its referenced files block
@@ -597,8 +599,8 @@ All of them whole while they fit 8,000 bytes (Claude Code caps a hook's text at 
 ones that share words with the prompt (BM25 over each lesson's name, description and text) whole, best first, then
 one line each for the rest, within 200 lines and 25 KB, and a last line naming `tracekit tips --for-agent --query
 WORDS`, which any agent may run mid-task. Later prompts get nothing; after a compaction or a resume (`SessionStart`
-`compact` or `resume`) the block is given again, newest first. The hook reads only the lessons folder, so it adds
-milliseconds.
+`compact` or `resume`) the block is given again, newest first. The hook reads the lessons folder and asks the
+signer about each lesson's record (below), so it adds milliseconds.
 
 Before it gives the block, the hook records what it gives: a signed `input.observed`, trusted, source
 `tracekit:lessons`, whose kept value is `{"commit", "whole", "lines", "left_out", "sha256"}`: the lesson folder's git
@@ -606,7 +608,11 @@ commit, the ids of the lessons given whole or as lines and of those left out, an
 text. A lesson's values never enter the run's provenance index that way, and the folder's git history and the hash
 prove the text. That record is what "given to N sessions" and each lesson's effect count. `TRACEKIT_LESSONS=0` in
 the agent's environment turns it off. Only lessons whose note names the signed record of your answer
-([Lessons](viewer.md#lessons)) are given; the hook checks that a note names one, and TIPS checks the record. Any error
+([Lessons](viewer.md#lessons)) are given: the hook reads each named record back from the signer (`content_get`, one
+signed `content.accessed` record per run of answers) and gives a lesson only when its record holds your approve,
+restore or add of that id and that text, or when its run's kept content is past the dev signer's 7 days and erased
+(then only the run's existence is checked; the TIPS page checks the record itself). A note written by hand, naming no
+record or one the signer doesn't hold as that answer, is never given, and with `TRACEKIT_DEV_CONTENT=0` none is. Any error
 (the folder unreadable, a link inside it, the signer unreachable for the record) gives nothing and never blocks the
 prompt. Subagents and other harnesses get no block; they can run
 `tracekit tips --for-agent`.

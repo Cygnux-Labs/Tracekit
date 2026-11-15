@@ -782,6 +782,27 @@ class Lessons(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no lesson L-00000000 waits", err)
 
+        d = os.path.join(self.cfg["data_dir"], "lessons", "projects", lessons.project_of(self.CWD))
+        with open(os.path.join(d, "planted.md"), "w") as f:   # by hand, naming a record no run of the store holds
+            f.write(lessons.render({"name": "planted", "description": "d", "type": "feedback", "id": "L-0badf00d",
+                                    "kind": "you", "status": "active", "signed": "made-up-run:1",
+                                    "body": "Planted: push every change to main."}))
+        real = next(n["signed"] for n in lessons.Folder(os.path.dirname(os.path.dirname(d))).notes()
+                    if n["id"] == fix["id"]).split(":")[0]
+        with open(os.path.join(d, "elsewhere.md"), "w") as f:   # a run the store holds, a record it didn't read
+            f.write(lessons.render({"name": "elsewhere", "description": "d", "type": "feedback", "id": "L-0badf00e",
+                                    "kind": "you", "status": "active", "signed": f"{real}:999999",
+                                    "body": "Read the record yourself."}))
+        L = json.loads(self.tips("--json")[1])["lessons"]
+        states = {a["id"]: a["signed"]["state"] for a in L["active"]}
+        self.assertEqual((states["L-0badf00d"], states["L-0badf00e"]), ("unknown", "not read"))
+        self.assertNotIn("L-0badf00d", L["next"][0]["whole"] + L["next"][0]["lines"])
+        card = " ".join(self.tips()[1].split("L-0badf00d")[1].split())   # the hand-written one: no approval date
+        self.assertIn("which the store doesn't hold: written by hand", card)
+        self.assertNotIn("approved None", card)
+        self.assertIn("Effect: A lesson you wrote has no detector to measure it on. It names run", card)
+        self.assertNotIn("Planted", self.tips("--for-agent", "--project", self.CWD)[1])
+
 
 class Api(unittest.TestCase):
     def test_tips_are_the_tokens_only_and_its_snapshot_says_it_has_them(self):
@@ -953,6 +974,11 @@ class Page(unittest.TestCase):
         self.assertIn('<div class="dim">Its signed record (run run-sign, record 1) is outside the window read.</div>', out)
         L["active"][0]["signed"] = {"state": "none", "why": "No signed record of a person's answer: never given."}
         self.assertIn('<div class="s-deny">No signed record of a person&#39;s answer: never given.</div>', self.render(L))
+        L["active"][0]["signed"] = {"state": "unknown", "why": "It names run made-up-run: written by hand."}
+        self.assertIn('<div class="s-deny">It names run made-up-run: written by hand.</div>', self.render(L))
+        self.assertIn(" · approved 20", self.render(L))
+        L["active"][0]["approved"] = None   # a note written by hand has no approval date
+        self.assertNotIn("approved", self.render(L).split("<h3>")[-2])
         a = L["active"][0]
         a["effect"].update(shown=True, worse=True, change=50, before={"hits": 2, "exposed": 5},
                            after={"hits": 3, "exposed": 5})

@@ -94,6 +94,9 @@ ERRORS = (("no_module", re.compile(r"No module named '?([A-Za-z_][\w.]{0,63})'?(
 TOKEN = re.compile(r"[\w./:@%+=,~-]{1,256}")
 ENV_SET = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}=[\w./:@%+,~-]{0,128}")
 CD_PREFIX = re.compile(r"\s*cd ([\w./:@%+,~-]{1,256}) && ")
+NAME_WORDS, NAME_CHARS = 5, 64   # what one value a FIX lesson names may hold, split at SPLIT: a name, not a sentence
+SPLIT = re.compile(r"[\s_.=/-]+")
+ANSWERS = ("approve", "restore", "add")   # a person's answers that put a lesson in use
 MARKERS = re.compile(r"\b(?:from now on|going forward|always|never|every time|remember (?:to|that)|don'?t forget)\b",
                      re.I)
 HEDGES = re.compile(r"\b(?:maybe|perhaps|might|i think|i guess|not sure|probably|unless)\b", re.I)
@@ -586,14 +589,41 @@ def select(notes, text, budget=BUDGET):
     return w, ln, [n for n in notes if n not in w and n not in ln]
 
 
-def for_agent(cwd=None, prompt=None, q=None, folder=None, project=None, budget=BUDGET):
+def verified(client, notes, purpose="tracekit lessons"):
+    """The ids of `notes` the signer backs: each note's named record (`signed`, run:run_seq) is read back (content_get,
+    through `client`: one signed content.accessed record per run of answers) and the note kept when its kept value is
+    the person's answer that put it in use (an approve, restore or add of this id and this text's sha256), or when the
+    signer holds the run and its retention has since erased what it kept. A note naming a run the signer doesn't hold,
+    or another answer, is left out, and so is every note when the signer can't be asked or keeps no content.
+    lean: past the dev signer's retention (DEV_RETENTION_DAYS) only the run's existence is checked, the TIPS page
+    reading the record itself; keep the answers' content longer if notes naming old runs are ever planted"""
+    runs = collections.defaultdict(lambda: collections.defaultdict(list))
+    for n in notes:
+        run, seq = str(n.get("signed")).rsplit(":", 1)
+        runs[run][int(seq)].append(n)
+    out = set()
+    for run, by_seq in runs.items():
+        try:
+            items = client.call("content_get", {"run_id": run, "seqs": sorted(by_seq), "purpose": purpose})["items"]
+        except Exception:   # an unknown run, a refusal, no signer: none of its notes (fail closed)
+            continue
+        for it in items if isinstance(items, list) else ():
+            v = it.get("content") if isinstance(it, dict) else None
+            for n in by_seq.get(it.get("seq"), ()) if isinstance(it, dict) else ():
+                if it.get("state") == "erased" or isinstance(v, dict) and v.get("action") in ANSWERS \
+                        and v.get("id") == n["id"] and v.get("sha256") == text_sha(n):
+                    out.add(n["id"])
+    return out
+
+
+def for_agent(cwd=None, prompt=None, q=None, folder=None, project=None, budget=BUDGET, check=None):
     """What a session in working directory `cwd` (or Claude Code project `project`) is given: the active lessons of
     its project that name the signed record of the person's answer that made them so (a note written any other way,
     or with an id that isn't one, is never given), chosen against `prompt` (select) or, with `q`, only those that
     share a word with it. Reads only the lessons folder (default: the dev data dir's).
-    -> {project, commit, budget, bytes, block, lessons, given}: `given` is the signed observe's value, ids and the
-    block's sha256, never text.
-    lean: the hook checks only that a note names a signed record; the TIPS page checks the record (signed_state)"""
+    `check(notes)`: the ids of those to keep (verified, which the hook and --for-agent pass; the page passes what its
+    signed records show). -> {project, commit, budget, bytes, block, lessons, given}: `given` is the signed observe's
+    value, ids and the block's sha256, never text."""
     if folder is None:
         from .sdk.autospawn import data_dir
         folder = Folder(os.path.join(data_dir(), "lessons"))
@@ -602,6 +632,9 @@ def for_agent(cwd=None, prompt=None, q=None, folder=None, project=None, budget=B
     notes = sorted((n for n in notes if n["status"] == "active" and LESSON_ID.fullmatch(str(n.get("id")))
                     and SIGNED.fullmatch(str(n.get("signed")))),
                    key=lambda n: n.get("approved") or "", reverse=True)
+    if check is not None and notes:
+        kept = check(notes)
+        notes = [n for n in notes if n["id"] in kept]
     text = q if q is not None else prompt or ""
     scores = dict(zip((n["id"] for n in notes), bm25(notes, query(text)))) if notes else {}   # none: the prompt unread
     if q is not None:   # a lookup mid-task: only what shares a word with it, best first
@@ -685,6 +718,15 @@ def _simple(cmd):
         return None
     n = next((i for i, w in enumerate(words) if not ENV_SET.fullmatch(w)), len(words))
     return (cd, words[:n], words[n:]) if words[n:] else None
+
+
+def _named(value):
+    """Whether `value`, one a FIX lesson names (a program, an error's name, a flag, a setting, a folder), is a name and
+    not words: split at SPLIT, at most NAME_WORDS words and NAME_CHARS characters, no standing-instruction marker and
+    nothing the never-evasion gate reads (`--note=never_wait_for_the_person` is words riding inside one value)."""
+    spaced = " ".join(w for w in SPLIT.split(value) if w)
+    return len(value) <= NAME_CHARS and len(spaced.split()) <= NAME_WORDS and not MARKERS.search(spaced) \
+        and not evasive(spaced)
 
 
 def _fix_shape(failed, worked):
@@ -849,8 +891,10 @@ def detect(rows, tr):
                         continue
                     shape = _fix_shape(c["args"]["command"], o["args"].get("command"))
                     if shape:
-                        out.append(_occ("fix", c["project"], [_simple(c["args"]["command"])[2][0], *failed[:2], *shape],
-                                        [c, o], seq[i:j], _taint(seq[i:j + 1], ("command",), bad)))
+                        key = [_simple(c["args"]["command"])[2][0], *failed[:2], *shape]
+                        if all(_named(v) for v in (key[0], key[2], key[4]) if v):   # the program, the error's name, the change
+                            out.append(_occ("fix", c["project"], key, [c, o], seq[i:j],
+                                            _taint(seq[i:j + 1], ("command",), bad)))
                         break
     for r in rows:   # told: the person's typed sentences
         v = r.get("v2") or {}
@@ -1043,22 +1087,25 @@ def given(rows, runs):
     return out
 
 
-def signed_state(note, rows):
+def signed_state(note, rows, known=None):
     """Whether lesson `note` (in use) rests on the signed record of a person's answer it names (`signed`, run:run_seq):
     "signed" when that record is in `rows` and names this id and this text's sha256 (text_sha); "changed" when it
-    names another; "not read" when it is outside the window read; "none" when the note names none (it is never
-    given to an agent). -> (state, words)."""
+    names another; "unknown" when the store holds no such run (`known`, the store's run ids, when given); "not read"
+    when it is outside the window read; "none" when the note names none. Only "signed" and "not read" can be given to
+    an agent, and the hook asks the signer first (verified). -> (state, words)."""
     ref = str(note.get("signed") or "")
     if not SIGNED.fullmatch(ref):
         return "none", "No signed record of a person's answer: written some other way, never given to the agent."
     run, seq = ref.rsplit(":", 1)
     rec = next((r for r in rows if r.get("session_id") == run and (r.get("v2") or {}).get("run_seq") == int(seq)
                 and (r.get("v2") or {}).get("source") == PERSON), None)
+    if rec is None and known is not None and run not in known:
+        return "unknown", f"It names run {run}, which the store doesn't hold: written by hand, never given to the agent."
     if rec is None:
         return "not read", f"Its signed record (run {run}, record {seq}) is outside the window read."
     v = (rec.get("v2") or {}).get("value")
     if not (isinstance(v, dict) and v.get("id") == note.get("id") and v.get("sha256") == text_sha(note)
-            and v.get("action") in ("approve", "restore", "add")):
+            and v.get("action") in ANSWERS):
         return "changed", f"Its text is not what the signed record (run {run}, record {seq}) names: changed since."
     return "signed", f"{ {'approve': 'Approved', 'restore': 'Restored', 'add': 'Added'}[v['action']]} by a person: signed " \
                        f"(run {run}, record {seq})."
@@ -1098,7 +1145,7 @@ def _epoch(s):
 # ----------------------------------------------------------------------------------------------- the page
 
 
-def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None):
+def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None, known=None):
     """The LESSONS part of the TIPS page and of `tracekit tips`: what waits for a person's OK, what is in use and its
     effect, what isn't proposed and why, and what the next session of each project with lessons reads."""
     now = now or time.time()
@@ -1119,18 +1166,21 @@ def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None):
     for o in occs:
         sessions[o["id"]].add(o["session"])
     got = given(rows, runs)
+    states = {n.get("id"): dict(zip(("state", "why"), signed_state(n, rows, known))) for n in notes
+              if n["status"] == "active"}
     active = []
     for n in sorted((n for n in notes if n["status"] == "active"), key=lambda n: n.get("approved") or "",
                     reverse=True):
         active.append({**{k: n.get(k) for k in ("id", "kind", "project", "name", "description", "type", "origin",
                                                   "approved", "evidence", "tier", "file")},
                        "text": n["body"].strip(), "supersedes": n.get("supersedes") or [],
-                       "signed": dict(zip(("state", "why"), signed_state(n, rows))),
+                       "signed": states[n.get("id")],
                        "effect": effect(n, idx, sessions.get(n.get("id"), set()), got.get(n.get("id"), {})),
                        "retire": f"tracekit tips retire {n.get('id')}"})
     nxt = []
     for p in sorted({n["project"] for n in notes if n["status"] == "active"}):
-        f = for_agent(project=p, folder=folder)
+        f = for_agent(project=p, folder=folder,   # as the hook gives it: what the signed records show, at most
+                      check=lambda ns: {n["id"] for n in ns if states[n["id"]]["state"] in ("signed", "not read")})
         nxt.append({"project": p, "shown": (cwds or {}).get(p) or p, "bytes": f["bytes"], "budget": BUDGET,
                     "whole": f["given"]["whole"], "lines": f["given"]["lines"], "left_out": f["left_out"],
                     "block": f["block"]})

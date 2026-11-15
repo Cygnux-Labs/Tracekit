@@ -4270,12 +4270,12 @@
       return `<span>EFFECT<b class="${e.worse ? "lworse" : ""}">${esc(`${a.hits} of ${a.exposed}`)}</b>${esc(`${LEFFECT[x.kind]} ${a.hits} of ${plural(a.exposed, "session")} given it, instead of ${b.hits} of ${b.exposed} before`
         + (e.change != null ? ` (${e.change > 0 ? "+" : ""}${e.change}%)` : "") + (e.worse ? ": worse" : ""))}</span>`;
     }
-    // a lesson in use rests on the signed record of a person's answer: "none" (never given to the agent) and "changed"
-    // in the warning colour, "not read" (outside the window) plain
-    const LSIGNED = { signed: "dim", "not read": "dim", none: "s-deny", changed: "s-deny" };
+    // a lesson in use rests on the signed record of a person's answer: "none" (never given to the agent), "changed" and
+    // "unknown" (a run the store doesn't hold: written by hand) in the warning colour, "not read" (outside the window) plain
+    const LSIGNED = { signed: "dim", "not read": "dim", none: "s-deny", changed: "s-deny", unknown: "s-deny" };
     function lessonUse(x) {
       const sg = x.signed || { state: "none", why: "" };
-      return `<section class="tcard luse"><div class="tsrc">${esc(`${LKIND[x.kind] || x.kind} · ${x.where} · ${x.id} · approved ${String(x.approved).slice(0, 10)}` + (x.origin === "you" ? " · your words" : ""))}</div>`
+      return `<section class="tcard luse"><div class="tsrc">${esc(`${LKIND[x.kind] || x.kind} · ${x.where} · ${x.id}` + (x.approved ? ` · approved ${String(x.approved).slice(0, 10)}` : "") + (x.origin === "you" ? " · your words" : ""))}</div>`
         + `<h3>${esc(x.name)}</h3><div class="${esc(LSIGNED[sg.state] || "s-deny")}">${esc(sg.why)}</div><pre class="ltext">${esc(x.text)}</pre>`
         + `<div class="tsave"><span>GIVEN TO<b>${esc(plural(x.effect.given, "session"))}</b>signed: each session's tracekit:lessons record names it</span>` + lessonEffect(x) + `</div>`
         + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + `</section>`;

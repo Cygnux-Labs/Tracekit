@@ -690,14 +690,14 @@ def _costs(agents):
     return out
 
 
-def lessons_part(rows, agents, calls, folder, now, since):
+def lessons_part(rows, agents, calls, folder, now, since, known=None):
     """The LESSONS part (lessons.page) of rows and the transcripts' agents and calls, each project named by the
-    folder its sessions ran in."""
+    folder its sessions ran in; `known`: the store's run ids, when read."""
     cwds = {c["project"]: _shown(c["cwd"]) for c in calls.values() if c.get("cwd")}
-    return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds)
+    return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds, known)
 
 
-def build(rows, root=None, now=None, since=None, folder=None):
+def build(rows, root=None, now=None, since=None, folder=None, known=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
     price table's date, the lessons (lessons_part; their folder `folder`, None outside the dev store) and the three
     tips. A signed step the transcripts also hold counts once, from the transcripts (`sources.signed.also`). The
@@ -709,7 +709,7 @@ def build(rows, root=None, now=None, since=None, folder=None):
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
-    part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since)
+    part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since, known)
     same = _same(signed, agents, calls)
     also = {"runs": len(same), "steps": sum(map(len, same.values()))}
     for k, idx in same.items():
@@ -737,24 +737,26 @@ class Page:
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
     takes seconds to read)."""
 
-    def __init__(self, rows, root, ttl=60, folder=None):
-        self.rows, self.root, self.ttl, self.folder = rows, root, ttl, folder
+    def __init__(self, rows, root, ttl=60, folder=None, known=None):
+        self.rows, self.root, self.ttl, self.folder, self.known = rows, root, ttl, folder, known
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
-                self.body = json.dumps(build(self.rows(), self.root, folder=self.folder), ensure_ascii=False)
+                self.body = json.dumps(build(self.rows(), self.root, folder=self.folder,
+                                             known=self.known() if self.known else None), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
 
 
-def signed_rows(cfg, since, say=None, content=None):
+def signed_rows(cfg, since, say=None, content=None, known=None):
     """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
     which give no rows. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
     kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
-    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read."""
+    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read. `known`: a set
+    given the store's run ids."""
     import tempfile
 
     from . import view
@@ -778,6 +780,8 @@ def signed_rows(cfg, since, say=None, content=None):
         try:
             note = r.checkpoint_latest()
             keys = [k for k, run in sorted(r.runs.items()) if note and k[1] != SIGNER_RUN[1] and recent(run)]
+            if known is not None:
+                known.update(k[1] for k in r.runs)
             if say and keys:
                 say(f"checking {len(keys)} run{'s' * (len(keys) != 1)} with the verifier, as tracekit view does: a "
                     "busy week takes minutes")
@@ -822,7 +826,7 @@ def effect_words(x):
     """A lesson in use's effect in plain words, as the page says it."""
     e = x["effect"]
     if not e["shown"]:
-        return e["why"]
+        return e["why"].rstrip(".")
     b, a = e["before"], e["after"]
     return (f"{EFFECT[x['kind']]} {a['hits']} of {_n(a['exposed'], 'session')} given it, instead of {b['hits']} of "
             f"{b['exposed']} before" + (": worse" if e["worse"] else "") + f" ({e['basis']})")
@@ -850,8 +854,8 @@ def lessons_text(L, days=7):
                 x["name"], _wrap(x["text"]), _wrap(seen)] + [
             _wrap(f"Replaces {o['id']} ({o['name']}).") for o in x["supersedes"]] + [f"    {x['approve']}"]
     for x in act:
-        out += ["", f"IN USE · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']} · approved "
-                    f"{str(x['approved'])[:10]}", x["name"],
+        out += ["", f"IN USE · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']}"
+                    + (f" · approved {str(x['approved'])[:10]}" if x.get("approved") else ""), x["name"],
                 _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."
                       + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
                 f"    {x['retire']}"]
@@ -937,15 +941,15 @@ def _vault(say):
 
 def _signer(client):
     """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
-    the lesson's id and its text's sha256, never the text) in a run of its own (agent `tracekit tips`), through
-    `client`. -> the record's run:run_seq, which the note keeps."""
+    the lesson's id and its text's sha256, never the text) in one run for this command (agent `tracekit tips`),
+    through `client`, which `sign.close()` closes. -> the record's run:run_seq, which the note keeps."""
+    run = []
+
     def sign(action, lid, sha):
-        run = client.run(agent="tracekit tips")
-        try:
-            out = run.observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
-        finally:
-            run.close()
-        return f"{run.run_id}:{out['run_seq']}"
+        run[:] = run or [client.run(agent="tracekit tips")]
+        out = run[0].observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
+        return f"{run[0].run_id}:{out['run_seq']}"
+    sign.close = lambda: run and run[0].close()
     return sign
 
 
@@ -953,10 +957,12 @@ def _scan(folder, since, say):
     """The LESSONS part as `tracekit tips` works it out (the dev store's runs that verify, their kept content, Claude
     Code's transcripts): what approve and retire find a waiting lesson in."""
     from .audit import default_root
-    rows, _ = signed_rows({"data_dir": os.path.dirname(folder.path)}, since, say, _vault(say))
+    known = set()
+    rows, _ = signed_rows({"data_dir": os.path.dirname(folder.path)}, since, say, _vault(say), known)
     root = default_root()
     agents, calls, _, _ = read_transcripts(root, since) if os.path.isdir(root) else ({}, {}, 0, [])
-    return lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, time.time(), since)
+    return lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, time.time(), since,
+                        known)
 
 
 def act(argv, say):
@@ -988,13 +994,15 @@ def act(argv, say):
     a = ap.parse_args(argv)
     from .sdk.client import SignerUnavailable
     from .signer.rpc_schema import RPCError
+    sign = None
     try:
         client = _running()
         if client is None:
             print("tracekit tips: no dev signer runs here: each answer to a lesson is a signed record, so start it "
                   "first (`tracekit up`)", file=sys.stderr)
             return 1
-        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=_signer(client))
+        sign = _signer(client)
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=sign)
         if a.act == "add":
             lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
                                    a.name, a.description, a.type)
@@ -1029,15 +1037,23 @@ def act(argv, say):
     except (lessons.Refused, OSError, ValueError, SignerUnavailable, RPCError) as e:
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
+    finally:
+        if sign:
+            sign.close()
 
 
 def for_agent(a):
-    """`tracekit tips --for-agent`: the approved lessons of the project, from the lessons folder alone."""
+    """`tracekit tips --for-agent`: the approved lessons of the project, from the lessons folder, each checked with
+    the dev signer that runs as the hook checks it (lessons.verified); with none running, none is given."""
     import sys
     from .signer.service import dev_data_dir
+    client = _running()
+    if client is None:
+        print("tracekit tips: no dev signer runs here: no lesson can be checked, so none is given", file=sys.stderr)
     try:
         folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"))
-        got = lessons.for_agent(os.path.abspath(a.project) if a.project else _here(), a.prompt, a.query, folder)
+        got = lessons.for_agent(os.path.abspath(a.project) if a.project else _here(), a.prompt, a.query, folder,
+                                check=lambda notes: lessons.verified(client, notes) if client else set())
     except FileNotFoundError:   # no dev signer has run here: nothing approved
         print(lessons.NOT_YET)
         return 0
@@ -1093,12 +1109,14 @@ def main(argv=None):
         ap.error("--since must be in the past")
     try:
         cfg = {"data_dir": os.path.abspath(a.data_dir) if a.data_dir else dev_data_dir(create=False)}
-        rows, failed = signed_rows(cfg, a.since, say, None if a.data_dir else _vault(say))
+        known = set()
+        rows, failed = signed_rows(cfg, a.since, say, None if a.data_dir else _vault(say), known)
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
     root = None if a.data_dir else default_root()
-    t = build(rows, root, now, a.since, None if a.data_dir else lessons.Folder(os.path.join(cfg["data_dir"], "lessons")))
+    t = build(rows, root, now, a.since, None if a.data_dir else lessons.Folder(os.path.join(cfg["data_dir"], "lessons")),
+              known)
     if a.json and failed:   # the text says it in its first line
         print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",
               file=sys.stderr)
