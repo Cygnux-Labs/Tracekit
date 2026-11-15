@@ -616,6 +616,28 @@ class Sources(unittest.TestCase):
             s = tips.build(recs, None, NOW)["sources"]["signed"]
             self.assertEqual((s["steps"], s["refused"]), (0, 10))
 
+    def test_a_gateways_record_never_counts_for_nothing(self):
+        """The final check of #871: a run could hide spend an LLM gateway signed. A `bot` run that signed the gateway's
+        exchange ids (the dev store shows them) at other counts got both refused, and a turn the agent moved 10 minutes
+        in its transcript left the gateway's record of it outside the window, refused. A gateway's record now always
+        counts: on a conflict the other records are refused, and one that joins no turn counts on its own. A forger
+        can make tips count more, never less."""
+        honest = [dict(r, tk_source="gateway") if r["event"] == "tk_model" else r for r in uncached(5)]
+        forged = [dict(r, usage=dict(r["usage"], input_tokens=1)) if r.get("usage") else r for r in uncached(5, "r8")]
+        for recs in (honest + forged, forged + honest):
+            s = tips.build(recs, None, NOW)["sources"]["signed"]
+            self.assertEqual((s["steps"], s["refused"]), (5, 5))   # the gateway's five, the bot's refused
+        lines, root, alone = self.session()
+        moved = [{**x, "timestamp": iso(T0 + 600), "message": {**x["message"], "usage": {
+            **x["message"]["usage"], "output_tokens": 3}}} if i == 0 else x for i, x in enumerate(lines)]
+        write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), moved)
+        s = tips.build(exchanges(lines, tools=True, run="gw1"), root, NOW)["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]["steps"], s["refused"]), (1, 299, 0))   # its own step, not refused
+        write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), lines)
+        two = exchanges(lines[:1], tools=True, run="gw1") + exchanges(lines[:1], tools=True, run="gw2", off=5)
+        s = tips.build(two, root, NOW)["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]["steps"], s["refused"]), (1, 1, 0))   # two gateways: both count
+
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
         path = write_jsonl(os.path.join(root, "p", "s.jsonl"), growing(n=60))
@@ -853,7 +875,13 @@ class Page(unittest.TestCase):
         gateway = rows(v2rec(1, "run.registered", {"agent": {"name": "gateway"}}, run="g1"),
                        ex(4, "gx-1", ["toolu_1"], dict(u1, output_tokens=407), "g1", "gateway"),
                        ex(5, "gx-2", [], u2, "g1", "gateway"))
-        for recs in (tailer + gateway, gateway + tailer):
+        u3 = dict(u2, output_tokens=60)   # two turns with the same counts, signed by both: two turns, not three
+        twins = rows(v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}, run="r1"),
+                     ex(2, "msg_3", [], u3, "r1", "sdk"), ex(3, "msg_4", [], u3, "r1", "sdk"))
+        twins_gw = rows(v2rec(1, "run.registered", {"agent": {"name": "gateway"}}, run="g1"),
+                        ex(4, "gx-3", [], u3, "g1", "gateway"), ex(5, "gx-4", [], u3, "g1", "gateway"))
+        for recs, want in ((tailer + gateway, [1100 + 1513, 407 + 50]), (gateway + tailer, [1100 + 1513, 407 + 50]),
+                           (twins + twins_gw, [2 * 1513, 2 * 60]), (twins_gw + twins, [2 * 1513, 2 * 60])):
             got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
                                       "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
                                       "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural",
@@ -861,7 +889,7 @@ class Page(unittest.TestCase):
                 let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
                 for (const r of {json.dumps(recs)}) ingest(r);
                 process.stdout.write(JSON.stringify([S.tokIn, S.tokOut]));"""))
-            self.assertEqual(got, [1100 + 1513, 407 + 50])
+            self.assertEqual(got, want)
 
     def setUp(self):
         if not shutil.which("node"):

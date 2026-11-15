@@ -369,8 +369,8 @@ tailer's records, taken only from a claude-code run whose records name a call of
 turn's first line to 5 minutes after its last), by a tool_use id (an LLM gateway's records, within 5 minutes), or by
 identical token counts within 5 minutes of one transcript message no other step matched (the gateway signs each exchange
 under an id of its own, and a message without tool calls has no tool_use id). Where the gateway and the tailer both
-signed a turn, the gateway's counts are kept. Records of one turn that disagree, and any other record of a transcript's
-turn, are refused: the transcript's counts stand, and the page's first line says how many
+signed a turn, the gateway's counts are kept, and a gateway's record always counts: one that joins no turn counts on
+its own. Other records of one turn that disagree, and any other record of a transcript's turn, are refused: the transcript's counts stand, and the page's first line says how many
 ([limits](limits.md#viewer)). The page's TOKENS IN and OUT count a turn the gateway and the tailer both signed once, the
 same way. Each card's `from` names where its token counts came from, the context card's arithmetic says how many steps each
 source gave, and each wait of the cache card has its own (`src`). The page's first line says how many signed steps

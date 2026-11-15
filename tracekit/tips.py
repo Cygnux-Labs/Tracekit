@@ -675,10 +675,11 @@ def _join(signed, agents, named):
     3. by the same token counts within MATCH_S, taking up one message no other step of this pass matched (the gateway
        signs each exchange under an id of its own, and a message without tool calls has no tool_use id), compared with
        the counts passes 1 and 2 signed.
-    In pass 1 and 2 a turn takes its records' counts only when they all agree; when they don't, it takes none of them
-    and each is refused: a record can push a turn back to the counts it had, never put its own over another's. The
-    gateway's counts (2), signed off the wire, are kept over the tailer's (1), signed as it read the transcript. A step
-    refused counts for nothing: the transcript's counts stand."""
+    In pass 1 a turn takes its records' counts only when they all agree; when they don't, it takes none of them and
+    each is refused: a record can push a turn back to the counts it had, never put its own over another's. A gateway's
+    record, signed off the wire, never counts for nothing: in pass 2 its counts are kept over the tailer's (and over
+    the transcript's), and one that joins no message in its window, or disagrees with the first that joined it, counts
+    on its own. A step refused counts for nothing: the transcript's counts stand."""
     where = {s["id"]: (s, k.split("/")[0]) for k, a in agents.items() for s in a["steps"]}
     by_call = {c: s for a in agents.values() for s in a["steps"] for c in s["calls"]}
     calls_of = collections.defaultdict(set)   # a transcript session -> the tool_use ids of its messages
@@ -688,18 +689,23 @@ def _join(signed, agents, named):
     ids = {c for a in signed.values() for s in a["steps"] for c in s["calls"]}
     taken = collections.defaultdict(dict)   # signed run's key -> {its step's index: the message, or None (refused)}
 
-    def settle(found):
+    def settle(found, gw=False):
         """[(transcript message, run key, step index, signed step)] a pass joined: each message at its records'
-        counts when they all agree, else at none of them."""
+        counts when they all agree, else at none of them; a gateway's (`gw`) at its first record's, joined by those
+        that agree with it, while one that doesn't counts on its own."""
         turns = collections.defaultdict(list)
         for t, k, i, s in found:
             turns[id(t)].append((t, k, i, s))
         for group in turns.values():
-            agree = len({_counts(s) for *_, s in group}) == 1
-            for t, k, i, s in group:
-                taken[k][i] = t if agree else None
-            if agree:
-                _signed(group[0][0], group[0][3])
+            t, first = group[0][0], group[0][3]
+            agree = all(_counts(s) == _counts(first) for *_, s in group)
+            for _, k, i, s in group:
+                if not gw:
+                    taken[k][i] = t if agree else None
+                elif _counts(s) == _counts(first):
+                    taken[k][i] = t
+            if agree or gw:
+                _signed(t, first)
     found = []
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
@@ -716,11 +722,11 @@ def _join(signed, agents, named):
         for i, s in enumerate(a["steps"]):
             t = next((by_call[c] for c in s["calls"] if c in by_call), None)
             if i not in taken[k] and t is not None:
-                if s["gw"] and t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S:
-                    found.append((t, k, i, s))
-                else:
+                if not s["gw"]:
                     taken[k][i] = None
-    settle(found)
+                elif t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S:   # else the gateway's counts on their own
+                    found.append((t, k, i, s))
+    settle(found, gw=True)
     pool = collections.defaultdict(list)   # token counts -> the transcript messages pass 3 may still take
     for a in agents.values():
         for s in a["steps"]:
@@ -768,7 +774,8 @@ def build(rows, root=None, now=None, since=None):
                                           isinstance(i, str))
     also, refused = _join(signed, agents, named)
     # an exchange id no transcript holds, signed by more than one run (a subagent transcript a resumed session copied)
-    # counts once when its counts agree, and not at all (refused) when they don't
+    # counts once when its counts agree; when they don't, a gateway's records count (a run can't hide what a gateway
+    # signed by signing its ids) and the others are refused, and without one none counts
     same = collections.defaultdict(list)
     for a in signed.values():
         for s in a["steps"]:
@@ -776,10 +783,15 @@ def build(rows, root=None, now=None, since=None):
                 same[s["id"]].append(s)
     drop = set()
     for group in same.values():
-        if len(group) > 1:
-            agree = len({_counts(s) for s in group}) == 1
-            drop.update(map(id, group[1:] if agree else group))
-            refused += 0 if agree else len(group)
+        first = next((s for s in group if s["gw"]), group[0])
+        agree = all(_counts(s) == _counts(first) for s in group)
+        for s in group:
+            if s is not first and (_counts(s) == _counts(first) or not s["gw"]):
+                drop.add(id(s))
+                refused += _counts(s) != _counts(first)
+        if not agree and not first["gw"]:
+            drop.add(id(first))
+            refused += 1
     for a in signed.values():
         a["steps"] = [s for s in a["steps"] if id(s) not in drop]
     signed = {k: a for k, a in signed.items() if a["steps"]}
