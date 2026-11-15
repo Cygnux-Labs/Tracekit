@@ -911,16 +911,17 @@ class RecordLog:
             self.storage.close()
         except Exception:
             pass
-        # the provenance indexes live in memory only: the replay can't rebuild them, and nothing in them was lost
-        prov = {k: r["prov"] for k, r in self.runs.items() if r.get("prov") is not None}
+        # the provenance indexes and the claims (SignerService._call_claim) live in memory only: the replay can't
+        # rebuild them, and nothing in them was lost
+        kept = {k: {f: r[f] for f in ("prov", "claims") if r.get(f) is not None} for k, r in self.runs.items()}
         try:
             self.storage = self.open_storage()
             self._replay()
         except Exception:
             return False
-        for k, p in prov.items():
+        for k, fields in kept.items():
             if k in self.runs and not self.runs[k]["final"]:
-                self.runs[k]["prov"] = p
+                self.runs[k].update(fields)
         since, err = self.down
         self.down = None
         fut = Future()

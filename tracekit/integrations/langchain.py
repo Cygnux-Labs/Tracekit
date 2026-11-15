@@ -277,17 +277,17 @@ class TracekitMiddleware(AgentMiddleware):
             self._consume(call, p, hint)
         return p["out"], p
 
-    def _claim(self, request, p):
+    def _claim(self, request, p, mine):
         """(the refusal, or None when this pass runs the call): one pass takes a call to run. In this process the first
-        moves its plan to `running` and keeps it until the tool ends, and another pass of the node (the thread resumed
-        twice at once) is refused. A call that goes on, consumed, after its tool paused the run itself is claimed from
-        the signer too (call_claim), which lets one pass in any process go on per pause; without its yes the call
-        doesn't run."""
+        moves its plan to `running`, marked with its token `mine` (_cut), and keeps it until the tool ends, and another
+        pass of the node (the thread resumed twice at once) is refused. A call that goes on, consumed, after its tool
+        paused the run itself is claimed from the signer too (call_claim), which lets one pass in any process go on per
+        pause; without its yes the call doesn't run."""
         call, config = request.tool_call, request.runtime.config
         with self._lock:
-            if p["state"] not in ("run", "paused"):
+            if mine["cut"] or p["state"] not in ("run", "paused"):
                 return self._refusal(call, RUNNING)
-            goes_on, p["state"] = p["state"] == "paused", "running"
+            goes_on, p["state"], p["by"] = p["state"] == "paused", "running", mine
             self._plans[_ns(config), call["id"]] = p
         if not goes_on:
             return None
@@ -298,10 +298,16 @@ class TracekitMiddleware(AgentMiddleware):
             c = claim(req) if claim else {"ok": False, "reason": "the signer has no call_claim"}
         except (RPCError, SignerUnavailable) as e:
             c = {"ok": False, "reason": str(e)}
-        if c["ok"]:
-            return None
-        self._ended(request, _done(p, self._refusal(call, c.get("reason") or "not claimed")))
-        return p["out"]
+        return None if c["ok"] else _done(p, self._refusal(call, c.get("reason") or "not claimed"))["out"]
+
+    def _cut(self, p, mine):
+        """This pass (token `mine`) was cut off while it claimed or ran the call (a cancellation, a KeyboardInterrupt):
+        a plan it took is `cut` (_resumed) unless done; one it hadn't taken yet it never takes (_claim), and one another
+        pass runs stays that pass's."""
+        with self._lock:
+            mine["cut"] = True
+            if p.get("by") is mine and p["state"] != "done":
+                p["state"] = "cut"
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
@@ -352,11 +358,11 @@ class TracekitMiddleware(AgentMiddleware):
                 return handler(request)
             finally:
                 CALL_ID.reset(token)
-        blocked, p = self._gate(request)
+        (blocked, p), mine = self._gate(request), {"cut": False}
         try:
-            blocked = blocked or self._claim(request, p)
+            blocked = blocked or self._claim(request, p, mine)
         except BaseException:   # cut off while it was claimed: the signer judges it again (_resumed)
-            _cut(p)
+            self._cut(p, mine)
             raise
         if blocked is not None:
             return blocked
@@ -372,7 +378,7 @@ class TracekitMiddleware(AgentMiddleware):
             self._ended(request, p)
             raise
         except BaseException:   # cut off (a KeyboardInterrupt, SystemExit): the signer judges it again (_resumed)
-            _cut(p)
+            self._cut(p, mine)
             raise
         self._complete(request.tool_call, p, out)
         self._ended(request, p)
@@ -386,11 +392,11 @@ class TracekitMiddleware(AgentMiddleware):
                 return await handler(request)
             finally:
                 CALL_ID.reset(token)
-        blocked, p = await asyncio.to_thread(self._gate, request)
+        (blocked, p), mine = await asyncio.to_thread(self._gate, request), {"cut": False}
         try:
-            blocked = blocked or await asyncio.to_thread(self._claim, request, p)
+            blocked = blocked or await asyncio.to_thread(self._claim, request, p, mine)
         except BaseException:   # cancelled while it was claimed: the signer judges it again (_resumed)
-            _cut(p)
+            self._cut(p, mine)
             raise
         if blocked is not None:
             return blocked
@@ -406,7 +412,7 @@ class TracekitMiddleware(AgentMiddleware):
             self._ended(request, p)
             raise
         except BaseException:   # cut off (its task cancelled): the signer judges it again (_resumed)
-            _cut(p)
+            self._cut(p, mine)
             raise
         await asyncio.to_thread(self._complete, request.tool_call, p, out)
         self._ended(request, p)
@@ -417,12 +423,6 @@ def _done(p, out):
     """Plan `p` is done: the model reads `out` (a refusal, or what the call gave) in each pass of its node."""
     p.update(state="done", out=out)
     return p
-
-
-def _cut(p):
-    """Plan `p`'s pass was cut off while the call was claimed or ran (_resumed), unless it is done (a refusal)."""
-    if p["state"] != "done":
-        p["state"] = "cut"
 
 
 def _resumed(p):

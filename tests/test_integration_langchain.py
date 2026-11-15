@@ -824,22 +824,29 @@ class ToolPauses(Driven):
                     self.approve(shown["approval_id"])
                     out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
                     self.assertEqual(out["__interrupt__"][0].value, "pay 1?")
-                    claim, cut = self.signer.call_claim, []
+                    claim, cut, claiming, release = self.signer.call_claim, [], threading.Event(), threading.Event()
 
                     def cut_claim(req):
                         if cut:
                             return claim(req)
                         cut.append(1)
-                        if mode == "async":
-                            time.sleep(0.4)   # the pass's ainvoke is cancelled meanwhile
-                            return claim(req)
-                        claim(req)
-                        raise Cut()
+                        out = claim(req)   # the signer says yes, then the pass is cut off
+                        if mode == "sync":
+                            raise Cut()
+                        claiming.set()
+                        release.wait(5)   # its ainvoke is cancelled meanwhile
+                        return out
+
+                    async def cancelled():
+                        task = asyncio.ensure_future(graph.ainvoke(Command(resume="yes"), THREAD))
+                        await asyncio.to_thread(claiming.wait, 5)
+                        task.cancel()
+                        with self.assertRaises(asyncio.CancelledError):
+                            await task
+                        release.set()
                     self.signer.call_claim = cut_claim
                     if mode == "async":
-                        with self.assertRaises(asyncio.TimeoutError):
-                            asyncio.run(asyncio.wait_for(graph.ainvoke(Command(resume="yes"), THREAD), 0.2))
-                        time.sleep(0.4)   # the claim's thread ends
+                        asyncio.run(cancelled())
                     else:
                         with self.assertRaises(Cut):
                             graph.invoke(Command(resume="yes"), THREAD)
@@ -847,6 +854,56 @@ class ToolPauses(Driven):
                     self.assertEqual(PAID, [])
                     self.assertTrue(read(out)["pay-1"].startswith("Tool call blocked by policy: TK-APPROVAL-CONSUMED"),
                                     read(out)["pay-1"])
+
+    def test_a_cancelled_claim_leaves_a_call_another_pass_runs_alone(self):
+        """Three async resumes of one thread in one process: A runs an allowed call; B is cancelled while it tries to
+        claim that call; then C resumes while A still runs it. At 93a34eebb0 B's cancellation marked A's running plan
+        cut, so C ran the call a second time. A pass cuts only a plan it took itself now: C is refused."""
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"},
+                 {"name": "slow", "args": {"text": "hi"}, "id": "s"}]
+        claim, held = TracekitMiddleware._claim, {}
+
+        @tool
+        async def slow(text: str) -> str:
+            """Echo; its first run lasts until C's pass ends."""
+            ac.RAN.append("slow")
+            if len(ac.RAN) == 1:
+                held["started"].set()
+                await asyncio.wait_for(held["c_done"].wait(), 5)
+            return text
+
+        def claiming_slowly(gate_self, request, p, *rest):
+            if request.tool_call["id"] == "s":
+                held["claims"] += 1
+                if held["claims"] == 2:   # B's, which is cancelled meanwhile
+                    held["claiming"].set()
+                    held["let_b_go"].wait(5)
+            return claim(gate_self, request, p, *rest)
+
+        async def three(graph, resume):
+            held.update(started=asyncio.Event(), c_done=asyncio.Event())
+            a = asyncio.ensure_future(graph.ainvoke(resume, THREAD))
+            await held["started"].wait()
+            b = asyncio.ensure_future(graph.ainvoke(resume, THREAD))
+            await asyncio.to_thread(held["claiming"].wait, 5)
+            b.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await b
+            held["let_b_go"].set()
+            c = await graph.ainvoke(resume, THREAD)
+            held["c_done"].set()
+            return c, await a
+        for how, node in self.nodes(tools=[counted_pay, slow]):
+            with self.subTest(wired=how):
+                held.update(claims=0, claiming=threading.Event(), let_b_go=threading.Event())
+                graph = tool_graph(node())
+                shown = graph.invoke(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                self.approve(shown["approval_id"])
+                with mock.patch.object(TracekitMiddleware, "_claim", claiming_slowly):
+                    c, a = asyncio.run(three(graph, Command(resume={"approval_id": shown["approval_id"]})))
+                self.assertEqual((ac.RAN, read(a)["s"]), (["slow"], "hi"))
+                self.assertEqual(read(c)["s"], "Tool call blocked by policy: it runs in another pass of its node: the "
+                                               "thread was resumed twice at once")
 
     def test_a_wrapper_outside_the_gate_cannot_change_a_decided_call(self):   # probe851_wrap.py
         """instrument() puts the gate inside a ToolNode's own wrap_tool_call, which sees each call after the pass

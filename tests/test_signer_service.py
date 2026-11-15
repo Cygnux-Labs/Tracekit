@@ -299,37 +299,57 @@ class TestService(unittest.TestCase):
         self.assertIsNotNone(s.log.storage.snapshot)   # it started from the edited snapshot
         self.assertEqual(states(s), before)
 
+    def consumed(self, s, run, tcid, seq):
+        """A pay `tcid` of `run`, decided ask, approved by another identity and consumed."""
+        tok = {"run_id": run["run_id"], "run_token": run["run_token"]}
+        call = {**tok, "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": {"to": tcid}}
+        s.decide({**self.ev(run, seq), **call})
+        aid = s.approval_request({"request_id": f"r-{tcid}", **tok, "tool_call_id": tcid})["approval_id"]
+        s.call(OTHER, "approval_decide", {"request_id": f"ok-{tcid}", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(s.approval_consume({"request_id": f"c-{tcid}", **call})["ok"])
+
+    @staticmethod
+    def claim(s, run, tcid, answers=2):
+        return s.call(ME, "call_claim", {"request_id": uuid.uuid4().hex, "run_id": run["run_id"],
+                                         "run_token": run["run_token"], "tool_call_id": tcid, "attempt": 0,
+                                         "answers": answers})
+
     def test_call_claim_refuses_a_consume_from_before_the_signer_started(self):
         """Claims are memory: a call whose approval was consumed before this signer process started may have gone on
         under a claim a crash took with it, so it is refused (a person approves it again), from the snapshot and from
         the records alone; one consumed since is claimed as before."""
         s = self.snapshotting()
         run = self.register(s)
-        tok = {"run_id": run["run_id"], "run_token": run["run_token"]}
-
-        def consumed(s, tcid, seq):
-            call = {**tok, "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": {"to": tcid}}
-            s.decide({**self.ev(run, seq), **call})
-            aid = s.approval_request({"request_id": f"r-{tcid}", **tok, "tool_call_id": tcid})["approval_id"]
-            s.call(OTHER, "approval_decide", {"request_id": f"ok-{tcid}", "approval_id": aid, "decision": "approve"})
-            self.assertTrue(s.approval_consume({"request_id": f"c-{tcid}", **call})["ok"])
-
-        def claim(s, tcid, answers=2):
-            return s.call(ME, "call_claim", {"request_id": uuid.uuid4().hex, **tok, "tool_call_id": tcid, "attempt": 0,
-                                             "answers": answers})
-        consumed(s, "before", 0)
-        self.assertTrue(claim(s, "before")["ok"])
+        self.consumed(s, run, "before", 0)
+        self.assertTrue(self.claim(s, run, "before")["ok"])
         s.close()
         for snapshot in (True, False):
             if not snapshot:
                 shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
             s = self.snapshotting()
-            self.assertEqual(claim(s, "before", 3), {
+            self.assertEqual(self.claim(s, run, "before", 3), {
                 "ok": False, "reason": "the signer restarted since this call's approval was used; ask again"})
             s.close()
         s = self.snapshotting()
-        consumed(s, "since", 1)
-        self.assertEqual((claim(s, "since")["ok"], claim(s, "since")["ok"]), (True, False))
+        self.consumed(s, run, "since", 1)
+        self.assertEqual((self.claim(s, run, "since")["ok"], self.claim(s, run, "since")["ok"]), (True, False))
+
+    def test_call_claim_survives_a_storage_recovery(self):   # probe test_probe851_recover.py
+        """The signer recovers from a storage error without restarting, rebuilding its run state from the records.
+        At 93a34eebb0 the rebuild dropped the claims, so a pause claimed before the outage was claimed again (a pay ran
+        twice). They are carried over now; and a call consumed in this process, claimed first after the outage, is
+        claimed as usual (its consume's place in the log, rebuilt from the records, is after the start)."""
+        s = self.open()
+        run = self.register(s)
+        self.consumed(s, run, "claimed", 0)
+        self.consumed(s, run, "waiting", 1)
+        self.assertTrue(self.claim(s, run, "claimed")["ok"])
+        Disk.fail = 1
+        self.refused("unavailable", s, "decide", self.ev(run, 2, tool_call_id="t", tool="t", args_source="parsed",
+                                                         args={}))
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            s.decide(self.ev(run, 2, tool_call_id="t", tool="t", args_source="parsed", args={}))
+        self.assertEqual((self.claim(s, run, "claimed")["ok"], self.claim(s, run, "waiting")["ok"]), (False, True))
 
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()
