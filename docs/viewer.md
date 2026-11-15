@@ -365,12 +365,14 @@ else from Claude Code's transcripts, read-only, as `tracekit audit` reads them: 
 the dev store `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts
 once, at its signed counts, in the transcript's place (the transcript says which agent took the step, when, and how
 long each cache write lasts, which no signed record holds): it is matched step by step, by its message id (the
-tailer's records, taken only from the session's own claude-code run, one whose records name a call of that session,
-signed from the turn's first line to 5 minutes after its last), by a tool_use id (an LLM gateway's records, within 5
-minutes), or by identical token counts within 5 minutes of one transcript message no other step matched (the gateway
-signs each exchange under an id of its own, and a message without tool calls has no tool_use id). Where the gateway and
-the tailer both signed a turn, the gateway's counts are kept. Another record of a transcript's turn is refused: the
-transcript's counts stand, and the page's first line says how many ([limits](limits.md#viewer)). Each card's `from` names where its token counts came from, the context card's arithmetic says how many steps each
+tailer's records, taken only from a claude-code run whose records name a call of that session, signed from the
+turn's first line to 5 minutes after its last), by a tool_use id (an LLM gateway's records, within 5 minutes), or by
+identical token counts within 5 minutes of one transcript message no other step matched (the gateway signs each exchange
+under an id of its own, and a message without tool calls has no tool_use id). Where the gateway and the tailer both
+signed a turn, the gateway's counts are kept. Records of one turn that disagree, and any other record of a transcript's
+turn, are refused: the transcript's counts stand, and the page's first line says how many
+([limits](limits.md#viewer)). The page's TOKENS IN and OUT count a turn the gateway and the tailer both signed once, the
+same way. Each card's `from` names where its token counts came from, the context card's arithmetic says how many steps each
 source gave, and each wait of the cache card has its own (`src`). The page's first line says how many signed steps
 took a transcript step's place, and the time span
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7

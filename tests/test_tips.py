@@ -583,6 +583,39 @@ class Sources(unittest.TestCase):
                          ({"runs": 1, "steps": 300}, 0))
         self.assertEqual(out["tips"][0]["from"], "signed records")
 
+    def test_records_of_one_turn_that_disagree_put_none_of_their_counts_on_it(self):
+        """The 2nd review of #871: a run that registers as claude-code and names one real call of the session joins
+        its turns too. Signing twice the counts 2 s after each line, after the session's own run, its counts replaced
+        the honest ones ($20.79 "from signed records" against $7.62); signing first, its writes lost the transcript's
+        cache-lifetime split ($9.61). Records of one turn that disagree now put none of their counts on it: each is
+        refused, and the transcript's counts stand."""
+        lines, root, alone = self.session()
+        doubled = [{**x, "message": {**x["message"], "usage": {k: 2 * v if isinstance(v, int) else v
+                                                              for k, v in x["message"]["usage"].items()}}}
+                   for x in lines]
+        honest = exchanges(lines, tools=True, tailer=True, late=1)
+        forged = exchanges(doubled, tools=True, tailer=True, run="r2", late=2)
+        for why, recs in (("the forger signs after", honest + forged), ("the forger signs first", forged + honest)):
+            with self.subTest(why):
+                out = tips.build(recs, root, NOW)
+                s = out["sources"]["signed"]
+                self.assertEqual((s["steps"], s["also"]["steps"], s["refused"]), (0, 0, 600))
+                self.assertEqual((out["tips"][0]["saving"], out["tips"][0]["from"]),
+                                 (alone["tips"][0]["saving"], "Claude Code's transcripts (read-only)"))
+        out = tips.build(honest + exchanges(lines, tools=True, tailer=True, run="r2", late=2), root, NOW)
+        self.assertEqual((out["sources"]["signed"]["also"], out["sources"]["signed"]["refused"]),
+                         ({"runs": 2, "steps": 600}, 0))   # two records that agree: the turn counts once, signed
+
+    def test_an_exchange_id_two_runs_signed_with_other_counts_counts_for_neither(self):
+        """The 2nd review of #871: with no transcript to join, the first run to sign an exchange id kept it, so a run
+        that registered early and later signed another run's exchange ids dropped that run's real counts. The same
+        id with other counts now counts for neither run (refused); with the same counts, once."""
+        other = [dict(r, usage=dict(r["usage"], input_tokens=r["usage"]["input_tokens"] * 2)) if r.get("usage") else r
+                 for r in uncached(5, run="r8")]
+        for recs in (uncached(5) + other, other + uncached(5)):
+            s = tips.build(recs, None, NOW)["sources"]["signed"]
+            self.assertEqual((s["steps"], s["refused"]), (0, 10))
+
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
         path = write_jsonl(os.path.join(root, "p", "s.jsonl"), growing(n=60))
@@ -803,6 +836,32 @@ class Page(unittest.TestCase):
                                              ex(2, "msg_1"), ex(3, "msg_1"), ex(4, "msg_2")))}) ingest(r);
             process.stdout.write(JSON.stringify([S.tokIn, S.tokOut]));"""))
         self.assertEqual(got, [2 * 1100, 2 * 400])
+
+    def test_the_viewers_token_totals_count_a_turn_the_gateway_and_the_tailer_signed_once(self):
+        """The 2nd review of #871: a session through both the LLM gateway and the transcript tailer counted every turn
+        twice in TOKENS IN and OUT, each signed under an id of its own. They join as in TIPS, by a tool_use id or the
+        same counts within 5 minutes, and the gateway's counts are the ones kept, whichever came first."""
+        def ex(seq, x, tools, usage, run, source):
+            return v2rec(seq, "model.exchange", {"exchange_id": x, "phase": "response", "model": "m", "upstream": "a",
+                                                 "usage": usage, **({"tool_uses": [{"id": i, "name": "Read"}
+                                                                                  for i in tools]} if tools else {})},
+                         run=run, source=source)
+        u1 = {"input_tokens": 6, "output_tokens": 400, "cache_read_tokens": 1000, "cache_write_tokens": 94}
+        u2 = {"input_tokens": 3, "output_tokens": 50, "cache_read_tokens": 1500, "cache_write_tokens": 10}
+        tailer = rows(v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}, run="r1"),
+                      ex(2, "msg_1", ["toolu_1"], u1, "r1", "sdk"), ex(3, "msg_2", [], u2, "r1", "sdk"))
+        gateway = rows(v2rec(1, "run.registered", {"agent": {"name": "gateway"}}, run="g1"),
+                       ex(4, "gx-1", ["toolu_1"], dict(u1, output_tokens=407), "g1", "gateway"),
+                       ex(5, "gx-2", [], u2, "g1", "gateway"))
+        for recs in (tailer + gateway, gateway + tailer):
+            got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
+                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                      "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural",
+                                      "ANSWER", "DECIDED", "decided"], f"""
+                let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
+                for (const r of {json.dumps(recs)}) ingest(r);
+                process.stdout.write(JSON.stringify([S.tokIn, S.tokOut]));"""))
+            self.assertEqual(got, [1100 + 1513, 407 + 50])
 
     def setUp(self):
         if not shutil.which("node"):

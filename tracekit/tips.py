@@ -659,6 +659,10 @@ def holds_tip(holds, calls, signed):
     return tip
 
 
+def _counts(s):
+    return s["in"], s["out"], s["cr"], s["w"]
+
+
 def _join(signed, agents, named):
     """Count each signed step Claude Code's transcripts also hold once, at its signed counts in the transcript
     message's place (_signed), and drop it from `signed`. -> ({runs, steps} joined, steps refused). In order, each pass
@@ -670,9 +674,11 @@ def _join(signed, agents, named):
     2. by a tool_use id the message shares, only from an LLM gateway (`gw`), signed within MATCH_S of it;
     3. by the same token counts within MATCH_S, taking up one message no other step of this pass matched (the gateway
        signs each exchange under an id of its own, and a message without tool calls has no tool_use id), compared with
-       the counts pass 1 signed.
-    A later pass's counts win: the LLM gateway's (2, 3) were signed off the wire, the tailer's (1) as it read the
-    transcript. A step refused in pass 1 or 2 counts for nothing: the transcript's counts stand."""
+       the counts passes 1 and 2 signed.
+    In pass 1 and 2 a turn takes its records' counts only when they all agree; when they don't, it takes none of them
+    and each is refused: a record can push a turn back to the counts it had, never put its own over another's. The
+    gateway's counts (2), signed off the wire, are kept over the tailer's (1), signed as it read the transcript. A step
+    refused counts for nothing: the transcript's counts stand."""
     where = {s["id"]: (s, k.split("/")[0]) for k, a in agents.items() for s in a["steps"]}
     by_call = {c: s for a in agents.values() for s in a["steps"] for c in s["calls"]}
     calls_of = collections.defaultdict(set)   # a transcript session -> the tool_use ids of its messages
@@ -680,24 +686,41 @@ def _join(signed, agents, named):
         for s in a["steps"]:
             calls_of[k.split("/")[0]].update(s["calls"])
     ids = {c for a in signed.values() for s in a["steps"] for c in s["calls"]}
-    taken, refused = collections.defaultdict(dict), 0   # signed run's key -> {its step's index: the message, or None}
+    taken = collections.defaultdict(dict)   # signed run's key -> {its step's index: the message, or None (refused)}
+
+    def settle(found):
+        """[(transcript message, run key, step index, signed step)] a pass joined: each message at its records'
+        counts when they all agree, else at none of them."""
+        turns = collections.defaultdict(list)
+        for t, k, i, s in found:
+            turns[id(t)].append((t, k, i, s))
+        for group in turns.values():
+            agree = len({_counts(s) for *_, s in group}) == 1
+            for t, k, i, s in group:
+                taken[k][i] = t if agree else None
+            if agree:
+                _signed(group[0][0], group[0][3])
+    found = []
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
             if s["id"] in where:
                 t, session = where[s["id"]]
-                ok = a.get("name") == "claude-code" and named[k.split("/")[0]] & calls_of[session] and \
-                    t["t"] <= s["t"] <= t["t1"] + MATCH_S
-                taken[k][i] = t if ok else None
-                if ok:
-                    _signed(t, s)
+                if a.get("name") == "claude-code" and named[k.split("/")[0]] & calls_of[session] and \
+                        t["t"] <= s["t"] <= t["t1"] + MATCH_S:
+                    found.append((t, k, i, s))
+                else:
+                    taken[k][i] = None
+    settle(found)
+    found = []
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
             t = next((by_call[c] for c in s["calls"] if c in by_call), None)
             if i not in taken[k] and t is not None:
-                ok = s["gw"] and t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S
-                taken[k][i] = t if ok else None
-                if ok:
-                    _signed(t, s)   # after the tailer's: the gateway's counts are the ones kept
+                if s["gw"] and t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S:
+                    found.append((t, k, i, s))
+                else:
+                    taken[k][i] = None
+    settle(found)
     pool = collections.defaultdict(list)   # token counts -> the transcript messages pass 3 may still take
     for a in agents.values():
         for s in a["steps"]:
@@ -705,11 +728,12 @@ def _join(signed, agents, named):
                 pool[s["in"], s["out"], s["cr"], _writes(s)].append(s)
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
-            left = pool.get((s["in"], s["out"], s["cr"], s["w"]), []) if i not in taken[k] else []
+            left = pool.get(_counts(s), []) if i not in taken[k] else []
             j = next((j for j, x in enumerate(left) if abs(x["t"] - s["t"]) <= MATCH_S), None)
             if j is not None:
                 taken[k][i] = left.pop(j)
-                _signed(taken[k][i], s)
+                taken[k][i]["src"] = "signed"   # the same counts: the transcript's split of its writes stands
+    refused = 0
     for k, x in taken.items():
         signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in x]
         refused += sum(t is None for t in x.values())
@@ -743,9 +767,21 @@ def build(rows, root=None, now=None, since=None):
         named[r.get("session_id")].update(i for i in (v.get("tool_use_id"), *(v.get("tool_ids") or ())) if
                                           isinstance(i, str))
     also, refused = _join(signed, agents, named)
-    seen = set()   # an exchange id no transcript holds counts once (a subagent transcript a resumed session copied)
+    # an exchange id no transcript holds, signed by more than one run (a subagent transcript a resumed session copied)
+    # counts once when its counts agree, and not at all (refused) when they don't
+    same = collections.defaultdict(list)
     for a in signed.values():
-        a["steps"] = [s for s in a["steps"] if s["id"] is None or s["id"] not in seen and not seen.add(s["id"])]
+        for s in a["steps"]:
+            if s["id"] is not None:
+                same[s["id"]].append(s)
+    drop = set()
+    for group in same.values():
+        if len(group) > 1:
+            agree = len({_counts(s) for s in group}) == 1
+            drop.update(map(id, group[1:] if agree else group))
+            refused += 0 if agree else len(group)
+    for a in signed.values():
+        a["steps"] = [s for s in a["steps"] if id(s) not in drop]
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
     holds = held_calls(rows, since)
