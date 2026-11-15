@@ -127,7 +127,7 @@ def said_since(harness, p, stderr):
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
             if said_items:
-                client = claude_code.HookClient()
+                client = claude_code.HookClient(start_wait_s=claude_code.start_wait(None))   # then the event's own
                 try:
                     # a SessionEnd records into the run it ends, never into a new one
                     s = said.Said(lambda **f: claude_code._run(client, sid, register=ev != "SessionEnd",

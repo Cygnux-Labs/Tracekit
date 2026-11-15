@@ -24,6 +24,7 @@ from tracekit import __version__, agent_hooks, cli, client, doctor, install, par
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.policy2.engine import Engine
+from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService, load_policy
@@ -2035,6 +2036,22 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual([e["data"]["kind"] for e in events if e["type"] == "constraint.added"], ["no_push"])
         self.assertEqual(agent_hooks.normalise("codex", dict(p, prompt="hi"))["prompt"], "hi")
 
+    def test_a_hook_that_records_what_was_said_waits_for_a_starting_signer_no_longer_than_its_event(self):
+        """The said record's connection, made before the event's own, waits no longer than autospawn's timeout for a
+        starting dev signer, so the two together stay under a non-tool event's 30 s (claude_code.start_wait)."""
+        self.serve()
+        waits, made = [], claude_code.HookClient
+
+        class Recording(made):
+            def __init__(self, **kw):
+                waits.append(kw.get("start_wait_s"))
+                super().__init__(**kw)
+        path = self.transcript(*ROLLOUT)
+        with mock.patch.object(claude_code, "HookClient", Recording):
+            self.assertEqual(self.hook("codex", {"session_id": "cx-w", "hook_event_name": "UserPromptSubmit",
+                                                 "prompt": "hi", "transcript_path": path})[0], 0)
+        self.assertEqual(waits, [0, 0])
+
     def test_codex_reasoning_is_recorded_before_the_decision_and_linked_by_call_id(self):
         self.serve()
         path = self.transcript(*ROLLOUT)
@@ -2156,6 +2173,43 @@ class WhatTheModelSaid(HarnessCase):
         self.assertIn("boom", err)
         _, _, events = self.events("cx-f")
         self.assertEqual([e["data"]["decision"] for e in events if e["type"] == "policy.decision"], ["allow", "allow"])
+
+
+class SlowSignerStart(HarnessCase):
+    """A dev signer slow to start (it rebuilds its open runs' provenance indexes first): a hook waits for it only as long
+    as its harness lets the hook run, so the hook answers (a pre-tool one blocks) before the harness gives up on it."""
+
+    def test_each_hook_waits_under_its_harness_timeout(self):
+        """A pre-tool hook's harness gives it 600 s (Claude Code's install.HOOK_TIMEOUT, agent_hooks' install), any other
+        event's 30 s (Claude Code: 15 s at SessionEnd, else its default 60 s), and Cline 30 s for every event: the most
+        a hook waits for the signer, 10 s for one to answer at all, leaves 5 s of that for the hook's own calls."""
+        for harness, agent in [("claude-code", "claude-code"), *agent_hooks.AGENT_NAMES.items()]:
+            for event in ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionEnd"):
+                limit = (30 if harness == "cline" else install.HOOK_TIMEOUT.get(event, 60) if harness == "claude-code"
+                         else 600 if event == "PreToolUse" else 30)
+                with self.subTest(harness, event=event), mock.patch.object(claude_code, "AGENT", agent):
+                    self.assertLessEqual(max(10, claude_code.start_wait(event)) + 5, limit)
+
+    def test_a_cline_hook_blocks_before_cline_runs_the_call(self):
+        """Cline runs a call whose hook is still running at 30 s: its hook gives up on a signer still starting within
+        agent_hooks.CLINE_WAIT_S and blocks the call."""
+        os.environ.pop("TRACEKIT_SIGNER", None)
+        d = autospawn.signer_dir()
+        child = ("import sys, time; from tracekit.signer import service; sys.exit(service.serve_dev(sys.argv[1], "
+                 "lambda: time.sleep(60) or (lambda *a: None, lambda: None)))")
+        with open(os.path.join(d, autospawn.LOG), "ab") as log:
+            p = subprocess.Popen([sys.executable, "-c", child, d], stdout=log, stderr=log)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        deadline = time.monotonic() + 30
+        while not autospawn._held(os.path.join(d, autospawn.LOCK)):
+            self.assertLess(time.monotonic(), deadline, "the signer did not start")
+            time.sleep(0.05)
+        begun = time.monotonic()
+        with mock.patch.object(agent_hooks, "CLINE_WAIT_S", 12):   # past autospawn's own 10 s
+            code, out, err = self.hook("cline", cases("cline")[3]["payload"], "PreToolUse")
+        self.assertLess(time.monotonic() - begun, 17)
+        self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
 
 
 class VersionNotice(HarnessCase):

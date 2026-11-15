@@ -278,6 +278,18 @@ def approval_wait_s():
     return w if 0 < w <= APPROVAL_WAIT_S else APPROVAL_WAIT_S if w > APPROVAL_WAIT_S else 0.0
 
 
+def start_wait(event):
+    """How long a hook for `event` waits for a dev signer that says it is starting (autospawn.ensure), so it answers
+    within its harness's timeout for the event: a pre-tool hook's is 600 s (install.HOOK_TIMEOUT, agent_hooks' install),
+    and it waits the default; any other event's 15 to 60 s, and a hook makes two connections at most (said, then the
+    event), so no longer than autospawn's own timeout; Cline runs a call whose hook is still running at 30 s, so a
+    Cline hook waits at most agent_hooks.CLINE_WAIT_S for any event."""
+    if AGENT == "cline":
+        from tracekit.agent_hooks import CLINE_WAIT_S
+        return CLINE_WAIT_S
+    return autospawn.START_WAIT_S if event == "PreToolUse" else 0
+
+
 class HookClient(Client):
     """The hooks' client: a call the signer rate-limits (quota_exceeded with retry_after_ms) is sent again once that has
     passed, within the client's timeout, as the tailer's lines are. In dev mode the hooks and the tailer share the
@@ -1300,7 +1312,7 @@ def _event(p):
         return 2 if pre else 0, None
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
-        client = HookClient()
+        client = HookClient(start_wait_s=start_wait(name))
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code, None
