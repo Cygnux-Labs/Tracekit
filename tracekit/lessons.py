@@ -76,6 +76,8 @@ NOT_YET = "No lessons approved for this project yet."
 SEARCH = {"Grep": "pattern", "Glob": "pattern", "WebSearch": "query"}
 OPEN = {"Read": "file_path", "WebFetch": "url"}
 WRITES = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
+READS = {"Read": ("file_path",), "Glob": ("pattern", "path"), "Grep": ("path",), "LS": ("path",)}   # the paths a read names
+READ_PROGRAMS = frozenset(("ls", "cat", "head", "tail", "find", "tree", "stat", "file", "which"))   # a shell read's
 RAN = ("allow", "flag")   # decisions under which a call ran as the agent sent it
 SUBJECT = {"lookup": 1, "fix": 3}   # the leading words of a key that say what a lesson is about (its identifier;
 # its program and failure): a new fact about the same thing supersedes the old
@@ -591,12 +593,11 @@ def select(notes, text, budget=BUDGET):
 
 def verified(client, notes, purpose="tracekit lessons"):
     """The ids of `notes` the signer backs: each note's named record (`signed`, run:run_seq) is read back (content_get,
-    through `client`: one signed content.accessed record per run of answers) and the note kept when its kept value is
-    the person's answer that put it in use (an approve, restore or add of this id and this text's sha256), or when the
-    signer holds the run and its retention has since erased what it kept. A note naming a run the signer doesn't hold,
-    or another answer, is left out, and so is every note when the signer can't be asked or keeps no content.
-    lean: past the dev signer's retention (DEV_RETENTION_DAYS) only the run's existence is checked, the TIPS page
-    reading the record itself; keep the answers' content longer if notes naming old runs are ever planted"""
+    through `client`: one signed content.accessed record per run of answers) and the note kept only when its kept value
+    is the person's answer that put it in use, an approve, restore or add of this id and this text's sha256. The signer
+    keeps a run of answers alone past its retention (service.expire_content), so this holds for old lessons too. A note
+    naming a run the signer doesn't hold, a record it keeps nothing for, or another answer, is left out, and so is every
+    note when the signer can't be asked or keeps no content."""
     runs = collections.defaultdict(lambda: collections.defaultdict(list))
     for n in notes:
         run, seq = str(n.get("signed")).rsplit(":", 1)
@@ -609,9 +610,8 @@ def verified(client, notes, purpose="tracekit lessons"):
             continue
         for it in items if isinstance(items, list) else ():
             v = it.get("content") if isinstance(it, dict) else None
-            for n in by_seq.get(it.get("seq"), ()) if isinstance(it, dict) else ():
-                if it.get("state") == "erased" or isinstance(v, dict) and v.get("action") in ANSWERS \
-                        and v.get("id") == n["id"] and v.get("sha256") == text_sha(n):
+            for n in by_seq.get(it.get("seq"), ()) if isinstance(v, dict) else ():
+                if v.get("action") in ANSWERS and v.get("id") == n["id"] and v.get("sha256") == text_sha(n):
                     out.add(n["id"])
     return out
 
@@ -729,25 +729,54 @@ def _named(value):
         and not evasive(spaced)
 
 
+def _read_paths(c):
+    """The paths call `c` read, when it ran: READS' arguments, or a shell READ_PROGRAMS call's words; each normalised,
+    relative to the session's folder when under it."""
+    if c["decision"] not in RAN or c["held"] or c["ok"] is False:
+        return []
+    if c["tool"] in READS:
+        ps = [c["args"].get(k) for k in READS[c["tool"]]]
+    else:
+        plain = _simple(c["args"].get("command")) if c["tool"] == "Bash" else None
+        ps = plain[2][1:] if plain and os.path.basename(plain[2][0]) in READ_PROGRAMS else []
+    return [os.path.normpath(_rel(p, c["cwd"])) for p in ps if isinstance(p, str) and p]
+
+
+def _found(value, reads):
+    """Whether `value`, a folder a fix ran from or a program it swapped in, is a relative path with no `..` that one of
+    `reads` (the session's earlier signed reads, _read_paths) named, itself or a path under it."""
+    v = os.path.normpath(value)
+    return not value.startswith(("/", "~")) and ".." not in value.split("/") and any(
+        p == v or p.startswith(v + "/") for p in reads)
+
+
+def _mentioned(name, cs):
+    """Whether `name`, an error's (a module, a program), is a word in the arguments of one of the signed calls `cs` that
+    ran: the transcript's error text, which the agent's process writes, names it only when a signed record does."""
+    pat = re.compile(r"(?<![\w.-])" + re.escape(name) + r"(?![\w-])")
+    return any(pat.search(v) for c in cs if c["decision"] in RAN and not c["held"]
+               for v in c["args"].values() if isinstance(v, str))
+
+
 def _fix_shape(failed, worked):
     """(shape, value) of the change from command `failed` to command `worked` when it is one of FIXED's: another
-    program, a flag added or removed (at most FIX_TOKENS words), a setting added, or `cd DIR` first; else None."""
+    program, a flag removed (at most FIX_TOKENS words), a setting added (its name: the value is the agent's word), or
+    `cd DIR` first; else None. A flag the fix added is the agent's word, never a lesson's."""
     a, b = _simple(failed), _simple(worked)
     if not (a and b):
         return None
     (cd1, env1, x1), (cd2, env2, x2) = a, b
     if cd1 == cd2 and env1 == env2 and x1[0] == x2[0]:
         ops = [o for o in difflib.SequenceMatcher(None, x1[1:], x2[1:], autojunk=False).get_opcodes() if o[0] != "equal"]
-        if len(ops) == 1 and ops[0][0] in ("insert", "delete"):
-            tag, i1, i2, j1, j2 = ops[0]
-            flag = x2[1:][j1:j2] if tag == "insert" else x1[1:][i1:i2]
+        if len(ops) == 1 and ops[0][0] == "delete":
+            flag = x1[1:][ops[0][1]:ops[0][2]]
             if flag[0].startswith("-") and len(flag) <= FIX_TOKENS:
-                return ("flag added" if tag == "insert" else "flag removed"), " ".join(flag)
+                return "flag removed", " ".join(flag)
         return None
     if cd1 == cd2 and env1 == env2 and x1[1:] == x2[1:]:
         return "program", x2[0]
     if cd1 == cd2 and x1 == x2 and len(env2) > len(env1) and env2[:len(env1)] == env1:
-        return "setting", " ".join(env2[len(env1):])
+        return "setting", " ".join(w.split("=", 1)[0] for w in env2[len(env1):])
     if cd1 is None and cd2 and env1 == env2 and x1 == x2:
         return "cd", cd2
     return None
@@ -850,9 +879,10 @@ def detect(rows, tr):
     idx = {"opened": collections.defaultdict(set), "ran": collections.defaultdict(set),
            "failed": collections.defaultdict(set), "said": collections.defaultdict(list),
            "prompted": collections.defaultdict(set)}
-    agents = collections.defaultdict(list)
+    agents, by_run = collections.defaultdict(list), collections.defaultdict(list)
     for c in cs:
         agents[c["run"], c["agent"]].append(c)
+        by_run[c["run"]].append(c)
         if c["tool"] in OPEN and c["decision"] in RAN:
             idx["opened"][c["project"], _rel(c["args"].get(OPEN[c["tool"]]), c["cwd"])].add(c["session"])
         if c["tool"] == "Bash" and isinstance(c["args"].get("command"), str) and c["decision"] in RAN:
@@ -860,7 +890,7 @@ def detect(rows, tr):
             argv = plain[2] if plain else _argv(c["args"]["command"])
             idx["ran"][c["project"], os.path.basename(argv[0]) if argv else ""].add(c["session"])
             if plain and failed:
-                idx["failed"][c["project"], os.path.basename(argv[0]), *failed[:2]].add(c["session"])
+                idx["failed"][(c["project"], os.path.basename(argv[0]), *failed[:2])].add(c["session"])
         idx["prompted"][c["project"]].add(c["session"])
     for seq in agents.values():
         seq.sort(key=lambda c: c["seq"] or 0)
@@ -892,7 +922,13 @@ def detect(rows, tr):
                     shape = _fix_shape(c["args"]["command"], o["args"].get("command"))
                     if shape:
                         key = [_simple(c["args"]["command"])[2][0], *failed[:2], *shape]
-                        if all(_named(v) for v in (key[0], key[2], key[4]) if v):   # the program, the error's name, the change
+                        before = [x for x in by_run[c["run"]] if (x["seq"] or 0) <= (c["seq"] or 0)]   # the session's
+                        # each value a name (the program, the error's name, the change); the error's name in a signed
+                        # call; a folder or a program swapped in, a path the session's earlier signed reads named
+                        if all(_named(v) for v in (key[0], key[2], key[4]) if v) \
+                                and (not key[2] or _mentioned(key[2], before)) \
+                                and (shape[0] not in ("program", "cd")
+                                     or _found(shape[1], [p for x in before if x is not c for p in _read_paths(x)])):
                             out.append(_occ("fix", c["project"], key, [c, o], seq[i:j],
                                             _taint(seq[i:j + 1], ("command",), bad)))
                         break
@@ -940,8 +976,8 @@ def _groups(occs):
     return list(by.values())
 
 
-FIXED = {"program": "With `{}` in its place it worked.", "flag added": "With `{}` added it worked.",
-         "flag removed": "Without `{}` it worked.", "setting": "With `{}` set it worked.", "cd": "Run from `{}` it worked."}
+FIXED = {"program": "With `{}` in its place it worked.", "flag removed": "Without `{}` it worked.",
+         "setting": "With `{}` set it worked.", "cd": "Run from `{}` it worked."}
 
 
 def _text(kind, key):

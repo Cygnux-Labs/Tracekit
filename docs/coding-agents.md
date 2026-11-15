@@ -610,8 +610,8 @@ prove the text. That record is what "given to N sessions" and each lesson's effe
 the agent's environment turns it off. Only lessons whose note names the signed record of your answer
 ([Lessons](viewer.md#lessons)) are given: the hook reads each named record back from the signer (`content_get`, one
 signed `content.accessed` record per run of answers) and gives a lesson only when its record holds your approve,
-restore or add of that id and that text, or when its run's kept content is past the dev signer's 7 days and erased
-(then only the run's existence is checked; the TIPS page checks the record itself). A note written by hand, naming no
+restore or add of that id and that text (the signer keeps a run of answers alone past its 7 days, so old lessons are
+checked the same way). A note written by hand, naming no
 record or one the signer doesn't hold as that answer, is never given, and with `TRACEKIT_DEV_CONTENT=0` none is. Any error
 (the folder unreadable, a link inside it, the signer unreachable for the record) gives nothing and never blocks the
 prompt. Subagents and other harnesses get no block; they can run

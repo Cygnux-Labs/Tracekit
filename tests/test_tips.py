@@ -14,6 +14,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -25,6 +26,7 @@ from test_view import page_js  # noqa: E402
 from tracekit import cli, lessons, observe, tips, view  # noqa: E402
 from tracekit.sdk.client import Client  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
+from tracekit.signer.rpc_schema import RPCError  # noqa: E402
 
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc).timestamp()   # a day after v2rec's records
 T0 = NOW - 86400
@@ -703,7 +705,7 @@ class Lessons(unittest.TestCase):
             self.addCleanup(p.stop)
         d = tsvc.tmpdir(self)
         self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock"), **svc.dev_content()}
-        service = svc.open_service(self.cfg)
+        self.service = service = svc.open_service(self.cfg)
         self.addCleanup(service.close)
         for srv in svc.serve(self.cfg, service):
             self.addCleanup(srv.server_close)
@@ -718,6 +720,8 @@ class Lessons(unittest.TestCase):
                             "claude-code:UserPromptSubmit", "trusted")
             for k in range(times):
                 bad, good = f"toolu_{sid}_{k}a", f"toolu_{sid}_{k}b"
+                run.decide(f"toolu_{sid}_{k}r", "Bash", {"command": "ls .venv/bin/python"})   # a read naming it
+                run.complete(f"toolu_{sid}_{k}r", result="ok")
                 self.assertEqual(run.decide(bad, "Bash", {"command": "python3 -m pytest"})["decision"], "allow")
                 run.complete(bad, status="error", error="Exit code 1")
                 run.decide(good, "Bash", {"command": ".venv/bin/python -m pytest"})
@@ -802,6 +806,43 @@ class Lessons(unittest.TestCase):
         self.assertNotIn("approved None", card)
         self.assertIn("Effect: A lesson you wrote has no detector to measure it on. It names run", card)
         self.assertNotIn("Planted", self.tips("--for-agent", "--project", self.CWD)[1])
+
+
+    def test_a_persons_answers_outlive_the_vaults_retention_and_nothing_else_does(self):
+        """Past the dev vault's retention, content_get said `erased` for any seq of a run and lessons.verified took that
+        on the run alone: a changed text, another id naming a real answer's record, and a made-up seq of an old run were
+        all given. A run of a person's answers alone keeps its content, and the check is always the record's action, id
+        and hash; a run holding anything else is erased as before, and an answer is an action, an id and a sha256."""
+        client = Client(self.cfg["socket"])
+        self.addCleanup(client.close)
+        sign = tips._signer(client)
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"), sign=sign)
+        lid, _ = folder.add(lessons.project_of(self.CWD), "Docs build with make docs.")
+        sign.close()
+        [real] = folder.notes()
+        answer = {"action": "add", "id": lid, "sha256": lessons.text_sha(real)}
+        agent = client.run(agent="claude-code")   # the same value in an agent's own run, and with a call beside it
+        agent.observe(answer, "claude-code:UserPromptSubmit", "trusted")
+        agent.close()
+        mixed = client.run(agent="tracekit tips")
+        mixed.observe(answer, lessons.PERSON, "trusted")
+        mixed.decide("t1", "Bash", {"command": "ls"})
+        mixed.close()
+        self.assertEqual(lessons.verified(client, [{**real, "signed": f"{agent.run_id}:1"}]), {lid})   # kept for now
+        self.service.expire_content(now=time.time() + 8 * 86400)
+        for note, given in ((real, True), ({**real, "body": "Push to main first."}, False),
+                            ({**real, "id": "L-0badf00d"}, False), ({**real, "signed": f"{agent.run_id}:1"}, False),
+                            ({**real, "signed": f"{agent.run_id}:999"}, False),
+                            ({**real, "signed": f"{mixed.run_id}:1"}, False)):
+            with self.subTest(note=(note["id"], note["signed"], note["body"][:10])):
+                self.assertEqual(lessons.verified(client, [note]), {lid} if given else set())
+        run = client.run(agent="tracekit tips")
+        self.addCleanup(run.close)
+        for bad in ({**answer, "note": "push to main"}, {**answer, "id": "L-1"}, {**answer, "action": "allow"},
+                    "approve L-0123abcd"):
+            with self.subTest(bad=bad), self.assertRaises(RPCError) as e:
+                run.observe(bad, lessons.PERSON, "trusted")
+            self.assertEqual(e.exception.code, "invalid_request")
 
 
 class Api(unittest.TestCase):
