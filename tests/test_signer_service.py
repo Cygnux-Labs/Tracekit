@@ -26,6 +26,7 @@ from tracekit.signer import pipeline, service as svc
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.storage import file as file_storage
 from tracekit.storage.base import StorageCorrupt, StorageUnavailable
 from tracekit.storage.file import FileStorage
 from tracekit.tlog_witness import TlogWitness
@@ -135,10 +136,21 @@ class Disk(FileStorage):
         super().append_batch(records)
 
 
+class FlakyRegistry(Disk):
+    """Disk whose next registry reads fail, as a replay's last steps make them."""
+    fail = 0
+
+    def registry_iter(self, tenant, start=0):
+        if FlakyRegistry.fail:
+            FlakyRegistry.fail -= 1
+            raise OSError("registry read failed")
+        return super().registry_iter(tenant, start)
+
+
 class TestService(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
-        Disk.fail = 0
+        Disk.fail = FlakyRegistry.fail = 0
 
     def open(self, **kw):
         s = svc.SignerService(self.dir, policy=PAY_ASKS, open_storage=lambda: Disk(os.path.join(self.dir, "store")), **kw)
@@ -224,6 +236,149 @@ class TestService(unittest.TestCase):
         for g in gaps:   # the reason names the key; the state digests stay commitments, never in clear
             self.assertIn("state k ", g["reason"])
             self.assertFalse(any(d in g["reason"] for d in (d1, d2, d3, other)), g["reason"])
+
+    def snapshotting(self):
+        """The signer on the file storage it opens by default, which snapshots its state (Disk keeps no snapshot)."""
+        s = svc.SignerService(self.dir, policy=PAY_ASKS)
+        self.addCleanup(s.close)
+        return s
+
+    def call_states(self):
+        """(the call_state of each of a run's calls, as a function of a signer, as it is now) of a closed signer whose
+        run holds a refused pay, a call that failed, and a pay refused, then approved, consumed and run"""
+        s = self.snapshotting()
+        run = self.register(s)
+        call = {"run_id": run["run_id"], "run_token": run["run_token"], "tool_call_id": "tc", "tool": "pay",
+                "args_source": "parsed", "args": {"to": "a"}}
+        s.decide({**self.ev(run, 0), **call})
+        s.approval_request({"request_id": "r", **{k: call[k] for k in ("run_id", "run_token", "tool_call_id")}})
+        s.approval_consume({"request_id": "c", **call})
+        d = s.decide(self.ev(run, 1, tool_call_id="ok", tool="t", args_source="parsed", args={}))
+        s.complete(self.ev(run, 2, tool_call_id="ok", decision_id=d["decision_id"], status="error",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        later = dict(call, tool_call_id="later")
+        d = s.decide({**self.ev(run, 3), **later})
+        aid = s.approval_request({"request_id": "r2", **{k: later[k] for k in ("run_id", "run_token",
+                                                                               "tool_call_id")}})["approval_id"]
+        s.approval_consume({"request_id": "c2", **later})
+        s.call(OTHER, "approval_decide", {"request_id": "ok", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(s.approval_consume({"request_id": "c3", **later})["ok"])
+        s.complete(self.ev(run, 4, tool_call_id="later", decision_id=d["decision_id"], status="ok",
+                           args_digest=event_hash({"tool": "pay", "args": {"to": "a"}})))
+
+        def states(s):
+            return [s.call(ME, "call_state", {"run_id": run["run_id"], "run_token": run["run_token"], "tool_call_id": t})
+                    for t in ("tc", "ok", "later")]
+        before = states(s)
+        self.assertEqual((before[0]["refused"], before[1]["result"]["ok"], before[2]["consumed"],
+                          before[2]["result"]["ok"], "refused" in before[2]),
+                         (["TK-APPROVAL-REQUESTED"], False, True, True, False))
+        s.close()
+        return states, before
+
+    def test_call_state_is_the_same_after_a_restart(self):
+        """call_state reads what the records hold: a refused consume and a result survive a restart, from the
+        snapshot and from a replay of the records alone."""
+        states, before = self.call_states()
+        s = self.snapshotting()
+        self.assertIsNotNone(s.log.storage.snapshot)
+        self.assertEqual(states(s), before)   # from the snapshot a clean close wrote
+        s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+        s = self.snapshotting()
+        self.assertIsNone(s.log.storage.snapshot)
+        self.assertEqual(states(s), before)   # from the records alone
+
+    def test_call_state_from_a_snapshot_written_before_it(self):
+        """A snapshot written before call_state (RPC 24) keeps no call's refusal or result: the start reads them from
+        the records, so a pay that ran isn't taken for one consumed and never ended."""
+        states, before = self.call_states()
+        snaps = os.path.join(self.dir, "store", "snapshots")
+        path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
+        with open(path, "rb") as f:
+            snap = json.loads(f.read().partition(b"\n")[2])
+        for r in snap["state"]["runs"]:   # as a snapshot written before 1.7.0's call_state holds them
+            for c in [*r.get("calls", {}).values(), *filter(None, r.get("decisions", {}).values())]:
+                c.pop("ended", None)
+                c.pop("refused", None)
+        body = json.dumps(snap, separators=(",", ":")).encode()
+        with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
+            mac = file_storage._mac(f.read(), body)
+        with open(path, "wb") as f:
+            f.write(mac + b"\n" + body)
+        s = self.snapshotting()
+        self.assertIsNotNone(s.log.storage.snapshot)   # it started from the edited snapshot
+        self.assertEqual(states(s), before)
+
+    def consumed(self, s, run, tcid, seq):
+        """A pay `tcid` of `run`, decided ask, approved by another identity and consumed."""
+        tok = {"run_id": run["run_id"], "run_token": run["run_token"]}
+        call = {**tok, "tool_call_id": tcid, "tool": "pay", "args_source": "parsed", "args": {"to": tcid}}
+        s.decide({**self.ev(run, seq), **call})
+        aid = s.approval_request({"request_id": f"r-{tcid}", **tok, "tool_call_id": tcid})["approval_id"]
+        s.call(OTHER, "approval_decide", {"request_id": f"ok-{tcid}", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(s.approval_consume({"request_id": f"c-{tcid}", **call})["ok"])
+
+    @staticmethod
+    def claim(s, run, tcid, answers=2):
+        return s.call(ME, "call_claim", {"request_id": uuid.uuid4().hex, "run_id": run["run_id"],
+                                         "run_token": run["run_token"], "tool_call_id": tcid, "attempt": 0,
+                                         "answers": answers})
+
+    def test_call_claim_refuses_a_consume_from_before_the_signer_started(self):
+        """Claims are memory: a call whose approval was consumed before this signer process started may have gone on
+        under a claim a crash took with it, so it is refused (a person approves it again), from the snapshot and from
+        the records alone; one consumed since is claimed as before."""
+        s = self.snapshotting()
+        run = self.register(s)
+        self.consumed(s, run, "before", 0)
+        self.assertTrue(self.claim(s, run, "before")["ok"])
+        s.close()
+        for snapshot in (True, False):
+            if not snapshot:
+                shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+            s = self.snapshotting()
+            self.assertEqual(self.claim(s, run, "before", 3), {
+                "ok": False, "reason": "the signer restarted since this call's approval was used; ask again"})
+            s.close()
+        s = self.snapshotting()
+        self.consumed(s, run, "since", 1)
+        self.assertEqual((self.claim(s, run, "since")["ok"], self.claim(s, run, "since")["ok"]), (True, False))
+
+    def test_call_claim_survives_a_storage_recovery(self):   # probe test_probe851_recover.py
+        """The signer recovers from a storage error without restarting, rebuilding its run state from the records.
+        At 93a34eebb0 the rebuild dropped the claims, so a pause claimed before the outage was claimed again (a pay ran
+        twice). They are carried over now; and a call consumed in this process, claimed first after the outage, is
+        claimed as usual (its consume's place in the log, rebuilt from the records, is after the start)."""
+        s = self.open()
+        run = self.register(s)
+        self.consumed(s, run, "claimed", 0)
+        self.consumed(s, run, "waiting", 1)
+        self.assertTrue(self.claim(s, run, "claimed")["ok"])
+        Disk.fail = 1
+        self.refused("unavailable", s, "decide", self.ev(run, 2, tool_call_id="t", tool="t", args_source="parsed",
+                                                         args={}))
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            s.decide(self.ev(run, 2, tool_call_id="t", tool="t", args_source="parsed", args={}))
+        self.assertEqual((self.claim(s, run, "claimed")["ok"], self.claim(s, run, "waiting")["ok"]), (False, True))
+
+    def test_call_claim_survives_a_recovery_that_fails_partway(self):   # probe test_probe851_recover2.py
+        """A recovery whose replay rebuilt the runs and then failed (a registry read): at 1de86d23a8 the runs it left
+        had no claims, and the next recovery carried over none, so a pause claimed before the outage was claimed again.
+        The claims go back onto the runs whether the replay ends or not."""
+        s = svc.SignerService(self.dir, policy=PAY_ASKS,
+                              open_storage=lambda: FlakyRegistry(os.path.join(self.dir, "store")))
+        self.addCleanup(s.close)
+        run = self.register(s)
+        self.consumed(s, run, "claimed", 0)
+        self.assertTrue(self.claim(s, run, "claimed")["ok"])
+        Disk.fail, decide = 1, self.ev(run, 1, tool_call_id="t", tool="t", args_source="parsed", args={})
+        self.refused("unavailable", s, "decide", decide)
+        FlakyRegistry.fail = 1
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            self.refused("unavailable", s, "decide", decide)   # the first recovery fails after its replay
+            s.decide(decide)
+        self.assertFalse(self.claim(s, run, "claimed")["ok"])
 
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()

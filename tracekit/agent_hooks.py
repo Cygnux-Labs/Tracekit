@@ -2307,7 +2307,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     return path
 
 
-CRUSH_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd")
+CRUSH_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd", "TurnEnd")
 
 
 def kiro_version():
@@ -2373,9 +2373,11 @@ def _install_crush(path, uninstall=False, v2=False, python=None):
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
     # seconds; 600 leaves a person time to approve a held call (Crush's default is 30)
-    removed = _merge(hooks, path, CRUSH_EVENTS, lambda ev: {
-        "name": "tracekit", "command": _command("crush", ev, v2, python), "timeout": 600 if ev == "PreToolUse" else 30},
-        uninstall, flat=True)
+    def entry(ev):
+        if v2 or ev != "TurnEnd":   # the v1 hook records no model text
+            return {"name": "tracekit", "command": _command("crush", ev, v2, python),
+                    "timeout": 600 if ev == "PreToolUse" else 30}
+    removed = _merge(hooks, path, CRUSH_EVENTS, entry, uninstall, flat=True)
     if not hooks:
         s.pop("hooks")
     if _backup_changed(path, txt, s):

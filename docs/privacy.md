@@ -42,7 +42,10 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 | `tool.result` | output | hash | redacted text |
 | `tool.result` | ok, duration_ms | clear | clear |
 | `model.message` | content (only with `reasoning_capture`) | hash | redacted text |
-| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing | clear | clear |
+| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing, token usage | clear | clear |
+| `model.exchange` (v2: LLM gateway) | model, stop reason, tool_use ids and names, usage (input, output, cache-read and cache-write tokens), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | model, the message id, usage (input, output, cache-read and cache-write tokens, once per message), each tool use's id and name, the ids of the tool results sent since the last response (`tool_results_sent`), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | the transcript line: the model's thinking, text and tool uses, the line's own timestamp | salted commitment; the line is kept only in the [content vault](#the-content-vault), when the signer keeps content | same |
 | `model.exchange` (proxy) | request body, response body | hash (after redaction) | redacted text |
 | `model.exchange` (proxy) | HTTP headers, including `x-api-key` / `authorization` | **never recorded** | **never recorded** |
 | every hook event | `transcript` mark: path, length, sha256 of the transcript | clear (hash only, never content) | same |
@@ -62,6 +65,7 @@ Redaction is pattern-based and will miss secrets it doesn't recognise. A command
 - **Paths and commands are in clear** (after redaction): file names, URLs, search queries and whole command lines can themselves be sensitive.
 - **Hashes of low-entropy content can be guessed**: a hashed "yes", a short prompt or a known file can be confirmed by hashing candidates. Hashes are unsalted so reviewers can match known files; treat them as confirmable. The v2 signer publishes salted commitments instead (below).
 - **Sizes and timing**: content sizes, tool durations and timestamps reveal activity patterns even when content is hashed.
+- **Token counts**: a model response's usage is in clear (the gateway's records, and the transcript tailer's for Claude Code), so its output tokens say how long each reply was, and its input and cache counts how large the context was, even where the text is only committed.
 - **Correlation**: the same file hashed in two runs links them; tool_use ids link proxy and hook events by design.
 - **Witnesses** learn when checkpoints happen and how many records exist, nothing else.
 
@@ -171,11 +175,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
   the commitment.
 - **Model messages from integrations and coding agents.** A framework integration records each model message it sees,
-  and a Codex, Gemini CLI or Cursor hook what the model said since the last hook (from Codex's rollout, Gemini CLI's
-  chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`): a commitment always, and the message (its
-  reasoning, sealed forms byte for byte, text and calls) as the record's `body` only when the signer says the vault is
-  on. Without the vault the text stays where it came from: the framework's memory, the agent's own files
-  ([reasoning](reasoning.md)).
+  and a Codex, Gemini CLI, Cursor or Crush hook what the model said since the last hook (from Codex's rollout, Gemini
+  CLI's chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`, Crush's `TurnEnd`
+  `last_assistant_message`): a commitment always, and the message (its reasoning, sealed forms byte for byte, text and
+  calls) as the record's `body` only when the signer says the vault is on. Without the vault the text stays where it
+  came from: the framework's memory, the agent's own files ([reasoning](reasoning.md)).
 - **Reasoning summaries through the LLM gateway.** The gateway asks the provider to show the reasoning a request has
   the model do but hides ([gateway](gateway.md#readable-reasoning); `show_reasoning: false` turns it off), so its
   responses carry the provider's summaries of the reasoning, to the agent and, with the vault on, into the response's
