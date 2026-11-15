@@ -601,10 +601,10 @@ class Transports(unittest.TestCase):
         c.decide({**EVENT, "tool_call_id": "c2", "args": {}})
         self.assertEqual(seen, [1])
 
-    def test_stalled_tcp_connect_stops_within_call_timeout(self):
+    def _silent_tcp(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.bind(("127.0.0.1", 0))
-        srv.listen(4)
+        srv.listen(8)
         self.addCleanup(srv.close)
         held = []
 
@@ -615,28 +615,20 @@ class Transports(unittest.TestCase):
                     held.append(conn)
         threading.Thread(target=accept_all, daemon=True).start()
         self.addCleanup(lambda: [s.close() for s in held])
-        port = srv.getsockname()[1]
-        c = Client(f"tcp://127.0.0.1:{port}", timeout=0.12, token="0" * 32)
+        return f"tcp://127.0.0.1:{srv.getsockname()[1]}"
+
+    def test_stalled_tcp_connect_stops_within_call_timeout(self):
+        c = Client(self._silent_tcp(), timeout=0.12, token="0" * 32)
         t = time.monotonic()
         with self.assertRaises(client.SignerUnavailable):
             c.status()
         self.assertLess(time.monotonic() - t, 1.0)
 
     def test_hung_tcp_signer_reports_signer_address_at_connect_timeout(self):
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.bind(("127.0.0.1", 0))
-        srv.listen(4)
-        self.addCleanup(srv.close)
-        held = []
+        _assert_hung_connect_reports_address(self, self._silent_tcp(), token="0" * 32)
 
-        def accept_all():
-            with contextlib.suppress(OSError):
-                while True:
-                    conn, _ = srv.accept()
-                    held.append(conn)
-        threading.Thread(target=accept_all, daemon=True).start()
-        self.addCleanup(lambda: [s.close() for s in held])
-        _assert_hung_connect_reports_address(self, f"tcp://127.0.0.1:{srv.getsockname()[1]}", token="0" * 32)
+    def test_parallel_tcp_calls_share_deadline_behind_dial(self):
+        _assert_parallel_calls_share_deadline(self, self._silent_tcp(), token="0" * 32)
 
 
 def _assert_hung_connect_reports_address(test, addr, **kwargs):
@@ -665,6 +657,31 @@ def _assert_hung_connect_reports_address(test, addr, **kwargs):
         e = errs.get(name)
         test.assertIsInstance(e, client.SignerUnavailable, f"{name}: {e!r}")
         test.assertRegex(str(e), rf"^no signer answering at {re.escape(addr)}: timed out$")
+
+
+def _assert_parallel_calls_share_deadline(test, addr, **kwargs):
+    c = Client(addr, timeout=1, **kwargs)
+    test.addCleanup(c.close)
+    res = [None] * 4
+    start = time.monotonic()
+
+    def run(i):
+        try:
+            c.status({})
+        except BaseException as e:
+            res[i] = (e, time.monotonic() - start)
+
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(4)]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(6)
+    for i, item in enumerate(res):
+        test.assertIsNotNone(item, f"thread {i} did not finish")
+        e, elapsed = item
+        test.assertIsInstance(e, client.SignerUnavailable, f"thread {i}: {e!r}")
+        test.assertRegex(str(e), r"within 1s")
+        test.assertLess(elapsed, 1.5, f"thread {i} took {elapsed:.2f}s")
 
 
 HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
@@ -873,10 +890,10 @@ class FakeSigners(unittest.TestCase):
             c.status({})
         self.assertLess(time.monotonic() - t, 0.75)
 
-    def test_hung_unix_signer_reports_signer_address_at_connect_timeout(self):
+    def _silent_unix(self):
         srv, held, stop = socket.socket(socket.AF_UNIX), [], threading.Event()
         srv.bind(self.path)
-        srv.listen()
+        srv.listen(8)
         self.addCleanup(lambda: [s.close() for s in held + [srv]])
         self.addCleanup(stop.set)
 
@@ -886,7 +903,13 @@ class FakeSigners(unittest.TestCase):
                     conn, _ = srv.accept()
                     held.append(conn)
         threading.Thread(target=serve, daemon=True).start()
-        _assert_hung_connect_reports_address(self, self.path)
+        return self.path
+
+    def test_hung_unix_signer_reports_signer_address_at_connect_timeout(self):
+        _assert_hung_connect_reports_address(self, self._silent_unix())
+
+    def test_parallel_unix_calls_share_deadline_behind_dial(self):
+        _assert_parallel_calls_share_deadline(self, self._silent_unix())
 
     def test_a_forked_child_does_not_inherit_a_held_lock(self):
         code = f"""if 1:

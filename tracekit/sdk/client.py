@@ -512,7 +512,8 @@ class Client:
 
     def _send(self, method, req, timeout=CONNECT_TIMEOUT_S, deadline=None):
         with self._lock:
-            data = self._prepare(method, req, lambda: self._ensure_conn(timeout))
+            data = self._prepare(method, req, lambda: self._ensure_conn(
+                timeout if deadline is None else deadline - time.monotonic()))
             if deadline is not None and deadline - time.monotonic() <= 0:
                 raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
             fut = concurrent.futures.Future()
@@ -522,6 +523,8 @@ class Client:
 
     def _ensure_conn(self, timeout=CONNECT_TIMEOUT_S):
         if self._conn is None:
+            if timeout <= 0:
+                raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
             self._conn = self._connect(timeout)
 
     def _poll(self, method, req, timeout):
