@@ -546,21 +546,17 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"]["detail"], f"v2 hooks in {self.managed}")
         bad = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]
         self.assertEqual((bad["status"], bad["detail"]), ("fail", "/etc/claude-code is group- or world-writable"))
-        self.assertTrue(bad["fix"].endswith(" --managed"), bad["fix"])
+        self.assertTrue(bad["fix"].endswith("; or " + doctor.REINIT), bad["fix"])   # collect() adds --managed
         bad = self.rows(readable=False)["D-HOOKS-MANAGED"]
         self.assertEqual(bad["status"], "fail")
         self.assertIn(f"agent can't read {self.managed}, so its Claude Code starts without it", bad["detail"])
 
-    def test_the_fix_keeps_managed_only_and_runs_on_macos(self):
-        """Following the fix after init --managed-only turned allowManagedHooksOnly off: init without --managed-only
-        removes the setting an earlier init turned on. And `chown root:root` fails on macOS, which has no root group."""
-        for only, want in ((True, " --managed --managed-only"), (False, " --managed")):
-            with self.subTest(managed_only=only), contextlib.redirect_stdout(io.StringIO()):
-                install.install_managed(None, only, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
-                                        signer="/run/s.sock")
-                fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
-                self.assertTrue(fix.endswith(want), fix)
-                self.assertTrue(fix.startswith(f"sudo chown 0:0 and sudo chmod 644 {self.managed}, "), fix)
+    def test_the_fix_runs_on_macos(self):
+        """`chown root:root` fails on macOS, which has no root group. (collect() adds --managed and --managed-only to
+        the re-init: NoHooksChosen.)"""
+        fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
+        self.assertEqual(fix, f"sudo chown 0:0 and sudo chmod 644 {self.managed}, and sudo chmod go-w the directories "
+                         f"above it; or {doctor.REINIT}")
 
     def test_managed_file_check_claims_only_what_it_checked(self):
         """D-HOOKS-MANAGED said the file was readable by every user, though doctor probes only the agent's user, and
@@ -589,7 +585,7 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["status"], "warn")
         self.assertEqual(got["detail"], f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so "
                          "every call is decided twice")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
     def test_own_hooks_allow_managed_hooks_only_stops_are_not_decided_twice(self):
         """With allowManagedHooksOnly on, Claude Code runs none of the agent's own hooks, yet doctor warned that init's
@@ -611,7 +607,7 @@ class ManagedHooks(unittest.TestCase):
             install.install_managed(None, False, self.managed, uninstall=True)
         got = self.rows()["D-HOOKS-PRESENT"]
         self.assertEqual(got["status"], "fail")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
 
 class DroidHooks(unittest.TestCase):
@@ -971,19 +967,37 @@ class NoHooksChosen(unittest.TestCase):
         followed the fix got init's hooks beside the plugin's (D-HOOKS-PRESENT then warned), and an SDK agent's
         host got Claude Code hooks it had declined (#464). Not over init --managed's hooks: --no-hooks there removed
         them, leaving the plugin's, which the agent's user can turn off. Nor did it name init's agent, so another
-        coding agent's host was set up again for Claude Code."""
+        coding agent's host was set up again for Claude Code. And on an init --managed host only D-HOOKS-MANAGED's fix
+        had --managed: following any other moved the hooks from the root-owned managed file into the agent's own
+        settings, which the agent can edit (with the plugin on, each call was decided twice), and one without
+        --managed-only turned off the allowManagedHooksOnly an init with it had turned on."""
         row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
         plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
-        for hooks, enabled, want in (({"no_hooks": True}, None, " --no-hooks"), ({}, plugin, " --no-hooks"),
-                                     ({"agent": "codex"}, plugin, " --agent codex"), ({}, None, ""),
-                                     ({"settings": install.MANAGED_SETTINGS["linux"]}, plugin, ""),
-                                     ({"agent": "codex", "no_hooks": True}, None, " --agent codex --no-hooks")):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        managed = os.path.join(d, "managed-settings.json")
+        for hooks, enabled, only, want in (
+                ({"no_hooks": True}, None, None, " --no-hooks"), ({}, plugin, None, " --no-hooks"),
+                ({"agent": "codex"}, plugin, None, " --agent codex"), ({}, None, None, ""),
+                ({"agent": "codex", "settings": "/home/a/.codex/hooks.json"}, plugin, None, " --agent codex"),
+                ({"agent": "codex", "no_hooks": True}, None, None, " --agent codex --no-hooks"),
+                ({"settings": managed}, plugin, False, " --managed"), ({"settings": managed}, None, False, " --managed"),
+                ({"settings": managed}, plugin, True, " --managed --managed-only"),
+                ({"settings": managed}, None, True, " --managed --managed-only"),
+                ({"settings": managed}, None, "admin", " --managed")):   # the admin's own setting: init leaves it
             sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}}
-            with self.subTest(hooks=hooks, plugin=enabled), \
+            with self.subTest(hooks=hooks, plugin=enabled, managed_only=only), \
+                    mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
                     mock.patch.object(doctor.client, "system_config", return_value=sc), \
                     mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
                     mock.patch.object(install, "plugin_enabled", return_value=enabled), \
                     mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                if only is not None:   # init --managed [--managed-only] writes the file, over an admin's setting
+                    with open(managed, "w") as f:
+                        json.dump({"allowManagedHooksOnly": True} if only == "admin" else {}, f)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_managed(None, only is True, managed, install.OPT_PYTHON,
+                                                module=install.V2_HOOK, signer="/run/s.sock")
                 self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want)
 
 
