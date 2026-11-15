@@ -296,6 +296,41 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertIn(user, later()[2])
 
+    def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
+        """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
+        gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""
+        path = os.path.join(self.d, "jh", "config.toml")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("jcode", path=path, v2=True)
+        ours = agent_hooks._command("jcode", "PreToolUse", True, None)
+
+        def rows(table=None):
+            if table is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    # between Tracekit's markers, so Python 3.9 (no tomllib) reads it too
+                    f.write("\n".join([agent_hooks.JCODE_BEGIN, "[hooks]", *agent_hooks._jcode_lines(table),
+                                       agent_hooks.JCODE_END]) + "\n")
+            got = {}
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.setdefault(rid, (ok, detail)),
+                                        {"jcode": path}, False, self.d)
+            return got
+
+        got = rows()
+        self.assertEqual({k: v[0] for k, v in got.items()},
+                         {"D-HOOKS-EVENT": True, "D-HOOKS-ORDER": True, "D-HOOKS-TIMEOUT": True})
+        hooks = agent_hooks._jcode_hooks(True, None)
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", ours]})["D-HOOKS-ORDER"][0])
+        other_python = agent_hooks._command("jcode", "PreToolUse", True, "/opt/other/bin/python3")
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", other_python]})["D-HOOKS-ORDER"][0])
+        self.assertFalse(rows({**hooks, "pre_tool": [other_python, "/usr/local/bin/rewriter"]})["D-HOOKS-ORDER"][0])
+        for later in ("~/bin/rewrite", "~/bin/rewrite  # tracekit.integrations.harness_hooks"):
+            with self.subTest(later=later):
+                ok, detail = rows({**hooks, "pre_tool": [ours, later]})["D-HOOKS-ORDER"]
+                self.assertFalse(ok)
+                self.assertIn("1 jcode pre_tool command(s)", detail)
+        no_timeout = {k: v for k, v in hooks.items() if k != "pre_tool_timeout_ms"}   # jcode's default: 5 s
+        self.assertFalse(rows(no_timeout)["D-HOOKS-TIMEOUT"][0])
+
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
         from tracekit import agent_hooks
@@ -511,21 +546,17 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"]["detail"], f"v2 hooks in {self.managed}")
         bad = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]
         self.assertEqual((bad["status"], bad["detail"]), ("fail", "/etc/claude-code is group- or world-writable"))
-        self.assertTrue(bad["fix"].endswith(" --managed"), bad["fix"])
+        self.assertTrue(bad["fix"].endswith("; or " + doctor.REINIT), bad["fix"])   # collect() adds --managed
         bad = self.rows(readable=False)["D-HOOKS-MANAGED"]
         self.assertEqual(bad["status"], "fail")
         self.assertIn(f"agent can't read {self.managed}, so its Claude Code starts without it", bad["detail"])
 
-    def test_the_fix_keeps_managed_only_and_runs_on_macos(self):
-        """Following the fix after init --managed-only turned allowManagedHooksOnly off: init without --managed-only
-        removes the setting an earlier init turned on. And `chown root:root` fails on macOS, which has no root group."""
-        for only, want in ((True, " --managed --managed-only"), (False, " --managed")):
-            with self.subTest(managed_only=only), contextlib.redirect_stdout(io.StringIO()):
-                install.install_managed(None, only, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
-                                        signer="/run/s.sock")
-                fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
-                self.assertTrue(fix.endswith(want), fix)
-                self.assertTrue(fix.startswith(f"sudo chown 0:0 and sudo chmod 644 {self.managed}, "), fix)
+    def test_the_fix_runs_on_macos(self):
+        """`chown root:root` fails on macOS, which has no root group. (collect() adds --managed and --managed-only to
+        the re-init: NoHooksChosen.)"""
+        fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
+        self.assertEqual(fix, f"sudo chown 0:0 and sudo chmod 644 {self.managed}, and sudo chmod go-w the directories "
+                         f"above it; or {doctor.REINIT}")
 
     def test_managed_file_check_claims_only_what_it_checked(self):
         """D-HOOKS-MANAGED said the file was readable by every user, though doctor probes only the agent's user, and
@@ -554,7 +585,7 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["status"], "warn")
         self.assertEqual(got["detail"], f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so "
                          "every call is decided twice")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
     def test_own_hooks_allow_managed_hooks_only_stops_are_not_decided_twice(self):
         """With allowManagedHooksOnly on, Claude Code runs none of the agent's own hooks, yet doctor warned that init's
@@ -576,7 +607,7 @@ class ManagedHooks(unittest.TestCase):
             install.install_managed(None, False, self.managed, uninstall=True)
         got = self.rows()["D-HOOKS-PRESENT"]
         self.assertEqual(got["status"], "fail")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
 
 class DroidHooks(unittest.TestCase):
@@ -653,6 +684,32 @@ class OpenCodePlugin(unittest.TestCase):
             self.assertIn("after an upgrade", got["detail"])
             # an opencode the working directory placed first on PATH isn't run: doctor can't tell the version
             self.assertIn("after an upgrade", row("opencode v2.3.0", folder=os.path.join("repo", "bin"))["detail"])
+
+
+class KiroHooks(unittest.TestCase):
+    def test_kiro_hooks_kiro_skips_and_a_cli_before_3_are_warned_about_on_either_path(self):
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(agent_hooks, "kiro_version", return_value=(3, 3, 0)):
+            path = agent_hooks.config_path("kiro", os.path.join(d, "p"))   # a project's
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("kiro", os.path.join(d, "p"), v2=True)
+
+            def rows():
+                return [r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"kiro": path})
+                        if r["id"] in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT")]
+            self.assertEqual({r["status"] for r in rows()}, {"ok"}, rows())
+            with mock.patch.object(agent_hooks, "kiro_version", return_value=(2, 9, 0)):
+                self.assertTrue(any(r["status"] == "warn" and "came with CLI V3" in r["detail"] for r in rows()))
+            with open(path) as f:
+                config = json.load(f)
+            config["hooks"][0]["enabled"] = False   # PreToolUse: Kiro skips it
+            with open(path, "w") as f:
+                json.dump(config, f)
+            warned = [r["detail"] for r in rows() if r["status"] == "warn"]
+            self.assertTrue(any('PreToolUse hook(s) are "enabled": false' in w for w in warned), warned)
+            self.assertTrue(any("no Tracekit v2 hook on the pre-tool event" in w for w in warned), warned)
 
 
 class AntigravityHooks(unittest.TestCase):
@@ -947,19 +1004,37 @@ class NoHooksChosen(unittest.TestCase):
         followed the fix got init's hooks beside the plugin's (D-HOOKS-PRESENT then warned), and an SDK agent's
         host got Claude Code hooks it had declined (#464). Not over init --managed's hooks: --no-hooks there removed
         them, leaving the plugin's, which the agent's user can turn off. Nor did it name init's agent, so another
-        coding agent's host was set up again for Claude Code."""
+        coding agent's host was set up again for Claude Code. And on an init --managed host only D-HOOKS-MANAGED's fix
+        had --managed: following any other moved the hooks from the root-owned managed file into the agent's own
+        settings, which the agent can edit (with the plugin on, each call was decided twice), and one without
+        --managed-only turned off the allowManagedHooksOnly an init with it had turned on."""
         row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
         plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
-        for hooks, enabled, want in (({"no_hooks": True}, None, " --no-hooks"), ({}, plugin, " --no-hooks"),
-                                     ({"agent": "codex"}, plugin, " --agent codex"), ({}, None, ""),
-                                     ({"settings": install.MANAGED_SETTINGS["linux"]}, plugin, ""),
-                                     ({"agent": "codex", "no_hooks": True}, None, " --agent codex --no-hooks")):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        managed = os.path.join(d, "managed-settings.json")
+        for hooks, enabled, only, want in (
+                ({"no_hooks": True}, None, None, " --no-hooks"), ({}, plugin, None, " --no-hooks"),
+                ({"agent": "codex"}, plugin, None, " --agent codex"), ({}, None, None, ""),
+                ({"agent": "codex", "settings": "/home/a/.codex/hooks.json"}, plugin, None, " --agent codex"),
+                ({"agent": "codex", "no_hooks": True}, None, None, " --agent codex --no-hooks"),
+                ({"settings": managed}, plugin, False, " --managed"), ({"settings": managed}, None, False, " --managed"),
+                ({"settings": managed}, plugin, True, " --managed --managed-only"),
+                ({"settings": managed}, None, True, " --managed --managed-only"),
+                ({"settings": managed}, None, "admin", " --managed")):   # the admin's own setting: init leaves it
             sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}}
-            with self.subTest(hooks=hooks, plugin=enabled), \
+            with self.subTest(hooks=hooks, plugin=enabled, managed_only=only), \
+                    mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
                     mock.patch.object(doctor.client, "system_config", return_value=sc), \
                     mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
                     mock.patch.object(install, "plugin_enabled", return_value=enabled), \
                     mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                if only is not None:   # init --managed [--managed-only] writes the file, over an admin's setting
+                    with open(managed, "w") as f:
+                        json.dump({"allowManagedHooksOnly": True} if only == "admin" else {}, f)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_managed(None, only is True, managed, install.OPT_PYTHON,
+                                                module=install.V2_HOOK, signer="/run/s.sock")
                 self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want)
 
 
