@@ -3740,6 +3740,7 @@
       S = {
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
         tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
+        turns: new Map(),  // v2: a model turn's exchange id and tool_use ids -> what its tokens added (tk_model); its counts -> such turns
         asked: new Map(),  // v2: a call (tuid) -> the model message that asked for it {x: exchange id, seq: its record's run_seq}
         effects: new Map(),  // v2: an observed effect (session|run_seq) -> {rec, call: tuid or null, how, status}
         cited: new Map(),  // v2: a record (session|run_seq) -> the findings that cite it
@@ -3992,8 +3993,30 @@
       if (ev === "tk_model") {
         const a = agentOf(r); const u = r.usage;
         for (const id of r.v2?.tool_ids || []) S.asked.set(r.session_id + "|" + id, { x: r.v2.exchange_id, seq: r.v2.run_seq });
-        if (u) { const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
-                 a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; }
+        // a model turn counts once, as in TIPS: one signed twice (a transcript line resent once the signer's answer was
+        // lost), or by both the LLM gateway and the transcript tailer under ids of their own, joined by its exchange id,
+        // a tool_use id, or the same counts within 5 minutes; the gateway's counts are the ones kept
+        if (u) {
+          const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
+          const gw = r.tk_source === "gateway", keys = [r.v2?.exchange_id != null && "x" + r.v2.exchange_id, ...(r.v2?.tool_ids || []).map(i => "t" + i)].filter(Boolean);
+          // the turns with these counts that no record from the other source joined yet: a record joins one of them
+          const same = "c" + [u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens].join(",");
+          const pool = S.turns.get(same) || [];
+          let t = keys.map(k => S.turns.get(k)).find(Boolean);
+          const j = t ? (t.gw !== gw ? pool.indexOf(t) : -1) : pool.findIndex(p => p.gw !== gw && Math.abs(p.ts - r.ts) <= 300);
+          if (j >= 0) t = pool.splice(j, 1)[0];
+          if (!t) {
+            t = { a, tin, tout, gw, ts: r.ts };
+            a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout;
+            pool.push(t);
+            S.turns.set(same, pool);
+          } else if (gw && !t.gw) {
+            t.a.tokIn -= t.tin; t.a.tokOut -= t.tout; S.tokIn -= t.tin; S.tokOut -= t.tout;
+            Object.assign(t, { a, tin, tout, gw, ts: r.ts });
+            a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout;
+          }
+          for (const k of keys) S.turns.set(k, t);
+        }
         if (typeof r.cost === "number") { a.cost += r.cost; S.cost += r.cost; S.costSeen = true; S.currency = r.currency || S.currency; }
         if (r.model) a.model = r.model;
         pushTape({ ts: r.ts, agent: a, ev: "MODEL", text: r.text || "", rec: r }); return;
@@ -4214,7 +4237,8 @@
       const also = s.signed.also || {};
       const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
       put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
-        + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, from them` : "")
+        + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, at their signed counts` : "")
+        + esc(s.signed.refused ? ` · ${plural(s.signed.refused, "signed model step")} not taken for a transcript's turn (another run's, or signed outside the turn's time): the transcript's counts stand` : "")
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
           + "; the tips list sessions from every project under that folder"
           : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")

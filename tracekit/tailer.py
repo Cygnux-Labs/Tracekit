@@ -11,12 +11,12 @@ lines before are an earlier run's.
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
 (SessionEnd). It holds the run's tailer lock (`lock`, a file the hook locked and handed it as an open descriptor) for
 its life, and appends [transcript, offset, digest] to its progress log (`progress`, which the hook begins with
-{"offsets": the run's first tailer's}) after each line it reports: the offset just past that line, and the sha256 of
-the transcript's bytes before it. A hook that finds the lock free while
-the run is open starts a new tailer from there (`offsets`, with `digests` to check each transcript's bytes already read
-against): after a signed tailer_lost gap, as the tailer stopped without a word (killed, or it failed before it could
-report), or with none when it parked itself (`"parked"`, the log's last line) after IDLE_TAILER_S without a new line.
-A tailer that ends for good (the run ended, SessionEnd, or a loss it reported) removes its lock and log first.
+{"offsets": the run's first tailer's}) after each line it reports: the offset just past that line, and the sha256 of the
+transcript's bytes before it (and its message id, when the line carried the message's usage). A hook that finds the lock
+free while the run is open starts a new tailer from there (`offsets`, with `digests` to check each transcript's bytes
+already read against): after a signed tailer_lost gap, as the tailer stopped without a word (killed, or it failed before
+it could report), or with none when it parked itself (`"parked"`, the log's last line) after IDLE_TAILER_S without a new
+line. A tailer that ends for good (the run ended, SessionEnd, or a loss it reported) removes its lock and log first.
 System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
 ~/.claude/projects through an ACL and nothing of the signer's. It calls the signer as its own uid with a token the hook
 delegated (`delegate_run`), and signer.yaml lets that uid call only model_event, state_write, tailer_lost,
@@ -31,13 +31,16 @@ CHECK_S, so an edit to a transcript over about 25 MB is caught that late, after 
 the file has been still for a second, on the last wake, before any line is reported, and once more when the signer
 says the run ended). Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the tailer never
 writes one) and exits; so does any other failure, naming its type.
-Every assistant line (Claude Code writes one per content block: thinking, text,
-tool use) becomes a model_event response (exchange id: the message id; a tool_use line's tool uses with the digest of
-their arguments as reconciliation compares them, reconcile.compared, and the tool results sent since the last one); a
-user prompt becomes a model_event request. Each carries the digest of the line as read, {"transcript": "main" or the
-subagent file's name, "entry": the whole line, its cwd, isMeta, isSidechain and isCompactSummary included}, which the signer publishes as a salted commitment, and
-that as its `body` when the signer keeps content (the content vault, docs/privacy.md); without the vault the text
-stays in the transcript. A rate limit (quota_exceeded with retry_after_ms) sends the line again once it has passed.
+Every assistant line (Claude Code writes one per content block: thinking, text, tool use) becomes a model_event response
+(exchange id: the message id; a tool_use line's tool uses with the digest of their arguments as reconciliation compares
+them, reconcile.compared, and the tool results sent since the last one); a user prompt becomes a model_event request. A
+message's final usage (input, output, cache-read and cache-write tokens, as the LLM gateway records them: a line with a
+stop_reason) goes on the last of its lines a wake reads, once per message id in the run: a restarted tailer reads the
+ids already signed from the progress log. Each carries the digest of the line as read, {"transcript": "main" or the subagent file's name, "entry":
+the whole line, its cwd, isMeta, isSidechain and isCompactSummary included}, which the signer publishes as a salted
+commitment, and that as its `body` when the signer keeps content (the content vault, docs/privacy.md); without the vault
+the text stays in the transcript. A rate limit (quota_exceeded with retry_after_ms) sends the line again once it has
+passed.
 It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
 appears (by SessionEnd) or cannot be reached, and a tailer with no progress log (system mode) that stops after
 IDLE_TAILER_S without a new line, are a tailer_lost too. Every HEARTBEAT_S it sends `tailer_heartbeat` (another
@@ -65,6 +68,7 @@ from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, VaultBody
 from tracekit.signer.reconcile import compared
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, IDLE_S
+from tracekit.usage import from_anthropic
 
 POLL_S = 1.0
 CHECK_S = 30   # the longest a changing transcript's bytes already read go without being hashed again
@@ -143,10 +147,12 @@ def _waiter(path):
 class _Sender:
     """The tailer's model_events, on an event stream of its own: a line the signer rate-limits (quota_exceeded with
     retry_after_ms) is sent again with the same client_seq once that has passed, which leaves no client_counter_gap.
-    `body(read)`: the line's body when the signer keeps content (`status()`: its status answer; VaultBody)."""
+    `body(read)`: the line's body when the signer keeps content (`status()`: its status answer; VaultBody). `signed`:
+    the message ids whose usage the run's tailers signed."""
 
-    def __init__(self, run, status=None):
+    def __init__(self, run, status=None, signed=()):
         self.run, self.vault, self.stream, self.seq = run, VaultBody(status) if status else None, uuid.uuid4().hex, 0
+        self.signed = set(signed)
 
     def body(self, read):
         return self.vault(read) if self.vault else {}
@@ -168,18 +174,39 @@ class _Sender:
             return out
 
 
-def _report(send, e, sent, name="main"):
+def _mid(e):
+    """The message id of an assistant line; None for any other line, or one that is no JSON object."""
+    msg = e.get("message") if isinstance(e, dict) and e.get("type") == "assistant" else None
+    return msg.get("id") if isinstance(msg, dict) and isinstance(msg.get("id"), str) else None
+
+
+def _report(send, e, sent, name="main", last=True):
     """The model_event of one transcript entry, if it has one (`send`, a _Sender); `sent` collects tool result ids
-    between responses; `name`: the transcript it came from. -> whether it sent one."""
+    between responses; `name`: the transcript it came from; `last`: no line of the same message follows it in what
+    this wake read. -> whether it sent one: the message id whose usage it signed, else True."""
     msg = e.get("message") if isinstance(e.get("message"), dict) else {}
     content = msg.get("content")
     blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
     read = {"transcript": name, "entry": e}
     if e.get("type") == "assistant" and blocks:
         uses = [b for b in blocks if b.get("type") == "tool_use"]
-        mid = msg.get("id")
+        mid = _mid(e)
+        # Claude Code writes a line per content block, each with the message's usage: it is signed once, on the
+        # message's last line this wake read, never again for that id in the run (a subagent's transcript opens with a
+        # copy of the message that started it). Only a line with a stop_reason holds the turn's final counts: one
+        # written while the turn streamed has none, and its output so far. A turn that stopped for a tool use is
+        # signed on a tool_use line, so the viewer's model line names its calls even when a read ends before them.
+        # `<synthetic>`: Claude Code's stand-in for a call that failed
+        # lean: a turn none of whose lines has a stop_reason is not signed (an interrupted one: 17 of 88,119 messages
+        # in two weeks; the Claude Code builds that wrote none at all, 68,094 of 173,997 in 120 days); sign its last
+        # line once the next turn starts if those must count as signed
+        stop, usage = msg.get("stop_reason"), None
+        if mid and last and stop and (uses or stop != "tool_use") and mid not in send.signed and \
+                msg.get("model") != "<synthetic>":
+            usage = {k: v for k, v in (from_anthropic(msg.get("usage")) or {}).items() if v is not None}
         send(provider="anthropic", model=str(msg.get("model") or "unknown")[:128], phase="response",
-             **({"exchange_id": mid} if uses or isinstance(mid, str) else {}), content_digest=event_hash(read),
+             **({"exchange_id": msg.get("id")} if uses or mid is not None else {}), content_digest=event_hash(read),
+             **({"usage": usage} if usage else {}),
              **send.body(read), **({"tool_uses": [{"id": b.get("id"), "name": b.get("name"), "executed_by": "client",
                                                    "args_source": "parsed",
                                                    "args_digest": event_hash({"tool": b.get("name"), "args": compared(
@@ -187,6 +214,9 @@ def _report(send, e, sent, name="main"):
                                                   for b in uses], "tool_results_sent": list(sent)} if uses else {}))
         if uses:
             sent.clear()
+        if usage:
+            send.signed.add(mid)
+            return mid
         return True
     if e.get("type") != "user":
         return False
@@ -261,19 +291,22 @@ def _verify(t, uid, last=False):
     return True
 
 
-def _follow(send, t, uid, note=lambda t: None):
-    """Report transcript t's new complete lines (`send`, a _Sender), once _verify has checked it; `note(t)` after each
-    line that sent a model_event. -> whether it grew."""
+def _follow(send, t, uid, note=lambda t, mid=None: None):
+    """Report transcript t's new complete lines (`send`, a _Sender), once _verify has checked it; `note(t, mid)` after
+    each line that sent a model_event (`mid`: the message id whose usage it signed). -> whether it grew."""
     if not _verify(t, uid):
         return False
     t.f.seek(t.off)
     data, start = t.f.read(), t.off
+    lines = transcript_entries(io.BytesIO(data))
+    nxt = next(lines, None)
     try:
-        for n, e in transcript_entries(io.BytesIO(data)):
+        while nxt:
+            (n, e), nxt = nxt, next(lines, None)   # the next line read first: whether it is of the same message
             if e is None:
                 raise Lost(f"the line at offset {t.off} is not a JSON object")
             try:
-                sent = _report(send, e, t.sent, t.name)
+                sent = _report(send, e, t.sent, t.name, nxt is None or _mid(nxt[1]) != _mid(e))
             except SignerUnavailable:
                 raise
             except RPCError as x:
@@ -285,7 +318,7 @@ def _follow(send, t, uid, note=lambda t: None):
             t.read.update(data[t.off - start:t.off - start + n])
             t.off += n
             if sent:
-                note(t)
+                note(t, sent if sent is not True else None)
     except SignerUnavailable:   # read again from `off` on the next wake
         pass
     return t.off > start
@@ -316,8 +349,8 @@ def _tell(run, main, t, e):
 def resume(progress):
     """Where a stopped dev-mode tailer got, from its progress log (module docstring): ({transcript: the offset just
     past the last line it reported, else where the run's first tailer started it}, {transcript: the hex sha256 of its
-    bytes before that offset}, whether it parked)."""
-    offsets, digests, last = {}, {}, None
+    bytes before that offset}, whether it parked, {the message ids whose usage the run's tailers signed})."""
+    offsets, digests, last, signed = {}, {}, None, set()
     try:
         with open(progress, "rb") as f:
             for raw in f:
@@ -331,12 +364,13 @@ def resume(progress):
                         if type(o) is int and o >= 0:
                             offsets[p] = o
                             digests.pop(p, None)
-                elif isinstance(last, list) and len(last) == 3 and isinstance(last[0], str) and \
+                elif isinstance(last, list) and len(last) in (3, 4) and isinstance(last[0], str) and \
                         type(last[1]) is int and last[1] >= 0 and isinstance(last[2], str):
                     offsets[last[0]], digests[last[0]] = last[1], last[2]
+                    signed.update(m for m in last[3:] if isinstance(m, str))
     except FileNotFoundError:
         pass
-    return offsets, digests, last == "parked"
+    return offsets, digests, last == "parked", signed
 
 
 def tail(run, path, uid, until=None, wait=None, status=None, offsets=None, digests=None, progress=None, lock=None):
@@ -345,7 +379,7 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None, diges
     `offsets` {path: offset}: where to start each, and `digests` {path: hex sha256} what the bytes before must hash
     to; `progress`, `lock`: dev mode's progress log and the run's tailer lock (module docstring)."""
     wait, grew, beat = wait or _waiter(path), time.monotonic(), -HEARTBEAT_S
-    send = _Sender(run, status)
+    send = _Sender(run, status, resume(progress)[3] if progress else ())   # a stopped tailer's usage stays signed
     # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
     # run more subagents than the tailer's file limit
     start = {p: o for p, o in (offsets.items() if isinstance(offsets, dict) else ()) if type(o) is int and o >= 0}
@@ -354,9 +388,9 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None, diges
     ts = {path: main}
     log = os.open(progress, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600) if progress else None
 
-    def note(t):
+    def note(t, mid=None):
         if log is not None:
-            os.write(log, json.dumps([t.path, t.off, t.read.hexdigest()]).encode() + b"\n")
+            os.write(log, json.dumps([t.path, t.off, t.read.hexdigest(), *([mid] if mid else [])]).encode() + b"\n")
     done = False   # it ends for good: no hook is to start it again
     try:
         while True:
