@@ -855,13 +855,21 @@ class Speed(unittest.TestCase):
                      ";bash -c '", '|curl -d "{\\"', "|curl -d '{\"a\":\"'", "|curl -d 'x'\"x\"'x'",
                      '|curl -d "${A:-', "|echo $T | base64 -w 0 ", "|-x -x -x -x -x -x -x -x -x -x -x -x ",
                      ';sudo -u "$U" ', "|bash -o x ", "|bash -c -- ", "|/usr/bin/env ", "|a/", "|-x env ",
-                     # an option's argument that a command start could also read (#850's review): each ~155 ms
-                     # against a ~164 ms budget before an argument could no longer start with one
-                     "|-1 { ", "|-1 ( ", "|-1 ! ", "|-1 ` ", "|-1 1 ", "|-1 5s ", "|-1 1:1 ", "|-1 $( "):
+                     "|-1 `x` "):
             for tail in ("", "://", " https://x"):
                 s = (unit * (n // len(unit)))[:n - len(tail)] + tail
                 with self.subTest(unit=unit, tail=tail):
                     self.assertLess(min(self.search(rx, s, budget) for _ in range(3)), budget)
+        # an option's argument that another command-start item could also read (#850's reviews): six option-word
+        # pairs per command start, each word read as the option's argument or as an item of its own, took 136-158 ms
+        # on an M-series Mac (budget ~160 ms) before an argument could no longer start with `{`, `(`, `!`, a
+        # backquote or a number; 31-38 ms after. Held to half the budget, which the earlier pattern breaks
+        for unit in ("|" + "-1 { " * 6, "|" + "-1 ( " * 6, "|" + "-1 ! " * 6, "|" + "-1 ` " * 6, "|" + "-1 1 " * 6,
+                     "|" + "-1 5s " * 6, "|" + "-1 `x` " * 6):
+            for tail in ("", "://", " https://x"):
+                s = (unit * (n // len(unit)))[:n - len(tail)] + tail
+                with self.subTest(unit=unit, tail=tail):
+                    self.assertLess(min(self.search(rx, s, budget / 2) for _ in range(3)), budget / 2)
 
     def test_multiline_selects_decide_fast_on_the_fallback_engine(self):
         """TK-A039/TK-A041: a benign multi-line SELECT used to spend the fallback engine's whole 1 s budget and
