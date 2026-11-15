@@ -34,10 +34,12 @@ mode lets the call run unrecorded, with a warning). Since 1.2, `decide` returns 
 `unavailable: True` instead of raising `SignerUnavailable`: a loop that caught that exception to block the call now
 gets `{"decision": "deny", ...}` and blocks by the decision. `approval_consume` doesn't raise either: a signer that
 can't be reached or refuses answers `{"ok": False, ...}`, and the call doesn't run. `complete` never raises: the call
-already ran, so a result the signer can't take is a warning, and the signer records the call as decided and not
-completed. To record
-the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit
-import autotrace; autotrace.instrument(None)` before it.
+already ran, so a failure is a warning, with one of three outcomes. A result the signer refused, or that never went
+out, was not recorded: the bundle shows the call as decided and not completed. A result that went out and got no
+answer may have been recorded: the bundle has its `tool.result` if it was, or a `decided_not_completed` gap if it
+wasn't. A retry the signer refused as already recorded was recorded, and there is no warning. To record the OpenAI,
+Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit import
+autotrace; autotrace.instrument(None)` before it.
 
 ## Frameworks that catch exceptions
 

@@ -724,13 +724,14 @@ def _close_at_exit(run, failed):
     try:
         run.close()
     except SignerUnavailable as e:
-        why = str(e).removesuffix(UNKNOWN)
-        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({why}); it closes the "
+        why, was = str(e).removesuffix(UNKNOWN), "may not have been" if e.recorded is None else "was not"
+        warnings.warn(f"tracekit: run {run.run_id} {was} closed: the signer can't be reached ({why}); it closes the "
                       "run after its idle timeout", stacklevel=3)
     except Exception as e:
         if not failed:
             raise
-        warnings.warn(f"tracekit: run {run.run_id} was not closed: {str(e).removesuffix(UNKNOWN)}", stacklevel=3)
+        was = "may not have been" if getattr(e, "recorded", False) is None else "was not"
+        warnings.warn(f"tracekit: run {run.run_id} {was} closed: {str(e).removesuffix(UNKNOWN)}", stacklevel=3)
 
 
 def _class_of(tool):

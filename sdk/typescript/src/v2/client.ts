@@ -158,7 +158,7 @@ class Conn {
 
   send(frame: Frame): Promise<Frame> {
     return new Promise((resolve, reject) => {
-      if (this.sock.destroyed) return reject(new ConnectionLost());
+      if (this.sock.destroyed) return reject(new ConnectionLost(false));   // nothing was written
       const line = JSON.stringify(frame) + "\n";   // may throw: before anything waits for an answer
       this.pending.push({ resolve, reject });
       this.sock.ref();

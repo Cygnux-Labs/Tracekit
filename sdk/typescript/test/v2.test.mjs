@@ -530,6 +530,29 @@ test("fake: a retry refused as already recorded after a drop was recorded", asyn
     [["c1", 0], ["c1", 0], ["c2", 1], ["c2", 1]]);
 });
 
+test("fake: a call on the connection a timeout destroyed sent nothing", async (t) => {
+  const { path } = await fake(t, { handle: (f) => f.method === "complete" && f.tool_call_id === "c1" && new Promise(() => {}) });
+  const client = new Client({ signer: path, timeoutMs: 300 });
+  const run = await client.registerRun("a");
+  const [first] = await warned(() => run.complete("c1", "ok", done));
+  assert.match(first, /^tracekit: the result of c1 may not have been recorded /);
+  const [second] = await warned(() => run.complete("c2", "ok", done));   // c2 never reached the signer
+  assert.match(second, /^tracekit: the result of c2 was not recorded: /);
+  const call = (id) => client.call("complete", { run_id: run.runId, run_token: run.runToken, tool_call_id: id, status: "ok", ...done });
+  await assert.rejects(call("c1"), (e) => e instanceof SignerUnavailable && e.recorded === null);   // times out again
+  await new Promise(setImmediate);   // the socket's close event may still be to come
+  await assert.rejects(client.registerRun("a"),   // still the destroyed socket: sent nothing
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+});
+
+test("fake: a write that times out after it went out may have been recorded", async (t) => {
+  const { path } = await fake(t, { handle: (f) => f.method === "complete" && sleep(1000).then(() => null) });
+  const client = new Client({ signer: path, timeoutMs: 300 });
+  const run = await client.registerRun("a");
+  await assert.rejects(client.call("complete", { run_id: run.runId, run_token: run.runToken, tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
+});
+
 /** A lost connection of a request that went out: the client's own ConnectionLost (not exported), taken from a
  * refused connect's. */
 async function lostAfterSend() {

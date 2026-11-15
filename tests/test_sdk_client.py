@@ -479,7 +479,9 @@ class Transports(unittest.TestCase):
             c.complete({"run_id": "r1", "run_token": "t", "tool_call_id": "call-1", "status": "ok", **DONE})
         self.assertIs(cm.exception.recorded, False)
         self.assertNotIn(client.UNKNOWN, str(cm.exception))
-        with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: lost the connection"):
+        # Windows retries a refused loopback connect for about 2 s: the connect times out instead
+        with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: (lost the connection|could not "
+                                                r"connect)"):
             self.assertIsNone(RunHandle(c, {"run_id": "r1", "run_token": "t"}).complete("call-1", **DONE))
 
     def test_a_signer_gone_after_the_hello_records_nothing_it_refused(self):
@@ -516,7 +518,9 @@ class Transports(unittest.TestCase):
             c.complete({"run_id": "r1", "run_token": "t", "tool_call_id": "call-1", "status": "ok", **DONE})
         self.assertIs(cm.exception.recorded, False)
         self.assertNotIn(client.UNKNOWN, str(cm.exception))
-        with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: lost the connection"):
+        # Windows retries a refused loopback connect for about 2 s: the connect times out instead
+        with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: (lost the connection|could not "
+                                                r"connect)"):
             self.assertIsNone(RunHandle(c, {"run_id": "r1", "run_token": "t"}).complete("call-1", **DONE))
 
     def test_a_connect_that_times_out_after_the_hello_records_nothing(self):
@@ -556,6 +560,37 @@ class Transports(unittest.TestCase):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=2)
+        self.addCleanup(c.close)
+        with self.assertRaises(client.SignerUnavailable) as cm:
+            c.complete({"run_id": "r1", "run_token": "t", "tool_call_id": "call-1", "status": "ok", **DONE})
+        self.assertIsNone(cm.exception.recorded)
+        self.assertTrue(str(cm.exception).endswith(client.UNKNOWN), str(cm.exception))
+
+    def test_a_write_that_times_out_after_it_went_out_may_have_recorded_it(self):
+        """A keep-alive signer that answers the hello, then reads the write and answers only after the client's timeout:
+        the write went out, so it may have been recorded (`recorded` None, and the message says so)."""
+        import http.server
+
+        class Signer(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"   # keep-alive
+
+            def do_POST(self):
+                frame = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if frame["method"] != "hello":
+                    time.sleep(1.5)   # read, answered too late
+                body = json.dumps(HELLO if frame["method"] == "hello" else {}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Signer)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=0.5)
         self.addCleanup(c.close)
         with self.assertRaises(client.SignerUnavailable) as cm:
             c.complete({"run_id": "r1", "run_token": "t", "tool_call_id": "call-1", "status": "ok", **DONE})
@@ -685,6 +720,14 @@ class RunExit(unittest.TestCase):
         with self.assertWarnsRegex(UserWarning, "run r was not closed: the signer can't be reached .* idle timeout"):
             with self.handle():
                 pass
+
+    def test_a_close_that_may_have_been_recorded_says_so(self):
+        e = client._unanswered(1)   # went out, no answer: `recorded` None
+        with mock.patch.object(Client, "call", side_effect=e), self.assertWarns(UserWarning) as cm:
+            with self.handle():
+                pass
+        self.assertRegex(str(cm.warning), r"^tracekit: run r may not have been closed: the signer can't be reached "
+                                          r"\(no answer .*\); it closes the run after its idle timeout$")
 
     def test_the_blocks_exception_is_never_masked(self):
         for refusal in (None, RPCError("run_closed", "r")):
