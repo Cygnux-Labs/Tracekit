@@ -2,6 +2,7 @@
 
     python3 -m pytest tests/test_tips.py -v
 """
+import collections
 import contextlib
 import hashlib
 import http.client
@@ -59,11 +60,14 @@ def rows(*recs):
     return [x for r in recs for x in tr.feed(r)]
 
 
-def exchanges(lines, ids=None, off=0, tools=False, agent="gateway", tailer=False):
+def exchanges(lines, ids=None, off=0, tools=False, agent=None, tailer=False, run="r1", late=0, source=None):
     """The signed records of an LLM gateway that saw transcript `lines`: each exchange under the gateway's own id, with
     the same token counts (`off` added to the output count) and, with `tools`, the message's tool_use ids; with
-    `tailer`, the transcript tailer's: each under its message's id."""
-    recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code" if tailer else agent}})]
+    `tailer`, the transcript tailer's: each under its message's id, by its client (in a claude-code run unless `agent`
+    says). Each is signed at its line's time plus `late` seconds, in run `run`, as `source` says (the gateway's own,
+    else its client's)."""
+    agent, source = agent or ("claude-code" if tailer else "gateway"), source or ("sdk" if tailer else "gateway")
+    recs = [v2rec(1, "run.registered", {"agent": {"name": agent}}, run=run)]
     for i, line in enumerate(lines):
         if line["type"] != "assistant":
             continue
@@ -74,8 +78,8 @@ def exchanges(lines, ids=None, off=0, tools=False, agent="gateway", tailer=False
             "usage": {"input_tokens": u["input_tokens"], "output_tokens": u["output_tokens"] + off,
                       "cache_read_tokens": u["cache_read_input_tokens"], "cache_write_tokens": u["cache_creation_input_tokens"]},
             **({"tool_uses": [{"id": b["id"], "name": b["name"]} for b in m["content"] if b["type"] == "tool_use"]}
-               if tools else {})}, ts=line["timestamp"].replace("Z", ".000000Z") if "." not in line["timestamp"] else
-            line["timestamp"]))
+               if tools else {})}, run=run, source=source, ts=iso(datetime.fromisoformat(line["timestamp"].replace("Z", "+00:00"))
+                                                   .timestamp() + late).replace("Z", ".000000Z")))
     return rows(*recs)
 
 
@@ -489,7 +493,10 @@ class Sources(unittest.TestCase):
         root, honest = tmp(self), tmp(self)
         write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), edited)
         write_jsonl(os.path.join(honest, "p", "sess-a.jsonl"), lines)
-        out = tips.build(exchanges(lines[:200], tailer=True), root, NOW)   # the tailer signed the first 200 turns
+        write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), tools_on(edited))
+        write_jsonl(os.path.join(honest, "p", "sess-a.jsonl"), tools_on(lines))
+        # the tailer signed the first 200 turns, each in the session's own run (its records name the turn's calls)
+        out = tips.build(exchanges(tools_on(lines[:200]), tools=True, tailer=True), root, NOW)
         t = out["tips"][0]
         self.assertEqual((t["from"], t["agent"]), ("signed records and Claude Code's transcripts (read-only)",
                                                    "session sess-a"))
@@ -503,7 +510,7 @@ class Sources(unittest.TestCase):
                  cc_result("toolu_s", T0 + 400), cc_assistant("m1", T0 + 405, write=200_000)]
         root = tmp(self)
         write_jsonl(os.path.join(root, "p", "sess-b", "subagents", "agent-c1.jsonl"), lines)
-        t = tips.build(exchanges(lines, tailer=True), root, NOW)["tips"][1]
+        t = tips.build(exchanges(lines, tools=True, tailer=True), root, NOW)["tips"][1]
         [w] = t["waits"]
         self.assertEqual((w["src"], w["life"], w["usd"], t["from"]),
                          ("signed", 300, 1.0, "signed records and Claude Code's transcripts (read-only)"))
@@ -511,8 +518,70 @@ class Sources(unittest.TestCase):
     def test_a_turn_signed_twice_counts_once(self):
         """A line the signer took while its answer was lost is sent again, and a subagent transcript a resumed session
         copies is read by its own run: the same exchange's usage signed twice counts once."""
-        steps = tips.signed_steps(uncached(5) + uncached(5, run="r8"), 0)
-        self.assertEqual(sum(len(a["steps"]) for a in steps.values()), 5)
+        twice = uncached(5) + [r for r in uncached(5) if r["event"] == "tk_model"]
+        self.assertEqual(sum(len(a["steps"]) for a in tips.signed_steps(twice, 0).values()), 5)
+        self.assertEqual(tips.build(uncached(5) + uncached(5, run="r8"), None, NOW)["sources"]["signed"]["steps"], 5)
+
+    def session(self, n=300):
+        """A Claude Code session's transcript of `n` turns without a tool call and one with (`toolu_msg_0`), in a
+        folder of its own: (lines, root, what tips makes of the transcript alone)."""
+        lines = tools_on(growing(n)[:1]) + growing(n)[1:]
+        root = tmp(self)
+        write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), lines)
+        return lines, root, tips.build([], root, NOW)
+
+    def test_a_turn_the_gateway_and_the_tailer_both_signed_counts_once_at_the_gateways_counts(self):
+        """The 1st review of #871: with the LLM gateway in front of a Claude Code session (what docs/limits.md says to
+        do where spend must rest on what the provider returned), each turn without a tool call was counted twice: the
+        tailer's record took its transcript message by message id, and the gateway's, signed under an id of its own,
+        was left to count again (300 such turns: $15.44, against $7.62). Both join the message, and the gateway's
+        counts, signed off the wire, are the ones kept."""
+        lines, root, alone = self.session()
+        both = exchanges(lines, tools=True, tailer=True) + exchanges(lines, tools=True, run="gw1")
+        out = tips.build(both, root, NOW)
+        s = out["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"], s["refused"]), (0, {"runs": 2, "steps": 600}, 0))
+        self.assertEqual(out["tips"][0]["saving"], alone["tips"][0]["saving"])
+        self.assertIn("Token counts of the 300 steps these figures rest on: 300 from signed records.",
+                      out["tips"][0]["math"])
+        # where the two disagree, the gateway's counts are kept
+        rows_ = exchanges(lines, tools=True, tailer=True) + exchanges(lines, tools=True, run="gw1", off=7)
+        signed, agents = tips.signed_steps(rows_, 0), tips.read_transcripts(root, 0)[0]
+        named = {"r1": {"toolu_msg_0"}, "gw1": {"toolu_msg_0"}}
+        tips._join(signed, agents, collections.defaultdict(set, named))
+        self.assertEqual(agents["sess-a"]["steps"][0]["out"], lines[0]["message"]["usage"]["output_tokens"] + 7)
+
+    def test_only_the_sessions_own_run_signs_its_turns_and_only_after_them(self):
+        """The 1st review of #871: any run can sign any message id with any counts, and tips took them as the session's
+        signed counts (a `bot` run that signed the session's ids at twice their counts: $20.79 "from signed records",
+        against $7.62). A record takes a transcript turn's place only when it comes from a claude-code run whose
+        records name a call of that session, signed after the turn's first line and within MATCH_S of its last; one
+        joined by a tool_use id only from an LLM gateway; another is refused (said in sources.signed.refused) and the
+        transcript's counts stand."""
+        lines, root, alone = self.session()
+        doubled = [{**x, "message": {**x["message"], "usage": {k: 2 * v if isinstance(v, int) else v
+                                                              for k, v in x["message"]["usage"].items()}}}
+                   for x in lines]
+        for why, recs, n in (
+                ("another agent's run", exchanges(doubled, tools=True, tailer=True, agent="bot", run="bot1"), 300),
+                ("a claude-code run that names no call of the session", exchanges(doubled[1:], tailer=True), 299),
+                ("the session's own run, signed before the turn", exchanges(doubled, tools=True, tailer=True,
+                                                                            late=-30), 300),
+                ("the session's own run, signed long after the turn", exchanges(doubled, tools=True, tailer=True,
+                                                                                late=tips.MATCH_S + 60), 300),
+                ("a run that is no gateway, by a tool_use id", exchanges(doubled[:1], tools=True, agent="bot",
+                                                                         run="bot1", source="sdk"), 1)):
+            with self.subTest(why):
+                out = tips.build(recs, root, NOW)
+                s = out["sources"]["signed"]
+                self.assertEqual((s["steps"], s["also"]["steps"], s["refused"]), (0, 0, n))
+                self.assertIn(f"{n:,} not taken for a transcript's turn", tips.text(out, "store"))
+                self.assertEqual((out["tips"][0]["saving"], out["tips"][0]["from"]),
+                                 (alone["tips"][0]["saving"], "Claude Code's transcripts (read-only)"))
+        out = tips.build(exchanges(lines, tools=True, tailer=True, late=1), root, NOW)   # its own run, a second after
+        self.assertEqual((out["sources"]["signed"]["also"], out["sources"]["signed"]["refused"]),
+                         ({"runs": 1, "steps": 300}, 0))
+        self.assertEqual(out["tips"][0]["from"], "signed records")
 
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
@@ -719,6 +788,22 @@ class Page(unittest.TestCase):
     NAMES = ["esc", "fmtT", "fmtD", "tipDur", "TZ", "plural", "cp", "tipTicks", "tipTok", "tipUsd", "contextChart",
              "cacheChart", "tipBar", "tipBins", "tipEvidence", "TIPNAME", "TIPTIME", "tipCard"]
 
+    def test_the_viewers_token_totals_count_a_turn_signed_twice_once(self):
+        """The 1st review of #871: the page summed every model line's usage, so a turn the tailer sent twice (the
+        signer took it while its answer was lost) counted twice in TOKENS IN and OUT, where TIPS counts it once."""
+        usage = {"input_tokens": 6, "output_tokens": 400, "cache_read_tokens": 1000, "cache_write_tokens": 94}
+        ex = lambda seq, x: v2rec(seq, "model.exchange", {"exchange_id": x, "phase": "response", "model": "m",  # noqa: E731
+                                                          "upstream": "anthropic", "usage": usage})
+        got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                  "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER",
+                                  "DECIDED", "decided"], f"""
+            let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
+            for (const r of {json.dumps(rows(v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+                                             ex(2, "msg_1"), ex(3, "msg_1"), ex(4, "msg_2")))}) ingest(r);
+            process.stdout.write(JSON.stringify([S.tokIn, S.tokOut]));"""))
+        self.assertEqual(got, [2 * 1100, 2 * 400])
+
     def setUp(self):
         if not shutil.which("node"):
             self.skipTest("needs node to run the page's code")
@@ -765,10 +850,12 @@ class Page(unittest.TestCase):
             let PAGE = "tips", TIPSON = true, TIPSERR = "", TIPSASKED = true, tipsKey = null, html = "";
             const put = (id, h) => { html = h; }, $ = () => ({}), loadTips = () => {};
             let TIPS = {window: [0, 7 * 86400], prices: "2026-11-05", root: "~/.claude/projects", tips: [],
-                        sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}, span: [43200, 86400]},
+                        sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}, refused: 4,
+                                           span: [43200, 86400]},
                                   transcripts: {files: 3, steps: 400, unreadable: 0}}};
             renderTipsPage(); process.stdout.write(html);""")
         self.assertIn("300 more signed model steps of 1 run the transcripts also hold, counted once, at their signed counts", out)
+        self.assertIn("4 signed model steps not taken for a transcript&#39;s turn", out)
         self.assertIn("transcripts in ~/.claude/projects, read-only", out)
         self.assertIn("the tips list sessions from every project under that folder", out)
         self.assertIn("9 signed records from 1970-01-01", out)   # the live view's span, not the window's

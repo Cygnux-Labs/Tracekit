@@ -47,9 +47,11 @@ TEXT = {"type": "text", "text": "Listing the files now."}
 
 
 def turn(mid, *blocks, model="claude-opus-5-5"):
-    """The lines Claude Code writes for message `mid`: one per content block, each with the message's usage."""
+    """The lines Claude Code writes for message `mid`: one per content block, each with the message's usage and its
+    stop_reason (tool_use when it calls a tool)."""
+    stop = "tool_use" if any(b["type"] == "tool_use" for b in blocks) else "end_turn"
     return [{"type": "assistant", "uuid": f"u-{mid}-{i}", "timestamp": "2026-10-01T08:15:42.123Z", "cwd": "/work/proj",
-             "message": {"id": mid, "model": model, "role": "assistant", "stop_reason": "tool_use", "content": [b],
+             "message": {"id": mid, "model": model, "role": "assistant", "stop_reason": stop, "content": [b],
                          "usage": USAGE}} for i, b in enumerate(blocks)]
 
 
@@ -404,11 +406,11 @@ class Tailer(unittest.TestCase):
         a file the agent writes, later. Claude Code writes a line per content block, each repeating the message's
         usage: the tailer signs it once, on the message's last line (its tool use: the viewer's model line), with the
         model; Claude Code's stand-in for a failed call (`<synthetic>`) is no turn."""
-        self.write(PROMPT, *turn("msg_1", THINK, TEXT, call("toolu_1")), *turn("msg_2", TEXT),
+        self.write(PROMPT, *turn("msg_1", THINK, TEXT, call("toolu_1")), *turn("msg_2", THINK, TEXT),
                    *turn("msg_3", TEXT, model="<synthetic>"))
         self.tail()
         self.assertEqual(self.usage(), [("msg_1", [], None), ("msg_1", [], None), ("msg_1", ["toolu_1"], SIGNED),
-                                        ("msg_2", [], SIGNED), ("msg_3", [], None)])
+                                        ("msg_2", [], None), ("msg_2", [], SIGNED), ("msg_3", [], None)])
         models = {e["data"]["model"] for e in self.events() if "usage" in e["data"]}
         self.assertEqual(models, {"claude-opus-5-5"})
         self.assertEqual(self.lost(), [])
@@ -430,12 +432,14 @@ class Tailer(unittest.TestCase):
                                         ("msg_2", [], None)])
 
     def test_a_message_read_over_two_wakes_and_its_subagents_copy_of_it_sign_its_usage_once(self):
-        """A message's lines can come in over two reads, and a subagent's transcript opens with a copy of the message
-        that started it (its Agent call): its usage is signed once, by its message id, across them."""
+        """A message's lines can come in over two reads (inotify wakes the tailer at each write), and a subagent's
+        transcript opens with a copy of the message that started it (its Agent call): its usage is signed once, by its
+        message id, across them, on its tool use, not on a thinking line the viewer would show as a model call without
+        one."""
         first, rest = turn("msg_1", THINK, call("toolu_a"))
         self.write(first)
         self.tail(lambda: self.write(rest), lambda: self.sub(rest, *turn("msg_s1", TEXT)))
-        self.assertEqual(self.usage(), [("msg_1", [], SIGNED), ("msg_1", ["toolu_a"], None),
+        self.assertEqual(self.usage(), [("msg_1", [], None), ("msg_1", ["toolu_a"], SIGNED),
                                         ("msg_1", ["toolu_a"], None), ("msg_s1", [], SIGNED)])
         self.assertEqual(self.lost(), [])
 
@@ -1190,11 +1194,11 @@ class HookRestartsTheTailer(unittest.TestCase):
         self.assertEqual(found, [("reconcile.fabricated", "toolu_2")])   # its line came after the change: not read
 
     def test_a_tailer_started_again_signs_no_usage_the_stopped_one_signed(self):
-        """#865: a turn is signed once across a run's tailers. The tailer read a message's first line, signed its
-        usage there and was killed; the run's next hook event started a new one, which read the message's tool use, and
-        a subagent's transcript that opens with a copy of it, with no second usage: the ids the stopped tailer signed
-        are in its progress log."""
-        first, rest = turn("msg_1", THINK, call("toolu_1"))
+        """#865: a turn is signed once across a run's tailers. The tailer read a message's first tool use, signed
+        its usage there and was killed; the run's next hook event started a new one, which read the message's second
+        tool use, and a subagent's transcript that opens with a copy of it, with no second usage: the ids the stopped
+        tailer signed are in its progress log."""
+        first, rest = turn("msg_1", call("toolu_0"), call("toolu_1"))
         sub = os.path.join(self.d, "s1", "subagents", "agent-a1.jsonl")
         self.write(PROMPT, first)
         self.hook(start="startup")

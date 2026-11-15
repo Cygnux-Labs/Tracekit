@@ -194,13 +194,15 @@ def _report(send, e, sent, name="main", last=True):
         # Claude Code writes a line per content block, each with the message's usage: it is signed once, on the
         # message's last line this wake read, never again for that id in the run (a subagent's transcript opens with a
         # copy of the message that started it). Only a line with a stop_reason holds the turn's final counts: one
-        # written while the turn streamed has none, and its output so far. `<synthetic>`: Claude Code's stand-in for
-        # a call that failed
+        # written while the turn streamed has none, and its output so far. A turn that stopped for a tool use is
+        # signed on a tool_use line, so the viewer's model line names its calls even when a read ends before them.
+        # `<synthetic>`: Claude Code's stand-in for a call that failed
         # lean: a turn none of whose lines has a stop_reason is not signed (an interrupted one: 17 of 88,119 messages
         # in two weeks; the Claude Code builds that wrote none at all, 68,094 of 173,997 in 120 days); sign its last
         # line once the next turn starts if those must count as signed
-        usage = None
-        if mid and last and msg.get("stop_reason") and mid not in send.signed and msg.get("model") != "<synthetic>":
+        stop, usage = msg.get("stop_reason"), None
+        if mid and last and stop and (uses or stop != "tool_use") and mid not in send.signed and \
+                msg.get("model") != "<synthetic>":
             usage = {k: v for k, v in (from_anthropic(msg.get("usage")) or {}).items() if v is not None}
         send(provider="anthropic", model=str(msg.get("model") or "unknown")[:128], phase="response",
              **({"exchange_id": msg.get("id")} if uses or mid is not None else {}), content_digest=event_hash(read),

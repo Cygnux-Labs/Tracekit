@@ -3992,8 +3992,10 @@
       if (ev === "tk_model") {
         const a = agentOf(r); const u = r.usage;
         for (const id of r.v2?.tool_ids || []) S.asked.set(r.session_id + "|" + id, { x: r.v2.exchange_id, seq: r.v2.run_seq });
-        if (u) { const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
-                 a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; }
+        // a turn signed twice (a transcript line resent once the signer's answer was lost) counts once, as in TIPS
+        const x = r.v2?.exchange_id, again = x != null && S.withheldSeen.has("x" + x);
+        if (u && !again) { const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
+                 a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; if (x != null) S.withheldSeen.add("x" + x); }
         if (typeof r.cost === "number") { a.cost += r.cost; S.cost += r.cost; S.costSeen = true; S.currency = r.currency || S.currency; }
         if (r.model) a.model = r.model;
         pushTape({ ts: r.ts, agent: a, ev: "MODEL", text: r.text || "", rec: r }); return;
@@ -4215,6 +4217,7 @@
       const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
       put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
         + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, at their signed counts` : "")
+        + esc(s.signed.refused ? ` · ${plural(s.signed.refused, "signed model step")} not taken for a transcript's turn (another run's, or signed outside the turn's time): the transcript's counts stand` : "")
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
           + "; the tips list sessions from every project under that folder"
           : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")

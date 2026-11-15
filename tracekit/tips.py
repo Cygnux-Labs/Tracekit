@@ -132,27 +132,31 @@ def _family(cmd):
 
 def signed_steps(rows, since):
     """{agent key: agent} from the viewer's rows of signed model exchanges that carry usage (observe.Translator's
-    tk_model rows), each step at its record's time, an exchange id once. The usage schema has no cache lifetime: its
-    writes are `w`."""
+    tk_model rows), each step at its record's time, an exchange id once in a run (a line resent once the signer's
+    answer was lost); each agent with its run's agent name (`name`), each step with whether an LLM gateway signed it
+    for its client (`gw`: the record's source, which only a gateway's identity can give). The usage schema has no cache
+    lifetime: its writes are `w`."""
     # lean: the tailer signs a Claude Code session's subagents' turns under the session's run, as agent main: without
-    # the transcripts (_same) they count as the main session's steps; record which transcript a turn came from (a
+    # the transcripts (_join) they count as the main session's steps; record which transcript a turn came from (a
     # format change) if tips must tell them apart from the store alone
     agents, seen = {}, set()
     for r in rows:
         u = r.get("usage") if r.get("event") == "tk_model" else None
         x = (r.get("v2") or {}).get("exchange_id")
-        if not u or (r.get("ts") or 0) < since or x is not None and x in seen:
-            continue   # a turn signed again (a line resent once the signer's answer was lost, a copy a resumed session made)
-        seen.add(x)
+        if not u or (r.get("ts") or 0) < since or x is not None and (r.get("session_id"), x) in seen:
+            continue
+        seen.add((r.get("session_id"), x))
         sub = r.get("agent_id")
         key = r.get("session_id", "") + ("/" + sub if sub else "")
         a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "signed",
+                                    "name": r.get("agent"),
                                     "label": f"{r.get('agent') or 'agent'} run {str(r.get('session_id'))[:8]}"
                                              + (f" · subagent {str(sub)[:8]}" if sub else ""), "steps": []})
         s = _step(r["ts"], x, r.get("model"), "signed")
         s.update({"in": _int(u.get("input_tokens")) or 0, "out": _int(u.get("output_tokens")) or 0,
                   "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0,
-                  "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)]})
+                  "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)],
+                  "gw": r.get("tk_source") == "gateway"})
         a["steps"].append(s)
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
@@ -655,30 +659,62 @@ def holds_tip(holds, calls, signed):
     return tip
 
 
-def _same(signed, agents):
-    """{signed run's key: {index of a step Claude Code's transcripts also hold: that transcript step}}, step by step: one
-    whose exchange id is a transcript message's id (the transcript tailer signs each message under it), one that shares
-    a tool_use id with a transcript's message, or one that takes up one transcript message no other step matched with
-    the same token counts within MATCH_S (the gateway signs each exchange under an id of its own, and a message without
-    tool calls has no tool_use id to join on)."""
-    steps = [s for a in agents.values() for s in a["steps"]]
-    by_id, by_call = {s["id"]: s for s in steps}, {c: s for s in steps for c in s["calls"]}
-    ids = {i for a in signed.values() for s in a["steps"] for i in [s["id"], *s["calls"]]}
-    pool = collections.defaultdict(list)   # token counts -> the transcript messages not matched yet
-    for s in steps:
-        if s["id"] not in ids and not ids.intersection(s["calls"]):
-            pool[s["in"], s["out"], s["cr"], _writes(s)].append(s)
-    held = collections.defaultdict(dict)
+def _join(signed, agents, named):
+    """Count each signed step Claude Code's transcripts also hold once, at its signed counts in the transcript
+    message's place (_signed), and drop it from `signed`. -> ({runs, steps} joined, steps refused). In order, each pass
+    over the steps no earlier one took:
+    1. by its exchange id, the message id the transcript tailer signs a turn under, only from a claude-code run whose
+       records name a tool call of that message's session (`named`: run -> the tool_use ids its records name, as the
+       hook's decisions do) and signed from the message's first line to MATCH_S after its last: any run can sign any
+       message id, with any counts;
+    2. by a tool_use id the message shares, only from an LLM gateway (`gw`), signed within MATCH_S of it;
+    3. by the same token counts within MATCH_S, taking up one message no other step of this pass matched (the gateway
+       signs each exchange under an id of its own, and a message without tool calls has no tool_use id), compared with
+       the counts pass 1 signed.
+    A later pass's counts win: the LLM gateway's (2, 3) were signed off the wire, the tailer's (1) as it read the
+    transcript. A step refused in pass 1 or 2 counts for nothing: the transcript's counts stand."""
+    where = {s["id"]: (s, k.split("/")[0]) for k, a in agents.items() for s in a["steps"]}
+    by_call = {c: s for a in agents.values() for s in a["steps"] for c in s["calls"]}
+    calls_of = collections.defaultdict(set)   # a transcript session -> the tool_use ids of its messages
+    for k, a in agents.items():
+        for s in a["steps"]:
+            calls_of[k.split("/")[0]].update(s["calls"])
+    ids = {c for a in signed.values() for s in a["steps"] for c in s["calls"]}
+    taken, refused = collections.defaultdict(dict), 0   # signed run's key -> {its step's index: the message, or None}
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
-            t = by_id.get(s["id"]) or next((by_call[c] for c in s["calls"] if c in by_call), None)
-            if t is None:
-                left = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
-                j = next((j for j, x in enumerate(left) if abs(x["t"] - s["t"]) <= MATCH_S), None)
-                t = left.pop(j) if j is not None else None
-            if t is not None:
-                held[k][i] = t
-    return held
+            if s["id"] in where:
+                t, session = where[s["id"]]
+                ok = a.get("name") == "claude-code" and named[k.split("/")[0]] & calls_of[session] and \
+                    t["t"] <= s["t"] <= t["t1"] + MATCH_S
+                taken[k][i] = t if ok else None
+                if ok:
+                    _signed(t, s)
+    for k, a in signed.items():
+        for i, s in enumerate(a["steps"]):
+            t = next((by_call[c] for c in s["calls"] if c in by_call), None)
+            if i not in taken[k] and t is not None:
+                ok = s["gw"] and t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S
+                taken[k][i] = t if ok else None
+                if ok:
+                    _signed(t, s)   # after the tailer's: the gateway's counts are the ones kept
+    pool = collections.defaultdict(list)   # token counts -> the transcript messages pass 3 may still take
+    for a in agents.values():
+        for s in a["steps"]:
+            if not ids.intersection(s["calls"]):
+                pool[s["in"], s["out"], s["cr"], _writes(s)].append(s)
+    for k, a in signed.items():
+        for i, s in enumerate(a["steps"]):
+            left = pool.get((s["in"], s["out"], s["cr"], s["w"]), []) if i not in taken[k] else []
+            j = next((j for j, x in enumerate(left) if abs(x["t"] - s["t"]) <= MATCH_S), None)
+            if j is not None:
+                taken[k][i] = left.pop(j)
+                _signed(taken[k][i], s)
+    for k, x in taken.items():
+        signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in x]
+        refused += sum(t is None for t in x.values())
+    joined = {k: x for k, x in taken.items() if any(t is not None for t in x.values())}
+    return {"runs": len(joined), "steps": sum(t is not None for x in joined.values() for t in x.values())}, refused
 
 
 def _signed(t, s):
@@ -692,20 +728,24 @@ def _signed(t, s):
 def build(rows, root=None, now=None, since=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
     price table's date and the three tips. A signed step the transcripts also hold counts once, at its signed counts in
-    the transcript's place (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so
-    they may span less than the window: `sources.signed.span`."""
+    the transcript's place (`sources.signed.also`); one _join refused counts for nothing (`sources.signed.refused`).
+    The signed records are the viewer's live view, its newest rows, so they may span less than the window:
+    `sources.signed.span`."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
-    same = _same(signed, agents)
-    also = {"runs": len(same), "steps": sum(map(len, same.values()))}
-    for k, idx in same.items():
-        for i, t in idx.items():
-            _signed(t, signed[k]["steps"][i])
-        signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
+    named = collections.defaultdict(set)
+    for r in rows:
+        v = r.get("v2") or {}
+        named[r.get("session_id")].update(i for i in (v.get("tool_use_id"), *(v.get("tool_ids") or ())) if
+                                          isinstance(i, str))
+    also, refused = _join(signed, agents, named)
+    seen = set()   # an exchange id no transcript holds counts once (a subagent transcript a resumed session copied)
+    for a in signed.values():
+        a["steps"] = [s for s in a["steps"] if s["id"] is None or s["id"] not in seen and not seen.add(s["id"])]
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
     holds = held_calls(rows, since)
@@ -713,7 +753,7 @@ def build(rows, root=None, now=None, since=None):
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
-                                   "also": also, "records": len(times),
+                                   "also": also, "refused": refused, "records": len(times),
                                    "span": [min(times), max(times)] if times else None,
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
@@ -795,6 +835,8 @@ def text(t, store, failed=0, root=None):
     read = f"{store}: {s['records']:,} signed records" + (
         f", {failed} run{'s' * (failed != 1)} left out: {'they' if failed != 1 else 'it'} didn't verify (tracekit view "
         "shows why)" if failed else "") + (
+        f", {s['refused']:,} not taken for a transcript's turn (another run's, or signed outside the turn's time: "
+        "the transcript's counts stand)" if s.get("refused") else "") + (
         f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
         f"; no Claude Code transcripts in {_shown(root)}" if root else "")
     if not (s["records"] or tr["steps"]):
