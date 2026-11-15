@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_signer_service as tsvc  # noqa: E402
 from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
-from tracekit import cli, observe, tips, view  # noqa: E402
+from tracekit import cli, lessons, observe, tips, view  # noqa: E402
 from tracekit.sdk.client import Client  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
 
@@ -506,6 +506,22 @@ class Sources(unittest.TestCase):
         self.assertEqual([tips._dur(s) for s in (45, 329, 480, 2520, 3600, 3900, 7200)],
                          ["45 s", "5 min 29 s", "8 min", "42 min", "1 h", "1 h 5 min", "2 h"])
 
+    @unittest.skipUnless(hasattr(os, "symlink") and os.name != "nt", "a symlinked folder")
+    def test_each_call_names_its_project_folder_through_a_linked_root(self):
+        """The walk reads real paths: through a linked root (macOS's /tmp) the project read as `..`."""
+        real = tmp(self)
+        write_jsonl(os.path.join(real, "-Users-me-proj", "s.jsonl"), [
+            {**cc_assistant("m0", T0, write=1000, tools=[("toolu_1", "Bash", {"command": "ls"})]), "cwd": "/Users/me/proj"},
+            {"type": "user", "timestamp": iso(T0 + 1), "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_1", "is_error": True, "content": [
+                    {"type": "text", "text": "Exit code 2\nls: x: No such file or directory"}]}]}}])
+        link = os.path.join(tmp(self), "linked")
+        os.symlink(real, link)
+        calls = tips.read_transcripts(link, T0 - 1)[1]
+        self.assertEqual({k: calls["toolu_1"][k] for k in ("project", "cwd", "error")},
+                         {"project": "-Users-me-proj", "cwd": "/Users/me/proj",
+                          "error": "Exit code 2\nls: x: No such file or directory"})
+
     def test_the_transcripts_folder_under_home_reads_as_tilde(self):
         """On Windows the folder stayed a full path: expanduser reads USERPROFILE, not HOME, and a temp folder comes
         back as a short name (C:\\Users\\RUNNER~1\\...) that a plain prefix check doesn't match to the long one."""
@@ -582,11 +598,16 @@ class Command(unittest.TestCase):
         self.cc = tmp(self)
         write_jsonl(os.path.join(self.cc, "projects", "p", "s.jsonl"), growing())
 
+    def vault(self, say):
+        """tips._vault over this test's signer, as over the dev signer that runs."""
+        return view.dev_content_source("tracekit tips", connect=lambda: Client(self.cfg["socket"]), say=say)
+
     def tips(self, *args):
         """(exit code, stdout, stderr) of `tracekit tips --since 2026-10-01` as the dev signer's user, its transcripts
         in the folder setUp wrote: before growing()'s session and the store's records."""
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.object(tips, "_vault", self.vault), \
                 mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["tips", "--since", "2026-10-01", *args])
@@ -597,10 +618,11 @@ class Command(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("tracekit tips is experimental", err)
         got = json.loads(self.tips("--json")[1])
-        head, *cards = out.split("\n\n")
+        head, lessons_part, *cards = out.split("\n\n")
         self.assertIn(f": {got['sources']['signed']['records']} signed records; Claude Code's transcripts in ",
                       " ".join(head.split()))   # the header wraps at 100 columns
         self.assertIn(", read-only, since 2026-10-01 00:00 UTC.", " ".join(head.split()))
+        self.assertEqual(lessons_part.splitlines()[0], "LESSONS")   # first, then the three tips
         self.assertEqual(len(cards), 3)
         for i, (card, t) in enumerate(zip(cards, got["tips"]), 1):
             lines, flat = card.splitlines(), " ".join(card.split())
@@ -619,6 +641,22 @@ class Command(unittest.TestCase):
         self.assertIn("an estimate. Time: not measured.", context)
         self.assertEqual(holds.splitlines()[1], "1 held call nobody answered")
 
+    def test_reading_the_tips_never_starts_or_stops_a_signer(self):
+        """The first real week's scan stopped this machine's older dev signer and started its own: lessons read the vault
+        through a client that auto-spawns. tracekit tips reads the vault of the dev signer that runs, or says none
+        does."""
+        from tracekit.sdk import autospawn
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.object(autospawn, "spawn", side_effect=AssertionError("started a signer")) as spawn, \
+                mock.patch.object(autospawn, "down", side_effect=AssertionError("stopped a signer")) as down, \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc, "TRACEKIT_RUNTIME_DIR": tmp(self)}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["tips", "--since", "2026-10-01"]), 0, err.getvalue())
+        spawn.assert_not_called()
+        down.assert_not_called()
+        self.assertIn("no dev signer runs here: lessons read the calls' arguments from its vault", err.getvalue())
+
     def test_text_escapes_control_characters_an_agent_chose(self):
         """A run's agent name is any string the agent picks; ESC and BEL reached the terminal raw, as report and audit
         escape them."""
@@ -633,7 +671,7 @@ class Command(unittest.TestCase):
         code, out, err = self.tips("--json")
         self.assertEqual(code, 0, err)
         got = json.loads(out)
-        self.assertEqual(list(got), ["window", "prices", "root", "sources", "tips"])
+        self.assertEqual(list(got), ["window", "prices", "root", "sources", "lessons", "tips"])
         self.assertEqual([(t["id"], t["ok"]) for t in got["tips"]], [("context", True), ("cache", False),
                                                                      ("holds", True)])
         self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
@@ -648,6 +686,97 @@ class Command(unittest.TestCase):
         store = tips._shown(os.path.join(empty["data_dir"], "store"))
         self.assertRegex(out.getvalue(), rf"^tracekit tips: read {re.escape(store)}: 0 signed records, since "
                                          r"\d{4}-\d\d-\d\d \d\d:\d\d UTC: nothing yet\n$")
+
+
+class Lessons(unittest.TestCase):
+    """`tracekit tips`' lessons through the real command: a signer that keeps content as the dev signer does, two
+    Claude Code sessions whose calls the transcripts join (a fix three times, a standing instruction typed once), then
+    a person approving, retiring, restoring and adding, and an agent's --for-agent."""
+
+    CWD = "/Users/me/proj"
+    vault = Command.vault
+
+    def setUp(self):
+        for name in ("TICK_S", "CHECKPOINT_S", "CHECKPOINT_MIN_S"):
+            p = mock.patch.object(svc, name, 0.05)
+            p.start()
+            self.addCleanup(p.stop)
+        d = tsvc.tmpdir(self)
+        self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock"), **svc.dev_content()}
+        service = svc.open_service(self.cfg)
+        self.addCleanup(service.close)
+        for srv in svc.serve(self.cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(self.cfg["socket"])
+        self.addCleanup(client.close)
+        self.cc, t = tmp(self), datetime.now(timezone.utc).timestamp() - 3600
+        for sid, times in (("s0", 2), ("s1", 1)):
+            run, lines = client.run(agent="claude-code"), []
+            if sid == "s0":
+                run.observe("From now on, run make lint before you commit. Then fix the tests.",
+                            "claude-code:UserPromptSubmit", "trusted")
+            for k in range(times):
+                bad, good = f"toolu_{sid}_{k}a", f"toolu_{sid}_{k}b"
+                self.assertEqual(run.decide(bad, "Bash", {"command": "python3 -m pytest"})["decision"], "allow")
+                run.complete(bad, status="error", error="Exit code 1")
+                run.decide(good, "Bash", {"command": ".venv/bin/python -m pytest"})
+                run.complete(good, result="ok")
+                t += 60
+                lines += [{**cc_assistant(f"m{bad}", t, write=30_000, tools=[(bad, "Bash", {})]), "cwd": self.CWD},
+                          {"type": "user", "timestamp": iso(t + 1), "message": {"role": "user", "content": [
+                              {"type": "tool_result", "tool_use_id": bad, "is_error": True,
+                               "content": "Exit code 1\n/usr/bin/python3: No module named pytest"}]}},
+                          {**cc_assistant(f"m{good}", t + 2, read=30_000, tools=[(good, "Bash", {})]),
+                           "cwd": self.CWD}, cc_result(good, t + 3)]
+            run.close()
+            write_jsonl(os.path.join(self.cc, "projects", "-Users-me-proj", f"{sid}.jsonl"), lines)
+        st = service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+
+    def tips(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.object(tips, "_vault", self.vault), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["tips", *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_approve_retire_restore_add_and_for_agent(self):
+        code, out, err = self.tips("--json")
+        self.assertEqual(code, 0, err)
+        L = json.loads(out)["lessons"]
+        fix, told = sorted(L["waiting"], key=lambda x: x["kind"])
+        self.assertEqual((fix["kind"], fix["times"], fix["sessions"], fix["key"][1]),
+                         ("fix", 3, 2, "python3: No module named pytest"))
+        self.assertEqual(told["text"], "The person said: “From now on, run make lint before you commit.” (1 session).")
+        self.assertEqual(fix["where"], self.CWD)
+        text = self.tips()[1]
+        self.assertLess(text.index("LESSONS"), text.index("TIP 1"))
+        self.assertIn(f"WAITING · FIX · {fix['id']}", text)
+        self.assertIn(f"    tracekit tips approve {fix['id']}", text)
+
+        code, out, err = self.tips("approve", fix["id"], told["id"])
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"approved {fix['id']}", out)
+        code, out, err = self.tips("--for-agent", "--project", self.CWD, "--json")
+        got = json.loads(out)
+        self.assertEqual({x["id"] for x in got["lessons"]}, {fix["id"], told["id"]})
+        L = json.loads(self.tips("--json")[1])["lessons"]
+        self.assertEqual((L["waiting"], {a["id"] for a in L["active"]}), ([], {fix["id"], told["id"]}))
+        self.assertEqual(L["next"][0]["whole"] and set(L["next"][0]["whole"]), {fix["id"], told["id"]})
+
+        self.assertEqual(self.tips("retire", fix["id"])[0], 0)
+        self.assertEqual(self.tips("restore", fix["id"])[0], 0)
+        code, out, err = self.tips("add", "Docs build with make docs.", "--project", self.CWD)
+        self.assertEqual(code, 0, err)
+        block = self.tips("--for-agent", "--project", self.CWD, "--query", "docs")[1]
+        self.assertIn("Docs build with make docs.", block)
+        self.assertNotIn("pytest", block)
+        code, _, err = self.tips("approve", "L-00000000")
+        self.assertEqual(code, 1)
+        self.assertIn("no lesson L-00000000 waits", err)
 
 
 class Api(unittest.TestCase):
@@ -721,7 +850,7 @@ class Page(unittest.TestCase):
         self.assertNotRegex(out[1], r"\$-|\$0\.0000")
 
     def test_the_read_line_says_what_counted_once_and_that_every_project_is_listed(self):
-        out = page_js(self.NAMES + ["renderTipsPage"], """
+        out = page_js(self.LESSONS + ["renderTipsPage"], """
             let PAGE = "tips", TIPSON = true, TIPSERR = "", TIPSASKED = true, tipsKey = null, html = "";
             const put = (id, h) => { html = h; }, $ = () => ({}), loadTips = () => {};
             let TIPS = {window: [0, 7 * 86400], prices: "2026-11-05", root: "~/.claude/projects", tips: [],
@@ -778,6 +907,66 @@ class Page(unittest.TestCase):
         self.assertIn('data-copy="tracekit approvals list"', out[1])
         self.assertIn('data-page="approvals"', out[1])
         self.assertIn("not measured", out[1])
+
+    LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
+                       "renderLessons"]
+
+    def lessons_page(self, approve=False):
+        """The LESSONS part as lessons.page works it out from three sessions' lookups (and a near miss)."""
+        import test_lessons as tl
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        s = tl.lookups(tl.Scene())
+        for i in (3, 4):
+            s.session(f"s{i}", tl.T0 + i * 600).lookup(pattern="Translator", path=tl.CWD + "/tracekit/view.py")
+        if approve:
+            folder.approve(lessons.page(s.rows(), s.tr, folder, now=tl.T0 + 7 * tl.DAY)["waiting"][0])
+        return lessons.page(s.rows(), s.tr, folder, cost={"toolu_0000": 0.42}, now=tl.T0 + 7 * tl.DAY,
+                            cwds={tl.PROJECT: "~/proj"})
+
+    def render(self, L):
+        return page_js(self.LESSONS, f"process.stdout.write(renderLessons({json.dumps(L)}, 7))")
+
+    def test_a_waiting_card_shows_evidence_links_saving_and_copy_commands(self):
+        L = self.lessons_page()
+        out, [w] = self.render(L), L["waiting"]
+        self.assertIn(f"LOOKUP · signed + transcript · ~/proj · {w['id']}", out)
+        self.assertIn("Searching for `held_calls` here leads to `tracekit/why/import_v2.py`", out)
+        rec = w["evidence"][0]["calls"][1]
+        self.assertIn(f'data-lrec="{rec["run"]}" data-lseq="{rec["seq"]}"', out)   # OPEN: the signed record
+        self.assertIn("WOULD SAVE<b>about 3 calls</b>$0.42 and 4 s in 7 days, an estimate", out)
+        self.assertIn("THE ARITHMETIC", out)
+        self.assertIn(f'data-copy="tracekit tips approve {w["id"]}"', out)
+        self.assertIn(f'data-copy="tracekit tips retire {w["id"]}"', out)
+        self.assertNotIn("data-approve", out)   # a command a person runs, never a click
+        self.assertIn("NOT PROPOSED 1", out)
+        self.assertIn("Seen in 2 sessions on 1 day: a lookup needs 3 sessions on 2 days.", out)
+
+    def test_an_effect_waits_for_five_sessions_and_a_worse_one_is_in_the_warning_colour(self):
+        L = self.lessons_page(approve=True)
+        out = self.render(L)
+        self.assertIn("IN USE 1", out)
+        self.assertIn("EFFECT<b class=\"tzero\">not yet</b>0 of 5 sessions so far", out)
+        a = L["active"][0]
+        a["effect"].update(shown=True, worse=True, change=50, before={"hits": 2, "exposed": 5},
+                           after={"hits": 3, "exposed": 5})
+        out = self.render(L)
+        self.assertIn('EFFECT<b class="lworse">3 of 5</b>searched before opening it in 3 of 5 sessions given it, '
+                      "instead of 2 of 5 before (+50%): worse", out)
+        self.assertIn("before and after on the same detector, not a controlled test", out)
+
+    def test_the_next_session_panel_shows_bytes_of_the_budget(self):
+        L = self.lessons_page(approve=True)
+        [n] = L["next"]
+        out = self.render(L)
+        self.assertIn(f"{n['bytes']:,} of 8,000 bytes · 1 lesson whole, 0 as lines, 0 left out", out)
+        self.assertIn("Off: TRACEKIT_LESSONS=0.", out)
+
+    def test_a_narrow_screen_stacks_the_lessons_grid(self):
+        css = observe.read_text(observe.UI)
+        self.assertIn(".lgrid {\n      display: grid;\n      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr)", css)
+        self.assertIn("@media (max-width:900px) {\n      .lgrid {\n        grid-template-columns: minmax(0, 1fr)", css)
+        self.assertIn(".ltext {\n      margin: 0;", css)
+        self.assertIn("overflow-wrap: anywhere", css[css.index(".ltext {"):css.index(".tcard.luse")])
 
 
 if __name__ == "__main__":

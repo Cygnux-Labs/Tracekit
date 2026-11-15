@@ -2,6 +2,7 @@
 runtime dir, invoked through the command `tracekit init --v2` wires."""
 import contextlib
 import glob
+import hashlib
 import hmac
 import io
 import json
@@ -21,7 +22,7 @@ from unittest import mock
 
 import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from tracekit import agent_hooks, cli, install, privacy
+from tracekit import agent_hooks, cli, install, lessons, privacy
 from tracekit.bundle_v2 import export
 from tracekit.client import client_home
 from tracekit.format.canon import event_hash
@@ -202,6 +203,63 @@ class HookV2(unittest.TestCase):
         observed = [e["data"] for e in self.events() if e["type"] == "input.observed"]
         self.assertEqual([(x["source"], x["trust"], x["output"]["size"]) for x in observed],
                          [("claude-code:Stop", "trusted", len(json.dumps("")))])
+
+    def lessons_folder(self, *bodies):
+        """The dev data dir's lessons folder with a person's own lesson for each of `bodies`, in the project of the
+        hook's working directory (self.cwd): -> (folder, their ids)."""
+        os.makedirs(autospawn.data_dir(), exist_ok=True)
+        folder = lessons.Folder(os.path.join(autospawn.data_dir(), "lessons"))
+        return folder, [folder.add(lessons.project_of(self.cwd), b)[0] for b in bodies]
+
+    def answer(self, event, **fields):
+        """(exit code, the one JSON object on stdout or {}, stderr) of a hook event from the project's folder."""
+        proc = self.hook(event, wait=False, cwd=self.cwd, **fields)
+        out, err = proc.stdout.read(), proc.stderr.read()
+        proc.wait(60)
+        proc.stdout.close()
+        proc.stderr.close()
+        return proc.returncode, json.loads(out) if out.strip() else {}, err
+
+    def test_the_first_prompt_gets_the_block_and_a_signed_observe_names_its_ids(self):
+        """The approved lessons reach the session's first prompt; the signer records which ones, by id and the block's
+        hash, never their text; later prompts get nothing; a compaction gives them again."""
+        folder, [lid] = self.lessons_folder("Tests run with .venv/bin/python -m pytest here.")
+        self.assertEqual(self.answer("SessionStart", source="startup")[:2], (0, {}))
+        code, out, err = self.answer("UserPromptSubmit", prompt="Fix the failing pytest run.")
+        self.assertEqual(code, 0, err)
+        block = out["hookSpecificOutput"]["additionalContext"]
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        self.assertTrue(block.startswith(lessons.INTRO))
+        self.assertIn("Tests run with .venv/bin/python -m pytest here.", block)
+        run = self.run_handle()
+        seen = [e for e in self.events() if e["type"] == "input.observed" and e["data"]["source"] == lessons.SOURCE]
+        self.assertEqual([e["data"]["trust"] for e in seen], ["trusted"])
+        [kept] = run.call("content_get", seqs=[seen[0]["run_seq"]], purpose="test")["items"]
+        self.assertEqual(kept["content"], {"commit": folder.head(), "whole": [lid], "lines": [], "left_out": [],
+                                           "sha256": hashlib.sha256(block.encode()).hexdigest()})
+        self.assertNotIn("pytest", json.dumps(kept["content"]))   # ids and a hash: no lesson's values
+        prompt = next(e for e in self.events() if e["type"] == "input.observed"
+                      and e["data"]["source"] == "claude-code:UserPromptSubmit")
+        self.assertLess(prompt["run_seq"], seen[0]["run_seq"])   # the person's prompt first, then what was given
+        self.assertEqual(self.answer("UserPromptSubmit", prompt="And the lint.")[:2], (0, {}))
+        code, out, _ = self.answer("SessionStart", source="compact")
+        self.assertEqual((code, out["hookSpecificOutput"]["hookEventName"]), (0, "SessionStart"))
+        self.assertEqual(len([e for e in self.events() if e["type"] == "input.observed"
+                              and e["data"]["source"] == lessons.SOURCE]), 2)
+
+    def test_lessons_off_with_TRACEKIT_LESSONS_0(self):
+        self.lessons_folder("Tests run with .venv/bin/python -m pytest here.")
+        os.environ[lessons.OFF] = "0"
+        self.assertEqual(self.answer("UserPromptSubmit", prompt="Fix pytest.")[:2], (0, {}))
+        self.assertEqual([e for e in self.events() if e["data"].get("source") == lessons.SOURCE], [])
+
+    def test_a_broken_lessons_folder_never_blocks_the_prompt(self):
+        folder, _ = self.lessons_folder("Tests run with .venv/bin/python -m pytest here.")
+        d = os.path.join(folder.path, "projects", lessons.project_of(self.cwd))
+        os.symlink(os.path.join(d, "MEMORY.md"), os.path.join(d, "linked.md"))
+        code, out, err = self.answer("UserPromptSubmit", prompt="Fix pytest.")
+        self.assertEqual((code, out), (0, {}), err)
+        self.assertEqual([e for e in self.events() if e["data"].get("source") == lessons.SOURCE], [])
 
     def test_early_closed_wrappers_keep_from_untrusted_provenance(self):
         policy = os.path.join(self.dir, "server.yaml")

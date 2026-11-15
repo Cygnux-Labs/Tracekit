@@ -29,6 +29,7 @@ import statistics
 import threading
 import time
 
+from . import lessons
 from .audit import _entry_time, _iter_transcripts, _safe_open
 from .hook import transcript_entries
 from .signer.service import _escaped
@@ -71,6 +72,7 @@ POLLS = {"sleep", "until", "while", "watch"}
 KEYWORDS = {"for", "if", "case", "select", "function", "do", "then"}
 BUILDS = {"pytest", "make", "npm", "npx", "tox", "cargo", "go", "gradle", "mvn"}
 PERSON = {"AskUserQuestion", "ExitPlanMode"}   # tools that wait for a person's answer: no poll keeps that cache
+READ_CHUNK = 1000   # records one content_get reads for lessons, its most: one signed content.accessed record each
 
 
 def _ctx(s):
@@ -150,11 +152,19 @@ def signed_steps(rows, since):
     return agents
 
 
+def _result_text(content):
+    """A tool result's text (a string, or its text blocks), its first 4,096 characters."""
+    if isinstance(content, list):
+        content = "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return content[:4096] if isinstance(content, str) else None
+
+
 def read_transcripts(root, since):
     """Claude Code's transcripts under root, read-only (audit's walk: no symlink followed, nothing written), from
     `since` on -> (agents, calls, files read, unreadable): one agent per transcript file (a session's main file, or one
     of its subagents'), each step a message (by id: a resumed session's file repeats its earlier ones, counted once);
-    calls: tool_use id -> {id, agent, tool, family, t0, t1}."""
+    calls: tool_use id -> {id, agent, tool, family, t0, t1, project (the folder under root), cwd, error (a failed
+    call's result text, for lessons)}."""
     # lean: every transcript written in the window is read again each time the page is worked out (a 983 MB folder took
     # 6.7 s and 370 MB); keep each file's offset and fold in only its new lines if a team's week outgrows that
     agents, calls, seen, unreadable, files = {}, {}, set(), [], 0
@@ -170,6 +180,7 @@ def read_transcripts(root, since):
             continue
         files += 1
         sub = "subagents" in os.path.relpath(path, root).split(os.sep)
+        project = os.path.relpath(path, os.path.realpath(root)).split(os.sep)[0]   # the walk's paths are real ones
         name = os.path.basename(path)[:-len(".jsonl")]
         key = session + ("/" + name if sub else "")
         mine, last_user = {}, None
@@ -197,7 +208,8 @@ def read_transcripts(root, since):
                             inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                             calls[b["id"]] = {"id": b["id"], "agent": key, "tool": str(b.get("name")), "t0": t,
                                               "t1": None, "family": _family(inp.get("command", ""))
-                                              if b.get("name") == "Bash" else str(b.get("name"))}
+                                              if b.get("name") == "Bash" else str(b.get("name")), "project": project,
+                                              "cwd": e.get("cwd") if isinstance(e.get("cwd"), str) else None}
                             s["calls"].append(b["id"])
                     last_user = None
                 elif e.get("type") == "user":
@@ -206,6 +218,8 @@ def read_transcripts(root, since):
                         c = calls.get(tid) if b.get("type") == "tool_result" and isinstance(tid, str) else None
                         if c and c["t1"] is None:
                             c["t1"] = t
+                            if b.get("is_error") is True:   # what failed, for a fix lesson's error line
+                                c["error"] = _result_text(b.get("content"))
                     last_user = t
         except OSError as x:
             unreadable.append({"path": path, "error": f"cannot read: {x}"})
@@ -663,17 +677,39 @@ def _same(signed, agents, calls):
     return held
 
 
-def build(rows, root=None, now=None, since=None):
+def _costs(agents):
+    """{tool_use id: USD} of the transcripts' `agents`: each step's cost (its input side and its output, at list
+    price), shared by the calls it made. A model without a price costs nothing here."""
+    out = {}
+    for a in agents.values():
+        for s in a["steps"]:
+            r = _RATES.rate(s["model"])
+            if r and s["calls"]:
+                usd = _input_usd(s, r) + s["out"] * r["output"] / 1e6
+                out.update(dict.fromkeys(s["calls"], usd / len(s["calls"])))
+    return out
+
+
+def lessons_part(rows, agents, calls, folder, now, since):
+    """The LESSONS part (lessons.page) of rows and the transcripts' agents and calls, each project named by the
+    folder its sessions ran in."""
+    cwds = {c["project"]: _shown(c["cwd"]) for c in calls.values() if c.get("cwd")}
+    return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds)
+
+
+def build(rows, root=None, now=None, since=None, folder=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
-    price table's date and the three tips. A signed step the transcripts also hold counts once, from the transcripts
-    (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so they may span less than
-    the window: `sources.signed.span`."""
+    price table's date, the lessons (lessons_part; their folder `folder`, None outside the dev store) and the three
+    tips. A signed step the transcripts also hold counts once, from the transcripts (`sources.signed.also`). The
+    signed records are the viewer's live view, its newest rows, so they may span less than the window:
+    `sources.signed.span`."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
+    part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since)
     same = _same(signed, agents, calls)
     also = {"runs": len(same), "steps": sum(map(len, same.values()))}
     for k, idx in same.items():
@@ -690,6 +726,7 @@ def build(rows, root=None, now=None, since=None):
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
                                         "steps": sum(len(a["steps"]) for a in agents.values())}},
+            "lessons": part,
             "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
                                                    {h["id"] for h in holds if h["answered"] is not None}),
                      holds_tip(holds, calls, bool(rows))]}
@@ -700,27 +737,30 @@ class Page:
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
     takes seconds to read)."""
 
-    def __init__(self, rows, root, ttl=60):
-        self.rows, self.root, self.ttl = rows, root, ttl
+    def __init__(self, rows, root, ttl=60, folder=None):
+        self.rows, self.root, self.ttl, self.folder = rows, root, ttl, folder
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
-                self.body = json.dumps(build(self.rows(), self.root), ensure_ascii=False)
+                self.body = json.dumps(build(self.rows(), self.root, folder=self.folder), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
 
 
-def signed_rows(cfg, since, say=None):
+def signed_rows(cfg, since, say=None, content=None):
     """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
-    which give no rows. `say(text)`: told how many runs are checked before the checks."""
+    which give no rows. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
+    kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
+    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read."""
     import tempfile
 
     from . import view
     from .signer.pipeline import SIGNER_RUN
     from .why.core import ts_seconds
+    from .why.signed import EvidenceAlert
 
     def recent(run):
         # lean: a run is placed by its last record's time as the store says it, before the check; place it by the
@@ -731,7 +771,7 @@ def signed_rows(cfg, since, say=None):
             return True
     vkeys, _ = view.store_trust(cfg)
     tr = view.Translator(view.policy_reasons([], os.path.join(cfg["data_dir"], "policies")))
-    rows, failed = [], 0
+    rows, failed, kept, reads = [], 0, 0, 0
     with tempfile.TemporaryDirectory(prefix="tk-tips-") as tmp:
         trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
         r = view.reader(cfg)
@@ -744,9 +784,19 @@ def signed_rows(cfg, since, say=None):
             for key in keys:
                 _, code, _, records = view.check(r, *key, note[1], trust)
                 failed += bool(code)
+                want = [x for x in records if view.wanted(x)] if content else []
+                try:
+                    tr.content.update({(key[1], s): c for s, c in content(key[1], want).items()} if want else {})
+                except EvidenceAlert as x:   # the vault's content does not open its record: none of it is read
+                    if say:
+                        say(str(x))
+                kept, reads = kept + len(want), reads + -(-len(want) // READ_CHUNK)
                 rows += [x for rec in records for x in tr.feed(rec)]
         finally:
             r.close()
+    if say and reads:   # each read is a signed record: said, so a person knows what reading the tips wrote
+        say(f"read the kept content of {kept:,} records from the dev signer's vault: about {reads:,} signed "
+            f"content.accessed records (one a run and {READ_CHUNK:,} records)")
     return rows, failed
 
 
@@ -759,9 +809,61 @@ def _wrap(text, indent="  "):
                          break_long_words=False)
 
 
+KINDS = {"lookup": "LOOKUP", "fix": "FIX", "told": "TOLD", "you": "YOURS"}   # the page's names of the lessons' kinds
+EFFECT = {"lookup": "searched before opening it in", "fix": "failed so in", "told": "said it again in"}
+RULES = {"one_session": "seen too few times", "shown": "past the 8 shown"}   # why one wasn't proposed, where its id says too little
+
+
+def _n(n, word):
+    return f"{n:,} {word}{'s' * (n != 1)}"
+
+
+def effect_words(x):
+    """A lesson in use's effect in plain words, as the page says it."""
+    e = x["effect"]
+    if not e["shown"]:
+        return e["why"]
+    b, a = e["before"], e["after"]
+    return (f"{EFFECT[x['kind']]} {a['hits']} of {_n(a['exposed'], 'session')} given it, instead of {b['hits']} of "
+            f"{b['exposed']} before" + (": worse" if e["worse"] else "") + f" ({e['basis']})")
+
+
+def lessons_text(L, days=7):
+    """The LESSONS part of `tracekit tips` in plain words: each lesson waiting for the person's OK with its text, how
+    often it was seen, its estimated saving and the command that approves it; each in use with its effect; why the
+    others weren't proposed."""
+    if not L.get("ok"):
+        return ["LESSONS", _wrap(L.get("why") or "")]
+    w, act, nope = L["waiting"], L["active"], L["not_proposed"]
+    out = ["LESSONS · from signed records and Claude Code's transcripts (read-only)",
+           _wrap(f"{len(w)} waiting for your OK, {len(act)} in use, {L['not_proposed_n']} not proposed. A lesson you "
+                 f"approve is given to each Claude Code session of its project at its first prompt, within "
+                 f"{L['budget']:,} bytes; {L['off']} turns that off.")]
+    for x in w:
+        sv = x["saving"]
+        seen = (f"Typed by you in {_n(x['sessions'], 'session')}." if x["kind"] == "told" else
+                f"Seen {_n(x['times'], 'time')} in {_n(x['sessions'], 'session')} on {_n(x['days'], 'day')}. Would "
+                f"save about {_n(sv['calls'], 'call')}" + (f", {_money(sv['usd'])}" if sv.get("usd") else "")
+                + (f" and {_dur(sv['seconds'])}" if sv.get("seconds") else "") + f" in {days} days, an estimate.")
+        out += ["", f"WAITING · {KINDS[x['kind']]} · {x['id']} · {x['where']}" + (" · RISKY: read it twice" if
+                                                                               x["risky"] else ""),
+                x["name"], _wrap(x["text"]), _wrap(seen)] + [
+            _wrap(f"Replaces {o['id']} ({o['name']}).") for o in x["supersedes"]] + [f"    {x['approve']}"]
+    for x in act:
+        out += ["", f"IN USE · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']} · approved "
+                    f"{str(x['approved'])[:10]}", x["name"],
+                _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."),
+                f"    {x['retire']}"]
+    if nope:
+        out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
+            [_wrap(f"and {L['not_proposed_n'] - 10} more (--json lists the first 40)")] if L["not_proposed_n"] > 10 else [])
+    return out
+
+
 def text(t, store, failed=0, root=None):
     """`tracekit tips` in plain words: what it read from `store` (its name) and the transcripts (looked for in `root`),
-    then each tip's title, evidence, estimated saving and fix, or why it has none; one line when nothing was read."""
+    then the lessons (lessons_text), then each tip's title, evidence, estimated saving and fix, or why it has none; one
+    line when nothing was read."""
     s, tr = t["sources"]["signed"], t["sources"]["transcripts"]
     since = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t["window"][0]))
     read = f"{store}: {s['records']:,} signed records" + (
@@ -773,7 +875,8 @@ def text(t, store, failed=0, root=None):
         return _escaped(f"tracekit tips: read {read}, since {since}: nothing yet")
     out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's list prices of {t['prices']}: a "
                  "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
-                 "operator-side, not evidence.", "")]
+                 "operator-side, not evidence.", ""), ""]
+    out += lessons_text(t["lessons"], max(1, round((t["window"][1] - t["window"][0]) / 86400)))
     for i, x in enumerate(t["tips"], 1):
         out += ["", f"TIP {i} · {NAMES[x['id']]}" + (f" · from {x['from']}" if x.get("from") else "")]
         if not x["ok"]:
@@ -793,8 +896,133 @@ def text(t, store, failed=0, root=None):
     return "\n".join(_escaped(line) for line in "\n".join(out).split("\n"))   # a run's agent name is the agent's text
 
 
+ACTIONS = ("approve", "retire", "restore", "add")   # a person's; TK-D012 denies the agent's own (as the first word)
+
+
+def _here():
+    """The working directory as the shell names it ($PWD, which Claude Code's project folder is named after) when it is
+    this one, else its real path."""
+    pwd = os.environ.get("PWD")
+    try:
+        return pwd if pwd and os.path.samefile(pwd, ".") else os.getcwd()
+    except OSError:
+        return os.getcwd()
+
+
+def _vault(say):
+    """The kept content source for lessons (view.dev_content_source, purpose `tracekit tips`) over the dev signer that
+    runs now. Unlike a hook's client, tracekit tips never starts, stops or replaces a signer: reading the tips changes
+    no process. None, said, while none runs; a signer of another protocol is said by the source and read from not."""
+    from . import view
+    from .sdk import autospawn
+    from .sdk.client import Client
+    try:
+        path, token = autospawn.address(autospawn.signer_dir(create=False))
+    except (OSError, ValueError):
+        path = token = None
+    if path is None or token is None and not os.path.exists(path):
+        say("no dev signer runs here: lessons read the calls' arguments from its vault, so none is found (`tracekit "
+            "up` starts it)")
+        return None
+    return view.dev_content_source("tracekit tips", connect=lambda: Client(path, token=token), say=say,
+                                   chunk=READ_CHUNK)
+
+
+def _scan(folder, since, say):
+    """The LESSONS part as `tracekit tips` works it out (the dev store's runs that verify, their kept content, Claude
+    Code's transcripts): what approve and retire find a waiting lesson in."""
+    from .audit import default_root
+    rows, _ = signed_rows({"data_dir": os.path.dirname(folder.path)}, since, say, _vault(say))
+    root = default_root()
+    agents, calls, _, _ = read_transcripts(root, since) if os.path.isdir(root) else ({}, {}, 0, [])
+    return lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, time.time(), since)
+
+
+def act(argv, say):
+    """`tracekit tips approve ID [ID ...] | retire ID | restore ID | add TEXT` on the dev data dir's lessons folder:
+    -> exit code. Approve and retire find a waiting lesson in the records as `tracekit tips` reads them, so it is
+    the one the person saw; nothing a proposal says is taken from anywhere else."""
+    import argparse
+    import sys
+
+    from .report import when
+    from .signer.service import dev_data_dir
+    ap = argparse.ArgumentParser(prog="tracekit tips", description="a person's answer to a lesson (docs/viewer.md"
+                                 "#lessons); the agent's own is denied (TK-D012)")
+    sub = ap.add_subparsers(dest="act", required=True)
+    for name, text_ in (("approve", "give these waiting lessons to the next Claude Code sessions of their project"),
+                        ("retire", "stop giving a lesson in use, or never propose a waiting one again"),
+                        ("restore", "undo a retire")):
+        p = sub.add_parser(name, help=text_)
+        p.add_argument("ids", nargs="+" if name == "approve" else 1, metavar="ID")
+        if name != "restore":
+            p.add_argument("--since", type=when, default="7d", help="the window the lesson was found in (default: 7d)")
+    p = sub.add_parser("add", help="your own lesson, given to the project's sessions from now on")
+    p.add_argument("text")
+    p.add_argument("--name", help="one line: what it is about (default: its first line)")
+    p.add_argument("--description", help="one line: when it applies")
+    p.add_argument("--type", default="feedback", choices=lessons.TYPES)
+    p.add_argument("--project", help="the project's folder (default: the current one)")
+    a = ap.parse_args(argv)
+    try:
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"))
+        if a.act == "add":
+            lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
+                                   a.name, a.description, a.type)
+            print(f"added {lid}: in use from the next session" + (f" ({note})" if note else ""))
+            return 0
+        if a.act == "restore":
+            note = folder.restore(a.ids[0])
+            print(f"restored {a.ids[0]}" + (f" ({note})" if note else ""))
+            return 0
+        if a.act == "retire" and folder.find(a.ids[0]):
+            note = folder.retire(a.ids[0])
+            print(f"retired {a.ids[0]}: no session is given it from now on" + (f" ({note})" if note else ""))
+            return 0
+        L = _scan(folder, a.since, say)
+        if not L.get("ok"):
+            print(f"tracekit tips: {L.get('why')}", file=sys.stderr)
+            return 1
+        found = {x["id"]: x for x in L["not_proposed"] + L["waiting"]}
+        code = 0
+        for lid in a.ids:
+            x = found.get(lid)
+            if x is None or x.get("rule") not in (None, "shown"):
+                print(f"tracekit tips: {lid}: " + (x["why"] if x else f"no lesson {lid} waits in this window (--since): "
+                                                   "tracekit tips lists the ones that do"), file=sys.stderr)
+                code = 1
+                continue
+            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x)
+            print(f"{a.act}d {lid}: {x['name']}" + (" (given to the next sessions of " + x["where"] + ")" if
+                                                     a.act == "approve" else " (never proposed again)")
+                  + (f" ({note})" if note else ""))
+        return code
+    except (lessons.Refused, OSError, ValueError) as e:
+        print(f"tracekit tips: {e}", file=sys.stderr)
+        return 1
+
+
+def for_agent(a):
+    """`tracekit tips --for-agent`: the approved lessons of the project, from the lessons folder alone."""
+    import sys
+    from .signer.service import dev_data_dir
+    try:
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"))
+        got = lessons.for_agent(os.path.abspath(a.project) if a.project else _here(), a.prompt, a.query, folder)
+    except FileNotFoundError:   # no dev signer has run here: nothing approved
+        print(lessons.NOT_YET)
+        return 0
+    except (lessons.Refused, OSError) as e:
+        print(f"tracekit tips: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps({k: got[k] for k in ("project", "commit", "budget", "bytes", "lessons", "left_out")}, indent=2)
+          if a.json else got["block"] or lessons.NOT_YET)
+    return 0
+
+
 def main(argv=None):
-    """`tracekit tips [--dev | --data-dir DIR] [--since 7d] [--json]` (docs/viewer.md#tracekit-tips)."""
+    """`tracekit tips [--dev | --data-dir DIR] [--since 7d] [--json]`, `tracekit tips --for-agent [--project DIR]
+    [--prompt TEXT | --query WORDS] [--json]` and a person's actions (act) (docs/viewer.md#tracekit-tips)."""
     import argparse
     import sys
 
@@ -802,32 +1030,48 @@ def main(argv=None):
     from .report import when
     from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
-    from .view import store_name
+    from . import view
+    argv = list(sys.argv[1:] if argv is None else argv)
+    say = lambda s: print(f"tracekit tips: {s}", file=sys.stderr, flush=True)   # noqa: E731
+    if argv[:1] and argv[0] in ACTIONS:   # the first word only: TK-D012 reads it there
+        return act(argv, say)
     ap = argparse.ArgumentParser(prog="tracekit tips", description="the TIPS page of tracekit view without the viewer: "
-                                 "what each step of your coding agents cost and how to cut it, from the dev signer's "
-                                 "store and Claude Code's transcripts, read-only. No network, no model.")
+                                 "lessons your coding agents keep relearning, and what each step cost and how to cut "
+                                 "it, from the dev signer's store and Claude Code's transcripts, read-only. No network, "
+                                 "no model. A person answers a lesson with `tracekit tips approve|retire|restore ID` "
+                                 "or adds one with `tracekit tips add TEXT`.")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's store and Claude Code's transcripts "
                                                       "(the default)")
     g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey): its store alone, as tracekit view "
                                       "--data-dir reads it")
+    g.add_argument("--for-agent", action="store_true", help="the approved lessons a coding agent reads, as Claude "
+                                                            "Code's hook gives them at a session's first prompt, from "
+                                                            "the lessons folder alone")
     ap.add_argument("--since", type=when, default="7d", help="7d, 24h, 30m, or an ISO date or time, UTC unless it says "
                                                              "(default: 7d)")
     ap.add_argument("--json", action="store_true", help="print the tips as one JSON object, as the TIPS page reads them")
+    ap.add_argument("--project", help="with --for-agent: the project's folder (default: the current one)")
+    ap.add_argument("--prompt", help="with --for-agent: rank the lessons against this prompt")
+    ap.add_argument("--query", help="with --for-agent: only the lessons that share a word with WORDS, best first")
     a = ap.parse_args(argv)
+    if a.for_agent:
+        return for_agent(a)
+    if a.project or a.prompt or a.query:
+        ap.error("--project, --prompt and --query go with --for-agent")
     now = time.time()
     if a.since >= now:
         ap.error("--since must be in the past")
     try:
         cfg = {"data_dir": os.path.abspath(a.data_dir) if a.data_dir else dev_data_dir(create=False)}
-        rows, failed = signed_rows(cfg, a.since, lambda s: print(f"tracekit tips: {s}", file=sys.stderr, flush=True))
+        rows, failed = signed_rows(cfg, a.since, say, None if a.data_dir else _vault(say))
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
     root = None if a.data_dir else default_root()
-    t = build(rows, root, now, a.since)
+    t = build(rows, root, now, a.since, None if a.data_dir else lessons.Folder(os.path.join(cfg["data_dir"], "lessons")))
     if a.json and failed:   # the text says it in its first line
         print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",
               file=sys.stderr)
-    print(json.dumps(t, indent=2) if a.json else text(t, _shown(store_name(cfg)), failed, root))
+    print(json.dumps(t, indent=2) if a.json else text(t, _shown(view.store_name(cfg)), failed, root))
     return 0

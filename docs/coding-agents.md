@@ -579,6 +579,36 @@ takes (32: an agent can add its own), a further one is refused, the hook says so
 run waits for your approval from then on. A scope ("only change src/pager.py") is never held: `tracekit analyze --v2`
 checks it after the run (TK-X204).
 
+### Lessons at the first prompt
+
+Claude Code only (experimental). At a session's first prompt, the hook gives the session the lessons you approved for
+its project in `tracekit tips` ([Lessons](viewer.md#lessons)): what the signed records showed its agents kept relearning
+there, and what you typed as a standing instruction. They go in as Claude Code's `additionalContext`, one block:
+
+```text
+Lessons from this project's signed runs, approved by the person (Tracekit). Each applies when what you are doing matches it.
+
+## When python3 fails with “python3: No module named pytest” (fix-3f2a91c0.md)
+When python3 fails here with python3: No module named pytest
+`python3 -m pytest` fails here with “python3: No module named pytest”; `.venv/bin/python -m pytest` worked (3 times in 2 sessions).
+```
+
+All of them whole while they fit 8,000 bytes (Claude Code caps a hook's text at 10,000 characters); past that, the
+ones that share words with the prompt (BM25 over each lesson's name, description and text) whole, best first, then
+one line each for the rest, within 200 lines and 25 KB, and a last line naming `tracekit tips --for-agent --query
+WORDS`, which any agent may run mid-task. Later prompts get nothing; after a compaction or a resume (`SessionStart`
+`compact` or `resume`) the block is given again, newest first. The hook reads only the lessons folder, so it adds
+milliseconds.
+
+Before it gives the block, the hook records what it gives: a signed `input.observed`, trusted, source
+`tracekit:lessons`, whose kept value is `{"commit", "whole", "lines", "left_out", "sha256"}`: the lesson folder's git
+commit, the ids of the lessons given whole or as lines and of those left out, and the block's sha256, never a lesson's
+text. A lesson's values never enter the run's provenance index that way, and the folder's git history and the hash
+prove the text. That record is what "given to N sessions" and each lesson's effect count. `TRACEKIT_LESSONS=0` in
+the agent's environment turns it off. Any error (the folder unreadable, a link inside it, the signer unreachable for
+the record) gives nothing and never blocks the prompt. Subagents and other harnesses get no block; they can run
+`tracekit tips --for-agent`.
+
 ### Hooks name their event
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code

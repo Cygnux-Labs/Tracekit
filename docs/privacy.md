@@ -185,6 +185,24 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 
+## The lessons folder
+
+TIPS' [lessons](viewer.md#lessons) read the dev signer's vault (the calls' arguments and the typed part of your
+prompts), each read a signed `content.accessed` record with purpose `tracekit tips` or `tracekit view`. Nothing is
+written until you approve a lesson (or add one). Then `<dev data dir>/lessons/` holds, per Claude Code project folder,
+one Markdown note per lesson and a `MEMORY.md` index: the lesson's text (paths, commands, an identifier the agent
+searched for, an error line, or your own sentence quoted as you typed it), its kind, its status, when you approved it,
+and the `run:run_seq` of up to 8 signed records it rests on. A lesson whose text matches a secret's shape, a bank
+number or a value the signer redacted is refused, never cut. The folder is a git repository: every approve, retire,
+restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
+ids of the lessons it was given and the block's sha256, never their text.
+
+The dev data dir is `~/Library/Application Support/tracekit/data` on macOS, `$XDG_DATA_HOME/tracekit` (else
+`~/.local/share/tracekit`) on Linux and `%LOCALAPPDATA%\tracekit` on Windows. To erase the lessons and their history,
+delete the folder: `rm -rf "<dev data dir>/lessons"`; a later approve starts a new one. Retiring a lesson stops it
+being given but keeps it, and its text stays in the git history until the folder is deleted. Erasing a run's content
+(`tracekit signer content erase --run R`) doesn't touch a lesson already approved from it.
+
 ## What leaves the machine
 
 - The ledger stays on the signer host.
