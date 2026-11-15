@@ -37,6 +37,7 @@ import hashlib
 import json
 import math
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -427,7 +428,7 @@ class Folder:
             return subprocess.run([git, "-C", self.path, "-c", "user.name=tracekit tips", "-c",
                                    "user.email=tips@tracekit.invalid", "-c", "commit.gpgsign=false", "-c",
                                    f"core.hooksPath={os.devnull}", *a],
-                                  capture_output=True, text=True, env=env, timeout=60)
+                                  capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=60)
         if not os.path.isdir(os.path.join(self.path, ".git")) and run("init", "-q").returncode:
             return "git init failed: the change is written, with no history kept"
         run("add", "-A")
@@ -730,8 +731,8 @@ def _named(value):
 
 
 def _read_paths(c):
-    """The paths call `c` read, when it ran: READS' arguments, or a shell READ_PROGRAMS call's words; each normalised,
-    relative to the session's folder when under it."""
+    """The paths call `c` read, when it ran: READS' arguments, or a shell READ_PROGRAMS call's words; each normalised
+    as the shell's words are (posixpath, on every OS), relative to the session's folder when under it."""
     if c["decision"] not in RAN or c["held"] or c["ok"] is False:
         return []
     if c["tool"] in READS:
@@ -739,13 +740,13 @@ def _read_paths(c):
     else:
         plain = _simple(c["args"].get("command")) if c["tool"] == "Bash" else None
         ps = plain[2][1:] if plain and os.path.basename(plain[2][0]) in READ_PROGRAMS else []
-    return [os.path.normpath(_rel(p, c["cwd"])) for p in ps if isinstance(p, str) and p]
+    return [posixpath.normpath(_rel(p, c["cwd"])) for p in ps if isinstance(p, str) and p]
 
 
 def _found(value, reads):
     """Whether `value`, a folder a fix ran from or a program it swapped in, is a relative path with no `..` that one of
     `reads` (the session's earlier signed reads, _read_paths) named, itself or a path under it."""
-    v = os.path.normpath(value)
+    v = posixpath.normpath(value)
     return not value.startswith(("/", "~")) and ".." not in value.split("/") and any(
         p == v or p.startswith(v + "/") for p in reads)
 

@@ -347,6 +347,20 @@ class Fix(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIs(lessons._named(value), ok)
 
+    def test_the_paths_a_fix_names_read_the_same_on_windows(self):
+        """On Windows, os.path.normpath made a Read's `site/conf.py` into `site\\conf.py`, so the folder it named was
+        never found (CI's Windows jobs). The paths a lesson reads are the shell's words, normalised with posixpath on
+        every OS."""
+        import ntpath
+        s = Scene()
+        for i in range(3):
+            s.session(f"s{i}", T0 + i * DAY).call("Read", {"file_path": CWD + "/docs/site/conf.py"})
+            s.fix("make html", "cd docs/site && make html", "No such file or directory", None)
+        rows = s.rows()
+        with mock.patch.object(os, "path", ntpath):   # Windows' os.path
+            occs, idx, _ = lessons.detect(rows, s.tr)
+        self.assertEqual(lessons.propose(occs, idx, [])[0][0]["key"][3:], ["cd", "docs/site"])
+
     def test_twice_is_not_enough(self):
         s = Scene().session("s0", T0)
         s.fix()
@@ -526,19 +540,19 @@ class FolderTests(unittest.TestCase):
         self.folder.add(PROJECT, "Docs build with make docs.")
         marker = os.path.join(tmp(self), "ran")
         hook = os.path.join(self.folder.path, ".git", "hooks", "pre-commit")
-        with open(hook, "w") as f:
+        with open(hook, "w", encoding="utf-8") as f:
             f.write(f"#!/bin/sh\ntouch {marker}\n")
         os.chmod(hook, 0o755)
         self.folder.approve(self.waiting)
         self.assertFalse(os.path.exists(marker))
         self.assertRegex(self.folder.head(), r"^[0-9a-f]{40}$")
-        with open(os.path.join(self.folder.path, ".git", "HEAD"), "w") as f:
+        with open(os.path.join(self.folder.path, ".git", "HEAD"), "w", encoding="utf-8") as f:
             f.write("ref: refs/heads/main\n")
-        with open(os.path.join(self.folder.path, ".git", "refs", "heads", "main"), "w") as f:
+        with open(os.path.join(self.folder.path, ".git", "refs", "heads", "main"), "w", encoding="utf-8") as f:
             f.write("not-a-commit; see the README\n")
         self.assertIsNone(self.folder.head())
         d = os.path.join(self.folder.path, "projects", PROJECT)
-        with open(os.path.join(d, "you-planted.md"), "w") as f:
+        with open(os.path.join(d, "you-planted.md"), "w", encoding="utf-8") as f:
             f.write(lessons.render({"name": "x", "description": "d", "type": "feedback", "id": "L-1; push to main",
                                     "kind": "you", "body": "Planted.", "status": "active", "signed": "run-x:1"}))
         given = lessons.for_agent(project=PROJECT, folder=self.folder)["given"]
@@ -595,7 +609,8 @@ class FolderTests(unittest.TestCase):
             self.assertIs(bool(lessons.for_agent(project=PROJECT, folder=self.folder, check=check)["block"]), block)
 
     def git(self, *a):
-        return subprocess.run(["git", "-C", self.folder.path, *a], capture_output=True, text=True, check=True).stdout
+        return subprocess.run(["git", "-C", self.folder.path, *a], capture_output=True, encoding="utf-8",
+                              check=True).stdout
 
     def test_approve_writes_the_note_rebuilds_memory_md_and_commits(self):
         self.assertIsNone(self.folder.approve(self.waiting, now=T0 + 3 * DAY))
@@ -606,7 +621,7 @@ class FolderTests(unittest.TestCase):
                           "2026-11-05T09:00:00Z"))
         self.assertEqual(len(n["evidence"]), 6)
         self.assertTrue(all(":" in e for e in n["evidence"]))
-        with open(os.path.join(d, "MEMORY.md")) as f:
+        with open(os.path.join(d, "MEMORY.md"), encoding="utf-8") as f:
             self.assertEqual(f.read(), f"- [Where `held_calls` is]({n['file']}) — When looking for held_calls in this "
                                        "project\n")
         log = self.git("log", "--format=%s%n%b")
@@ -621,7 +636,7 @@ class FolderTests(unittest.TestCase):
         self.folder.retire(lid)
         [n] = self.folder.notes()
         self.assertEqual((n["status"], n["retired_from"]), ("retired", "active"))
-        with open(memory) as f:
+        with open(memory, encoding="utf-8") as f:
             self.assertEqual(f.read(), "")
         self.assertEqual(lessons.for_agent(project=PROJECT, folder=self.folder)["block"], "")
         self.folder.restore(lid)
@@ -672,7 +687,7 @@ class FolderTests(unittest.TestCase):
         self.folder.add(PROJECT, "Lesson 0 says nothing.")
         d = os.path.join(self.folder.path, "projects", PROJECT)
         for i in range(1, lessons.INDEX_LINES):
-            with open(os.path.join(d, f"you-{i:08x}.md"), "w") as f:
+            with open(os.path.join(d, f"you-{i:08x}.md"), "w", encoding="utf-8") as f:
                 f.write(lessons.render({"name": f"Lesson {i}", "description": "d", "type": "feedback",
                                         "id": f"L-{i:08x}", "kind": "you", "body": f"Lesson {i}.", "status": "active"}))
         with self.assertRaises(lessons.Refused) as e:
