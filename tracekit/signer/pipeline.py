@@ -919,9 +919,10 @@ class RecordLog:
             self._replay()
         except Exception:
             return False
-        for k, fields in kept.items():
-            if k in self.runs and not self.runs[k]["final"]:
-                self.runs[k].update(fields)
+        finally:   # a replay that failed partway may have rebuilt the runs already: the next attempt starts from them
+            for k, fields in kept.items():
+                if k in self.runs and not self.runs[k]["final"]:
+                    self.runs[k].update(fields)
         since, err = self.down
         self.down = None
         fut = Future()

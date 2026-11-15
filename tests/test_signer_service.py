@@ -136,10 +136,21 @@ class Disk(FileStorage):
         super().append_batch(records)
 
 
+class FlakyRegistry(Disk):
+    """Disk whose next registry reads fail, as a replay's last steps make them."""
+    fail = 0
+
+    def registry_iter(self, tenant, start=0):
+        if FlakyRegistry.fail:
+            FlakyRegistry.fail -= 1
+            raise OSError("registry read failed")
+        return super().registry_iter(tenant, start)
+
+
 class TestService(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
-        Disk.fail = 0
+        Disk.fail = FlakyRegistry.fail = 0
 
     def open(self, **kw):
         s = svc.SignerService(self.dir, policy=PAY_ASKS, open_storage=lambda: Disk(os.path.join(self.dir, "store")), **kw)
@@ -350,6 +361,24 @@ class TestService(unittest.TestCase):
         with mock.patch.object(pipeline, "RECOVER_S", 0):
             s.decide(self.ev(run, 2, tool_call_id="t", tool="t", args_source="parsed", args={}))
         self.assertEqual((self.claim(s, run, "claimed")["ok"], self.claim(s, run, "waiting")["ok"]), (False, True))
+
+    def test_call_claim_survives_a_recovery_that_fails_partway(self):   # probe test_probe851_recover2.py
+        """A recovery whose replay rebuilt the runs and then failed (a registry read): at 1de86d23a8 the runs it left
+        had no claims, and the next recovery carried over none, so a pause claimed before the outage was claimed again.
+        The claims go back onto the runs whether the replay ends or not."""
+        s = svc.SignerService(self.dir, policy=PAY_ASKS,
+                              open_storage=lambda: FlakyRegistry(os.path.join(self.dir, "store")))
+        self.addCleanup(s.close)
+        run = self.register(s)
+        self.consumed(s, run, "claimed", 0)
+        self.assertTrue(self.claim(s, run, "claimed")["ok"])
+        Disk.fail, decide = 1, self.ev(run, 1, tool_call_id="t", tool="t", args_source="parsed", args={})
+        self.refused("unavailable", s, "decide", decide)
+        FlakyRegistry.fail = 1
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            self.refused("unavailable", s, "decide", decide)   # the first recovery fails after its replay
+            s.decide(decide)
+        self.assertFalse(self.claim(s, run, "claimed")["ok"])
 
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()

@@ -905,6 +905,42 @@ class ToolPauses(Driven):
                 self.assertEqual(read(c)["s"], "Tool call blocked by policy: it runs in another pass of its node: the "
                                                "thread was resumed twice at once")
 
+    def test_a_pass_cancelled_before_it_takes_a_call_never_takes_it(self):
+        """An approved pay whose tool asked the person itself; the answer's async pass is cancelled before its claim
+        takes the call (its worker thread starts the claim only afterwards). That claim must not take the call: taken
+        by a pass gone, it would stay running for good, and the next resume would be refused as a second resume. The
+        next resume runs it once, with the person's answer."""
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        claim, held = TracekitMiddleware._claim, {}
+
+        def claiming_late(gate_self, request, p, *rest):
+            if request.tool_call["id"] == "pay-1" and not held["claims"]:
+                held["claims"].append(1)
+                held["entered"].set()
+                held["go_on"].wait(5)   # its pass is cancelled meanwhile
+            return claim(gate_self, request, p, *rest)
+
+        async def cancelled(graph):
+            task = asyncio.ensure_future(graph.ainvoke(Command(resume="yes: pay 1?"), THREAD))
+            await asyncio.to_thread(held["entered"].wait, 5)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            held["go_on"].set()
+        for how, node in self.nodes(tools=[confirmed_pay, TOOLS[0]]):
+            with self.subTest(wired=how):
+                held.update(claims=[], entered=threading.Event(), go_on=threading.Event())
+                graph = tool_graph(node())
+                shown = graph.invoke(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                self.approve(shown["approval_id"])
+                self.assertEqual(graph.invoke(Command(resume={"approval_id": shown["approval_id"]}), THREAD)[
+                    "__interrupt__"][0].value, "pay 1?")
+                with mock.patch.object(TracekitMiddleware, "_claim", claiming_late):
+                    asyncio.run(cancelled(graph))
+                out = asyncio.run(graph.ainvoke(Command(resume="yes: pay 1?"), THREAD))
+                self.assertEqual((PAID, read(out)["pay-1"]), ([(1, "yes: pay 1?")], "paid 1 after yes: pay 1?"))
+
     def test_a_wrapper_outside_the_gate_cannot_change_a_decided_call(self):   # probe851_wrap.py
         """instrument() puts the gate inside a ToolNode's own wrap_tool_call, which sees each call after the pass
         decided it: a wrapper that changes an approved pay's amount (5 to 99999) has the call refused, not run."""
