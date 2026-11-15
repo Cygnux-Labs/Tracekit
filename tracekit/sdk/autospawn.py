@@ -35,6 +35,7 @@ from tracekit.sdk.client import Incompatible, SignerUnavailable, _default_signer
 from tracekit.signer.rpc_schema import RPC_VERSION
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
+STARTING_S = 120   # past its timeout, how much longer a client waits for a dev signer that says it is starting
 # -P (3.11+) keeps the working directory off sys.path; before 3.11 it is there, and spawn() makes it the private runtime
 # dir. Not -I, which also drops the PYTHONPATH a checkout without an install needs.
 PYTHON = [sys.executable, *(["-P"] if sys.version_info >= (3, 11) else [])]
@@ -296,13 +297,22 @@ def _ensure(d, wait, timeout):
             if conn:
                 return conn
             exited = p is not None and p.poll() is not None
-            if time.monotonic() > deadline or (exited and not _held(lock)):
+            now = time.monotonic()
+            if now > deadline and (now > deadline + STARTING_S or not _starting(d)) or (exited and not _held(lock)):
                 break
             time.sleep(0.02)
     if _held(lock):
         raise Hung(f"a dev signer (pid {_pid(d)}) holds {lock} but does not answer; see {os.path.join(d, LOG)}")
     raise SignerUnavailable(f"the dev signer did not start ({_last_line(os.path.join(d, LOG))}); see "
                             f"{os.path.join(d, LOG)}")
+
+
+def _starting(d):
+    """Whether the dev signer of runtime dir `d` is still starting (reading its store and rebuilding run state, which
+    takes seconds for long runs): it holds signer.lock and its log's last start line is STARTING, not SERVING
+    (serve_dev)."""
+    tail = _tail(os.path.join(d, LOG)) or ""
+    return _held(os.path.join(d, LOCK)) and tail.rfind("STARTING pid ") > tail.rfind("SERVING pid ")
 
 
 def _tail(path, size=4096):

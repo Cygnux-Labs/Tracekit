@@ -206,8 +206,10 @@ NESTED = "[truncated: nesting too deep]"   # what redact() leaves in place of wh
 def redact(obj, dotenv=False, _depth=0, counts=None):
     """Recursively redact every string (and every key). Returns (obj, was_redacted).
     Nesting beyond MAX_DEPTH is replaced by a marker instead of recursing without bound. `counts`: as for
-    redact_text."""
+    redact_text, and one under `nesting` per marker."""
     if _depth > MAX_DEPTH:
+        if counts is not None:
+            counts["nesting"] += 1
         return NESTED, True
     if isinstance(obj, str):
         out, hit = redact_text(obj, counts)

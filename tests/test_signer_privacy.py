@@ -114,6 +114,17 @@ class SignerPrivacy(Harness, unittest.TestCase):
         data = self.result("tc-2")["data"]
         self.assertEqual((data["redaction"]["count"], data["output"]["redacted"]), (0, False))
 
+    def test_a_value_nested_too_deep_counts_as_redacted(self):
+        """What lies past privacy.MAX_DEPTH is replaced by a marker: the content changed, so the manifest says so."""
+        self.register()
+        deep = "evil@x.example"
+        for _ in range(70):
+            deep = [deep]
+        self.complete(*self.decide(), result={"stdout": deep})
+        data = self.result("tc-1")["data"]
+        self.assertEqual((data["redaction"], data["output"]["redacted"]),
+                         ({"rules": ["nesting"], "count": 1, "client_claimed": False}, True))
+
     def test_the_approver_sees_the_signers_copy_redacted(self):
         self.register()
         self.decide("wire", {"to": "acct-1", "memo": SECRET})

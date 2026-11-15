@@ -938,6 +938,7 @@ class SignerService:
         self._unmatched = set()   # (decision_id, result_digest) of a gateway's forms that open no tool.result of it
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
+        self._kept = {}   # policy_hash -> the policy kept in <data_dir>/policies, None if not (_kept_policy)
         authorize = dict(authorize or {})
         grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
         if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
@@ -2315,15 +2316,26 @@ class SignerService:
 
     def _kept_policy(self, policy_hash):
         """The policy (an Engine) with `policy_hash` this signer kept in <data_dir>/policies, or None."""
-        name = policy_hash[len("sha256:"):]
-        if not (policy_hash.startswith("sha256:") and re.fullmatch("[0-9a-f]{64}", name)):
-            return None
-        try:
-            with open(os.path.join(self.data_dir, "policies", name + ".json"), "rb") as f:
-                data = f.read()
-            return Engine(json.loads(data)) if hashlib.sha256(data).hexdigest() == name else None
-        except (OSError, ValueError):
-            return None
+        if policy_hash in self._kept:
+            return self._kept[policy_hash]
+        name, kept = policy_hash[len("sha256:"):], None
+        if policy_hash.startswith("sha256:") and re.fullmatch("[0-9a-f]{64}", name):
+            try:
+                with open(os.path.join(self.data_dir, "policies", name + ".json"), "rb") as f:
+                    data = f.read()
+                kept = Engine(json.loads(data)) if hashlib.sha256(data).hexdigest() == name else None
+            except (OSError, ValueError):
+                pass
+        self._kept[policy_hash] = kept
+        return kept
+
+    def _untrusted_results(self, tool, policy_hash):
+        """Whether `tool`'s results are untrusted under this signer's policy or the one its call was decided under
+        (`policy_hash`: a restart may have changed it); None when only that one could say and it isn't kept."""
+        if self.policy.untrusted_results(tool) or policy_hash in (None, self.policy.policy_hash):
+            return self.policy.untrusted_results(tool)
+        kept = self._kept_policy(policy_hash)
+        return None if kept is None else kept.untrusted_results(tool)
 
     def _provenance(self, key, args, req):
         """(`untrusted(subject, field)` for the policy, a function giving the decision's provenance fields) of a call
@@ -3085,7 +3097,8 @@ class SignerService:
                 call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
                         "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                         "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
-                        "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid}
+                        "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
+                        "policy_hash": self.policy.policy_hash}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
@@ -3180,9 +3193,13 @@ class SignerService:
         # the provenance index: only an untrusted tool's results (any other tool may echo what the agent put in its
         # arguments, which would launder an injected value into trusted content), read before redaction (HMACs in
         # memory only), so a value next to a secret's label still counts. A digest instead of the result: partial.
-        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: no decision record names it
+        # Untrusted under this policy or the one the call was decided under (a restart may have changed it).
+        decided = self.log.runs[key].get("decisions", {}).get(did) or {}
+        tool = decided.get("tool")   # None: no decision record names it
         keys, overflow, missing = [], False, False
-        if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
+        untrusted = self._untrusted_results(tool, decided.get("policy_hash")) if tool and self.log.runs[key].get(
+            "prov") else False
+        if untrusted:
             keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
             r = req.get("result")
             missing = req["status"] == "ok" and ("result" not in req or isinstance(r, str) and _DIGEST.fullmatch(r)
@@ -3216,6 +3233,10 @@ class SignerService:
             if missing:
                 degrade(tx, run.get("prov"), "partial", f"{tcid} ({call['tool'][:64]}) completed with a digest, "
                                                           "not its result")
+            if untrusted is None:
+                degrade(tx, run.get("prov"), "partial", f"the policy {tcid} was decided under is not in the signer's "
+                                                          f"policies directory: whether {tool[:64]}'s results are "
+                                                          "untrusted is unknown")
             # approved: this call consumed the approval (pipeline.ran), not the attempt whose approval a retry consumed,
             # and only once: under the decision that consumed it, or a later one while that is still open
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
@@ -5529,11 +5550,12 @@ def dev_data_dir(create=True):
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
               idle_s=900, data_dir=None, stacks=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
-    with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
-    `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's), and `stacks`, the signal
-    on which this process writes every thread's stack to its log (autospawn.down sends it to a stop that hangs); before
-    returning, unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
+    with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life, and logs
+    STARTING (a client waits longer for it: autospawn); then `open_handler()` -> (handle_frame, close); then binds the
+    socket (loopback TCP without Unix sockets) and publishes endpoint.json, which names `data_dir` as hello does
+    (autospawn takes only its own HOME's), and `stacks`, the signal on which this process writes every thread's stack to
+    its log (autospawn.down sends it to a stop that hangs); before returning, unpublishes both, then calls close(). Call
+    it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -5548,6 +5570,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                 print("LOST: another dev signer holds signer.lock", file=sys.stderr)
                 return 1
             time.sleep(0.05)
+    print(f"STARTING pid {os.getpid()}", file=sys.stderr, flush=True)
     stop = []   # not an Event: its set() in the handler waits forever on the lock a wait() it interrupts holds
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)

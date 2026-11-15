@@ -1,5 +1,6 @@
 """Signed provenance: the values a tool result or observed input carries (tracekit.provenance), the signer's per-run
 index of them, `from: untrusted` rules, the decision's provenance fields, input.observed and the 1.1 bundle rule."""
+import contextlib
 import json
 import os
 import shutil
@@ -572,13 +573,22 @@ class Restart(Calls, unittest.TestCase):
         self.assertIn(f"run_seq {seq} does not open its commitment",
                       self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"])
 
+    def mine(self):
+        """A policy whose `untrusted` lists no http tool, with TK-P001 as the packs have it."""
+        path = os.path.join(self.dir, "mine.yaml")
+        with open(path, "w") as f:
+            f.write("untrusted: [mcp]\ntools: {send_email: email, http_get: http}\nask:\n"
+                    "  - {id: TK-P001, class: email, field: recipients, pattern: '.', from: untrusted}\n")
+        return path
+
+    def after_restart(self, state, why, policy=os.path.join(PACKS, "server.yaml")):
+        self.restart(policy)
+        self.assertIn(why, self.held(f"tc-mail-{uuid.uuid4().hex}", "audit@vendor.example", state)["provenance_reason"])
+
     def test_a_policy_change_keeps_a_result_untrusted(self):
         """A result the policy its decision recorded listed as untrusted stays so under a policy that doesn't."""
         self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
-        mine = os.path.join(self.dir, "mine.yaml")
-        with open(mine, "w") as f:
-            f.write("untrusted: [mcp]\ntools: {send_email: email, http_get: http}\nask:\n"
-                    "  - {id: TK-P001, class: email, field: recipients, pattern: '.', from: untrusted}\n")
+        mine = self.mine()
         self.restart(mine)
         self.assertEqual(self.held("tc-mail", "audit@vendor.example", "complete")["provenance"][0]["source"]["tool"],
                          "http_get")
@@ -588,6 +598,64 @@ class Restart(Calls, unittest.TestCase):
         self.restart(mine)
         self.assertIn("whether http_get's results are untrusted is unknown",
                       self.held("tc-mail2", "ops@ours.example", "partial")["provenance_reason"])
+
+    def test_a_call_decided_before_a_policy_change_completes_untrusted(self):
+        """Its result is untrusted under the policy the call was decided under, whatever policy the signer runs when it
+        completes: the call state keeps that policy in a snapshot, from the records, and from an older snapshot's. When
+        that policy is no longer kept, whether the result is untrusted is unknown."""
+        args = {"url": "https://notes.example/a"}
+        older = mock.patch.object(pipeline, "CALL_KEYS", pipeline.CALL_KEYS[:-1])   # no policy_hash, as before 1.7
+        for how in ("snapshot", "records", "older snapshot", "not kept"):
+            with self.subTest(how):
+                self.restart()
+                self.new_run()
+                d = self.decide("http_get", args, "tc-fetch")
+                with older if how == "older snapshot" else contextlib.nullcontext():
+                    self.s.close()
+                if how == "records":   # as after a crash: the records alone
+                    shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+                if how == "not kept":
+                    os.remove(os.path.join(self.dir, "policies", self.s.policy.policy_hash[len("sha256:"):] + ".json"))
+                self.restart(self.mine())
+                self.s.complete(self.req(tool_call_id="tc-fetch", decision_id=d["decision_id"], status="ok",
+                                         result={"body": INJECTED}, args_digest=event_hash({"tool": "http_get",
+                                                                                            "args": args})))
+                if how == "not kept":
+                    self.assertIn("whether http_get's results are untrusted is unknown",
+                                  self.held("tc-mail", "ops@ours.example", "partial")["provenance_reason"])
+                    continue
+                data = self.held("tc-mail", "audit@vendor.example", "complete")
+                self.assertEqual(data["provenance"][0]["source"]["tool_call_id"], "tc-fetch")
+
+    def test_a_kept_policy_file_that_changed_is_no_policy(self):
+        """A file in <data_dir>/policies whose bytes don't hash to its name is not the policy the decision recorded."""
+        self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
+        self.s.close()
+        with open(os.path.join(self.dir, "policies", self.s.policy.policy_hash[len("sha256:"):] + ".json"), "wb") as f:
+            f.write(pc.canonical(svc.load_policy(self.mine()).policy).encode())   # another policy, valid
+        self.after_restart("partial", "whether http_get's results are untrusted is unknown", self.mine())
+
+    def test_a_gap_before_a_restart_leaves_the_rebuilt_index_partial(self):
+        self.observe({"note": "hi"}, "trusted")
+        self.seq += 1   # an event the signer never got
+        self.observe({"note": "again"}, "trusted")
+        self.after_restart("partial", "skipped client_seq")
+
+    def test_a_digest_result_before_a_restart_leaves_the_rebuilt_index_partial(self):
+        args = {"url": "https://notes.example/a"}
+        d = self.decide("http_get", args, "tc-fetch")
+        self.s.complete(self.req(tool_call_id="tc-fetch", decision_id=d["decision_id"], status="ok",
+                                 result=event_hash({"body": INJECTED}), args_digest=event_hash({"tool": "http_get",
+                                                                                                "args": args})))
+        self.after_restart("partial", "tc-fetch (http_get) completed with a digest")
+
+    def test_content_with_more_values_than_are_read_leaves_the_rebuilt_index_truncated(self):
+        pad = " ".join(f"u{i}@pad.example" for i in range(provenance.MAX_VALUES))
+        self.call("http_get", {"url": "https://notes.example/a"}, {"body": pad + " " + INJECTED}, "tc-fetch")
+        self.after_restart("truncated", "the result of tc-fetch carried more values")
+        self.new_run()
+        seq = self.observe({"ticket": pad + " " + INJECTED}, "untrusted")
+        self.after_restart("truncated", f"observed input {seq} carried more values")
 
     def test_a_run_that_continues_a_session_stays_partial_across_restarts(self):
         """register_run `continues`: the run's index starts partial and its rebuild keeps it so, from the run state a

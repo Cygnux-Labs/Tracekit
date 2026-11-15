@@ -65,7 +65,7 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
               "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller")
+             "detect_ids", "via", "caller", "policy_hash")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
@@ -523,12 +523,14 @@ class RecordLog:
                     r.setdefault("tails", {})
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                     r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
-                    calls = [c for c in (*r["calls"].values(), *r["decisions"].values()) if c and "tool" not in c]
-                    if calls:   # before 1.7 a call had no tool: its decision's record names it
-                        tools = {x["event"]["data"].get("decision_id"): x["event"]["data"].get("tool")
+                    calls = [c for c in (*r["calls"].values(), *r["decisions"].values())
+                             if c and not {"tool", "policy_hash"} <= c.keys()]
+                    if calls:   # before 1.7 a call had no tool or policy_hash: its decision's record names them
+                        named = {x["event"]["data"].get("decision_id"): x["event"]["data"]
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
-                            c["tool"] = tools.get(c["decision_id"])
+                            d = named.get(c["decision_id"]) or {}
+                            c["tool"], c["policy_hash"] = d.get("tool"), d.get("policy_hash")
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
@@ -606,7 +608,7 @@ class RecordLog:
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
-                        "detect_ids": d.get("detect", {}).get("rule_ids")}
+                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
