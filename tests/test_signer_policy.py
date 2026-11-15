@@ -4260,8 +4260,12 @@ class CodingPack(unittest.TestCase):
         self.verdicts([("security -q dump-keychain -d", "TK-D020"), ("pass grep .", "TK-D020"), ("ssh-add -L", "TK-A021"),
                        ("security -q find-generic-password -s x -w", "TK-A021"),
                        ("security -v -p go find-internet-password -s x", "TK-A021"), ("pass example/site", "TK-A021"),
-                       ("pass show -c example/site", "TK-A021"), ("pass -c example/site", "TK-A021")])
-        for command in ("ssh-add -l", "pass", "pass ls", "pass insert example/new", "pass git log"):
+                       ("pass show -c example/site", "TK-A021"), ("pass -c example/site", "TK-A021"),
+                       ("gopass show email/github", "TK-A021"), ("gopass email/github", "TK-A021"),
+                       ("gopass cat secrets/prod", "TK-A021"), ("gopass otp accounts/github", "TK-A021")])
+        for command in ("ssh-add -l", "pass", "pass ls", "pass insert example/new", "pass git log", "gopass",
+                        "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
+                        "gopass mounts", "gopass config"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
