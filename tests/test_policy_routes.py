@@ -1002,12 +1002,13 @@ class WindowsPrograms(unittest.TestCase):
             (R + " '%USERPROFILE%\\*'", R + " ~/*"), (R + ' "$USERPROFILE"', R + ' "$HOME"'),
             (R + " ${USERPROFILE}", R + " ${HOME}"), (R + " $env:USERPROFILE", R + " $HOME"),
             ("find C:/ -delete", "find / -delete"))
-    # each decides as its reference does
+    # each decides as its reference does (an absolute path as its POSIX twin: TK-F003 flags a target it can't place in
+    # the project, a relative one it doesn't)
     BENIGN = (("'C:\\Program Files\\Git\\bin\\git.exe' status", "git status"),
               ("'C:\\Python\\python.exe' -m pytest", "python -m pytest"), ("git.exe log -5", "git log -5"),
               ("echo 'C:\\Windows'", "ls"), ("printf 'a\\tb'", "ls"), ("ls 'C:\\Users'", "ls"),
-              (R + " 'C:\\proj\\build'", R + " build"), (R + " C:/Users/u/proj/build", R + " build"),
-              (R + " /c/Users/u/proj", R + " build"),
+              (R + " 'C:\\proj\\build'", R + " /proj/build"), (R + " C:/Users/u/proj/build", R + " /Users/u/proj/build"),
+              (R + " /c/Users/u/proj", R + " /Users/u/proj"), (R + " 'proj\\build'", R + " proj/build"),
               ("cd C:/Users/u/proj && " + R + " build", "cd /Users/u/proj && " + R + " build"))
 
     @classmethod

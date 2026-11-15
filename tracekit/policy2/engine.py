@@ -551,13 +551,14 @@ class Engine:
         if cls == "shell" and field in (None, "argv"):
             # and each again with its words' own spaces as WORD_SPACE where a word before its last has one (the last
             # word's move no word after it: sqlite3's SQL is searched once), and with each word that is only a variable
-            # the line gives no value there (shell's unresolved: not a loop's, nor one it knows) as UNKNOWN_WORD
+            # the line gives no value there (shell's unresolved: not a loop's, nor one it knows) as UNKNOWN_WORD; each
+            # also with `\` as `/` (_slashes), as a line is
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
-            return list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
+            return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
-                         for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])]))
+                         for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])])))
         if cls == "shell" and field == "line":   # (and each publish as its program's: _published)
             return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1]) + list(dict.fromkeys(
                 p for c in parsed[0] if (p := _published(c["argv"]))))
