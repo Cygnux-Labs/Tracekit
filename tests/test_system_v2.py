@@ -955,12 +955,41 @@ class CliProject(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(d)
-        for argv, want in ((["--project", "/srv/my repo"], "/srv/my repo"), (["--project", "repo"], os.path.join(
-                os.getcwd(), "repo")), (["--project"], os.getcwd()), ([], None)):
+        for argv, want in ((["--project", "/srv/my repo"], os.path.abspath("/srv/my repo")),   # C:\srv\my repo on Windows
+                           (["--project", "repo"], os.path.join(os.getcwd(), "repo")), (["--project"], os.getcwd()),
+                           ([], None)):
             with self.subTest(argv=argv), contextlib.redirect_stdout(io.StringIO()), \
                     mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", None)) as v2:
                 self.assertEqual(cli.main(["init", "--v2", "--user", "agent", *argv]), 0)
             self.assertEqual(v2.call_args.args[3], want)
+
+    def test_the_default_is_the_working_directory_as_init_runs(self):
+        """init --dev --v2 --project wrote its hooks into the checkout on Windows CI, not the test's working directory:
+        --project with no DIR went through os.path.abspath, which on Windows asks the OS for the working directory
+        (nt._getfullpathname) rather than os.getcwd(), which the tests patch and which the code read before --project
+        took a DIR. Here an abspath that ignores a patched os.getcwd stands in for Windows' (on POSIX abspath calls
+        os.getcwd()). And a parser built before a chdir doesn't fix the directory early."""
+        from tracekit import cli
+        here, there = tempfile.mkdtemp(), tempfile.mkdtemp()
+        for p in (here, there):
+            self.addCleanup(shutil.rmtree, p, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(here)
+        real = os.getcwd
+        as_windows = mock.patch.object(os.path, "abspath", lambda p: os.path.normpath(os.path.join(real(), p)))
+        for cmd, called in ((["init", "--v2", "--user", "agent"], lambda: v2.call_args.args[3]),
+                            (["uninstall"], lambda: claude.call_args.args[0])):
+            with self.subTest(cmd=cmd[0]), contextlib.redirect_stdout(io.StringIO()), as_windows, \
+                    mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", None)) as v2, \
+                    mock.patch.object(install, "uninstall") as claude:
+                with mock.patch("os.getcwd", return_value=there):   # as InitV2 and Installer set the directory
+                    self.assertEqual(cli.main([*cmd, "--project"]), 0)
+                self.assertEqual(called(), there)
+                a = cli._parser()[0].parse_args([*cmd, "--project"])
+                os.chdir(there)
+                self.assertEqual(cli._run(a), 0)
+                self.assertEqual(called(), os.getcwd())
+                os.chdir(here)
 
     def test_uninstall_takes_the_project_directory(self):
         """uninstall --project took only the working directory, while init --project names DIR."""
@@ -969,7 +998,8 @@ class CliProject(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(d)
-        for argv, want in ((["--project", "/srv/my repo"], "/srv/my repo"), (["--project"], os.getcwd()), ([], None)):
+        for argv, want in ((["--project", "/srv/my repo"], os.path.abspath("/srv/my repo")), (["--project"], os.getcwd()),
+                           ([], None)):
             with self.subTest(argv=argv), contextlib.redirect_stdout(io.StringIO()), \
                     mock.patch.object(install, "uninstall") as claude, mock.patch.object(agent_hooks, "install") as other:
                 self.assertEqual(cli.main(["uninstall", *argv]), 0)

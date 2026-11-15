@@ -669,7 +669,9 @@ def _match_pending(pend, prefix):
 
 def _run(a):
     if a.cmd in ("init", "uninstall") and a.project:   # --project [DIR]: a re-init names it, so it runs from anywhere
-        a.project = os.path.abspath(a.project)
+        # DIR against os.getcwd() as init runs, as the code before --project took a DIR did: Windows' abspath asks the
+        # OS for the working directory itself (nt._getfullpathname)
+        a.project = os.path.normpath(os.path.join(os.getcwd(), a.project))
     if a.cmd in ("init", "uninstall") and a.agent in ("gptme", "jcode"):
         if a.project:
             print(f"tracekit: {a.agent} hooks use the user's config; omit --project", file=sys.stderr)
