@@ -1049,6 +1049,7 @@ class CliProject(unittest.TestCase):
         self.assertIsNone(install.plugin_enabled([], project=repo))
 
 
+@unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class HarnessSpec(unittest.TestCase):
     def test_the_given_path_is_kept_only_where_only_root_can_repoint_it(self):
         """init recorded --harness as given, links kept, with no look at who can change the link: a link in a
