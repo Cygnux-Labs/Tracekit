@@ -167,11 +167,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
   the commitment.
 - **Model messages from integrations and coding agents.** A framework integration records each model message it sees,
-  and a Codex, Gemini CLI or Cursor hook what the model said since the last hook (from Codex's rollout, Gemini CLI's
-  chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`): a commitment always, and the message (its
-  reasoning, sealed forms byte for byte, text and calls) as the record's `body` only when the signer says the vault is
-  on. Without the vault the text stays where it came from: the framework's memory, the agent's own files
-  ([reasoning](reasoning.md)).
+  and a Codex, Gemini CLI, Cursor or Crush hook what the model said since the last hook (from Codex's rollout, Gemini
+  CLI's chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`, Crush's `TurnEnd`
+  `last_assistant_message`): a commitment always, and the message (its reasoning, sealed forms byte for byte, text and
+  calls) as the record's `body` only when the signer says the vault is on. Without the vault the text stays where it
+  came from: the framework's memory, the agent's own files ([reasoning](reasoning.md)).
 - **Reasoning summaries through the LLM gateway.** The gateway asks the provider to show the reasoning a request has
   the model do but hides ([gateway](gateway.md#readable-reasoning); `show_reasoning: false` turns it off), so its
   responses carry the provider's summaries of the reasoning, to the agent and, with the vault on, into the response's

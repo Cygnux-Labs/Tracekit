@@ -16,12 +16,13 @@ a missing session or tool call id blocks the call. Only the reply differs: each 
 What the model said (docs/reasoning.md) is recorded before each event is handled, as model_event responses on the
 session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout and
 Gemini CLI's thoughts and text from its chat recording (the transcript the payload names; each hook reads the lines
-written since the session's last one, a resumed session's first from where it ended at SessionStart), and the text of Cursor's afterAgentThought and afterAgentResponse events. Each
+written since the session's last one, a resumed session's first from where it ended at SessionStart), the text of
+Cursor's afterAgentThought and afterAgentResponse events, and the last_assistant_message of Crush's TurnEnd event. Each
 Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
 with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
-decision and reconciliation pairs the two; Gemini CLI and Cursor give a call no id, so theirs is not linked, and their
-messages are sent `said_only`: the signer reads no call from them, so it never takes the calls their hooks decide for
-calls no model asked for. Recording
+decision and reconciliation pairs the two; Gemini CLI, Cursor and Crush name no call id in what they send here, so
+theirs is not linked, and their messages are sent `said_only`: the signer reads no call from them, so it never takes
+the calls their hooks decide for calls no model asked for. Recording
 never changes a hook's answer: a failure prints a line and the hook goes on.
 """
 import contextlib
@@ -72,7 +73,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)
-        if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
+        if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID or (
+                harness == "crush" and p.get("hook_event_name") == "TurnEnd"):
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
             with warnings.catch_warnings():   # a version skew is told once per session (claude_code.handle) instead
                 warnings.filterwarnings("ignore", claude_code.SKEW)
@@ -100,14 +102,16 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline", "gptme", "openhands", "copilot",
+    if harness in ("qwen", "droid", "antigravity", "devin", "cline", "gptme", "openhands", "copilot",
                    "codebuddy", "jcode", "kiro"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
     ev, path, model = p.get("hook_event_name"), p.get("transcript_path"), p.get("model")
     if not isinstance(sid, str) or not sid or (
-            ev not in agent_hooks.CURSOR_SAID if harness == "cursor" else not isinstance(path, str) or not path):
+            ev not in agent_hooks.CURSOR_SAID if harness == "cursor" else
+            ev != "TurnEnd" or not said.text(p.get("last_assistant_message")) if harness == "crush" else
+            not isinstance(path, str) or not path):
         return
     try:
         state = claude_code._state(sid, "said")
@@ -118,6 +122,8 @@ def said_since(harness, p, stderr):
                 text = p.get("text") if isinstance(p.get("text"), str) else ""
                 said_items = [([said.thought(text)] if ev == "afterAgentThought" else said.text(text), model, "unknown",
                                "cursor hook")]
+            elif harness == "crush":
+                said_items = [(said.text(p["last_assistant_message"]), model, "unknown", "crush hook")]
             else:
                 resumed = ev == "SessionStart" and p.get("source") in claude_code.RESUMED
                 if st.get("path") != path or resumed:   # the session's first transcript, or a new one: from its
@@ -141,7 +147,7 @@ def said_since(harness, p, stderr):
                     st["vault"] = s.vault.limit
                 finally:
                     client.close()
-            if harness != "cursor":
+            if harness not in ("cursor", "crush"):
                 files.write_json(state, st)
     except Exception as e:   # what the model said goes unrecorded; the hook's answer is unchanged
         # lean: lines read and not sent are not read again, and no gap says so; have the signer write a gap if this
