@@ -584,9 +584,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 156 / 171 | 430 / 490 | 1193 / 1563 | 7.6 / 8.5 |
-| strict, RE2 / regex | 158 / 170 | 407 / 462 | 1040 / 1524 | 7.05 / 8.08 |
-| dev, RE2 / regex | 162 / 178 | 450 / 510 | 1295 / 1606 | 7.78 / 9.05 |
+| default, RE2 / regex | 156 / 171 | 439 / 491 | 1198 / 1546 | 7.82 / 8.72 |
+| strict, RE2 / regex | 157 / 170 | 407 / 470 | 1131 / 1488 | 7.15 / 8.13 |
+| dev, RE2 / regex | 163 / 178 | 445 / 525 | 1213 / 1624 | 7.96 / 9.14 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (66.7% default, 72.6% strict) and no benign set's
