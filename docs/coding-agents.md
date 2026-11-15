@@ -100,10 +100,11 @@ permission prompt. On macOS and Linux `install._blocking` wraps the command `ini
 exits 2 and blocks the call, and a v1 hook does too with `TRACEKIT_FAIL_CLOSED=1`. Only Windows dev mode has no
 wrapper, so there a hook that cannot start lets the call through. What Crush itself lets through is a hook that
 outlives its timeout: the call proceeds (Tracekit's hook answers within 540 s, under the 600 s timeout). `TurnStart`
-carries no prompt, and Tracekit doesn't read `TurnEnd`'s `last_assistant_message` yet, so `init` installs
-`SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` only; no prompt or model text is
-recorded (`SessionEnd` has a two-second budget). Tested through Crush's published hook payloads and Tracekit's
-installer, not yet in a live Crush session.
+carries no prompt, so `init` installs `SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse` and
+`PostToolUseFailure`, and with `--v2` also `TurnEnd` (`SessionEnd` has a two-second budget): no prompt is recorded, and
+`TurnEnd`'s `last_assistant_message` records only the turn's last step's first text part, after its calls ran — no
+reasoning, no text from the turn's earlier steps, and none from a sub-agent's turn. Checked in a Crush v0.101.0 session
+on Windows driven by a scripted OpenAI-compatible model, not yet with a live model.
 
 Cline's CLI and its VS Code extension run a hook file named after its event: `init --agent cline` writes Tracekit's
 `PreToolUse`, `PostToolUse`, `TaskStart`, `TaskComplete` and `UserPromptSubmit` files, executable and
@@ -527,11 +528,13 @@ to, or with the plugin enabled in the user's settings (unless they set it; `--no
 `tracekit uninstall` removes it again while it's still `true`): without it Claude Code keeps the model's thinking
 only sealed. For headless runs pass `claude -p --thinking-display summarized`. `tracekit analyze --v2`
 ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)) and `tracekit view --dev` read
-them. **Codex, Gemini CLI and Cursor:** each v2 hook first records what the model said since the session's last hook:
+them. **Codex, Gemini CLI, Cursor and Crush:** each v2 hook first records what the model said since the session's last hook:
 Codex's reasoning summaries (and the sealed `encrypted_content`), messages and tool calls from its rollout file, linked
 to the calls by `call_id`; Gemini CLI's thought summaries and text from its chat recording; Cursor's thinking and
-response text from its `afterAgentThought` and `afterAgentResponse` hooks (init installs them). Gemini CLI and Cursor
-give a call no id, so their text is not linked to a call, and Gemini CLI writes its thoughts after the calls ran.
+response text from its `afterAgentThought` and `afterAgentResponse` hooks; Crush's `last_assistant_message` from its
+`TurnEnd` hook (the turn's last step's first text part, with no reasoning or earlier steps' text; init installs those
+hooks). Gemini CLI, Cursor and Crush carry no call id in what sends the text, so their text is not linked to a call;
+Gemini CLI writes its thoughts, and Crush fires `TurnEnd`, after the calls ran.
 `tracekit init --v2 --agent codex` also sets `model_reasoning_summary = "auto"` as the first line of Codex's
 `config.toml` (unless it sets one; `--no-thinking-summaries` leaves it alone; `tracekit uninstall --agent codex` removes
 the line while it's unchanged): Codex's current models default to `none`, which keeps the
