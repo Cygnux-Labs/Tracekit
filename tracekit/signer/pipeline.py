@@ -46,8 +46,8 @@ _MISSING = object()
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks; `registered`, its run.registered's time (none in a
-    snapshot before 1.4). `prov`: the provenance index of a run registered
-    since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
+    snapshot before 1.4). `prov`: the run's provenance index (SignerService._index), memory only; None after a restart
+    until SignerService._rebuild rebuilds it (unavailable: no content vault to rebuild it from). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
     and snapshot only. `results`: tool_call_id -> [[decision_id, output hash, comparable, redacted, the form digest it
     matched or None], ...] of its tool.results (the newest RESULTS_PER_CALL: an id may be reused), which a gateway's
@@ -888,16 +888,23 @@ class RecordLog:
             self.storage.close()
         except Exception:
             pass
-        # the provenance indexes live in memory only: the replay can't rebuild them, and nothing in them was lost
-        prov = {k: r["prov"] for k, r in self.runs.items() if r.get("prov") is not None}
+        # the provenance indexes live in memory only, so they are kept over the replay: each holds what its run's records
+        # up to the head it saw carried. A write the storage reported failed may still have reached it: records past
+        # that head, which the replay brings back, were never indexed
+        prov = {k: (r["prov"], r["run_seq"]) for k, r in self.runs.items() if r.get("prov") is not None}
         try:
             self.storage = self.open_storage()
             self._replay()
         except Exception:
             return False
-        for k, p in prov.items():
-            if k in self.runs and not self.runs[k]["final"]:
-                self.runs[k]["prov"] = p
+        for k, (p, seen) in prov.items():
+            run = self.runs.get(k)
+            if run and not run["final"]:
+                run["prov"] = p
+                if run["run_seq"] > seen:
+                    degrade(types.SimpleNamespace(set=dict.__setitem__), p, "partial",
+                            f"run_seq {seen}..{run['run_seq'] - 1} reached the store in a write it reported failed, "
+                            "so the index never read them")
         since, err = self.down
         self.down = None
         fut = Future()

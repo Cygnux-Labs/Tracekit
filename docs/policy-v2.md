@@ -407,7 +407,7 @@ up as the host it is, without a trailing dot (`evil.example.` is `evil.example`)
 |---|---|
 | `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`), or a client's events skipped a `client_seq` (`client_counter_gap`: an observe or a result the signer never got), from the decision that reveals the gap on |
 | `truncated` | a result or untrusted observed input carried more values than are read (4096 values, 1 MiB of text), or the run's index reached 20000 values |
-| `unavailable` | the signer restarted: the index lives in memory only (a storage outage the signer recovers from keeps it) |
+| `unavailable` | the signer restarted without a content vault to rebuild the index from (it lives in memory only); with one, the index is rebuilt from the run's records and the vault, and is `partial` where an untrusted record's content can't be read back whole (a storage outage the signer recovers from keeps the index: `partial` once a write the store reported failed turns out to have reached it) |
 | `timeout` | reading this call's values took past the decision's deadline (1 s) |
 
 **Fail closed:** in every state but `complete` a `from: untrusted` rule matches whenever its pattern does, in its own

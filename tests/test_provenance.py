@@ -146,16 +146,8 @@ class Policy(unittest.TestCase):
                                 ("c@x.example", "recipients")])
 
 
-class Signer(unittest.TestCase):
-    def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.dir, True)
-        self.open()
-
-    def open(self):
-        self.s = svc.SignerService(self.dir, policy=svc.load_policy(os.path.join(PACKS, "server.yaml")))
-        self.addCleanup(self.s.close)
-        self.new_run()
+class Calls:
+    """The calls of a test's run `run` on its signer `s`."""
 
     def new_run(self):
         self.run = self.s.register_run({"request_id": f"reg-{uuid.uuid4().hex}", "agent": {"name": "a"}})
@@ -185,6 +177,18 @@ class Signer(unittest.TestCase):
 
     def email(self, tcid, to="audit@vendor.example"):
         return self.decide("send_email", {"to": to, "subject": "list", "body": "attached"}, tcid)
+
+
+class Signer(Calls, unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.open()
+
+    def open(self):
+        self.s = svc.SignerService(self.dir, policy=svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        self.addCleanup(self.s.close)
+        self.new_run()
 
     def test_an_address_from_an_untrusted_result_is_held(self):
         self.call("http_get", {"url": "https://notes.example/vendor"}, {"body": INJECTED}, "tc-fetch")
@@ -441,12 +445,45 @@ class Signer(unittest.TestCase):
         with self.assertRaises(svc.RPCError):
             self.email("tc-x")
         with mock.patch.object(pipeline, "RECOVER_S", 0):
-            self.email("tc-mail")   # decided on the state before the recovery, which its write then runs
+            self.email("tc-mail")   # decided while the storage is down, and its write runs the recovery
         self.assertIsNotNone(self.s.log.runs[(self.run["tenant"], self.run["run_id"])]["prov"])
         self.assertEqual(self.email("tc-after")["rule_ids"], ["TK-P001"])
         data = self.record("tc-after")   # the values are still there; the refused decide's client_seq is a gap
         self.assertEqual({p["source"].get("tool_call_id") for p in data["provenance"]}, {"tc-fetch"})
         self.assertEqual(data["provenance_state"], "partial")
+
+    def test_a_write_the_storage_reported_failed_but_kept_makes_the_index_partial(self):
+        """The recovery's replay brings back the records of a batch the storage wrote but reported failed, which the
+        index never read: an untrusted observe's address. A decision during the outage can't tell either."""
+        self.s.close()
+        fail = []
+
+        class Disk(FileStorage):
+            def append_batch(self, records):
+                super().append_batch(records)
+                if fail:
+                    fail.pop()
+                    raise StorageUnavailable("fsync: Input/output error")
+        self.s = svc.SignerService(self.dir, policy=svc.load_policy(os.path.join(PACKS, "server.yaml")),
+                                   open_storage=lambda: Disk(os.path.join(self.dir, "store")))
+        self.addCleanup(self.s.close)
+        self.new_run()
+        fail.append(1)
+        with self.assertRaises(svc.RPCError):   # from another client process: no client_seq of the decides' is lost
+            self.s.observe({"request_id": "rq-inbox", "run_id": self.run["run_id"], "run_token": self.run["run_token"],
+                            "stream": "inbox", "client_seq": 0, "source": "inbox", "trust": "untrusted",
+                            "value": {"ticket": INJECTED}})
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            d = self.email("tc-mail")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertIn("the storage failed a write", self.record("tc-mail")["provenance_reason"])
+        self.assertIn("input.observed", [r["event"]["type"] for r in self.s.log.storage.iter_run(
+            self.run["tenant"], self.run["run_id"])])
+        d = self.email("tc-after")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        data = self.record("tc-after")
+        self.assertEqual(data["provenance_state"], "partial")
+        self.assertIn("run_seq 1..1 reached the store in a write it reported failed", data["provenance_reason"])
 
     def test_the_index_goes_with_the_run(self):
         key = (self.run["tenant"], self.run["run_id"])
@@ -455,6 +492,127 @@ class Signer(unittest.TestCase):
         self.s.grace_s = 0
         self.s.sweep()
         self.assertNotIn("prov", self.s.log.runs[key])
+
+
+class Restart(Calls, unittest.TestCase):
+    """A restart rebuilds each open run's index from its signed records and the content vault."""
+
+    def setUp(self):
+        self.dir, self.s = tempfile.mkdtemp(), None
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.restart()
+        self.new_run()
+
+    def restart(self, policy=os.path.join(PACKS, "server.yaml")):
+        if self.s:
+            self.s.close()
+        self.s = svc.SignerService(self.dir, policy=svc.load_policy(policy), content={**svc.CONTENT, "retain": True})
+        self.addCleanup(self.s.close)
+
+    def req(self, **kw):   # one client stream across restarts: no client_seq is skipped
+        return {**super().req(**kw), "stream": "s"}
+
+    def blob(self, seq):
+        return self.s.log.storage._vault(self.s.log.log_id, self.run["tenant"], self.run["run_id"], str(seq))
+
+    def held(self, tcid, to, state):
+        d = self.email(tcid, to)
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        data = self.record(tcid)
+        self.assertEqual(data["provenance_state"], state)
+        return data
+
+    def test_a_restart_keeps_where_each_value_came_from(self):
+        seq = self.observe({"ticket": INJECTED}, "untrusted")
+        self.observe({"prompt": "Mail the summary to ops@ours.example"}, "trusted")
+        self.call("http_get", {"url": "https://notes.example/a"}, {"pay_to": "acct_1Nv0FGQ9RKHgCVdK"}, "tc-fetch")
+        self.restart()
+        d = self.decide("transfer_funds", {"account": "9876-5432-1012-3456", "amount": 5}, "tc-pay")
+        self.assertIn("TK-P002", d["rule_ids"])
+        data = self.record("tc-pay")
+        self.assertEqual((data["provenance_state"], [p["source"] for p in data["provenance"]]),
+                         ("complete", [{"run_seq": seq}]))
+        d = self.decide("transfer_funds", {"account": "acct_1Nv0FGQ9RKHgCVdK", "amount": 5}, "tc-pay2")
+        self.assertIn("TK-P002", d["rule_ids"])
+        self.assertEqual(self.record("tc-pay2")["provenance"][0]["source"]["tool_call_id"], "tc-fetch")
+        self.assertEqual(self.email("tc-mail", to="ops@ours.example")["decision"], "allow")
+        self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "complete")["provenance"][0]["source"],
+                         {"run_seq": seq})
+        accessed = [e["data"] for e in (r["event"] for r in self.s.log.storage.iter_run(self.run["tenant"],
+                                                                                         pipeline.SIGNER_RUN[1]))
+                    if e["type"] == "content.accessed"]
+        self.assertEqual([(a["principal"], a["run_id"]) for a in accessed], [("signer", self.run["run_id"])])
+        self.assertEqual(accessed[0]["seqs"], [seq, seq + 1, seq + 3])   # the observes and the result
+
+    def test_a_value_redaction_hid_leaves_the_rebuilt_index_partial(self):
+        """Redaction can take a value with the marks around it, whatever count a record (an older signer's) says."""
+        seq = self.observe({"ticket": "token=[REDACTED:assignment]evil@x.example[REDACTED:assignment]"}, "untrusted")
+        self.restart()
+        data = self.held("tc-mail", "evil@x.example", "partial")
+        self.assertIn(f"run_seq {seq} was redacted", data["provenance_reason"])
+
+    def test_an_altered_vault_leaves_the_rebuilt_index_partial(self):
+        seq = self.observe({"ticket": INJECTED}, "untrusted")
+        other = self.observe({"ticket": "nothing to see"}, "untrusted")
+        self.s.close()
+        os.replace(self.blob(other), self.blob(seq))   # another record's content: its binding doesn't open
+        self.restart()
+        self.assertIn(f"run_seq {seq} does not open against its record",
+                      self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"])
+
+    def test_content_that_does_not_open_its_commitment_leaves_the_rebuilt_index_partial(self):
+        seq = self.observe({"ticket": INJECTED}, "untrusted")
+        key = (self.run["tenant"], self.run["run_id"])
+        e = next(r["event"] for r in self.s.log.storage.iter_run(*key) if r["event"]["run_seq"] == seq)
+        dk = self.s._data_key(key)
+        self.s.close()
+        with open(self.blob(seq), "wb") as f:   # bound to its record, but not the content it commits to
+            f.write(b"\0" * 12 + dk.encrypt(b"\0" * 12, b'{"ticket":"hi"}', self.s._aad(key, seq, svc._committed(e))))
+        self.restart()
+        self.assertIn(f"run_seq {seq} does not open its commitment",
+                      self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"])
+
+    def test_a_policy_change_keeps_a_result_untrusted(self):
+        """A result the policy its decision recorded listed as untrusted stays so under a policy that doesn't."""
+        self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
+        mine = os.path.join(self.dir, "mine.yaml")
+        with open(mine, "w") as f:
+            f.write("untrusted: [mcp]\ntools: {send_email: email, http_get: http}\nask:\n"
+                    "  - {id: TK-P001, class: email, field: recipients, pattern: '.', from: untrusted}\n")
+        self.restart(mine)
+        self.assertEqual(self.held("tc-mail", "audit@vendor.example", "complete")["provenance"][0]["source"]["tool"],
+                         "http_get")
+        for name in os.listdir(os.path.join(self.dir, "policies")):   # the policy it recorded, gone: unknown
+            if svc.load_policy(mine).policy_hash != "sha256:" + name[:-len(".json")]:
+                os.remove(os.path.join(self.dir, "policies", name))
+        self.restart(mine)
+        self.assertIn("whether http_get's results are untrusted is unknown",
+                      self.held("tc-mail2", "ops@ours.example", "partial")["provenance_reason"])
+
+    def test_only_records_bound_to_the_runs_head_are_read(self):
+        """An observe altered to trusted before the last snapshot (which the replay doesn't read again) breaks the
+        run's chain; records missing from the store end it before its head."""
+        seq = self.observe({"ticket": INJECTED}, "untrusted")
+        self.observe({"prompt": "hi"}, "trusted")
+        self.s.log.snapshot()
+        self.s.close()
+        path = os.path.join(self.dir, "store", "records.jsonl")
+        with open(path, "rb") as f:
+            data = f.read()
+        with open(path, "wb") as f:   # the same length: the store reads it where it was
+            f.write(data.replace(b'"trust":"untrusted"', b'"trust":"trusted"  '))
+        self.restart()
+        self.assertIn(f"run_seq {seq} breaks the run's chain",
+                      self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"])
+        self.s.close()
+        with open(path, "rb") as f:
+            data = f.read()
+        with open(path, "wb") as f:
+            f.write(data.replace(b'"trust":"trusted"  ', b'"trust":"untrusted"'))
+        iter_run = FileStorage.iter_run
+        with mock.patch.object(FileStorage, "iter_run", lambda s, *k: list(iter_run(s, *k))[:seq + 1]):
+            self.restart()
+        self.assertIn("end before its head", self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"])
 
 
 class Bundles(Case):

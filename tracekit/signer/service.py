@@ -285,7 +285,7 @@ exchange redaction changed whose tool_uses carry args_commitments, which the sal
 retention_days ago, checked at start and every CONTENT_SWEEP_S) delete a run's key and blobs, then write
 `content.erased`. Records are never changed.
 
-Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
+Provenance (docs/policy-v2.md): each open run has an index, in memory only, of the
 values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
 carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
 content was trusted (an observed input is what the caller says; other tools' results are not indexed: they can echo
@@ -294,9 +294,12 @@ trusted stays trusted. `decide` answers `send_result` for an untrusted tool, so 
 result rather than a digest. `from: untrusted` rules match on the index, and every decision records which arguments
 carry untrusted-only values (field, kind, source record; never the value). The index is `partial` once an untrusted
 tool completes with a digest or no result, or a client's events skip a client_seq (a lost observe or result),
-`truncated` once a result carries more values than are read or the run's index is full, `unavailable` after a restart
-(a storage recovery keeps it), and a decision whose values take past its deadline is `timeout`; in each, `from:
-untrusted` rules fail closed: they match whenever their pattern does.
+`truncated` once a result carries more values than are read or the run's index is full, and a decision whose values
+take past its deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern
+does. A restart rebuilds each open run's index from its records and the content vault (_rebuilt), `partial` where an
+untrusted record's content can't be read whole, `unavailable` without a vault; a storage recovery keeps the index,
+`partial` once records it never read turn out to have reached the store, and a decision during the outage reads it
+as `partial`.
 """
 import argparse
 import base64
@@ -351,7 +354,8 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
-from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageCorrupt, StorageUnavailable, registry_tree
+from tracekit.storage.base import ACK_ON_WRITE, RECORDS, ZERO_HASH, StorageCorrupt, StorageUnavailable, \
+    registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
@@ -566,7 +570,7 @@ def _waiting(a, now):
     return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
 
 
-MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
+MARK = privacy.MARK
 
 
 def _salt(key, label):
@@ -596,9 +600,8 @@ def _committed(e):
 
 def _redact(value, dotenv, claim=None):
     """(`value` through privacy.redact, its manifest). `claim`: the client's manifest when it says it redacted."""
-    before = collections.Counter(MARK.findall(canonical(value).decode()))
-    out = privacy.redact(value, dotenv)[0]
-    fired = collections.Counter(MARK.findall(canonical(out).decode())) - before
+    fired = collections.Counter()
+    out = privacy.redact(value, dotenv, counts=fired)[0]
     manifest = {"rules": sorted(fired), "count": sum(fired.values()), "client_claimed": claim is not None}
     if claim is not None:
         manifest["client"] = claim
@@ -1153,6 +1156,7 @@ class SignerService:
             pass
         except Exception:   # as the ticker: the signer still starts
             self._loop_error("ticker")
+        self._rebuild()   # after the sweep: a run it closed decides nothing more
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -2204,6 +2208,116 @@ class SignerService:
             elif had is None or had["trust"] == "untrusted" and source["trust"] == "trusted":
                 tx.set(idx, k, source)
 
+    def _rebuild(self):
+        """After a restart, rebuild the provenance index of each open run from its records and the content vault, each
+        in one writer item that also writes the content.accessed of what it read (none without a vault: the index stays
+        unavailable). A run whose rebuild fails starts partial."""
+        if self._content_key is None:
+            return
+        # lean: every open run is rebuilt before the signer serves, reading its records and the content of its observes
+        # and untrusted results: seconds for a long run (2.5 s for one of 15,800 calls and observes, 10 s for one with
+        # 2,000 of 32 KiB each); rebuild a run on its first decide instead if restarts must answer sooner
+        for key in [k for k in self.log.live if not self.log.runs[k]["closed"]]:
+            def fn(tx, key=key):
+                try:
+                    prov, read = self._rebuilt(key)
+                except Exception as e:   # the content key doesn't open (_data_key), the store can't be read, ...
+                    prov, read = {"state": "partial", "reason": f"the index could not be rebuilt after a signer "
+                                                                f"restart: {e}"[:256], "index": {}}, []
+                tx.set(self.log.runs[key], "prov", prov)
+                for i in range(0, len(read), 1000):   # content_accessed's seqs
+                    tx.emit(self.log.signer_run(tx, key[0]), "content.accessed", {
+                        "principal": "signer", "run_id": key[1], "seqs": read[i:i + 1000],
+                        "purpose": "rebuilding the run's provenance index after a signer restart"}, source="signer")
+            try:
+                self.log.write(fn)
+            except Exception:   # its content.accessed not written (storage down): the run's index stays unavailable
+                logging.getLogger(__name__).exception("tracekit signer: the provenance index of run %s was not rebuilt",
+                                                      key[1])
+
+    def _rebuilt(self, key):
+        """(run `key`'s provenance index as _index, _observe and _complete built it, the run_seqs whose content it read),
+        from the run's records, checked against its head, and the vault. Trust comes from signed records only: an
+        observe's `trust`, and a tool result is untrusted when the policy or one the run's decisions recorded lists its
+        tool. A value comes only from content that opens against its record (the vault's binding) and its commitment
+        and that redaction left whole: a mark may hide a value, whatever the record's count says. An untrusted record
+        whose content can't be read so makes the index partial; trusted content left out only holds more calls."""
+        prov, read, tools, head = {"state": "complete", "index": {}}, [], {}, ZERO_HASH
+        policies = {self.policy.policy_hash: self.policy}   # policy_hash -> the policy (None: not kept)
+        run, at, dk = {"prov": prov}, types.SimpleNamespace(set=dict.__setitem__), self._data_key(key)
+        for r in self.log.storage.iter_run(*key):
+            e, d = r["event"], r["event"]["data"]
+            if e["run_prev_hash"] != head or event_hash(e) != r["hash"]:
+                degrade(at, prov, "partial", f"run_seq {e['run_seq']} breaks the run's chain: run `tracekit signer fsck`")
+                return prov, read
+            head, seq, t = r["hash"], e["run_seq"], e["type"]
+            if t == "policy.decision":
+                tools[d["decision_id"]] = d["tool"]
+                if d["policy_hash"] not in policies:
+                    policies[d["policy_hash"]] = self._kept_policy(d["policy_hash"])
+            elif t == "capture.gap" and d.get("kind") == "client_counter_gap":
+                degrade(at, prov, "partial", d["reason"] + LOST)
+            if t == "input.observed":
+                source = {"run_seq": seq, "trust": d["trust"]}
+            elif t == "tool.result" and d["decision_id"] in tools:
+                tool = tools[d["decision_id"]]
+                if not any(p.untrusted_results(tool) for p in policies.values() if p):
+                    if None in policies.values():
+                        degrade(at, prov, "partial", "a policy this run's decisions recorded is not in the signer's "
+                                                     f"policies directory: whether {tool[:64]}'s results are untrusted "
+                                                     "is unknown")
+                    continue
+                source = {"run_seq": seq, "tool": tool, "tool_call_id": e["tool_call_id"], "trust": "untrusted"}
+            else:
+                continue
+            blob = None if dk in (None, ERASED) else self.log.storage.content_get(self.log.log_id, *key, seq)
+            value, why = None, "was erased" if dk is ERASED else "was too large to keep" if blob == b"" else \
+                "was not kept" if not blob else None
+            if blob:
+                try:
+                    value = loads_strict(dk.decrypt(blob[:12], blob[12:], self._aad(key, seq, _committed(e))))
+                    read.append(seq)
+                    c = canonical(value)
+                except (InvalidTag, StrictJSONError):
+                    why = "does not open against its record"
+                else:
+                    text = c.decode()
+                    why = "does not open its commitment" if not self._opens(
+                        _committed(e), salt_label(e), "sha256:" + hashlib.sha256(c).hexdigest()) else \
+                        "was redacted" if MARK.search(text) or privacy.NESTED in text else None
+            if why:
+                if source["trust"] == "untrusted":
+                    degrade(at, prov, "partial", f"the content of run_seq {seq} {why}, so the index rebuilt after a "
+                                                 "signer restart lacks its values")
+                continue
+            keys, overflow = self._keys(value)
+            self._index(at, run, keys, source)
+            if t == "tool.result":
+                res = value.get("result")
+                if overflow:
+                    degrade(at, prov, "truncated", f"the result of {e['tool_call_id']} carried more values than are read")
+                if d["ok"] and ("result" not in value or isinstance(res, str) and _DIGEST.fullmatch(res)
+                                or isinstance(res, dict) and {"hash", "size"} <= res.keys()):
+                    degrade(at, prov, "partial", f"{e['tool_call_id']} ({tool[:64]}) completed with a digest, not its "
+                                                 "result")
+            elif overflow and source["trust"] == "untrusted":
+                degrade(at, prov, "truncated", f"observed input {seq} carried more values than are read")
+        if head != self.log.runs[key]["head"]:
+            degrade(at, prov, "partial", "the run's records in the store end before its head: run `tracekit signer fsck`")
+        return prov, read
+
+    def _kept_policy(self, policy_hash):
+        """The policy (an Engine) with `policy_hash` this signer kept in <data_dir>/policies, or None."""
+        name = policy_hash[len("sha256:"):]
+        if not (policy_hash.startswith("sha256:") and re.fullmatch("[0-9a-f]{64}", name)):
+            return None
+        try:
+            with open(os.path.join(self.data_dir, "policies", name + ".json"), "rb") as f:
+                data = f.read()
+            return Engine(json.loads(data)) if hashlib.sha256(data).hexdigest() == name else None
+        except (OSError, ValueError):
+            return None
+
     def _provenance(self, key, args, req):
         """(`untrusted(subject, field)` for the policy, a function giving the decision's provenance fields) of a call
         with `args` in run `key`, decided by event `req`. Whenever the index is not complete (partial, truncated,
@@ -2214,9 +2328,14 @@ class SignerService:
         # see that batch's values for that moment; read on the writer if that ever matters
         idx = prov["index"] if prov else {}
         st = ({"state": prov["state"], "reason": prov.get("reason")} if prov else
-              {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart, so from: "
-                                                 "untrusted rules hold every call they match for the rest of this run: "
-                                                 "answer the holds, or start the task again in a new run"})
+              {"state": "unavailable", "reason": "the index was lost in a signer restart (no content vault to rebuild it "
+                                                 "from), so from: untrusted rules hold every call they match for the "
+                                                 "rest of this run: answer the holds, or start the task again in a new "
+                                                 "run"})
+        down = st["state"] == "complete" and self.log.down
+        if down:   # a write the storage reported failed may have reached it, unread by the index (RecordLog._recover)
+            st = {"state": "partial", "reason": f"the storage failed a write at {down[0]}, which may have reached it: "
+                                                "the index can't vouch for a value until it recovers"}
         gap = st["state"] == "complete" and skipped(self.log.runs[key], req)
         if gap:   # a gap this decide reveals: the writer degrades the index with it
             st = {"state": "partial", "reason": (gap + LOST)[:256]}
