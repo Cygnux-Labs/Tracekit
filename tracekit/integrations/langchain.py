@@ -53,16 +53,19 @@ from langgraph.prebuilt.tool_node import _handle_tool_error, _infer_handled_type
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
-from tracekit.integrations import said
+from tracekit.integrations import said, version_check
 from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
+_FRAMEWORK = version_check.framework("langgraph")
+
 
 class TracekitMiddleware(AgentMiddleware):
     def __init__(self, signer, run_id, run_token, fail_modes=None):
         """`signer` is any `SignerAPI`; `run_id`/`run_token` (and `fail_modes`) come from its `register_run`."""
+        version_check.warn_untested(*_FRAMEWORK)
         super().__init__()
         self.signer, self.run = signer, {"run_id": run_id, "run_token": run_token}
         self.fail_modes = fail_modes
@@ -303,6 +306,7 @@ class _GatedToolNode(ToolNode):
 def tracekit_tool_node(tools, signer, run, **kw):
     """A `ToolNode` for graphs built without `create_agent`, every call through the `TracekitMiddleware` gate. `run` is
     the signer's `register_run` response; `kw` goes to ToolNode."""
+    version_check.warn_untested(*_FRAMEWORK)
     gate = TracekitMiddleware(signer, run["run_id"], run["run_token"], run.get("fail_modes"))
     if "handle_tool_errors" in kw:
         kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
@@ -346,6 +350,7 @@ class TracekitCheckpointer(BaseCheckpointSaver):
     digest than the signer's last, which the signer records as a `state_tamper` gap."""
 
     def __init__(self, saver, signer, run):
+        version_check.warn_untested(*_FRAMEWORK)
         super().__init__(serde=saver.serde)
         self.saver, self.signer, self.run = saver, signer, {"run_id": run["run_id"], "run_token": run["run_token"]}
         self.stream, self._seq, self._reads = "langgraph-" + uuid.uuid4().hex, itertools.count(), itertools.count()

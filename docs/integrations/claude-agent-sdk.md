@@ -32,11 +32,17 @@ options = ClaudeAgentOptions(
 )
 async for message in query(prompt="fix the failing test", options=options):
     ...
+signer.close_run({"run_id": run["run_id"], "run_token": run["run_token"]})
 ```
 
-Register the run when the session starts; the hooks close it at `SessionEnd`. To add hooks of your own, extend the
-lists in the mapping. Tools run in the CLI subprocess under their Claude Code names (`Bash`, `Edit`, `Write`, ...), so
-the signer's coding packs apply to them as they do to the Claude Code hook.
+Register the run when the session starts and close it after the message loop. The CLI doesn't send the SDK's hooks
+`SessionEnd` (checked with claude-agent-sdk 0.2.165 and 0.2.181, CLI 2.1.294 and 2.1.323), so a run the app leaves open
+closes only at the signer's idle timeout (`idle_s`, an hour by default), with the reason `idle_timeout` rather than
+the session's own. The hooks still close it at `SessionEnd` if a CLI sends one; `tracekit.instrument()` closes its run
+when the process exits.
+
+To add hooks of your own, extend the lists in the mapping. Tools run in the CLI subprocess under their Claude Code
+names (`Bash`, `Edit`, `Write`, ...), so the signer's coding packs apply to them as they do to the Claude Code hook.
 
 ### With a tool executor
 
@@ -64,7 +70,7 @@ each `ClaudeAgentOptions`' own `mcp_servers` for you.
 | PreToolUse, right before it runs | `approval_consume` | the same call and arguments, and the approval id when the hook waited for one |
 | PostToolUse / PostToolUseFailure | `complete` | `status` `ok` or `error`, a `sha256:` commitment to the tool response (not the response), or the error message |
 | after each `SessionStore.append` | `state_write` | the transcript's digest and the digest it started from (`prev_digest`) |
-| SessionEnd | `close_run` | the CLI's reason |
+| SessionEnd, if the CLI sends it (it doesn't today: the app closes the run) | `close_run` | the CLI's reason |
 
 ## What the model said
 

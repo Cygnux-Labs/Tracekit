@@ -110,14 +110,21 @@ def collect(config=None, issuer_key=None):
         # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
         # until doctor reads them per format
-        return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
-                               signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                               sandbox_settings=[p for p in (home, settings, _managed()) if p],
-                               gemini_settings=_gemini(agent and agent.pw_dir,
-                                                        h.get("settings") if h.get("agent") == "gemini" else None),
-                               harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
-                               else None, no_hooks=h.get("no_hooks") is True)
+        rows = v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
+                         signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
+                         client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
+                         sandbox_settings=[p for p in (home, settings, _managed()) if p],
+                         gemini_settings=_gemini(agent and agent.pw_dir,
+                                                 h.get("settings") if h.get("agent") == "gemini" else None),
+                         harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
+                         else None, no_hooks=h.get("no_hooks") is True)
+        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
+        # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
+        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off
+        again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
+            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude"
+            and settings not in install.MANAGED_SETTINGS.values() else "")
+        return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -781,7 +788,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
-        fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
         if harness == "gptme":
             if not prod:
                 ok, detail = _gptme_load_check(path)
@@ -983,6 +990,94 @@ def _vault_off(cfg, keys):
     except (OSError, ValueError, KeyError) as e:
         return False, f"off; cannot count the runs still retained: {e}", "run doctor as root"
     return (False, f"off, {n} runs still retained (erase or keep)", fix) if n else (True, off, "")
+
+
+def _acl_perms(out, uid):
+    """The permissions `getfacl -n` output `out` gives uid: its named entry (as the mask leaves it), else other's."""
+    # lean: the groups' entries aren't read; init grants the tailer's user a named entry
+    named = other = None
+    for line in out.splitlines():
+        entry, _, effective = line.partition("#effective:")
+        parts = entry.strip().split(":")
+        if len(parts) == 3 and parts[:2] == ["user", str(uid)]:
+            named = effective.strip() or parts[2]
+        elif len(parts) == 3 and parts[0] == "other":
+            other = parts[2]
+    return named if named is not None else other or ""
+
+
+def _tailer_checks(add, client_json, agent):
+    """D-TAILER-*: what system init sets up for a Claude Code agent's transcript tailer (install._tailer_acl,
+    install._tailer_sudo, client.json's `tailer` key). Without it each session records a tailer_lost gap, whose signed
+    reason sends the reader here."""
+    try:
+        sc = read_json(client_json)
+    except (OSError, ValueError):   # D-SYSTEM-CONFIG's
+        return
+    hooks = sc.get("hooks") if isinstance(sc, dict) else None
+    if not isinstance(hooks, dict) or hooks.get("agent", "claude") != "claude":   # the tailer reads Claude Code's only
+        return
+    t = sc.get("tailer")
+    if not (isinstance(t, dict) and isinstance(t.get("user"), str) and type(t.get("uid")) is int
+            and isinstance(t.get("python"), str)):
+        add("D-TAILER-CONFIG", False, f"{client_json} " + ("names no tailer" if t is None else
+            "has a tailer that isn't {user, uid, python}") + ": each Claude Code session records a tailer_lost gap "
+            "instead of its transcript", REINIT, bad=WARN)
+        return
+    user, uid, python = t["user"], t["uid"], t["python"]
+    add("D-TAILER-CONFIG", True, f"{client_json} names the tailer: {user} (uid {uid}), {python}", "")
+    pw = _user(user)
+    add("D-TAILER-USER", pw is not None and pw.pw_uid == uid, f"no user {user}" if pw is None else
+        f"{user} has uid {pw.pw_uid}, not {uid}: the signer lets only uid {uid} make the tailer's calls"
+        if pw.pw_uid != uid else f"the tailer's user {user} has uid {uid}", REINIT, bad=WARN)
+
+    sudoers, cmd = install.TAILER_SUDOERS, f"{python} -I -m tracekit.tailer"
+    try:
+        st = os.lstat(sudoers)
+        bad = [why for why, hit in ((f"{sudoers} isn't a file", not stat.S_ISREG(st.st_mode)),
+                                    (f"{sudoers} belongs to uid {st.st_uid}, not root", st.st_uid != 0),
+                                    (f"{sudoers} is {stat.S_IMODE(st.st_mode):04o}, not 0440",
+                                     stat.S_IMODE(st.st_mode) != 0o440)) if hit]
+        if bad:
+            add("D-TAILER-SUDO", False, "; ".join(bad), f"sudo chown 0:0 {sudoers}; sudo chmod 440 {sudoers}; or "
+                + REINIT)
+        else:
+            # the exact line install._tailer_sudo writes, so a commented-out line or another user's rule doesn't count
+            rule = f"{agent.pw_name} ALL=({user}) NOPASSWD: {cmd}" if agent else None
+            text = read_text(sudoers)
+            named = rule in (ln.strip() for ln in text.splitlines()) if rule else cmd in text
+            add("D-TAILER-SUDO", named, f"{sudoers} lets the agent's user start {cmd}" if named else
+                f"{sudoers} has no rule for {cmd}: the agent's user can't start the tailer", REINIT, bad=WARN)
+    except FileNotFoundError:
+        add("D-TAILER-SUDO", False, f"{sudoers} is missing: the agent's user can't start the tailer", REINIT, bad=WARN)
+    except OSError as e:
+        add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e.strerror}", ROOT_DOCTOR, bad=WARN)
+    except ValueError as e:   # not UTF-8
+        add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e}", REINIT, bad=WARN)
+
+    getfacl = shutil.which("getfacl")
+    if not agent or not sys.platform.startswith("linux") or not getfacl:
+        add("D-TAILER-ACL", False, "not checked: " + ("no agent user is known (client.json names none)" if not agent
+            else f"doctor reads ACLs on Linux only, this is {sys.platform}" if not sys.platform.startswith("linux")
+            else "no getfacl (install the acl package)"),
+            f"check that {user} can search {agent.pw_dir} and ~/.claude and read ~/.claude/projects"
+            if agent else REINIT, bad=WARN)
+        return
+    dot = os.path.join(agent.pw_dir, ".claude")
+    missing = []
+    for path, need in ((agent.pw_dir, "x"), (dot, "x"), (os.path.join(dot, "projects"), "rx")):
+        try:
+            r = subprocess.run([getfacl, "-n", "-p", path], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError) as e:
+            missing.append(f"{path}: {e}")
+            continue
+        got = _acl_perms(r.stdout, uid) if r.returncode == 0 else None
+        if got is None:
+            missing.append(f"{path}: {(r.stderr or '').strip()[:256] or f'getfacl exited {r.returncode}'}")
+        elif not all(c in got for c in need):
+            missing.append(f"{path} ({got or 'no entry'}, needs {'read and search' if need == 'rx' else 'search'})")
+    add("D-TAILER-ACL", not missing, f"{user} can't reach the transcripts: " + "; ".join(missing) if missing else
+        f"{user} can search {agent.pw_dir} and {dot} and read {os.path.join(dot, 'projects')}", REINIT, bad=WARN)
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
@@ -1350,6 +1445,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)}" if open_ else "every class fails closed",
         "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent",
         bad=WARN)
+    if prod and client_json:
+        _tailer_checks(add, client_json, agent)
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "

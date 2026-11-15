@@ -13,7 +13,7 @@ from unittest import mock
 import pydantic
 
 import adapter_contract as ac
-from factories import mcp_tools
+from factories import VersionCheckCases, mcp_tools
 from tracekit.sdk.client import Client
 from tracekit.signer.quotas import MAX_LINE
 
@@ -1175,3 +1175,12 @@ class Parts(unittest.TestCase):
         self.assertEqual(list(parts([1, big, 2])), [[1], [big], [2]])
         self.assertEqual(list(parts({"a": 1, "b": big})), [{"a": 1}, {"b": big}])
         self.assertEqual(list(parts({"tools": []}, "tools")), [{"tools": []}])
+
+
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "mcp", "2.3.0"
+    message = "MCP client 0.0.1 is wired but untested; Tracekit is tested with mcp>=2.3,<2.4"
+
+    def entries(self, integration):
+        return (lambda: integration.TracekitSession(mock.Mock(), mock.Mock(), {"run_id": "r", "run_token": "t"}),)

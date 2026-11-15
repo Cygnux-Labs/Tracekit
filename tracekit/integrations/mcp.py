@@ -39,11 +39,13 @@ from mcp.types import CallToolResult, TextContent
 
 from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import event_hash
+from tracekit.integrations import version_check
 from tracekit.integrations.held import HeldCalls
 from tracekit.sdk.client import SignerUnavailable, fail_open, parts, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
+_FRAMEWORK = version_check.framework("mcp")
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 _UNNAMED = ("MCP: the session doesn't name its server, so its calls are recorded as mcp:unknown/<tool>: "
             "pass TracekitSession(..., server=<name>), or call tracekit.instrument() before the "
@@ -62,6 +64,7 @@ class TracekitSession(HeldCalls):
     def __init__(self, session, signer, run, approval_wait_s=300, server=None):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`, `fail_modes`);
         `server`: the server's name, else the session's server_info."""
+        version_check.warn_untested(*_FRAMEWORK)
         super().__init__(signer, run, approval_wait_s)
         self._session, self._server = session, server
         # the asyncio task -> the multi-round call it left waiting for its next round

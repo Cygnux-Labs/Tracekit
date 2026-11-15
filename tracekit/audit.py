@@ -9,6 +9,7 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -22,7 +23,9 @@ from .agent_hooks import AGENT_NAMES, UnreadableCall, _blocked, tool as hook_too
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
+from .integrations.harness_hooks import _codex_tool
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
+from .policy2.compile import ENGINE_REASONS
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
 from .view import ENGINE_RULES
 
@@ -32,6 +35,13 @@ def default_root():
     another config dir), else in ~/.claude, as install.user_settings finds its settings."""
     return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
                         "projects")
+
+
+def codex_root():
+    """Codex sessions in $CODEX_HOME/sessions when set, else ~/.codex/sessions."""
+    home = os.environ.get("CODEX_HOME")
+    return os.path.join(os.path.realpath(home) if home else os.path.join(os.path.expanduser("~"), ".codex"),
+                        "sessions")
 
 
 def _session_from_path(path: str) -> str:
@@ -81,9 +91,15 @@ def _not_regular(path: str) -> str | None:
             "a directory" if stat.S_ISDIR(mode) else "not a regular file")
 
 
-def _iter_transcripts(root: str, unreadable: list):
-    """Yield (path, session) for each .jsonl under root, at any depth (a session's subagent files too). Follows no
-    symlink; a folder it can't list goes into `unreadable`."""
+def gemini_root():
+    """Gemini CLI's sessions' folder: .gemini/tmp in $GEMINI_CLI_HOME when set (Gemini CLI's own setting for another
+    home), else in ~ (gemini-cli 0.68: utils/paths.ts homedir, config/storage.ts getGlobalTempDir)."""
+    return os.path.join(os.environ.get("GEMINI_CLI_HOME") or os.path.expanduser("~"), ".gemini", "tmp")
+
+
+def _iter_transcripts(root: str, unreadable: list, suffixes: tuple = (".jsonl",)):
+    """Yield (path, Claude Code session) for each file under root ending in one of `suffixes`, at any depth (a
+    session's subagent files too). Follows no symlink; a folder it can't list goes into `unreadable`."""
     root = os.path.realpath(root)   # a root reached through a symlink (macOS /var, a linked ~/.claude) is still the root
 
     def failed(e):
@@ -93,7 +109,7 @@ def _iter_transcripts(root: str, unreadable: list):
         dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
-            if not name.endswith(".jsonl") or os.path.islink(path):
+            if not name.endswith(suffixes) or os.path.islink(path):
                 continue
             try:   # stay inside root: a Windows directory junction is no symlink to islink, and the walk enters it
                 if os.path.commonpath([root, os.path.realpath(path)]) != root:
@@ -148,6 +164,166 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
+
+
+def _codex(root: str, since_ts: float, unreadable: list):
+    """Read Codex rollouts as (time, session, tool, args), or None for an unreadable line.
+
+    A response_item holds the Responses API item returned by the model. _codex_tool builds the PreToolUse payload
+    Codex would give its hook; audit decides that form.
+    """
+    seen: set[bytes] = set()
+    for path, session in _iter_transcripts(root, unreadable):
+        if not os.path.basename(path).startswith("rollout-"):
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        try:
+            for _n, entry in transcript_entries(f, final=True):
+                if entry is None:
+                    yield None
+                    continue
+                if entry.get("type") != "response_item":
+                    continue
+                at = _entry_time(entry)
+                if at is not None and at.timestamp() < since_ts:
+                    continue
+                item = entry.get("payload")
+                if not isinstance(item, dict):
+                    yield None
+                    continue
+                try:
+                    mapped = _codex_tool(item)
+                except RecursionError:
+                    yield None
+                    continue
+                if mapped is None:  # no PreToolUse (write_stdin, text, tool output, or missing call id)
+                    continue
+                tool, args = mapped
+                call_id = item.get("call_id")
+                try:  # copies dedup by id + mapped content; reused ids with other args still count
+                    key = (hashlib.sha256(json.dumps([call_id, tool, args], sort_keys=True,
+                                                     default=str).encode()).digest()
+                           if isinstance(call_id, str) and call_id else None)
+                except RecursionError:
+                    key = None
+                if key is not None and key in seen:
+                    continue
+                if key is not None:
+                    seen.add(key)
+                yield at, session, tool, args
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+
+
+def _gemini_calls(entry: dict):
+    """(time, call) for each tool call a Gemini CLI session record holds: a message line's own, those of a $set's full
+    history (an older checkpoint) or of a pre-v0.39 session's messages. None for a record whose messages or tool calls
+    aren't the lists and objects Gemini CLI writes."""
+    holder = entry["$set"] if isinstance(entry.get("$set"), dict) else entry
+    held = holder.get("messages", [entry])
+    if not isinstance(held, list):
+        yield None
+        return
+    for msg in held:
+        if not isinstance(msg, dict):
+            yield None
+        elif msg.get("type") == "gemini" and "toolCalls" in msg:
+            if not isinstance(msg["toolCalls"], list):
+                yield None
+                continue
+            for c in msg["toolCalls"]:
+                yield (_entry_time(c) or _entry_time(msg), c) if isinstance(c, dict) else None
+
+
+def _gemini_layout(real: str):
+    """(folder to walk, what stands above it in <project>/chats/...) for a ROOT that is Gemini CLI's tmp folder, the
+    .gemini folder or a home that holds it, one project's folder or its chats folder; a ValueError for any other."""
+    def has(*p):
+        return os.path.isdir(os.path.join(real, *p))
+    if has(".gemini", "tmp"):
+        return os.path.join(real, ".gemini", "tmp"), []
+    if os.path.basename(real) == ".gemini" and has("tmp"):
+        return os.path.join(real, "tmp"), []
+    if has("chats") and not has("chats", "chats"):   # a project: a project named chats holds one, a tmp holds that
+        return real, [""]
+    if os.path.basename(real) == "chats" and not has("chats"):
+        return real, ["", "chats"]
+    try:
+        if os.path.basename(real) == "tmp" or any(os.path.isdir(os.path.join(real, d, "chats"))
+                                                   for d in os.listdir(real)):
+            return real, []
+    except OSError:   # a folder it can't list: _iter_transcripts reports it
+        return real, []
+    raise ValueError(f"{real} is not a Gemini CLI folder: give its tmp folder (~/.gemini/tmp, or .gemini/tmp in "
+                     "$GEMINI_CLI_HOME), a project's folder in it, or that project's chats folder")
+
+
+def _gemini(root: str, since_ts: float, unreadable: list):
+    """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root, its tmp
+    folder, a project's or its chats folder (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
+    and <id>.json written before v0.39), None for a record that isn't what Gemini CLI writes. A message is written
+    again on each update: a call counts once in its session, by its id, as its last copy has it, and stays counted
+    after a $rewindTo drops it."""
+    seen: set[bytes] = set()
+    folder, above = _gemini_layout(os.path.realpath(root))
+    for path, _ in _iter_transcripts(folder, unreadable, (".jsonl", ".json")):
+        parts = above + os.path.relpath(path, folder).split(os.sep)   # by depth: a project may be named chats
+        own = len(parts) == 3 and parts[1] == "chats" and parts[2].startswith("session-")
+        sub = len(parts) == 4 and parts[1] == "chats"
+        if not own and not sub:
+            continue   # the project's other files (logs.json, checkpoints, an activity log)
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        session = parts[2] if sub else None   # a subagent's counts under its parent's session
+        calls: dict = {}   # call id -> (time, tool, args), its last copy
+        try:
+            if path.endswith(".json"):
+                try:
+                    entries = [json.loads(f.read())]
+                except (ValueError, RecursionError):
+                    entries = [None]
+            else:
+                entries = (e for _n, e in transcript_entries(f, final=True))
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    yield None
+                    continue
+                if session is None and isinstance(entry.get("sessionId"), str):
+                    session = entry["sessionId"]
+                for item in _gemini_calls(entry):
+                    if item is None:
+                        yield None
+                        continue
+                    at, c = item
+                    cid = c.get("id") if isinstance(c.get("id"), str) else (None, len(calls))   # no id: its own call
+                    calls[cid] = (at, c.get("name") if isinstance(c.get("name"), str) else "",
+                                  c.get("args") if isinstance(c.get("args"), dict) else {})
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+        session = session or parts[2].rsplit(".", 1)[0]
+        for cid, (at, tool, args) in calls.items():
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            try:   # the same id and call in another file of the session (a resumed pre-v0.39 session's .jsonl
+                # repeats its .json's): a copy
+                key = isinstance(cid, str) and hashlib.sha256(json.dumps(
+                    [session, cid, tool, args], sort_keys=True, default=str).encode()).digest()
+            except (RecursionError, ValueError):   # arguments the encoder can't take: counted
+                key = None
+            if key in seen:
+                continue
+            if key:
+                seen.add(key)
+            yield at, session, tool, args
 
 
 def cursor_root():
@@ -273,10 +449,12 @@ def _cline(root: str, since_ts: float, unreadable: list):
 # (time, session, tool, args), None for a line it counts as malformed
 READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
                       _claude_code),
+           "codex": (codex_root, "$CODEX_HOME/sessions when it is set, else ~/.codex/sessions", _codex),
            "cursor": (cursor_root, "~/.cursor/projects", _cursor),
            "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
-                     "in VS Code's global storage", _cline)}
+                     "in VS Code's global storage", _cline),
+           "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini)}
 
 
 def _defaults(default) -> list[str]:
@@ -366,6 +544,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
+    unread_causes: collections.Counter = collections.Counter()   # TK-SHELL-PARSE holds by their cause (#745)
     # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
     # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
     calls_out: list[dict] = []
@@ -410,6 +589,10 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 "verdict": verdict,
                 "rule_ids": decision.get("rule_ids") or [],
             }
+            if decision.get("unread"):   # why the policy couldn't read the call, when the engine says (#745)
+                rec["unread"] = decision["unread"]
+                if "TK-SHELL-PARSE" in rec["rule_ids"]:
+                    unread_causes[decision["unread"]] += 1
             if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
                 rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
             calls_out.append(rec)
@@ -435,11 +618,14 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
+        # --since's window in seconds since the epoch: --share counts each day of it from its start, never printed
+        "window": [since_ts, now] if since else None,
         "sessions": len({(c["agent"], c["session"]) for c in calls}),
         "agents": agents,
         "calls_file": calls_file,
         "counts": counts,
         "by_rule": by_rule,
+        "unread_causes": dict(unread_causes),
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
                     **{r["id"]: r.get("reason") or r.get("label", "") for _, r, *_ in engine.rules if r["id"] in by_rule}},
         # the policy's section of each rule: an engine check has none
@@ -485,6 +671,11 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         for rid, k in sorted(report["by_rule"].items(), key=lambda x: (-x[1], x[0])):
             reason = report["reasons"].get(rid, "")
             lines.append(f"  {rid}: {k}" + (f"  ({reason})" if reason else ""))
+            if rid == "TK-SHELL-PARSE":   # each hold's cause, with the cause's own reason (#745)
+                causes = ENGINE_REASONS["TK-SHELL-PARSE"].get("causes", {})
+                for cause, m in sorted(report["unread_causes"].items(), key=lambda x: (-x[1], x[0])):
+                    why = causes.get(cause, {}).get("reason") or ENGINE_REASONS["TK-SHELL-PARSE"]["reason"]
+                    lines.append(f"    {cause}: {m}  ({why})")
     lines.append("")
     lines.append(f"skipped malformed lines: {report['skipped_malformed']}")
     lines.append(f"unreadable files: {len(report['unreadable'])}")
@@ -500,8 +691,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     # section, or an engine check, which has none; not a flag that also matched), most first
     stopped = collections.Counter(r for c in report["calls"] if c["verdict"] in ("ask", "deny") for r in c["rule_ids"]
                                   if report["sections"].get(r, c["verdict"]) == c["verdict"])
-    window = "week" if report["since"] == "7d" else _days(time.time() - when(report["since"])) if report["since"] \
-        else "calls file" if report["calls_file"] else "transcripts"
+    window = "week" if report["since"] == "7d" else _days(report["window"][1] - report["window"][0]) \
+        if report["since"] else "calls file" if report["calls_file"] else "transcripts"
     agent = next(iter(report["agents"])) if len(report["agents"]) == 1 else None
     init = "tracekit init --dev --v2" + (f" --agent {agent}" if agent in AGENT_NAMES else "")   # claude: init's default
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
@@ -514,28 +705,59 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
+def _by_day(report: dict) -> list[str]:
+    """--share's day lines, with --since: the calls by decision for each 24 hours of the window, numbered from its
+    start, a day with none too, then those with no time, if any. A day number, never a date: without --since there are
+    none, as day 1 would be the first call's and say how far back the transcripts go."""
+    if report["window"] is None:
+        return []
+    start, end = report["window"]
+    # lean: one line a day however long the window (a --since of a year prints 365); fold them into weeks if people
+    # post windows that long
+    days = [collections.Counter() for _ in range(max(1, math.ceil((end - start) / 86400)))]
+    no_time = collections.Counter()
+    for c in report["calls"]:
+        i = None if c["time"] is None else int((datetime.fromisoformat(c["time"]).timestamp() - start) // 86400)
+        if i is None or i >= 0:   # a call before the window is on no day
+            (no_time if i is None else days[min(i, len(days) - 1)])[c["verdict"]] += 1
+    return ["Calls by decision and day (24 hours each, day 1 from the window's start):",
+            *(f"  Day {i}: " + _counts({k: d[k] for k in DECISIONS}) for i, d in enumerate(days, 1)),
+            *["  No time: " + _counts({k: no_time[k] for k in DECISIONS})] * bool(no_time)]
+
+
 def share(report: dict) -> str:
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md), as tracekit report
-    --share gives them: of --since, the window's length; no session, path, policy file, time, call or rule
-    description, and no rule id but Tracekit's own (report.share_rules). A rule is why its call was decided when its
-    section is the call's decision; an engine check, which has no section, is not placed."""
+    --share gives them: of --since, the window's length and each day's calls by decision (_by_day); no session, path,
+    policy file, date, time, call or rule description, and no rule id but Tracekit's own (report.share_rules). A rule
+    is why its call was decided when its section is the call's decision; an engine check, which has no section, is not
+    placed."""
     n, s, secs = report["counts"], report["sessions"], report["sections"]
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])
-    window = _days(time.time() - when(report["since"])) if report["since"] else \
+    window = _days(report["window"][1] - report["window"][0]) if report["since"] else \
         "the whole calls file" if report["calls_file"] else "every transcript"
     kind = "Claude Code" if set(report["agents"]) == {"claude"} else "coding-agent"
+    causes = ENGINE_REASONS["TK-SHELL-PARSE"].get("causes", {})
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
+             *_by_day(report),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
-             *share_rules(by_rule)]
+             *share_rules(by_rule),
+             # a TK-SHELL-PARSE hold's cause, by name alone and only a name in the engine's own table, anything
+             # else (a path, say) as other, so no text of a call leaves the machine (#745); denies first, as
+             # share_rules orders its lines
+             *[f"  {dec} TK-SHELL-PARSE {cause} {k:,}" for (dec, cause), k in
+               sorted(collections.Counter((c["verdict"], c["unread"] if c["unread"] in causes else "other")
+                                          for c in report["calls"]
+                                          if "unread" in c and "TK-SHELL-PARSE" in c["rule_ids"]).items(),
+                      key=lambda x: (-DECISIONS.index(x[0][0]), -x[1], x[0]))]]
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code, Cursor and Cline), or in a calls file any agent's log can be "
+                                 "transcripts (" + ", ".join(READERS) + "), or in a calls file any agent's log can be "
                                  "turned into, through the policy and count what it would have held or denied. "
                                  "Read-only, local, and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "

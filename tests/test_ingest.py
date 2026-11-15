@@ -371,9 +371,28 @@ class RemoteUrls(unittest.TestCase):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
         src = self.serve(Redirect)
-        resp = client._http_rpc(src, {"socket_token": "secret"}, {"op": "status"}, 5)
-        self.assertFalse(resp.get("ok"))
+        for _ in range(2):   # the second through the shared opener the first built (#722)
+            resp = client._http_rpc(src, {"socket_token": "secret"}, {"op": "status"}, 5)
+            self.assertFalse(resp.get("ok"))
         self.assertEqual(seen, [], "the redirect target must never be contacted")
+
+    def test_calls_without_a_context_share_one_opener_and_its_ssl_context(self):
+        """#722: a new opener per call made a new SSL context per call (Python 3.12 on), loading Windows' certificates
+        each time. A caller's own context still gets an opener of its own."""
+        import ssl
+        client._shared_opener.cache_clear()
+        made = []
+        real = ssl._create_default_https_context
+
+        def counted(*a, **kw):
+            made.append(1)
+            return real(*a, **kw)
+        with unittest.mock.patch.object(ssl, "_create_default_https_context", counted):
+            first, second = client.no_redirect_opener(), client.no_redirect_opener()
+        self.assertIs(first, second)
+        self.assertLessEqual(len(made), 1)   # one on 3.12 on; none before, where a connection makes its own
+        own = ssl.create_default_context()
+        self.assertIsNot(client.no_redirect_opener(own), first)
 
     def test_empty_reply_is_unavailable(self):
         from http.server import BaseHTTPRequestHandler

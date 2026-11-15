@@ -115,6 +115,7 @@ def false_alarm(x, why=None, kept=None):
 
 
 def main(argv=None):
+    from .cli import SIGNER_HELP
     from .signer.service import _escaped
     ap = argparse.ArgumentParser(prog="tracekit feedback", description="print a pre-filled GitHub issue (a field "
                                  "report, or a false alarm with --harmless) and exactly what it holds. It sends "
@@ -126,8 +127,7 @@ def main(argv=None):
     g.add_argument("--file", metavar="PATH", help="write a field report to this new file instead, to fill in and send as "
                    "a pull request (docs/field-reports/README.md)")
     ap.add_argument("--why", help="with --harmless, one line on why the call was harmless")
-    ap.add_argument("--signer", help="with --harmless, the signer's Unix socket or tcp://host:port (default: the "
-                    "same-user dev signer)")
+    ap.add_argument("--signer", help="with --harmless, " + SIGNER_HELP)
     ap.add_argument("--open", action="store_true", help="also open the link in your browser")
     a = ap.parse_args(argv)
     if a.why and not a.harmless:
