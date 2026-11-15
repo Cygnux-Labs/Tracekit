@@ -75,7 +75,9 @@ class SystemModeUsesOpt(unittest.TestCase):
 
     def test_init_records_the_flags_doctor_gives_again(self):
         """V1_REINIT, doctor's fix, named none of init's flags: one followed on an init --managed host wrote the hooks
-        into the agent's own settings, beside the managed ones. Init records them in root-owned client.json."""
+        into the agent's own settings, beside the managed ones. Init records them in root-owned client.json, with
+        --managed-only (here the managed file holds none of init's settings, as when MDM replaced it: the fix keeps
+        it and says so); not --i-understand-agent-is-privileged, whose refusal init names."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         me, managed = install.pwd.getpwuid(os.getuid()), os.path.join(d, "managed-settings.json")
@@ -92,13 +94,18 @@ class SystemModeUsesOpt(unittest.TestCase):
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
                 mock.patch.object(install, "_pin_policy"), mock.patch.object(install, "install_hooks"), \
                 contextlib.redirect_stdout(io.StringIO()):
-            install.init_system("agent", [], managed=True, no_service=True, proxy=True, proxy_port=9000,
-                                fail_mode="closed")
+            install.init_system("agent", [], managed=True, managed_only=True, no_service=True, proxy=True,
+                                proxy_port=9000, fail_mode="closed", allow_privileged=True)
             sc = sys_cfg.call_args.args[0]
-            self.assertEqual(sc["init_flags"], ["--managed", "--no-service", "--proxy", "--experimental",
-                                                "--fail-closed", "--proxy-port", "9000"])
-            self.assertEqual(install.v1_reinit(sc, False), install.V1_REINIT + " --managed --no-service --proxy "
-                             "--experimental --fail-closed --proxy-port 9000")
+            self.assertEqual(sc["init_flags"], ["--managed", "--managed-only", "--no-service", "--proxy",
+                                                "--experimental", "--fail-closed", "--proxy-port", "9000"])
+            self.assertEqual(install.v1_reinit(sc, False), install.V1_REINIT + " --managed --managed-only --no-service "
+                             "--proxy --experimental --fail-closed --proxy-port 9000; init turned on "
+                             "allowManagedHooksOnly and it is off now; drop --managed-only only if you turned it off "
+                             "on purpose")
+            install.init_system("agent", [], project=os.path.join(d, "my repo"), no_service=True)
+            self.assertEqual(sys_cfg.call_args.args[0]["init_flags"], ["--no-service", "--project",
+                                                                       os.path.join(d, "my repo")])
 
     def test_rerun_without_harness_keeps_the_registered_binding(self):
         d = tempfile.mkdtemp()
@@ -269,10 +276,14 @@ class SystemModeUsesOpt(unittest.TestCase):
             self.assertNotIn("CAP_", unit)
             self.assertIn("ProtectKernelTunables=true\n", unit)
 
-    def test_migrate_keeps_a_policy_path(self):
+    def test_migrate_keeps_a_policy_path_and_inits_record(self):
+        """migrate --system, a fix doctor gives, rewrote client.json without init's init_flags: the re-init fixes doctor
+        gave after it dropped init's flags again."""
         d = self.migrate_dir()
         me = install.pwd.getpwuid(os.getuid())
-        for existing, expected in (({"policy": "/etc/tracekit/p.yaml", **V2_KEYS}, "/etc/tracekit/p.yaml"), (None, POLICY)):
+        flags = ["--managed", "--proxy", "--experimental"]
+        for existing, expected in (({"policy": "/etc/tracekit/p.yaml", "init_flags": flags, **V2_KEYS},
+                                    "/etc/tracekit/p.yaml"), (None, POLICY)):
             with as_root_on_linux(), mock.patch.object(install, "SYS_HOME", d), \
                     mock.patch.object(install, "SYSTEMD_DIR", d), \
                     mock.patch.object(install.client, "system_config", return_value=existing), \
@@ -288,6 +299,7 @@ class SystemModeUsesOpt(unittest.TestCase):
                 install.migrate_system()
             self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
             self.assertEqual(sys_cfg.call_args.args[0].get("signer"), existing and V2_KEYS["signer"])
+            self.assertEqual(sys_cfg.call_args.args[0].get("init_flags"), existing and flags)
 
     def test_release_install_pins_the_pypi_name_and_version(self):
         d = tempfile.mkdtemp()
@@ -517,9 +529,9 @@ class Doctor(unittest.TestCase):
 
     def test_the_reinit_fix_keeps_inits_managed_hooks_and_flags(self):
         """V1_REINIT named no --managed: following it on an init --managed host wrote user hooks beside the managed
-        ones. With init's record the fix gives its flags again (--managed-only by init's own rule, from the managed
-        file); without one (an older init's), --managed where the managed file has v1 hooks, and that doctor can't
-        tell the rest."""
+        ones. With init's record the fix gives its flags again, shell-quoted; without one (an older init's), --managed
+        where the managed file has v1 hooks (--managed-only where init's marker is), and that doctor can't tell the
+        rest."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         managed = os.path.join(d, "managed-settings.json")
@@ -532,8 +544,8 @@ class Doctor(unittest.TestCase):
                     mock.patch.object(install.client, "system_config",
                                       **({"side_effect": sc} if isinstance(sc, Exception) else {"return_value": sc})):
                 return {r["id"]: r["fix"] for r in install.v1_results()}
-        cant = ("; add each flag this host's init was run with that this lacks (--managed, --project, --proxy, "
-                f"--no-hooks, --no-service, --fail-closed, ...): {client.SYSTEM_CONFIG} ")
+        cant = ("; add each flag this host's init was run with that this lacks (--managed, --managed-only, --project, "
+                f"--proxy, --no-hooks, --no-service, ...): {client.SYSTEM_CONFIG} ")
         reinstall = f"re-run init to reinstall into {d}: {install.V1_REINIT}"
         self.assertEqual(fixes({"socket": "/s"})["D-V1-RUNTIME"], reinstall + " --managed" + cant
                          + "doesn't record them, so doctor can't tell them, and init without them goes back to its "
@@ -543,12 +555,13 @@ class Doctor(unittest.TestCase):
                          "tell them, and init without them goes back to its defaults")
         with contextlib.redirect_stdout(io.StringIO()):
             install.install_managed(None, True, managed, install.OPT_PYTHON)
-        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--managed", "--proxy", "--experimental"]})
-                         ["D-V1-RUNTIME"], reinstall + " --managed --managed-only --proxy --experimental")
+        self.assertTrue(fixes({"socket": "/s"})["D-V1-RUNTIME"].startswith(reinstall + " --managed --managed-only;"))
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--managed", "--managed-only", "--proxy",
+                                                               "--experimental"]})["D-V1-RUNTIME"],
+                         reinstall + " --managed --managed-only --proxy --experimental")
         hooks.clear()   # a record without --managed: no hooks moved into the managed file
-        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--project"], "project": "/srv/repo"})["D-V1-RUNTIME"],
-                         reinstall + " --project, in /srv/repo (--project puts the hooks in the directory init runs "
-                         "in)")
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--project", "/srv/my repo"]})["D-V1-RUNTIME"],
+                         reinstall + " --project '/srv/my repo'")
 
     def test_untrusted_system_config_is_a_fail_line(self):
         with mock.patch.object(install.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):

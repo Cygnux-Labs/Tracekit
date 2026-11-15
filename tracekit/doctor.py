@@ -49,7 +49,7 @@ _PY = sys.executable if sys.executable and not sys.executable.startswith(install
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
-V2_FLAGS = "--approver, --policy, --harness, --egress, --project, --no-witness"   # some of what init --v2 records
+V2_FLAGS = "--approver, --policy, --harness, --egress, --project, --managed-only"   # some of what init --v2 records
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -96,9 +96,9 @@ def collect(config=None, issuer_key=None):
     try:
         sc = client.system_config()
     except client.SystemConfigError as e:   # of init's flags, only init --managed's hooks can be seen then
-        managed = _managed_flags(_managed()) if install._v2_hooks_in(_managed()) else ""
-        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT + managed + _unrecorded(
-            V2_FLAGS, f"{client.SYSTEM_CONFIG} records them, and it can't be read"))]
+        flags, tail = install.reinit_flags(None, _managed() if install._v2_hooks_in(_managed()) else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} records them, and it can't be read")
+        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT + flags + tail)]
     out = install.v1_results() if sc and "socket" in sc and not config else []
     if config or (sc and sc.get("signer")):
         h = (sc or {}).get("hooks") or {}
@@ -125,21 +125,24 @@ def collect(config=None, issuer_key=None):
         # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
         # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off. It keeps
         # --managed, else init moves the hooks from the root-owned file into the agent's own settings, and
-        # --managed-only where init turned allowManagedHooksOnly on (_managed_flags). And the rest of init's flags,
-        # which only root-owned client.json gives: without them init puts its defaults (its own policy, no harness
-        # binding) in place of the host's
+        # --managed-only, else init turns allowManagedHooksOnly off. And the rest of init's flags, which only
+        # root-owned client.json gives (install.reinit_flags): without them init puts its defaults (its own policy, no
+        # harness binding) in place of the host's
         managed = settings in install.MANAGED_SETTINGS.values()
-        flags, tail = _recorded(h, V2_FLAGS, f"{client.SYSTEM_CONFIG} doesn't record them")
+        flags, tail = install.reinit_flags(h.get("init_flags"), settings if managed else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} doesn't record them" if sc else
+                                           f"there's no {client.SYSTEM_CONFIG} here to record them")
         agent_flag = f" --agent {shlex.quote(agent_name)}" if agent_name != "claude" else ""
-        rest = (_managed_flags(settings) if managed else "") + (flags or "")
         no_hooks = " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude" and not managed \
             else ""
 
         def again(text, extra):
+            if " --managed-only" in extra:   # a fix's own (D-HOOKS-PRESENT's) is init's already
+                text = text.replace(REINIT + " --managed-only", REINIT)
             return text.replace(REINIT, REINIT + extra) + tail if REINIT in text else text
         # a detail's re-init (D-HOOKS-PRESENT after init --no-hooks) is the one that adds the hooks
-        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + rest),
-                           detail=again(r["detail"], agent_flag + rest)) for r in rows]
+        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags),
+                           detail=again(r["detail"], agent_flag + flags)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -178,34 +181,6 @@ def collect(config=None, issuer_key=None):
 
 def _managed():
     return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-
-
-def _managed_flags(path):
-    """The re-init flags that keep init --managed's hooks in Claude Code's managed settings `path`: --managed, and
-    --managed-only where init turned allowManagedHooksOnly on (its marker) and it's still on, init's own rule. Without
-    it init turns the setting off; with it, a setting an admin turned off since is turned on again."""
-    return " --managed" + (" --managed-only" if _setting(path, "_tracekit_allowManagedHooksOnly") is True
-                           and _setting(path, "allowManagedHooksOnly") is True else "")
-
-
-def _unrecorded(examples, why):
-    """The end of a re-init fix when doctor can't read the flags init was run with: `examples` names some."""
-    return (f"; add each flag this host's init was run with that this lacks ({examples}, ...): {why}, so doctor can't "
-            "tell them, and init without them goes back to its defaults")
-
-
-def _recorded(cfg, examples, why):
-    """The flags init recorded in `cfg` (client.json, or its hooks: root-owned, never what the agent's user can write),
-    shell-quoted, and what follows the re-init: where to run a --project one. None and _unrecorded's note when there
-    is no record (an older init's)."""
-    flags, project = cfg.get("init_flags"), cfg.get("project")
-    if not (isinstance(flags, list) and all(isinstance(f, str) for f in flags)):
-        return None, _unrecorded(examples, why)
-    # lean: a --project init's directory is named, not how to run the release clone's init from it; until init takes
-    # --project DIR
-    return "".join(f" {shlex.quote(f)}" for f in flags), (
-        f", in {shlex.quote(project)} (--project puts the hooks in the directory init runs in)"
-        if isinstance(project, str) else "")
 
 
 def _layers(paths, key):
@@ -927,13 +902,7 @@ def _json(path):
     return json.loads(install.agent_file(path))
 
 
-def _setting(path, key):
-    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable."""
-    try:
-        s = _json(path)
-    except (OSError, ValueError):
-        return None
-    return s.get(key) if isinstance(s, dict) else None
+_setting = install.setting   # a Claude Code settings file's key, or None
 
 
 def _user(name):

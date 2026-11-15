@@ -945,7 +945,10 @@ class NoHooksChosen(unittest.TestCase):
                 ({"settings": managed}, plugin, True, " --managed --managed-only"),
                 ({"settings": managed}, None, True, " --managed --managed-only"),
                 ({"settings": managed}, None, "admin", " --managed")):   # the admin's own setting: init leaves it
-            sc = {"signer": "/run/s.sock", "hooks": {"user": "a", "init_flags": [], **hooks}}
+            # an older init's client.json for the managed hosts: --managed[-only] from the managed file (ReinitFlags
+            # has the record's)
+            record = {} if only is not None else {"init_flags": []}
+            sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **record, **hooks}}
             with self.subTest(hooks=hooks, plugin=enabled, managed_only=only), \
                     mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
                     mock.patch.object(doctor.client, "system_config", return_value=sc), \
@@ -958,7 +961,8 @@ class NoHooksChosen(unittest.TestCase):
                     with contextlib.redirect_stdout(io.StringIO()):
                         install.install_managed(None, only is True, managed, install.OPT_PYTHON,
                                                 module=install.V2_HOOK, signer="/run/s.sock")
-                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want)
+                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want + (
+                    ReinitFlags.old if only is not None else ""))
 
 
 class FirstDay(unittest.TestCase):
@@ -1065,9 +1069,12 @@ class ReinitFlags(unittest.TestCase):
     doctor didn't say. Init records them in root-owned client.json (tests/test_system_v2.py:
     test_init_records_the_flags_doctor_gives_again)."""
     fix = "re-run init to reinstall the venv: " + doctor.REINIT
-    old = ("; add each flag this host's init was run with that this lacks (--approver, --policy, --harness, --egress, "
-           f"--project, --no-witness, ...): {client.SYSTEM_CONFIG} doesn't record them, so doctor can't tell them, and "
-           "init without them goes back to its defaults")
+    cant = ("; add each flag this host's init was run with that this lacks (--approver, --policy, --harness, --egress, "
+            "--project, --managed-only, ...): {}, so doctor can't tell them, and init without them goes back to its "
+            "defaults")
+    old = cant.format(f"{client.SYSTEM_CONFIG} doesn't record them")
+    off = ("; init turned on allowManagedHooksOnly and it is off now; drop --managed-only only if you turned it off on "
+           "purpose")
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -1077,37 +1084,42 @@ class ReinitFlags(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def collect(self, hooks, row=None):
-        sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}}
+    def collect(self, hooks, row=None, sc=True):
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}} if sc else None
         with mock.patch.object(doctor.client, "system_config", return_value=sc), \
                 mock.patch.object(doctor, "_user", return_value=None), \
                 mock.patch.object(doctor, "v2_checks", return_value=[
                     row or doctor.result("D-CODE-TRUST", "fail", "detail", self.fix)]):
-            return doctor.collect()[-1]
+            return doctor.collect(None if sc else os.path.join(self.d, "signer.yaml"))[-1]
 
     def test_the_fix_gives_inits_recorded_flags_again_shell_quoted(self):
         flags = ["--approver", "admin", "--policy", "/srv/policies/$(id) policy.yaml", "--harness",
-                 "claude=/usr/local/bin/claude", "--egress", "--no-witness"]
+                 "claude=/usr/local/bin/claude", "--egress"]
         fix = self.collect({"init_flags": flags})["fix"]
         self.assertEqual(fix, self.fix + " --approver admin --policy '/srv/policies/$(id) policy.yaml' --harness "
-                         "claude=/usr/local/bin/claude --egress --no-witness")
+                         "claude=/usr/local/bin/claude --egress")
         self.assertEqual(shlex.split(fix.split(" --user <agent-user>")[1])[-len(flags):], flags)
         self.assertEqual(self.collect({"agent": "codex", "no_hooks": True, "init_flags": ["--no-service"]})["fix"],
                          self.fix + " --agent codex --no-hooks --no-service")
 
     def test_without_a_record_the_fix_says_doctor_cant_tell_inits_flags(self):
         """An older init's client.json records none of them: the fix says so, rather than give a re-init that drops
-        them unseen."""
+        them unseen. And doctor --config on a host with no client.json says there is none, not that it records none."""
         self.assertEqual(self.collect({})["fix"], self.fix + self.old)
         self.assertEqual(self.collect({"agent": "codex"})["fix"], self.fix + " --agent codex" + self.old)
         for bad in ("--policy /p", ["--policy", 1], None):   # not a list of strings: no record
             with self.subTest(init_flags=bad):
                 self.assertEqual(self.collect({"init_flags": bad})["fix"], self.fix + self.old)
+        self.assertEqual(self.collect({}, sc=False)["fix"],
+                         self.fix + self.cant.format(f"there's no {client.SYSTEM_CONFIG} here to record them"))
 
-    def test_a_project_init_names_its_directory(self):
-        got = self.collect({"init_flags": ["--approver", "admin", "--project"], "project": "/srv/my repo"})["fix"]
-        self.assertEqual(got, self.fix + " --approver admin --project, in '/srv/my repo' (--project puts the hooks in "
-                         "the directory init runs in)")
+    def test_a_project_init_is_given_its_directory_and_runs_from_the_clone(self):
+        """The fix told the person to run `sudo python3 -m tracekit init --project` in the project: the agent's own
+        directory, where `-m` imports a planted tracekit/ before the release's, as root. Init takes --project DIR, so
+        the fix runs from the root-owned clone, as every re-init does, and names the directory."""
+        got = self.collect({"init_flags": ["--approver", "admin", "--project", "/srv/my repo"]})["fix"]
+        self.assertEqual(got, self.fix + " --approver admin --project '/srv/my repo'")
+        self.assertTrue(got.startswith("re-run init to reinstall the venv: from a root-owned clone of the release "), got)
 
     def test_the_re_init_that_adds_hooks_after_no_hooks_keeps_the_rest(self):
         """D-HOOKS-PRESENT after init --no-hooks names, in its detail, the re-init that adds the hooks."""
@@ -1116,31 +1128,52 @@ class ReinitFlags(unittest.TestCase):
         self.assertEqual((got["detail"], got["fix"]), ("to record Claude Code's calls too, run " + doctor.REINIT
                                                        + " --approver admin --policy /srv/p.yaml", ""))
 
-    def test_managed_only_is_given_again_only_while_inits_setting_is_on(self):
-        """The fix gave --managed-only wherever init's marker was, even after an admin turned allowManagedHooksOnly
-        off: following it turned the setting back on. Init's own rule needs the marker and the setting on."""
+    def test_managed_only_stays_and_says_so_when_the_setting_is_off_now(self):
+        """--managed-only came only from init's marker in the managed settings: an MDM policy that replaced the file
+        took it away, and the fix re-inited without it, leaving every user's own hooks running. Init records it; when
+        allowManagedHooksOnly is off now the fix keeps it, the safe default, and says when to drop it."""
         with contextlib.redirect_stdout(io.StringIO()):
             install.install_managed(None, True, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
                                     signer="/run/s.sock")
-        hooks = {"settings": self.managed, "init_flags": []}
-        self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed --managed-only")
+        hooks = {"settings": self.managed, "init_flags": ["--managed", "--managed-only", "--approver", "admin"]}
+        self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed --managed-only --approver admin")
         with open(self.managed) as f:
             s = json.load(f)
-        with open(self.managed, "w") as f:   # an admin turns it off by hand; init's marker stays
+        for name, replaced in (("an admin turns it off; the marker stays", dict(s, allowManagedHooksOnly=False)),
+                               ("MDM replaces the file", {"env": {"CORP": "1"}})):
+            with self.subTest(name):
+                with open(self.managed, "w") as f:
+                    json.dump(replaced, f)
+                self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed --managed-only --approver admin"
+                                 + self.off)
+        with open(self.managed, "w") as f:   # an older init's client.json: init's marker is all there is
             json.dump(dict(s, allowManagedHooksOnly=False), f)
-        self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed")
-        with contextlib.redirect_stdout(io.StringIO()):   # following that fix leaves the admin's choice as it is
-            install.install_managed(None, False, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
-                                    signer="/run/s.sock")
-        with open(self.managed) as f:
-            self.assertIs(json.load(f)["allowManagedHooksOnly"], False)
+        self.assertEqual(self.collect({"settings": self.managed})["fix"], self.fix + " --managed --managed-only"
+                         + self.off + self.old)
+
+    def test_a_fixs_own_managed_only_is_not_given_twice(self):
+        """D-HOOKS-PRESENT's fix names --managed-only itself; init's record has it too."""
+        row = doctor.result("D-HOOKS-PRESENT", "fail", "detail", "keep one: /plugin disable tracekit@tracekit in the "
+                            f"agent's Claude Code, or {doctor.REINIT} --managed-only, which stops every user's own "
+                            "Claude Code hooks and plugins on this machine")
+        hooks = {"settings": self.managed, "init_flags": ["--managed", "--managed-only", "--approver", "admin"]}
+        self.assertEqual(self.collect(hooks, row)["fix"], "keep one: /plugin disable tracekit@tracekit in the agent's "
+                         f"Claude Code, or {doctor.REINIT} --managed --managed-only --approver admin, which stops every "
+                         "user's own Claude Code hooks and plugins on this machine" + self.off)
+
+    def test_the_harness_helpers_fix_is_the_re_init_with_inits_harness(self):
+        """D-HARNESS-HELPER added a --harness [NAME=]PATH placeholder to the re-init, beside the --harness init
+        recorded."""
+        rows = {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d, "harness_binding": {"helper": "/run/h"}},
+                                                      "production", unit=os.path.join(self.d, "tracekit-signer.service"))}
+        self.assertEqual((rows["D-HARNESS-HELPER"]["status"], rows["D-HARNESS-HELPER"]["fix"]), ("fail", doctor.REINIT))
+        got = self.collect({"init_flags": ["--harness", "claude=/usr/local/bin/claude"]}, rows["D-HARNESS-HELPER"])
+        self.assertEqual(got["fix"], doctor.REINIT + " --harness claude=/usr/local/bin/claude")
 
     def test_an_unreadable_client_json_keeps_managed_hooks_managed(self):
         """D-SYSTEM-CONFIG gave a plain re-init when client.json couldn't be read: on an init --managed host it moved
         the hooks out of the root-owned managed settings into the agent's own."""
-        unreadable = ("; add each flag this host's init was run with that this lacks (--approver, --policy, --harness, "
-                      f"--egress, --project, --no-witness, ...): {client.SYSTEM_CONFIG} records them, and it can't be "
-                      "read, so doctor can't tell them, and init without them goes back to its defaults")
+        unreadable = self.cant.format(f"{client.SYSTEM_CONFIG} records them, and it can't be read")
 
         def fix():
             with mock.patch.object(doctor.client, "system_config", side_effect=client.SystemConfigError("not root's")):

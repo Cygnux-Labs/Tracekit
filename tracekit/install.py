@@ -845,17 +845,24 @@ HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agen
                     "opencode": "opencode", "qwen": "qwen"}
 
 
-def resolve_harness(spec, agent="claude"):
-    """`--harness` value -> registered harness. spec is PATH or NAME=PATH; a script (#!) registers its interpreter as
-    the executable and the script itself, because that is what the kernel shows for the running harness."""
+def harness_spec(spec, agent="claude"):
+    """`--harness` value -> NAME=PATH, PATH absolute as given (found on PATH when it's a name), its symlinks kept: the
+    spec init records, so a re-init binds the program there then, as a package upgrade moves its target."""
     name, path = spec.split("=", 1) if "=" in spec else (agent, spec)
     found = path if os.path.isabs(path) else shutil.which(path)
     if not found or not os.path.exists(found):
         raise SystemExit(f"--harness: {path} not found")
+    return f"{name or agent}={os.path.abspath(found)}"
+
+
+def resolve_harness(spec, agent="claude"):
+    """`--harness` value -> registered harness. spec is PATH or NAME=PATH; a script (#!) registers its interpreter as
+    the executable and the script itself, because that is what the kernel shows for the running harness."""
+    name, found = harness_spec(spec, agent).split("=", 1)
     real = os.path.realpath(found)
     with open(real, "rb") as f:
         head = f.read(256)
-    entry = {"name": name or agent, "exe": real}
+    entry = {"name": name, "exe": real}
     if head.startswith(b"#!"):
         interp = head[2:].split(b"\n", 1)[0].decode(errors="replace").strip().split()
         if interp and os.path.basename(interp[0]) == "env":
@@ -1223,9 +1230,11 @@ def migrate_system(fail_mode=None, harnesses=None):
            "signer_isolation": "separate-user", "mode": "system", "fail_mode": fail_mode or "closed"}
     if scfg.get("proxy"):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
-    policy = (client.system_config() or {}).get("policy")
-    cfg["policy"] = policy or _opt_default_policy()  # 0.2.x configs have no policy key; use the root-owned default
-    _write_system_client_config(dict(cfg, **_v2_client_keys()))
+    old = client.system_config() or {}
+    cfg["policy"] = old.get("policy") or _opt_default_policy()  # 0.2.x configs have none: the root-owned default
+    # init's record stays, so doctor's re-init fixes still give its flags
+    _write_system_client_config(dict(cfg, **({"init_flags": old["init_flags"]} if "init_flags" in old else {}),
+                                     **_v2_client_keys()))
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses) if harnesses or not scfg.get("harnesses") else {}
     _update_signer_config(SYS_HOME, dict(hcfg, harness_helper=V1_HELPER_SOCKET), tk)
@@ -1419,19 +1428,49 @@ def v1_results(checks=None):
 
 
 def v1_reinit(sc, managed):
-    """V1_REINIT with the flags v1 init recorded in the system config `sc` (None: it can't be read), as doctor's v2
-    fixes get theirs (doctor.collect): --managed[-only] from the managed file, as there; without a record, --managed
-    where `managed` (the managed file has v1 hooks) and a note that doctor can't tell the rest."""
-    from .doctor import _managed_flags, _recorded
-    flags = (sc or {}).get("init_flags")
-    if isinstance(flags, list):
-        managed = "--managed" in flags
-        sc = dict(sc, init_flags=[f for f in flags if f != "--managed"])
-    flags, tail = _recorded(sc or {}, "--managed, --project, --proxy, --no-hooks, --no-service, --fail-closed",
-                            f"{client.SYSTEM_CONFIG} " + ("doesn't record them" if sc else
-                                                          "records them, and it's missing or can't be read"))
+    """V1_REINIT with the flags v1 init recorded in the system config `sc` (None: it's missing or can't be read), as
+    doctor's v2 fixes get theirs (reinit_flags); without a record, --managed where `managed` (the managed settings
+    hold v1 hooks)."""
+    record = (sc or {}).get("init_flags")
     path = MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    return V1_REINIT + (_managed_flags(path) if managed else "") + (flags or "") + tail
+    flags, tail = reinit_flags(record, path if managed or isinstance(record, list) and "--managed" in record else None,
+                               "--managed, --managed-only, --project, --proxy, --no-hooks, --no-service",
+                               f"{client.SYSTEM_CONFIG} " + ("doesn't record them" if sc else
+                                                             "records them, and it's missing or can't be read"))
+    return V1_REINIT + flags + tail
+
+
+MANAGED_ONLY_OFF = ("; init turned on allowManagedHooksOnly and it is off now; drop --managed-only only if you turned "
+                    "it off on purpose")
+
+
+def setting(path, key):
+    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable (read as
+    agent_file reads: a FIFO or a device can't hang or flood the reader)."""
+    try:
+        s = json.loads(agent_file(path))
+    except (OSError, ValueError):
+        return None
+    return s.get(key) if isinstance(s, dict) else None
+
+
+def reinit_flags(record, managed, examples, why):
+    """What a fix that re-runs system init (doctor's, v1_reinit) adds for init's own flags: (the flags, shell-quoted;
+    what follows the command). record: the flags init recorded in root-owned client.json, never anything the agent's
+    user can write. managed: Claude Code's managed settings file when init put its hooks there. --managed-only stays
+    when init was run with it (the record, else init's marker in `managed`), with a note when allowManagedHooksOnly is
+    off now: an MDM policy or an admin may have replaced the file, and a re-init without it would leave every user's
+    own hooks running. Without a record (an older init's): --managed[-only] from `managed`, and a note that doctor
+    can't tell the rest (`examples` names some, `why` says why)."""
+    known = isinstance(record, list) and all(isinstance(f, str) for f in record)
+    only = "--managed-only" in record if known else bool(managed) and setting(
+        managed, "_tracekit_allowManagedHooksOnly") is True
+    off = MANAGED_ONLY_OFF if only and managed and setting(managed, "allowManagedHooksOnly") is not True else ""
+    if known:
+        return "".join(f" {shlex.quote(f)}" for f in record), off
+    return (" --managed" + " --managed-only" * only if managed else ""), off + (
+        f"; add each flag this host's init was run with that this lacks ({examples}, ...): {why}, so doctor can't "
+        "tell them, and init without them goes back to its defaults")
 
 
 def _require_system(experimental_macos, other=", or use tracekit init --dev for a same-user signer"):
@@ -1619,13 +1658,16 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         if bad:
             raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
                              f"{target_user} cannot change it")
-    harnesses = [resolve_harness(h, agent) for h in harnesses]
-    # the flags doctor's re-init fixes give again (client.json records init's agent, hooks and --managed already)
-    flags = ["--approver", approver.pw_name, *(["--policy", policy] if policy else []), *(
-        a for h in harnesses for a in ("--harness", f"{h['name']}={h.get('script') or h['exe']}"))] + [
-        f for f, on in (("--project", project), ("--egress", egress), ("--public-witness", public_witness),
-                        ("--no-witness", public_witness is False), ("--no-thinking-summaries", not thinking),
-                        ("--no-service", no_service), ("--i-understand-agent-is-privileged", allow_privileged)) if on]
+    given = [harness_spec(h, agent) for h in harnesses]
+    harnesses = [resolve_harness(h, agent) for h in given]
+    # the flags doctor's re-init fixes give again (client.json records init's agent and --no-hooks already). Not
+    # --i-understand-agent-is-privileged: init's refusal names it, for a user that gained a privilege since; nor the
+    # witness flags: V2_NO_WITNESS keeps --no-witness, and --public-witness again can only make init fail
+    flags = [f for f, on in (("--managed", managed), ("--managed-only", managed_only)) if on] + [
+        "--approver", approver.pw_name, *(["--policy", policy] if policy else []),
+        *(["--project", project] if project else []), *(a for h in given for a in ("--harness", h))] + [
+        f for f, on in (("--egress", egress), ("--no-thinking-summaries", not thinking), ("--no-service", no_service))
+        if on]
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     recorded = (sc.get("hooks") or {}).get("settings")
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
@@ -1736,7 +1778,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
                                             **({"env": proxy} if proxy else {}),
                                             **({} if hooks else {"no_hooks": True}),   # doctor: the choice it is
-                                            "init_flags": flags, **({"project": project} if project else {})},
+                                            "init_flags": flags},
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if not harnesses:
@@ -1925,15 +1967,15 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
     # the flags doctor's re-init fixes give again; the signer's config keeps the witnesses, the checkpoint interval,
-    # the harnesses and the external signer over a later init, and doctor reads --managed-only from the managed file
-    flags = [f for f, on in (("--managed", managed), ("--project", project), ("--no-hooks", not hooks),
+    # the harnesses and the external signer over a later init. Not --i-understand-agent-is-privileged (init_system_v2)
+    flags = [f for f, on in (("--managed", managed), ("--managed-only", managed_only), ("--no-hooks", not hooks),
                              ("--no-service", no_service), ("--proxy", proxy), ("--experimental", proxy),
-                             ("--fail-closed", fail_mode == "closed"), ("--experimental-macos", darwin),
-                             ("--i-understand-agent-is-privileged", allow_privileged)) if on] + (
+                             ("--fail-closed", fail_mode == "closed"), ("--experimental-macos", darwin)) if on] + (
+        ["--project", project] if project else []) + (
         ["--proxy-port", str(proxy_port)] if proxy and proxy_port != 8787 else []) + (
         ["--agent", agent] if agent != "claude" else [])
     _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, init_flags=flags,
-                                     **({"project": project} if project else {}), **_v2_client_keys()))
+                                     **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
     failed = []   # what to check for each service that did not start
     for plist in plists:   # after the pin, and booted out first: a running signer must reload its config
