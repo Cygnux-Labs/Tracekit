@@ -28,6 +28,7 @@ from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.storage import file as file_storage
 from test_signer_privacy import SECRET
 
 PAY = {"to": "acct-42", "cents": 1500}
@@ -353,6 +354,42 @@ class TestRealSigner(unittest.TestCase):
         self.assertTrue(self.consume()["ok"])
         self.assertIsNone(self.s.approval_get({"approval_id": aid})["args"])   # purged once consumed
         self.assertEqual(os.listdir(os.path.join(self.dir, "approvals")), [])
+
+    def test_a_retry_decided_before_a_restart_consumes_the_approval_after_it(self):
+        """The snapshot kept each call without its tool, so the retry's consume raised KeyError once the signer
+        restarted from it (found by the stateful property test of #760)."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-2",
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        self.restart()
+        out = self.consume(tool_call_id="tc-2")
+        self.assertEqual((out["ok"], out["approval_id"]), (True, aid))
+
+    def test_a_snapshot_written_before_calls_kept_their_tool_still_serves_the_retry(self):
+        """A run open across the upgrade: its calls in the older snapshot have no tool, which the start reads from
+        their decisions' records."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-2",
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        self.s.close()
+        snaps = os.path.join(self.dir, "store", "snapshots")
+        path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
+        with open(path, "rb") as f:
+            snap = json.loads(f.read().partition(b"\n")[2])
+        for r in snap["state"]["runs"]:   # as a snapshot written before 1.7 holds them
+            for c in [*r.get("calls", {}).values(), *r.get("decisions", {}).values()]:
+                del c["tool"]
+        body = json.dumps(snap, separators=(",", ":")).encode()
+        with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
+            mac = file_storage._mac(f.read(), body)
+        with open(path, "wb") as f:
+            f.write(mac + b"\n" + body)
+        self.s = self.open()
+        self.assertIsNotNone(self.s.log.storage.snapshot)   # it started from the edited snapshot
+        out = self.consume(tool_call_id="tc-2")
+        self.assertEqual((out["ok"], out["approval_id"]), (True, aid))
 
     def test_args_are_encrypted_at_rest(self):
         aid = self.pending()

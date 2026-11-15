@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from factories import VersionCheckCases
 from tracekit import findings_v2
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
@@ -332,6 +333,15 @@ class ResponseBodies(unittest.TestCase):
         for data in (on, off):   # the args each signer committed to (salted): the same tool use either way
             self.assertEqual([{k: v for k, v in t.items() if k != "args_commitment"} for t in data["tool_uses"]],
                              [{"id": "c-1", "name": "echo", "executed_by": "client", "args_source": "raw"}])
+
+
+@unittest.skipUnless(HAVE_OA, "openai-agents not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "openai_agents", "0.23.1"
+    message = "OpenAI Agents SDK 0.0.1 is wired but untested; Tracekit is tested with openai-agents>=0.23.1,<0.24"
+
+    def entries(self, integration):
+        return (lambda: integration.TracekitAgents(mock.Mock(), {"run_id": "r", "run_token": "t"}),)
 
 
 if __name__ == "__main__":

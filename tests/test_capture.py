@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests  # noqa: E402
 from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_json  # noqa: E402
-from factories import make_signer, wait_for  # noqa: E402
+from factories import ledger_records, make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
 
@@ -144,11 +144,7 @@ class Stack(unittest.TestCase):
             f.write(json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}) + "\n")
 
     def events(self):
-        out = []
-        for l in read_text(os.path.join(self.home, "ledger", "ledger.jsonl")).splitlines():
-            if l.strip():
-                out.append(json.loads(l)["event"])
-        return out
+        return [r["event"] for r in ledger_records(self.home)]   # the daemon may be mid-append: complete lines only
 
     def of(self, typ, **match):
         return [e for e in self.events() if e["type"] == typ and all(e["data"].get(k) == v for k, v in match.items())]

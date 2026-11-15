@@ -56,6 +56,15 @@ class Help(unittest.TestCase):
                 self.assertEqual((code, out, err), run([name, "--help"]))
         self.assertIn("Every command, grouped by what it is for", run(["help", "help"])[1])
 
+    def test_signer_options_name_an_https_signer_and_its_credentials(self):
+        """--signer takes what the client takes: an https:// signer (http:// on loopback) with a token works too."""
+        for name in ("approvals", "grant", "feedback"):
+            with self.subTest(name=name):
+                out = " ".join(run([name, "--help"])[1].split())
+                for part in ("tcp://host:port", "https://host:port", "http:// on a loopback address",
+                             "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_API_KEY", "default: $TRACEKIT_SIGNER"):
+                    self.assertIn(part, out)
+
     def test_help_on_a_moved_command_says_where_it_went(self):
         for name in cli._MOVED:
             with self.subTest(name=name):

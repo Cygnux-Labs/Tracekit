@@ -63,10 +63,12 @@ run = client.register_run({"agent": {"name": "my-agent"}})
 options = ClaudeAgentOptions(hooks=tracekit_hooks(client, run))
 async for message in query(prompt="Use the Bash tool to list the files here.", options=options):
     ...
+client.close_run({"run_id": run["run_id"], "run_token": run["run_token"]})
 ```
 
 The example runs a mock CLI (`transport=`) so it needs no `claude` binary and no API key. An ask holds the call inside
-the PreToolUse hook for up to nine minutes; SessionEnd closes the run.
+the PreToolUse hook for up to nine minutes. Close the run after the message loop: the CLI sends the hooks no
+SessionEnd ([limits](../limits.md)).
 
 The no-key example at the top of this page wires it this way, with an approval.
 

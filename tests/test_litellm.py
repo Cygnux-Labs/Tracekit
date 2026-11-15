@@ -43,7 +43,7 @@ class LiteLLMGuardrail(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:*": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                   authorize={"token:*": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/litellm": ["decide", "complete", "approval_request",
                                                                              "approval_wait", "approval_consume"]})
         self.closed = False

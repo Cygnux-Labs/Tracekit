@@ -414,6 +414,43 @@ class Transports(unittest.TestCase):
         self.addCleanup(patch.stop)
         return Client("https://signer.test:8443", timeout=timeout)
 
+    def test_refusals_and_lost_connections_are_counted_apart(self):
+        """Two rate limits and a lost connection are not three lost connections: the signer's refusals that run out
+        are its RPCError, as before retries, not SignerUnavailable (which would apply the fail mode)."""
+        answers, sent = iter([LIMIT, LIMIT, client._ConnectionLost("reset"), LIMIT]), []
+
+        def answer(frame):
+            sent.append(frame)
+            a = next(answers)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        with self.assertRaises(RPCError) as cm:
+            self.https(answer).decide({**EVENT, "tool_call_id": "c1", "args": {}})
+        self.assertEqual((cm.exception.code, len(sent)), ("quota_exceeded", 4))
+        self.assertEqual(len({(f["request_id"], f["stream"], f["client_seq"]) for f in sent}), 1)   # one request
+
+    def test_a_retry_refused_as_already_recorded_raises_the_first_tries_outage(self):
+        """The try the signer answered unavailable was written after all, so its retry is client_seq_reused: the caller
+        gets that unavailable, its outage path, as without retries. Without an outage before it, the refusal stands."""
+        for answers, code in (([OUTAGE, REUSED], "unavailable"), ([REUSED], "client_seq_reused")):
+            it = iter(answers)
+            with self.subTest(code), self.assertRaises(RPCError) as cm:
+                self.https(lambda f: next(it)).decide({**EVENT, "tool_call_id": "c1", "args": {}})
+            self.assertEqual((cm.exception.code, cm.exception.message), (code, {
+                "unavailable": "storage refused writes", "client_seq_reused": "s/0"}[code]))
+
+    def test_an_error_code_this_client_doesnt_know_is_an_rpc_error(self):
+        """A newer signer can answer with an error code this client's ERROR_CODES lacks: the client raised
+        AssertionError, which callers that catch RPCError don't handle. It is an RPCError with that code; the signer's
+        own errors are still held to ERROR_CODES when they are sent."""
+        c = self.https(lambda frame: {"error": {"code": "a_newer_signers_code", "message": "no", "retry_after_ms": 5}})
+        with self.assertRaises(RPCError) as raised:
+            c.decide({**EVENT, "run_id": "r1", "tool_call_id": "c1", "args": {}})
+        self.assertEqual((raised.exception.code, raised.exception.retry_after_ms), ("a_newer_signers_code", 5))
+        with self.assertRaises(AssertionError):
+            RPCError("a_newer_signers_code", "no").wire()
+
     def test_a_runs_events_reach_an_https_signer_in_client_seq_order(self):
         arrived = collections.defaultdict(list)
 
@@ -474,6 +511,9 @@ class Transports(unittest.TestCase):
 
 HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
 EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
+LIMIT = {"error": {"code": "quota_exceeded", "message": "event rate limit", "retry_after_ms": 5}}
+OUTAGE = {"error": {"code": "unavailable", "message": "storage refused writes"}}
+REUSED = {"error": {"code": "client_seq_reused", "message": "s/0"}}
 
 
 class RunExit(unittest.TestCase):

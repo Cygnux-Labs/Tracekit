@@ -267,7 +267,7 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.object(install, "ROOT", d), \
                 mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
-            req = install._install_source()
+            req = install._install_source("init")
         self.assertEqual(req[-1], f"tracekit-ai=={__version__}")
         self.assertEqual("--pre" in req, any(c.isalpha() for c in __version__))
 
@@ -283,12 +283,13 @@ class SystemModeUsesOpt(unittest.TestCase):
             return None if p in (sys.executable, os.path.dirname(os.__file__), src) or p.startswith(vcs) else f"{p} is mine"
         with mock.patch.object(install, "ROOT", src), mock.patch("tracekit.harness_helper.trusted_file", trusted_file):
             with self.assertRaises(SystemExit) as cm:
-                install._install_source()
+                install._install_source("init")
         self.assertIn("pyproject.toml is mine", str(cm.exception))
-        self.assertIn("sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit", str(cm.exception))
+        self.assertIn(f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit "
+                      f"/usr/local/src/tracekit-{__version__}", str(cm.exception))   # this release, as docs/deploy.md
         with mock.patch.object(install, "ROOT", src), \
                 mock.patch("tracekit.harness_helper.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
-            self.assertIsNone(install._install_source())  # the repository metadata is not installed
+            self.assertIsNone(install._install_source("init"))  # the repository metadata is not installed
 
     def opt(self):
         d = tempfile.mkdtemp()
@@ -479,6 +480,13 @@ class Doctor(unittest.TestCase):
     def test_fails_without_a_system_install(self):
         with mock.patch.object(install.client, "system_config", return_value=None):
             self.assertEqual(self.run_doctor(None)[0], 1)
+
+    def test_system_config_fix_names_the_root_owned_clone(self):
+        # under PEP 668 (Debian 12, Ubuntu 23.04+) the bare system-Python init fails outside a clone of the release
+        with mock.patch.object(install.client, "system_config", return_value=None):
+            out = self.run_doctor(None)[1]
+        self.assertIn("fix: from a root-owned clone of the release (", out)
+        self.assertIn("#laptop-system-mode), sudo /usr/bin/python3 -m tracekit init --user <agent-user>", out)
 
     def test_untrusted_system_config_is_a_fail_line(self):
         with mock.patch.object(install.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):

@@ -12,8 +12,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
   `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
-* MCP client: every ClientSession.call_tool goes through TracekitSession, and its list_tools, list_resources and
-  list_prompts are recorded as untrusted input;
+* MCP client: every ClientSession.call_tool goes through TracekitSession, and its read_resource, list_tools,
+  list_resources and list_prompts are recorded as untrusted input;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
 * Pydantic AI: every Agent built from now on gets the Tracekit capability (tracekit.integrations.pydantic_ai), unless
@@ -266,7 +266,7 @@ def _mcp(run):
 
     from .integrations.mcp import TracekitSession
     methods = {}
-    for name in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts"):
+    for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts"):
         orig = getattr(ClientSession, name, None)
         if orig is not None:   # get_prompt is absent on mcp 1.x
             methods[name] = orig
@@ -306,15 +306,27 @@ def _browser_use(run):
     from browser_use import Tools
 
     from .integrations import browser_use
-    init = Tools.__init__
     # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
     actions = browser_use._actions(run.client, run.registered)
+    if not hasattr(Tools, "act"):   # 1.0: actions are Pydantic AI tools, called through BrowserLoop
+        browser_use._wire_1x(actions)
+        return
+    init = Tools.__init__
 
     @functools.wraps(init)
     def gated(self, *a, **kw):
         init(self, *a, **kw)
         browser_use._wrap(self, actions)
     Tools.__init__ = gated
+
+
+def _browser_use_wired():
+    """Whether the 1.0 seam is installed: its wrapper carries the actions it decides with."""
+    try:
+        from browser_use.agent.loop import BrowserLoop
+    except ImportError:
+        return False
+    return getattr(BrowserLoop.wrap_tool_execute, "tracekit_actions", None) is not None
 
 
 def _pydantic_ai(run):
@@ -325,9 +337,16 @@ def _pydantic_ai(run):
 
     @functools.wraps(init)
     def wired(self, *a, capabilities=None, **kw):
-        if not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
-            capabilities = [*(capabilities or ()), Tracekit(run)]
-        init(self, *a, capabilities=capabilities, **kw)
+        deps = kw.get("deps_type")
+        if getattr(deps, "__module__", "").startswith("browser_use.") and _browser_use_wired():
+            # Browser Use's internal agent is gated by its own integration (BrowserLoop), which decides its `python`
+            # cell as `browser_use:python`; this capability would decide the same call again, under a generic name.
+            # While the seam is not wired, it is the only thing that decides that agent's calls.
+            init(self, *a, capabilities=capabilities, **kw)
+        elif not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
+            init(self, *a, capabilities=[*(capabilities or ()), Tracekit(run)], **kw)
+        else:
+            init(self, *a, capabilities=capabilities, **kw)
     Agent.__init__ = wired
 
 
@@ -349,7 +368,7 @@ FRAMEWORKS = (
     ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
      "quickstarts/claude-agent-sdk", _claude_agent_sdk),
     ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
-    ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
+    ("Browser Use", "browser-use", (0, 13, 11), (1, 1), "browser-use>=0.13.11,<1.1", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
     ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",
@@ -413,6 +432,7 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
+    from .integrations import version_check
     from .sdk.client import Client, SignerUnavailable, current_run
     from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
@@ -442,14 +462,18 @@ def instrument(agent=None):
         atexit.register(_close, run)
         _STATE["run"] = run   # before wiring: an instrument() called while a framework is imported gets this run
         for (label, dist, lo, hi, req, page, wire), version in found:
+            untested = not lo <= _release(version) < hi
+            claimed = untested and version_check.claim(label)
             try:
                 wire(run)
             except Exception as e:
+                if claimed:
+                    version_check.unclaim(label)
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
                               f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
-            if not lo <= _release(version) < hi:
+            if claimed:
                 warnings.warn(f"tracekit.instrument(): {_untested_warning(label, version, req)}", stacklevel=2)
         autotrace.instrument(run)
         return run

@@ -3,10 +3,31 @@ the installed framework is outside the versions Tracekit is tested with, as `tra
 import threading
 import warnings
 
+from tracekit import autowire
 from tracekit.autowire import _release, _tested, _untested_warning, _version
 
 _LOCK = threading.Lock()
 _WARNED = set()   # the frameworks already warned about, this process
+
+
+def framework(dist):
+    """The `(label, req)` `autowire.FRAMEWORKS` gives `dist`, for `warn_untested(label, req)`."""
+    label, _, _, _, req, *_ = next(f for f in autowire.FRAMEWORKS if f[1] == dist)
+    return label, next(r for r in req.split() if r.startswith(dist + ">="))
+
+
+def claim(label):
+    """Record `label` as warned about; True when no warning for it has gone out yet in this process."""
+    with _LOCK:
+        if label in _WARNED:
+            return False
+        _WARNED.add(label)
+        return True
+
+
+def unclaim(label):
+    with _LOCK:
+        _WARNED.discard(label)
 
 
 def warn_untested(label, req):
@@ -26,8 +47,5 @@ def warn_untested(label, req):
             return
     except Exception:
         return
-    with _LOCK:
-        if label in _WARNED:
-            return
-        _WARNED.add(label)
-    warnings.warn(f"tracekit: {_untested_warning(label, version, req)}", stacklevel=3)
+    if claim(label):
+        warnings.warn(f"tracekit: {_untested_warning(label, version, req)}", stacklevel=3)
