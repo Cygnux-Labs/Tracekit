@@ -1233,8 +1233,8 @@ class TypedText(unittest.TestCase):
     def test_the_hook_decides_the_joined_line(self):
         from tracekit.integrations import claude_code, harness_hooks
         seen = []
-        decide = mock.Mock(side_effect=lambda q: seen.append((q["tool_input"]["command"],
-                                                              q["tool_input"].get("typed_line"))) or 0)
+        decide = mock.Mock(side_effect=lambda q, begun=None: seen.append((q["tool_input"]["command"],
+                                                                          q["tool_input"].get("typed_line"))) or 0)
         # (run sets the hook module's agent name, as each hook process does: put back for the tests after this one)
         with mock.patch.object(claude_code, "handle", decide), \
                 mock.patch.object(claude_code, "AGENT", claude_code.AGENT):
