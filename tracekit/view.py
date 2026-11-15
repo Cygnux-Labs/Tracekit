@@ -769,7 +769,8 @@ class Translator(observe.Translator):
         """A model exchange: a person's prompt (UserPromptSubmit), what the model said (a model_turn whose blocks name
         their form), a response's tool uses (observe's model line); without retained content, what is committed."""
         body = self.content.pop((e["run_id"], e.get("run_seq")), None)
-        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []   # a transcript line has neither
+        # a transcript's thinking or text line has neither, unless it is its message's last: the tailer signs usage there
+        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []
         x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
         for r in out:
             r["v2"] = x

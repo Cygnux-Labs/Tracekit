@@ -3765,7 +3765,8 @@ class Installer(unittest.TestCase):
         with open(path) as f:
             cfg = json.load(f)
         self.assertEqual(cfg["theme"], "dark")
-        self.assertEqual(sorted(cfg["hooks"]), ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionEnd", "SessionStart"])
+        v1_events = ["PostToolUse", "PostToolUseFailure", "PreToolUse", "SessionEnd", "SessionStart"]
+        self.assertEqual(sorted(cfg["hooks"]), v1_events)   # TurnEnd is v2-only: the v1 hook records no model text
         for ev, entries in cfg["hooks"].items():
             self.assertEqual(len(entries), 2 if ev == "PreToolUse" else 1, ev)   # the person's PreToolUse hook is kept
             ours = [e for e in entries if agent_hooks._version(e.get("command")) == "v1"]
@@ -3774,10 +3775,22 @@ class Installer(unittest.TestCase):
             self.assertNotIn("matcher", hook)
             self.assertIn("tracekit.agent_hooks", hook["command"])
             self.assertIn("crush", hook["command"])
-        agent_hooks.install("crush", d, v2=True, python="/opt/tracekit/python")
-        with open(path) as f:
-            self.assertIn(agent_hooks.V2_MODULE, f.read())
         with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("crush", d, v2=True, python="/opt/tracekit/python")
+        with open(path) as f:
+            cfg = json.load(f)
+        self.assertEqual(sorted(cfg["hooks"]), sorted([*v1_events, "TurnEnd"]))
+        for ev, entries in cfg["hooks"].items():
+            (hook,) = [e for e in entries if agent_hooks._version(e.get("command")) == "v2"]
+            self.assertEqual((hook["name"], hook["timeout"]), ("tracekit", 600 if ev == "PreToolUse" else 30), ev)
+            self.assertIn(agent_hooks.V2_MODULE, hook["command"])
+            self.assertRegex(hook["command"], rf"\b{ev}\b")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("crush", d, python="/opt/tracekit/python")   # v2 -> v1 leaves no stale TurnEnd
+        with open(path) as f:
+            self.assertEqual(sorted(json.load(f)["hooks"]), v1_events)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("crush", d, v2=True, python="/opt/tracekit/python")
             agent_hooks.install("crush", d, uninstall=True)
         with open(path) as f:
             self.assertEqual(json.load(f), {"theme": "dark",

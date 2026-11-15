@@ -49,6 +49,7 @@ _PY = sys.executable if sys.executable and not sys.executable.startswith(install
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
+V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -94,8 +95,10 @@ def collect(config=None, issuer_key=None):
     """The checks that apply to the setup on this host (or to signer.yaml `config`)."""
     try:
         sc = client.system_config()
-    except client.SystemConfigError as e:
-        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT)]
+    except client.SystemConfigError as e:   # of init's flags, only init --managed's hooks can be seen then
+        flags, tail = install.reinit_flags(None, _managed() if install._v2_hooks_in(_managed()) else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} records them, and it can't be read")
+        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT + flags + tail)]
     out = install.v1_results() if sc and "socket" in sc and not config else []
     if config or (sc and sc.get("signer")):
         h = (sc or {}).get("hooks") or {}
@@ -122,13 +125,24 @@ def collect(config=None, issuer_key=None):
         # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
         # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off. It keeps
         # --managed, else init moves the hooks from the root-owned file into the agent's own settings, and
-        # --managed-only where init turned allowManagedHooksOnly on, else init turns it off
+        # --managed-only, else init turns allowManagedHooksOnly off. And the rest of init's flags, which only
+        # root-owned client.json gives (install.reinit_flags): without them init puts its defaults (its own policy, no
+        # harness binding) in place of the host's
         managed = settings in install.MANAGED_SETTINGS.values()
-        again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
-            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude" and not managed else "") + (
-            " --managed" + (" --managed-only" if _setting(settings, "_tracekit_allowManagedHooksOnly") is True else "")
-            if managed else "")
-        return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
+        flags, tail = install.reinit_flags(h.get("init_flags"), settings if managed else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} doesn't record them" if sc else
+                                           f"there's no {client.SYSTEM_CONFIG} here to record them")
+        agent_flag = f" --agent {shlex.quote(agent_name)}" if agent_name != "claude" else ""
+        no_hooks = " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude" and not managed \
+            else ""
+
+        def again(text, extra):
+            if " --managed-only" in extra:   # a fix's own (D-HOOKS-PRESENT's) is init's already
+                text = text.replace(REINIT + " --managed-only", REINIT)
+            return text.replace(REINIT, REINIT + extra) + tail if REINIT in text else text
+        # a detail's re-init (D-HOOKS-PRESENT after init --no-hooks) is the one that adds the hooks
+        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags),
+                           detail=again(r["detail"], agent_flag + flags)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -962,13 +976,7 @@ def _json(path):
     return json.loads(install.agent_file(path))
 
 
-def _setting(path, key):
-    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable."""
-    try:
-        s = _json(path)
-    except (OSError, ValueError):
-        return None
-    return s.get(key) if isinstance(s, dict) else None
+_setting = install.setting   # a Claude Code settings file's key, or None
 
 
 def _user(name):
@@ -1334,7 +1342,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         if cfg.get("harness_binding"):
             out.append(helper_result(
                 os.path.join(os.path.dirname(unit), (install.HELPER_LABEL + ".plist") if unit.endswith(".plist")
-                             else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
+                             else install.V2_HELPER + ".service"), REINIT))   # collect() adds init's --harness
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
@@ -1346,6 +1354,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
+    only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
+    idle = plugin and only and plugin_settings != settings   # and the plugins the managed settings enable
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     chosen = ("no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send (tracekit.instrument()) are "
@@ -1363,10 +1373,13 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", False, f"{settings}: {e}", f"make {settings} "
                 f"{'readable' if isinstance(e, OSError) else 'a JSON object'} (move it aside, or fix it), then {hook_fix}",
                 bad=sev)
-        if hooks is not None and plugin:   # init's hooks too would decide every call twice
+        if hooks is not None and plugin and not idle:   # init's hooks too would decide every call twice
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
-                "twice, and every approved call is blocked" if both else from_plugin,
+                "twice, and every approved call is blocked" if both else from_plugin, "keep one: " + (
+                    f"take {plugin_key} out of enabledPlugins in {settings}" if plugin_settings == settings else
+                    f"/plugin disable {plugin_key} in the agent's Claude Code, or {hook_fix} --managed-only, which "
+                    "stops every user's own Claude Code hooks and plugins on this machine") if managed else
                 f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}", bad=sev)
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
             add("D-HOOKS-PRESENT", True, others, "")
@@ -1381,12 +1394,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
             twice = not missing and own and install._v2_hooks_in(own)   # Claude Code runs both files' hooks
-            unused = twice and _setting(settings, "allowManagedHooksOnly") is True   # unless it runs managed ones only
+            unused = twice and only   # unless it runs managed ones only
             add("D-HOOKS-PRESENT", not (missing or twice) or unused,
-                f"no v2 hook for {', '.join(missing)} in {settings}" if missing
-                else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
-                else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
-                if twice else f"v2 hooks in {settings}", hook_fix, bad=WARN if twice else sev)
+                (f"no v2 hook for {', '.join(missing)} in {settings}" if missing
+                 else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
+                 else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
+                 if twice else f"v2 hooks in {settings}")
+                + (f"; the Tracekit plugin's, enabled in {plugin_settings}, don't run (allowManagedHooksOnly)" if idle
+                   else ""), hook_fix, bad=WARN if twice else sev)
         if hooks is not None:
             layers = sandbox_settings or dict.fromkeys((os.path.join(agent.pw_dir, ".claude", "settings.json") if agent
                                                         else install.user_settings(), settings))

@@ -66,7 +66,7 @@ class Mapping(HarnessCase):
         super().setUp()
         # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
         os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
-        self.decision, self.sent, self.observed, mutex = "allow", [], [], threading.Lock()
+        self.decision, self.sent, self.observed, self.models, mutex = "allow", [], [], [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
         def handle(identity, frame):
@@ -75,6 +75,8 @@ class Mapping(HarnessCase):
                     self.sent.append({k: frame[k] for k in ("tool", "tool_call_id", "args")})
                 if frame["method"] == "observe":
                     self.observed.append(frame["value"])
+                if frame["method"] == "model_event":
+                    self.models.append(dict(frame))
                 return getattr(self.signer, frame.pop("method"))(frame)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
 
@@ -586,6 +588,29 @@ class Mapping(HarnessCase):
         self.assertEqual(code, 2)
         self.assertIn("Docker MCP Gateway's code-mode", err)
         self.assertEqual(len(self.sent), 1)
+
+    def test_crush_turn_end_records_only_a_nonempty_last_assistant_message(self):
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-te", "cwd": "/w"}
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7},
+                      {"last_assistant_message": ["hi"]}, {"last_assistant_message": {"text": "hi"}}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.hook("crush", {**base, **extra}, "TurnEnd"), (0, "", ""))
+        self.assertEqual(self.models, [])
+        self.assertFalse(os.path.exists(claude_code._state("cr-te")))
+        self.assertEqual(self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd"), (0, "", ""))
+        (ev,) = self.models
+        self.assertEqual((ev["phase"], ev["provider"], ev["model"], ev.get("said_only"), "tool_uses" in ev),
+                         ("response", "unknown", "unknown", True, False))
+        self.assertEqual(ev["content_digest"],
+                         event_hash({"output": harness_hooks.said.text("Done."), "source": "crush hook"}))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, out, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
+        code, out, err = self.hook("crush", "[]", "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("event not recorded", err)
 
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
@@ -1434,8 +1459,9 @@ class Installer(unittest.TestCase):
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    # Cursor: and what its model said; agy and Copilot: their tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "codebuddy": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
+                    # Cursor and Crush: and what their model said; agy and Copilot: their tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "crush": 6, "qwen": 6, "codebuddy": 6, "antigravity": 2,
+                                                 "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
@@ -2050,7 +2076,7 @@ ROLLOUT = [{"timestamp": "t", "type": "session_meta", "payload": {"id": "cx-s"}}
 @unittest.skipIf(os.name == "nt", "the content vault test reads as the socket's uid")
 class WhatTheModelSaid(HarnessCase):
     """Each harness hook records what the model said since the session's last hook, before deciding: Codex's rollout
-    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought."""
+    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought, Crush's TurnEnd."""
 
     def setUp(self):
         super().setUp()
@@ -2233,8 +2259,9 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual((self.frames[0]["provider"], self.frames[0]["model"]), ("google", "gemini-3-pro"))
 
     def test_a_harness_that_names_no_call_is_never_accused_of_fabricating_one(self):
-        """Gemini CLI's and Cursor's messages are recorded without their calls (neither gives a call an id): the
-        signer must not read each decided call as one no model message asked for (reconcile.fabricated)."""
+        """Gemini CLI's, Cursor's and Crush's messages are recorded without their calls (none names a call id in what
+        carries the text): the signer must not read each decided call as one no model message asked for
+        (reconcile.fabricated)."""
         self.serve()
         msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
                "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}]}
@@ -2248,9 +2275,17 @@ class WhatTheModelSaid(HarnessCase):
                "tool_input": {"command": "ls"}, "cwd": self.d}
         self.assertEqual(self.hook("cursor", cur)[0], 0)
         self.hook("cursor", dict(cur, hook_event_name="postToolUse", tool_output="a.txt"))
-        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f")}
+        cr = {"session_id": "cr-f", "hook_event_name": "PreToolUse", "tool_name": "ls", "tool_use_id": "call_1",
+              "tool_input": {"path": self.d}, "cwd": self.d}
+        self.assertEqual(self.hook("crush", cr, "PreToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", dict(cr, hook_event_name="PostToolUse", tool_response="a.txt"),
+                                   "PostToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-f",
+                                             "cwd": self.d, "last_assistant_message": "Listed."}, "TurnEnd")[0], 0)
+        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f", "cr-f")}
         self.hook("gemini", dict(pre, hook_event_name="SessionEnd", reason="exit"))
         self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "sessionEnd", "reason": "exit"})
+        self.hook("crush", {"session_id": "cr-f", "hook_event_name": "SessionEnd", "cwd": self.d}, "SessionEnd")
         self.service.sweep()
         for sid, run_id in runs.items():
             recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
@@ -2269,6 +2304,33 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual(self.frames[0]["body"]["source"], "cursor hook")
         self.hook("cursor", {"conversation_id": "cu-s", "hook_event_name": "afterAgentResponse", "text": "Done."})
         self.assertEqual(self.frames[1]["body"]["output"][0]["content"][0]["text"], "Done.")
+
+    def test_crush_turn_end_is_recorded(self):
+        self.serve()
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-s", "cwd": self.d}
+        out = self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd")
+        self.assertEqual(out, (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertTrue(self.frames[0].get("said_only"))
+        self.assertNotIn("tool_uses", self.frames[0])
+        self.assertEqual(self.frames[0]["body"]["source"], "crush hook")
+        self.assertEqual([(x["kind"], x["text"]) for x in parsers.said("openai:responses", self.frames[0]["body"])],
+                         [("text", "Done.")])
+        st, c, events = self.events("cr-s")
+        (ex,) = [e for e in events if e["type"] == "model.exchange"]
+        got = c.call("content_get", {"run_id": st["run_id"], "seqs": [ex["run_seq"]], "purpose": "test"})["items"]
+        self.assertEqual(got[0]["content"], self.frames[0]["body"])
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7}):
+            self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd",
+                                                 "session_id": "cr-empty", "cwd": self.d, **extra}, "TurnEnd"),
+                             (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertFalse(os.path.exists(claude_code._state("cr-empty")))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, stdout, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, stdout), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
 
     def test_a_failure_to_record_never_changes_the_decision(self):
         self.serve()

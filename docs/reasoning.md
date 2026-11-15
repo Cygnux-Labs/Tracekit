@@ -31,10 +31,11 @@ the fix (`D-THINKING-SUMMARIES`, `D-CODEX-REASONING`, `D-GEMINI-THOUGHTS`; [doct
 | Codex CLI | summary, and the `encrypted_content`; encrypted only while summaries are off | `model_reasoning_summary = "auto"` in `~/.codex/config.toml` (`tracekit init --v2 --agent codex` sets it; Codex's current models default to `none`) | its rollout file, read at each hook | yes, by `call_id` |
 | Gemini CLI | summary (its thought summaries) | on by default; don't set `includeThoughts: false` in `modelConfigs` | its chat recording, read at each hook | no: Gemini CLI gives a call no id, and writes the thoughts after the calls run |
 | Cursor | the thinking text Cursor reports (recorded as a summary) | nothing: `tracekit init --v2 --agent cursor` installs its `afterAgentThought` and `afterAgentResponse` hooks | those hooks | no: they carry no call id |
+| Crush | none: only the turn's last step's first text part (full reasoning only if an open model starts it with `<think>...</think>`) | nothing: `tracekit init --v2 --agent crush` installs its `TurnEnd` hook | `TurnEnd`'s `last_assistant_message` (no reasoning or earlier steps' text; sub-agent turns fire none) | no: `TurnEnd` carries no call id and runs after the turn's calls |
 
-Gemini CLI's and Cursor's messages are recorded `said_only`: what the model said, without the calls it asked for, which
-their hooks can't name. The signer reconciles no call against them, so an honest session never reads as one whose calls
-no model asked for (`reconcile.fabricated`); it also gets no such cross-check.
+Gemini CLI's, Cursor's and Crush's messages are recorded `said_only`: what the model said, without the calls it asked
+for, which those hooks and transcripts don't name by call id. The signer reconciles no call against them, so an honest
+session never reads as one whose calls no model asked for (`reconcile.fabricated`); it also gets no such cross-check.
 
 ## Frameworks
 
