@@ -627,6 +627,9 @@ class PolicySafety(unittest.TestCase):
                 self.assertEqual((d["decision"], d["rule_ids"][:1]), ("deny", ["TK-D005"]))
         for ti in ({"file_path": r"C:\w\app.py"}, {"file_path": r"C:\w\.env.example"}):
             self.assertNotEqual(policy.evaluate(pol, "Edit", ti, r"C:\w")["decision"], "deny", ti)
+        # a person's own rule, written with `/`, reads a Windows path too
+        own = {"deny": [{"id": "X-1", "tool": "Write", "field": "file_path", "pattern": "(^|/)keys/"}]}
+        self.assertEqual(policy.evaluate(own, "Write", {"file_path": r"C:\w\keys\a.pem"}, r"C:\w")["decision"], "deny")
 
 
 class BoundedFeed(unittest.TestCase):
