@@ -49,6 +49,7 @@ export type Frame = Record<string, any>;
 
 export class SignerUnavailable extends Error {
   name = "SignerUnavailable";
+  recorded: boolean | null = false;   // a write call's error: see Client
 }
 
 /** The signer answered but does not speak this client's protocol version. It is left running. */
@@ -63,12 +64,29 @@ export class Incompatible extends Error {
 /** A refusal from the signer (or of a request that fails the contract before it is sent). */
 export class RPCError extends Error {
   name = "RPCError";
+  recorded: boolean | null = false;   // a write call's error: see Client
   constructor(readonly code: string, message: string, readonly retryAfterMs?: number) {
     super(`${code}: ${message}`);
   }
 }
 
-class ConnectionLost extends Error {}
+/** The request may not have arrived. `sent` false: it never connected, so nothing went out. */
+class ConnectionLost extends Error {
+  constructor(readonly sent = true) {
+    super();
+  }
+}
+
+/** Added to the message of a write call's error when a try of it may have been recorded (`recorded` null). */
+const UNKNOWN = ". It may have been recorded: once the run closes, its bundle shows whether it was. Don't send it again " +
+  "as a new call: if it was recorded, it would be recorded twice";
+
+/** The error of a request that went out and got no answer in time: it may have been recorded. */
+function unanswered(ms: number): SignerUnavailable {
+  const e = new SignerUnavailable(`no answer from the signer within ${ms / 1000}s`);
+  e.recorded = null;
+  return e;
+}
 
 /** Milliseconds to wait before sending a call of `schema` again after its `tries`th try was refused with `e`; null: not
  * again. Only an event call (one with a client_seq): the signer refuses a client_seq it already recorded before it
@@ -95,7 +113,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => void): Promi
   const t = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       onTimeout();
-      reject(new SignerUnavailable(`no answer from the signer within ${ms / 1000}s`));
+      reject(unanswered(ms));
     }, ms);
   });
   return Promise.race([p, t]).finally(() => clearTimeout(timer));
@@ -301,7 +319,8 @@ class Https {
 
   /** The answer frame, read from the body whatever the HTTP status. The client doesn't ask for error statuses
    * (Tracekit-Errors), so a proxy in front sees 200 for a refusal and acts on none (no retry of a 503, no host ejected).
-   * ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout. */
+   * ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout (`recorded` false when it timed
+   * out connecting: nothing went out). */
   post(frame: Frame, timeoutMs: number): Promise<Frame> {
     const body = JSON.stringify(frame), tokenFile = process.env.TRACEKIT_SIGNER_TOKEN_FILE;
     const apiKey = process.env.TRACEKIT_API_KEY?.trim();
@@ -331,18 +350,27 @@ class Https {
           }
         });
       });
+      let connected = false;   // nothing goes out until it connects (and the TLS handshake is done)
       req.on("timeout", () => {
-        reject(new SignerUnavailable(`no answer from the signer within ${timeoutMs / 1000}s`));
+        reject(connected ? unanswered(timeoutMs)
+          : new SignerUnavailable(`could not connect to the signer at ${this.url.origin} within ${timeoutMs / 1000}s`));
         req.destroy();
       });
-      req.on("error", () => reject(new ConnectionLost()));
+      req.on("socket", (s) => {
+        if (s.connecting) s.once("secureConnect", () => (connected = true));
+        else connected = true;   // a kept-alive socket
+      });
+      req.on("error", () => reject(new ConnectionLost(connected)));
       req.end(body);
     });
   }
 
   async rpc(frame: Frame, timeoutMs: number): Promise<Frame> {
     if (!this.hello) {
-      const hello = await this.post({ method: "hello" }, timeoutMs);
+      const hello = await this.post({ method: "hello" }, timeoutMs).catch((e) => {
+        if (e instanceof SignerUnavailable) e.recorded = false;   // only the hello went out
+        throw e;
+      });
       if (hello.error) throw new RPCError(hello.error.code, hello.error.message ?? "");
       check(hello, this.url.origin);
       this.hello = hello;
@@ -359,7 +387,9 @@ export interface ClientOptions {
 }
 
 /** Methods take the request object of an RPC and return its response, or reject with RPCError (a refusal),
- * SignerUnavailable or Incompatible. */
+ * SignerUnavailable or Incompatible. The error of a write call (one with a `request_id`) has `recorded`: false, it was
+ * not; null, a try of it may have been (its message says so); true, it was and only its answer was lost (an event's
+ * retry refused client_seq_reused). */
 export class Client {
   readonly signer: string | null;
   readonly stream = newId();
@@ -436,18 +466,20 @@ export class Client {
       }
       return { method, ...req };
     };
-    const timeout = this.timeoutMs + (req.timeout_ms ?? 0), deadline = Date.now() + timeout;
+    const timeout = this.timeoutMs + (req.timeout_ms ?? 0), deadline = Date.now() + timeout, assigned = claim;
     let release = () => {};
     if (claim) {
       try {
         release = await this.turn(req.run_id, timeout);
       } catch (e) {
         frame();   // used up: the signer's client_counter_gap covers a call it never saw
+        (e as SignerUnavailable).recorded = false;   // it was not sent
         throw e;
       }
     }
-    // tries: the signer's refusals of an event call (retryWait), counted apart from lost connections
-    let losses = 0, tries = 0, outage: RPCError | null = null;
+    // tries: the signer's refusals of an event call (retryWait), counted apart from lost connections; sent: a try may
+    // have been recorded (no answer, or unavailable); recorded: one was (see Client)
+    let losses = 0, tries = 0, outage: RPCError | null = null, sent = false, recorded = false;
     try {
       while (losses < RETRIES) {
         const left = Math.max(deadline - Date.now(), 1);
@@ -465,6 +497,8 @@ export class Client {
         } catch (e) {
           if (e instanceof ConnectionLost) {
             losses++;
+            // a lost hello, or a connect that failed, sent nothing; past both, the request may have gone out
+            sent ||= e.sent && (!this.https || this.https.hello !== null);
             continue;
           }
           if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
@@ -473,8 +507,13 @@ export class Client {
         if (reply.error) {
           const e = reply.error, err = new RPCError(e.code, e.message ?? "", e.retry_after_ms);
           if (["run_closed", "unknown_run"].includes(e.code)) this.seqs.delete(req.run_id);   // no more events for it
-          // the try the signer answered unavailable was written after all: that answer stands (the caller's outage path)
-          if (outage && e.code === "client_seq_reused") throw outage;
+          // a try that may have been written was, if this client gave it its client_seq; a try the signer answered
+          // unavailable: that answer stands (the caller's outage path)
+          if (sent && e.code === "client_seq_reused") {
+            recorded = assigned;
+            throw outage ?? err;
+          }
+          sent ||= e.code === "unavailable";
           const wait = retryWait(schema, e, ++tries);
           if (wait === null || tries === RETRIES || Date.now() + wait >= deadline) throw err;
           if (e.code === "unavailable") outage = err;
@@ -485,6 +524,13 @@ export class Client {
         return reply;
       }
       throw new SignerUnavailable(`lost the connection to the signer ${RETRIES} times`);
+    } catch (e) {
+      if (e instanceof SignerUnavailable || e instanceof RPCError) {
+        // not a write: null means a write's unknown outcome only
+        e.recorded = !("request_id" in req) ? false : recorded ? true : sent || e.recorded === null ? null : false;
+        if (e.recorded === null) e.message += UNKNOWN;
+      }
+      throw e;
     } finally {
       release();
     }
@@ -669,8 +715,9 @@ export class RunHandle {
     } catch (e) {
       if (!(e instanceof SignerUnavailable)) throw e;
       const open = failOpen(this.failModes, fields.tool_class_hint);
-      warn(`tracekit: ${tool} ${open ? "runs unrecorded (fail open)" : "is denied (fail closed)"}: ${e.message}`);
-      return { decision: open ? "allow" : "deny", rule_ids: [], reason: `signer unavailable: ${e.message}`.slice(0, 1024), unavailable: true };
+      const why = e.message.replace(UNKNOWN, "");   // the outage path, worded as before: `recorded` stays on the error
+      warn(`tracekit: ${tool} ${open ? "runs unrecorded (fail open)" : "is denied (fail closed)"}: ${why}`);
+      return { decision: open ? "allow" : "deny", rule_ids: [], reason: `signer unavailable: ${why}`.slice(0, 1024), unavailable: true };
     }
     try {   // a denied call is never completed: nothing to remember; others are capped, as `at` is
       if (d.decision !== "deny")
@@ -681,15 +728,24 @@ export class RunHandle {
     return d as Decision;
   }
 
-  /** Never rejects: a failure to record a call that already ran is a warning. Defaults decision_id and args_digest to
-   * those of the last `decide` for this tool call. */
+  /** Never rejects: a failure to record a call that already ran resolves null and warns that it was not recorded (the
+   * run's bundle shows the call as decided and not completed) or that it may not have been (no answer to a try that
+   * went out: the bundle has its tool.result or a decided_not_completed gap). A retry the signer refuses as already
+   * recorded (client_seq_reused) was recorded: null, no warning. Defaults decision_id and args_digest to those of the
+   * last `decide` for this tool call. */
   async complete(toolCallId: string, status: "ok" | "error" = "ok", fields: Frame = {}): Promise<Frame | null> {
     const decided = this.decided.get(toolCallId);
     this.decided.delete(toolCallId);
     try {
       return await this.call("complete", { tool_call_id: toolCallId, status, ...decided, ...fields });
     } catch (e) {
-      warn(`tracekit: the result of ${toolCallId} was not recorded: ${(e as Error).message}`);
+      const recorded = (e as RPCError).recorded, message = (e as Error).message;
+      if (recorded === null)
+        warn(`tracekit: the result of ${toolCallId} may not have been recorded (${message.replace(UNKNOWN, "")}). Once ` +
+          `the run closes, its bundle has ${toolCallId}'s tool.result if it was, or a decided_not_completed gap if it wasn't.`);
+      else if (!recorded)
+        warn(`tracekit: the result of ${toolCallId} was not recorded: ${message}. Once the run closes, its bundle shows ` +
+          `${toolCallId} as decided and not completed.`);
       return null;
     } finally {
       this.at.delete(toolCallId);
@@ -714,8 +770,9 @@ export class RunHandle {
       return await this.call("approval_consume", { tool_call_id: toolCallId, tool, args, args_source: typeof args === "string" ? "raw" : "parsed",
         ...(approvalIdHint ? { approval_id_hint: approvalIdHint } : {}), ...fields });
     } catch (e) {
-      warn(`tracekit: ${tool} is blocked: approval_consume failed: ${(e as Error).message}`);
-      return { ok: false, rule_ids: [], reason: `approval_consume failed: ${(e as Error).message}`.slice(0, 1024) };
+      const why = (e as Error).message.replace(UNKNOWN, "");   // handed to the model: `recorded` stays on the error
+      warn(`tracekit: ${tool} is blocked: approval_consume failed: ${why}`);
+      return { ok: false, rule_ids: [], reason: `approval_consume failed: ${why}`.slice(0, 1024) };
     }
   }
 
