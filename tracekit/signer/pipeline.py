@@ -496,6 +496,7 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
+        unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
         agent, contain = {"off": False, "uses": {}}, new_contain()
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
@@ -544,6 +545,7 @@ class RecordLog:
             run = runs.get((e["tenant"], e["run_id"]))
             if run is None:
                 run = runs[(e["tenant"], e["run_id"])] = new_run(e["tenant"], e["run_id"])
+                unsnapped.add((e["tenant"], e["run_id"]))
             if (e["prev_hash"], e["run_seq"], e["run_prev_hash"]) != (prev, run["run_seq"], run["head"]):
                 raise StorageCorrupt(f"seq {e['seq']} breaks the chain; run `tracekit signer fsck`")
             if e["type"] == "signer.epoch":
@@ -660,6 +662,7 @@ class RecordLog:
             if self.detector and not r["final"] and r["owner"] and k not in det["runs"]:
                 det["runs"][k] = detect.run_entry(r.get("session", run_id), r["owner"], r["people"][1])
         self.det = det
+        self.unsnapped = unsnapped   # SignerService._rebuilt: memory state of theirs a crash may have lost
         # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits

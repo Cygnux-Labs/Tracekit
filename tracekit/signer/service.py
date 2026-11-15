@@ -299,7 +299,8 @@ earlier run read; kept in the run state and snapshots, and in the reason its dec
 result carries more values than are read or the run's index is full, and a decision whose values take past its
 deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern does. A
 restart rebuilds each open run's index from its records and the content vault (_rebuilt), `partial` where an untrusted
-record's content can't be read whole, `unavailable` without a vault; a storage recovery keeps the index, `partial`
+record's content can't be read whole or for a run with no decision that no snapshot holds (after a crash, nothing says
+whether it was registered with `continues`), `unavailable` without a vault; a storage recovery keeps the index, `partial`
 once records it never read turn out to have reached the store, and a decision during the outage reads it as
 `partial`.
 """
@@ -385,6 +386,9 @@ SNAPSHOT_RECORDS = 100_000
 PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CONTINUES = "continues an earlier run of the session"   # register_run `continues`: the index's reason
+# the reason of a run rebuilt with no decision, which no snapshot holds: was it registered with `continues`?
+CRASHED = ("rebuilt after a signer crash before the run's first decision: whether it continues an earlier run of its "
+           "session is unknown")
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
@@ -2229,6 +2233,8 @@ class SignerService:
                     prov, read = {"state": "partial", "reason": f"the index could not be rebuilt after a signer "
                                                                 f"restart: {e}"[:256], "index": {}}, []
                 tx.set(self.log.runs[key], "prov", prov)
+                if prov.get("reason") == CRASHED:   # in the run state until a decision records it, as `continues` is
+                    tx.set(self.log.runs[key], "partial_start", CRASHED)
                 for i in range(0, len(read), 1000):   # content_accessed's seqs
                     tx.emit(self.log.signer_run(tx, key[0]), "content.accessed", {
                         "principal": "signer", "run_id": key[1], "seqs": read[i:i + 1000],
@@ -2247,8 +2253,9 @@ class SignerService:
         and that redaction left whole: a mark may hide a value, whatever the record's count says. An untrusted record
         whose content can't be read so makes the index partial; trusted content left out only holds more calls."""
         prov, read, tools, head = {"state": "complete", "index": {}}, [], {}, ZERO_HASH
-        if self.log.runs[key].get("continues"):
-            prov.update(state="partial", reason=CONTINUES)
+        if self.log.runs[key].get("partial_start"):   # CONTINUES or CRASHED, from the run state or a snapshot
+            prov.update(state="partial", reason=self.log.runs[key]["partial_start"])
+        decided = False
         policies = {self.policy.policy_hash: self.policy}   # policy_hash -> the policy (None: not kept)
         run, at, dk = {"prov": prov}, types.SimpleNamespace(set=dict.__setitem__), self._data_key(key)
         for r in self.log.storage.iter_run(*key):
@@ -2258,9 +2265,9 @@ class SignerService:
                 return prov, read
             head, seq, t = r["hash"], e["run_seq"], e["type"]
             if t == "policy.decision":
-                tools[d["decision_id"]] = d["tool"]
-                if d.get("provenance_reason") == CONTINUES:   # a crash since the last snapshot lost the run state's word
-                    degrade(at, prov, "partial", CONTINUES)
+                tools[d["decision_id"]], decided = d["tool"], True
+                if d.get("provenance_reason") in (CONTINUES, CRASHED):   # a crash since the snapshot lost the run state
+                    degrade(at, prov, "partial", d["provenance_reason"])
                 if d["policy_hash"] not in policies:
                     policies[d["policy_hash"]] = self._kept_policy(d["policy_hash"])
             elif t == "capture.gap" and d.get("kind") == "client_counter_gap":
@@ -2312,6 +2319,8 @@ class SignerService:
                 degrade(at, prov, "truncated", f"observed input {seq} carried more values than are read")
         if head != self.log.runs[key]["head"]:
             degrade(at, prov, "partial", "the run's records in the store end before its head: run `tracekit signer fsck`")
+        if not decided and key in self.log.unsnapped:   # neither a decision's reason nor the run state can say
+            degrade(at, prov, "partial", CRASHED)
         return prov, read
 
     def _kept_policy(self, policy_hash):
@@ -2900,7 +2909,7 @@ class SignerService:
             tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             if req.get("continues"):   # kept in the run state (and its snapshots) for the index's rebuild
-                tx.set(run, "continues", True)
+                tx.set(run, "partial_start", CONTINUES)
             tx.set(run, "prov", {"state": "partial", "reason": CONTINUES, "index": {}} if req.get("continues") else
                    {"state": "complete", "index": {}})
             if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions

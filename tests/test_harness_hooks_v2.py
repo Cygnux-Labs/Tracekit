@@ -2037,20 +2037,23 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual(agent_hooks.normalise("codex", dict(p, prompt="hi"))["prompt"], "hi")
 
     def test_a_hook_that_records_what_was_said_waits_for_a_starting_signer_no_longer_than_its_event(self):
-        """The said record's connection, made before the event's own, waits no longer than autospawn's timeout for a
-        starting dev signer, so the two together stay under a non-tool event's 30 s (claude_code.start_wait)."""
+        """The said record's connection, made before the event's own, answers by the same deadline as the event's
+        (claude_code.deadline): together they stay under a non-tool event's 30 s."""
         self.serve()
         waits, made = [], claude_code.HookClient
 
         class Recording(made):
             def __init__(self, **kw):
-                waits.append(kw.get("start_wait_s"))
+                waits.append(kw.get("answer_by"))
                 super().__init__(**kw)
         path = self.transcript(*ROLLOUT)
+        begun = time.monotonic()
         with mock.patch.object(claude_code, "HookClient", Recording):
             self.assertEqual(self.hook("codex", {"session_id": "cx-w", "hook_event_name": "UserPromptSubmit",
                                                  "prompt": "hi", "transcript_path": path})[0], 0)
-        self.assertEqual(waits, [0, 0])
+        self.assertEqual(len(waits), 2)
+        self.assertEqual(waits[0], waits[1])
+        self.assertLessEqual(waits[0], begun + 2 * autospawn.TIMEOUT_S + 1)
 
     def test_codex_reasoning_is_recorded_before_the_decision_and_linked_by_call_id(self):
         self.serve()
@@ -2179,16 +2182,110 @@ class SlowSignerStart(HarnessCase):
     """A dev signer slow to start (it rebuilds its open runs' provenance indexes first): a hook waits for it only as long
     as its harness lets the hook run, so the hook answers (a pre-tool one blocks) before the harness gives up on it."""
 
-    def test_each_hook_waits_under_its_harness_timeout(self):
+    def test_each_hook_answers_under_its_harness_timeout(self):
         """A pre-tool hook's harness gives it 600 s (Claude Code's install.HOOK_TIMEOUT, agent_hooks' install), any other
-        event's 30 s (Claude Code: 15 s at SessionEnd, else its default 60 s), and Cline 30 s for every event: the most
-        a hook waits for the signer, 10 s for one to answer at all, leaves 5 s of that for the hook's own calls."""
+        event's 30 s (Claude Code: 15 s at SessionEnd, else its default 60 s), and Cline 30 s for every event. A hook
+        answers by its deadline, which leaves 5 s of the limit for starting the process and answering."""
         for harness, agent in [("claude-code", "claude-code"), *agent_hooks.AGENT_NAMES.items()]:
             for event in ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionEnd"):
                 limit = (30 if harness == "cline" else install.HOOK_TIMEOUT.get(event, 60) if harness == "claude-code"
                          else 600 if event == "PreToolUse" else 30)
                 with self.subTest(harness, event=event), mock.patch.object(claude_code, "AGENT", agent):
-                    self.assertLessEqual(max(10, claude_code.start_wait(event)) + 5, limit)
+                    self.assertLessEqual(claude_code.deadline(event, 0.0) + 5, limit)
+
+    def test_a_rate_limited_call_is_not_sent_again_past_the_hooks_deadline(self):
+        calls = []
+
+        def refused(client, method, req=None, **fields):
+            calls.append(method)
+            raise RPCError("quota_exceeded", "events_per_s", retry_after_ms=2000)
+        with mock.patch.object(Client, "call", refused):
+            c = claude_code.HookClient(answer_by=time.monotonic() + 0.5)
+            begun = time.monotonic()
+            with self.assertRaises(RPCError):
+                c.call("decide", {})
+        self.assertLess(time.monotonic() - begun, 1)
+        self.assertEqual(calls, ["decide"])
+
+    def slow_signer(self, seconds):
+        """The dev signer the hooks start from now on takes `seconds` to start once it holds signer.lock."""
+        os.environ.pop("TRACEKIT_SIGNER", None)
+        self.addCleanup(autospawn.down, 60)   # once it has started: it serves before it sees the SIGTERM
+        slow = ac.tmpdir(self)
+        with open(os.path.join(slow, "sitecustomize.py"), "w") as f:
+            f.write("import sys, time\n"
+                    "if sys.argv[1:] == ['signer', 'serve', '--dev']:\n"
+                    "    from tracekit.signer import service\n"
+                    "    open_dev = service.open_dev\n"
+                    f"    service.open_dev = lambda: time.sleep({seconds}) or open_dev()\n")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        os.environ["PYTHONPATH"] = os.pathsep.join(x for x in (slow, root, os.environ.get("PYTHONPATH")) if x)
+
+    UPLOAD = {"preToolUse": {"toolName": "run_commands",   # held by the dev pack (TK-A032)
+                             "parameters": {"commands": json.dumps(["aws s3 cp build/ s3://releases/ --recursive"])}}}
+
+    def test_a_cline_hook_that_waits_for_its_signer_and_an_approval_answers_before_cline_runs_the_call(self):
+        """One deadline for the whole hook: a start that takes 15 s leaves the held call's approval wait (20 s here)
+        nothing, and the hook blocks the call before Cline's 30 s."""
+        self.slow_signer(15)
+        os.environ["TRACEKIT_APPROVAL_WAIT"] = "20"
+        agent_hooks.cline_cap_wait()
+        begun = time.monotonic()
+        code, out, err = self.hook("cline", dict(cases("cline")[3]["payload"], **self.UPLOAD), "PreToolUse")
+        self.assertLess(time.monotonic() - begun, 25)
+        self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
+        self.assertIn("HELD", json.loads(out)["errorMessage"])
+
+    def test_a_pre_tool_hook_whose_signer_starts_past_its_deadline_blocks_by_it(self):
+        """As a Claude Code hook with its numbers scaled down: a 6 s budget, a signer that takes 9 s to start."""
+        self.slow_signer(9)
+        begun = time.monotonic()
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 6), contextlib.redirect_stderr(io.StringIO()):
+            code = claude_code.handle({"hook_event_name": "PreToolUse", "session_id": "s-pre", "tool_use_id": "t1",
+                                       "tool_name": "Bash", "tool_input": {"command": "ls"}})
+        self.assertLess(time.monotonic() - begun, 8)
+        self.assertEqual(code, 2)
+
+    def test_a_harness_hooks_deadline_starts_before_what_was_said(self):
+        """A Codex hook records what the model said first, on a connection of its own: that wait counts against the
+        hook's deadline too (scaled down: a 12 s budget, a signer that takes 30 s to start)."""
+        self.slow_signer(30)
+        rollout = os.path.join(ac.tmpdir(self), "rollout.jsonl")
+        with open(rollout, "wb") as f:
+            f.write(b"".join(map(line, ROLLOUT)))
+        begun = time.monotonic()
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 12):
+            code, _, err = self.hook("codex", {"session_id": "cx-d", "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                                               "tool_use_id": "call_1", "tool_input": {"command": "ls"},
+                                               "transcript_path": rollout})
+        self.assertLess(time.monotonic() - begun, 14, err)
+        self.assertEqual(code, CODEX_DENY)
+
+    def test_a_cline_hook_still_waits_for_an_approval_within_its_deadline(self):
+        """Each signer call takes at most a quarter of what the hook has left, so a Cline hook's approval wait has the
+        rest: a person who approves within it lets the call run."""
+        self.slow_signer(0)
+        os.environ["TRACEKIT_APPROVAL_WAIT"] = "20"
+        agent_hooks.cline_cap_wait()
+        out = []
+        t = threading.Thread(target=lambda: out.append(self.hook(
+            "cline", dict(cases("cline")[3]["payload"], **self.UPLOAD), "PreToolUse")))
+        t.start()
+        self.addCleanup(t.join, 30)
+        deadline = time.monotonic() + 15
+        while True:
+            self.assertLess(time.monotonic(), deadline, "no approval was requested")
+            try:
+                asked = Client().approval_list({"state": "requested"})["approvals"]
+            except Exception:   # the signer is starting
+                asked = []
+            if asked:
+                break
+            time.sleep(0.1)
+        Client().approval_decide({"approval_id": asked[0]["approval_id"], "decision": "approve"})
+        t.join(30)
+        code, stdout, err = out[0]
+        self.assertEqual((code, json.loads(stdout).get("cancel")), (0, None), err)
 
     def test_a_cline_hook_blocks_before_cline_runs_the_call(self):
         """Cline runs a call whose hook is still running at 30 s: its hook gives up on a signer still starting within

@@ -30,6 +30,7 @@ import os
 import re
 import stat
 import sys
+import time
 import warnings
 
 from tracekit import agent_hooks, parsers
@@ -47,7 +48,7 @@ NO_HOOK = ("write_stdin", "wait")   # Codex tools that fire no PreToolUse (unifi
 def run(harness, raw, stdout=None, stderr=None, event=None):
     """Handle one hook invocation (`event`: the hook event from the command line, or None). -> exit code. Writes the
     harness's expected stdout."""
-    stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
+    stdout, stderr, begun = stdout or sys.stdout, stderr or sys.stderr, time.monotonic()   # the hook's deadline's start
     try:
         p = json.loads(raw) if raw.strip() else {}
     except (ValueError, RecursionError):   # nested too deep to read
@@ -76,7 +77,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
             with warnings.catch_warnings():   # a version skew is told once per session (claude_code.handle) instead
                 warnings.filterwarnings("ignore", claude_code.SKEW)
-                said_since(harness, p, stderr)
+                said_since(harness, p, stderr, claude_code.deadline(q and q.get("hook_event_name"), begun))
         reason = agent_hooks._blocked(harness, p, raw) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
@@ -86,7 +87,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         else:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]
             with contextlib.redirect_stderr(err):
-                code = claude_code.handle(q)
+                code = claude_code.handle(q, begun)
     except Exception as e:   # never a reason to let the call run
         print(f"[tracekit] {harness} hook error ({type(e).__name__}: {e}); "
               + ("blocking" if is_pre else "event not recorded"), file=err)
@@ -98,8 +99,9 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     return agent_hooks._exit(harness, code, is_pre)
 
 
-def said_since(harness, p, stderr):
-    """Record what the model said since the session's last hook (see the module docstring). Never raises."""
+def said_since(harness, p, stderr, end=None):
+    """Record what the model said since the session's last hook (see the module docstring), by the hook's deadline
+    `end` (claude_code.deadline). Never raises."""
     if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline", "gptme", "openhands", "copilot",
                    "codebuddy", "jcode", "kiro"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
@@ -127,7 +129,7 @@ def said_since(harness, p, stderr):
                 said_items = ([(items, model) for items in _responses(lines)] if harness == "codex" else
                               [(items, m.get("model"), "google", "gemini chat") for m, items in _gemini(lines, st["seen"])])
             if said_items:
-                client = claude_code.HookClient(start_wait_s=claude_code.start_wait(None))   # then the event's own
+                client = claude_code.HookClient(answer_by=end)   # the hook's deadline: the event's own wait follows
                 try:
                     # a SessionEnd records into the run it ends, never into a new one
                     s = said.Said(lambda **f: claude_code._run(client, sid, register=ev != "SessionEnd",

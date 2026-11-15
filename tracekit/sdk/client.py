@@ -319,12 +319,13 @@ class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
     response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
     an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE; `token`: a tcp:// signer's token,
-    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read); `start_wait_s`: how long it waits in
-    all for a dev signer that says it is starting (autospawn.ensure's `start_wait`; None: its default)."""
+    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read); `answer_by`: a time.monotonic() by
+    which a connection to the dev signer has answered or failed, a starting one included (autospawn.ensure's
+    `start_wait`, at most its default; None: no such time)."""
 
-    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None, start_wait_s=None):
+    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None, answer_by=None):
         self.signer = signer or _default_signer()
-        self.timeout, self.hello, self.token, self.start_wait_s = timeout, None, token, start_wait_s
+        self.timeout, self.hello, self.token, self.answer_by = timeout, None, token, answer_by
         http = (self.signer or "").startswith(("https://", "http://"))
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
@@ -527,8 +528,8 @@ class Client:
             sock, rfile, self.hello = connect(self.signer, token=self.token)
         else:
             from tracekit.sdk import autospawn
-            sock, rfile, self.hello = autospawn.ensure(**({} if self.start_wait_s is None else {
-                "start_wait": self.start_wait_s}))
+            sock, rfile, self.hello = autospawn.ensure(**({} if self.answer_by is None else {"start_wait": min(
+                autospawn.START_WAIT_S, max(self.answer_by - time.monotonic(), 0.0))}))
         return sock, rfile
 
     def _connect(self):

@@ -667,9 +667,36 @@ class Restart(Calls, unittest.TestCase):
         self.s.close()
         shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))   # as a crash: a replay of the records alone
         self.restart()
-        self.assertNotIn("continues", self.s.log.runs[(self.run["tenant"], self.run["run_id"])])
+        self.assertNotIn("partial_start", self.s.log.runs[(self.run["tenant"], self.run["run_id"])])
         self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"],
                          "continues an earlier run of the session")
+
+    def test_a_run_a_crash_left_with_no_decision_starts_partial(self):
+        """A crash loses the run state of a run registered since the last snapshot, and with no decision yet no record
+        says whether it was registered with `continues`: its rebuilt index starts partial, and stays so over a later
+        restart. A run the snapshot holds starts as the snapshot says."""
+        snaps = os.path.join(self.dir, "store", "snapshots")
+        self.s.log.snapshot()   # holds setUp's run, with no decision
+        kept = set(os.listdir(snaps))
+        first, self.run = self.run, self.s.register_run({"request_id": "reg-later", "agent": {"name": "a"},
+                                                         "continues": True})
+        self.seq = -1
+        self.s.close()
+        for name in set(os.listdir(snaps)) - kept:   # as a crash: the snapshot close wrote never was
+            os.remove(os.path.join(snaps, name))
+        self.restart()
+        self.restart()   # and a clean restart after it, before the run's first decision
+        self.assertEqual(self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"],
+                         svc.CRASHED)
+        later, self.run, self.seq = self.run, first, -1
+        self.assertEqual(self.email("tc-mail")["decision"], "allow")
+        self.assertNotIn("provenance_state", self.record("tc-mail"))
+        self.s.close()
+        shutil.rmtree(snaps)   # a crash after its decision: that decision's reason says so
+        self.restart()
+        self.run, self.seq = later, 0
+        self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"],
+                         svc.CRASHED)
 
     def test_only_records_bound_to_the_runs_head_are_read(self):
         """An observe altered to trusted before the last snapshot (which the replay doesn't read again) breaks the

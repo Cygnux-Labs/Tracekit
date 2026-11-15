@@ -77,6 +77,7 @@ import glob
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -278,25 +279,27 @@ def approval_wait_s():
     return w if 0 < w <= APPROVAL_WAIT_S else APPROVAL_WAIT_S if w > APPROVAL_WAIT_S else 0.0
 
 
-def start_wait(event):
-    """How long a hook for `event` waits for a dev signer that says it is starting (autospawn.ensure), so it answers
-    within its harness's timeout for the event: a pre-tool hook's is 600 s (install.HOOK_TIMEOUT, agent_hooks' install),
-    and it waits the default; any other event's 15 to 60 s, and a hook makes two connections at most (said, then the
-    event), so no longer than autospawn's own timeout; Cline runs a call whose hook is still running at 30 s, so a
-    Cline hook waits at most agent_hooks.CLINE_WAIT_S for any event."""
+def deadline(event, begun):
+    """When the hook for `event` that started at `begun` (time.monotonic()) must have answered, under its harness's
+    timeout for the event; every wait in it (for a starting signer, a rate limit, an approval) takes what is left. A
+    pre-tool hook's harness gives it 600 s (install.HOOK_TIMEOUT, agent_hooks' install): APPROVAL_WAIT_S; any other
+    event's 30 s (Claude Code's 60 s): twice autospawn's own timeout, and Claude Code's SessionEnd 15 s: once; Cline runs
+    a call whose hook is still running at 30 s: agent_hooks.CLINE_WAIT_S for every event."""
     if AGENT == "cline":
         from tracekit.agent_hooks import CLINE_WAIT_S
-        return CLINE_WAIT_S
-    return autospawn.START_WAIT_S if event == "PreToolUse" else 0
+        return begun + CLINE_WAIT_S
+    return begun + (APPROVAL_WAIT_S if event == "PreToolUse" else autospawn.TIMEOUT_S if event == "SessionEnd" else
+                    2 * autospawn.TIMEOUT_S)
 
 
 class HookClient(Client):
-    """The hooks' client: a call the signer rate-limits (quota_exceeded with retry_after_ms) is sent again once that has
-    passed, within the client's timeout, as the tailer's lines are. In dev mode the hooks and the tailer share the
-    agent's uid, and so its event rate: a tailer reading a long transcript must not have the hook's decide refused."""
+    """The hooks' client, by the hook's deadline() (`answer_by`): a call the signer rate-limits (quota_exceeded with
+    retry_after_ms) is sent again once that has passed, within the client's timeout and the deadline, as the tailer's
+    lines are. In dev mode the hooks and the tailer share the agent's uid, and so its event rate: a tailer reading a
+    long transcript must not have the hook's decide refused."""
 
     def call(self, method, req=None, **fields):
-        end = time.monotonic() + self.timeout
+        end = min(time.monotonic() + self.timeout, self.answer_by or math.inf)
         while True:
             try:
                 return super().call(method, req, **fields)
@@ -698,8 +701,11 @@ def _approval_command_prefix(agent, signer):
     return ""
 
 
-def _pre(client, p, sid, tid):
-    end, per_call = time.monotonic() + APPROVAL_WAIT_S, client.timeout   # every signer call is capped to the time left
+def _pre(client, p, sid, tid, end=None):
+    # `end`: the hook's deadline(); every signer call is capped to the time left, and to a quarter of it, so the last
+    # approval_wait's answer and the consume fit in what an approval wait leaves
+    end = end or time.monotonic() + APPROVAL_WAIT_S
+    per_call = min(client.timeout, max(end - time.monotonic(), 0.0) / 4)
 
     def cap(wait_s=0.0):
         client.timeout = max(min(per_call, end - time.monotonic() - wait_s), 0.001)
@@ -1138,9 +1144,9 @@ def _tool_class(tool):
     return load_policy().tool_class(tool)
 
 
-def _handle(client, p, event, sid, tid):
+def _handle(client, p, event, sid, tid, end=None):
     if event == "PreToolUse":
-        return _pre(client, p, sid, tid)
+        return _pre(client, p, sid, tid, end)
     if event in TOOL_EVENTS:
         return _post(client, p, sid, tid)
     if AGENT == "gptme" and event == "PromptObserved":
@@ -1269,9 +1275,10 @@ def _entry(event=None):
     return handle(dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {})
 
 
-def handle(p):
+def handle(p, begun=None):
     """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
-    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
+    onto it), in a hook that began at `begun` (time.monotonic(); default now): its deadline() bounds every wait.
+    -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
     blocked: any other event that fails returns 1, a non-blocking error the harness shows (2 would erase a prompt, or
     send the agent back to work at Stop), and its tool calls are still decided at PreToolUse. An event let through (0)
     may also tell the person, once per session, that the signer runs another Tracekit version (_skew): in Claude Code's
@@ -1279,7 +1286,7 @@ def handle(p):
     out, notice = io.StringIO(), None
     with contextlib.redirect_stdout(out), warnings.catch_warnings():
         warnings.filterwarnings("ignore", SKEW)
-        code, client = _event(p)
+        code, client = _event(p, deadline(p.get("hook_event_name"), begun or time.monotonic()))
         if code == 0 and client:
             try:
                 notice = _skew(client, p.get("session_id"))
@@ -1300,8 +1307,9 @@ def handle(p):
     return code
 
 
-def _event(p):
-    """handle's answer to one event: (exit code, the client that asked the signer, or None)."""
+def _event(p, end=None):
+    """handle's answer to one event, by the hook's deadline `end`: (exit code, the client that asked the signer, or
+    None)."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
     pre = name == "PreToolUse"
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
@@ -1312,12 +1320,12 @@ def _event(p):
         return 2 if pre else 0, None
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
-        client = HookClient(start_wait_s=start_wait(name))
+        client = HookClient(answer_by=end)
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code, None
     try:
-        return _handle(client, p, name, sid, tid), client
+        return _handle(client, p, name, sid, tid, end), client
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
         fix = ""
