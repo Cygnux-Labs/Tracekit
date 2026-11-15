@@ -109,9 +109,12 @@ and not decided: give each call an id of its own.
 Resumed in another process (a durable checkpointer, a new gate), the node reads from the signer (`call_state`) what
 each call did: whether it was decided, consumed, refused or ended. A call that ended comes back to the model as
 `ran; its result is recorded at run_seq N`, since the signer keeps a commitment to the result, not the result; one
-whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). An identity with an explicit
-`authorize` list needs `call_state` granted beside `decide` and `approval_consume`; without it the node decides each
-call again. Single calls under `create_agent` keep their own task and the per-call gate.
+whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). Resume a thread from one place at a
+time: of two resumes at once, one pass takes each call and the other is refused, and an approved call that goes on
+after its tool asked the person itself is claimed from the signer (`call_claim`), so a second process doesn't run it
+again. An identity with an explicit `authorize` list needs `call_state` and `call_claim` granted beside `decide` and
+`approval_consume`; without them the node decides each call again. Single calls under `create_agent` keep their own
+task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

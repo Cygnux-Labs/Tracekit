@@ -71,6 +71,8 @@ from tracekit.signer.rpc_schema import RPCError
 # graph of its own), `plans`, {tool_call_id: its plan}; under ainvoke, `node`, `left`, the node's calls not ended yet,
 # and `done`, set once none is (pass_arun_one)
 _PASS = contextvars.ContextVar("tracekit_tool_node_pass", default=None)
+# why a pass of a node doesn't run a call another pass of it runs (TracekitMiddleware._claim)
+RUNNING = "it runs in another pass of its node: the thread was resumed twice at once"
 
 
 class TracekitMiddleware(AgentMiddleware):
@@ -257,9 +259,11 @@ class TracekitMiddleware(AgentMiddleware):
                                            "them runs"), p
             if p["state"] != "done" and event_hash({"tool": call["name"], "args": call["args"]}) != p["digest"]:
                 _done(p, self._refusal(call, "the call's arguments changed after the decision"))   # an outer wrapper's
-            return p["out"], p
+            return (p["out"] if p["state"] == "done" else self._claim(call, config, p)), p
         key, answered = (_ns(config), call["id"]), _answered(config)
-        p = _resumed(self._plans.pop(key, None))
+        p = _resumed(self._plans.get(key))
+        if p is not None and p["state"] == "running":
+            return self._refusal(call, RUNNING), p
         if p is None and answered:
             p = self._recorded(call)
             if p is not None:
@@ -273,16 +277,35 @@ class TracekitMiddleware(AgentMiddleware):
             hint = resume.get("approval_id") if isinstance(resume, dict) else None
         if p["state"] == "decide":
             self._consume(call, p, hint)
-        return p["out"], p
+        return (p["out"] if p["state"] == "done" else self._claim(call, config, p)), p
+
+    def _claim(self, call, config, p):
+        """(the refusal, or None when this pass runs the call): one pass takes a call to run. In this process the first
+        moves its plan to `running`, and another pass of the node (the thread resumed twice at once) is refused. A call
+        that goes on, consumed, after its tool paused the run itself is claimed from the signer too (call_claim), which
+        lets one pass in any process go on per pause; without its yes the call doesn't run."""
+        with self._lock:
+            if p["state"] not in ("run", "paused"):
+                return self._refusal(call, RUNNING)
+            goes_on, p["state"] = p["state"] == "paused", "running"
+        if not goes_on:
+            return None
+        claim = getattr(self.signer, "call_claim", None)   # a SignerAPI of the app's own may have none
+        req = {"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"], "attempt": p["attempt"],
+               "answers": _answered(config)}
+        try:
+            c = claim(req) if claim else {"ok": False, "reason": "the signer has no call_claim"}
+        except (RPCError, SignerUnavailable) as e:
+            c = {"ok": False, "reason": str(e)}
+        return None if c["ok"] else _done(p, self._refusal(call, c.get("reason") or "not claimed"))["out"]
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
                            status="error")
 
     def _start(self, request, p):
-        """The call's tool starts. Its plan is kept, `running`, until the tool ends: a pass of its node that finds it so
-        (cut off in this process: a cancellation, a KeyboardInterrupt) has the signer judge it again (_resumed)."""
-        p["state"] = "running"
+        """The call's tool starts (its plan `running`, _claim): the plan is kept until the tool ends, so another pass
+        of its node finds it running, and one that finds it cut off has the signer judge it again (_resumed)."""
         self._plans[_ns(request.runtime.config), request.tool_call["id"]] = p
 
     def _ended(self, request, p):
@@ -293,9 +316,8 @@ class TracekitMiddleware(AgentMiddleware):
     @staticmethod
     def _paused(p):
         """The call's tool paused the run (interrupt(), a handoff): it goes on when its node runs again, an approved
-        call under its one consume, an allowed one consumed again."""
-        if p["d"] is not None:
-            p["state"] = "decide" if p["d"]["decision"] == "allow" else "paused"
+        call under its one consume, an allowed one consumed again, one unrecorded (failing open) unrecorded again."""
+        p["state"] = "run" if p["d"] is None else "decide" if p["d"]["decision"] == "allow" else "paused"
 
     def _complete(self, call, p, out=None, exc=None):
         """Records the outcome; never raises, so the tool's result or exception reaches the framework unchanged."""
@@ -346,6 +368,9 @@ class TracekitMiddleware(AgentMiddleware):
             self._complete(request.tool_call, p, exc=e)
             self._ended(request, p)
             raise
+        except BaseException:   # cut off (a KeyboardInterrupt, SystemExit): the signer judges it again (_resumed)
+            p["state"] = "cut"
+            raise
         self._complete(request.tool_call, p, out)
         self._ended(request, p)
         return out
@@ -373,6 +398,9 @@ class TracekitMiddleware(AgentMiddleware):
             await asyncio.to_thread(self._complete, request.tool_call, p, exc=e)
             self._ended(request, p)
             raise
+        except BaseException:   # cut off (its task cancelled): the signer judges it again (_resumed)
+            p["state"] = "cut"
+            raise
         await asyncio.to_thread(self._complete, request.tool_call, p, out)
         self._ended(request, p)
         return out
@@ -385,10 +413,11 @@ def _done(p, out):
 
 
 def _resumed(p):
-    """Plan `p` (or None) as its node runs again. A call whose tool started and never ended in this process (cut off:
-    a cancellation, a KeyboardInterrupt) is judged by the signer again: its consume refuses an approval it already used
-    (TK-APPROVAL-CONSUMED), so it never runs twice on one approval; an allowed one runs again, as a new decide would."""
-    if p is not None and p["state"] == "running":
+    """Plan `p` (or None) as its node runs again. A call whose tool was cut off in this process (a cancellation, a
+    KeyboardInterrupt) is judged by the signer again: its consume refuses an approval it already used
+    (TK-APPROVAL-CONSUMED), so it never runs twice on one approval; an allowed one runs again, as a new decide would.
+    One still `running` runs in another pass of its node (_claim)."""
+    if p is not None and p["state"] == "cut":
         p["state"] = "decide" if p["d"] is not None else "run"
     return p
 

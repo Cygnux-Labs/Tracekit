@@ -472,11 +472,11 @@ class RecordLog:
     # --- state from storage ---
 
     def _state(self):
-        """The run state as replay rebuilds it, as JSON: no deny sets, args digests or pending arguments; monotonic
-        times as wall clock times."""
+        """The run state as replay rebuilds it, as JSON: no deny sets, args digests, pending arguments or claims
+        (SignerService._call_claim); monotonic times as wall clock times."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
-            r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov")}
+            r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov", "claims")}
             if "calls" in r:
                 r["calls"] = {t: {k: c.get(k) for k in CALL_KEYS} for t, c in run["calls"].items()}
                 r["decisions"] = {d: c and {k: c.get(k) for k in CALL_KEYS} for d, c in run["decisions"].items()}

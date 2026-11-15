@@ -362,6 +362,24 @@ class SignerContract(Harness):
         self.assertEqual([(self.state(t)["approval"], self.state(t)["consumed"]) for t in ("tc-2", "tc-3")],
                          [("consumed", False), ("consumed", True)])
 
+    def test_call_claim(self):
+        """One pass of a call's node goes on with the call after each of its tool's own pauses (version 24): only a
+        call this attempt consumed and that has no result, once per pause (`answers`)."""
+        self.register()
+
+        def claim(answers, tcid="tc-1"):
+            return self.call("call_claim", self.run_req(tool_call_id=tcid, attempt=0, answers=answers))["ok"]
+        req, d = self.decide(tool="pay", args={"amount": 5})
+        self.assertFalse(claim(2))   # not consumed
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-1"))["approval_id"]
+        self.approve(aid)
+        self.assertTrue(self.call("approval_consume", self.run_req(tool_call_id="tc-1", tool="pay", args_source="parsed",
+                                                                   args={"amount": 5}))["ok"])
+        self.assertEqual((claim(2), claim(2), claim(3)), (True, False, True))   # a second resume of one pause: no
+        self.complete(req, d)
+        self.assertFalse(claim(4))   # it has a result: nothing to go on with
+        self.assertFalse(claim(2, "tc-none"))
+
     def test_no_approval_after_close(self):
         aid = self.ask()
         self.call("close_run", self.run_req())

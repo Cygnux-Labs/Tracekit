@@ -435,7 +435,7 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -4712,6 +4712,32 @@ class SignerService:
                 out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
             return out
         return self.log.write(state)
+
+    def _call_claim(self, identity, req):
+        """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
+        under the approval this attempt consumed: the first claim after `answers` answered interrupts of the node is
+        ok, any other is not (another resume of the same thread, in any process). A call this attempt didn't consume,
+        or that has a result, has nothing to go on with. Writes no record."""
+        # lean: claims are run state in memory, kept by no record or snapshot: after a signer restart a pause may be
+        # claimed once more; record them if threads are resumed twice at once across restarts
+        key, tcid, attempt = self._authorize(identity, req), req["tool_call_id"], req["attempt"]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            call = run["calls"].get(tcid)
+            a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt))) or {}
+            if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
+                    and ran(a)[:2] == (tcid, attempt)):
+                return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            claimed = f"{tcid}/{attempt}/{req['answers']}"
+            if claimed in run.get("claims", {}):
+                return {"ok": False, "reason": f"{tcid} already went on after that pause: its thread was resumed twice "
+                                               "at once"}
+            if "claims" not in run:
+                tx.set(run, "claims", {})
+            tx.set(run["claims"], claimed, True)
+            return {"ok": True}
+        return self.log.submit(identity, "call_claim", req, fn, key)
 
     def _export_run(self, identity, req):
         """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,

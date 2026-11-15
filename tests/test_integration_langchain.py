@@ -7,6 +7,7 @@ import collections
 import itertools
 import json
 import random
+import threading
 import time
 import types
 import unittest
@@ -61,8 +62,49 @@ else:
         PAID.append((cents, answer))
         return f"paid {cents} after {answer}"
 
+    @tool("pay")
+    def held_open_pay(to: str, cents: int) -> str:
+        """Send money; a first run stays open while a second may start."""
+        PAID.append(cents)
+        held_open()
+        return f"paid {cents}"
+
+    @tool("pay")
+    def asking_held_open_pay(to: str, cents: int) -> str:
+        """Send money once the person confirms; a first run stays open while a second may start."""
+        answer = interrupt(f"pay {cents}?")
+        PAID.append(cents)
+        held_open()
+        return f"paid {cents} after {answer}"
+
 THREAD = {"configurable": {"thread_id": "t"}}
 PAID = []   # the cents of each counted_pay that ran; (cents, the answer it got) for confirmed_pay
+SECOND = threading.Event()   # a pay's second run started (held_open)
+
+
+def held_open():
+    """A pay's first run waits (1 s at most) for a second run of it, so two passes that both run it overlap."""
+    if len(PAID) > 1:
+        SECOND.set()
+    else:
+        SECOND.wait(1)
+
+
+def at_once(*fns):
+    """The outputs of `fns`, run at once in threads of their own (what one raised, in its place)."""
+    outs = [None] * len(fns)
+
+    def run(i):
+        try:
+            outs[i] = fns[i]()
+        except Exception as e:
+            outs[i] = e
+    threads = [threading.Thread(target=run, args=(i,)) for i in range(len(fns))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return outs
 
 
 def prompt(name, **args):
@@ -760,6 +802,65 @@ class ToolPauses(Driven):
                     self.assertEqual((PAID, read(out)), ([], {
                         "p": "Tool call blocked by policy: the call's arguments changed after the decision", "e": "hi"}))
 
+    def test_two_resumes_at_once_after_a_tools_own_pause_pay_once(self):   # probe851_pausedrace.py same
+        """An approved pay asked the person itself; the answer is resumed twice at once in one process (a double
+        submit). At 8e5f8383 both passes ran it on its one consume (the second complete refused with a warning only).
+        The first pass to take the call runs it now; the other is refused."""
+        pay, echo = ({"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"},
+                     {"name": "echo", "args": {"text": "hi"}, "id": "e"})
+        for calls in ([pay, echo], [pay]):
+            for mode in ("sync", "async"):
+                for how, node in self.nodes(tools=[asking_held_open_pay, TOOLS[0]]):
+                    with self.subTest(calls=len(calls), mode=mode, wired=how):
+                        SECOND.clear()
+                        go = runner(tool_graph(node()), mode)
+                        shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                        self.approve(shown["approval_id"])
+                        out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
+                        self.assertEqual(out["__interrupt__"][0].value, "pay 120?")
+                        outs = at_once(*[lambda: go(Command(resume="yes"), THREAD)] * 2)
+                        self.assertEqual(PAID, [120])
+                        self.assertEqual(sorted(read(o)["p0"] for o in outs), [
+                            "Tool call blocked by policy: it runs in another pass of its node: the thread was resumed "
+                            "twice at once", "paid 120 after yes"])
+                        self.assertEqual([r["tool_call_id"] for r in self.recorded("tool.result")].count("p0"), 1)
+
+    def test_a_resume_that_starts_while_another_is_about_to_run_the_call_pays_once(self):   # probe851_race_slow.py
+        """Resume B of one thread starts once resume A consumed the approved pay, before A's tool starts. At
+        8e5f8383 B found the pay consumed and ran it too (12 of 12, sync and async). One pass runs it now."""
+        calls = [{"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        gate = TracekitMiddleware._gate
+        for mode in ("sync", "async"):
+            for how, node in self.nodes(tools=[held_open_pay, TOOLS[0]]):
+                with self.subTest(mode=mode, wired=how):
+                    SECOND.clear()
+                    go = runner(tool_graph(node()), mode)
+                    shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                    self.approve(shown["approval_id"])
+                    consumed, delayed, consume = threading.Event(), [], self.signer.approval_consume
+
+                    def consuming(req):
+                        out = consume(req)
+                        if req["tool_call_id"] == "p0" and out["ok"]:
+                            consumed.set()
+                        return out
+
+                    def slow_gate(gate_self, request):   # A's pay: a scheduling delay before its tool starts
+                        if request.tool_call["id"] == "p0" and not delayed:
+                            delayed.append(1)
+                            time.sleep(0.3)
+                        return gate(gate_self, request)
+                    self.signer.approval_consume = consuming
+                    resume = Command(resume={"approval_id": shown["approval_id"]})
+                    with mock.patch.object(TracekitMiddleware, "_gate", slow_gate):
+                        outs = at_once(lambda: go(resume, THREAD), lambda: consumed.wait(5) and go(resume, THREAD))
+                    self.assertEqual(PAID, [120])
+                    self.assertEqual(sorted(read(o)["p0"] for o in outs), [
+                        "Tool call blocked by policy: it runs in another pass of its node: the thread was resumed "
+                        "twice at once", "paid 120"])
+                    self.assertEqual([r["tool_call_id"] for r in self.recorded("tool.result")].count("p0"), 1)
+
 
 class Agent:
     """A SignerService called in this process as identity `who`."""
@@ -904,6 +1005,61 @@ class AnotherProcess(unittest.TestCase):
                 seen, _, events = self.scenario([self.pay, self.asking, self.echo], calls, mode, lambda n: True)
                 self.assertEqual(seen["q"], "yes")
                 self.check(events, calls, ["pay0", "confirm:yes", "echo"])
+
+    def test_two_processes_resuming_one_thread_at_once_pay_once(self):   # probe851_pausedrace.py new
+        """An approved pay asked the person itself; two processes (a new gate each, the same checkpointer) resume the
+        answer at once. Both read from the signer that the pay was consumed and went on paused; at 8e5f8383 both ran
+        it. The signer lets one pass go on per pause now (call_claim): the other is refused."""
+        pay, echo = ({"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"},
+                     {"name": "echo", "args": {"text": "hi"}, "id": "e"})
+        for calls in ([pay, echo], [pay]):
+            for mode in ("sync", "async"):
+                with self.subTest(calls=len(calls), mode=mode):
+                    PAID.clear()
+                    SECOND.clear()
+                    (s, agent, run), saver = self.signer(), InMemorySaver()
+                    graph = lambda: runner(tool_graph(tracekit_tool_node([asking_held_open_pay, self.echo], agent, run),
+                                                      saver), mode)
+                    go = graph()
+                    shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                    self.approve(s, shown["approval_id"])
+                    self.assertEqual(go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)[
+                        "__interrupt__"][0].value, "pay 120?")
+                    outs = at_once(*[lambda: graph()(Command(resume="yes"), THREAD)] * 2)
+                    self.assertEqual(PAID, [120])
+                    self.assertEqual(sorted(read(o)["p0"] for o in outs), [
+                        "Tool call blocked by policy: p0 already went on after that pause: its thread was resumed "
+                        "twice at once", "paid 120 after yes"])
+                    events = [r["event"] for r in s.log.storage.iter_run("default", run["run_id"])]
+                    self.assertEqual(([e["type"] for e in events].count("approval.consumed"),
+                                      [e.get("tool_call_id") for e in events if e["type"] == "tool.result"].count("p0")),
+                                     (1, 1))
+
+    def test_two_resumes_that_consume_at_once_never_pay_twice(self):
+        """Two resumes of one thread that reach approval_consume at once, in one process or two: the signer consumes
+        the approval once. One pass runs the pay, or, in one process, the second consume's refusal can leave both
+        refused (fail closed: the approval is used, and the run ends with a decided_not_completed gap)."""
+        calls = [{"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        for gates in ("one", "two"):
+            for mode in ("sync", "async"):
+                with self.subTest(gates=gates, mode=mode):
+                    PAID.clear()
+                    SECOND.clear()
+                    (s, agent, run), saver = self.signer(), InMemorySaver()
+                    graph = lambda: runner(tool_graph(tracekit_tool_node([held_open_pay, self.echo], agent, run),
+                                                      saver), mode)
+                    go = graph()
+                    shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                    self.approve(s, shown["approval_id"])
+                    resume = Command(resume={"approval_id": shown["approval_id"]})
+                    at_once(*[(lambda: go(resume, THREAD)) if gates == "one" else
+                              (lambda: graph()(resume, THREAD))] * 2)
+                    events = [r["event"] for r in s.log.storage.iter_run("default", run["run_id"])]
+                    self.assertLessEqual(len(PAID), 1)
+                    self.assertEqual(([e["type"] for e in events].count("approval.consumed"),
+                                      [e.get("tool_call_id") for e in events if e["type"] == "tool.result"].count("p0")),
+                                     (1, len(PAID)))
 
     def test_a_paused_call_whose_saved_args_changed_does_not_go_on(self):
         """[a pay that asks the person itself, echo]: approved and consumed, its tool paused; then the saved checkpoint's

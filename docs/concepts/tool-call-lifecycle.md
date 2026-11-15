@@ -126,7 +126,7 @@ serve its version, so upgrade the signer before its clients ([deploy](../deploy.
 
 | Group | Calls |
 |---|---|
-| Runs and events | `register_run`, `decide`, `complete`, `observe`, `state_write`, `model_event`, `constraint_add`, `close_run`, `status`, `read`, `checkpoint_nudge`, `call_state` |
+| Runs and events | `register_run`, `decide`, `complete`, `observe`, `state_write`, `model_event`, `constraint_add`, `close_run`, `status`, `read`, `checkpoint_nudge`, `call_state`, `call_claim` |
 | Approvals | `approval_request`, `approval_wait`, `approval_decide`, `approval_decide_on_behalf`, `approval_get`, `approval_consume`, `approval_list`, `approval_abandon`, `approval_review`, `approval_revoke`, `approval_agents`, `passkey_register` |
 | Services | `delegate_run`, `tailer_heartbeat`, `tailer_lost`, `observe_effect`, `decision_import` |
 | Content and findings | `content_get`, `content_erase`, `why_finding`, `review_finding` |
@@ -136,7 +136,8 @@ What the newer versions added: 17 (Tracekit 1.3) the gateway's tool-result diges
 [verified tool results](custody.md#the-llm-gateway); 18 kernel sensor effects on `observe_effect`; 19 `review_finding`
 (signed findings of `tracekit analyze --v2`), `constraint_add`, OpenShell's imported events and the gateway's
 `amended` fields; 24 `call_state` (what the signer recorded of a call's latest attempt, which the LangChain gate reads
-when a ToolNode runs again after a resume).
+when a ToolNode runs again after a resume) and `call_claim` (the one pass that goes on with an approved call after
+its tool paused the run itself).
 
 State-changing calls carry a `request_id`. A retry with the same id and payload returns the original answer; the same id
 with a different payload is a `conflict`.

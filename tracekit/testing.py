@@ -328,6 +328,21 @@ class FakeSigner:
             return out
         return self._call("call_state", req, handle)
 
+    def call_claim(self, req):
+        def handle(req):
+            run, tcid, attempt = self._run(req), req["tool_call_id"], req["attempt"]
+            call = run["calls"].get(tcid)
+            a = self._approvals.get(self._index.get((req["run_id"], tcid, attempt))) or {}
+            if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
+                    and a.get("used_by") == (tcid, attempt)):
+                return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            claimed = (tcid, attempt, req["answers"])
+            if claimed in run.setdefault("claims", set()):
+                return {"ok": False, "reason": f"{tcid} already went on after that pause"}
+            run["claims"].add(claimed)
+            return {"ok": True}
+        return self._call("call_claim", req, handle)
+
     def approval_get(self, req):
         def handle(req):
             a = self._visible(req["approval_id"])

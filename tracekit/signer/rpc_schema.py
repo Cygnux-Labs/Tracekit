@@ -2,7 +2,8 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 24 adds `call_state` (a read under the run token):
 what the signer recorded of a call's latest attempt, which the LangChain gate reads to go on with a ToolNode's calls
-after a resume (tracekit.integrations.langchain). Version 23 adds `export_run` (docs/remote-ingest.md): a run
+after a resume (tracekit.integrations.langchain), and `call_claim`: the one pass of a node that goes on with a call,
+consumed, after its tool paused the run itself, so two resumes of one thread never run it twice. Version 23 adds `export_run` (docs/remote-ingest.md): a run
 of the caller's tenant as the .tkb bundle the operator's `tracekit export --v2` writes, in chunks that each fit a frame.
 Version 22 adds intent grants (docs/intent-grants.md):
 `grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
@@ -487,6 +488,10 @@ REQUESTS = {
     # asks whether those are the arguments it was decided for
     "call_state": _obj(["run_id", "run_token", "tool_call_id"], run_id=ID, run_token=TOKEN, tool_call_id=ID,
                        args_digest=DIGEST),
+    # (version 24) the one pass of a call's node that goes on with the call, consumed, after its tool paused the run
+    # itself: `answers`, the interrupt() calls of the node the run had answered when the pass started
+    "call_claim": _obj(_RUN_REQ + ["tool_call_id", "attempt", "answers"], **_RUN, tool_call_id=ID, attempt=SEQ,
+                       answers=SEQ),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -626,9 +631,11 @@ RESPONSES = {
                        same_args={"type": "boolean"}, approval_id=ID, approval=APPROVAL_STATE,
                        consumed={"type": "boolean"}, refused=RULE_IDS,
                        result=_obj(["run_seq", "ok"], run_seq=SEQ, ok={"type": "boolean"})),
+    # ok: this pass goes on with the call; else `reason` says why not (another pass took it, or nothing to go on with)
+    "call_claim": _obj(["ok"], ok={"type": "boolean"}, reason=REASON),
 }
 
-ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
+ERROR =_obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
                                    retry_after_ms=SEQ))
 
 
@@ -709,3 +716,4 @@ class SignerAPI(Protocol):
     def grant_revoke(self, req: dict) -> dict: ...
     def export_run(self, req: dict) -> dict: ...
     def call_state(self, req: dict) -> dict: ...
+    def call_claim(self, req: dict) -> dict: ...
