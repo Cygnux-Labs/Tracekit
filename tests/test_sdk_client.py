@@ -593,6 +593,8 @@ class Transports(unittest.TestCase):
         with mock.patch.object(client, "connect", side_effect=slow_connect):
             with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.15s"):
                 c.decide({**EVENT, "tool_call_id": "c1", "args": {}})
+        self.assertIsNotNone(c._conn)
+        self.assertEqual(list(c._conn.pending), [])
         self.assertEqual(seen, [])
         c.timeout = 2
         c.decide({**EVENT, "tool_call_id": "c2", "args": {}})
@@ -761,32 +763,39 @@ class FakeSigners(unittest.TestCase):
         self.assertEqual([f["method"] for f in frames], ["approval_wait"])
 
     def test_retry_after_dropped_unix_connection_stops_on_slow_reconnect_hello(self):
-        srv, frames, held, stop = socket.socket(socket.AF_UNIX), [], [], threading.Event()
+        srv, frames, held, done = socket.socket(socket.AF_UNIX), [], [], threading.Event()
         srv.bind(self.path)
         srv.listen()
         self.addCleanup(lambda: [s.close() for s in held + [srv]])
 
         def serve():
-            with contextlib.suppress(OSError):
+            try:
                 for idx in (1, 2):
                     conn, _ = srv.accept()
                     held.append(conn)
                     with conn.makefile("rb") as rfile:
                         rfile.readline()
                         if idx == 2:
-                            stop.wait(1.5)
+                            time.sleep(1.5)
                         conn.sendall((json.dumps(HELLO) + "\n").encode())
+                        conn.settimeout(0.2)
+                        line = rfile.readline()
+                        if line:
+                            frames.append(json.loads(line))
                         if idx == 1:
-                            frames.append(json.loads(rfile.readline() or "null"))
                             conn.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            finally:
+                done.set()
         threading.Thread(target=serve, daemon=True).start()
         c = Client(self.path, timeout=0.5)
         self.addCleanup(c.close)
-        self.addCleanup(stop.set)
         t = time.monotonic()
-        with self.assertRaises(client.SignerUnavailable):
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.5s"):
             c.status({})
         self.assertLess(time.monotonic() - t, 1.0)
+        done.wait(3)
         self.assertEqual(len(frames), 1)
 
     def test_reconnect_after_slow_hello_bounds_answer_wait(self):

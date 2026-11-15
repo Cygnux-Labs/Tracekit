@@ -147,7 +147,8 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     except (OSError, RPCError, ValueError) as e:
         if sock:
             sock.close()
-        raise SignerUnavailable(f"no signer answering at {path}: {e}") from None
+        cls = _TimeoutUnavailable if isinstance(e, (TimeoutError, socket.timeout)) else SignerUnavailable
+        raise cls(f"no signer answering at {path}: {e}") from None
     sock.settimeout(None)
     try:
         _check(hello, path)
