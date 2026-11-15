@@ -67,6 +67,7 @@ experimental.
 | Cline hooks (checked against payloads recorded from Cline CLI 3.0.74 and the VS Code extension 4.1.26 on Linux, each driven by a scripted model) | [coding agents](coding-agents.md) |
 | CodeBuddy Code hooks (written to its bundled code, 2.183.0, and tested against payloads derived from that code, not a live CodeBuddy session) | [coding agents](coding-agents.md) |
 | jcode hooks (checked against hook payloads recorded from jcode v1.0.0-preview.424 on Linux, driven by a scripted model) | [coding agents](coding-agents.md) |
+| Open Interpreter hooks (checked against payloads recorded from Open Interpreter 0.0.61 on Linux, driven by a scripted model) | [coding agents](coding-agents.md) |
 | The gptme plugin (checked against hook payloads recorded from gptme 0.36.0 on WSL2, driven by a scripted model) | [coding agents](coding-agents.md) |
 | OpenHands hooks (tested through the released CLI's SDK, 1.21.0: its `HookManager` with its real tools and Tracekit's installer) | [coding agents](coding-agents.md) |
 | The Hermes Agent plugin (`integrations/hermes/`; tested against a stand-in for the sequential path of Hermes's agent loop and its plugin hook dispatch as v0.22.5's source defines them, not a running Hermes) | [Hermes Agent](integrations/hermes.md) |
