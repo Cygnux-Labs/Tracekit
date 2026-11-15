@@ -522,8 +522,9 @@ def plugin_enabled(user=None, project=None):
     # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
     # unseen; read those too if users hit that
     active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    users = user_settings_all() if user is None else [p for p in user if p]
     root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
-    for p in (*(user or user_settings_all()), *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
+    for p in (*users, *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
               managed):
         try:
             enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
@@ -533,7 +534,7 @@ def plugin_enabled(user=None, project=None):
             continue
         for key, value in enabled.items():
             if (key == PLUGIN or key.rpartition("@")[0] == PLUGIN_NAME and
-                    _installed_tracekit_plugin(key, p, root)) and isinstance(value, bool):
+                    _installed_tracekit_plugin(key, p, root, users)) and isinstance(value, bool):
                 order += 1
                 if value:
                     active[key] = (p, key, order)
@@ -542,19 +543,25 @@ def plugin_enabled(user=None, project=None):
     return max(active.values(), key=lambda found: found[2])[:2] if active else None
 
 
-def _plugin_config_dirs(settings_path, project=None):
+def _plugin_config_dirs(settings_path, project=None, user=None):
     """The Claude config root whose plugins/ holds the install state for a plugin enabled in settings_path: a user
-    settings file's own directory (another user's too: system-mode doctor reads the agent's), else this user's.
-    Claude Code never writes plugin state into a project's .claude (`project`, default the working directory's)."""
+    settings file's own directory (another user's too: system-mode doctor reads the agent's), else `user`'s (when
+    managed or project settings enable it for that user), else this user's. Claude Code never writes plugin state into
+    a project's .claude (`project`, default the working directory's)."""
     parent = os.path.dirname(os.path.abspath(settings_path))
     config = os.environ.get("CLAUDE_CONFIG_DIR")
     project = project or os.path.join(os.path.abspath(os.getcwd()), ".claude")
     if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
         return [os.path.realpath(parent)]
+    from_user = [os.path.realpath(d) for u in (user or ()) if u
+                 for d in (os.path.dirname(os.path.abspath(u)),) if os.path.basename(d) == ".claude" and d != project]
+    if from_user:
+        extra = [os.path.realpath(parent)] if settings_path in MANAGED_SETTINGS.values() else []
+        return list(dict.fromkeys([*from_user, *extra]))
     return [os.path.realpath(config or os.path.join(os.path.expanduser("~"), ".claude"))]
 
 
-def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
+def _installed_tracekit_plugin(plugin_id, settings_path, project=None, user=None):
     """True only when Claude's install record and marketplace catalog point at Tracekit's plugin directory."""
     def tracekit_repo(value):
         if not isinstance(value, str):
@@ -564,7 +571,7 @@ def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
         return value == "Cygnux-Labs/Tracekit"
 
     marketplace = plugin_id.rpartition("@")[2]
-    for config_dir in _plugin_config_dirs(settings_path, project):
+    for config_dir in _plugin_config_dirs(settings_path, project, user):
         try:
             installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
             records = installed.get("plugins", {}).get(plugin_id)
