@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-91'
+version: '2026.11-v2-92'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -756,6 +756,20 @@ ask:
     # node 16` doesn't match. There is no ROLLBACK exemption: a destructive statement in one argument isn't undone
     # by a transaction in another. A list-valued argument isn't read. Its whitespace runs are lazy, as TK-A039's are.
     pattern: '"(sql|query|statement)":"((?:[^;\"\\]|\\.)*;){0,8}(?:\s|\\[ntrf]|\\u000[bB]|--[^\\\n"]*(?:\n|\\n)|/\*(?:[^!M*"\\]|\\.|M(?:[^!*"\\]|\\.)|M?\*[^/"\\]|M?\*\\.)(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/|/\*M?\*/|/\*M?![0-9]*)*?([Dd][Rr][Oo][Pp](?:(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])?)?(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Bb][Yy])|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*|;|")|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Ff][Rr][Oo][Mm](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)(?:\s*[^\s;"]+(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?(?:[Aa][Ss](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)[^;"]*|(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)|(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)[^;"]*|(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)?)|[^;"]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1)(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)(;|"|\*/))'
+    reason: a destructive SQL statement through an MCP database tool
+    remedy: Have a person approve the held call, or run the change as a reviewed migration.
+    rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
+  - id: TK-A086
+    class: mcp
+    tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
+    field: run
+    # TK-A041's statements as every SQL dialect lexes them, as TK-DB001..003 read a SQL tool's (engine._runs: comments
+    # and literals blanked, a blank run one space, `SQL;` before a statement a `;` ends and `SQL:` before the last), so
+    # a comment that one database reads otherwise than TK-A041's one reading does (a nested /* */, a -- before a
+    # control character, a CR that ends a comment) doesn't hide the statement after it. A tool a pack maps to class sql
+    # is read by TK-DB001..003 instead. Words are one blank apart there, so the DELETE's words are read lazily, one at a
+    # time, and the fallback engine stays linear
+    pattern: '^SQL[:;][Dd][Rr][Oo][Pp] (?:[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])? )?(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd] [Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn] [Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd] [Bb][Yy])\b|^SQL[:;][Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\b|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm] [^ ]+(?: (?:[Aa][Ss] )?[A-Za-z_][A-Za-z0-9_]*)?(?: [Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg] .*)?$|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm](?: [^ ]+)+? [Ww][Hh][Ee][Rr][Ee] (?:1 ?= ?1|'''' ?= ?''''|[Tt][Rr][Uu][Ee]|1)$'
     reason: a destructive SQL statement through an MCP database tool
     remedy: Have a person approve the held call, or run the change as a reviewed migration.
     rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.

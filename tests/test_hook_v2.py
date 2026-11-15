@@ -903,7 +903,8 @@ class HookV2(unittest.TestCase):
         self.post("ls")
         run = self.run_handle()
         self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
-        self.assertEqual([f for f in os.listdir(os.path.join(self.dir, "run")) if f.startswith("claude-code-")], [])
+        self.assertEqual([f for f in os.listdir(os.path.join(self.dir, "run")) if f.startswith("claude-code-")],
+                         [os.path.basename(claude_code._state("s1", claude_code.ENDED))])   # only that it ended
         deadline = time.monotonic() + 20
         while run.call("read")["events"][-1]["type"] != "run.final":   # after the grace window
             self.assertLess(time.monotonic(), deadline, "no run.final")
@@ -943,7 +944,8 @@ class HookV2(unittest.TestCase):
         self.pre("ls")
         self.run_handle().close()
         self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
-        self.assertEqual([f for f in os.listdir(os.path.join(self.dir, "run")) if f.startswith("claude-code-")], [])
+        self.assertEqual([f for f in os.listdir(os.path.join(self.dir, "run")) if f.startswith("claude-code-")],
+                         [os.path.basename(claude_code._state("s1", claude_code.ENDED))])   # only that it ended
 
     def test_missing_ids_are_never_defaulted(self):
         code, err = self.hook("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})

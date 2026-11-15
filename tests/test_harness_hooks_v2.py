@@ -759,6 +759,18 @@ class Mapping(HarnessCase):
         result = run["events"][-1]
         self.assertEqual((result["type"], result["data"]["tool_call_id"]), ("tool.result", self.sent[-1]["tool_call_id"]))
 
+    def test_a_tool_input_that_is_a_list_or_null_blocks_the_call(self):
+        # a 1.7.0 review: Codex, Gemini CLI and Cursor ran a call whose tool_input wasn't an object, read as no arguments
+        for harness in ("codebuddy", "codex", "crush", "cursor", "devin", "gemini", "goose", "kiro", "qwen"):
+            payload = next(c["payload"] for c in cases(harness) if isinstance(c["payload"], dict)
+                           and isinstance(c["payload"].get("tool_input"), dict))
+            for value in (list(payload["tool_input"].values()), None):
+                with self.subTest(harness=harness, tool_input=value):
+                    code, out, err = self.hook(harness, dict(payload, tool_input=value))
+                    self.assertIn("not an object of arguments", out + err)
+                    self.assertEqual(code, CODEX_DENY if harness == "codex" else 2)
+        self.assertEqual(self.sent, [])
+
     def test_missing_ids_block_the_call(self):
         for harness, payload, reply in (
                 ("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -1055,9 +1067,15 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def state(self, sid):
+        """The provenance state of session `sid`'s current run."""
+        return self.service.log.runs[("default", claude_code._load(claude_code._state(sid))["run_id"])]["prov"]["state"]
+
     def test_a_later_run_of_a_session_starts_its_provenance_index_partial(self):
         """A session's run the signer closed (idle) is followed by a new one whose model may still hold what the closed
-        run read; a session's first run, which no SessionStart says was resumed, starts complete."""
+        run read; a session's first run, started by a SessionStart that says it is new, starts complete."""
+        self.assertEqual(self.hook("codex", {"session_id": "c", "hook_event_name": "SessionStart",
+                                             "source": "startup"})[0], 0)
         call = {"session_id": "c", "hook_event_name": "PreToolUse", "tool_name": "shell", "tool_input": {"command": ["ls"]}}
         self.assertEqual(self.hook("codex", dict(call, tool_use_id="l1"))[0], 0)
         first = claude_code._load(claude_code._state("c"))
@@ -1068,6 +1086,41 @@ class OnTheDevPolicy(HarnessCase):
         self.assertNotEqual(later, first["run_id"])
         self.assertEqual(self.service.log.runs[("default", later)]["prov"],
                          {"state": "partial", "reason": "continues an earlier run of the session", "index": {}})
+
+    def test_a_session_resumed_or_with_its_state_gone_starts_partial(self):
+        """Whatever the harness: a SessionStart that says resume, a SessionStart naming no source after the session's
+        SessionEnd, a first event that is no SessionStart (state pruned, or deleted mid-session) all start a run whose
+        model may hold an earlier one's content. A SessionStart that says startup, or names no source in a session that
+        never ended, starts complete."""
+        for harness, start, sid in (("codex", "SessionStart", "cx"), ("gemini", "SessionStart", "gm"),
+                                    ("cursor", "sessionStart", "cu")):
+            with self.subTest(harness):
+                self.assertEqual(self.hook(harness, {"session_id": sid, "conversation_id": sid, "hook_event_name": start,
+                                                     **({} if harness == "cursor" else {"source": "startup"})})[0], 0)
+                self.assertEqual(self.state(sid), "complete")
+                end = "sessionEnd" if harness == "cursor" else "SessionEnd"
+                self.assertEqual(self.hook(harness, {"session_id": sid, "conversation_id": sid, "hook_event_name": end})[0],
+                                 0)
+                self.assertEqual(self.hook(harness, {"session_id": sid, "conversation_id": sid, "hook_event_name": start,
+                                                     **({} if harness == "cursor" else {"source": "resume"})})[0], 0)
+                self.assertEqual(self.state(sid), "partial")
+                # a session this machine never saw, resumed (another checkout's, or its state pruned)
+                self.assertEqual(self.hook(harness, {"session_id": sid + "2", "conversation_id": sid + "2",
+                                                     "hook_event_name": start, "source": "resume"})[0], 0)
+                self.assertEqual(self.state(sid + "2"), "partial")
+        self.assertEqual(self.hook("codex", {"session_id": "cx3", "hook_event_name": "SessionStart",
+                                             "source": "startup"})[0], 0)
+        self.assertEqual(self.state("cx3"), "complete")
+        os.remove(claude_code._state("cx3"))   # the hook's state gone mid-session
+        self.assertEqual(self.hook("codex", {"session_id": "cx3", "hook_event_name": "PreToolUse", "tool_name": "shell",
+                                             "tool_use_id": "l1", "tool_input": {"command": ["ls"]}})[0], 0)
+        self.assertEqual(self.state("cx3"), "partial")
+        for source, state in (("create", "complete"), ("resume", "partial"), ("attach", "partial")):
+            with self.subTest(jcode=source):
+                env = {"JCODE_HOOK_EVENT": "session_start", "JCODE_HOOK_SESSION_ID": f"jc-{source}",
+                       "JCODE_HOOK_SOURCE": source}
+                self.assertEqual(self.hook("jcode", agent_hooks.jcode_payload("", env))[0], 0)
+                self.assertEqual(self.state(f"jc-{source}"), state)
 
     def test_a_codex_shell_command_that_isnt_text_is_held(self):
         """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reaches the signer as a list,

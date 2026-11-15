@@ -875,6 +875,17 @@ class Routes(unittest.TestCase):
         self.assertTrue(constraints.shell({"commands": ["echo ok \\", "git push origin main"]})["push"])
         self.expect([("shell", {"commands": ["ls", "git status"]})], "allow")
 
+    # --- a variable whose value joins others
+    def test_a_variable_that_joins_home_or_pwd_is_read_as_written(self):
+        # a 1.7.0 review: a value that joins $HOME or $PWD, variables the line doesn't set, was read as no value, so
+        # the word that reads it named nothing a rule holds. As written it does; a deny that only this reading makes
+        # takes on_parse_error's section, as the line can't say what $HOME holds
+        self.expect(self.bash("s=$HOME/.claude; echo '{}' > $s/settings.json"), "ask", "TK-F015")
+        self.expect(self.bash('g=$PWD/.git/hooks; cp /tmp/x "$g/pre-push"'), "ask", "TK-A013")
+        held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
+        self.expect(self.bash("d=$HOME; rm -r" + "f $d"), held, "TK-D004")
+        self.expect(self.bash("f=$HOME/.ssh/authorized_keys; cat /tmp/k >> $f"), held, "TK-D010")
+
     # --- SQL as the database lexes it
     def test_sql_comments_and_dollar_quotes_read_as_the_database_lexes_them(self):
         pg, my = classes.SQL_DIALECTS["postgres"], classes.SQL_DIALECTS["mysql"]
@@ -890,10 +901,40 @@ class Routes(unittest.TestCase):
             stmt = f"SELECT 1 AS {ident}$a$, $q$[$q$, 1 # 2; {D}; SELECT $q$]$q$ -- $a$"
             self.assertIn("DROP", classes.sql_code(stmt, *pg))
         held = {"dev": "deny", "server": "deny", "strict": "deny"}
-        self.expect([("mcp:postgres/query", {"sql": f"/* /*/ ' */ */ {D}; -- '"}),
-                     ("mcp:supabase/execute_sql", {"query": f"/* /*/ ' */ */ {D}; -- '"}),
-                     ("mcp:mysql/execute_sql", {"sql": f"--\x7f\"\n# '\n{D}\n# \"'"})], held, "TK-DB001",
-                    packs=("dev", "server", "strict"))
+        calls = [("mcp:postgres/query", {"sql": f"/* /*/ ' */ */ {D}; -- '"}),
+                 ("mcp:supabase/execute_sql", {"query": f"/* /*/ ' */ */ {D}; -- '"}),
+                 ("mcp:mysql/execute_sql", {"sql": f"--\x7f\"\n# '\n{D}\n# \"'"})]
+        self.expect(calls, held, "TK-DB001", packs=("dev", "server", "strict"))
+        # the coding pack, which maps no SQL tool, holds them as it holds a plain DROP TABLE (TK-A041's reading
+        # didn't see them), under Claude Code's MCP names too
+        self.expect(calls + [("mcp__postgres__query", {"sql": f"/* /*/ ' */ */ {D}; -- '"})], "ask", "TK-A086",
+                    packs=("coding",))
+        self.expect([("mcp:postgres/query", {"sql": "/* a /* nested */ note */ SELECT 'DROP TABLE y' -- '"})], "flag",
+                    packs=("coding",))
+
+    def test_sql_is_read_as_a_server_in_another_string_mode_reads_it(self):
+        # a 1.7.0 review: PostgreSQL with standard_conforming_strings off and MySQL with NO_BACKSLASH_ESCAPES read a
+        # backslash in a literal otherwise than by default, whatever set the mode (a SET earlier in the session,
+        # set_config, the server's configuration)
+        held, packs = {"dev": "deny", "server": "deny", "strict": "deny"}, ("dev", "server", "strict")
+        for stmt, rule in ((D, "TK-DB001"), ("GRANT ALL ON users TO public", "TK-DB004")):
+            self.expect([("mcp:postgres/query", {"sql": f"SELECT length('\\' a ') # 1 ; {stmt}; -- ')"}),
+                         ("mcp:mysql/execute_sql", {"sql": f"SELECT '\\' --1; {stmt}; -- '"})], held, rule, packs=packs)
+        self.expect([("mcp:postgres/query", {"sql": "SELECT 'C:\\temp\\' AS p, E'it\\'s', 'DROP TABLE x'"})],
+                    {"dev": "flag", "server": "allow", "strict": "allow"}, packs=packs)
+
+    def test_sql_statements_before_a_literal_one_dialect_leaves_open_are_read(self):
+        # a 1.7.0 review: MySQL and SQLite run a statement at a time, so a statement a `;` ends before a literal they
+        # can't close runs; another dialect's reading of the whole call hid it
+        held, packs = {"dev": "deny", "server": "deny", "strict": "deny"}, ("dev", "server", "strict")
+        grant = "GRANT ALL PRIVILEGES ON *.* TO 'x'@'%'"
+        self.expect([("mcp:mysql/execute_sql", {"sql": f"SELECT 1 $$; {grant}; '$$"}),
+                     ("mcp:mysql/execute_sql", {"sql": f"SELECT 1 $$; {grant}; ` $$ , '\\''"})], held, "TK-DB004",
+                    packs=packs)
+        self.expect([("mcp:sqlite/write_query", {"sql": "SELECT 1 $$; ATTACH DATABASE '/tmp/x.db' AS x; '$$"})], held,
+                    "TK-DB005", packs=packs)
+        self.expect([("mcp:postgres/query", {"sql": "SELECT 1; SELECT 'a"})], "ask", "TK-SQL-PARSE",
+                    packs=("server", "strict"))   # no dialect reads all of it
 
 
 class WindowsPaths(unittest.TestCase):
@@ -1041,6 +1082,18 @@ class WindowsPrograms(unittest.TestCase):
             for command, twin in self.BENIGN:
                 with self.subTest(pack=name, engine=backend, command=command):
                     self.assertEqual(self.decide(e, command), self.decide(e, twin))
+
+    def test_a_command_cmd_or_wsl_runs_decides_as_the_command(self):
+        # a 1.7.0 review: cmd.exe's /c and /k (//c where MSYS rewrites a /) and wsl (bare, -e, --exec, --, a distro)
+        # run their words, which the rules read as cmd's or wsl's arguments
+        forms = ("wsl", "wsl -e", "wsl --exec", "wsl --", "wsl -d Ubuntu -u root", "wsl.exe", "cmd /c", "cmd //c",
+                 "cmd /k", "CMD.EXE /C", "cmd /q /c")
+        for (name, backend), e in self.engines.items():
+            for direct in (self.R + " ~", PUSH):
+                want = self.decide(e, direct)
+                for command in (f"{w} {direct}" for w in forms):
+                    with self.subTest(pack=name, engine=backend, command=command):
+                        self.assertEqual(self.decide(e, command), want)
 
     def test_an_unmapped_tools_exe_command_is_held_as_its_name(self):
         name = "re" + "boot"

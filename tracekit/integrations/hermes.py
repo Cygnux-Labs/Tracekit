@@ -21,16 +21,19 @@ type repair makes of them (another plugin's `modify`, or an edit in place).
 
 Each Hermes session is a run (agent "hermes"), registered at its first tool call and closed when Hermes exits; a run
 the signer closed after it was idle is replaced at the next call, by one registered with `continues` (the model may
-still hold what the earlier run read: its provenance index starts partial).
+still hold what the earlier run read: its provenance index starts partial), and so is the run of a session an earlier
+Hermes process ran (a resumed session: a marker per session in the runtime dir says so).
 """
 import atexit
 import contextlib
 import copy
+import hashlib
 import os
 import threading
 import time
 import warnings
 
+from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -119,7 +122,12 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
                     return runs[session_id]
                 t = token()
                 client = clients[t] = clients.get(t) or Client(token=t)
-            run = client.run(AGENT, **({"continues": True} if session_id in had else {}))
+            mark = os.path.join(autospawn.runtime_dir(), "hermes-" + hashlib.sha256(
+                session_id.encode("utf-8", "surrogatepass")).hexdigest() + ".seen")
+            # lean: one empty file per session this user's Hermes ran, never pruned; prune by age if they pile up
+            run = client.run(AGENT, **({"continues": True} if session_id in had or os.path.exists(mark) else {}))
+            with open(mark, "a"):   # a later process's run of the session continues it too
+                pass
             with lock:
                 runs[session_id] = run
                 had.add(session_id)

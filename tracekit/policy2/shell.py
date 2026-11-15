@@ -157,6 +157,10 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
             "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
+            # cmd.exe's switches start with / (// where MSYS rewrites one: cmd //c); wsl runs its words in its distro's
+            # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
+            "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
+                                     "--shell-type"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
@@ -438,6 +442,14 @@ def _assignments(ways):
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
 # $NAME or ${NAME}, fully matched, and a function's positional parameter $1 to $9 (_Parser.call)
 _PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9])\}?")
+
+
+class _Every:
+    def __contains__(self, name):
+        return True
+
+
+_EVERY = _Every()   # _Parser.set_names once a command that may set any variable ran
 # what bash splits or globs in an unquoted expansion's value (IFS as bash sets it)
 _SPLIT_OR_GLOB = re.compile(r"[ \t\n*?[]")
 # variables bash itself sets as the line runs, whatever the line gives them: never known (track_values). $_ is the
@@ -2310,7 +2322,7 @@ def _unwrap(name, args):
             starts.append(i)
         elif a is None or name == "command" and a in ("-v", "-V"):   # the end, or a lookup, not a run
             starts.append(None)
-        elif a.startswith("-"):   # a bare `-` too (env - cmd: an empty environment)
+        elif a.startswith("-") or name == "cmd" and a.startswith("/"):   # a bare `-` too (env - cmd: an empty environment)
             todo += [i + n for n in reversed(_takes(a, opts, WRAPPER_FLAGS.get(name, ())))]
         elif assigns(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
             todo.append(i + 1)
@@ -3549,10 +3561,16 @@ class _Parser:
                                                                  [v for v in elements if v is not None])
                 elif _GIT_ENV_KEY.fullmatch(var):   # a git config key an expansion makes: as written, as -c reads one
                     self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
-                elif not m.group(1) and self.readings:   # one an expansion joins: each literal reading with a blank
-                    self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
-                        v for r in self.readings for v in [r.partition("=")[2]]
-                        if re.search(r"[ \t\n]", v) and not any(e in v for e in self.exps))
+                elif not m.group(1):
+                    # its expansions all variables the line doesn't set (s=$HOME/.claude): as written, so a word that
+                    # reads it reads what the direct form ($HOME/.claude/…) does
+                    if self.exps and all((v := _PLAIN_VARIABLE.fullmatch(e)) and not v.group(1).isdigit()
+                                         and v.group(1) not in self.set_names(assigned) for e in self.exps):
+                        self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
+                    if self.readings:   # one an expansion joins: each literal reading with a blank
+                        self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
+                            v for r in self.readings for v in [r.partition("=")[2]]
+                            if re.search(r"[ \t\n]", v) and not any(e in v for e in self.exps))
                 if self.ctx["namerefs"].get(var, 1) is None:   # the first assignment names its target
                     raise ParseError(f"an assignment through the nameref {var}, which has no target, is not supported")
                 # what the variable now holds: text the line makes, or a value the parser can't name; and whether it
@@ -3922,6 +3940,17 @@ class _Parser:
             out.append((frozenset(zip(names, values)), texts) if keyed else texts)
             self.charge(n)
         return out
+
+    def set_names(self, assigned=()):
+        """The variables the line has set so far (assigned, the current command's `assigned` among them, a loop's, one
+        it reads into, the directory a cd moved), or every one once a command that may set any ran (track_values)."""
+        if self.ctx["any_set"]:
+            return _EVERY
+        moved = any(c["argv"][:1] in (["cd"], ["pushd"], ["popd"]) for c in self.ctx["cmds"])
+        return {*self.ctx["given"], *(k for k, v in self.known.items() if v), *self.ctx["namerefs"],
+                *self.ctx["opaque_values"],
+                *self.ctx["unread_values"], *self.ctx["joined_values"], *(n for n, _ in self.ctx["assigned"]),
+                *(n for n, _ in assigned), *(("PWD", "OLDPWD") if moved else ())}
 
     def track_values(self, words, cmds, assigns, loop, sure, raws=(), at=()):
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with

@@ -697,6 +697,21 @@ class Restart(Calls, unittest.TestCase):
         self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"],
                          "continues an earlier run of the session")
 
+    def test_a_continuing_run_s_decision_out_of_time_keeps_its_reason_for_the_rebuild(self):
+        """A decision that runs out of time reading the call's values records the index's own reason when the index
+        isn't complete, so a rebuild after a crash still reads that the run continues an earlier one."""
+        self.run = self.s.register_run({"request_id": "reg-later", "agent": {"name": "a"}, "continues": True})
+        self.seq = -1
+        self.observe({"ticket": INJECTED}, "untrusted")   # an entry: the decide reads the call's values
+        with mock.patch.object(svc, "PROVENANCE_S", -1):
+            self.assertEqual(self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"],
+                             svc.CONTINUES)
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))   # as a crash: a replay of the records alone
+        self.restart()
+        self.assertEqual(self.held("tc-mail2", "audit@vendor.example", "partial")["provenance_reason"],
+                         svc.CONTINUES)
+
     def test_a_run_a_crash_left_with_no_decision_starts_partial(self):
         """A crash loses the run state of a run registered since the last snapshot, and with no decision yet no record
         says whether it was registered with `continues`: its rebuilt index starts partial, and stays so over a later

@@ -542,7 +542,7 @@ class Engine:
             return _container_host_access(parsed[0])
         if cls == "shell" and field == "push":
             return _pushes(parsed[0])
-        if cls == "unknown" and field == "run":
+        if cls in ("unknown", "mcp") and field == "run":
             return _runs(args, tool)
         if cls == "sql" and field == "code":
             return fields.get("code", [])
@@ -1833,9 +1833,9 @@ _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of p
 
 
 def _runs(args, tool=""):
-    """The `run` field of a tool no pack maps: for each argument TK-S010 reads as a command (at any depth, its name in
-    any case), `WORD:<its last /-part>` and the program name it gives (shell.base_name: reboot.exe is reboot) when it
-    is one word of plain characters (letters, digits, `_ . : / -`), else
+    """The `run` field of a tool no pack maps, or of an MCP tool: for each argument TK-S010 reads as a command (at any
+    depth, its name in any case), `WORD:<its last /-part>` and the program name it gives (shell.base_name: reboot.exe
+    is reboot) when it is one word of plain characters (letters, digits, `_ . : / -`), else
     `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
     tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
     query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as

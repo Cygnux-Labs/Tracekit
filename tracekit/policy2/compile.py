@@ -116,7 +116,7 @@ CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_inde
            "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
-           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
+           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args", "run"},
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},

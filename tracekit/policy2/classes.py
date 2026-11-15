@@ -219,10 +219,15 @@ def url_target(url):
 # SQL as each dialect lexes it: (backslash escapes in '' and "", $tag$ quotes, nested /* */, # comments, [ident],
 # `ident`, -- starts a comment only before a blank or a control character, a CR ends a -- or # comment as a LF does:
 # PostgreSQL's scanner and SQL Server's documentation; MySQL and SQLite end one at a LF only). A statement that splits
-# differently in two dialects (a comment or literal one hides and the other runs) is matched in every reading.
-# lean: Oracle q'[...]' quotes and MySQL's NO_BACKSLASH_ESCAPES are not modelled; add a reading if a deployment uses them
+# differently in two dialects (a comment or literal one hides and the other runs) is matched in every reading. A
+# session or a server can change how literals read, so PostgreSQL with standard_conforming_strings off and MySQL with
+# NO_BACKSLASH_ESCAPES are readings too, however the setting was made.
+# lean: Oracle q'[...]' quotes and MySQL's ANSI_QUOTES are not modelled, and the PostgreSQL reading with backslash
+# escapes takes them in "" too (more is held, never less); add a reading if a deployment uses them
 SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False, True),
+                "postgres-escapes": (True, True, True, False, False, False, False, True),
                 "mysql": (True, False, False, True, False, True, True, False),
+                "mysql-no-escapes": (False, False, False, True, False, True, True, False),
                 "sqlite": (False, False, False, False, True, True, False, False),
                 "mssql": (False, False, True, False, True, False, False, True)}
 # a dollar-quote tag is an identifier: PostgreSQL's scanner takes any byte past ASCII as a letter (dolq_start)
@@ -406,8 +411,14 @@ def extract(cls, tool, args, limit=None):
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(
             isinstance(s, str) for s in stmt) else None
-        code = [] if text is None else [text] if limit is not None and len(text) > limit else list(dict.fromkeys(
-            c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values()) if c is not None))
+        if text is None or limit is not None and len(text) > limit:
+            code = [] if text is None else [text]
+        else:
+            # a reading whose literal or comment doesn't close is read up to its last `;`: a database that runs a
+            # statement at a time (MySQL, SQLite) runs those, then fails. None closing is TK-SQL-PARSE (Engine)
+            read = [sql_read(text, *d) for d in SQL_DIALECTS.values()]
+            code = list(dict.fromkeys(c if closed else c[:c.rfind(";") + 1] for c, closed in read
+                                      if closed or ";" in c)) if any(closed for _, closed in read) else []
         out = {"statement": stmt, "db": first(args, "db", "database"), "code": code or None,
                "verb": code[0].split()[0].upper() if code and code[0].split() else None}
     elif cls == "payment":

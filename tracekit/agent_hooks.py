@@ -1245,6 +1245,8 @@ def normalise(harness, p):
                 if not isinstance(typed, str) or not typed.strip():
                     return None
                 out["prompt"] = typed
+        if ev == "SessionStart":   # startup, resume, clear, ...: claude_code._run reads a resumed session's
+            out["source"] = p.get("source")
         if ev == "SessionEnd":
             out["reason"] = p.get("reason") or "session end"
         return out
@@ -1252,7 +1254,7 @@ def normalise(harness, p):
         out["session_id"] = p.get("session_id")
         if ev not in JCODE_EVENTS.values():
             return None
-        out["hook_event_name"] = ev
+        out["hook_event_name"], out["source"] = ev, p.get("source")   # session_start's (jcode_payload)
         if ev in ("PreToolUse", "PostToolUse"):
             raw = str(p.get("tool_name") or "?")
             out["tool_name"], out["tool_input"] = tool(harness, raw, p.get("tool_input"))
@@ -1284,7 +1286,7 @@ def normalise(harness, p):
         if ev == "beforeSubmitPrompt":
             return dict(out, hook_event_name="UserPromptSubmit", prompt=p.get("prompt"))
         if ev == "sessionStart":
-            return dict(out, hook_event_name="SessionStart")
+            return dict(out, hook_event_name="SessionStart", source=p.get("source"))
         if ev == "sessionEnd":
             return dict(out, hook_event_name="SessionEnd", reason=p.get("reason") or p.get("final_status") or "session end")
         return None
@@ -1304,7 +1306,7 @@ def normalise(harness, p):
         if ev == "BeforeAgent":
             return dict(out, hook_event_name="UserPromptSubmit", prompt=p.get("prompt"))
         if ev == "SessionStart":
-            return dict(out, hook_event_name="SessionStart")
+            return dict(out, hook_event_name="SessionStart", source=p.get("source"))
         if ev == "SessionEnd":
             return dict(out, hook_event_name="SessionEnd", reason=p.get("reason") or "session end")
         return None
@@ -1629,6 +1631,9 @@ def _repeated(args):
 def _blocked(harness, p, raw="", line=None):
     """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
     received; line: for typed input, the text the terminal reads it into (typed_line)."""
+    if "tool_input" in p and (p["tool_input"] is None or isinstance(p["tool_input"], list)):
+        return ("Blocked by Tracekit: the call's tool_input is " + ("null" if p["tool_input"] is None else "a list")
+                + ", not an object of arguments, so Tracekit can't read what the tool would run.")
     if harness == "antigravity":
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
@@ -3111,6 +3116,9 @@ def jcode_payload(stdin, env=None):
                  error=env.get("JCODE_HOOK_ERROR"))
     if ev == "session_end":
         p["reason"] = env.get("JCODE_HOOK_SOURCE")
+    if ev == "session_start":   # create (a new session), attach or resume (one with earlier content)
+        src = env.get("JCODE_HOOK_SOURCE")
+        p["source"] = "startup" if src == "create" else src
     return json.dumps(p)
 
 

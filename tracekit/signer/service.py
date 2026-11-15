@@ -2423,7 +2423,8 @@ class SignerService:
         deadline, entries = time.monotonic() + PROVENANCE_S, []
 
         def timeout():
-            st.update(state="timeout", reason="reading the call's values took past the decision's deadline")
+            if st["state"] == "complete":   # an index already not complete keeps its reason, which a rebuild reads
+                st.update(state="timeout", reason="reading the call's values took past the decision's deadline")
 
         def hits(obj):
             keys, overflow = self._keys(obj, False, deadline)

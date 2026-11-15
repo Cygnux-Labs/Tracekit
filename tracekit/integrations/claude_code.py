@@ -106,6 +106,7 @@ NO_POST = ("no PostToolUse came by the end of the session: declined (the harness
            "interrupted, or its payload was unreadable")
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
 FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
+ENDED = "ended"   # _state(sid, ENDED): a SessionEnd of the session came; kept as the session's state is (_prune)
 FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
         "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
@@ -351,10 +352,11 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
-            # a session with no state is new at a SessionStart that doesn't say resume or fork, and at another
-            # harness's first event; Claude Code starts each session with SessionStart, so one of its sessions whose
-            # first event is another went on after its SessionEnd, and its model holds its earlier runs' content
-            fresh = st is None and start not in RESUMED and (start is not None or AGENT != "claude-code")
+            # a session with no state is new only at a SessionStart that says so (startup, clear) or names no source,
+            # and that no SessionEnd of the same session came before (ENDED): any other first event (a resume or fork,
+            # a compaction, an event after a SessionEnd, state pruned or deleted) is of a session whose model may hold
+            # earlier runs' content
+            fresh = st is None and start in (*FRESH, "") and not os.path.exists(_state(sid, ENDED))
             # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
             st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
                            _seen(transcript) if st is None or start in RESUMED else None, continues=not fresh)
@@ -1117,9 +1119,9 @@ def _prune():
     """Removes the runtime state no hook has written for a while: a session's after SESSION_KEEP_S, as it carries the
     session's constraints and transcript to its later runs (after an idle close, or a resume); any other (a tool
     call's, which one that never got its PostToolUse leaves behind, or a lock no state needs) after the signer's
-    default run idle timeout, when the signer has closed its run."""
+    default run idle timeout, when the signer has closed its run. A session's ENDED marker is kept as its state is."""
     from tracekit.signer.service import IDLE_S
-    now = time.time()
+    now, ended = time.time(), _state("", ENDED).rsplit(".", 2)[1]
     for f in sorted(glob.glob(os.path.join(glob.escape(autospawn.runtime_dir()), "claude-code-*")),
                     key=lambda f: f.endswith(".lock")):   # the state first, then the locks it no longer needs
         # lean: a lock goes only once its session state has; a hook that resumes that very session at this instant
@@ -1129,7 +1131,8 @@ def _prune():
         if ".tailer-" in f and os.path.exists(os.path.join(os.path.dirname(f), os.path.basename(f).split(".")[0]
                                                            + ".json")):   # a run's tailer's: kept with its session
             continue
-        session = f.endswith(".json") and os.path.basename(f).count(".") == 1   # not claude-code-<sid>.<call>.json
+        # a session's state (not claude-code-<sid>.<call>.json), or its ENDED marker
+        session = f.endswith(".json") and (os.path.basename(f).count(".") == 1 or f.endswith(f".{ended}.json"))
         try:
             if os.path.getmtime(f) < now - (SESSION_KEEP_S if session else IDLE_S):
                 os.remove(f)
@@ -1179,6 +1182,7 @@ def _handle(client, p, event, sid, tid, end=None):
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             with contextlib.suppress(FileNotFoundError):   # a tailer that ended removes its own lock and log
                 os.remove(f)
+        files.write_json(_state(sid, ENDED), {})   # the session's next run, if it goes on, continues it (_run)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
     if event == "Stop":   # the harness says the model ended its turn: a signed end-of-turn marker (not SubagentStop)
