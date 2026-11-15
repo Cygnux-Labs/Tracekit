@@ -246,10 +246,14 @@ class TracekitAgents(RunHooks):
     async def apply_decisions(self, state):
         """Approve or reject the paused calls in a RunState as the signer's approvers decided; returns the calls
         still waiting. Resuming with a call approved some other way runs nothing: the signer refuses it."""
-        listed = await self._call("approval_list", {"run_id": self.run["run_id"]})
-        decided = {}
-        for a in listed["approvals"]:
-            decided.setdefault(a["tool_call_id"], a["state"])
+        decided, req = {}, {"run_id": self.run["run_id"]}
+        while True:   # every page: a call approved after the first page's worth would stay waiting
+            listed = await self._call("approval_list", req)
+            for a in listed["approvals"]:
+                decided.setdefault(a["tool_call_id"], a["state"])
+            if not listed["next_cursor"]:
+                break
+            req = {**req, "cursor": listed["next_cursor"]}
         waiting = []
         for item in state.get_interruptions():
             raw = item.raw_item

@@ -65,7 +65,7 @@ class Mapping(HarnessCase):
         super().setUp()
         # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
         os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
-        self.decision, self.sent, self.observed, mutex = "allow", [], [], threading.Lock()
+        self.decision, self.sent, self.observed, self.models, mutex = "allow", [], [], [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
         def handle(identity, frame):
@@ -74,6 +74,8 @@ class Mapping(HarnessCase):
                     self.sent.append({k: frame[k] for k in ("tool", "tool_call_id", "args")})
                 if frame["method"] == "observe":
                     self.observed.append(frame["value"])
+                if frame["method"] == "model_event":
+                    self.models.append(dict(frame))
                 return getattr(self.signer, frame.pop("method"))(frame)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
 
@@ -100,7 +102,10 @@ class Mapping(HarnessCase):
                 self.decision = case["decision"]
                 if self.decision == "ask":
                     self.approve_when_asked()
-                code, out, err = self.hook(harness, case["payload"], case.get("event"))   # agy: the command's event
+                payload = case["payload"]
+                if harness == "jcode":   # its payload is environment variables and stdin, as recorded
+                    payload = agent_hooks.jcode_payload(payload["stdin"], payload["env"])
+                code, out, err = self.hook(harness, payload, case.get("event"))   # agy: the command's event
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
@@ -133,6 +138,54 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_jcode(self):
+        self.check("jcode")
+
+    def jcode(self, event, name, ti, sid="jc-batch"):
+        """One jcode hook invocation, its payload built as jcode sends it (agent_hooks.jcode_payload)."""
+        text = json.dumps(ti, separators=(",", ":"))
+        env = {"JCODE_HOOK_EVENT": event, "JCODE_HOOK_SESSION_ID": sid, "JCODE_HOOK_CWD": "/w",
+               "JCODE_HOOK_TOOL_NAME": name, "JCODE_HOOK_TOOL_INPUT": text[:16384]}
+        return self.hook("jcode", agent_hooks.jcode_payload(text, env), "PreToolUse")
+
+    def test_jcode_batch_passes_its_gate_and_its_denied_call_is_denied_on_its_own(self):
+        # #720: every call in a batch reaches its own pre_tool gate, so the batch itself is decided as the tools it
+        # runs, never again on their arguments (which would decide each call twice and could hold it twice)
+        decisions = self.set_signer_policy(load_policy())
+        push = {"tool": "bash", "intent": "push", "command": "git push --force origin main"}
+        code, _, err = self.jcode("pre_tool", "batch", {"tool_calls": [push, {"tool": "read", "intent": "note",
+                                                                              "file_path": "note.txt"}]})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.sent[-1]["args"], {"tool_calls": [{"tool": "bash"}, {"tool": "read"}]})
+        self.assertEqual(decisions[-1]["verdict"], "flag")   # an unknown tool, and nothing else
+        code, _, err = self.jcode("pre_tool", "bash", {"command": push["command"], "intent": "push"})
+        self.assertEqual(code, 2)
+        self.assertEqual(decisions[-1]["verdict"], "deny")
+        self.assertIn("BLOCKED", err)
+
+    def test_jcode_pairs_identical_batch_calls_and_inputs_cut_at_16_kb(self):
+        # #720: two calls of one batch with the same input carry the same JCODE_HOOK_TOOL_INPUT and run in parallel,
+        # so either post_tool pairs with either pre_tool, first in first out: harmless (the same input gets the same
+        # decision), and pinned here. A write over 16 KB pairs on the cut copy both events carry
+        read = {"file_path": "note.txt", "intent": "note"}
+        for _ in range(2):
+            self.assertEqual(self.jcode("pre_tool", "read", read, sid="jc-pair")[0], 0)
+        first, second = (s["tool_call_id"] for s in self.sent[-2:])
+        big = {"content": "x" * 20000, "file_path": "big.txt"}
+        self.assertEqual(self.jcode("pre_tool", "write", big, sid="jc-pair")[0], 0)
+        self.assertEqual(self.sent[-1]["args"]["content"], big["content"])   # decided on the whole input (stdin)
+        written = self.sent[-1]["tool_call_id"]
+        posts = []
+        for name, ti, status in (("read", read, "ok"), ("read", read, "error"), ("write", big, "ok")):
+            p = json.loads(agent_hooks.jcode_payload("", {
+                "JCODE_HOOK_EVENT": "post_tool", "JCODE_HOOK_SESSION_ID": "jc-pair", "JCODE_HOOK_TOOL_NAME": name,
+                "JCODE_HOOK_TOOL_INPUT": json.dumps(ti, separators=(",", ":"))[:16384], "JCODE_HOOK_STATUS": status,
+                "JCODE_HOOK_ERROR": "File not found: note.txt" if status == "error" else ""}))
+            posts.append(agent_hooks.normalise("jcode", p))
+        self.assertEqual([q["tool_use_id"] for q in posts], [first, second, written])
+        self.assertEqual([q["hook_event_name"] for q in posts], ["PostToolUse", "PostToolUseFailure", "PostToolUse"])
+        self.assertEqual(posts[1]["error"], "File not found: note.txt")
 
     def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
         prefix = "notes-"
@@ -396,6 +449,72 @@ class Mapping(HarnessCase):
         self.assertEqual([(r["tool_call_id"], r["status"]) for r in done], [("call_h1", "error")])
         self.assertIn("NOT APPROVED, nothing ran", done[0]["error"])
 
+    def test_kiro(self):
+        self.check("kiro")
+
+    def test_kiro_results_prompts_and_session_events_answer_nothing(self):
+        # Kiro CLI 3.3.0's SessionStart, UserPromptSubmit, PostToolUse (no call id; its result a string) and Stop as
+        # recorded (tests/data/harness/kiro_events.json); SessionEnd, which `chat --no-interactive` never fired, is
+        # built. A payload the hook can't read blocks the call (exit 2, Kiro's block)
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        post = rec["PostToolUse"]
+        pre = {k: v for k, v in post.items() if k != "tool_response"} | {"hook_event_name": "PreToolUse"}
+        self.assertEqual(self.hook("kiro", pre)[0], 0)
+        built = {"session_id": post["session_id"], "cwd": post["cwd"], "hook_event_name": "SessionEnd"}
+        for payload in (rec["SessionStart"], rec["UserPromptSubmit"], post, rec["Stop"], built):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("kiro", payload)[:2], (0, ""))
+        code, out, err = self.hook("kiro", "not json", "PreToolUse")
+        self.assertEqual((code, out), (2, ""), err)
+
+    def test_kiro_calls_denied_in_the_hook_never_reach_the_signer(self):
+        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides, and invoke_sub_agent hands
+        # the sub-agent its contextFiles with no read_file of them
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            recorded = json.load(f)["denied_in_hook"]
+        create = recorded[0]
+        built = [dict(create, tool_name=name, tool_input=ti) for name, ti in (
+            ("subagent/reviewer", {"prompt": "x"}), ("kiro_powers", {"action": "list"}),
+            ("code", {"operation": "rename_symbol", "file_path": "C:\\work\\kiro-rec\\sample.py", "new_name": "x"}),
+            ("code", {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}))]
+        for payload in (*recorded, *built):
+            with self.subTest(tool=payload["tool_name"], ti=payload["tool_input"]):
+                code, out, err = self.hook("kiro", payload)
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertIn("Blocked by Tracekit: Kiro's", err)
+        self.assertEqual(self.sent, [])
+
+    def test_kiro_windows_pre_tool_command_fails_closed_under_cmd(self):
+        # Kiro runs a Windows hook under cmd.exe and the call on any exit but 2: a v2 PreToolUse hook that can't start
+        # exits 2; the other events, and a v1 hook, keep their command as it is
+        d = ac.tmpdir(self)
+        with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", r"C:\Python311\python.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for v2 in (True, False):
+                agent_hooks.install("kiro", d, v2=v2)
+                with open(agent_hooks.config_path("kiro", d)) as f:
+                    cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+                for ev, c in cmds.items():
+                    with self.subTest(v2=v2, event=ev):
+                        self.assertEqual(c.endswith("& exit 2)"), v2 and ev == "PreToolUse", c)
+                        self.assertRegex(c, rf"\b{ev}\b")   # v1 too: a pre-tool payload it can't read is blocked
+
+    @unittest.skipUnless(os.name == "nt", "Kiro runs Windows hooks under cmd.exe")
+    def test_kiro_cmd_blocks_a_tool_call_whose_hook_cannot_start(self):
+        d = ac.tmpdir(self)
+        with mock.patch.object(sys, "executable", os.path.join(d, "gone", "python.exe")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, v2=True)
+        with open(agent_hooks.config_path("kiro", d)) as f:
+            cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+        for ev, c in cmds.items():
+            with self.subTest(event=ev):
+                p = subprocess.run(c, shell=True, input="{}", capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode == 2, ev == "PreToolUse", (p.returncode, p.stderr))
+        p = subprocess.run(cmds["PreToolUse"], shell=True, input="{}", capture_output=True, text=True, timeout=30)
+        self.assertIn("call blocked (fail-closed)", p.stderr)
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -456,6 +575,29 @@ class Mapping(HarnessCase):
         self.assertEqual(code, 2)
         self.assertIn("Docker MCP Gateway's code-mode", err)
         self.assertEqual(len(self.sent), 1)
+
+    def test_crush_turn_end_records_only_a_nonempty_last_assistant_message(self):
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-te", "cwd": "/w"}
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7},
+                      {"last_assistant_message": ["hi"]}, {"last_assistant_message": {"text": "hi"}}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.hook("crush", {**base, **extra}, "TurnEnd"), (0, "", ""))
+        self.assertEqual(self.models, [])
+        self.assertFalse(os.path.exists(claude_code._state("cr-te")))
+        self.assertEqual(self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd"), (0, "", ""))
+        (ev,) = self.models
+        self.assertEqual((ev["phase"], ev["provider"], ev["model"], ev.get("said_only"), "tool_uses" in ev),
+                         ("response", "unknown", "unknown", True, False))
+        self.assertEqual(ev["content_digest"],
+                         event_hash({"output": harness_hooks.said.text("Done."), "source": "crush hook"}))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, out, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
+        code, out, err = self.hook("crush", "[]", "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("event not recorded", err)
 
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
@@ -1103,7 +1245,7 @@ class Installer(unittest.TestCase):
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    project = None if harness == "gptme" else d
+                    project = None if harness in ("gptme", "jcode") else d   # their user config only
                     path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
                         agent_hooks.install(harness, project)   # v1
@@ -1122,6 +1264,13 @@ class Installer(unittest.TestCase):
                         self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
                         self.assertFalse(os.path.exists(bridge))
                         self.assertTrue(os.path.isfile(path))
+                        continue
+                    if harness == "jcode":   # a TOML table in its config.toml
+                        code, out = self.cli("uninstall", "--agent", harness)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
+                        with open(path, encoding="utf-8") as f:
+                            self.assertNotIn("tracekit", f.read())
                         continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
@@ -1180,20 +1329,23 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map
-                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
+                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map; Kiro's file a list of
+                    # hooks, each with its command under `action`
+                    hooks = [h["action"] for h in blob["hooks"]] if harness == "kiro" else \
+                        [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    # Cursor: and what its model said; agy and Copilot: their tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "codebuddy": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
+                    # Cursor and Crush: and what their model said; agy and Copilot: their tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "crush": 6, "qwen": 6, "codebuddy": 6, "antigravity": 2,
+                                                 "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
                     # isn't documented: a path with a space keeps cmd.exe's. CodeBuddy Code runs them under Git Bash, as
-                    # Claude Code does
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy"):
+                    # Claude Code does, and Kiro under cmd.exe
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy", "kiro"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -1211,7 +1363,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
+                    if harness in ("droid", "copilot", "kiro"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
@@ -1313,9 +1465,14 @@ class Installer(unittest.TestCase):
                     with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                         init()   # as init before 1.3 wrote it
                     init()
-                    with open(path) as f:
-                        blob = json.load(f)
-                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                    if harness == "jcode":
+                        table = agent_hooks.jcode_config(path)["hooks"]
+                        hooks = [(ev, {"command": table[key]}) for key, ev in agent_hooks.JCODE_EVENTS.items()]
+                    else:
+                        with open(path) as f:
+                            blob = json.load(f)
+                        hooks = [(h["trigger"], h["action"]) for h in blob["hooks"]] if harness == "kiro" else \
+                            [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
                              for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
                     for ev, h in hooks:
                         p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
@@ -1796,7 +1953,7 @@ ROLLOUT = [{"timestamp": "t", "type": "session_meta", "payload": {"id": "cx-s"}}
 @unittest.skipIf(os.name == "nt", "the content vault test reads as the socket's uid")
 class WhatTheModelSaid(HarnessCase):
     """Each harness hook records what the model said since the session's last hook, before deciding: Codex's rollout
-    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought."""
+    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought, Crush's TurnEnd."""
 
     def setUp(self):
         super().setUp()
@@ -1960,8 +2117,9 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual((self.frames[0]["provider"], self.frames[0]["model"]), ("google", "gemini-3-pro"))
 
     def test_a_harness_that_names_no_call_is_never_accused_of_fabricating_one(self):
-        """Gemini CLI's and Cursor's messages are recorded without their calls (neither gives a call an id): the
-        signer must not read each decided call as one no model message asked for (reconcile.fabricated)."""
+        """Gemini CLI's, Cursor's and Crush's messages are recorded without their calls (none names a call id in what
+        carries the text): the signer must not read each decided call as one no model message asked for
+        (reconcile.fabricated)."""
         self.serve()
         msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
                "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}]}
@@ -1975,9 +2133,17 @@ class WhatTheModelSaid(HarnessCase):
                "tool_input": {"command": "ls"}, "cwd": self.d}
         self.assertEqual(self.hook("cursor", cur)[0], 0)
         self.hook("cursor", dict(cur, hook_event_name="postToolUse", tool_output="a.txt"))
-        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f")}
+        cr = {"session_id": "cr-f", "hook_event_name": "PreToolUse", "tool_name": "ls", "tool_use_id": "call_1",
+              "tool_input": {"path": self.d}, "cwd": self.d}
+        self.assertEqual(self.hook("crush", cr, "PreToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", dict(cr, hook_event_name="PostToolUse", tool_response="a.txt"),
+                                   "PostToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-f",
+                                             "cwd": self.d, "last_assistant_message": "Listed."}, "TurnEnd")[0], 0)
+        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f", "cr-f")}
         self.hook("gemini", dict(pre, hook_event_name="SessionEnd", reason="exit"))
         self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "sessionEnd", "reason": "exit"})
+        self.hook("crush", {"session_id": "cr-f", "hook_event_name": "SessionEnd", "cwd": self.d}, "SessionEnd")
         self.service.sweep()
         for sid, run_id in runs.items():
             recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
@@ -1996,6 +2162,33 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual(self.frames[0]["body"]["source"], "cursor hook")
         self.hook("cursor", {"conversation_id": "cu-s", "hook_event_name": "afterAgentResponse", "text": "Done."})
         self.assertEqual(self.frames[1]["body"]["output"][0]["content"][0]["text"], "Done.")
+
+    def test_crush_turn_end_is_recorded(self):
+        self.serve()
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-s", "cwd": self.d}
+        out = self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd")
+        self.assertEqual(out, (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertTrue(self.frames[0].get("said_only"))
+        self.assertNotIn("tool_uses", self.frames[0])
+        self.assertEqual(self.frames[0]["body"]["source"], "crush hook")
+        self.assertEqual([(x["kind"], x["text"]) for x in parsers.said("openai:responses", self.frames[0]["body"])],
+                         [("text", "Done.")])
+        st, c, events = self.events("cr-s")
+        (ex,) = [e for e in events if e["type"] == "model.exchange"]
+        got = c.call("content_get", {"run_id": st["run_id"], "seqs": [ex["run_seq"]], "purpose": "test"})["items"]
+        self.assertEqual(got[0]["content"], self.frames[0]["body"])
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7}):
+            self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd",
+                                                 "session_id": "cr-empty", "cwd": self.d, **extra}, "TurnEnd"),
+                             (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertFalse(os.path.exists(claude_code._state("cr-empty")))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, stdout, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, stdout), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
 
     def test_a_failure_to_record_never_changes_the_decision(self):
         self.serve()

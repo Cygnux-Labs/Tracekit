@@ -508,7 +508,7 @@ def _restart(client, path, st):
         held.close()
         return
     from tracekit.tailer import resume   # only here: it loads the signer's module
-    offsets, digests, parked = resume(log)
+    offsets, digests, parked, _ = resume(log)   # the new tailer reads which usage was signed itself
     # lean: with no progress log (removed) a new tailer reads on from where the hook last saw the transcripts, so what
     # the stopped one had not read by then is skipped; keep the run's start offsets in the state if that happens
     handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],

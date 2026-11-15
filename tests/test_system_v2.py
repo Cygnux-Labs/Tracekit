@@ -6,6 +6,7 @@ import io
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import stat
 import subprocess
@@ -240,6 +241,7 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
                 mock.patch.object(install, "_tailer_acl", return_value=None) as acl, \
                 mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
+                mock.patch.object(install, "harness_spec", lambda spec, agent: spec), \
                 mock.patch.object(install, "install_hooks") as hooks:
             sock, settings = install.init_system_v2("agent", harnesses=harnesses)
         self.run = run
@@ -256,8 +258,10 @@ class InstallAndUninstall(unittest.TestCase):
         if sudo_why:
             return sys_cfg
         del v1["tailer"]
+        flags = ["--approver", self.me.pw_name, *(a for h in harnesses for a in ("--harness", h))]
         self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings,
-                                                                                      "agent": "claude"},
+                                                                                      "agent": "claude",
+                                                                                      "init_flags": flags},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
                                                                  "python": install.OPT_PYTHON}))
         self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, tailer_heartbeat, status]', yaml)
@@ -304,7 +308,8 @@ class InstallAndUninstall(unittest.TestCase):
             self.assertEqual(install.init_system_v2("agent", hooks=False)[1], None)
         hooks.assert_not_called()
         self.assertEqual(sys_cfg.call_args.args[0]["hooks"], {"user": "agent", "settings": None, "agent": "claude",
-                                                               "no_hooks": True})
+                                                               "no_hooks": True,
+                                                               "init_flags": ["--approver", self.me.pw_name]})
 
     def test_egress_routes_the_agents_traffic_through_the_observer_until_uninstall(self):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
@@ -394,7 +399,8 @@ class InstallAndUninstall(unittest.TestCase):
                             self.assertIn(json.dumps([install.OPT_PYTHON, "-I", "-m",
                                                       "tracekit.integrations.harness_hooks", harness, event]), hook)
                     sc = sys_cfg.call_args.args[0]
-                    self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": harness})
+                    self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": harness,
+                                                   "init_flags": ["--approver", self.me.pw_name]})
                     self.uninstall(sc)
                     if harness == "opencode":
                         self.assertFalse(os.path.exists(settings))
@@ -451,6 +457,45 @@ class InstallAndUninstall(unittest.TestCase):
         with open(path) as f:
             return json.load(f)
 
+    def test_init_records_the_flags_doctor_gives_again(self):
+        """Doctor's re-init fixes gave init's agent, --no-hooks and --managed again, and none of its other flags: one
+        followed on a host set up with --policy and --harness rewrote signer.yaml with init's own policy and no harness
+        binding, unseen. Init records them in root-owned client.json, which doctor reads them from. --harness as the
+        script (never its interpreter), here by its real path: the link is in a directory the agent's user can write
+        (HarnessSpec has the path kept as given). --project with its
+        directory, so the re-init runs from the release's clone. Not --i-understand-agent-is-privileged, which waived
+        init's refusal ahead of time for a user that gained a privilege since, nor the witness flags (V2_NO_WITNESS
+        keeps --no-witness; --public-witness again can only make init fail)."""
+        from tracekit import doctor
+        self.managed_setup()
+        policy, repo, bin_ = (os.path.join(self.d, n) for n in ("corp policy.yaml", "repo", "bin"))
+        os.makedirs(bin_)
+        script, link = os.path.join(bin_, "claude-2.1.0.js"), os.path.join(bin_, "claude")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.symlink(script, link)
+        me = self.me.pw_name
+        row = doctor.result("D-CODE-TRUST", "fail", "detail", doctor.REINIT)
+        with mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
+            for kw, flags in (
+                    ({"policy": policy, "harnesses": ["claude=" + link], "egress": True, "public_witness": False,
+                      "thinking": False, "no_service": True, "allow_privileged": True},
+                     ["--approver", me, "--policy", policy, "--harness", "claude=" + os.path.realpath(script), "--egress",
+                      "--no-thinking-summaries", "--no-service"]),
+                    ({"project": repo, "public_witness": True}, ["--approver", me, "--project", repo]),
+                    ({"managed": True, "managed_only": True}, ["--managed", "--managed-only", "--approver", me])):
+                with self.subTest(**kw), mock.patch("tracekit.public_witness.entry"), \
+                        mock.patch.object(install, "V2_NO_WITNESS", os.path.join(self.d, "no-witness")):
+                    sc = self.init_real({}, **kw)[2]
+                    self.assertEqual(sc["hooks"]["init_flags"], flags)
+                    if "harnesses" in kw:   # the signer binds what the path names now
+                        self.assertIn(f'script: "{os.path.realpath(script)}"', self.written[install.V2_CONFIG].decode())
+                    with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                            mock.patch.object(doctor, "_user", return_value=None), \
+                            mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                        fix = doctor.collect()[-1]["fix"]
+                    self.assertEqual(fix, doctor.REINIT + "".join(f" {shlex.quote(f)}" for f in flags))
+
     def test_managed_hooks_go_in_the_admin_settings_and_uninstall_takes_only_tracekits_out(self):
         """init --v2 --managed wrote the hooks into the agent's own settings, which the agent can edit."""
         admin = {"permissions": {"deny": ["Read(./.env)"]}, "env": {"CORP": "1"},
@@ -458,7 +503,8 @@ class InstallAndUninstall(unittest.TestCase):
         self.managed_setup(admin)
         sock, settings, sc, out = self.init_real({}, managed=True, managed_only=True)
         self.assertEqual(settings, self.managed)
-        self.assertEqual(sc["hooks"], {"user": "agent", "settings": self.managed, "agent": "claude"})
+        self.assertEqual(sc["hooks"], {"user": "agent", "settings": self.managed, "agent": "claude",
+                                       "init_flags": ["--managed", "--managed-only", "--approver", self.me.pw_name]})
         self.assertFalse(os.path.exists(self.user))
         s = self.read(self.managed)
         self.assertEqual((s["permissions"], s["env"]), (admin["permissions"], {"CORP": "1", "TRACEKIT_SIGNER": sock}))
@@ -525,7 +571,8 @@ class InstallAndUninstall(unittest.TestCase):
         _, _, sc, _ = self.init_real({}, managed=True)
         _, settings, sc, _ = self.init_real(sc, agent="codex")
         self.assertEqual(self.read(self.managed), {})
-        self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex"})
+        self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex",
+                                       "init_flags": ["--approver", self.me.pw_name]})
 
     def test_init_for_another_user_takes_the_managed_hooks_out(self):
         """init --managed for one user, then init without it for another, left the managed hooks running in the other
@@ -896,6 +943,136 @@ class CliHelp(unittest.TestCase):
             cli.main(["init", "--help"])
         self.assertIn("install no agent hooks (an SDK agent, or the Claude Code plugin's own hooks)",
                       " ".join(out.getvalue().split()))
+
+
+class CliProject(unittest.TestCase):
+    def test_init_takes_the_project_directory(self):
+        """init --project used the working directory only, so doctor's re-init for a --project host had the person run
+        sudo python3 -m tracekit in the agent's own directory, where -m imports a planted tracekit/ first, as root.
+        --project DIR names it; with no DIR it is still the working directory."""
+        from tracekit import cli
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(d)
+        for argv, want in ((["--project", "/srv/my repo"], os.path.abspath("/srv/my repo")),   # C:\srv\my repo on Windows
+                           (["--project", "repo"], os.path.join(os.getcwd(), "repo")), (["--project"], os.getcwd()),
+                           ([], None)):
+            with self.subTest(argv=argv), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", None)) as v2:
+                self.assertEqual(cli.main(["init", "--v2", "--user", "agent", *argv]), 0)
+            self.assertEqual(v2.call_args.args[3], want)
+
+    def test_the_default_is_the_working_directory_as_init_runs(self):
+        """init --dev --v2 --project wrote its hooks into the checkout on Windows CI, not the test's working directory:
+        --project with no DIR went through os.path.abspath, which on Windows asks the OS for the working directory
+        (nt._getfullpathname) rather than os.getcwd(), which the tests patch and which the code read before --project
+        took a DIR. Here an abspath that ignores a patched os.getcwd stands in for Windows' (on POSIX abspath calls
+        os.getcwd()). And a parser built before a chdir doesn't fix the directory early."""
+        from tracekit import cli
+        here, there = tempfile.mkdtemp(), tempfile.mkdtemp()
+        for p in (here, there):
+            self.addCleanup(shutil.rmtree, p, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(here)
+        real = os.getcwd
+        as_windows = mock.patch.object(os.path, "abspath", lambda p: os.path.normpath(os.path.join(real(), p)))
+        for cmd, called in ((["init", "--v2", "--user", "agent"], lambda: v2.call_args.args[3]),
+                            (["uninstall"], lambda: claude.call_args.args[0])):
+            with self.subTest(cmd=cmd[0]), contextlib.redirect_stdout(io.StringIO()), as_windows, \
+                    mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", None)) as v2, \
+                    mock.patch.object(install, "uninstall") as claude:
+                with mock.patch("os.getcwd", return_value=there):   # as InitV2 and Installer set the directory
+                    self.assertEqual(cli.main([*cmd, "--project"]), 0)
+                self.assertEqual(called(), there)
+                a = cli._parser()[0].parse_args([*cmd, "--project"])
+                os.chdir(there)
+                self.assertEqual(cli._run(a), 0)
+                self.assertEqual(called(), os.getcwd())
+                os.chdir(here)
+
+    def test_uninstall_takes_the_project_directory(self):
+        """uninstall --project took only the working directory, while init --project names DIR."""
+        from tracekit import cli
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(d)
+        for argv, want in ((["--project", "/srv/my repo"], os.path.abspath("/srv/my repo")), (["--project"], os.getcwd()),
+                           ([], None)):
+            with self.subTest(argv=argv), contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "uninstall") as claude, mock.patch.object(agent_hooks, "install") as other:
+                self.assertEqual(cli.main(["uninstall", *argv]), 0)
+                self.assertEqual(cli.main(["uninstall", "--agent", "codex", *argv]), 0)
+            self.assertEqual((claude.call_args.args[0], other.call_args.args[1]), (want, want))
+
+    def test_dev_init_reads_the_plugin_setting_of_the_project_it_names(self):
+        """init --dev --v2 --project DIR looked for the Claude Code plugin in the working directory's .claude, not DIR's:
+        with the plugin enabled in DIR it wrote init's hooks beside the plugin's, deciding every call twice."""
+        from tracekit import cli, client
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        home, repo, elsewhere = (os.path.join(d, n) for n in ("home", "my repo", "elsewhere"))
+        for p in (home, os.path.join(repo, ".claude"), elsewhere):
+            os.makedirs(p)
+        settings = os.path.join(repo, ".claude", "settings.json")
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(elsewhere)
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                          "LOCALAPPDATA": os.path.join(home, "data")}), \
+                mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-witness", "--project", repo]), 0)
+        self.assertIn(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings}", out.getvalue())
+        self.assertFalse(install._v2_hooks_in(settings))
+
+    def test_a_named_projects_plugin_state_is_not_a_user_config(self):
+        """Claude Code never writes plugin install state into a project's .claude, so a repo can't vouch for a plugin
+        key through one; that held only for the working directory's project, not a DIR named elsewhere."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        repo = os.path.join(d, "repo")
+        plugins = os.path.join(repo, ".claude", "plugins")
+        os.makedirs(os.path.join(plugins, "m", ".claude-plugin"))
+        for name, data in (("settings.json", {"enabledPlugins": {"tracekit@evil": True}}),
+                           ("plugins/installed_plugins.json",
+                            {"version": 2, "plugins": {"tracekit@evil": [{"scope": "user", "installPath": "/x"}]}}),
+                           ("plugins/known_marketplaces.json",
+                            {"evil": {"source": {"source": "github", "repo": "Cygnux-Labs/Tracekit"},
+                                      "installLocation": os.path.join(plugins, "m")}}),
+                           ("plugins/m/.claude-plugin/marketplace.json",
+                            {"plugins": [{"name": "tracekit", "source": "./plugin"}]})):
+            with open(os.path.join(repo, ".claude", name), "w") as f:
+                json.dump(data, f)
+        self.assertIsNone(install.plugin_enabled([], project=repo))
+
+
+@unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
+class HarnessSpec(unittest.TestCase):
+    def test_the_given_path_is_kept_only_where_only_root_can_repoint_it(self):
+        """init recorded --harness as given, links kept, with no look at who can change the link: a link in a
+        directory the agent's user can write could be repointed before a re-init, which then bound any root-owned
+        program the user chose. The path is kept only when every directory its lookup reads is root's alone."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        script, link = os.path.join(d, "claude-2.1.0.js"), os.path.join(d, "claude")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.symlink(script, link)
+        spec = install.harness_spec("claude=" + link)
+        self.assertEqual(spec, "claude=" + os.path.realpath(script))
+        os.remove(link)
+        os.symlink("/bin/sh", link)   # the agent's user repoints it before a re-init
+        with mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
+            self.assertEqual(install.resolve_harness(spec)["script"], os.path.realpath(script))
+        os.symlink("/bin", os.path.join(d, "bin"))   # a link to a root-only directory, in one the user can write
+        self.assertFalse(install._fixed(os.path.join(d, "bin", "sh")))
+        kept = [p for p in ("/bin/sh", "/etc/hosts") if os.path.realpath(p) != p and install._fixed(p)]
+        if not kept:
+            self.skipTest("no link here in root-only directories (/bin/sh, /etc/hosts) to keep")
+        self.assertEqual(install.harness_spec("x=" + kept[0]), "x=" + kept[0])
 
 
 class CliManaged(unittest.TestCase):

@@ -360,12 +360,21 @@ to paste.
 | 3 · HOLDS NOBODY ANSWERED | held calls answered and not (the agent's retry of a held call counted with it, as PERMISSIONS and the run review count them), in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | when they waited: remove `TRACEKIT_APPROVAL_WAIT` from the `env` block of the Claude Code settings that set it (`~/.claude/settings.json` or `$CLAUDE_CONFIG_DIR/settings.json`, the project's `.claude/settings.json` or `.claude/settings.local.json`; **COPY** gives the `jq` edit of the first), unset it in the agent's shell, then restart the agent; otherwise the rule's remedy and `tracekit approvals list` |
 
 Token counts come from signed records where they carry them (a `model.exchange` response's `usage`: the LLM gateway's,
-an SDK integration's). Claude Code's transcript tailer records no usage, so for Claude Code the viewer reads its
-transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with the dev store
-`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts once, from the
-transcripts: it is matched step by step, by a tool_use id or by identical token counts within 5 minutes of one
-transcript message no other step matched (the gateway signs each exchange under an id of its own, and a message
-without tool calls has no tool_use id). The page's first line says how many signed steps that was, and the time span
+an SDK integration's, and Claude Code's transcript tailer's, which signs each turn's usage as it reads the transcript),
+else from Claude Code's transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with
+the dev store `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts
+once, at its signed counts, in the transcript's place (the transcript says which agent took the step, when, and how
+long each cache write lasts, which no signed record holds): it is matched step by step, by its message id (the
+tailer's records, taken only from a claude-code run whose records name a call of that session, signed from the
+turn's first line to 5 minutes after its last), by a tool_use id (an LLM gateway's records, within 5 minutes), or by
+identical token counts within 5 minutes of one transcript message no other step matched (the gateway signs each exchange
+under an id of its own, and a message without tool calls has no tool_use id). Where the gateway and the tailer both
+signed a turn, the gateway's counts are kept, and a gateway's record always counts: one that joins no turn counts on
+its own. Other records of one turn that disagree, and any other record of a transcript's turn, are refused: the transcript's counts stand, and the page's first line says how many
+([limits](limits.md#viewer)). The page's TOKENS IN and OUT count a turn the gateway and the tailer both signed once, the
+same way. Each card's `from` names where its token counts came from, the context card's arithmetic says how many steps each
+source gave, and each wait of the cache card has its own (`src`). The page's first line says how many signed steps
+took a transcript step's place, and the time span
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
 whether it ran in a subagent. Codex CLI's session files (`$CODEX_HOME/sessions`, else `~/.codex/sessions`) are read the
