@@ -2,11 +2,11 @@
 
 <a href="https://github.com/Cygnux-Labs/Tracekit"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/banner.png" alt="Tracekit: the tamper-evident flight recorder for AI agents" width="840"></a>
 
-# The tamper-evident flight recorder for AI agents
+# Proof of what your AI agents actually did
 
 **Tracekit checks each tool call your agent makes before it runs, and risky calls wait for a person to approve them.
-Every action is signed into a tamper-evident log, so you can put agents on real systems and prove what they did:
-your customers and auditors can verify the record themselves, offline.**
+Every action is signed into a tamper-evident log by a process the agent can't touch, so you can put agents on real
+systems and show what they did: your customers and auditors can verify the record themselves, offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
 <a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-41_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 41 agents and frameworks"></a>
