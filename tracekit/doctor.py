@@ -120,10 +120,14 @@ def collect(config=None, issuer_key=None):
                          else None, no_hooks=h.get("no_hooks") is True)
         # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
         # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
-        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off
+        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off. It keeps
+        # --managed, else init moves the hooks from the root-owned file into the agent's own settings, and
+        # --managed-only where init turned allowManagedHooksOnly on, else init turns it off
+        managed = settings in install.MANAGED_SETTINGS.values()
         again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
-            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude"
-            and settings not in install.MANAGED_SETTINGS.values() else "")
+            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude" and not managed else "") + (
+            " --managed" + (" --managed-only" if _setting(settings, "_tracekit_allowManagedHooksOnly") is True else "")
+            if managed else "")
         return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
     if sc:
         return out
@@ -1307,10 +1311,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
-    # an init without --managed-only turns off the allowManagedHooksOnly an init with it turned on
-    only = managed and _setting(settings, "_tracekit_allowManagedHooksOnly") is True
-    hook_fix = (REINIT + " --managed" + (" --managed-only" if only else "") if managed else REINIT) if prod else \
-        "tracekit init --dev --v2"
+    hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
