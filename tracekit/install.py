@@ -1391,18 +1391,20 @@ def v1_results(checks=None):
                                         f"sudo {OPT_PYTHON} -I -m tracekit migrate --system")]
         except (OSError, ValueError, AttributeError):   # no or unreadable signer config: the other checks say so
             pass
-        for h in _installed_hooks():
+        found = _installed_hooks()
+        for h in found:
             out.append(result("D-V1-HOOKS", OK, "hooks: " + (' and '.join(h.get('versions', ())) or h.get('error')
                                                              or 'none') + f" in {h['settings']}"))
+        managed = any(h.get("managed") and "v1" in h.get("versions", ()) for h in found)   # init --managed's
         try:
             sc = client.system_config()
         except client.SystemConfigError as e:
-            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}", V1_REINIT)]
+            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}", v1_reinit(None, managed))]
         if sc is None:
             return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {client.SYSTEM_CONFIG} is missing or not "
-                                 "root-owned", V1_REINIT)]
+                                 "root-owned", v1_reinit(None, managed))]
         from .policy import DEFAULT_POLICY
-        reinstall = f"re-run init to reinstall into {OPT}: " + V1_REINIT
+        reinstall = f"re-run init to reinstall into {OPT}: " + v1_reinit(sc, managed)
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
                   ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
@@ -1414,6 +1416,22 @@ def v1_results(checks=None):
             bad = _first_problem(path, _root_only)
         out.append(result("D-V1-" + label.upper().replace(" ", "-"), FAIL if bad else OK, f"{label}: {bad or path}", fix))
     return out + helper
+
+
+def v1_reinit(sc, managed):
+    """V1_REINIT with the flags v1 init recorded in the system config `sc` (None: it can't be read), as doctor's v2
+    fixes get theirs (doctor.collect): --managed[-only] from the managed file, as there; without a record, --managed
+    where `managed` (the managed file has v1 hooks) and a note that doctor can't tell the rest."""
+    from .doctor import _managed_flags, _recorded
+    flags = (sc or {}).get("init_flags")
+    if isinstance(flags, list):
+        managed = "--managed" in flags
+        sc = dict(sc, init_flags=[f for f in flags if f != "--managed"])
+    flags, tail = _recorded(sc or {}, "--managed, --project, --proxy, --no-hooks, --no-service, --fail-closed",
+                            f"{client.SYSTEM_CONFIG} " + ("doesn't record them" if sc else
+                                                          "records them, and it's missing or can't be read"))
+    path = MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    return V1_REINIT + (_managed_flags(path) if managed else "") + (flags or "") + tail
 
 
 def _require_system(experimental_macos, other=", or use tracekit init --dev for a same-user signer"):
@@ -1602,6 +1620,12 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
                              f"{target_user} cannot change it")
     harnesses = [resolve_harness(h, agent) for h in harnesses]
+    # the flags doctor's re-init fixes give again (client.json records init's agent, hooks and --managed already)
+    flags = ["--approver", approver.pw_name, *(["--policy", policy] if policy else []), *(
+        a for h in harnesses for a in ("--harness", f"{h['name']}={h.get('script') or h['exe']}"))] + [
+        f for f, on in (("--project", project), ("--egress", egress), ("--public-witness", public_witness),
+                        ("--no-witness", public_witness is False), ("--no-thinking-summaries", not thinking),
+                        ("--no-service", no_service), ("--i-understand-agent-is-privileged", allow_privileged)) if on]
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     recorded = (sc.get("hooks") or {}).get("settings")
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
@@ -1711,7 +1735,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
                                             **({"env": proxy} if proxy else {}),
-                                            **({} if hooks else {"no_hooks": True})},   # doctor: the choice it is
+                                            **({} if hooks else {"no_hooks": True}),   # doctor: the choice it is
+                                            "init_flags": flags, **({"project": project} if project else {})},
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if not harnesses:
@@ -1899,7 +1924,16 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
-    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, **_v2_client_keys()))
+    # the flags doctor's re-init fixes give again; the signer's config keeps the witnesses, the checkpoint interval,
+    # the harnesses and the external signer over a later init, and doctor reads --managed-only from the managed file
+    flags = [f for f, on in (("--managed", managed), ("--project", project), ("--no-hooks", not hooks),
+                             ("--no-service", no_service), ("--proxy", proxy), ("--experimental", proxy),
+                             ("--fail-closed", fail_mode == "closed"), ("--experimental-macos", darwin),
+                             ("--i-understand-agent-is-privileged", allow_privileged)) if on] + (
+        ["--proxy-port", str(proxy_port)] if proxy and proxy_port != 8787 else []) + (
+        ["--agent", agent] if agent != "claude" else [])
+    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, init_flags=flags,
+                                     **({"project": project} if project else {}), **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
     failed = []   # what to check for each service that did not start
     for plist in plists:   # after the pin, and booted out first: a running signer must reload its config

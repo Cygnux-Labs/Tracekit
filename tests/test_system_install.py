@@ -73,6 +73,33 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertFalse([c for c in cmds if "--now" in c])
         self.assertIn("restarted tracekitd and tracekit-proxy", out.getvalue())
 
+    def test_init_records_the_flags_doctor_gives_again(self):
+        """V1_REINIT, doctor's fix, named none of init's flags: one followed on an init --managed host wrote the hooks
+        into the agent's own settings, beside the managed ones. Init records them in root-owned client.json."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        me, managed = install.pwd.getpwuid(os.getuid()), os.path.join(d, "managed-settings.json")
+        with as_root_on_linux(), mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
+                mock.patch.object(install, "SYS_HOME", os.path.join(d, "home")), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=me), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "harness_config", return_value={"harness_binding": "off"}), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install.client, "system_config", return_value=None), \
+                mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                mock.patch.object(install, "_pin_policy"), mock.patch.object(install, "install_hooks"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            install.init_system("agent", [], managed=True, no_service=True, proxy=True, proxy_port=9000,
+                                fail_mode="closed")
+            sc = sys_cfg.call_args.args[0]
+            self.assertEqual(sc["init_flags"], ["--managed", "--no-service", "--proxy", "--experimental",
+                                                "--fail-closed", "--proxy-port", "9000"])
+            self.assertEqual(install.v1_reinit(sc, False), install.V1_REINIT + " --managed --no-service --proxy "
+                             "--experimental --fail-closed --proxy-port 9000")
+
     def test_rerun_without_harness_keeps_the_registered_binding(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -487,6 +514,41 @@ class Doctor(unittest.TestCase):
             out = self.run_doctor(None)[1]
         self.assertIn("fix: from a root-owned clone of the release (", out)
         self.assertIn("#laptop-system-mode), sudo /usr/bin/python3 -m tracekit init --user <agent-user>", out)
+
+    def test_the_reinit_fix_keeps_inits_managed_hooks_and_flags(self):
+        """V1_REINIT named no --managed: following it on an init --managed host wrote user hooks beside the managed
+        ones. With init's record the fix gives its flags again (--managed-only by init's own rule, from the managed
+        file); without one (an older init's), --managed where the managed file has v1 hooks, and that doctor can't
+        tell the rest."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        managed = os.path.join(d, "managed-settings.json")
+        hooks = [{"settings": managed, "managed": True, "events": install.TOOL_EVENTS, "versions": ["v1"]}]
+
+        def fixes(sc):
+            with mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
+                    mock.patch.object(install, "_installed_hooks", return_value=hooks), \
+                    mock.patch.object(install, "OPT", d), \
+                    mock.patch.object(install.client, "system_config",
+                                      **({"side_effect": sc} if isinstance(sc, Exception) else {"return_value": sc})):
+                return {r["id"]: r["fix"] for r in install.v1_results()}
+        cant = ("; add each flag this host's init was run with that this lacks (--managed, --project, --proxy, "
+                f"--no-hooks, --no-service, --fail-closed, ...): {client.SYSTEM_CONFIG} ")
+        reinstall = f"re-run init to reinstall into {d}: {install.V1_REINIT}"
+        self.assertEqual(fixes({"socket": "/s"})["D-V1-RUNTIME"], reinstall + " --managed" + cant
+                         + "doesn't record them, so doctor can't tell them, and init without them goes back to its "
+                           "defaults")
+        self.assertEqual(fixes(client.SystemConfigError("not root's"))["D-SYSTEM-CONFIG"], install.V1_REINIT
+                         + " --managed" + cant + "records them, and it's missing or can't be read, so doctor can't "
+                         "tell them, and init without them goes back to its defaults")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, managed, install.OPT_PYTHON)
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--managed", "--proxy", "--experimental"]})
+                         ["D-V1-RUNTIME"], reinstall + " --managed --managed-only --proxy --experimental")
+        hooks.clear()   # a record without --managed: no hooks moved into the managed file
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--project"], "project": "/srv/repo"})["D-V1-RUNTIME"],
+                         reinstall + " --project, in /srv/repo (--project puts the hooks in the directory init runs "
+                         "in)")
 
     def test_untrusted_system_config_is_a_fail_line(self):
         with mock.patch.object(install.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):

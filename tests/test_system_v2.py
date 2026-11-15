@@ -6,6 +6,7 @@ import io
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import stat
 import subprocess
@@ -256,8 +257,10 @@ class InstallAndUninstall(unittest.TestCase):
         if sudo_why:
             return sys_cfg
         del v1["tailer"]
+        flags = ["--approver", self.me.pw_name, *(a for h in harnesses for a in ("--harness", h))]
         self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings,
-                                                                                      "agent": "claude"},
+                                                                                      "agent": "claude",
+                                                                                      "init_flags": flags},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
                                                                  "python": install.OPT_PYTHON}))
         self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, tailer_heartbeat, status]', yaml)
@@ -304,7 +307,8 @@ class InstallAndUninstall(unittest.TestCase):
             self.assertEqual(install.init_system_v2("agent", hooks=False)[1], None)
         hooks.assert_not_called()
         self.assertEqual(sys_cfg.call_args.args[0]["hooks"], {"user": "agent", "settings": None, "agent": "claude",
-                                                               "no_hooks": True})
+                                                               "no_hooks": True,
+                                                               "init_flags": ["--approver", self.me.pw_name]})
 
     def test_egress_routes_the_agents_traffic_through_the_observer_until_uninstall(self):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
@@ -394,7 +398,8 @@ class InstallAndUninstall(unittest.TestCase):
                             self.assertIn(json.dumps([install.OPT_PYTHON, "-I", "-m",
                                                       "tracekit.integrations.harness_hooks", harness, event]), hook)
                     sc = sys_cfg.call_args.args[0]
-                    self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": harness})
+                    self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": harness,
+                                                   "init_flags": ["--approver", self.me.pw_name]})
                     self.uninstall(sc)
                     if harness == "opencode":
                         self.assertFalse(os.path.exists(settings))
@@ -451,6 +456,36 @@ class InstallAndUninstall(unittest.TestCase):
         with open(path) as f:
             return json.load(f)
 
+    def test_init_records_the_flags_doctor_gives_again(self):
+        """Doctor's re-init fixes gave init's agent, --no-hooks and --managed again, and none of its other flags: one
+        followed on a host set up with --policy and --harness rewrote signer.yaml with init's own policy and no harness
+        binding, unseen. Init records them in root-owned client.json, which doctor reads them from."""
+        from tracekit import doctor
+        self.managed_setup()
+        policy, repo = os.path.join(self.d, "corp policy.yaml"), os.path.join(self.d, "repo")
+        row = doctor.result("D-CODE-TRUST", "fail", "detail", doctor.REINIT)
+        with mock.patch("tracekit.harness_helper.trusted_file", return_value=None), \
+                mock.patch.object(install, "resolve_harness", return_value={"name": "claude",
+                                                                             "exe": "/usr/local/bin/claude"}):
+            for kw, flags in (
+                    ({"policy": policy, "harnesses": ["claude"], "egress": True, "public_witness": False,
+                      "thinking": False, "no_service": True, "allow_privileged": True},
+                     ["--policy", policy, "--harness", "claude=/usr/local/bin/claude", "--egress", "--no-witness",
+                      "--no-thinking-summaries", "--no-service", "--i-understand-agent-is-privileged"]),
+                    ({"project": repo, "public_witness": True}, ["--project", "--public-witness"])):
+                with self.subTest(**kw), mock.patch("tracekit.public_witness.entry"), \
+                        mock.patch.object(install, "V2_NO_WITNESS", os.path.join(self.d, "no-witness")):
+                    sc = self.init_real({}, **kw)[2]
+                    flags = ["--approver", self.me.pw_name, *flags]
+                    self.assertEqual(sc["hooks"]["init_flags"], flags)
+                    with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                            mock.patch.object(doctor, "_user", return_value=None), \
+                            mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                        fix = doctor.collect()[-1]["fix"]
+                    self.assertEqual(fix, doctor.REINIT + "".join(f" {shlex.quote(f)}" for f in flags) + (
+                        f", in {repo} (--project puts the hooks in the directory init runs in)" if "project" in kw
+                        else ""))
+
     def test_managed_hooks_go_in_the_admin_settings_and_uninstall_takes_only_tracekits_out(self):
         """init --v2 --managed wrote the hooks into the agent's own settings, which the agent can edit."""
         admin = {"permissions": {"deny": ["Read(./.env)"]}, "env": {"CORP": "1"},
@@ -458,7 +493,8 @@ class InstallAndUninstall(unittest.TestCase):
         self.managed_setup(admin)
         sock, settings, sc, out = self.init_real({}, managed=True, managed_only=True)
         self.assertEqual(settings, self.managed)
-        self.assertEqual(sc["hooks"], {"user": "agent", "settings": self.managed, "agent": "claude"})
+        self.assertEqual(sc["hooks"], {"user": "agent", "settings": self.managed, "agent": "claude",
+                                       "init_flags": ["--approver", self.me.pw_name]})
         self.assertFalse(os.path.exists(self.user))
         s = self.read(self.managed)
         self.assertEqual((s["permissions"], s["env"]), (admin["permissions"], {"CORP": "1", "TRACEKIT_SIGNER": sock}))
@@ -525,7 +561,8 @@ class InstallAndUninstall(unittest.TestCase):
         _, _, sc, _ = self.init_real({}, managed=True)
         _, settings, sc, _ = self.init_real(sc, agent="codex")
         self.assertEqual(self.read(self.managed), {})
-        self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex"})
+        self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex",
+                                       "init_flags": ["--approver", self.me.pw_name]})
 
     def test_init_for_another_user_takes_the_managed_hooks_out(self):
         """init --managed for one user, then init without it for another, left the managed hooks running in the other
