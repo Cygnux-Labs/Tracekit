@@ -300,7 +300,7 @@ def read_codex_sessions(root, since):
                         if rid in seen:   # a resumed file repeats its earlier responses: each counts once
                             continue
                         seen.add(rid)
-                    s = _step(at.timestamp(), rid if isinstance(rid, str) else None, model)
+                    s = _step(at.timestamp(), rid if isinstance(rid, str) else None, model, "codex")
                     s["in"] = max(0, (_int(u.get("input_tokens")) or 0) - (_int(u.get("cached_input_tokens")) or 0)
                                    - (_int(u.get("cache_write_input_tokens")) or 0))
                     s["out"] = max(s["out"], _int(u.get("output_tokens")) or 0)
@@ -548,7 +548,8 @@ def context_tip(agents):
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
                      f"Token counts of the {sum(tiers.values()):,} steps these figures rest on: "
-                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts") if tiers[k])
+                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts", "codex")
+                                       if tiers[k])
                      + ".",
                      "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
                      + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
@@ -847,25 +848,22 @@ def _signed(t, s):
     t.update(src="signed", **{k: s[k] for k in ("in", "out", "cr")})
 
 
-def _same(signed, agents, calls):
-    """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: one that shares a
-    tool_use id with a session's step, or that takes up one session step no other step matched with the same token
-    counts within MATCH_S (a Codex run's records name no call ids, so the counts are all that can join them)."""
-    ids = {i for a in signed.values() for s in a["steps"] for i in s["calls"]}
+def _same(signed, agents):
+    """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: one that takes up
+    one session step no other step matched with the same token counts within MATCH_S (a Codex run's records name no
+    call ids, so the counts are all that can join them)."""
     pool = collections.defaultdict(list)   # token counts -> the times of the session steps not matched yet
     for a in agents.values():
         for s in a["steps"]:
-            if not ids.intersection(s["calls"]):
-                pool[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
+            pool[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
     held = collections.defaultdict(set)
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
             times = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
             j = next((j for j, t in enumerate(times) if abs(t - s["t"]) <= MATCH_S), None)
-            if any(c in calls for c in s["calls"]) or j is not None:
+            if j is not None:
                 held[k].add(i)
-                if j is not None and not any(c in calls for c in s["calls"]):
-                    times.pop(j)
+                times.pop(j)
     return held
 
 
@@ -910,7 +908,7 @@ def build(rows, root=None, now=None, since=None, codex=None):
             refused += 1
     for a in signed.values():
         a["steps"] = [s for s in a["steps"] if id(s) not in drop]
-    cx = _same(signed, codex_agents, calls)   # a signed Codex run its sessions also hold counts once
+    cx = _same(signed, codex_agents)   # a signed Codex run its sessions also hold counts once
     for k, idx in cx.items():
         signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
     also["runs"], also["steps"] = also["runs"] + len(cx), also["steps"] + sum(map(len, cx.values()))
