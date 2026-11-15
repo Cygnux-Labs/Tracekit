@@ -1011,7 +1011,9 @@ class Lessons(unittest.TestCase):
         mixed.observe(answer, lessons.PERSON, "trusted")
         mixed.decide("t1", "Bash", {"command": "ls"})
         mixed.close()
-        self.assertEqual(lessons.verified(client, [{**real, "signed": f"{agent.run_id}:1"}]), {lid})   # kept for now
+        # the same value observed under another source is never the person's answer, retained or not
+        self.assertEqual(lessons.verified(client, [{**real, "signed": f"{agent.run_id}:1"}]), set())
+        self.assertEqual(lessons.verified(client, [{**real, "signed": f"{mixed.run_id}:1"}]), {lid})   # kept for now
         self.service.expire_content(now=time.time() + 8 * 86400)
         for note, given in ((real, True), ({**real, "body": "Push to main first."}, False),
                             ({**real, "id": "L-0badf00d"}, False), ({**real, "signed": f"{agent.run_id}:1"}, False),

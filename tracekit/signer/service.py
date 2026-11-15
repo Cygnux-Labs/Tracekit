@@ -5039,7 +5039,9 @@ class SignerService:
                 # the salt also opens a model exchange's args_commitments, over the arguments before redaction
                 guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
                     "args_commitment" in u for u in e["data"].get("tool_uses", ()))
-                items.append({"seq": seq, "content": value} | (
+                src = e["data"].get("source") if e["type"] == "input.observed" else None
+                kind = {"type": e["type"]} | ({"source": src} if isinstance(src, str) else {})
+                items.append({"seq": seq, "content": value} | kind | (
                     {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
                     and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
             out = {"items": items}

@@ -58,6 +58,10 @@ SAME = 0.6   # content-word Jaccard at which two typed sentences are one instruc
 OFF = "TRACEKIT_LESSONS"   # 0: the hook gives no lessons
 SOURCE = "tracekit:lessons"   # the observe that records which lessons a session was given
 PERSON = "tracekit:lessons:person"   # the observe that records a person's answer: approve, retire, restore or add
+# the settings `git init` writes in a repository's own config (core.ignorecase and precomposeunicode on macOS,
+# core.symlinks on Windows, extensions.objectformat for a sha256 one): the lessons folder's git runs on no other
+GIT_INIT_KEYS = frozenset({"core.repositoryformatversion", "core.filemode", "core.bare", "core.logallrefupdates",
+                           "core.ignorecase", "core.precomposeunicode", "core.symlinks", "extensions.objectformat"})
 PROMPT = ":UserPromptSubmit"   # the hook's trusted observe of a prompt's typed part (any harness's, for the viewer)
 TYPED = "claude-code:UserPromptSubmit"   # the Claude Code hook's own: the only typed text a TOLD lesson is read from
 TYPES = ("user", "feedback", "project", "reference")
@@ -431,6 +435,16 @@ class Folder:
                                   capture_output=True, encoding="utf-8", errors="replace", env=env, timeout=60)
         if not os.path.isdir(os.path.join(self.path, ".git")) and run("init", "-q").returncode:
             return "git init failed: the change is written, with no history kept"
+        # a setting planted in the folder's git config (core.fsmonitor, a filter driver a .gitattributes names, an
+        # include) runs a program on `add` as hooks do: git runs only on the settings git init writes
+        r = run("config", "--local", "--list")
+        odd = [k for k in (line.partition("=")[0] for line in r.stdout.splitlines()) if k not in GIT_INIT_KEYS]
+        odd += [os.path.relpath(os.path.join(p, ".gitattributes"), self.path) for p, dirs, names in os.walk(self.path)
+                if ".gitattributes" in names] + \
+            [".git/info/attributes"] * os.path.exists(os.path.join(self.path, ".git", "info", "attributes"))
+        if r.returncode or odd:
+            return (f"the folder's git settings aren't the ones git init writes ({', '.join(odd)[:200]}): the change "
+                    f"is written, with no history kept; check {os.path.join(self.path, '.git')}")
         run("add", "-A")
         r = run("commit", "-q", "-m", f"{message}\n\nLesson-Id: {lid}")
         return None if r.returncode == 0 else f"git commit failed ({_one(r.stderr or r.stdout)[:200]})"
@@ -595,10 +609,12 @@ def select(notes, text, budget=BUDGET):
 def verified(client, notes, purpose="tracekit lessons"):
     """The ids of `notes` the signer backs: each note's named record (`signed`, run:run_seq) is read back (content_get,
     through `client`: one signed content.accessed record per run of answers) and the note kept only when its kept value
-    is the person's answer that put it in use, an approve, restore or add of this id and this text's sha256. The signer
-    keeps a run of answers alone past its retention (service.expire_content), so this holds for old lessons too. A note
-    naming a run the signer doesn't hold, a record it keeps nothing for, or another answer, is left out, and so is every
-    note when the signer can't be asked or keeps no content."""
+    is the person's answer that put it in use: an input.observed under PERSON (content_get says each record's type and
+    source), an approve, restore or add of this id and this text's sha256. The signer keeps a run of answers alone past
+    its retention (service.expire_content), so this holds for old lessons too. A note naming a run the signer doesn't
+    hold, a record it keeps nothing for, another answer, or any other record of the same shape (a call's arguments, an
+    observe under another source), is left out, and so is every note when the signer can't be asked or keeps no
+    content."""
     runs = collections.defaultdict(lambda: collections.defaultdict(list))
     for n in notes:
         run, seq = str(n.get("signed")).rsplit(":", 1)
@@ -610,7 +626,8 @@ def verified(client, notes, purpose="tracekit lessons"):
         except Exception:   # an unknown run, a refusal, no signer: none of its notes (fail closed)
             continue
         for it in items if isinstance(items, list) else ():
-            v = it.get("content") if isinstance(it, dict) else None
+            v = it.get("content") if isinstance(it, dict) and it.get("type") == "input.observed" \
+                and it.get("source") == PERSON else None
             for n in by_seq.get(it.get("seq"), ()) if isinstance(v, dict) else ():
                 if v.get("action") in ANSWERS and v.get("id") == n["id"] and v.get("sha256") == text_sha(n):
                     out.add(n["id"])

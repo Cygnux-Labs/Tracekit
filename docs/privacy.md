@@ -137,7 +137,8 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   `tracekit_content_keys` (schema version 2: run `tracekit signer migrate`). Neither is in the readers' grants.
 - **Access is signed.** Only the signer reads the vault, through the `content_get` RPC: `{run_id, seqs (at most 1000
   run_seqs), purpose}`, for a run of the caller's tenant. The caller needs the `content_read` grant in `authorize`,
-  which no identity has by default (agents never do). Each item comes back as `{content, salt}`, with the record's salt
+  which no identity has by default (agents never do). Each item says its record's `type` (and an `input.observed`'s
+  `source`, RPC version 25) and comes back as `{content, salt}`, with the record's salt
   as `tracekit signer reveal` gives it, so the caller recomputes the commitment, as `{content, redacted: true}` (no
   salt) for decision arguments redaction changed and for a model exchange redaction changed whose `tool_uses` carry
   `args_commitment` (the record's salt opens those too, over the arguments before redaction), or as `{state: not_retained | too_large

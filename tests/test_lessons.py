@@ -571,6 +571,26 @@ class FolderTests(unittest.TestCase):
         with self.assertRaises(lessons.Refused):
             self.folder.notes()
 
+    def test_a_setting_planted_in_the_folders_git_config_runs_nothing_on_an_answer(self):
+        """Hooks were off, but core.fsmonitor, or a filter driver that a .gitattributes names, ran a program on a
+        person's approve too: git now runs only on the settings git init writes."""
+        self.folder.add(PROJECT, "Docs build with make docs.")
+        marker = os.path.join(tmp(self), "ran")
+        run = os.path.join(tmp(self), "run.sh")
+        with open(run, "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/sh\ntouch {marker}\ncat\n")
+        os.chmod(run, 0o755)
+        git = shutil.which("git")
+        subprocess.run([git, "-C", self.folder.path, "config", "--local", "core.fsmonitor", run], check=True)
+        said = self.folder.approve(self.waiting)
+        self.assertFalse(os.path.exists(marker))
+        self.assertIn("aren't the ones git init writes (core.fsmonitor)", str(said))
+        subprocess.run([git, "-C", self.folder.path, "config", "--local", "--unset", "core.fsmonitor"], check=True)
+        # a .gitattributes can name a filter defined outside the folder (a user's ~/.gitconfig): refused on its own
+        with open(os.path.join(self.folder.path, ".gitattributes"), "w", encoding="utf-8") as f:
+            f.write("* filter=lfs\n")
+        self.assertIn("aren't the ones git init writes (.gitattributes)", str(self.folder.retire(self.waiting["id"])))
+
     def test_a_note_without_its_signed_record_is_never_given(self):
         unsigned = lessons.Folder(self.folder.path)   # written without a signed record: a script, a hand
         unsigned.approve(self.waiting)
@@ -586,10 +606,14 @@ class FolderTests(unittest.TestCase):
         n = {"id": "L-0123abcd", "name": "Docs", "description": "d", "body": "Docs build with make docs.",
              "signed": "run-a:3"}
         answer = {"action": "approve", "id": n["id"], "sha256": lessons.text_sha(n)}
-        kept = {"run-a": {"seq": 3, "content": answer, "salt": "00"},
-                "run-retired": {"seq": 3, "content": {**answer, "action": "retire"}, "salt": "00"},
-                "run-other-id": {"seq": 3, "content": {**answer, "id": "L-0badf00d"}, "salt": "00"},
-                "run-other-text": {"seq": 3, "content": {**answer, "sha256": "0" * 64}, "salt": "00"},
+        person = {"seq": 3, "type": "input.observed", "source": lessons.PERSON, "salt": "00"}
+        kept = {"run-a": {**person, "content": answer},
+                "run-retired": {**person, "content": {**answer, "action": "retire"}},
+                "run-other-id": {**person, "content": {**answer, "id": "L-0badf00d"}},
+                "run-other-text": {**person, "content": {**answer, "sha256": "0" * 64}},
+                # the same value as an agent's call's arguments, or observed under another source: not the person's
+                "run-call": {"seq": 3, "type": "policy.decision", "salt": "00", "content": answer},
+                "run-other-source": {**person, "source": "notes:anything", "content": answer},
                 "run-old": {"seq": 3, "state": "erased"}, "run-not-kept": {"seq": 3, "state": "not_retained"}}
 
         class Signer:
@@ -598,7 +622,8 @@ class FolderTests(unittest.TestCase):
                     raise RPCError("unknown_run", req["run_id"])
                 return {"items": [kept[req["run_id"]]]}
         for run, given in (("run-a", True), ("run-old", False), ("made-up-run", False), ("run-retired", False),
-                           ("run-other-id", False), ("run-other-text", False), ("run-not-kept", False)):
+                           ("run-other-id", False), ("run-other-text", False), ("run-not-kept", False),
+                           ("run-call", False), ("run-other-source", False)):
             with self.subTest(run=run):
                 self.assertEqual(lessons.verified(Signer(), [{**n, "signed": f"{run}:3"}]), {n["id"]} if given else set())
         self.assertEqual(lessons.verified(None, [n]), set())   # no signer: none
