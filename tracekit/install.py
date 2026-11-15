@@ -513,16 +513,18 @@ def agent_file(path):
     return data
 
 
-def plugin_enabled(user=None):
+def plugin_enabled(user=None, project=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
-    or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
-    managed settings: a later file's enabledPlugins entry wins, as in Claude Code. -> (settings path, plugin key)."""
+    or None. Reads `user` (default user_settings_all()), the project's (default: the working directory) project and
+    local settings, then the managed settings: a later file's enabledPlugins entry wins, as in Claude Code. ->
+    (settings path, plugin key)."""
     # lean: enabledPlugins plus Claude Code's install state; a plugin on through --plugin-dir, --settings or its
     # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
     # unseen; read those too if users hit that
     active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
-    for p in (*(user or user_settings_all()), *project, managed):
+    root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
+    for p in (*(user or user_settings_all()), *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
+              managed):
         try:
             enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
@@ -531,7 +533,7 @@ def plugin_enabled(user=None):
             continue
         for key, value in enabled.items():
             if (key == PLUGIN or key.rpartition("@")[0] == PLUGIN_NAME and
-                    _installed_tracekit_plugin(key, p)) and isinstance(value, bool):
+                    _installed_tracekit_plugin(key, p, root)) and isinstance(value, bool):
                 order += 1
                 if value:
                     active[key] = (p, key, order)
@@ -540,19 +542,19 @@ def plugin_enabled(user=None):
     return max(active.values(), key=lambda found: found[2])[:2] if active else None
 
 
-def _plugin_config_dirs(settings_path):
+def _plugin_config_dirs(settings_path, project=None):
     """The Claude config root whose plugins/ holds the install state for a plugin enabled in settings_path: a user
     settings file's own directory (another user's too: system-mode doctor reads the agent's), else this user's.
-    Claude Code never writes plugin state into a project's .claude."""
+    Claude Code never writes plugin state into a project's .claude (`project`, default the working directory's)."""
     parent = os.path.dirname(os.path.abspath(settings_path))
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    project = os.path.join(os.path.abspath(os.getcwd()), ".claude")
+    project = project or os.path.join(os.path.abspath(os.getcwd()), ".claude")
     if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
         return [os.path.realpath(parent)]
     return [os.path.realpath(config or os.path.join(os.path.expanduser("~"), ".claude"))]
 
 
-def _installed_tracekit_plugin(plugin_id, settings_path):
+def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
     """True only when Claude's install record and marketplace catalog point at Tracekit's plugin directory."""
     def tracekit_repo(value):
         if not isinstance(value, str):
@@ -562,7 +564,7 @@ def _installed_tracekit_plugin(plugin_id, settings_path):
         return value == "Cygnux-Labs/Tracekit"
 
     marketplace = plugin_id.rpartition("@")[2]
-    for config_dir in _plugin_config_dirs(settings_path):
+    for config_dir in _plugin_config_dirs(settings_path, project):
         try:
             installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
             records = installed.get("plugins", {}).get(plugin_id)
@@ -846,13 +848,40 @@ HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agen
 
 
 def harness_spec(spec, agent="claude"):
-    """`--harness` value -> NAME=PATH, PATH absolute as given (found on PATH when it's a name), its symlinks kept: the
-    spec init records, so a re-init binds the program there then, as a package upgrade moves its target."""
+    """`--harness` value -> NAME=PATH, the spec init records: PATH absolute as given (found on PATH when it's a name),
+    its links kept, so a re-init binds what it names then, as a package upgrade moves a link's target; but its real
+    path when a user other than root could repoint it (_fixed), or a re-init would bind whatever they chose."""
     name, path = spec.split("=", 1) if "=" in spec else (agent, spec)
     found = path if os.path.isabs(path) else shutil.which(path)
     if not found or not os.path.exists(found):
         raise SystemExit(f"--harness: {path} not found")
-    return f"{name or agent}={os.path.abspath(found)}"
+    given = os.path.abspath(found)
+    return f"{name or agent}={given if _fixed(given) else os.path.realpath(given)}"
+
+
+def _fixed(path):
+    """Whether only root can change what the absolute `path` names: every directory its lookup reads, the ones its
+    links' targets go through included, is root-owned and not group- or world-writable (a link is replaced only
+    through its directory)."""
+    todo, cur, hops = [c for c in path.split("/") if c], "/", 0
+    try:
+        while todo:
+            st = os.stat(cur)
+            if st.st_uid != 0 or st.st_mode & 0o022:
+                return False
+            nxt = os.path.join(cur, todo.pop(0))
+            if os.path.islink(nxt):
+                hops += 1
+                target = os.readlink(nxt)
+                todo[:0] = [c for c in target.split("/") if c]
+                cur = "/" if target.startswith("/") else cur
+                if hops > 40:   # a loop, as the kernel's limit
+                    return False
+            else:
+                cur = os.path.normpath(nxt)
+    except OSError:
+        return False
+    return True
 
 
 def resolve_harness(spec, agent="claude"):
@@ -1434,7 +1463,7 @@ def v1_reinit(sc, managed):
     record = (sc or {}).get("init_flags")
     path = MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
     flags, tail = reinit_flags(record, path if managed or isinstance(record, list) and "--managed" in record else None,
-                               "--managed, --managed-only, --project, --proxy, --no-hooks, --no-service",
+                               "--managed, --managed-only, --project DIR, --proxy, --no-hooks, --no-service",
                                f"{client.SYSTEM_CONFIG} " + ("doesn't record them" if sc else
                                                              "records them, and it's missing or can't be read"))
     return V1_REINIT + flags + tail

@@ -1069,8 +1069,9 @@ class ReinitFlags(unittest.TestCase):
     doctor didn't say. Init records them in root-owned client.json (tests/test_system_v2.py:
     test_init_records_the_flags_doctor_gives_again)."""
     fix = "re-run init to reinstall the venv: " + doctor.REINIT
+    # --project DIR, not a bare --project: run from the release's clone, that puts the hooks in the clone
     cant = ("; add each flag this host's init was run with that this lacks (--approver, --policy, --harness, --egress, "
-            "--project, --managed-only, ...): {}, so doctor can't tell them, and init without them goes back to its "
+            "--project DIR, --managed-only, ...): {}, so doctor can't tell them, and init without them goes back to its "
             "defaults")
     old = cant.format(f"{client.SYSTEM_CONFIG} doesn't record them")
     off = ("; init turned on allowManagedHooksOnly and it is off now; drop --managed-only only if you turned it off on "

@@ -49,7 +49,7 @@ _PY = sys.executable if sys.executable and not sys.executable.startswith(install
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
-V2_FLAGS = "--approver, --policy, --harness, --egress, --project, --managed-only"   # some of what init --v2 records
+V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"

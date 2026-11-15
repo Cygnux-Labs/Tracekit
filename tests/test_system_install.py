@@ -544,8 +544,8 @@ class Doctor(unittest.TestCase):
                     mock.patch.object(install.client, "system_config",
                                       **({"side_effect": sc} if isinstance(sc, Exception) else {"return_value": sc})):
                 return {r["id"]: r["fix"] for r in install.v1_results()}
-        cant = ("; add each flag this host's init was run with that this lacks (--managed, --managed-only, --project, "
-                f"--proxy, --no-hooks, --no-service, ...): {client.SYSTEM_CONFIG} ")
+        cant = ("; add each flag this host's init was run with that this lacks (--managed, --managed-only, --project "
+                f"DIR, --proxy, --no-hooks, --no-service, ...): {client.SYSTEM_CONFIG} ")
         reinstall = f"re-run init to reinstall into {d}: {install.V1_REINIT}"
         self.assertEqual(fixes({"socket": "/s"})["D-V1-RUNTIME"], reinstall + " --managed" + cant
                          + "doesn't record them, so doctor can't tell them, and init without them goes back to its "

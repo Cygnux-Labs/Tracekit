@@ -372,9 +372,9 @@ def _parser():
                    "with it")
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
-    p.add_argument("--project", action="store_true",
-                   help="remove hooks from the selected agent's project settings file "
-                        "instead of its user settings file")
+    p.add_argument("--project", nargs="?", const=".", metavar="DIR",
+                   help="remove hooks from the selected agent's project settings file in DIR (the working directory "
+                        "when not given) instead of its user settings file")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
@@ -668,7 +668,7 @@ def _match_pending(pend, prefix):
 
 
 def _run(a):
-    if a.cmd == "init" and a.project:   # init --project [DIR]: a re-init names it, so it runs from anywhere
+    if a.cmd in ("init", "uninstall") and a.project:   # --project [DIR]: a re-init names it, so it runs from anywhere
         a.project = os.path.abspath(a.project)
     if a.cmd in ("init", "uninstall") and a.agent == "gptme":
         if a.project:
@@ -802,7 +802,7 @@ def _run(a):
                 from .signer.service import dev_data_dir
                 anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
-                plugin = hooks and install.plugin_enabled()
+                plugin = hooks and install.plugin_enabled(project=a.project)
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin
                     print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {settings_path}, "
@@ -931,14 +931,14 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        path = agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # says what it removed
+        path = agent_hooks.install(a.agent, a.project, uninstall=True)   # says what it removed
         for line in [] if a.project else _kept(path):
             print(line)
         return 0
     if a.cmd == "uninstall":
         from . import install
         try:
-            if install.uninstall(os.getcwd() if a.project else None) == "no settings file":   # else it said what it removed
+            if install.uninstall(a.project) == "no settings file":   # else it said what it removed
                 print("tracekit: no Claude Code settings file, so no hooks to remove")
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
