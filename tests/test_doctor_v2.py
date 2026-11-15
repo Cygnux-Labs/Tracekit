@@ -26,20 +26,7 @@ from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PLUGIN_SRC = os.path.abspath(os.path.join(HERE, "..", "plugin"))
 spec = importlib.util.spec_from_file_location("e16_doctor", os.path.join(HERE, "..", "eval", "e16_doctor.py"))
-
-
-def _stage_plugin(claude_dir, install_dir, key=install.PLUGIN):
-    """Copy repo plugin/ to `install_dir` and record it in `<claude_dir>/plugins/installed_plugins.json`."""
-    if os.path.exists(install_dir):
-        shutil.rmtree(install_dir)
-    shutil.copytree(PLUGIN_SRC, install_dir)
-    plugins_dir = os.path.join(claude_dir, "plugins")
-    os.makedirs(plugins_dir, exist_ok=True)
-    with open(os.path.join(plugins_dir, "installed_plugins.json"), "w") as f:
-        json.dump({"version": 2, "plugins": {key: [{"scope": "user", "installPath": install_dir}]}}, f)
-    return install_dir
 e16 = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(e16)
 
@@ -616,32 +603,25 @@ class ManagedHooks(unittest.TestCase):
                 self.assertEqual((got["status"], got["detail"]), want)
 
     def test_the_plugin_beside_managed_hooks_counts_only_where_claude_code_runs_it(self):
-        """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host with allowManagedHooksOnly on
-        when only the agent's own settings enabled the plugin, though Claude Code then runs managed hooks only, and the
-        plugins managed settings enable: the agent's user could fail doctor by turning the plugin on. And its fix,
-        tracekit uninstall, never takes managed hooks out."""
-        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host when only the agent's own
+        settings enabled the plugin: the agent's user could fail doctor by turning the plugin on in its own settings.
+        In system mode only managed settings count for the plugin; with allowManagedHooksOnly on, the detail says the
+        plugin's hooks don't run, and with it off, init's managed hooks stay and the detail notes the non-managed
+        entry."""
         own, managed = (self.user, install.PLUGIN), (self.managed, install.PLUGIN)
-        # Not installed: even with allowManagedHooksOnly off, the agent enabling the plugin cannot fail D-HOOKS-PRESENT.
-        got = self.rows(managed={"allowManagedHooksOnly": False}, plugin=own)["D-HOOKS-PRESENT"]
-        self.assertEqual((got["status"], got["detail"]),
-                         ("ok", f"v2 hooks in {self.managed}; init's hooks kept: the Tracekit plugin, enabled in "
-                                f"{self.user}, is not installed"))
-        _stage_plugin(os.path.join(self.d, ".claude"), os.path.join(self.d, "root-plugin"))
         got = self.rows(managed={"allowManagedHooksOnly": True}, plugin=own)["D-HOOKS-PRESENT"]
         self.assertEqual((got["status"], got["detail"]), ("ok", f"v2 hooks in {self.managed}; the Tracekit plugin's, "
                                                                 f"enabled in {self.user}, don't run (allowManagedHooksOnly)"))
-        both = f"{self.managed}: every call is decided twice, and every approved call is blocked"
-        got = self.rows(managed={"allowManagedHooksOnly": True}, plugin=managed)["D-HOOKS-PRESENT"]
-        self.assertEqual((got["status"], got["fix"]), ("fail", f"keep one: take {install.PLUGIN} out of enabledPlugins "
-                                                               f"in {self.managed}"))
-        self.assertTrue(got["detail"].endswith(both), got["detail"])
         got = self.rows(managed={"allowManagedHooksOnly": False}, plugin=own)["D-HOOKS-PRESENT"]
-        self.assertEqual((got["status"], got["fix"]), ("fail", f"keep one: /plugin disable {install.PLUGIN} in the "
-                                                               f"agent's Claude Code, or {doctor.REINIT} --managed-only, "
-                                                               "which stops every user's own Claude Code hooks and "
-                                                               "plugins on this machine"))
-        self.assertTrue(got["detail"].endswith(both), got["detail"])
+        self.assertEqual((got["status"], got["detail"]),
+                         ("ok", f"v2 hooks in {self.managed}; init's hooks kept: the Tracekit plugin is enabled in "
+                                f"{self.user}, not managed settings"))
+        both = f"{self.managed}: every call is decided twice, and every approved call is blocked"
+        for only in (True, False):
+            got = self.rows(managed={"allowManagedHooksOnly": only}, plugin=managed)["D-HOOKS-PRESENT"]
+            self.assertEqual((got["status"], got["fix"]),
+                             ("fail", f"keep one: take {install.PLUGIN} out of enabledPlugins in {self.managed}"))
+            self.assertTrue(got["detail"].endswith(both), got["detail"])
 
     def test_the_fix_for_missing_managed_hooks_keeps_them_managed(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -1015,17 +995,19 @@ class NoHooksChosen(unittest.TestCase):
         row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        home = os.path.join(d, "home")
-        _stage_plugin(os.path.join(home, ".claude"), os.path.join(d, "root-plugin"))
-        plugin = (os.path.join(home, ".claude", "settings.json"), install.PLUGIN)
         managed = os.path.join(d, "managed-settings.json")
+        own_plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
+        managed_plugin = (managed, install.PLUGIN)
         for hooks, enabled, only, want in (
-                ({"no_hooks": True}, None, None, " --no-hooks"), ({}, plugin, None, " --no-hooks"),
-                ({"agent": "codex"}, plugin, None, " --agent codex"), ({}, None, None, ""),
-                ({"agent": "codex", "settings": "/home/a/.codex/hooks.json"}, plugin, None, " --agent codex"),
+                ({"no_hooks": True}, None, None, " --no-hooks"),
+                ({}, managed_plugin, None, " --no-hooks"),
+                ({}, own_plugin, None, ""),   # #864: the agent's own settings never add --no-hooks in system mode
+                ({"agent": "codex"}, managed_plugin, None, " --agent codex"), ({}, None, None, ""),
+                ({"agent": "codex", "settings": "/home/a/.codex/hooks.json"}, managed_plugin, None, " --agent codex"),
                 ({"agent": "codex", "no_hooks": True}, None, None, " --agent codex --no-hooks"),
-                ({"settings": managed}, plugin, False, " --managed"), ({"settings": managed}, None, False, " --managed"),
-                ({"settings": managed}, plugin, True, " --managed --managed-only"),
+                ({"settings": managed}, managed_plugin, False, " --managed"),
+                ({"settings": managed}, None, False, " --managed"),
+                ({"settings": managed}, managed_plugin, True, " --managed --managed-only"),
                 ({"settings": managed}, None, True, " --managed --managed-only"),
                 ({"settings": managed}, None, "admin", " --managed")):   # the admin's own setting: init leaves it
             # an older init's client.json for the managed hosts: --managed[-only] from the managed file (ReinitFlags
@@ -1035,7 +1017,7 @@ class NoHooksChosen(unittest.TestCase):
             with self.subTest(hooks=hooks, plugin=enabled, managed_only=only), \
                     mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
                     mock.patch.object(doctor.client, "system_config", return_value=sc), \
-                    mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir=home)), \
+                    mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
                     mock.patch.object(doctor, "trusted_file", return_value=None), \
                     mock.patch.object(install, "plugin_enabled", return_value=enabled), \
                     mock.patch.object(doctor, "v2_checks", return_value=[row]):
@@ -1045,25 +1027,29 @@ class NoHooksChosen(unittest.TestCase):
                     with contextlib.redirect_stdout(io.StringIO()):
                         install.install_managed(None, only is True, managed, install.OPT_PYTHON,
                                                 module=install.V2_HOOK, signer="/run/s.sock")
+                elif os.path.exists(managed):
+                    os.unlink(managed)
                 self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want + (
                     ReinitFlags.old if only is not None else ""))
 
 
 class SystemPluginTrust(unittest.TestCase):
-    """#864: in system mode, agent-writable settings alone must not put --no-hooks into doctor's sudo re-init fix or
-    fail D-HOOKS-PRESENT with "decided twice". --no-hooks and D-HOOKS-PRESENT's decided-twice check share one rule:
-    the plugin is installed where the agent's user can't write it, and enabled in managed settings or with Tracekit v2
-    hooks that Claude Code loads."""
+    """#864: in system mode, only root-trusted managed settings count for the Claude Code plugin. Nothing in the
+    agent's own or project settings may add --no-hooks to doctor's sudo re-init fix or fail D-HOOKS-PRESENT with
+    "decided twice", and the two checks never disagree."""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d, True)
         self.root = os.path.join(self.d, "root")
         self.home = os.path.join(self.d, "home", "agent")
-        for p in (self.root, os.path.join(self.home, ".claude", "plugins"), os.path.join(self.root, "data")):
+        self.project = os.path.join(self.d, "proj")
+        for p in (self.root, os.path.join(self.home, ".claude"), os.path.join(self.project, ".claude"),
+                  os.path.join(self.root, "data")):
             os.makedirs(p, exist_ok=True)
         self.managed = os.path.join(self.root, "managed-settings.json")
         self.own = os.path.join(self.home, ".claude", "settings.json")
+        self.proj_settings = os.path.join(self.project, ".claude", "settings.json")
         self.signer_yaml = os.path.join(self.root, "signer.yaml")
         with open(self.signer_yaml, "w") as f:
             f.write(f"data_dir: {json.dumps(os.path.join(self.root, 'data'))}\n")
@@ -1073,40 +1059,47 @@ class SystemPluginTrust(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def _trusted(self, path):
-        p = os.path.abspath(path)
-        root = os.path.abspath(self.root)
-        return None if p == root or p.startswith(root + os.sep) else f"{path} is not owned by root"
-
-    def _collect(self, has_init_hooks=True, own_extra=None, managed_extra=None, writable_hits=None):
-        if os.path.exists(self.own):
-            os.unlink(self.own)
+    def _collect(self, has_init_hooks=True, own_extra=None, managed_extra=None, proj_extra=None, settings_path=None,
+                 managed_trusted=True):
+        target = settings_path or self.own
+        for p in (self.own, self.proj_settings):
+            if os.path.exists(p):
+                os.unlink(p)
         if has_init_hooks:
             with contextlib.redirect_stdout(io.StringIO()):
-                install.install_hooks(self.own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
-        s = {}
-        if os.path.exists(self.own):
-            with open(self.own) as f:
-                s = json.load(f)
-        with open(self.own, "w") as f:
-            json.dump({**s, **(own_extra or {})}, f)
+                install.install_hooks(target, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        for path, extra in ((self.own, own_extra), (self.proj_settings, proj_extra)):
+            if extra is not None or os.path.exists(path):
+                s = {}
+                if os.path.exists(path):
+                    with open(path) as f:
+                        s = json.load(f)
+                with open(path, "w") as f:
+                    json.dump({**s, **(extra or {})}, f)
         if managed_extra is not None:
             with open(self.managed, "w") as f:
                 json.dump(managed_extra, f)
         elif os.path.exists(self.managed):
             os.unlink(self.managed)
-        sc = {"signer": "/run/s.sock", "hooks": {"user": "agent", "settings": self.own, "agent": "claude",
+
+        def trusted(path):
+            p = os.path.abspath(path)
+            if p == os.path.abspath(self.managed) and not managed_trusted:
+                return f"{path} is group- or world-writable"
+            root = os.path.abspath(self.root)
+            return None if p == root or p.startswith(root + os.sep) else f"{path} is not owned by root"
+
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "agent", "settings": target, "agent": "claude",
                                                  "init_flags": []}}
         with mock.patch.object(doctor.client, "system_config", return_value=sc), \
                 mock.patch.object(doctor, "_user", return_value=self.agent), \
-                mock.patch.object(doctor, "trusted_file", side_effect=self._trusted), \
-                mock.patch.object(doctor, "agent_access", return_value=writable_hits), \
+                mock.patch.object(doctor, "trusted_file", side_effect=trusted), \
                 mock.patch("os.getcwd", return_value=self.d):
             return {r["id"]: r for r in doctor.collect(self.signer_yaml)}
 
     def test_plugin_enabled_only_in_agents_settings_not_installed_has_no_no_hooks(self):
-        """Item 2: the plugin enabled only in the agent's own settings, not installed, gives a fix without --no-hooks,
-        keeps init's hooks, and says why in D-HOOKS-PRESENT's detail."""
+        """#864 item 2: the plugin enabled only in the agent's own settings, not installed, gives a fix without
+        --no-hooks, keeps init's hooks, and says why in D-HOOKS-PRESENT's detail."""
         rows = self._collect(has_init_hooks=True, own_extra={"enabledPlugins": {install.PLUGIN: True}})
         reinit_fixes = [r["fix"] for r in rows.values() if doctor.REINIT in r["fix"]]
         self.assertTrue(reinit_fixes)
@@ -1114,140 +1107,76 @@ class SystemPluginTrust(unittest.TestCase):
             self.assertNotIn("--no-hooks", fix)
         hp = rows["D-HOOKS-PRESENT"]
         self.assertEqual(hp["status"], "ok")
-        self.assertEqual(hp["detail"], f"v2 hooks in {self.own}; init's hooks kept: the Tracekit plugin, enabled in "
-                                       f"{self.own}, is not installed")
+        self.assertEqual(hp["detail"], f"v2 hooks in {self.own}; init's hooks kept: the Tracekit plugin is enabled in "
+                                       f"{self.own}, not managed settings")
 
         # Even if the agent also deletes init's hooks from its own settings, D-HOOKS-PRESENT fails and its re-init fix
         # restores init's hooks rather than dropping them with --no-hooks.
         rows = self._collect(has_init_hooks=False, own_extra={"enabledPlugins": {install.PLUGIN: True}})
         hp = rows["D-HOOKS-PRESENT"]
         self.assertEqual(hp["status"], "fail")
-        self.assertIn(f"the Tracekit plugin, enabled in {self.own}, is not installed", hp["detail"])
+        self.assertIn(f"the Tracekit plugin is enabled in {self.own}, not managed settings", hp["detail"])
         self.assertEqual(hp["fix"], doctor.REINIT)
         self.assertNotIn("--no-hooks", hp["fix"])
 
-    def test_plugin_installed_where_the_agent_can_write_it_keeps_inits_hooks(self):
-        """A plugin cached under ~/.claude/plugins/cache (owned by the agent), ACL-writable by the agent, or reached
-        through a symlink in an agent-writable directory never adds --no-hooks or fails D-HOOKS-PRESENT."""
-        # 1. Installed in the agent's own ~/.claude/plugins/cache.
-        cache = os.path.join(self.home, ".claude", "plugins", "cache", "tracekit", "tracekit", "1.6.0")
-        _stage_plugin(os.path.join(self.home, ".claude"), cache)
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("init's hooks kept:", rows["D-HOOKS-PRESENT"]["detail"])
-        self.assertIn("is installed where the agent's user can write it", rows["D-HOOKS-PRESENT"]["detail"])
+    def test_managed_plugin_counts_and_empty_user_list_ignores_callers_home(self):
+        """A root-trusted managed settings file enabling the plugin counts in system mode (including `doctor --config`
+        with no agent user, where `plugin_enabled([])` must not fall back to the caller's own ~/.claude/settings.json)."""
+        rows = self._collect(has_init_hooks=True, managed_extra={"enabledPlugins": {install.PLUGIN: True}})
+        self.assertIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
+        hp = rows["D-HOOKS-PRESENT"]
+        self.assertEqual(hp["status"], "fail")
+        self.assertIn("every call is decided twice", hp["detail"])
+        self.assertEqual(hp["fix"], f"keep one: take {install.PLUGIN} out of enabledPlugins in {self.managed}, or "
+                                    f"{doctor.REINIT} --no-hooks")
 
-        # 2. Root-owned plugin directory that agent_access finds writable by the agent (e.g. via POSIX ACL).
-        root_plugin = _stage_plugin(os.path.join(self.home, ".claude"), os.path.join(self.root, "plugin"))
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}},
-                             writable_hits=[[root_plugin, "write"]])
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("agent can write", rows["D-HOOKS-PRESENT"]["detail"])
-
-        # 3. Multi-scope installed_plugins.json with an untrusted entry beside the root-owned one.
-        with open(os.path.join(self.home, ".claude", "plugins", "installed_plugins.json"), "w") as f:
-            json.dump({"version": 2, "plugins": {install.PLUGIN: [
-                {"scope": "project", "installPath": cache},
-                {"scope": "user", "installPath": root_plugin},
-            ]}}, f)
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("is installed where the agent's user can write it", rows["D-HOOKS-PRESENT"]["detail"])
-
-    def test_plugin_without_loaded_tracekit_hooks_keeps_inits_hooks(self):
-        """A root-owned directory with no Tracekit v2 hooks, narrowed matchers, allowManagedHooksOnly on user settings,
-        or disableAllHooks keeps init's hooks and omits --no-hooks."""
-        root_plugin = os.path.join(self.root, "plugin")
-
-        # Missing hooks/hooks.json
-        os.makedirs(root_plugin, exist_ok=True)
-        with open(os.path.join(self.home, ".claude", "plugins", "installed_plugins.json"), "w") as f:
-            json.dump({"version": 2, "plugins": {install.PLUGIN: [{"scope": "user", "installPath": root_plugin}]}}, f)
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("has no Tracekit v2 hooks that Claude Code loads", rows["D-HOOKS-PRESENT"]["detail"])
-
-        # Narrowed matcher in hooks/hooks.json
-        _stage_plugin(os.path.join(self.home, ".claude"), root_plugin)
-        hooks_json = os.path.join(root_plugin, "hooks", "hooks.json")
-        with open(hooks_json) as f:
-            hj = json.load(f)
-        hj["hooks"]["PreToolUse"][0]["matcher"] = "Edit"
-        with open(hooks_json, "w") as f:
-            json.dump(hj, f)
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("has no Tracekit v2 hooks that Claude Code loads", rows["D-HOOKS-PRESENT"]["detail"])
-
-        # Real plugin restored, but allowManagedHooksOnly in managed settings blocks user-enabled plugins even when init
-        # was not run with --managed.
-        _stage_plugin(os.path.join(self.home, ".claude"), root_plugin)
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}},
-                             managed_extra={"allowManagedHooksOnly": True})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("don't run (allowManagedHooksOnly)", rows["D-HOOKS-PRESENT"]["detail"])
-
-        # disableAllHooks in user settings stops non-managed hooks from loading (and D-HOOKS-EVENT fails on it).
-        rows = self._collect(own_extra={"enabledPlugins": {install.PLUGIN: True}, "disableAllHooks": True})
-        self.assertNotIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
-        self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
-        self.assertIn("doesn't run (disableAllHooks is set in", rows["D-HOOKS-PRESENT"]["detail"])
-        self.assertEqual(rows["D-HOOKS-EVENT"]["status"], "fail")
+        caller_home = os.path.join(self.d, "caller")
+        os.makedirs(os.path.join(caller_home, ".claude"), exist_ok=True)
+        with open(os.path.join(caller_home, ".claude", "settings.json"), "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        if os.path.exists(self.managed):
+            os.unlink(self.managed)
+        with mock.patch.dict(os.environ, {"HOME": caller_home, "USERPROFILE": caller_home}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None), \
+                mock.patch.object(doctor, "trusted_file", return_value=None), \
+                mock.patch("os.getcwd", return_value=self.d):
+            self.assertIsNone(install.plugin_enabled([]))
+            rows = {r["id"]: r for r in doctor.collect(self.signer_yaml)}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "warn")
+            self.assertNotIn("--no-hooks", rows["D-HOOKS-PRESENT"]["fix"])
+            with open(self.managed, "w") as f:
+                json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+            rows = {r["id"]: r for r in doctor.collect(self.signer_yaml)}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
+            self.assertIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
 
     def test_no_hooks_and_decided_twice_never_disagree(self):
-        """Item 3: collect()'s --no-hooks and D-HOOKS-PRESENT's "decided twice" FAIL use the exact same rule."""
-        root_plugin = os.path.join(self.root, "plugin")
-        agent_plugin = os.path.join(self.home, ".claude", "plugins", "cache", "tracekit", "tracekit", "1.6.0")
-        empty_root = os.path.join(self.root, "empty")
-        os.makedirs(empty_root, exist_ok=True)
-        for name, install_dir, own_extra, managed_extra, want_active in (
-                ("not-installed", None, {"enabledPlugins": {install.PLUGIN: True}}, None, False),
-                ("agent-writable", agent_plugin, {"enabledPlugins": {install.PLUGIN: True}}, None, False),
-                ("no-hooks-json", empty_root, {"enabledPlugins": {install.PLUGIN: True}}, None, False),
-                ("user-blocked-by-managed-only", root_plugin, {"enabledPlugins": {install.PLUGIN: True}},
-                 {"allowManagedHooksOnly": True}, False),
-                ("user-disabled-all-hooks", root_plugin,
-                 {"enabledPlugins": {install.PLUGIN: True}, "disableAllHooks": True}, None, False),
-                ("managed-disabled-all-hooks", root_plugin, {},
-                 {"enabledPlugins": {install.PLUGIN: True}, "disableAllHooks": True}, False),
-                ("trusted-user-enabled", root_plugin, {"enabledPlugins": {install.PLUGIN: True}}, None, True),
-                ("trusted-managed-enabled", root_plugin, {}, {"enabledPlugins": {install.PLUGIN: True}}, True),
-                ("trusted-managed-enabled-managed-only", root_plugin, {},
-                 {"enabledPlugins": {install.PLUGIN: True}, "allowManagedHooksOnly": True}, True),
-                ("trusted-managed-ignores-user-disable-all", root_plugin, {"disableAllHooks": True},
-                 {"enabledPlugins": {install.PLUGIN: True}}, True)):
+        """#864 item 3: collect()'s --no-hooks and D-HOOKS-PRESENT's "decided twice" FAIL use the exact same rule."""
+        for name, kw, want_active in (
+                ("own-settings", {"own_extra": {"enabledPlugins": {install.PLUGIN: True}}}, False),
+                ("project-settings", {"proj_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                      "settings_path": self.proj_settings}, False),
+                ("own-blocked-by-managed-only", {"own_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                                 "managed_extra": {"allowManagedHooksOnly": True}}, False),
+                ("own-disabled-all-hooks", {"own_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                          "disableAllHooks": True}}, False),
+                ("managed-untrusted", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                       "managed_trusted": False}, False),
+                ("managed-disabled-all-hooks", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                                  "disableAllHooks": True}}, False),
+                ("managed-enabled", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True}}}, True),
+                ("managed-enabled-managed-only", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                                    "allowManagedHooksOnly": True}}, True),
+                ("managed-ignores-own-disable-all", {"own_extra": {"disableAllHooks": True},
+                                                     "managed_extra": {"enabledPlugins": {install.PLUGIN: True}}},
+                 True)):
             with self.subTest(case=name):
-                installed_json = os.path.join(self.home, ".claude", "plugins", "installed_plugins.json")
-                if install_dir is None:
-                    if os.path.exists(installed_json):
-                        os.unlink(installed_json)
-                elif install_dir == empty_root:
-                    os.makedirs(os.path.dirname(installed_json), exist_ok=True)
-                    with open(installed_json, "w") as f:
-                        json.dump({"version": 2, "plugins": {install.PLUGIN: [{"scope": "user",
-                                                                               "installPath": empty_root}]}}, f)
-                else:
-                    _stage_plugin(os.path.join(self.home, ".claude"), install_dir)
-                rows = self._collect(has_init_hooks=True, own_extra=own_extra, managed_extra=managed_extra)
+                rows = self._collect(has_init_hooks=True, **kw)
                 has_no_hooks = "--no-hooks" in rows["D-UNIT-HARDENING"]["fix"]
                 hp = rows["D-HOOKS-PRESENT"]
                 decided_twice = hp["status"] == "fail" and "every call is decided twice" in hp["detail"]
                 self.assertEqual(has_no_hooks, want_active, rows["D-UNIT-HARDENING"]["fix"])
                 self.assertEqual(decided_twice, want_active, hp)
-
-    @unittest.skipIf(os.name == "nt", "POSIX ownership and symlink checks")
-    def test_unmocked_posix_checks_reject_writable_dir_and_symlink(self):
-        cache = _stage_plugin(os.path.join(self.home, ".claude"), os.path.join(self.d, "writable-plugin"))
-        os.chmod(cache, 0o777)
-        why = doctor._plugin_idle((self.own, install.PLUGIN), True, self.agent, self.own, [self.own])
-        self.assertIsNotNone(why)
-        self.assertIn("is installed where the agent's user can write it", why)
 
 
 class FirstDay(unittest.TestCase):
