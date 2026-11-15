@@ -384,16 +384,19 @@ to its session and project by its calls' `tool_use_id` in Claude Code's transcri
 
 | Kind | Found when | The lesson says |
 |---|---|---|
-| LOOKUP | the same search (Grep, Glob, WebSearch, or a shell `rg`, `grep -r`, `git grep`, `find -name`) for an identifier of 4 or more characters, then the same file read within 3 calls, in 3 sessions on 2 days; a file written between them is no lookup | ``Searching for `held_calls` here leads to `tracekit/why/import_v2.py`: it was opened right after that search in 3 sessions.`` |
-| FIX | the same shell call failing with the same error (its first error line, from the transcript, paths cut to their name and numbers masked), then within 5 calls a call that differs from it in at most 4 words and worked, 3 times in 2 sessions; a write, a deny or a hold between them makes it none | ``` `python3 -m pytest` fails here with “python3: No module named pytest”; `.venv/bin/python -m pytest` worked (3 times in 2 sessions).``` |
-| TOLD | a sentence you typed with "from now on", "always", "never", "every time", "going forward", "remember to" or "don't forget", from the hook's signed record of the prompt's typed part (never a paste or what the harness added), and not a question, a hedge, a quote or code | `The person said: “From now on, run make lint before you commit.” (1 session).` |
+| LOOKUP | the same search (Grep, Glob, WebSearch, or a shell `rg`, `grep -r`, `git grep`, `find -name`) for an identifier of 4 or more characters, then the same file read within 3 calls, in 3 sessions on 2 days; a file written, or a call denied or held, between them makes it none | ``Searching for `held_calls` here leads to `tracekit/why/import_v2.py`.`` |
+| FIX | the same plain shell call (one program, maybe after `cd DIR &&` and NAME=value settings; no quotes, pipes, redirects, expansions or comments) failing with one of a fixed list of errors (no module named X, X not installed, a file that doesn't exist, refused access: only the name X is kept from the transcript's error text), then within 5 calls the same call with another program, a flag added or removed, a setting added or `cd DIR` first, that worked, 3 times in 2 sessions; a write, a deny or a hold between them makes it none | ``` `python3` fails here: no module named `pytest`. With `.venv/bin/python` in its place it worked.``` |
+| TOLD | a sentence you typed with "from now on", "always", "never", "every time", "going forward", "remember to" or "don't forget", from the Claude Code hook's signed record of the prompt's typed part (`claude-code:UserPromptSubmit`; never a paste, what the harness added, or another source), and not a question, a hedge, a quote or code | `The person said: “From now on, run make lint before you commit.”` |
 
-A lesson's words are a template over the calls' values, or your own sentence: never the agent's. An occurrence is
-dropped when a value it uses came only from untrusted content, as the signer's provenance shows it: its decision's
-`provenance` names the argument, the run's provenance index isn't complete, or any decision in the window carried that
-value from untrusted content (a page the agent fetched in another session, or a memory note it wrote from one). A
-lesson that rests on a deny or a hold, or whose words talk about holds, approvals, denies, Tracekit or its policy, is
-never given to the agent: **NOT PROPOSED** shows it to you, with the reason in plain words, as it shows a candidate
+A lesson's words are a template over values a pattern read (an identifier, a path, a program, a flag, a setting, an
+error's name), or your own sentence: never a command, a comment or an error line, the agent's or a page's. An
+occurrence is dropped when a value it uses came only from untrusted content, as the signer's provenance shows it: its
+decision's `provenance` names the argument, the run's provenance index isn't complete, or any decision in the window
+carried that value from untrusted content (a page the agent fetched in another session, or a memory note it wrote from
+one). A
+lookup or a fix stops at a deny or a hold, so none rests on one; a lesson whose words talk about holds, approvals,
+permission, a sign-off, confirming or asking first, denies, Tracekit or its policy (a hyphen breaks words) is never
+given to the agent: **NOT PROPOSED** shows it to you, with the reason in plain words, as it shows a candidate
 seen in too few sessions, a duplicate, one past the 8 shown per project, and one a check refused.
 
 **WAITING FOR YOUR OK** has a card per lesson: its kind, its tier (`signed + transcript`) and its project; the exact
@@ -403,12 +406,19 @@ the dollars of the model steps that made them: an estimate, with **THE ARITHMETI
 (of the sessions that opened the file, how many searched first); **RISKY** when its words name a limit, an exemption, a
 payment, a host, an email or an account; and the commands that answer it, with **COPY**. Approving is a command you
 run in your own terminal, never a click: a click is one an agent holding the viewer's token could make, and the
-policy denies the agent's own `tracekit tips approve` (`TK-D012`).
+policy denies the agent's own `tracekit tips approve` (`TK-D012`). A lesson's id covers its exact text, so the text
+you approve is the text written; any other text is another lesson. Each answer (approve, retire, restore, add) is
+first a signed record on the dev signer that runs: an `input.observed`, source `tracekit:lessons:person`, whose kept
+value is the action, the id and the sha256 of the lesson's text, never the text, in a run of its own (agent `tracekit
+tips`); the note names it. With no dev signer running, nothing is written.
 
 **IN USE** shows each lesson you approved: how many sessions the signed record says were given it, and its **EFFECT**,
 measured on the detector that found it: before its approval (recorded then) against the sessions given it since, for
 14 days, shown once each side has 5 sessions ("3 of 5 sessions so far" until then); a worse after is in the warning
-colour. It is a before and after on the same detector, not a controlled test. **WHAT THE NEXT SESSION READS** shows,
+colour. It is a before and after on the same detector, not a controlled test. Each card also says whether the signed
+record of your answer names its text: a note written any other way (a script, a hand), or changed since, is said in
+the warning colour, and one that names no signed record is never given to the agent; a record from before the window
+is said to be outside it. **WHAT THE NEXT SESSION READS** shows,
 per project, the block a session's first prompt gets with an empty prompt and how many bytes of the 8,000 it takes.
 
 A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its

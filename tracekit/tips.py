@@ -852,7 +852,8 @@ def lessons_text(L, days=7):
     for x in act:
         out += ["", f"IN USE · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']} · approved "
                     f"{str(x['approved'])[:10]}", x["name"],
-                _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."),
+                _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."
+                      + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
                 f"    {x['retire']}"]
     if nope:
         out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
@@ -909,23 +910,43 @@ def _here():
         return os.getcwd()
 
 
-def _vault(say):
-    """The kept content source for lessons (view.dev_content_source, purpose `tracekit tips`) over the dev signer that
-    runs now. Unlike a hook's client, tracekit tips never starts, stops or replaces a signer: reading the tips changes
-    no process. None, said, while none runs; a signer of another protocol is said by the source and read from not."""
-    from . import view
+def _running():
+    """A client of the dev signer that runs now, or None while none does. Unlike a hook's client, tracekit tips never
+    starts, stops or replaces a signer: reading the tips changes no process."""
     from .sdk import autospawn
     from .sdk.client import Client
     try:
         path, token = autospawn.address(autospawn.signer_dir(create=False))
     except (OSError, ValueError):
-        path = token = None
-    if path is None or token is None and not os.path.exists(path):
+        return None
+    return None if token is None and not os.path.exists(path) else Client(path, token=token)
+
+
+def _vault(say):
+    """The kept content source for lessons (view.dev_content_source, purpose `tracekit tips`) over the dev signer that
+    runs now (_running). None, said, while none runs; a signer of another protocol is said by the source and read
+    from not."""
+    from . import view
+    client = _running()
+    if client is None:
         say("no dev signer runs here: lessons read the calls' arguments from its vault, so none is found (`tracekit "
             "up` starts it)")
         return None
-    return view.dev_content_source("tracekit tips", connect=lambda: Client(path, token=token), say=say,
-                                   chunk=READ_CHUNK)
+    return view.dev_content_source("tracekit tips", connect=lambda: client, say=say, chunk=READ_CHUNK)
+
+
+def _signer(client):
+    """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
+    the lesson's id and its text's sha256, never the text) in a run of its own (agent `tracekit tips`), through
+    `client`. -> the record's run:run_seq, which the note keeps."""
+    def sign(action, lid, sha):
+        run = client.run(agent="tracekit tips")
+        try:
+            out = run.observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
+        finally:
+            run.close()
+        return f"{run.run_id}:{out['run_seq']}"
+    return sign
 
 
 def _scan(folder, since, say):
@@ -941,7 +962,8 @@ def _scan(folder, since, say):
 def act(argv, say):
     """`tracekit tips approve ID [ID ...] | retire ID | restore ID | add TEXT` on the dev data dir's lessons folder:
     -> exit code. Approve and retire find a waiting lesson in the records as `tracekit tips` reads them, so it is
-    the one the person saw; nothing a proposal says is taken from anywhere else."""
+    the one the person saw; nothing a proposal says is taken from anywhere else. Each answer is first a signed record
+    on the dev signer that runs (_signer), which the note names: with none running, nothing is written."""
     import argparse
     import sys
 
@@ -964,8 +986,15 @@ def act(argv, say):
     p.add_argument("--type", default="feedback", choices=lessons.TYPES)
     p.add_argument("--project", help="the project's folder (default: the current one)")
     a = ap.parse_args(argv)
+    from .sdk.client import SignerUnavailable
+    from .signer.rpc_schema import RPCError
     try:
-        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"))
+        client = _running()
+        if client is None:
+            print("tracekit tips: no dev signer runs here: each answer to a lesson is a signed record, so start it "
+                  "first (`tracekit up`)", file=sys.stderr)
+            return 1
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=_signer(client))
         if a.act == "add":
             lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
                                    a.name, a.description, a.type)
@@ -997,7 +1026,7 @@ def act(argv, say):
                                                      a.act == "approve" else " (never proposed again)")
                   + (f" ({note})" if note else ""))
         return code
-    except (lessons.Refused, OSError, ValueError) as e:
+    except (lessons.Refused, OSError, ValueError, SignerUnavailable, RPCError) as e:
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
 

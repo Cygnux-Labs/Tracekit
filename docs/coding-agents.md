@@ -588,9 +588,9 @@ there, and what you typed as a standing instruction. They go in as Claude Code's
 ```text
 Lessons from this project's signed runs, approved by the person (Tracekit). Each applies when what you are doing matches it.
 
-## When python3 fails with “python3: No module named pytest” (fix-3f2a91c0.md)
-When python3 fails here with python3: No module named pytest
-`python3 -m pytest` fails here with “python3: No module named pytest”; `.venv/bin/python -m pytest` worked (3 times in 2 sessions).
+## When `python3` fails: no module named `pytest` (fix-3f2a91c0.md)
+When running python3 here
+`python3` fails here: no module named `pytest`. With `.venv/bin/python` in its place it worked.
 ```
 
 All of them whole while they fit 8,000 bytes (Claude Code caps a hook's text at 10,000 characters); past that, the
@@ -605,8 +605,10 @@ Before it gives the block, the hook records what it gives: a signed `input.obser
 commit, the ids of the lessons given whole or as lines and of those left out, and the block's sha256, never a lesson's
 text. A lesson's values never enter the run's provenance index that way, and the folder's git history and the hash
 prove the text. That record is what "given to N sessions" and each lesson's effect count. `TRACEKIT_LESSONS=0` in
-the agent's environment turns it off. Any error (the folder unreadable, a link inside it, the signer unreachable for
-the record) gives nothing and never blocks the prompt. Subagents and other harnesses get no block; they can run
+the agent's environment turns it off. Only lessons whose note names the signed record of your answer
+([Lessons](viewer.md#lessons)) are given; the hook checks that a note names one, and TIPS checks the record. Any error
+(the folder unreadable, a link inside it, the signer unreachable for the record) gives nothing and never blocks the
+prompt. Subagents and other harnesses get no block; they can run
 `tracekit tips --for-agent`.
 
 ### Hooks name their event

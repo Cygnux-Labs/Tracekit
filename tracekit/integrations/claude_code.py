@@ -92,7 +92,7 @@ import uuid
 import warnings
 from collections import deque
 
-from tracekit import __version__, constraints, lessons, model_receipt, privacy
+from tracekit import __version__, constraints, model_receipt, privacy
 from tracekit.client import system_config
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -1252,7 +1252,10 @@ def _lessons(client, p, sid, transcript, event, prompt=None):
     block's sha256, never their text: a lesson's values never enter the run's provenance index, and the folder's git
     history with the hash proves the text. None, and nothing given, when TRACEKIT_LESSONS=0, the session had it, there
     is none, or anything fails: a prompt is never blocked for it. Reads only the lessons folder."""
-    if AGENT != "claude-code" or os.environ.get(lessons.OFF) == "0":
+    if AGENT != "claude-code":
+        return None
+    from tracekit import lessons   # here: a PreToolUse never pays for importing it
+    if os.environ.get(lessons.OFF) == "0":
         return None
     try:
         path = _state(sid)

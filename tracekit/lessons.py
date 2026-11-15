@@ -56,11 +56,15 @@ AFTER_S = 14 * 86400   # an effect counts the sessions given a lesson this long 
 SAME = 0.6   # content-word Jaccard at which two typed sentences are one instruction
 OFF = "TRACEKIT_LESSONS"   # 0: the hook gives no lessons
 SOURCE = "tracekit:lessons"   # the observe that records which lessons a session was given
-PROMPT = ":UserPromptSubmit"   # the hook's trusted observe of a prompt's typed part (claude_code)
+PERSON = "tracekit:lessons:person"   # the observe that records a person's answer: approve, retire, restore or add
+PROMPT = ":UserPromptSubmit"   # the hook's trusted observe of a prompt's typed part (any harness's, for the viewer)
+TYPED = "claude-code:UserPromptSubmit"   # the Claude Code hook's own: the only typed text a TOLD lesson is read from
 TYPES = ("user", "feedback", "project", "reference")
 # keys only Tracekit writes: `tracekit tips add` takes none of them from the person's words
 HOST = ("status", "superseded_by", "retired_from", "supersedes", "origin", "id", "kind", "key", "evidence", "tier",
-        "approved", "before")
+        "approved", "before", "signed")
+LESSON_ID = re.compile(r"L-[0-9a-f]{8}")
+SIGNED = re.compile(r"[\w.-]{1,128}:[0-9]{1,12}")   # run:run_seq of the signed record of a person's answer
 MEASURE = "before and after on the same detector, not a controlled test"
 NOTE_FILE = re.compile(r"(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md")
 PROJECT_NAME = re.compile(r"[A-Za-z0-9-][A-Za-z0-9._-]{0,254}")   # never `.` or `..`: it starts with no dot
@@ -73,21 +77,33 @@ SEARCH = {"Grep": "pattern", "Glob": "pattern", "WebSearch": "query"}
 OPEN = {"Read": "file_path", "WebFetch": "url"}
 WRITES = {"Write": "file_path", "Edit": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
 RAN = ("allow", "flag")   # decisions under which a call ran as the agent sent it
-SUBJECT = {"lookup": 1, "fix": 2}   # the leading words of a key that say what a lesson is about (its identifier;
+SUBJECT = {"lookup": 1, "fix": 3}   # the leading words of a key that say what a lesson is about (its identifier;
 # its program and failure): a new fact about the same thing supersedes the old
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]{3,}")
 KEYWORDS = frozenset(("class", "function", "import", "from", "return", "const", "self", "this", "async", "await",
                       "export", "struct", "interface", "public", "private", "static", "void", "type", "true", "false",
                       "none", "null", "todo"))
-ERRORS = re.compile(r"command not found|No module named|No such file or directory|Permission denied|\berror:|\bfatal:",
-                    re.I)
+# the failures a FIX lesson names, each in words of its own with only its variable part, a name, kept from the
+# transcript's error text (which the agent's process writes)
+ERRORS = (("no_module", re.compile(r"No module named '?([A-Za-z_][\w.]{0,63})'?(?![\w.])"), "no module named `{}`"),
+          ("not_found", re.compile(r"command not found: ([\w.+-]{1,64})\b"), "`{}` is not installed"),
+          ("not_found", re.compile(r"(?:^|[\s:])([\w.+-]{1,64}): (?:command )?not found\b"), "`{}` is not installed"),
+          ("no_file", re.compile(r"No such file or directory"), "a file it names doesn't exist{}"),
+          ("permission", re.compile(r"Permission denied"), "access to a file it uses is refused{}"))
+# a value a lesson's template names: no space, quote, shell operator, comment or expansion, so never prose
+TOKEN = re.compile(r"[\w./:@%+=,~-]{1,256}")
+ENV_SET = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}=[\w./:@%+,~-]{0,128}")
+CD_PREFIX = re.compile(r"\s*cd ([\w./:@%+,~-]{1,256}) && ")
 MARKERS = re.compile(r"\b(?:from now on|going forward|always|never|every time|remember (?:to|that)|don'?t forget)\b",
                      re.I)
 HEDGES = re.compile(r"\b(?:maybe|perhaps|might|i think|i guess|not sure|probably|unless)\b", re.I)
-# the never-evasion gate (memory 11-07): words about how a deny or a hold works, in prose; the same letters inside a path
-# or an identifier (tracekit/view.py, held_calls) say nothing about it
-EVASION = re.compile(r"\bTK-[A-Z]|(?<![\w/.-])(?:tracekit|hold\w*|held|approv\w*|den(?:y|ied|ies)|polic(?:y|ies))"
-                     r"(?![\w/-]|\.\w)|bypass|get past|without asking|skip the hook|--no-verify", re.I)
+# the never-evasion gate (memory 11-07): words about how a deny, a hold or a person's OK works, in prose; a hyphen
+# breaks words (policy-check, deny-list), but the same letters inside a path or an identifier (tracekit/view.py,
+# held_calls) say nothing about it
+EVASION = re.compile(r"\bTK-[A-Z]|(?<![\w/.])(?:tracekit|hold\w*|held|approv\w*|den(?:y|ied|ies)|polic(?:y|ies)"
+                     r"|permi(?:t|ssion)\w*|sign[- ]?offs?|confirm\w*|ask(?:ing)? first|(?-i:OK)"
+                     r"|wait(?:s|ing)? for (?:a|the) (?:person|human|user|owner))(?![\w/]|\.\w)"
+                     r"|bypass|get past|without asking|skip the hook|--no-verify", re.I)
 # a lesson a person reads twice: a limit or an exemption from a check, trusting, buying from or paying a named source,
 # or a host, email or account named in its text
 RISKY = re.compile(r"\bno need to\b|\bskip\b|\btrust|\bpay\b|\bbuy\b|\baccount\b|https?://|[\w.+-]+@[\w-]+\.[\w.]+"
@@ -196,8 +212,18 @@ def project_of(cwd):
     return re.sub(r"[^A-Za-z0-9]", "-", cwd) if isinstance(cwd, str) and cwd else None
 
 
-def lesson_id(kind, project, key):
-    return "L-" + hashlib.sha256(json.dumps([kind, project, key], ensure_ascii=False).encode()).hexdigest()[:8]
+def lesson_id(kind, project, key, text):
+    """`L-` and 8 hex digits of the lesson's kind, project, key and exact text (name, description, body): the text a
+    person approves is the text its id names, and any other text is another lesson."""
+    return "L-" + hashlib.sha256(json.dumps([kind, project, key, list(text)], ensure_ascii=False).encode()
+                                 ).hexdigest()[:8]
+
+
+def text_sha(note):
+    """sha256 of what a session reads of a note (its name, description and body): the signed record of a person's
+    answer names it, never the text."""
+    return hashlib.sha256(json.dumps([note["name"], note["description"], note["body"].strip()], ensure_ascii=False)
+                          .encode()).hexdigest()
 
 
 def _one(text):
@@ -260,10 +286,12 @@ def index(notes):
 class Folder:
     """The lessons folder, <dev data dir>/lessons: one git repo, projects/<project>/ holding a project's notes and its
     MEMORY.md. `tracekit tips`' actions, run by a person, are its only writer; a folder that holds a link, or anything
-    but folders and regular files, is refused whole, for reading too."""
+    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256)`: records a person's
+    answer as a signed observe (source PERSON) once every check has passed, before anything is written, and gives the
+    record's `run:run_seq`, which the note keeps (`signed`); a note without one is never given to an agent."""
 
-    def __init__(self, path):
-        self.path = path
+    def __init__(self, path, sign=None):
+        self.path, self.sign = path, sign
 
     def _dir(self, project):
         """A project's folder; refused for a name that isn't one folder's (a transcript folder's name is the agent's
@@ -273,14 +301,14 @@ class Folder:
         return os.path.join(self.path, "projects", project)
 
     def _safe(self):
-        """Refused if the folder or anything under it, its .git left aside, is a link or neither a folder nor a
-        regular file.
+        """Refused if the folder, its .git, or anything under the folder outside .git is a link or neither a folder
+        nor a regular file.
         lean: checked before each read and write, not held: a process of the person's own user could swap a file in
         between (policy denies the agent the data dir, TK-D007 and TK-D013); system mode keeps it out of reach"""
         if not os.path.lexists(self.path):
             return
-        if os.path.islink(self.path) or not os.path.isdir(self.path):
-            raise Refused("outside", f"{self.path} is a link or not a folder: the lessons folder is refused")
+        if os.path.islink(self.path) or not os.path.isdir(self.path) or os.path.islink(os.path.join(self.path, ".git")):
+            raise Refused("outside", f"{self.path} or its .git is a link or not a folder: the lessons folder is refused")
         for d, dirs, names in os.walk(self.path, followlinks=False):
             if d == self.path:
                 dirs[:] = [x for x in dirs if x != ".git"]
@@ -300,8 +328,11 @@ class Folder:
             for f in sorted(os.listdir(d)) if os.path.isdir(d) else []:
                 if f == "MEMORY.md" or not f.endswith(".md"):
                     continue
-                with open(os.path.join(d, f), "rb") as fh:
-                    raw = fh.read()
+                fd = os.open(os.path.join(d, f), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                with os.fdopen(fd, "rb") as fh:
+                    raw = fh.read(NOTE_BYTES + 1)   # never more: a note past the cap is refused, unread
+                if len(raw) > NOTE_BYTES:
+                    raise Refused("too_large", f"{os.path.join(d, f)}: " + WORDS["too_large"])
                 try:
                     n = parse(f, raw.decode("utf-8"))
                 except UnicodeDecodeError:
@@ -315,35 +346,33 @@ class Folder:
         return next((n for n in self.notes() if n.get("id") == lid), None)
 
     def head(self):
-        """The folder's git commit, read from its files (no git process: the hook stays fast), or None.
-        lean: a branch git has packed (git gc) is read from packed-refs; a detached or other ref layout gives None"""
+        """The folder's git commit, read from its files (no git process: the hook stays fast): 40 hex digits, else None
+        (it goes into a signed record, so nothing else read from a file the user can write does).
+        lean: a branch git has packed (git gc) is read from packed-refs; another ref layout, or a SHA-256 repository,
+        gives None"""
         g = os.path.join(self.path, ".git")
         try:
             with open(os.path.join(g, "HEAD"), encoding="ascii") as f:
-                ref = f.read().strip()
-            if not ref.startswith("ref: "):
-                return ref if re.fullmatch(r"[0-9a-f]{40,64}", ref) else None
-            ref = ref[5:]
-            if os.path.isfile(os.path.join(g, ref)):
-                with open(os.path.join(g, ref), encoding="ascii") as f:
-                    return f.read().strip() or None
-            with open(os.path.join(g, "packed-refs"), encoding="ascii") as f:
-                return next((x.split()[0] for x in f if x.rstrip().endswith(" " + ref)), None)
+                ref = f.read(256).strip()
+            if ref.startswith("ref: refs/heads/") and re.fullmatch(r"[\w.-]{1,128}", ref[16:]):
+                ref = ref[5:]
+                if os.path.isfile(os.path.join(g, ref)):
+                    with open(os.path.join(g, ref), encoding="ascii") as f:
+                        ref = f.read(256).strip()
+                else:
+                    with open(os.path.join(g, "packed-refs"), encoding="ascii") as f:
+                        ref = next((x.split()[0] for x in f if x.rstrip().endswith(" " + ref)), "")
+            return ref if re.fullmatch(r"[0-9a-f]{40}", ref) else None
         except (OSError, ValueError):
             return None
 
-    def _write(self, project, changed, message, lid):
+    def _write(self, project, changed, message, lid, action):
         """Write the notes `changed` of `project` (every one checked: refused, never cut), rebuild its MEMORY.md
-        (refused past INDEX_LINES lines or INDEX_BYTES bytes), then commit. -> a note when no history was kept."""
+        (refused past INDEX_LINES lines or INDEX_BYTES bytes), have the person's answer `action` to the first signed
+        (sign), then commit. -> a note when no history was kept."""
         from .deploy import files
         self._dir(project)
         self._safe()
-        texts = {}
-        for n in changed:
-            texts[n["file"]] = text = render(n)
-            bad = problems(text)
-            if bad:
-                raise Refused(bad[0], f"{n['file']}: " + WORDS[bad[0]])
         notes = {n["file"]: n for n in self.notes(project)}
         notes.update({n["file"]: n for n in changed})
         idx = index(notes.values())
@@ -351,6 +380,14 @@ class Folder:
             raise Refused("index_full", f"{project} would have {idx.count(chr(10))} lessons in use, "
                                         f"{len(idx.encode()):,} bytes of MEMORY.md: at most {INDEX_LINES} lines and "
                                         f"{INDEX_BYTES:,} bytes. Retire one first: refused, never cut")
+        for signed in (False, True):   # every check, then the signed record, then every check of what it adds
+            if signed and self.sign:
+                changed[0]["signed"] = self.sign(action, lid, text_sha(changed[0]))
+            texts = {n["file"]: render(n) for n in changed}
+            for f, text in texts.items():
+                bad = problems(text)
+                if bad:
+                    raise Refused(bad[0], f"{f}: " + WORDS[bad[0]])
         d = files.open_dir(os.path.dirname(self.path))
         try:
             top = files.subdir(d, os.path.basename(self.path))
@@ -381,9 +418,10 @@ class Folder:
         env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
         env["GIT_TERMINAL_PROMPT"] = "0"
 
-        def run(*a):
+        def run(*a):   # no hook runs: one planted in the folder's .git would run on a person's approve
             return subprocess.run([git, "-C", self.path, "-c", "user.name=tracekit tips", "-c",
-                                   "user.email=tips@tracekit.invalid", "-c", "commit.gpgsign=false", *a],
+                                   "user.email=tips@tracekit.invalid", "-c", "commit.gpgsign=false", "-c",
+                                   f"core.hooksPath={os.devnull}", *a],
                                   capture_output=True, text=True, env=env, timeout=60)
         if not os.path.isdir(os.path.join(self.path, ".git")) and run("init", "-q").returncode:
             return "git init failed: the change is written, with no history kept"
@@ -392,7 +430,11 @@ class Folder:
         return None if r.returncode == 0 else f"git commit failed ({_one(r.stderr or r.stdout)[:200]})"
 
     def approve(self, lesson, now=None):
-        """Write waiting `lesson` (from proposals) as an active note, marking the notes it supersedes."""
+        """Write waiting `lesson` (from proposals) as an active note, marking the notes it supersedes; refused unless
+        its text is the text its id names (lesson_id), so what a person read is what is written."""
+        if lesson_id(lesson["kind"], lesson["project"], lesson["key"],
+                     (lesson["name"], lesson["description"], lesson["text"])) != lesson["id"]:
+            raise Refused("changed", f"{lesson['id']}'s text is not the text its id names: refused")
         now = now or time.time()
         when = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         note = {k: lesson[k] for k in ("name", "description", "type", "origin", "id", "kind", "key", "tier")}
@@ -402,7 +444,7 @@ class Folder:
                     supersedes=[n["file"] for n in lesson.get("supersedes") or ()])
         old = [dict(n, status="superseded", superseded_by=note["file"]) for n in self.notes(lesson["project"])
                if n["file"] in note["supersedes"]]
-        return self._write(lesson["project"], [note, *old], f"approve {lesson['id']}", lesson["id"])
+        return self._write(lesson["project"], [note, *old], f"approve {lesson['id']}", lesson["id"], "approve")
 
     def retire(self, lid, proposal=None):
         """Retire the note `lid` (it leaves MEMORY.md and is never given again), or, with the waiting `proposal` of
@@ -420,7 +462,7 @@ class Folder:
         else:
             was = "pending" if n["status"] == "pending" else "active"
         n = dict(n, status="retired", retired_from=was, superseded_by=None)
-        return self._write(n["project"], [n], f"retire {lid}", lid)
+        return self._write(n["project"], [n], f"retire {lid}", lid, "retire")
 
     def restore(self, lid):
         """Give a retired note back the status it was retired from: in use, or proposed again (pending)."""
@@ -428,7 +470,7 @@ class Folder:
         if n is None or n["status"] != "retired":
             raise Refused("status", f"no retired lesson {lid}")
         back = "active" if n.get("retired_from") == "active" else "pending"
-        return self._write(n["project"], [dict(n, status=back, retired_from=None)], f"restore {lid}", lid)
+        return self._write(n["project"], [dict(n, status=back, retired_from=None)], f"restore {lid}", lid, "restore")
 
     def add(self, project, body, name=None, description=None, kind_type="feedback", now=None):
         """The person's own lesson, in use at once (origin you): one-line name and description, or the body's first
@@ -446,7 +488,7 @@ class Folder:
         if evasive(" ".join((name, description, body))):
             raise Refused("evasion", WORDS["evasion"])
         key = [body]
-        lid = lesson_id("you", project, key)
+        lid = lesson_id("you", project, key, (name, description, body))
         if self.find(lid):
             raise Refused("duplicate", f"{lid} is there already")
         when = datetime.datetime.fromtimestamp(now or time.time(), datetime.timezone.utc).strftime(
@@ -454,7 +496,7 @@ class Folder:
         note = {"file": f"you-{lid[2:]}.md", "name": name, "description": description, "type": kind_type,
                 "origin": "you", "id": lid, "kind": "you", "key": key, "tier": "you", "approved": when, "body": body,
                 "status": "active"}
-        return lid, self._write(project, [note], f"add {lid}", lid)
+        return lid, self._write(project, [note], f"add {lid}", lid, "add")
 
 
 # ----------------------------------------------------------------------------------------------- relevance
@@ -546,15 +588,20 @@ def select(notes, text, budget=BUDGET):
 
 def for_agent(cwd=None, prompt=None, q=None, folder=None, project=None, budget=BUDGET):
     """What a session in working directory `cwd` (or Claude Code project `project`) is given: the active lessons of
-    its project, chosen against `prompt` (select) or, with `q`, only those that share a word with it. Reads only the
-    lessons folder (default: the dev data dir's). -> {project, commit, budget, bytes, block, lessons, given}: `given`
-    is the signed observe's value, ids and the block's sha256, never text."""
+    its project that name the signed record of the person's answer that made them so (a note written any other way,
+    or with an id that isn't one, is never given), chosen against `prompt` (select) or, with `q`, only those that
+    share a word with it. Reads only the lessons folder (default: the dev data dir's).
+    -> {project, commit, budget, bytes, block, lessons, given}: `given` is the signed observe's value, ids and the
+    block's sha256, never text.
+    lean: the hook checks only that a note names a signed record; the TIPS page checks the record (signed_state)"""
     if folder is None:
         from .sdk.autospawn import data_dir
         folder = Folder(os.path.join(data_dir(), "lessons"))
     project = project or project_of(cwd)
     notes = folder.notes(project) if project and os.path.isdir(folder._dir(project)) else []
-    notes = sorted((n for n in notes if n["status"] == "active"), key=lambda n: n.get("approved") or "", reverse=True)
+    notes = sorted((n for n in notes if n["status"] == "active" and LESSON_ID.fullmatch(str(n.get("id")))
+                    and SIGNED.fullmatch(str(n.get("signed")))),
+                   key=lambda n: n.get("approved") or "", reverse=True)
     text = q if q is not None else prompt or ""
     scores = dict(zip((n["id"] for n in notes), bm25(notes, query(text)))) if notes else {}   # none: the prompt unread
     if q is not None:   # a lookup mid-task: only what shares a word with it, best first
@@ -611,28 +658,57 @@ def _searched(call):
     return max(found, key=len) if found else None
 
 
-def _signature(text):
-    """A failure's error in one line: the first line naming one (ERRORS), or a traceback's last, with paths cut to
-    their name and numbers masked; None when it names none."""
+def _failure(text):
+    """(class, name, words) of a failure's error text (the transcript's, which the agent's process writes): the first of
+    its lines one of ERRORS names, keeping only that error's variable part, a name its pattern reads; None for any other
+    error, so no error line is ever a lesson's text."""
     if not isinstance(text, str):
         return None
-    lines = [x.strip() for x in text.split("\n") if x.strip()]
-    if "Traceback (most recent call last)" in text and lines:
-        line = lines[-1]
-    else:
-        line = next((x for x in lines if ERRORS.search(x)), None)
-    if not line:
+    for line in text.split("\n")[:50]:
+        for cls, pat, said in ERRORS:
+            m = pat.search(line)
+            if m:
+                var = m.group(1) if pat.groups else ""
+                return cls, var, said.format(var)
+    return None
+
+
+def _simple(cmd):
+    """(cd, settings, argv) of a shell command that is one plain call, maybe after `cd DIR &&` and NAME=value
+    settings, each word a TOKEN; None for anything else (quotes, pipes, redirects, expansions, comments, more lines).
+    lean: a fix inside a compound command isn't found; FIX lessons name only such words, never a command's text"""
+    if not isinstance(cmd, str) or "\n" in cmd:
         return None
-    line = re.sub(r"(?:[\w.~-]*/)+([\w.-]+)", r"\1", line)
-    return re.sub(r"\b\d+\b", "N", line)[:160]
+    m = CD_PREFIX.match(cmd)
+    cd, words = (m.group(1), cmd[m.end():].split()) if m else (None, cmd.split())
+    if not words or not all(TOKEN.fullmatch(w) for w in words):
+        return None
+    n = next((i for i, w in enumerate(words) if not ENV_SET.fullmatch(w)), len(words))
+    return (cd, words[:n], words[n:]) if words[n:] else None
 
 
-def _change(a, b):
-    """(words changed, the change in words) from argv `a` to argv `b`."""
-    ops = [o for o in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes() if o[0] != "equal"]
-    n = sum(max(i2 - i1, j2 - j1) for _, i1, i2, j1, j2 in ops)
-    return n, "; ".join(f"{' '.join(a[i1:i2]) or '(nothing)'} → {' '.join(b[j1:j2]) or '(nothing)'}"
-                        for _, i1, i2, j1, j2 in ops)
+def _fix_shape(failed, worked):
+    """(shape, value) of the change from command `failed` to command `worked` when it is one of FIXED's: another
+    program, a flag added or removed (at most FIX_TOKENS words), a setting added, or `cd DIR` first; else None."""
+    a, b = _simple(failed), _simple(worked)
+    if not (a and b):
+        return None
+    (cd1, env1, x1), (cd2, env2, x2) = a, b
+    if cd1 == cd2 and env1 == env2 and x1[0] == x2[0]:
+        ops = [o for o in difflib.SequenceMatcher(None, x1[1:], x2[1:], autojunk=False).get_opcodes() if o[0] != "equal"]
+        if len(ops) == 1 and ops[0][0] in ("insert", "delete"):
+            tag, i1, i2, j1, j2 = ops[0]
+            flag = x2[1:][j1:j2] if tag == "insert" else x1[1:][i1:i2]
+            if flag[0].startswith("-") and len(flag) <= FIX_TOKENS:
+                return ("flag added" if tag == "insert" else "flag removed"), " ".join(flag)
+        return None
+    if cd1 == cd2 and env1 == env2 and x1[1:] == x2[1:]:
+        return "program", x2[0]
+    if cd1 == cd2 and x1 == x2 and len(env2) > len(env1) and env2[:len(env1)] == env1:
+        return "setting", " ".join(env2[len(env1):])
+    if cd1 is None and cd2 and env1 == env2 and x1 == x2:
+        return "cd", cd2
+    return None
 
 
 def _sentences(text):
@@ -715,10 +791,11 @@ def _taint(cs, fields, bad):
     return None
 
 
-def _occ(kind, project, key, cs, wasted, taint, **x):
+def _occ(kind, project, key, cs, wasted, taint):
     c = cs[-1]
-    return {"kind": kind, "project": project, "key": key, "id": lesson_id(kind, project, key), "calls": cs,
-            "wasted": wasted, "session": c["session"], "day": _day(cs[0]["ts"]), "ts": cs[0]["ts"], "taint": taint, **x}
+    return {"kind": kind, "project": project, "key": key, "id": lesson_id(kind, project, key, _text(kind, key)[:3]),
+            "calls": cs, "wasted": wasted, "session": c["session"], "day": _day(cs[0]["ts"]), "ts": cs[0]["ts"],
+            "taint": taint}
 
 
 def detect(rows, tr):
@@ -737,51 +814,48 @@ def detect(rows, tr):
         if c["tool"] in OPEN and c["decision"] in RAN:
             idx["opened"][c["project"], _rel(c["args"].get(OPEN[c["tool"]]), c["cwd"])].add(c["session"])
         if c["tool"] == "Bash" and isinstance(c["args"].get("command"), str) and c["decision"] in RAN:
-            argv = _argv(c["args"]["command"])
-            prog = os.path.basename(argv[0]) if argv else ""
-            idx["ran"][c["project"], prog].add(c["session"])
-            if c["ok"] is False and _signature(c["error"]):
-                idx["failed"][c["project"], prog, _signature(c["error"])].add(c["session"])
+            plain, failed = _simple(c["args"]["command"]), _failure(c["error"]) if c["ok"] is False else None
+            argv = plain[2] if plain else _argv(c["args"]["command"])
+            idx["ran"][c["project"], os.path.basename(argv[0]) if argv else ""].add(c["session"])
+            if plain and failed:
+                idx["failed"][c["project"], os.path.basename(argv[0]), *failed[:2]].add(c["session"])
         idx["prompted"][c["project"]].add(c["session"])
     for seq in agents.values():
         seq.sort(key=lambda c: c["seq"] or 0)
         for i, c in enumerate(seq):
-            x = _searched(c) if c["decision"] in RAN else None
-            if x:   # a lookup: the first read within PAIR_WITHIN calls, nothing written to it between
+            x = _searched(c) if c["decision"] in RAN and not c["held"] else None
+            if x:   # a lookup: the first read within PAIR_WITHIN calls, nothing written to it, denied or held between
                 for j in range(i + 1, min(len(seq), i + 1 + PAIR_WITHIN)):
                     o = seq[j]
-                    if o["tool"] not in OPEN or o["decision"] not in RAN or o["ok"] is False:
+                    if o["decision"] not in RAN or o["held"]:
+                        break   # what the agent read after a deny or a hold rests on it: never a lesson
+                    if o["tool"] not in OPEN or o["ok"] is False:
                         continue
-                    target = o["args"].get(OPEN[o["tool"]])
-                    if isinstance(target, str) and not any(
-                            w["tool"] in WRITES and w["args"].get(WRITES[w["tool"]]) == target for w in seq[i + 1:j]):
-                        f = _rel(target, o["cwd"])
+                    f = _rel(o["args"].get(OPEN[o["tool"]]), o["cwd"])
+                    if isinstance(f, str) and TOKEN.fullmatch(f) and not any(
+                            w["tool"] in WRITES and _rel(w["args"].get(WRITES[w["tool"]]), w["cwd"]) == f
+                            for w in seq[i + 1:j]):
                         out.append(_occ("lookup", c["project"], [x, f], [c, o], seq[i:j],
-                                        _taint([c, o], (SEARCH.get(c["tool"], "command"), OPEN[o["tool"]]), bad),
-                                        name=f"Where `{x}` is", target=f))
+                                        _taint([c, o], (SEARCH.get(c["tool"], "command"), OPEN[o["tool"]]), bad)))
                     break
-            err = _signature(c["error"]) if c["tool"] == "Bash" and c["ok"] is False and c["decision"] in RAN \
-                and not c["held"] else None
-            if err:   # a fix: the next shell call that worked, a small change of this one, with no write, deny or hold
-                a = _argv(c["args"].get("command", ""))
+            failed = _failure(c["error"]) if c["tool"] == "Bash" and c["ok"] is False and c["decision"] in RAN \
+                and not c["held"] and _simple(c["args"].get("command")) else None
+            if failed:   # a fix: the next shell call that worked, a change of FIXED's of this one, nothing between
                 for j in range(i + 1, min(len(seq), i + 1 + FIX_WITHIN)):
                     o = seq[j]
                     if o["decision"] not in RAN or o["held"] or o["tool"] in WRITES:
                         break
                     if o["tool"] != "Bash" or o["ok"] is not True:
                         continue
-                    b = _argv(o["args"].get("command", ""))
-                    n, shape = _change(a, b)
-                    if 1 <= n <= min(FIX_TOKENS, max(1, (len(a) + 1) // 2)):   # a change of it, not another command
-                        prog = os.path.basename(a[0]) if a else ""
-                        out.append(_occ("fix", c["project"], [prog, err, shape], [c, o], seq[i:j],
-                                        _taint(seq[i:j + 1], ("command",), bad), name=f"When {prog} fails with “{err}”",
-                                        failed=c["args"].get("command"), worked=o["args"].get("command")))
+                    shape = _fix_shape(c["args"]["command"], o["args"].get("command"))
+                    if shape:
+                        out.append(_occ("fix", c["project"], [_simple(c["args"]["command"])[2][0], *failed[:2], *shape],
+                                        [c, o], seq[i:j], _taint(seq[i:j + 1], ("command",), bad)))
                         break
     for r in rows:   # told: the person's typed sentences
         v = r.get("v2") or {}
-        if not (v.get("type") == "input.observed" and v.get("trust") == "trusted" and str(v.get("source")).endswith(
-                PROMPT) and isinstance(v.get("value"), str) and r.get("session_id") in runs):
+        if not (v.get("type") == "input.observed" and v.get("trust") == "trusted" and v.get("source") == TYPED
+                and isinstance(v.get("value"), str) and r.get("session_id") in runs):
             continue
         session, project, _ = runs[r["session_id"]]
         idx["prompted"][project].add(session)
@@ -789,7 +863,7 @@ def detect(rows, tr):
             idx["said"][project].append((session, s))
             c = {"run": r["session_id"], "seq": v.get("run_seq"), "hash": r.get("hash"), "ts": r.get("ts") or 0,
                  "session": session, "tool": "prompt", "args": {}}
-            out.append(_occ("told", project, [" ".join(s.split())], [c], [], None, name=s, said=s))
+            out.append(_occ("told", project, [" ".join(s.split())], [c], [], None))
     return out, idx, runs
 
 
@@ -799,8 +873,8 @@ def _seen(kind, project, key, idx, occ_sessions):
     if kind == "lookup":
         return occ_sessions, idx["opened"].get((project, key[1]), set()) | occ_sessions
     if kind == "fix":
-        hit = idx["failed"].get((project, key[0], key[1]), set())
-        return hit, idx["ran"].get((project, key[0]), set()) | hit
+        hit = idx["failed"].get((project, os.path.basename(key[0]), key[1], key[2]), set())
+        return hit, idx["ran"].get((project, os.path.basename(key[0])), set()) | hit
     if kind == "told":
         hit = {s for s, said in idx["said"].get(project, ()) if _jaccard(said, key[0]) >= SAME}
         return hit, idx["prompted"].get(project, set()) | hit
@@ -814,7 +888,7 @@ def _groups(occs):
     for o in sorted(occs, key=lambda o: o["ts"]):
         if o["kind"] == "told":
             first = next((g for g in by.values() if g[0]["kind"] == "told" and g[0]["project"] == o["project"]
-                          and _jaccard(g[0]["said"], o["said"]) >= SAME), None)
+                          and _jaccard(g[0]["key"][0], o["key"][0]) >= SAME), None)
             if first is not None:
                 first.append(o)
                 continue
@@ -822,22 +896,26 @@ def _groups(occs):
     return list(by.values())
 
 
-def _text(kind, g, sessions):
-    """A lesson's (name, description, body, type, origin): templates over the newest occurrence's values, or the
-    person's sentence. Facts, not commands."""
-    o, n = g[-1], len(sessions)
-    many = f"{n} session{'s' * (n != 1)}"
+FIXED = {"program": "With `{}` in its place it worked.", "flag added": "With `{}` added it worked.",
+         "flag removed": "Without `{}` it worked.", "setting": "With `{}` set it worked.", "cd": "Run from `{}` it worked."}
+
+
+def _text(kind, key):
+    """A lesson's (name, description, body, type, origin), from its key alone: templates over values a pattern read (an
+    identifier, a path, a program, a flag, a setting, an error's name), or the person's own sentence; facts, not
+    commands, and no count, so one id names one text (lesson_id)."""
     if kind == "lookup":
-        x, f = o["key"]
-        return (o["name"], f"When looking for {x} in this project", f"Searching for `{x}` here leads to `{f}`: it was "
-                f"opened right after that search in {many}.", "reference", "run")
+        x, f = key
+        return (f"Where `{x}` is", f"When looking for {x} in this project", f"Searching for `{x}` here leads to `{f}`.",
+                "reference", "run")
     if kind == "fix":
-        prog, err, _ = o["key"]
-        return (o["name"], f"When {prog} fails here with {err}", f"`{_one(o['failed'])}` fails here with “{err}”; "
-                f"`{_one(o['worked'])}` worked ({len(g)} times in {many}).", "feedback", "run")
-    said = g[0]["said"]
-    return (said if len(said) <= 80 else said[:77] + "...", f"The person's standing instruction here ({many})",
-            f"The person said: “{said}” ({many}).", "feedback", "you")
+        prog, cls, var, shape, value = key
+        failed = {c: said for c, _, said in ERRORS}[cls].format(var)
+        return (f"When `{prog}` fails: {failed}", f"When running {os.path.basename(prog)} here",
+                f"`{prog}` fails here: {failed}. " + FIXED[shape].format(value), "feedback", "run")
+    said = key[0]
+    return (said if len(said) <= 80 else said[:77] + "...", "The person's standing instruction here",
+            f"The person said: “{said}”", "feedback", "you")
 
 
 def _evidence(g):
@@ -871,7 +949,7 @@ def propose(occs, idx, notes, cost=None, days=7):
         clean = [o for o in g if not o["taint"]]
         sessions, days_ = {o["session"] for o in clean}, {o["day"] for o in clean}
         need = {"lookup": (MIN_SESSIONS, MIN_DAYS, 1), "fix": (FIX_SESSIONS, 1, FIX_TIMES), "told": (1, 1, 1)}[kind]
-        name, desc, body, typ, origin = _text(kind, clean or g, sessions or {o["session"] for o in g})
+        name, desc, body, typ, origin = _text(kind, key)
         card = {"id": lid, "kind": kind, "project": project, "key": key, "name": name, "description": desc,
                 "text": body, "type": typ, "origin": origin, "tier": "signed+transcript", "file": f"{kind}-{lid[2:]}.md"}
         if kind == "told":   # one instruction: a note of the same words, in use or retired, is this one
@@ -899,7 +977,7 @@ def propose(occs, idx, notes, cost=None, days=7):
         if bad:
             nope.append({**card, "rule": bad[0], "why": WORDS[bad[0]]})
             continue
-        if evasive(all_text) or any(c["decision"] not in RAN for o in clean for c in o["calls"] if "decision" in c):
+        if evasive(all_text):   # (one that rests on a deny or a hold is no occurrence: detect stops there)
             nope.append({**card, "rule": "evasion", "why": WORDS["evasion"]})
             continue
         if any(" ".join(n["body"].lower().split()) == " ".join(body.lower().split()) for n in active):
@@ -960,9 +1038,30 @@ def given(rows, runs):
             continue
         session = runs.get(r.get("session_id"), (r.get("session_id"),))[0]
         for lid in [*(v["value"].get("whole") or ()), *(v["value"].get("lines") or ())]:
-            if isinstance(lid, str):
+            if isinstance(lid, str) and LESSON_ID.fullmatch(lid):
                 out[lid].setdefault(session, r.get("ts") or 0)
     return out
+
+
+def signed_state(note, rows):
+    """Whether lesson `note` (in use) rests on the signed record of a person's answer it names (`signed`, run:run_seq):
+    "signed" when that record is in `rows` and names this id and this text's sha256 (text_sha); "changed" when it
+    names another; "not read" when it is outside the window read; "none" when the note names none (it is never
+    given to an agent). -> (state, words)."""
+    ref = str(note.get("signed") or "")
+    if not SIGNED.fullmatch(ref):
+        return "none", "No signed record of a person's answer: written some other way, never given to the agent."
+    run, seq = ref.rsplit(":", 1)
+    rec = next((r for r in rows if r.get("session_id") == run and (r.get("v2") or {}).get("run_seq") == int(seq)
+                and (r.get("v2") or {}).get("source") == PERSON), None)
+    if rec is None:
+        return "not read", f"Its signed record (run {run}, record {seq}) is outside the window read."
+    v = (rec.get("v2") or {}).get("value")
+    if not (isinstance(v, dict) and v.get("id") == note.get("id") and v.get("sha256") == text_sha(note)
+            and v.get("action") in ("approve", "restore", "add")):
+        return "changed", f"Its text is not what the signed record (run {run}, record {seq}) names: changed since."
+    return "signed", f"{ {'approve': 'Approved', 'restore': 'Restored', 'add': 'Added'}[v['action']]} by a person: signed " \
+                       f"(run {run}, record {seq})."
 
 
 def effect(note, idx, occ_sessions, given_to):
@@ -1026,6 +1125,7 @@ def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None):
         active.append({**{k: n.get(k) for k in ("id", "kind", "project", "name", "description", "type", "origin",
                                                   "approved", "evidence", "tier", "file")},
                        "text": n["body"].strip(), "supersedes": n.get("supersedes") or [],
+                       "signed": dict(zip(("state", "why"), signed_state(n, rows))),
                        "effect": effect(n, idx, sessions.get(n.get("id"), set()), got.get(n.get("id"), {})),
                        "retire": f"tracekit tips retire {n.get('id')}"})
     nxt = []

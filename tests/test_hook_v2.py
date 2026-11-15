@@ -208,8 +208,19 @@ class HookV2(unittest.TestCase):
         """The dev data dir's lessons folder with a person's own lesson for each of `bodies`, in the project of the
         hook's working directory (self.cwd): -> (folder, their ids)."""
         os.makedirs(autospawn.data_dir(), exist_ok=True)
-        folder = lessons.Folder(os.path.join(autospawn.data_dir(), "lessons"))
+        folder = lessons.Folder(os.path.join(autospawn.data_dir(), "lessons"),
+                                sign=lambda action, lid, sha: "run-tips:1")   # each answer names its signed record
         return folder, [folder.add(lessons.project_of(self.cwd), b)[0] for b in bodies]
+
+    def test_no_block_without_its_signed_observe(self):
+        """The observe that records which lessons a session got comes first: if the signer doesn't take it, the
+        session gets no block, and the prompt goes on."""
+        given = {"block": "Lessons ...", "given": {"whole": ["L-0123abcd"], "lines": [], "left_out": [],
+                                                   "sha256": "0" * 64, "commit": None}}
+        with mock.patch.object(lessons, "for_agent", return_value=given), \
+                mock.patch.object(claude_code, "_run", side_effect=SignerUnavailable("down")) as sent:
+            self.assertIsNone(claude_code._lessons(None, {"cwd": self.cwd}, "s9", None, "UserPromptSubmit", "Fix it."))
+        self.assertEqual(sent.call_args.kwargs["source"], lessons.SOURCE)
 
     def answer(self, event, **fields):
         """(exit code, the one JSON object on stdout or {}, stderr) of a hook event from the project's folder."""

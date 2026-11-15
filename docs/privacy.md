@@ -190,9 +190,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 TIPS' [lessons](viewer.md#lessons) read the dev signer's vault (the calls' arguments and the typed part of your
 prompts), each read a signed `content.accessed` record with purpose `tracekit tips` or `tracekit view`. Nothing is
 written until you approve a lesson (or add one). Then `<dev data dir>/lessons/` holds, per Claude Code project folder,
-one Markdown note per lesson and a `MEMORY.md` index: the lesson's text (paths, commands, an identifier the agent
-searched for, an error line, or your own sentence quoted as you typed it), its kind, its status, when you approved it,
-and the `run:run_seq` of up to 8 signed records it rests on. A lesson whose text matches a secret's shape, a bank
+one Markdown note per lesson and a `MEMORY.md` index: the lesson's text (an identifier the agent searched for, a path,
+a program, a flag or a setting, an error's name, or your own sentence quoted as you typed it), its kind, its status,
+when you approved it, the `run:run_seq` of up to 8 signed records it rests on, and that of the signed record of your
+answer (an observe whose kept value is the action, the id and the sha256 of the lesson's text, never the text). A
+lesson whose text matches a secret's shape, a bank
 number or a value the signer redacted is refused, never cut. The folder is a git repository: every approve, retire,
 restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
 ids of the lessons it was given and the block's sha256, never their text.

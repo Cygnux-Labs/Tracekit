@@ -946,14 +946,15 @@ def review(records, rep, verdict, outcomes=None):
 
 def wanted(r):
     """Whether the viewer (and tracekit tips) reads record r's kept content: a decision's arguments, a model exchange's
-    content, and two trusted observes the Claude Code hook sends, a prompt's typed part and the lessons a session was
-    given (TIPS' lessons read them)."""
+    content, and the trusted observes TIPS' lessons read: a prompt's typed part and the lessons a session was given
+    (the hooks send them), and a person's answer to a lesson (tracekit tips sends it)."""
     e = r["event"]
     d = e.get("data") or {}
     return bool(e["type"] == "policy.decision" and d.get("args_commitment")
                 or e["type"] == "model.exchange" and d.get("content_digest")
                 or e["type"] == "input.observed" and d.get("trust") == "trusted" and (
-                    str(d.get("source")).endswith(lessons.PROMPT) or d.get("source") == lessons.SOURCE))
+                    str(d.get("source")).endswith(lessons.PROMPT)
+                    or d.get("source") in (lessons.SOURCE, lessons.PERSON)))
 
 
 def dev_content_source(purpose="tracekit view", connect=None, say=None, chunk=None):

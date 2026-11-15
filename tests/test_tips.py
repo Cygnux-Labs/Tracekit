@@ -598,16 +598,16 @@ class Command(unittest.TestCase):
         self.cc = tmp(self)
         write_jsonl(os.path.join(self.cc, "projects", "p", "s.jsonl"), growing())
 
-    def vault(self, say):
-        """tips._vault over this test's signer, as over the dev signer that runs."""
-        return view.dev_content_source("tracekit tips", connect=lambda: Client(self.cfg["socket"]), say=say)
+    def running(self):
+        """tips._running: this test's signer, as the dev signer that runs."""
+        return Client(self.cfg["socket"])
 
     def tips(self, *args):
         """(exit code, stdout, stderr) of `tracekit tips --since 2026-10-01` as the dev signer's user, its transcripts
         in the folder setUp wrote: before growing()'s session and the store's records."""
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
-                mock.patch.object(tips, "_vault", self.vault), \
+                mock.patch.object(tips, "_running", self.running), \
                 mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["tips", "--since", "2026-10-01", *args])
@@ -694,7 +694,7 @@ class Lessons(unittest.TestCase):
     a person approving, retiring, restoring and adding, and an agent's --for-agent."""
 
     CWD = "/Users/me/proj"
-    vault = Command.vault
+    running = Command.running
 
     def setUp(self):
         for name in ("TICK_S", "CHECKPOINT_S", "CHECKPOINT_MIN_S"):
@@ -731,13 +731,13 @@ class Lessons(unittest.TestCase):
                            "cwd": self.CWD}, cc_result(good, t + 3)]
             run.close()
             write_jsonl(os.path.join(self.cc, "projects", "-Users-me-proj", f"{sid}.jsonl"), lines)
-        st = service.log.storage
+        self.st = st = service.log.storage
         self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
 
     def tips(self, *args):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
-                mock.patch.object(tips, "_vault", self.vault), \
+                mock.patch.object(tips, "_running", self.running), \
                 mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["tips", *args])
@@ -748,9 +748,9 @@ class Lessons(unittest.TestCase):
         self.assertEqual(code, 0, err)
         L = json.loads(out)["lessons"]
         fix, told = sorted(L["waiting"], key=lambda x: x["kind"])
-        self.assertEqual((fix["kind"], fix["times"], fix["sessions"], fix["key"][1]),
-                         ("fix", 3, 2, "python3: No module named pytest"))
-        self.assertEqual(told["text"], "The person said: “From now on, run make lint before you commit.” (1 session).")
+        self.assertEqual((fix["kind"], fix["times"], fix["sessions"], fix["key"]),
+                         ("fix", 3, 2, ["python3", "no_module", "pytest", "program", ".venv/bin/python"]))
+        self.assertEqual(told["text"], "The person said: “From now on, run make lint before you commit.”")
         self.assertEqual(fix["where"], self.CWD)
         text = self.tips()[1]
         self.assertLess(text.index("LESSONS"), text.index("TIP 1"))
@@ -760,6 +760,10 @@ class Lessons(unittest.TestCase):
         code, out, err = self.tips("approve", fix["id"], told["id"])
         self.assertEqual(code, 0, err)
         self.assertIn(f"approved {fix['id']}", out)
+        self.assertTrue(wait_for(lambda: (self.st.checkpoint_latest() or (0,))[0] == self.st.tree.size, 20))
+        L = json.loads(self.tips("--json")[1])["lessons"]   # each answer is a signed record the page checks
+        self.assertEqual({a["id"]: a["signed"]["state"] for a in L["active"]}, {fix["id"]: "signed",
+                                                                                told["id"]: "signed"})
         code, out, err = self.tips("--for-agent", "--project", self.CWD, "--json")
         got = json.loads(out)
         self.assertEqual({x["id"] for x in got["lessons"]}, {fix["id"], told["id"]})
@@ -908,13 +912,13 @@ class Page(unittest.TestCase):
         self.assertIn('data-page="approvals"', out[1])
         self.assertIn("not measured", out[1])
 
-    LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
+    LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "LSIGNED", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
                        "renderLessons"]
 
     def lessons_page(self, approve=False):
         """The LESSONS part as lessons.page works it out from three sessions' lookups (and a near miss)."""
         import test_lessons as tl
-        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"), sign=tl.signing(self))
         s = tl.lookups(tl.Scene())
         for i in (3, 4):
             s.session(f"s{i}", tl.T0 + i * 600).lookup(pattern="Translator", path=tl.CWD + "/tracekit/view.py")
@@ -946,6 +950,9 @@ class Page(unittest.TestCase):
         out = self.render(L)
         self.assertIn("IN USE 1", out)
         self.assertIn("EFFECT<b class=\"tzero\">not yet</b>0 of 5 sessions so far", out)
+        self.assertIn('<div class="dim">Its signed record (run run-sign, record 1) is outside the window read.</div>', out)
+        L["active"][0]["signed"] = {"state": "none", "why": "No signed record of a person's answer: never given."}
+        self.assertIn('<div class="s-deny">No signed record of a person&#39;s answer: never given.</div>', self.render(L))
         a = L["active"][0]
         a["effect"].update(shown=True, worse=True, change=50, before={"hits": 2, "exposed": 5},
                            after={"hits": 3, "exposed": 5})
