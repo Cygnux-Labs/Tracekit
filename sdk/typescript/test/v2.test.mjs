@@ -640,26 +640,34 @@ test("HTTPS: a write whose connect (TLS handshake) times out records nothing", a
     (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
 });
 
-/** A TLS signer from Python (keep-alive) that reads each request and closes without answering. */
-const PY_DROPS = `
-import http.server, json, os, ssl, sys, tempfile, threading
+/** A TLS signer from Python (keep-alive) whose handler reads each request, then runs `then`. */
+const pyTls = (then) => `
+import http.server, json, os, ssl, sys, tempfile, threading, time
 sys.path.insert(0, ${JSON.stringify(join(ROOT, "tests"))})
 from test_identity_mtls import Pki
 d = tempfile.mkdtemp()
 pki = Pki(d)
 cert, key = pki.issue("server")
-class Drops(http.server.BaseHTTPRequestHandler):
+class Signer(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def do_POST(self):
         self.rfile.read(int(self.headers["Content-Length"]))
-        self.close_connection = True
+${then}
 ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 ctx.load_cert_chain(cert, key)
-srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Drops)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Signer)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 print(json.dumps({"port": srv.server_address[1], "ca": pki.path}), flush=True)
 sys.stdin.read()`;
+/** Closes without answering. */
+const PY_DROPS = pyTls("        self.close_connection = True");
+/** Answers only after 2 s. */
+const PY_LATE = pyTls(`        time.sleep(2)
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")`);
 
 test("HTTPS: a write lost after it went out may have been recorded", { skip: NO_PKI }, async (t) => {
   const info = await pyServer(t, PY_DROPS);
@@ -667,6 +675,16 @@ test("HTTPS: a write lost after it went out may have been recorded", { skip: NO_
   t.after(() => delete process.env.TRACEKIT_SIGNER_CA);
   const c = https((f) => Object.getPrototypeOf(c.https).post.call(
     { url: new URL(`https://127.0.0.1:${info.port}/v2/rpc`), agent: c.https.agent }, f, 1000), 3000);
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
+});
+
+test("HTTPS: a write that times out after it went out may have been recorded", { skip: NO_PKI }, async (t) => {
+  const info = await pyServer(t, PY_LATE);
+  process.env.TRACEKIT_SIGNER_CA = info.ca;
+  t.after(() => delete process.env.TRACEKIT_SIGNER_CA);
+  const c = https((f) => Object.getPrototypeOf(c.https).post.call(
+    { url: new URL(`https://127.0.0.1:${info.port}/v2/rpc`), agent: c.https.agent }, f, 500), 3000);
   await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
     (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
 });

@@ -110,12 +110,12 @@ anything, and rebuilds that from the records after a restart or a disk error, so
 `unavailable`, as it did before it retried, so the caller takes its outage path (the run's fail mode). Refusals that
 run out are the signer's error, as before; lost connections are counted apart, three tries of their own, and end in
 `SignerUnavailable`. The error of a write call has `recorded`: `False` when nothing was recorded (refused, or never
-sent), `None` when a try went out and got no answer, so it may have been (the message says so; once the run closes,
-its bundle shows whether it was, so don't send it again as a new call), and `True` when a retry was refused
-`client_seq_reused` after such a try, so that try was recorded. TypeScript has the same field (`false`, `null`,
-`true`). No other call is sent again: its `request_id` is remembered in memory only and forgotten with a
-write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in front of the signer
-retry its requests either.
+sent), `None` when a try went out and got no answer, or the signer answered `unavailable`, so it may have been (the
+message says so; once the run closes, its bundle shows whether it was, so don't send it again as a new call), and
+`True` when a retry was refused `client_seq_reused` after such a try, so that try was recorded. TypeScript has the
+same field (`false`, `null`, `true`). No other call is sent again: its `request_id` is remembered in memory only and
+forgotten with a write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in
+front of the signer retry its requests either.
 
 ## Downloading a run
 

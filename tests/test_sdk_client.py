@@ -834,6 +834,18 @@ class FakeSigners(unittest.TestCase):
         self.assertEqual([(f["tool_call_id"], f["client_seq"]) for f in frames],   # each request sent twice, as it was
                          [("call-1", 0), ("call-1", 0), ("call-2", 1), ("call-2", 1)])
 
+    def test_a_write_that_times_out_after_it_went_out_may_have_recorded_it(self):
+        """A signer that reads complete and never answers: the write went out, so it may have been recorded (`recorded`
+        None, and the message says so)."""
+        frames = self.stalled()
+        c = Client(self.path, timeout=0.5)
+        self.addCleanup(c.close)
+        with self.assertRaises(client.SignerUnavailable) as cm:
+            c.complete({"run_id": "r1", "run_token": "t", "tool_call_id": "call-1", "status": "ok", **DONE})
+        self.assertEqual([f["tool_call_id"] for f in frames], ["call-1"])
+        self.assertIsNone(cm.exception.recorded)
+        self.assertTrue(str(cm.exception).endswith(client.UNKNOWN), str(cm.exception))
+
     def test_a_request_that_is_not_json_takes_no_answer_and_no_client_seq(self):
         seen = []
 

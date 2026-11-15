@@ -65,9 +65,9 @@ await client.close();                                     // waits for what is i
 - **Protocol:** `hello` first; a signer that does not speak this client's RPC version is refused with `Incompatible`.
   Requests are validated against the RPC schemas before they are sent, pipelined on one connection and answered in
   order; a call whose connection drops is resent with the same `request_id`. A write call's error has `recorded`:
-  `false` when it was not recorded, `null` when it went out with no answer and may have been, `true` when a retry was
-  refused as already recorded. Each handle's events carry the client's
-  `stream` and a `client_seq` per run.
+  `false` when it was not recorded, `null` when it went out with no answer, or the signer answered `unavailable`, and
+  may have been, `true` when a retry was refused as already recorded. Each handle's events carry the client's `stream`
+  and a `client_seq` per run.
 - **Fail modes:** only when the signer cannot be reached does `decide` return the run's fail mode for the tool class
   (`fields.tool_class_hint`, from `register_run`'s `fail_modes`, default closed) with `unavailable: true`. A refusal
   from the signer rejects with `RPCError`, never an allow.

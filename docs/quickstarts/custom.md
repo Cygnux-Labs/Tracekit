@@ -36,10 +36,10 @@ gets `{"decision": "deny", ...}` and blocks by the decision. `approval_consume` 
 can't be reached or refuses answers `{"ok": False, ...}`, and the call doesn't run. `complete` never raises: the call
 already ran, so a failure is a warning, with one of three outcomes. A result the signer refused, or that never went
 out, was not recorded: the bundle shows the call as decided and not completed. A result that went out and got no
-answer may have been recorded: the bundle has its `tool.result` if it was, or a `decided_not_completed` gap if it
-wasn't. A retry the signer refused as already recorded was recorded, and there is no warning. To record the OpenAI,
-Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit import
-autotrace; autotrace.instrument(None)` before it.
+answer, or that the signer answered `unavailable`, may have been recorded: the bundle has its `tool.result` if it was,
+or a `decided_not_completed` gap if it wasn't. A retry the signer refused as already recorded was recorded, and there
+is no warning. To record the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as
+well, add `from tracekit import autotrace; autotrace.instrument(None)` before it.
 
 ## Frameworks that catch exceptions
 
