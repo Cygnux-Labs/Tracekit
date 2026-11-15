@@ -37,6 +37,24 @@ THINKING = {"type": "assistant", "uuid": "u-5", "cwd": "/work/proj", "message": 
             "content": [{"type": "thinking", "thinking": "list the files first", "signature": "EqQBsealed"}]}}
 SAID = {"type": "assistant", "uuid": "u-6", "cwd": "/work/proj", "message": {"id": "msg_1", "model": "claude-x",
         "content": [{"type": "text", "text": "Listing the files."}]}}
+# a message's usage as Claude Code writes it on each of the message's lines, and as the tailer signs it
+USAGE = {"input_tokens": 6, "output_tokens": 412, "cache_read_input_tokens": 150_000, "cache_creation_input_tokens": 1_200,
+         "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 1_200},
+         "server_tool_use": {"web_search_requests": 0}, "service_tier": "standard"}
+SIGNED = {"input_tokens": 6, "output_tokens": 412, "cache_read_tokens": 150_000, "cache_write_tokens": 1_200}
+THINK = {"type": "thinking", "thinking": "plan the listing first", "signature": "EqQBsealed"}
+TEXT = {"type": "text", "text": "Listing the files now."}
+
+
+def turn(mid, *blocks, model="claude-opus-5-5"):
+    """The lines Claude Code writes for message `mid`: one per content block, each with the message's usage."""
+    return [{"type": "assistant", "uuid": f"u-{mid}-{i}", "timestamp": "2026-10-01T08:15:42.123Z", "cwd": "/work/proj",
+             "message": {"id": mid, "model": model, "role": "assistant", "stop_reason": "tool_use", "content": [b],
+                         "usage": USAGE}} for i, b in enumerate(blocks)]
+
+
+def call(tcid, args=ARGS):
+    return {"type": "tool_use", "id": tcid, "name": "Bash", "input": args}
 
 
 def line(e):
@@ -375,6 +393,75 @@ class Tailer(unittest.TestCase):
             {"transcript": "main", "entry": prompt}, {"transcript": "main", "entry": THINKING},
             {"transcript": "main", "entry": TOOL_USE}, {"transcript": "agent-a1.jsonl", "entry": sub}])
         self.assertTrue(all("salt" in x for x in got))   # each opens its record's commitment
+
+    def usage(self):
+        """[(exchange id, its tool uses' ids, usage)] of the run's model responses, in order."""
+        return [(x["exchange_id"], [t["id"] for t in x.get("tool_uses", ())], x.get("usage"))
+                for x in (e["data"] for e in self.events() if e["type"] == "model.exchange") if x["phase"] == "response"]
+
+    def test_a_messages_usage_is_signed_once_on_its_last_line(self):
+        """#865: on a week of real work no record carried what a model turn cost, and tips read it from the transcript,
+        a file the agent writes, later. Claude Code writes a line per content block, each repeating the message's
+        usage: the tailer signs it once, on the message's last line (its tool use: the viewer's model line), with the
+        model; Claude Code's stand-in for a failed call (`<synthetic>`) is no turn."""
+        self.write(PROMPT, *turn("msg_1", THINK, TEXT, call("toolu_1")), *turn("msg_2", TEXT),
+                   *turn("msg_3", TEXT, model="<synthetic>"))
+        self.tail()
+        self.assertEqual(self.usage(), [("msg_1", [], None), ("msg_1", [], None), ("msg_1", ["toolu_1"], SIGNED),
+                                        ("msg_2", [], SIGNED), ("msg_3", [], None)])
+        models = {e["data"]["model"] for e in self.events() if "usage" in e["data"]}
+        self.assertEqual(models, {"claude-opus-5-5"})
+        self.assertEqual(self.lost(), [])
+
+    def test_a_turn_streamed_over_several_lines_is_signed_at_its_final_counts(self):
+        """The user run on a real session found 714 of 8,415 messages whose subagent lines differ: Claude Code wrote a
+        tool use while the turn still streamed (no stop_reason, 16 output tokens so far), ran it (its result line in
+        between), then the turn's last tool use with the final counts (stop_reason, 243). The turn is signed once, at
+        those; one that never got a stop_reason (an interrupted turn) is not signed at all."""
+        early, final = turn("msg_1", call("toolu_1"), call("toolu_2"))
+        early["message"] = dict(early["message"], stop_reason=None, usage=dict(USAGE, output_tokens=16))
+        result = {"type": "user", "uuid": "u-r1", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "ok"}]}}
+        [cut] = turn("msg_2", TEXT)
+        cut["message"] = dict(cut["message"], stop_reason=None)
+        self.write(early, result)
+        self.tail(lambda: self.write(final, cut, PROMPT))
+        self.assertEqual(self.usage(), [("msg_1", ["toolu_1"], None), ("msg_1", ["toolu_2"], SIGNED),
+                                        ("msg_2", [], None)])
+
+    def test_a_message_read_over_two_wakes_and_its_subagents_copy_of_it_sign_its_usage_once(self):
+        """A message's lines can come in over two reads, and a subagent's transcript opens with a copy of the message
+        that started it (its Agent call): its usage is signed once, by its message id, across them."""
+        first, rest = turn("msg_1", THINK, call("toolu_a"))
+        self.write(first)
+        self.tail(lambda: self.write(rest), lambda: self.sub(rest, *turn("msg_s1", TEXT)))
+        self.assertEqual(self.usage(), [("msg_1", [], SIGNED), ("msg_1", ["toolu_a"], None),
+                                        ("msg_1", ["toolu_a"], None), ("msg_s1", [], SIGNED)])
+        self.assertEqual(self.lost(), [])
+
+    def test_a_turns_usage_is_signed_in_clear_and_its_text_only_as_a_commitment(self):
+        """docs/privacy.md: the usage numbers and the model are in clear; the model's thinking and text, the call's
+        arguments and the line's own cwd and time are only in the commitment (and the vault, when it is on)."""
+        lines = turn("msg_1", THINK, TEXT, call("toolu_1"))
+        self.write(*lines)
+        self.tail()
+        [rec] = [e["data"] for e in self.events() if "usage" in e["data"]]
+        self.assertEqual((rec["model"], rec["usage"]), ("claude-opus-5-5", SIGNED))
+        self.assertEqual(rec["content_digest"], self.signer._commit("model.exchange:" + rec["salt_id"], event_hash(
+            {"transcript": "main", "entry": lines[-1]})))
+        with open(os.path.join(self.d, "data", "store", "records.jsonl")) as f:
+            stored = f.read()
+        for text in ("plan the listing", "Listing the files", "EqQBsealed", "/work/proj", "ls -la", "2026-10-01T08:15"):
+            self.assertNotIn(text, stored)
+
+    def test_usage_never_enters_the_provenance_index(self):
+        """`from: untrusted` rules read the run's provenance index, where a value once observed as trusted stays
+        trusted: the usage a transcript (the agent's own file) reports is never indexed, trusted or not."""
+        self.write(*turn("msg_1", call("toolu_1")))
+        self.tail()
+        self.assertEqual([u for *_, u in self.usage()], [SIGNED])
+        prov = self.signer.log.runs[("default", self.out["run_id"])]["prov"]
+        self.assertEqual((prov["state"], prov["index"]), ("complete", {}))
 
     def test_a_burst_of_lines_past_the_rate_limit_is_sent_whole(self):
         signer = svc.SignerService(os.path.join(self.d, "burst"), grace_s=600, fsck_every_s=0,
@@ -1101,6 +1188,30 @@ class HookRestartsTheTailer(unittest.TestCase):
         self.assertEqual(len(lost), 2)
         self.assertIn("a line already read changed in place while no tailer ran", lost[1])
         self.assertEqual(found, [("reconcile.fabricated", "toolu_2")])   # its line came after the change: not read
+
+    def test_a_tailer_started_again_signs_no_usage_the_stopped_one_signed(self):
+        """#865: a turn is signed once across a run's tailers. The tailer read a message's first line, signed its
+        usage there and was killed; the run's next hook event started a new one, which read the message's tool use, and
+        a subagent's transcript that opens with a copy of it, with no second usage: the ids the stopped tailer signed
+        are in its progress log."""
+        first, rest = turn("msg_1", THINK, call("toolu_1"))
+        sub = os.path.join(self.d, "s1", "subagents", "agent-a1.jsonl")
+        self.write(PROMPT, first)
+        self.hook(start="startup")
+        self.tailer(then=Killed)
+        self.write(rest)
+        self.decide("toolu_1", "Bash", ARGS)   # finds it stopped: a new tailer
+        self.assertEqual(len(self.started), 2)
+        self.write(rest, *turn("msg_s1", TEXT), path=sub)
+        self.tailer()
+        self.finish()
+        with open(os.path.join(self.d, "data", "store", "records.jsonl"), "rb") as f:
+            events = [json.loads(x)["event"] for x in f.read().splitlines()]
+        self.assertEqual([(e["data"]["exchange_id"], e["data"]["usage"]) for e in events
+                          if e["type"] == "model.exchange" and "usage" in e["data"]],
+                         [("msg_1", SIGNED), ("msg_s1", SIGNED)])
+        self.assertEqual(sum(e["type"] == "model.exchange" and e["data"].get("exchange_id") == "msg_1"
+                             for e in events), 3)   # every line was still recorded
 
     def test_an_idle_tailer_parks_and_the_runs_next_event_starts_it_again_with_no_gap(self):
         """A run stays open while an approval waits, and a person may answer hours later. The tailer gave up after

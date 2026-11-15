@@ -520,7 +520,9 @@ these rules don't see (a script that calls a payment SDK, another provider): [li
 
 For Claude Code, the transcript tailer records every line the model writes (thinking, text, tool use) and every prompt
 as a model exchange: a commitment to the whole line, and the line itself when the signer keeps content (the dev signer
-does). `tracekit init --v2` also sets `"showThinkingSummaries": true` in the Claude Code settings it writes the hooks
+does). Each message's token usage (input, output, cache-read and cache-write tokens) is signed in clear once, at its
+final counts, as the tailer reads it: `tracekit tips` counts those signed figures before the transcript's own
+([limits](limits.md#signer-and-capture)). `tracekit init --v2` also sets `"showThinkingSummaries": true` in the Claude Code settings it writes the hooks
 to, or with the plugin enabled in the user's settings (unless they set it; `--no-thinking-summaries` leaves it alone;
 `tracekit uninstall` removes it again while it's still `true`): without it Claude Code keeps the model's thinking
 only sealed. For headless runs pass `claude -p --thinking-display summarized`. `tracekit analyze --v2`

@@ -42,7 +42,10 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 | `tool.result` | output | hash | redacted text |
 | `tool.result` | ok, duration_ms | clear | clear |
 | `model.message` | content (only with `reasoning_capture`) | hash | redacted text |
-| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing | clear | clear |
+| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing, token usage | clear | clear |
+| `model.exchange` (v2: LLM gateway) | model, stop reason, tool_use ids and names, usage (input, output, cache-read and cache-write tokens), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | model, the message id, usage (input, output, cache-read and cache-write tokens, once per message), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | the transcript line: the model's thinking, text and tool uses, the line's own timestamp | salted commitment; the line is kept only in the [content vault](#the-content-vault), when the signer keeps content | same |
 | `model.exchange` (proxy) | request body, response body | hash (after redaction) | redacted text |
 | `model.exchange` (proxy) | HTTP headers, including `x-api-key` / `authorization` | **never recorded** | **never recorded** |
 | every hook event | `transcript` mark: path, length, sha256 of the transcript | clear (hash only, never content) | same |

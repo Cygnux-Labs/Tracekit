@@ -59,16 +59,18 @@ def rows(*recs):
     return [x for r in recs for x in tr.feed(r)]
 
 
-def exchanges(lines, ids=None, off=0, tools=False, agent="gateway"):
+def exchanges(lines, ids=None, off=0, tools=False, agent="gateway", tailer=False):
     """The signed records of an LLM gateway that saw transcript `lines`: each exchange under the gateway's own id, with
-    the same token counts (`off` added to the output count) and, with `tools`, the message's tool_use ids."""
-    recs = [v2rec(1, "run.registered", {"agent": {"name": agent}})]
+    the same token counts (`off` added to the output count) and, with `tools`, the message's tool_use ids; with
+    `tailer`, the transcript tailer's: each under its message's id."""
+    recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code" if tailer else agent}})]
     for i, line in enumerate(lines):
         if line["type"] != "assistant":
             continue
         m, u = line["message"], line["message"]["usage"]
         recs.append(v2rec(2 + i, "model.exchange", {
-            "exchange_id": f"gx-{i:032x}", "phase": "response", "model": m["model"], "upstream": "anthropic",
+            "exchange_id": m["id"] if tailer else f"gx-{i:032x}", "phase": "response", "model": m["model"],
+            "upstream": "anthropic",
             "usage": {"input_tokens": u["input_tokens"], "output_tokens": u["output_tokens"] + off,
                       "cache_read_tokens": u["cache_read_input_tokens"], "cache_write_tokens": u["cache_creation_input_tokens"]},
             **({"tool_uses": [{"id": b["id"], "name": b["name"]} for b in m["content"] if b["type"] == "tool_use"]}
@@ -454,7 +456,8 @@ class Sources(unittest.TestCase):
                 s = out["sources"]["signed"]
                 self.assertEqual((s["steps"], s["also"]), (10, {"runs": 1, "steps": 300}))
                 self.assertEqual(out["tips"][0]["saving"], alone["tips"][0]["saving"])
-                self.assertEqual(out["tips"][0]["from"], "Claude Code's transcripts (read-only)")
+                # counted once, at the signed counts (#865): the transcript says only whose step it was and when
+                self.assertEqual(out["tips"][0]["from"], "signed records")
 
     def test_a_signed_step_counts_once_only_when_a_transcript_message_matches_it(self):
         """One signed step with a transcript message's counts dropped the whole signed run: an SDK agent no transcript
@@ -473,6 +476,43 @@ class Sources(unittest.TestCase):
         write_jsonl(os.path.join(root, "proj-a", "sess-a.jsonl"), a)
         s = tips.build(exchanges(a + b), root, NOW)["sources"]["signed"]
         self.assertEqual((s["steps"], s["also"]), (300, {"runs": 1, "steps": 300}))
+
+    def test_signed_usage_counts_before_the_transcripts_and_each_tip_says_where_its_counts_came_from(self):
+        """#865: tips read each Claude Code step's tokens from its transcript, a file the agent writes and can edit
+        after the fact. The transcript tailer now signs each turn's usage as it reads it: a step both hold counts at its
+        signed counts, in the transcript's place (its session, its time, how long its cache lasts), and each tip says
+        where its counts came from. Here the transcript's first 200 turns were edited after they were signed."""
+        lines = growing()
+        edited = [{**x, "message": {**x["message"], "usage": {**x["message"]["usage"], "cache_read_input_tokens":
+                                                              x["message"]["usage"]["cache_read_input_tokens"] // 2}}}
+                  if i < 200 else x for i, x in enumerate(lines)]
+        root, honest = tmp(self), tmp(self)
+        write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), edited)
+        write_jsonl(os.path.join(honest, "p", "sess-a.jsonl"), lines)
+        out = tips.build(exchanges(lines[:200], tailer=True), root, NOW)   # the tailer signed the first 200 turns
+        t = out["tips"][0]
+        self.assertEqual((t["from"], t["agent"]), ("signed records and Claude Code's transcripts (read-only)",
+                                                   "session sess-a"))
+        self.assertIn("Token counts of the 300 steps these figures rest on: 200 from signed records and 100 from Claude "
+                      "Code's transcripts (read-only).", t["math"])
+        self.assertEqual(t["saving"], tips.build([], honest, NOW)["tips"][0]["saving"])   # not the edited counts
+        s = out["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]), (0, {"runs": 1, "steps": 200}))
+        # the cache tip: a rebuild's counts signed, how long the cache lasted from the transcript
+        lines = [cc_assistant("m0", T0, write=200_000, tools=[("toolu_s", "Bash", {"command": "sleep 400"})]),
+                 cc_result("toolu_s", T0 + 400), cc_assistant("m1", T0 + 405, write=200_000)]
+        root = tmp(self)
+        write_jsonl(os.path.join(root, "p", "sess-b", "subagents", "agent-c1.jsonl"), lines)
+        t = tips.build(exchanges(lines, tailer=True), root, NOW)["tips"][1]
+        [w] = t["waits"]
+        self.assertEqual((w["src"], w["life"], w["usd"], t["from"]),
+                         ("signed", 300, 1.0, "signed records and Claude Code's transcripts (read-only)"))
+
+    def test_a_turn_signed_twice_counts_once(self):
+        """A line the signer took while its answer was lost is sent again, and a subagent transcript a resumed session
+        copies is read by its own run: the same exchange's usage signed twice counts once."""
+        steps = tips.signed_steps(uncached(5) + uncached(5, run="r8"), 0)
+        self.assertEqual(sum(len(a["steps"]) for a in steps.values()), 5)
 
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
@@ -728,7 +768,7 @@ class Page(unittest.TestCase):
                         sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}, span: [43200, 86400]},
                                   transcripts: {files: 3, steps: 400, unreadable: 0}}};
             renderTipsPage(); process.stdout.write(html);""")
-        self.assertIn("300 more signed model steps of 1 run the transcripts also hold, counted once, from them", out)
+        self.assertIn("300 more signed model steps of 1 run the transcripts also hold, counted once, at their signed counts", out)
         self.assertIn("transcripts in ~/.claude/projects, read-only", out)
         self.assertIn("the tips list sessions from every project under that folder", out)
         self.assertIn("9 signed records from 1970-01-01", out)   # the live view's span, not the window's

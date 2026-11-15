@@ -13,12 +13,14 @@ Three tips, each worked out from what the agents' own records show, over the las
    they blocked the agent.
 
 Token counts come from signed records where those carry them (a model.exchange response's `usage`: the LLM gateway's,
-an SDK integration's) and from Claude Code's transcripts, read-only as `tracekit audit` reads them (the transcript
-tailer's records carry no usage). A signed run the transcripts also hold counts once, from the transcripts: matched by
-a tool_use id, or by identical token counts within MATCH_S (the gateway signs each exchange under an id of its own,
-and a message without tool calls has no tool_use id). Holds come only from signed records; a transcript adds how long
-each one blocked the agent and where it ran, joined by its tool_use_id. Each tip names every source it mixes. Dollars
-are Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
+an SDK integration's, the transcript tailer's, signed as each Claude Code turn was read) and from Claude Code's
+transcripts, read-only as `tracekit audit` reads them, where none does. A signed step the transcripts also hold counts
+once, at its signed counts, in the transcript's place (which agent took it, when, and how long each cache write lasts,
+which no signed record says): matched by its message id (the tailer's), a tool_use id, or identical token counts within
+MATCH_S (the gateway signs each exchange under an id of its own, and a message without tool calls has no tool_use id).
+Holds come only from signed records; a transcript adds how long each one blocked the agent and where it ran, joined by
+its tool_use_id. Each tip names every source its figures came from, and each step says its own (`src`). Dollars are
+Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
 """
 import collections
 import json
@@ -95,9 +97,10 @@ def _start(s):
     return s["t"] - s["lat"] if s["lat"] is not None else s["t"]
 
 
-def _step(t, mid, model):   # a transcript is the agent's to write: a model that isn't a name is none
+def _step(t, mid, model, src="transcripts"):   # a transcript is the agent's to write: a model that isn't a name is none
+    """A step; `src`: where its token counts came from (FROM)."""
     return {"t": t, "t1": t, "id": mid, "model": model if isinstance(model, str) else None, "in": 0, "out": 0, "cr": 0, "w5": 0, "w1h": 0, "w": 0,
-            "lat": None, "calls": []}
+            "lat": None, "calls": [], "src": src}
 
 
 def _usage(s, u):
@@ -129,18 +132,24 @@ def _family(cmd):
 
 def signed_steps(rows, since):
     """{agent key: agent} from the viewer's rows of signed model exchanges that carry usage (observe.Translator's
-    tk_model rows), each step at its record's time. The usage schema has no cache lifetime: its writes are `w`."""
-    agents = {}
+    tk_model rows), each step at its record's time, an exchange id once. The usage schema has no cache lifetime: its
+    writes are `w`."""
+    # lean: the tailer signs a Claude Code session's subagents' turns under the session's run, as agent main: without
+    # the transcripts (_same) they count as the main session's steps; record which transcript a turn came from (a
+    # format change) if tips must tell them apart from the store alone
+    agents, seen = {}, set()
     for r in rows:
         u = r.get("usage") if r.get("event") == "tk_model" else None
-        if not u or (r.get("ts") or 0) < since:
-            continue
+        x = (r.get("v2") or {}).get("exchange_id")
+        if not u or (r.get("ts") or 0) < since or x is not None and x in seen:
+            continue   # a turn signed again (a line resent once the signer's answer was lost, a copy a resumed session made)
+        seen.add(x)
         sub = r.get("agent_id")
         key = r.get("session_id", "") + ("/" + sub if sub else "")
         a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "signed",
                                     "label": f"{r.get('agent') or 'agent'} run {str(r.get('session_id'))[:8]}"
                                              + (f" · subagent {str(sub)[:8]}" if sub else ""), "steps": []})
-        s = _step(r["ts"], (r.get("v2") or {}).get("exchange_id"), r.get("model"))
+        s = _step(r["ts"], x, r.get("model"), "signed")
         s.update({"in": _int(u.get("input_tokens")) or 0, "out": _int(u.get("output_tokens")) or 0,
                   "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0,
                   "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)]})
@@ -187,7 +196,7 @@ def read_transcripts(root, since):
                         continue
                     s = mine.get(mid)
                     if s is None:
-                        s = mine[mid] = _step(t, mid, m.get("model"))
+                        s = mine[mid] = _step(t, mid, m.get("model"), "transcripts")
                         s["lat"] = t - last_user if last_user is not None else None
                         seen.add(mid)
                     _usage(s, m["usage"])
@@ -415,7 +424,8 @@ def context_tip(agents):
     above, below = [d for c, d in lat if c > cap], [d for c, d in lat if c <= cap]
     slower = statistics.median(above) - statistics.median(below) if len(above) >= 10 and len(below) >= 10 else None
     x, act = _series(ctx)
-    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from({x["a"]["source"] for x in rows})},
+    tiers = collections.Counter(s["src"] for x in rows for s in x["steps"])
+    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from(tiers)},
                slower=round(slower, 1) if slower is not None and slower > 0 else None,
                title=f"{'Compact' if claude else 'Trim the history it sends'} at about {_k(cap)} tokens"
                + (f", not at {_k(at)}" if at else ""),
@@ -445,6 +455,9 @@ def context_tip(agents):
                      f"{_about(saved[cap])} of {_money(total)}.",
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
+                     f"Token counts of the {sum(tiers.values()):,} steps these figures rest on: "
+                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts") if tiers[k])
+                     + ".",
                      "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
                      + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
                         "measured saving." if slower is not None and slower > 0 else ".")]
@@ -471,9 +484,9 @@ def cache_tip(agents, calls, held=(), asked=()):
     for a in agents:
         known = sum(s["w1h"] for s in a["steps"]), sum(s["w5"] for s in a["steps"])
         default = LIFE["1h"] if known[0] > known[1] else LIFE["5m"] if known[1] else None
-        if default:
+        if default:   # a cache lifetime only a transcript records
             lives[a["kind"]].add(default)
-            kinds.add(a["source"])
+            kinds.add("transcripts")
         for p, s in zip(a["steps"], a["steps"][1:]):
             ctx = _ctx(s)
             if ctx < MIN_CTX or ctx < DROP * _ctx(p):   # under half the last step's: a compaction rewrote it, no wait
@@ -505,8 +518,10 @@ def cache_tip(agents, calls, held=(), asked=()):
             polls = 0 if blocked and c["id"] in held else math.ceil(gap / (life - MARGIN)) - 1   # a hold could fail at once
             alt = polls * ((ctx - grew) * r["cache_read"] + POLL_OUT * r["output"]) / 1e6 + kept   # polls before it grew
             fix = blocked and alt < now
+            kinds.add(s["src"])
             waits.append({"t": _start(p), "s": round(gap), "usd": round(now, 4), "alt": round(alt, 4),
-                          "tokens": _writes(s), "agent": a["label"], "kind": a["kind"], "life": life, "fix": fix,
+                          "tokens": _writes(s), "src": s["src"], "agent": a["label"], "kind": a["kind"], "life": life,
+                          "fix": fix,
                           "cause": ("a call held for a person" if c["id"] in held else c["family"]) if fix else
                           "idle: waiting for a person" if a["kind"] == "main" or person else
                           "idle: resumed after it handed back"})
@@ -640,43 +655,56 @@ def holds_tip(holds, calls, signed):
     return tip
 
 
-def _same(signed, agents, calls):
-    """{signed run's key: the indexes of its steps Claude Code's transcripts also hold}, step by step: one that shares a
-    tool_use id with a transcript's message, or that takes up one transcript message no other step matched with the
-    same token counts within MATCH_S (the gateway signs each exchange under an id of its own, and a message without
+def _same(signed, agents):
+    """{signed run's key: {index of a step Claude Code's transcripts also hold: that transcript step}}, step by step: one
+    whose exchange id is a transcript message's id (the transcript tailer signs each message under it), one that shares
+    a tool_use id with a transcript's message, or one that takes up one transcript message no other step matched with
+    the same token counts within MATCH_S (the gateway signs each exchange under an id of its own, and a message without
     tool calls has no tool_use id to join on)."""
-    ids = {i for a in signed.values() for s in a["steps"] for i in s["calls"]}
-    pool = collections.defaultdict(list)   # token counts -> the times of the transcript messages not matched yet
-    for a in agents.values():
-        for s in a["steps"]:
-            if not ids.intersection(s["calls"]):
-                pool[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
-    held = collections.defaultdict(set)
+    steps = [s for a in agents.values() for s in a["steps"]]
+    by_id, by_call = {s["id"]: s for s in steps}, {c: s for s in steps for c in s["calls"]}
+    ids = {i for a in signed.values() for s in a["steps"] for i in [s["id"], *s["calls"]]}
+    pool = collections.defaultdict(list)   # token counts -> the transcript messages not matched yet
+    for s in steps:
+        if s["id"] not in ids and not ids.intersection(s["calls"]):
+            pool[s["in"], s["out"], s["cr"], _writes(s)].append(s)
+    held = collections.defaultdict(dict)
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
-            times = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
-            j = next((j for j, t in enumerate(times) if abs(t - s["t"]) <= MATCH_S), None)
-            if any(c in calls for c in s["calls"]) or j is not None:
-                held[k].add(i)
-                if j is not None and not any(c in calls for c in s["calls"]):
-                    times.pop(j)
+            t = by_id.get(s["id"]) or next((by_call[c] for c in s["calls"] if c in by_call), None)
+            if t is None:
+                left = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
+                j = next((j for j, x in enumerate(left) if abs(x["t"] - s["t"]) <= MATCH_S), None)
+                t = left.pop(j) if j is not None else None
+            if t is not None:
+                held[k][i] = t
     return held
+
+
+def _signed(t, s):
+    """Transcript step t at signed step s's token counts, its `src` signed. The transcript's split of the cache writes by
+    lifetime, which no signed record holds, is kept while it adds up to the signed writes."""
+    if _writes(t) != s["w"]:
+        t["w5"], t["w1h"], t["w"] = 0, 0, s["w"]
+    t.update(src="signed", **{k: s[k] for k in ("in", "out", "cr")})
 
 
 def build(rows, root=None, now=None, since=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
-    price table's date and the three tips. A signed step the transcripts also hold counts once, from the transcripts
-    (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so they may span less than
-    the window: `sources.signed.span`."""
+    price table's date and the three tips. A signed step the transcripts also hold counts once, at its signed counts in
+    the transcript's place (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so
+    they may span less than the window: `sources.signed.span`."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
-    same = _same(signed, agents, calls)
+    same = _same(signed, agents)
     also = {"runs": len(same), "steps": sum(map(len, same.values()))}
     for k, idx in same.items():
+        for i, t in idx.items():
+            _signed(t, signed[k]["steps"][i])
         signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
