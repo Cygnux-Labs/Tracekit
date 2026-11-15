@@ -709,7 +709,7 @@ def _join(signed, agents, named):
     found = []
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
-            if s["id"] in where:
+            if s["id"] in where and not s["gw"]:   # a gateway's id is its own: a transcript line can't claim it
                 t, session = where[s["id"]]
                 if a.get("name") == "claude-code" and named[k.split("/")[0]] & calls_of[session] and \
                         t["t"] <= s["t"] <= t["t1"] + MATCH_S:

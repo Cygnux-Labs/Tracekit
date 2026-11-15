@@ -638,6 +638,22 @@ class Sources(unittest.TestCase):
         s = tips.build(two, root, NOW)["sources"]["signed"]
         self.assertEqual((s["steps"], s["also"]["steps"], s["refused"]), (1, 1, 0))   # two gateways: both count
 
+    def test_a_transcript_line_under_a_gateways_exchange_id_leaves_the_gateways_record_counted(self):
+        """The final check of #871: the agent's user wrote transcript lines whose message ids were the gateway's
+        exchange ids (the dev store shows them), at 1 token each and an hour off. Pass 1 took the gateway's records for
+        the tailer's, they failed its checks and were refused: the gateway's 5 steps went to 0 and only the made-up
+        1-token turns counted. A gateway's record never joins by message id; here it counts on its own."""
+        for name in ("gateway", "claude-code"):
+            with self.subTest(name):
+                honest = [dict(r, agent=name, tk_source="gateway") if r["event"] == "tk_model" else r
+                          for r in uncached(5)]
+                root = tmp(self)
+                t = datetime(2026, 10, 10, 18, tzinfo=timezone.utc).timestamp()
+                write_jsonl(os.path.join(root, "p", "sess-f.jsonl"),
+                            [cc_assistant(f"x{i}", t + i, new=1, out=1) for i in range(5)])
+                s = tips.build(honest, root, NOW)["sources"]["signed"]
+                self.assertEqual((s["steps"], s["refused"]), (5, 0))
+
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
         path = write_jsonl(os.path.join(root, "p", "s.jsonl"), growing(n=60))
