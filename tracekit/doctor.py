@@ -108,7 +108,12 @@ def collect(config=None, issuer_key=None):
         settings = h.get("settings") if agent_name == "claude" else None
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
-        plugin = agent and install.plugin_enabled([home])
+        project = (os.path.dirname(os.path.dirname(settings))
+                   if settings and settings not in (home, *install.MANAGED_SETTINGS.values())
+                   and os.path.basename(os.path.dirname(settings)) == ".claude" else None)
+        users = [home] if home else []
+        plugin = install.plugin_enabled(users, project) if project else install.plugin_enabled(users)
+        layers = [p for p in (home, settings, _managed()) if p]
         # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT (CodeBuddy Code's D-HOOKS-ORDER
         # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
@@ -116,25 +121,27 @@ def collect(config=None, issuer_key=None):
         rows = v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                          signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                          client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                         sandbox_settings=[p for p in (home, settings, _managed()) if p],
+                         sandbox_settings=layers,
                          gemini_settings=_gemini(agent and agent.pw_dir,
                                                  h.get("settings") if h.get("agent") == "gemini" else None),
                          harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
                          else None, no_hooks=h.get("no_hooks") is True)
-        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
-        # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
-        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off. It keeps
-        # --managed, else init moves the hooks from the root-owned file into the agent's own settings, and
-        # --managed-only, else init turns allowManagedHooksOnly off. And the rest of init's flags, which only
-        # root-owned client.json gives (install.reinit_flags): without them init puts its defaults (its own policy, no
-        # harness binding) in place of the host's
+        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or Claude Code's
+        # root-trusted managed settings enable the Tracekit plugin (else init writes its hooks beside the plugin's,
+        # deciding each call twice); not over init --managed's hooks, nor from the agent's own or project settings,
+        # which the agent's user can write to make a re-init drop init's hooks. It keeps --managed, else init moves the
+        # hooks from the root-owned file into the agent's own settings, and --managed-only, else init turns
+        # allowManagedHooksOnly off. And the rest of init's flags, which only root-owned client.json gives
+        # (install.reinit_flags): without them init puts its defaults (its own policy, no harness binding) in place of
+        # the host's
         managed = settings in install.MANAGED_SETTINGS.values()
         flags, tail = install.reinit_flags(h.get("init_flags"), settings if managed else None, V2_FLAGS,
                                            f"{client.SYSTEM_CONFIG} doesn't record them" if sc else
                                            f"there's no {client.SYSTEM_CONFIG} here to record them")
         agent_flag = f" --agent {shlex.quote(agent_name)}" if agent_name != "claude" else ""
-        no_hooks = " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude" and not managed \
-            else ""
+        active_plugin = plugin if plugin and not _plugin_idle(plugin, True, settings) else None
+        no_hooks = (" --no-hooks"
+                    if h.get("no_hooks") is True or active_plugin and agent_name == "claude" and not managed else "")
 
         def again(text, extra):
             if " --managed-only" in extra:   # a fix's own (D-HOOKS-PRESENT's) is init's already
@@ -1042,6 +1049,43 @@ def _hooks(settings):
                  for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
 
 
+def _plugin_idle(plugin, prod, settings=None):
+    """Why `plugin` (`(settings_path, key)`) doesn't count as active Claude Code hooks, or None when it does.
+    In system mode (`prod`), only a root-trusted managed settings file counts: collect()'s --no-hooks and
+    D-HOOKS-PRESENT's decided-twice check both call this so the two never disagree."""
+    if not plugin:
+        return None
+    plugin_settings, _ = plugin
+    admin = settings if settings in install.MANAGED_SETTINGS.values() else _managed()
+    in_managed = plugin_settings in install.MANAGED_SETTINGS.values()
+    if not in_managed and _setting(admin, "allowManagedHooksOnly") is True:
+        return "allowManagedHooksOnly"
+    if not prod:
+        return None
+    if not in_managed:
+        return "not_managed"
+    bad = trusted_file(plugin_settings)
+    if bad:
+        return f"untrusted: {bad}"
+    if _setting(plugin_settings, "disableAllHooks") not in (None, False, 0, ""):
+        return f"disableAllHooks in {plugin_settings}"
+    return None
+
+
+def _plugin_note(plugin_settings, why, kept=False):
+    if not why:
+        return ""
+    if why == "allowManagedHooksOnly":
+        return f"; the Tracekit plugin's, enabled in {plugin_settings}, don't run (allowManagedHooksOnly)"
+    prefix = "; init's hooks kept: " if kept else "; "
+    if why == "not_managed":
+        return f"{prefix}the Tracekit plugin is enabled in {plugin_settings}, not managed settings"
+    if why.startswith("disableAllHooks "):
+        return f"{prefix}the Tracekit plugin, enabled in {plugin_settings}, doesn't run ({why})"
+    reason = why[len("untrusted: "):]
+    return f"{prefix}the Tracekit plugin is enabled in {plugin_settings}, which isn't root-only ({reason})"
+
+
 def _vault_off(cfg, keys):
     """(ok, detail, fix) of D-CONTENT-VAULT with the vault off: what it kept while it was on stays until erased."""
     from .storage import file as file_store
@@ -1333,16 +1377,22 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
             + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
+    layers = list(dict.fromkeys(sandbox_settings or [p for p in (
+        os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
+        settings, _managed()) if p]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
-    idle = plugin and only and plugin_settings != settings   # and the plugins the managed settings enable
+    why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
+    active_plugin = plugin if plugin and not why else None
+    note = _plugin_note(plugin_settings, why)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     chosen = ("no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send (tracekit.instrument()) are "
               f"still recorded; to record Claude Code's calls too, run {hook_fix}")
     if not settings:
-        add("D-HOOKS-PRESENT", bool(plugin or harnesses or no_hooks), from_plugin if plugin else others if harnesses
-            else chosen if no_hooks else "no hooks recorded in client.json", REINIT, bad=WARN)
+        add("D-HOOKS-PRESENT", bool(active_plugin or harnesses or no_hooks),
+            from_plugin if active_plugin else (others if harnesses else chosen if no_hooks
+                                               else "no hooks recorded in client.json") + note, REINIT, bad=WARN)
     else:
         try:
             hooks = _hooks(settings)
@@ -1353,18 +1403,17 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", False, f"{settings}: {e}", f"make {settings} "
                 f"{'readable' if isinstance(e, OSError) else 'a JSON object'} (move it aside, or fix it), then {hook_fix}",
                 bad=sev)
-        if hooks is not None and plugin and not idle:   # init's hooks too would decide every call twice
+        if hooks is not None and active_plugin:   # init's hooks too would decide every call twice
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
-                "twice, and every approved call is blocked" if both else from_plugin, "keep one: " + (
-                    f"take {plugin_key} out of enabledPlugins in {settings}" if plugin_settings == settings else
-                    f"/plugin disable {plugin_key} in the agent's Claude Code, or {hook_fix} --managed-only, which "
-                    "stops every user's own Claude Code hooks and plugins on this machine") if managed else
-                f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}", bad=sev)
+                "twice, and every approved call is blocked" if both else from_plugin, (
+                    f"keep one: take {plugin_key} out of enabledPlugins in {plugin_settings}"
+                    + ("" if managed else f", or {hook_fix}") if prod else
+                    f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}"), bad=sev)
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
-            add("D-HOOKS-PRESENT", True, others, "")
+            add("D-HOOKS-PRESENT", True, others + note, "")
         elif hooks is not None and no_hooks and not any(hooks.values()):
-            add("D-HOOKS-PRESENT", True, chosen, "")
+            add("D-HOOKS-PRESENT", True, chosen + note, "")
         elif hooks is not None and not prod and not any(hooks.values()) and not shutil.which("claude") \
                 and not os.path.isdir(os.path.dirname(install.user_settings())):   # no Claude Code here to hook
             add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
@@ -1380,11 +1429,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                  else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
                  else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
                  if twice else f"v2 hooks in {settings}")
-                + (f"; the Tracekit plugin's, enabled in {plugin_settings}, don't run (allowManagedHooksOnly)" if idle
-                   else ""), hook_fix, bad=WARN if twice else sev)
+                + _plugin_note(plugin_settings, why, kept=not missing), hook_fix, bad=WARN if twice else sev)
         if hooks is not None:
-            layers = sandbox_settings or dict.fromkeys((os.path.join(agent.pw_dir, ".claude", "settings.json") if agent
-                                                        else install.user_settings(), settings))
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
             blocking = sorted({ev for ev, c in cmds if ev != "PreToolUse" and FAIL_CLOSED in c})
@@ -1392,9 +1438,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
             # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
-            off = [p for p in ([settings] if managed else dict.fromkeys([*layers, settings]))   # the hooks' own file too
+            managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
+            off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
+                               else dict.fromkeys([*layers, settings]))   # the hooks' own file too
                    if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
-                if any(hooks.values()) or plugin else []
+                if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
                         if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
             unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
@@ -1423,7 +1471,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s; " + _hook_run(),
                     f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
-            if any(hooks.values()) or plugin:   # without Claude Code's hooks none of its reasoning is recorded
+            if any(hooks.values()) or active_plugin:   # without Claude Code's hooks none of its reasoning is recorded
                 vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
                 value, where = None, None   # Claude Code's precedence: the last file that sets it wins
                 for p in layers:
