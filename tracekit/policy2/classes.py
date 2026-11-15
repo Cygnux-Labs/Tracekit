@@ -29,6 +29,21 @@ _CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^
 # text names GITHUB_SHA other than as `$GITHUB_SHA` or `${GITHUB_SHA…}` (`GITHUB_SHA=$TOKEN`, an `env:` key): then
 # it is read as any other variable.
 _CI_PUBLIC_SHA = re.compile(r"(\$\{?)?\bGITHUB_SHA\b")
+# a skill OpenHands loads from a project's or the home folder's .agents/skills/ (any .md there, at any depth), whose
+# invoke_skill runs each !`cmd` in it with shell=True (openhands-sdk skills/execute.py)
+_AGENT_SKILL = re.compile(r"(?:^|/)\.agents/skills/(?:[^/]+/)*[^/]+\.md$")
+
+
+def _texts(value):
+    """Every string in a JSON value, at any depth."""
+    out, todo = [], [value]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, (dict, list)):
+            todo.extend(v.values() if isinstance(v, dict) else v)
+    return out
 
 
 def first(args, *keys):
@@ -347,12 +362,22 @@ def extract(cls, tool, args, limit=None):
         content = first(args, "content", "new_string", "new_source", "edits")
         out = {"path": fs_path(path) if isinstance(path, str) else path, "op": FS_OPS.get(tool) or args.get("op"),
                "content_digest": None if content is None else event_hash(content)}
-        # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject.
-        written = args.get({"Write": "content", "Edit": "new_string"}.get(tool))
+        # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject. Under each
+        # harness's name for it (OpenHands' and Copilot's file_text and new_str, OpenCode's newString, Cursor's
+        # contents), every one sent, so a decoy under one name never hides the text under another
+        written = "\n".join(args[k] for k in {"Write": ("content", "file_text", "contents"),
+                                              "Edit": ("new_string", "new_str", "newString")}.get(tool, ())
+                            if isinstance(args.get(k), str)) or None
         if isinstance(written, str) and any(_CI_WORKFLOW.search(p.casefold()) for p in fs_forms(path)):
             if all(m[1] for m in _CI_PUBLIC_SHA.finditer(written)):
                 written = _CI_PUBLIC_SHA.sub("GITHUB_SHA", written)
             out["ci_workflow"] = written
+        # the text of a call on an agent skill file, every string but its paths (the harnesses name it content,
+        # new_string, file_text, new_str, ...). lean: an edit's old text is read too, so removing a !`cmd` line is held
+        # as adding one is; read only the new text if that stops real work
+        files = [path, *(args["paths"] if isinstance(args.get("paths"), list) else ())]
+        if any(_AGENT_SKILL.search(p.casefold()) for f in files for p in fs_forms(f)):
+            out["agent_skill"] = "\n".join(_texts({k: v for k, v in args.items() if k not in (*PATH_KEYS, "paths")}))
     elif cls in ("http", "browser"):
         url = first(args, "url")
         info = url_info(url) if isinstance(url, str) else {}

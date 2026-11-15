@@ -618,6 +618,43 @@ class DroidHooks(unittest.TestCase):
             self.assertIn("60 s", row["detail"])
 
 
+class OpenCodePlugin(unittest.TestCase):
+    def test_a_plugin_opencode_2_cant_load_is_caught(self):
+        # OpenCode 2.x loads a plugin only from its default export: one without it (as an earlier Tracekit wrote) it
+        # logs as failed to load and runs every call undecided, which doctor didn't read (it skips the JS plugin)
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_CONFIG_HOME": os.path.join(d, ".config")}), \
+                mock.patch("os.getcwd", return_value=os.path.join(d, "repo")), contextlib.redirect_stdout(io.StringIO()):
+            path = agent_hooks.install("opencode", v2=True)
+            os.makedirs(os.path.join(d, "repo"))
+
+            def row(version, prod=False, folder="bin"):
+                os.makedirs(os.path.join(d, folder), exist_ok=True)
+                with open(os.path.join(d, folder, "opencode"), "w") as f:   # `opencode --version` as each major prints it
+                    f.write(f"#!/bin/sh\necho '{version}'\n")
+                os.chmod(os.path.join(d, folder, "opencode"), 0o755)
+                with mock.patch.dict(os.environ, {"PATH": os.path.join(d, folder) + os.pathsep + os.environ["PATH"]}):
+                    return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "production" if prod else "dev",
+                                                                 settings=os.path.join(d, "none.json"),
+                                                                 harnesses={"opencode": path})}["D-OPENCODE-PLUGIN"]
+            self.assertEqual(row("opencode v2.3.0")["status"], "ok")
+            with open(path) as f:
+                plugin = f.read()
+            with open(path, "w") as f:   # the plugin init wrote before: no default export
+                f.write(plugin[:plugin.index("\n// OpenCode 2.x loads a plugin only")] + "\n")
+            got = row("opencode v2.3.0")
+            self.assertEqual(got["status"], "warn", got)
+            self.assertIn("OpenCode 2.3.0 can't load it", got["detail"])
+            self.assertEqual(got["fix"], "tracekit init --dev --v2 --agent opencode")
+            self.assertEqual(row("opencode v2.3.0", prod=True)["status"], "fail")
+            got = row("1.19.5")   # works on 1.x, stops on an upgrade
+            self.assertEqual(got["status"], "warn", got)
+            self.assertIn("after an upgrade", got["detail"])
+            # an opencode the working directory placed first on PATH isn't run: doctor can't tell the version
+            self.assertIn("after an upgrade", row("opencode v2.3.0", folder=os.path.join("repo", "bin"))["detail"])
+
+
 class AntigravityHooks(unittest.TestCase):
     def test_agy_hooks_under_tracekits_hook_name_are_found_and_checked_in_seconds(self):
         # agy's hooks.json maps each hook's name to its events: Tracekit's are under AGY_HOOK, not `hooks`, and an

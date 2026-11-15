@@ -31,7 +31,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
             edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
             delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
-            NotebookEdit
+            NotebookEdit; WriteShellStdin, whose payload lacks the text it types, is denied in the hook
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
             -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
@@ -42,13 +42,15 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             payload names its event `event` and its
             working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
     Qwen Code (a Gemini CLI fork) sends Claude Code's payloads and names its events as Claude Code does, with Gemini's
-            tool names and its own edit, grep_search and agent -> Edit, Grep, Task
+            tool names and its own edit, grep_search, agent, and cron_create with a `gate` -> Edit, Grep, Task, Bash
+            (command = the gate)
     Droid   Execute, Create, ApplyPatch, FetchUrl -> Bash, Write, Edit (all patch file headers in paths), WebFetch
     agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input, checked as typed text) (each decided on the argument the tool
-            itself reads)
+            itself reads); 1.5's read_file, edit_file and write_file -> Read, Edit, Write (on `Path`);
+            send_command_input and run_workflow are denied in the hook (their arguments aren't read)
     Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
             notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
             generate_image with an `image` as a Read of it and the `path`); notebook_execute is blocked in the hook
@@ -56,8 +58,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
             (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
-            agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
-            run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
+            agent, agentic_fetch, agent_dispatch, agent_send and Docker MCP Gateway's code-mode tools are denied in the
+            hook (the calls they make run no hooks), and so is a built-in tool's input with argument names Crush may
+            read otherwise
     Devin   exec, write_to_process, read, write, edit, apply_patch, grep, glob, webfetch, mcp__s__t
             -> Bash, Bash (command = all its text), Read, Write, Edit (every path under a key ending in path, paths or
             file, case and _ ignored), Edit (all patch and diff file headers in paths), Grep, Glob, WebFetch, mcp__s__t
@@ -123,7 +126,7 @@ import urllib.parse
 from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
-from .policy2.classes import PATH_KEYS, first
+from .policy2.classes import _CI_WORKFLOW, PATH_KEYS, first, fs_forms
 
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
@@ -183,33 +186,51 @@ CURSOR_EDITS = {"StrReplace": ("Edit", "path"), "search_replace": ("Edit", "file
                 "delete_file": ("Edit", "target_file"), "EditNotebook": ("NotebookEdit", "target_notebook"),
                 "edit_notebook": ("NotebookEdit", "target_notebook")}
 CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
-OPENCODE_TOOLS = {"bash": "Bash", "shell": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
-                  "apply_patch": "Edit", "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch",
-                  "websearch": "WebSearch", "task": "Task", "todowrite": "TodoWrite"}   # shell: OpenCode 2.x's bash
+# OpenCode 2.x names bash `shell` and task `subagent`, and its read, write and edit read `path` (1.x: `filePath`); its
+# experimental_image_generate writes `path`, and reads its `images` as Kilo's generate_image reads `image` (tool())
+OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
+                  "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
+                  "task": "Task", "todowrite": "TodoWrite", "shell": "Bash", "subagent": "Task",
+                  "experimental_image_generate": "Write"}
 # goose's hooks guide, Tool Input Keys: the path a tool itself reads decides, as for OpenCode (read_image reads
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
-# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process) or a command left running (Qwen Code's
-# monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
-# they write (tracekit.model_receipt)
-LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process"), ("kilo", "background_process"), ("copilot", "write_bash"),
-                   ("copilot", "write_powershell")))
+# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process), a command left running (Qwen Code's
+# monitor, Kilo's background_process) or run later (Qwen Code's cron_create gate); normalise marks their payload
+# `later`, and the hook takes no receipt of what they write (tracekit.model_receipt)
+LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("qwen", "cron_create"),
+                   ("antigravity", "manage_task"), ("devin", "write_to_process"), ("kilo", "background_process"),
+                   ("copilot", "write_bash"), ("copilot", "write_powershell")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
 # tool itself reads, so a decoy key the model sends beside it never moves the decision. BypassSandbox runs a
 # run_command outside agy's terminal sandbox (google-antigravity/antigravity-cli#1304): TK-A003 holds it
+# agy 1.5 also has read_file, edit_file and write_file, each on its `Path` (as its stream-json step_update events show
+# them), beside the older names
 AGY_TOOLS = {"run_command": "Bash", "view_file": "Read", "write_to_file": "Write", "replace_file_content": "Edit",
              "multi_replace_file_content": "Edit", "list_dir": "LS", "find_by_name": "Glob", "grep_search": "Grep",
-             "read_url_content": "WebFetch", "search_web": "WebSearch", "invoke_subagent": "Task"}
+             "read_url_content": "WebFetch", "search_web": "WebSearch", "invoke_subagent": "Task",
+             "read_file": "Read", "edit_file": "Edit", "write_file": "Write"}
 AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox": "BypassSandbox"},
             "view_file": {"file_path": "AbsolutePath"}, "write_to_file": {"file_path": "TargetFile"},
             "replace_file_content": {"file_path": "TargetFile"}, "multi_replace_file_content": {"file_path": "TargetFile"},
             "list_dir": {"file_path": "DirectoryPath"}, "find_by_name": {"file_path": "SearchDirectory", "pattern": "Pattern"},
-            "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"}}
+            "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"},
+            **dict.fromkeys(("read_file", "edit_file", "write_file"), {"file_path": "Path"})}
+# agy tools the hook denies until their arguments are read: send_command_input types into a running command, and
+# run_workflow (1.5.9) runs a Python script the model wrote, which starts sub-agents; neither's arguments are
+# documented, so what they run can't be decided
+AGY_BLOCKED = {"send_command_input": "types input into a running command",
+               "run_workflow": "runs a Python workflow script, which starts sub-agents"}
+# what an agy write or edit puts in its file, for the rules that read a write's text (TK-A061): every string it sends
+# but its path, as the Write's content or the Edit's new_string, since agy's names for the text aren't all documented
+# (CodeContent, Content, ReplacementContent, ReplacementChunks, ...); _blocked denies a CI workflow write with none.
+# lean: an edit's old text (TargetContent) is read too, so an edit that removes a CI line is held as one that adds it
+AGY_TEXT = {**dict.fromkeys(("write_to_file", "write_file"), "content"),
+            **dict.fromkeys(("replace_file_content", "multi_replace_file_content", "edit_file"), "new_string")}
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
@@ -338,7 +359,8 @@ OPENHANDS_DECIDED_ON = {**{t: k for t, k in OPENHANDS_PATH_ARG.items()},
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
-OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
+OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path",
+                     "experimental_image_generate": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
 # Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
@@ -545,6 +567,34 @@ def _strings(value):
             yield from _strings(child)
 
 
+# gptme's watch verbs that run a command (tools/watch.py), each with the watch's own options it takes off the words
+WATCH_OPTS = {"run": ("timeout",), "stream": ("timeout",), "until": ("every", "timeout")}
+
+
+def _gptme_watch(text):
+    """The command line gptme's `watch run|until|stream <cmd>` runs with shell=True (tools/watch.py _watch), else None:
+    the words after the verb, without the watch's own options (_parse_opts: `--name value` or `--name=value`, a
+    --timeout only with a unit), joined by shlex.join."""
+    try:
+        verb, *rest = shlex.split(text) or [None]
+    except ValueError:   # gptme can't split it either, and runs nothing
+        return None
+    if verb not in WATCH_OPTS:
+        return None
+    words, i = [], 0
+    while i < len(rest):
+        key, eq, value = rest[i][2:].partition("=")
+        if not eq:
+            value = rest[i + 1] if i + 1 < len(rest) and not rest[i + 1].startswith("--") else None
+        if rest[i].startswith("--") and key in WATCH_OPTS[verb] and value is not None and (
+                key != "timeout" or re.fullmatch(r"\d+(?:\.\d+)?(?:ms|s|m|h)", value.strip())):
+            i += 1 if eq else 2
+            continue
+        words.append(rest[i])
+        i += 1
+    return shlex.join(words) or None
+
+
 def _gptme_tool(name, ti):
     args, content, kwargs = ti.get("args"), ti.get("content"), ti.get("kwargs")
     if kwargs is not None:
@@ -593,6 +643,13 @@ def _gptme_tool(name, ti):
         command = kwargs.get("command") if kwargs is not None else content
         if isinstance(command, str) and command.lstrip().startswith("load"):
             return "mcp__gptme__load", {"command": command}
+
+    if name == "watch":   # run, until and stream start their command and return while it runs (until: again at each
+        # poll), so its effects come after the call's post-tool hook
+        text = kwargs.get("content") if kwargs is not None else content
+        command = _gptme_watch(text) if isinstance(text, str) else None
+        if command:
+            return "Bash", {"command": command, "run_in_background": True}
 
     if name in ("shell", "ipython"):
         key = "command" if name == "shell" else "code"
@@ -661,8 +718,9 @@ def tool(harness, name, ti):
             path = ti.get(OPENHANDS_PATH_ARG[name])
             ti["paths"] = [path] if isinstance(path, str) and path else []
             ti["file_path"] = ti["paths"][0] if ti["paths"] else None
-            if name == "file_editor":
-                return {"view": "Read", "create": "Write"}.get(ti.get("command"), "Edit"), ti
+            if name == "file_editor":   # a command that isn't text is denied in _blocked
+                c = ti.get("command")
+                return {"view": "Read", "create": "Write"}.get(c, "Edit") if isinstance(c, str) else "Edit", ti
         if name == "terminal" and isinstance(ti.get("command"), str):
             # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
             # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
@@ -765,6 +823,10 @@ def tool(harness, name, ti):
         return edit[0] if edit else CURSOR_TOOLS.get(name, name), ti
     if harness == "gemini" and name.startswith("mcp_"):   # mcp_<server>_<tool> (packages/core/src/tools/mcp-tool.ts)
         return "mcp__" + name[4:], ti
+    if harness == "qwen" and name == "cron_create" and isinstance(ti.get("gate"), str):
+        # its gate is a shell command the scheduler runs at each fire, unattended and with no hook
+        # (services/cron-gate.ts): decided as that command when the task is made
+        return "Bash", {**ti, "command": ti["gate"]}
     if harness in ("gemini", "qwen"):
         mapped = (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name)
         if mapped != "Bash":   # a shell command's dir_path is where it runs, not a file it reads
@@ -796,19 +858,21 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in path_arg:
             ti["file_path"] = ti.get(path_arg[name])
-            # OpenCode 2.x's read, write and edit read `path` where 1.x's read filePath: each one sent is decided, so a
-            # decoy under the other release's key never stands in for the one the tool reads
-            files = [ti[k] for k in ("filePath", "path") if isinstance(ti.get(k), str)] * (path_arg[name] == "filePath")
-            if len(set(files)) > 1:
-                ti["paths"] = list(dict.fromkeys(files + [f for f in ti.get("paths") or () if isinstance(f, str)]))
+            if path_arg[name] == "filePath" and isinstance(ti.get("path"), str):   # 2.x reads `path`: each is decided
+                ti["paths"] = list(dict.fromkeys(p for p in (ti["file_path"], ti["path"]) if isinstance(p, str)))
+                ti["file_path"] = ti["paths"][0]
         if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
             ti["notebook_path"] = ti["file_path"]
-        if harness == "kilo" and name == "generate_image":
+        if (harness, name) in (("kilo", "generate_image"), ("opencode", "experimental_image_generate")):
             ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
-            if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
-                # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
-                ti["file_path"] = ti["image"]
-                ti["paths"] = [ti["image"]] + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
+            # Kilo's `image` and OpenCode 2.x's `images`, files read and sent to the image provider: decided as a Read
+            # of each, with the `path` it writes (an image extension is given to it)
+            # lean: an http(s) image OpenCode downloads is decided as a path, not by the fetch rules
+            images = ti.get("image" if harness == "kilo" else "images")
+            images = [i for i in (images if isinstance(images, list) else [images]) if isinstance(i, str)]
+            if images:
+                ti["file_path"] = images[0]
+                ti["paths"] = images + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
@@ -844,7 +908,12 @@ def tool(harness, name, ti):
         if name == "manage_task" and str(ti.get("Action")).casefold() == "send_input":
             ti["command"] = ti["Input"].replace("\r", "\n") if isinstance(ti.get("Input"), str) else ti.get("Input")
             return "Bash", ti
+        if name in AGY_TEXT:
+            paths = {AGY_ARGS[name]["file_path"].casefold(), *PATH_KEYS, "paths"}
+            text = "\n".join(s for k, v in ti.items() if k.casefold() not in paths for s in _strings(v))
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
+        if name in AGY_TEXT and text:
+            ti[AGY_TEXT[name]] = text
         return AGY_TOOLS.get(name, name), ti
     if harness == "crush":
         if name.startswith("mcp_"):   # Crush names an MCP tool mcp_<server>_<tool> (internal/agent/tools/mcp-tools.go)
@@ -905,7 +974,8 @@ def tool(harness, name, ti):
         return CLINE_TOOLS.get(name, name), ti
     if harness == "copilot":
         if name == "str_replace_editor":   # one tool for viewing, creating and editing: decided as the one it does
-            name = COPILOT_EDITOR.get(ti.get("command"), "edit")
+            c = ti.get("command")
+            name = COPILOT_EDITOR.get(c, "edit") if isinstance(c, str) else "edit"
         if name == "apply_patch":   # the patch is the arguments, or their `input` or `patch`
             files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]
             if not files or not all(files):
@@ -1239,8 +1309,9 @@ PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands")   # t
 # as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
 GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
 # Crush's sub-agent tools: a sub-agent's own calls (view, grep, sourcegraph, web_fetch, ...) run no hooks
-# (internal/agent/hooked_tool.go, wrapToolsWithHooks)
-CRUSH_SUBAGENTS = ("agent", "agentic_fetch")
+# (internal/agent/hooked_tool.go, wrapToolsWithHooks); the TUI starts one with agent_dispatch, which may give it write
+# tools, and agent_send resumes one with a new message (internal/agent/agent_dispatch.go)
+CRUSH_SUBAGENTS = ("agent", "agentic_fetch", "agent_dispatch", "agent_send")
 # Docker MCP Gateway's code-mode makes a tool, code-mode-<name>, whose script calls MCP tools inside the gateway, where
 # no hook sees them (docker/mcp-gateway pkg/gateway/codemode.go); Crush names them mcp_<server>_code-mode[-<name>]
 CRUSH_CODE_MODE = re.compile(r"mcp_.+_code-mode(-.+)?", re.S)
@@ -1295,8 +1366,8 @@ def _blocked_tool(harness, tool_name, raw=""):
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
                 "can't decide them; make each call itself instead. To stop Crush offering it, put "
-                '"permissions deny agent agentic_fetch" in crushrc (in crush.json: '
-                '"options": {"disabled_tools": ["agent", "agentic_fetch"]}).')
+                f'"permissions deny {" ".join(CRUSH_SUBAGENTS)}" in crushrc (in crush.json: '
+                f'"options": {{"disabled_tools": {json.dumps(list(CRUSH_SUBAGENTS))}}}).')
     if CRUSH_CODE_MODE.fullmatch(tool_name):
         return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
                 "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "
@@ -1391,6 +1462,10 @@ def _blocked(harness, p, raw="", line=None):
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
         name = str(call.get("name") or "?")
+        if name.casefold() in AGY_BLOCKED:   # agy may match a tool's name ignoring case (tool())
+            return (f"Blocked by Tracekit: agy's {name} {AGY_BLOCKED[name.casefold()]}, and Tracekit doesn't read its "
+                    "arguments yet, so it can't decide what the call runs; run each command with run_command (or type "
+                    "into a background command with manage_task's send_input), which Tracekit decides.")
         why = _blocked_agy_args(name, call.get("args"))
         if why is None and name.casefold() == "manage_task":   # input typed into a background run_command
             args = call.get("args")
@@ -1398,6 +1473,12 @@ def _blocked(harness, p, raw="", line=None):
             if str(ti.get("Action")).casefold() == "send_input" and isinstance(ti.get("command"), str):
                 why = _typed("agy's manage_task", "send_input", ti["command"]) or line and _typed(
                     "agy's manage_task", "send_input", line.replace(UNKNOWN, "")) or _twice(harness, "manage_task", ti)
+        if why is None and name.casefold() in AGY_TEXT:   # a CI workflow write is decided on its text (TK-A061)
+            ti = tool(harness, name, (p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}).get("args"))[1]
+            if not ti.get(AGY_TEXT[name.casefold()]) and any(
+                    _CI_WORKFLOW.search(f.casefold()) for f in fs_forms(ti.get("file_path"))):
+                why = (f"Blocked by Tracekit: agy's {name[:64]} writes a CI workflow file but sends no text Tracekit "
+                       "can read, so it can't decide what the workflow will run; send the file's text.")
         return why
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
@@ -1406,6 +1487,10 @@ def _blocked(harness, p, raw="", line=None):
         return (f"Blocked by Tracekit: Devin's {name[:64]} call sends an argument more than once (case ignored): "
                 f"{twice[:64]!r}. json.loads keeps its last value and Devin's decoder may keep another, so Tracekit "
                 "can't be sure it decides the arguments the tool runs with; send each argument once.")
+    if harness == "openhands" and name == "file_editor" and not isinstance(_input(p.get("tool_input")).get("command"),
+                                                                           str):
+        return ("Blocked by Tracekit: OpenHands' file_editor call's command isn't text (view, create, str_replace, "
+                "insert or undo_edit), so Tracekit can't tell whether it reads, creates or edits its file.")
     if harness == "openhands" and name in OPENHANDS_DECIDED_ON and not tool(harness, name, p.get("tool_input"))[1].get(
             "file_path"):
         sent = ", ".join(k for k, v in _input(p.get("tool_input")).items() if v is not None and k != "kind")[:200]
@@ -1451,6 +1536,11 @@ def _blocked(harness, p, raw="", line=None):
                 "Copilot's", cname, line.replace(UNKNOWN, ""), devin=True) or _twice(harness, cname, ti)
             if reason:
                 return reason
+    elif harness == "cursor" and name == "WriteShellStdin":   # typed into a running shell, as Devin's write_to_process,
+        # but its preToolUse payload holds only the shell's id and the text's length (Cursor 3.29.15)
+        return ("Blocked by Tracekit: Cursor's WriteShellStdin types text into a running shell, and its hook sends the "
+                "text's length but not the text, so Tracekit can't decide what it runs; run the command in a Shell call "
+                "of its own instead.")
     return _blocked_tool(harness, name, raw)
 
 
@@ -1866,11 +1956,12 @@ def _plugin_marker(harness):
 
 
 def _opencode_plugin(python, v2, harness="opencode"):
-    """The local OpenCode plugin (Kilo's too: harness). OpenCode runs plugins with Bun and awaits a before hook, so the
-    hook's process, spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call
-    until Tracekit allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call
-    blocked. Each event's command names the event, and runs the hook as install._hook_command does (python, or this
-    interpreter)."""
+    """The local OpenCode plugin (Kilo's too: harness), in the forms OpenCode 1.x and 2.x load: the named export 1.x
+    reads, and the default export {id, setup} 2.x requires (packages/core/src/plugin/module.ts), whose `server` is the
+    1.x plugin. OpenCode runs plugins with Bun and awaits a before hook, so the hook's process, spawned without blocking
+    OpenCode's event loop (parallel calls are decided at once), holds the call until Tracekit allows or denies it (or a
+    person approves it); one that doesn't answer in time is killed and its call blocked. Each event's command names the
+    event, and runs the hook as install._hook_command does (python, or this interpreter)."""
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
@@ -1928,6 +2019,26 @@ export const TracekitPlugin = async ({{ directory }}) => ({{
     if (result.code !== 0) console.error(result.message);
   }},
 }});
+
+// OpenCode 2.x loads a plugin only from its default export, {{id, setup}}: without it, it logs a warning and runs every
+// call undecided. 1.x reads that object's server (its plugin above); a throw in execute.before blocks the call there too
+export default {{
+  id: "tracekit",
+  server: TracekitPlugin,
+  setup: async (ctx) => {{
+    const call = (event) => ({{ sessionID: event.sessionID, callID: event.id, tool: event.tool,
+                               cwd: ctx.location.directory }});
+    await ctx.tool.hook("execute.before", async (event) => {{
+      const result = await tracekit("tool.execute.before", call(event), event.input);
+      if (result.code !== 0) throw new Error(result.message || "Blocked by Tracekit: the hook could not decide this call");
+    }});
+    await ctx.tool.hook("execute.after", async (event) => {{
+      const result = await tracekit("tool.execute.after", call(event), event.input,
+                                    event.status === "completed" ? event.result : {{ error: event.error }});
+      if (result.code !== 0) console.error(result.message);
+    }});
+  }},
+}};
 '''
 
 
