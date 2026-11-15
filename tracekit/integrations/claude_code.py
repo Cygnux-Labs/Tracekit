@@ -39,7 +39,8 @@ run; with none when it parked itself (idle). A new session's run
 reads it from its first line; a later run of the session (after an idle close) has its tailer start where the hook last
 saw the transcripts while the earlier run was open (_seen), and a resumed session's first run, or one a session with no
 state left starts (Claude Code went on after a SessionEnd with no SessionStart), where its transcript ended then: the
-lines before are an earlier run's.
+lines before are an earlier run's. Each such later run is registered with `continues`: the model may still hold what an
+earlier run read, so the signer starts the run's provenance index `partial` (a fresh session's starts `complete`).
 
 At UserPromptSubmit, the typed part of the harness's prompt is recorded (`observe`, source <agent>:UserPromptSubmit,
 trusted); harness-wrapped parts are separate untrusted observations, and so is the whole of a turn Claude Code's payload
@@ -76,6 +77,7 @@ import glob
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shlex
@@ -277,13 +279,27 @@ def approval_wait_s():
     return w if 0 < w <= APPROVAL_WAIT_S else APPROVAL_WAIT_S if w > APPROVAL_WAIT_S else 0.0
 
 
+def deadline(event, begun):
+    """When the hook for `event` that started at `begun` (time.monotonic()) must have answered, under its harness's
+    timeout for the event; every wait in it (for a starting signer, a rate limit, an approval) takes what is left. A
+    pre-tool hook's harness gives it 600 s (install.HOOK_TIMEOUT, agent_hooks' install): APPROVAL_WAIT_S; any other
+    event's 30 s (Claude Code's 60 s): twice autospawn's own timeout, and Claude Code's SessionEnd 15 s: once; Cline runs
+    a call whose hook is still running at 30 s: agent_hooks.CLINE_WAIT_S for every event."""
+    if AGENT == "cline":
+        from tracekit.agent_hooks import CLINE_WAIT_S
+        return begun + CLINE_WAIT_S
+    return begun + (APPROVAL_WAIT_S if event == "PreToolUse" else autospawn.TIMEOUT_S if event == "SessionEnd" else
+                    2 * autospawn.TIMEOUT_S)
+
+
 class HookClient(Client):
-    """The hooks' client: a call the signer rate-limits (quota_exceeded with retry_after_ms) is sent again once that has
-    passed, within the client's timeout, as the tailer's lines are. In dev mode the hooks and the tailer share the
-    agent's uid, and so its event rate: a tailer reading a long transcript must not have the hook's decide refused."""
+    """The hooks' client, by the hook's deadline() (`answer_by`): a call the signer rate-limits (quota_exceeded with
+    retry_after_ms) is sent again once that has passed, within the client's timeout and the deadline, as the tailer's
+    lines are. In dev mode the hooks and the tailer share the agent's uid, and so its event rate: a tailer reading a
+    long transcript must not have the hook's decide refused."""
 
     def call(self, method, req=None, **fields):
-        end = time.monotonic() + self.timeout
+        end = min(time.monotonic() + self.timeout, self.answer_by or math.inf)
         while True:
             try:
                 return super().call(method, req, **fields)
@@ -324,9 +340,10 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
     order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
     run is marked ended instead, and the session's next event that registers starts the new one). `transcript` (the
     payload's): kept in the session state; each run of the session gets a tailer on it, which starts at the first line
-    of a new session's (`start`, the SessionStart source: startup or clear), at where it ends at registration for a
-    resumed or forked session or one with no state left, else where the session's earlier run was last seen open
-    (_seen; _tail for a run registered before its transcript was known).
+    of a new session's (`start`, a SessionStart's source: startup or clear; "" for none, None when the event is no
+    SessionStart), at where it ends at registration for a resumed or forked session or one with no state left, else
+    where the session's earlier run was last seen open (_seen; _tail for a run registered before its transcript was
+    known).
     `stated`: the constraints a prompt states, kept in the session state; each run gets the session's (_constrain).
     `skip`: client_seq values left unsent before `send` (_send)."""
     path = _state(sid)
@@ -334,9 +351,13 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
         lock_file(lk)
         st = _load(path)
         if register and (st is None or st.get("ended")):
+            # a session with no state is new at a SessionStart that doesn't say resume or fork, and at another
+            # harness's first event; Claude Code starts each session with SessionStart, so one of its sessions whose
+            # first event is another went on after its SessionEnd, and its model holds its earlier runs' content
+            fresh = st is None and start not in RESUMED and (start is not None or AGENT != "claude-code")
             # where its tailer starts, kept in the state so a retried start (_tail) reads from the same place
             st = _register(client, path, st, {transcript: 0} if transcript and st is None and start in FRESH else
-                           _seen(transcript) if st is None or start in RESUMED else None)
+                           _seen(transcript) if st is None or start in RESUMED else None, continues=not fresh)
         if st and transcript:
             st["transcript"] = transcript
         if st and stated:
@@ -378,11 +399,14 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             return _send(client, path, st, send, fields, seen, skip)
 
 
-def _register(client, path, prev=None, offsets=None):
+def _register(client, path, prev=None, offsets=None, continues=True):
     """A new run for the session whose state was `prev` (None: its first), keeping its transcript and where the
-    earlier run was last seen open in it (`offsets` in place of that)."""
+    earlier run was last seen open in it (`offsets` in place of that). `continues`: the session had a run before (an
+    idle close, a resume), whose content its model may still hold: the signer starts the new run's provenance index
+    partial."""
     version = os.environ.get("CLAUDE_CODE_VERSION") if AGENT == "claude-code" else None
-    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
+    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})},
+                               **({"continues": True} if continues else {})})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
@@ -677,8 +701,11 @@ def _approval_command_prefix(agent, signer):
     return ""
 
 
-def _pre(client, p, sid, tid):
-    end, per_call = time.monotonic() + APPROVAL_WAIT_S, client.timeout   # every signer call is capped to the time left
+def _pre(client, p, sid, tid, end=None):
+    # `end`: the hook's deadline(); every signer call is capped to the time left, and to a quarter of it, so the last
+    # approval_wait's answer and the consume fit in what an approval wait leaves
+    end = end or time.monotonic() + APPROVAL_WAIT_S
+    per_call = min(client.timeout, max(end - time.monotonic(), 0.0) / 4)
 
     def cap(wait_s=0.0):
         client.timeout = max(min(per_call, end - time.monotonic() - wait_s), 0.001)
@@ -1117,9 +1144,9 @@ def _tool_class(tool):
     return load_policy().tool_class(tool)
 
 
-def _handle(client, p, event, sid, tid):
+def _handle(client, p, event, sid, tid, end=None):
     if event == "PreToolUse":
-        return _pre(client, p, sid, tid)
+        return _pre(client, p, sid, tid, end)
     if event in TOOL_EVENTS:
         return _post(client, p, sid, tid)
     if AGENT == "gptme" and event == "PromptObserved":
@@ -1227,7 +1254,7 @@ def _handle(client, p, event, sid, tid):
         return 1 if refused else 0   # shown to the person (FULL, on stderr), never blocking the prompt
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded
-    _run(client, sid, transcript=transcript, start=p.get("source") if event == "SessionStart" else None)
+    _run(client, sid, transcript=transcript, start=(p.get("source") or "") if event == "SessionStart" else None)
     return 0
 
 
@@ -1248,9 +1275,10 @@ def _entry(event=None):
     return handle(dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {})
 
 
-def handle(p):
+def handle(p, begun=None):
     """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
-    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
+    onto it), in a hook that began at `begun` (time.monotonic(); default now): its deadline() bounds every wait.
+    -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
     blocked: any other event that fails returns 1, a non-blocking error the harness shows (2 would erase a prompt, or
     send the agent back to work at Stop), and its tool calls are still decided at PreToolUse. An event let through (0)
     may also tell the person, once per session, that the signer runs another Tracekit version (_skew): in Claude Code's
@@ -1258,7 +1286,7 @@ def handle(p):
     out, notice = io.StringIO(), None
     with contextlib.redirect_stdout(out), warnings.catch_warnings():
         warnings.filterwarnings("ignore", SKEW)
-        code, client = _event(p)
+        code, client = _event(p, deadline(p.get("hook_event_name"), begun or time.monotonic()))
         if code == 0 and client:
             try:
                 notice = _skew(client, p.get("session_id"))
@@ -1279,8 +1307,9 @@ def handle(p):
     return code
 
 
-def _event(p):
-    """handle's answer to one event: (exit code, the client that asked the signer, or None)."""
+def _event(p, end=None):
+    """handle's answer to one event, by the hook's deadline `end`: (exit code, the client that asked the signer, or
+    None)."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
     pre = name == "PreToolUse"
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
@@ -1291,12 +1320,12 @@ def _event(p):
         return 2 if pre else 0, None
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
-        client = HookClient()
+        client = HookClient(answer_by=end)
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code, None
     try:
-        return _handle(client, p, name, sid, tid), client
+        return _handle(client, p, name, sid, tid, end), client
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
         fix = ""

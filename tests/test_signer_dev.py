@@ -217,6 +217,34 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertEqual(autospawn.down(timeout=10, d=self.run_dir), p.pid)
         self.assertEqual(p.wait(10), 0)
 
+    def starting(self, seconds):
+        """A dev signer of self.run_dir that takes `seconds` to start once it holds signer.lock. Its process."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        child = ("import sys, time; from tracekit.signer import service; sys.exit(service.serve_dev(sys.argv[1], "
+                 f"lambda: time.sleep({seconds}) or (lambda *a: None, lambda: None)))")
+        with open(self.path(autospawn.LOG), "ab") as log:
+            p = subprocess.Popen([sys.executable, "-c", child, self.run_dir], stdout=log, stderr=log)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(self.held, 30)
+        return p
+
+    def test_a_client_waits_past_its_timeout_for_a_signer_that_says_it_is_starting(self):
+        """A dev signer reading a long store (rebuilding its open runs' provenance indexes) takes longer to answer than
+        a client waits: it logs STARTING once it holds signer.lock, and a client waits on while it does."""
+        p = self.starting(2)
+        sock, _, hello = autospawn.ensure(timeout=0.5)
+        sock.close()
+        self.assertEqual(hello["pid"], p.pid)
+
+    def test_a_client_waits_for_a_starting_signer_only_as_long_as_it_may(self):
+        """`start_wait` bounds the whole wait: a hook answers within its harness's timeout (claude_code.start_wait)."""
+        self.starting(30)
+        begun = time.monotonic()
+        with self.assertRaises(autospawn.Hung):
+            autospawn.ensure(timeout=0.5, start_wait=1.5)
+        self.assertLess(time.monotonic() - begun, 5)
+
     def test_a_client_that_finds_the_signer_stopping_starts_the_next_once_it_exits(self):
         """Review of 1.5.3: a client that found signer.lock held and nothing answering (a `tracekit down` while an agent
         runs, an idle exit racing a hook) waited out its 10 s for that signer, which was exiting, and started none."""

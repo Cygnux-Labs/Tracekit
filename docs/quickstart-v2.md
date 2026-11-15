@@ -45,9 +45,9 @@ with it the bugs and security holes fixed since:
   uv made), or run `tracekit init --dev --v2` again from the upgraded install to point the hooks at it.
 - **The running dev signer.** It keeps its version until it stops, after 15 minutes with no client connected (a Claude
   Code session's transcript tailer stays connected while the session is open). Stop it with `tracekit down`; the next
-  call starts one from the calling hook's Python. Open sessions go on in it: a signer keeps its runs and their run tokens across a restart (a run open across
-  one gets an `unavailable` provenance index, so a `from: untrusted` rule holds more of its calls:
-  [limits](limits.md#provenance-11)).
+  call starts one from the calling hook's Python. Open sessions go on in it: a signer keeps its runs and their run tokens across a restart (the signer rebuilds the
+  provenance index of a run open across one from the run's records and its content vault; one it can't rebuild
+  whole holds more calls of a `from: untrusted` rule: [limits](limits.md#provenance-11)).
 
 `tracekit doctor` checks both (`D-VERSIONS`) and prints the commands for your machine; it upgrades and stops nothing.
 A hook whose signer runs another version says so too, once per session, with the same fix.
