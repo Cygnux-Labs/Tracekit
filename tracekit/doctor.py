@@ -212,8 +212,16 @@ def _dev_settings():
 
 def _harness_hooks(harness, config):
     """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map (a Devin project's
-    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
+    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), Kiro's is a list of hooks, each
+    naming its event (`trigger`) and its command (`action`), less those Kiro skips (`"enabled": false`), the others'
+    is under `hooks`."""
     from . import agent_hooks
+    if harness == "kiro":
+        out = {}
+        for h in config.get("hooks") or ():
+            if isinstance(h, dict) and isinstance(h.get("action"), dict) and h.get("enabled") is not False:
+                out.setdefault(h.get("trigger"), []).append({**h, "command": h["action"].get("command")})
+        return out
     if harness == "droid":
         return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
     if harness == "devin" and "hooks" not in config:
@@ -224,7 +232,21 @@ def _harness_hooks(harness, config):
     if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
         named = config.get(agent_hooks.AGY_HOOK) or {}
         return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
+    if harness == "jcode":   # its [hooks] table: each key a command or a list of them; one gate timeout, in ms (5 s
+        # when unset), for every pre_tool command
+        table = config.get("hooks") or {}
+        timeout = table.get("pre_tool_timeout_ms", 5000)
+        timeout = timeout / 1000 if type(timeout) in (int, float) else 0
+        return {ev: [{"command": c, **({"timeout": timeout} if ev in agent_hooks.PRE else {})}
+                     for c in (table[k] if isinstance(table[k], list) else [table[k]])]
+                for k, ev in agent_hooks.JCODE_EVENTS.items() if k in table}
     return config.get("hooks") or {}
+
+
+def _config(harness, path):
+    """A coding agent's hook config at `path`, parsed: jcode's TOML, the others' JSON."""
+    from . import agent_hooks
+    return agent_hooks.jcode_config(path) if harness == "jcode" else _json(path) or {}
 
 
 def _dev_harnesses():
@@ -273,7 +295,7 @@ def _hook_commands(harness, path):
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
-    hooks = _harness_hooks(harness, _json(path) or {})
+    hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
             if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
@@ -796,8 +818,22 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
+        if harness == "kiro":
+            version = agent_hooks.kiro_version()
+            old = version is not None and version < (3,)
+            add("D-HOOKS-EVENT", not old,
+                agent_hooks.KIRO_OLD.format(".".join(map(str, version))) if old else
+                f"Kiro CLI {'.'.join(map(str, version)) if version else '(version unread)'} runs the hook files in "
+                f"{os.path.dirname(path)}", "upgrade Kiro CLI to 3.0 or later", bad=WARN)
+            with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+                off = sorted({h.get("trigger") for h in (_json(path) or {}).get("hooks") or ()
+                              if isinstance(h, dict) and h.get("enabled") is False and isinstance(h.get("action"), dict)
+                              and agent_hooks._version(h["action"].get("command")) is not None})
+                add("D-HOOKS-EVENT", not off,
+                    f'Tracekit\'s Kiro {", ".join(map(str, off))} hook(s) are "enabled": false in {path}, so Kiro '
+                    "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
-            hooks = _harness_hooks(harness, _json(path) or {})
+            hooks = _harness_hooks(harness, _config(harness, path))
             cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
                     for h in (g.get("hooks") or () if "hooks" in g else [g])
                     if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
@@ -833,6 +869,18 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                 "the last hook's permissionDecision: its allow runs a call Tracekit denied" if later else
                 "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
                 "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
+        if harness == "jcode":   # jcode runs its gates in order, and one's updatedInput replaces the input the next
+            # gates get and the tool runs with. Find the first Tracekit module even under another interpreter;
+            # any later gate but an exact command init writes may rewrite the call, as for CodeBuddy Code
+            gates = [h["command"] for h in hooks.get("PreToolUse", ())]
+            mine = {agent_hooks._command("jcode", "PreToolUse", v2, python)
+                    for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
+            start = next((i + 1 for i, c in enumerate(gates) if agent_hooks._version(c) is not None), len(gates))
+            after = [c for c in gates[start:] if c not in mine]
+            add("D-HOOKS-ORDER", not after,
+                f"{len(after)} jcode pre_tool command(s) in {path} run after Tracekit's: a gate's updatedInput replaces "
+                "the input of the call Tracekit decided" if after else "Tracekit's is the last jcode pre_tool command",
+                f"put Tracekit's command last in pre_tool in {path}", bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
         default = 30 if harness in ("antigravity", "crush", "copilot") else 60

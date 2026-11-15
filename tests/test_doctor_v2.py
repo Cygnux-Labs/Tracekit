@@ -296,6 +296,41 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertIn(user, later()[2])
 
+    def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
+        """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
+        gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""
+        path = os.path.join(self.d, "jh", "config.toml")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("jcode", path=path, v2=True)
+        ours = agent_hooks._command("jcode", "PreToolUse", True, None)
+
+        def rows(table=None):
+            if table is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    # between Tracekit's markers, so Python 3.9 (no tomllib) reads it too
+                    f.write("\n".join([agent_hooks.JCODE_BEGIN, "[hooks]", *agent_hooks._jcode_lines(table),
+                                       agent_hooks.JCODE_END]) + "\n")
+            got = {}
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.setdefault(rid, (ok, detail)),
+                                        {"jcode": path}, False, self.d)
+            return got
+
+        got = rows()
+        self.assertEqual({k: v[0] for k, v in got.items()},
+                         {"D-HOOKS-EVENT": True, "D-HOOKS-ORDER": True, "D-HOOKS-TIMEOUT": True})
+        hooks = agent_hooks._jcode_hooks(True, None)
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", ours]})["D-HOOKS-ORDER"][0])
+        other_python = agent_hooks._command("jcode", "PreToolUse", True, "/opt/other/bin/python3")
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", other_python]})["D-HOOKS-ORDER"][0])
+        self.assertFalse(rows({**hooks, "pre_tool": [other_python, "/usr/local/bin/rewriter"]})["D-HOOKS-ORDER"][0])
+        for later in ("~/bin/rewrite", "~/bin/rewrite  # tracekit.integrations.harness_hooks"):
+            with self.subTest(later=later):
+                ok, detail = rows({**hooks, "pre_tool": [ours, later]})["D-HOOKS-ORDER"]
+                self.assertFalse(ok)
+                self.assertIn("1 jcode pre_tool command(s)", detail)
+        no_timeout = {k: v for k, v in hooks.items() if k != "pre_tool_timeout_ms"}   # jcode's default: 5 s
+        self.assertFalse(rows(no_timeout)["D-HOOKS-TIMEOUT"][0])
+
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
         from tracekit import agent_hooks
@@ -616,6 +651,32 @@ class DroidHooks(unittest.TestCase):
                        if r["id"] == "D-HOOKS-TIMEOUT")
             self.assertEqual(row["status"], "warn")
             self.assertIn("60 s", row["detail"])
+
+
+class KiroHooks(unittest.TestCase):
+    def test_kiro_hooks_kiro_skips_and_a_cli_before_3_are_warned_about_on_either_path(self):
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(agent_hooks, "kiro_version", return_value=(3, 3, 0)):
+            path = agent_hooks.config_path("kiro", os.path.join(d, "p"))   # a project's
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("kiro", os.path.join(d, "p"), v2=True)
+
+            def rows():
+                return [r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"kiro": path})
+                        if r["id"] in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT")]
+            self.assertEqual({r["status"] for r in rows()}, {"ok"}, rows())
+            with mock.patch.object(agent_hooks, "kiro_version", return_value=(2, 9, 0)):
+                self.assertTrue(any(r["status"] == "warn" and "came with CLI V3" in r["detail"] for r in rows()))
+            with open(path) as f:
+                config = json.load(f)
+            config["hooks"][0]["enabled"] = False   # PreToolUse: Kiro skips it
+            with open(path, "w") as f:
+                json.dump(config, f)
+            warned = [r["detail"] for r in rows() if r["status"] == "warn"]
+            self.assertTrue(any('PreToolUse hook(s) are "enabled": false' in w for w in warned), warned)
+            self.assertTrue(any("no Tracekit v2 hook on the pre-tool event" in w for w in warned), warned)
 
 
 class AntigravityHooks(unittest.TestCase):
