@@ -628,6 +628,41 @@ test("TCP: a stalled handshake stops within timeoutMs instead of waiting CONNECT
   }
 });
 
+async function assertHungConnectReportsAddress(path) {
+  const c = new Client({ signer: path, timeoutMs: 5000 });
+  const start = Date.now();
+  const results = await Promise.allSettled([
+    c.call("status", {}),
+    c.call("approval_wait", { run_id: "r1", run_token: "t", approval_id: "a1", timeout_ms: 0 }),
+  ]);
+  assert.ok(Date.now() - start < 3500);
+  for (const r of results) {
+    assert.equal(r.status, "rejected");
+    assert.ok(r.reason instanceof SignerUnavailable);
+    assert.ok(r.reason.message.startsWith(`no signer answering at ${path}: no answer from the signer within `), r.reason.message);
+    assert.doesNotMatch(r.reason.message, /within 5s/);
+  }
+  await c.close();
+}
+
+test("TCP: a hung signer reports its address at CONNECT_TIMEOUT_MS, not timeoutMs", async (t) => {
+  const held = [];
+  const srv = createServer((sock) => held.push(sock));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => {
+    for (const s of held) s.destroy();
+    srv.close();
+  });
+  const before = process.env.TRACEKIT_SIGNER_TOKEN;
+  process.env.TRACEKIT_SIGNER_TOKEN = "0".repeat(32);
+  try {
+    await assertHungConnectReportsAddress(`tcp://127.0.0.1:${srv.address().port}`);
+  } finally {
+    if (before === undefined) delete process.env.TRACEKIT_SIGNER_TOKEN;
+    else process.env.TRACEKIT_SIGNER_TOKEN = before;
+  }
+});
+
 test("HTTPS: a call timed out before its first try uses its client_seq", async () => {
   const seen = [];
   const c = https(async (f) => {
@@ -758,4 +793,9 @@ test("fake: a call joining another call's reconnect keeps its own timeout budget
   await assert.rejects(callA, (e) => e instanceof SignerUnavailable && /within 1s/.test(e.message));
   assert.deepEqual(await callB, { ok: true });
   await c.close();
+});
+
+test("fake: a hung signer reports its address at CONNECT_TIMEOUT_MS, not timeoutMs", async (t) => {
+  const { path } = await fake(t, { hello: () => true });
+  await assertHungConnectReportsAddress(path);
 });

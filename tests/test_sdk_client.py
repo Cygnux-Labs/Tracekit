@@ -9,6 +9,7 @@ import io
 import json
 import os
 import random
+import re
 import shutil
 import signal
 import socket
@@ -621,6 +622,50 @@ class Transports(unittest.TestCase):
             c.status()
         self.assertLess(time.monotonic() - t, 1.0)
 
+    def test_hung_tcp_signer_reports_signer_address_at_connect_timeout(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        self.addCleanup(srv.close)
+        held = []
+
+        def accept_all():
+            with contextlib.suppress(OSError):
+                while True:
+                    conn, _ = srv.accept()
+                    held.append(conn)
+        threading.Thread(target=accept_all, daemon=True).start()
+        self.addCleanup(lambda: [s.close() for s in held])
+        _assert_hung_connect_reports_address(self, f"tcp://127.0.0.1:{srv.getsockname()[1]}", token="0" * 32)
+
+
+def _assert_hung_connect_reports_address(test, addr, **kwargs):
+    c = Client(addr, timeout=5, **kwargs)
+    test.addCleanup(c.close)
+    errs = {}
+
+    def run(name, fn):
+        try:
+            fn()
+        except BaseException as e:
+            errs[name] = e
+
+    t = time.monotonic()
+    threads = [
+        threading.Thread(target=run, args=("status", lambda: c.status({}))),
+        threading.Thread(target=run, args=("wait", lambda: c.approval_wait(
+            {"run_id": "r1", "run_token": "t", "approval_id": "a1", "timeout_ms": 0}))),
+    ]
+    for th in threads:
+        th.start()
+    for th in threads:
+        th.join(6)
+    test.assertLess(time.monotonic() - t, 3.5)
+    for name in ("status", "wait"):
+        e = errs.get(name)
+        test.assertIsInstance(e, client.SignerUnavailable, f"{name}: {e!r}")
+        test.assertRegex(str(e), rf"^no signer answering at {re.escape(addr)}: timed out$")
+
 
 HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
 EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
@@ -827,6 +872,21 @@ class FakeSigners(unittest.TestCase):
         with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.5s"):
             c.status({})
         self.assertLess(time.monotonic() - t, 0.75)
+
+    def test_hung_unix_signer_reports_signer_address_at_connect_timeout(self):
+        srv, held, stop = socket.socket(socket.AF_UNIX), [], threading.Event()
+        srv.bind(self.path)
+        srv.listen()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+        self.addCleanup(stop.set)
+
+        def serve():
+            with contextlib.suppress(OSError):
+                while not stop.is_set():
+                    conn, _ = srv.accept()
+                    held.append(conn)
+        threading.Thread(target=serve, daemon=True).start()
+        _assert_hung_connect_reports_address(self, self.path)
 
     def test_a_forked_child_does_not_inherit_a_held_lock(self):
         code = f"""if 1:

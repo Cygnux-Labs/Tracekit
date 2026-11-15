@@ -202,7 +202,7 @@ export async function connect(path: string, token?: string, timeoutMs = CONNECT_
     conn?.sock.destroy();
     if (e instanceof SignerUnavailable && !conn) throw e;
     const msg = `no signer answering at ${path}: ${(e as Error).message}`;
-    throw e instanceof TimeoutUnavailable ? new TimeoutUnavailable(msg) : new SignerUnavailable(msg);
+    throw e instanceof TimeoutUnavailable && timeoutMs < CONNECT_TIMEOUT_MS ? new TimeoutUnavailable(msg) : new SignerUnavailable(msg);
   }
   try {
     check(hello, path);
