@@ -47,6 +47,7 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 | CodeBuddy Code (`tracekit init --dev --v2 --agent codebuddy`) | Experimental | [coding agents](coding-agents.md) |
 | jcode (`tracekit init --dev --v2 --agent jcode`) | Experimental | [coding agents](coding-agents.md) |
 | Kiro CLI (`tracekit init --dev --v2 --agent kiro`) | Experimental | [coding agents](coding-agents.md) |
+| Open Interpreter 0.0.61 (`tracekit init --dev --v2 --agent interpreter`) | Experimental | [coding agents](coding-agents.md) |
 | Hermes Agent plugin | Experimental | [Hermes Agent](integrations/hermes.md) |
 
 The goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks are written to each harness's published hook
