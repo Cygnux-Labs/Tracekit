@@ -1242,6 +1242,9 @@ def _xargs_here_readings(ctx):
     strict size limit, so crafted input cannot inflate a policy decision.
     """
     cmds = list(ctx["cmds"])
+    wrappers = {(w["argv"][0], w["pipeline"], w["stage"], tuple(
+        w["argv"][2:] if w["argv"][1:2] == ["-r"] else w["argv"][1:]))
+        for w in cmds if w["argv"][0] in ("xargs", "gxargs")}
     for c in cmds:
         if c["argv"][0] != "rm" or c["via"][-1:] not in (["xargs"], ["gxargs"]):
             continue
@@ -1250,9 +1253,7 @@ def _xargs_here_readings(ctx):
         # newline as data; -I/-J replacement changes the resulting operands.
         # Matching the original wrapper also avoids applying this to a later
         # unrelated rm in the same pipeline.
-        if not any(w["argv"][0] == c["via"][-1] and w["pipeline"] == c["pipeline"] and
-                   w["stage"] == c["stage"] and w["argv"][1:] in (c["argv"], ["-r", *c["argv"]])
-                   for w in cmds):
+        if (c["via"][-1], c["pipeline"], c["stage"], tuple(c["argv"])) not in wrappers:
             continue
         # `stdin` contains literal here-string data; it is empty when xargs
         # reads a pipe, inherited stdin or an input file.
