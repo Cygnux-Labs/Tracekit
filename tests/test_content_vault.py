@@ -111,6 +111,9 @@ class On(Vault):
                 self.assertEqual(item["content"], want[item["seq"]])
                 self.assertNotIn("redacted", item)
                 e = events[item["seq"]]
+                # which kind of record the value is, and an observe's source (tracekit.lessons.verified reads them)
+                self.assertEqual((item["type"], item.get("source")),
+                                 (e["type"], "inbox:1" if e["type"] == "input.observed" else None))
                 digest = event_hash({"tool": "Bash", "args": item["content"]}) if e["type"] == "policy.decision" \
                     else "sha256:" + hashlib.sha256(canonical(item["content"])).hexdigest()
                 self.assertTrue(self.opens(item, digest, e))

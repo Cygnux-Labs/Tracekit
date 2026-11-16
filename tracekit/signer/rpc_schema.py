@@ -1,6 +1,8 @@
-"""The signer RPC contract, version 24: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 25: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 24 adds `call_state` (a read under the run token):
+Frozen: a change to any schema here is a new RPC_VERSION. Version 25 adds content_get's `type` of each record whose
+content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
+(tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
 what the signer recorded of a call's latest attempt, which the LangChain gate reads to go on with a ToolNode's calls
 after a resume (tracekit.integrations.langchain), and `call_claim`: the one pass of a node that goes on with a call,
 consumed, after its tool paused the run itself, so two resumes of one thread never run it twice. Version 23 adds `export_run` (docs/remote-ingest.md): a run
@@ -43,7 +45,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 24
+RPC_VERSION = 25
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -583,8 +585,8 @@ RESPONSES = {
     # per seq, in request order: the content and the record's salt (as `tracekit signer reveal` gives it), the content
     # marked redacted (changed by redaction, so it opens no commitment: no salt), or why not
     "content_get": _obj(["items"], items={"type": "array", "maxItems": 1000, "items": dict(
-        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True},
-             state={"enum": ["not_retained", "too_large", "erased"]}),
+        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True}, type=_str(64),
+             source=_str(256), state={"enum": ["not_retained", "too_large", "erased"]}),
         oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,

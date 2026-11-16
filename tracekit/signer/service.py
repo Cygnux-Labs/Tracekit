@@ -456,6 +456,15 @@ EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
 EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
+# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
+# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
+# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+LESSON_ANSWERS = "tracekit:lessons:person"
+LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
+                 re.compile(r"[0-9a-f]{64}"))
+ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
+ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
@@ -918,6 +927,7 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.content = content_config(content)
+        self._answer_runs = {}   # expire_content's verdict on each closed run: a run of a person's answers or not
         if posture is not None and not (isinstance(posture, dict) and set(posture) <= {"network", "tool_calls"}
                                         and all(v in ("enforced", "open") for v in posture.values())):
             raise ValueError("posture takes network and tool_calls, each enforced or open (gateway_mandatory is a "
@@ -3116,6 +3126,14 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
+        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
+                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                and lid.fullmatch(v["id"])
+                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+            raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
+                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
+                                              "and nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -5021,7 +5039,9 @@ class SignerService:
                 # the salt also opens a model exchange's args_commitments, over the arguments before redaction
                 guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
                     "args_commitment" in u for u in e["data"].get("tool_uses", ()))
-                items.append({"seq": seq, "content": value} | (
+                src = e["data"].get("source") if e["type"] == "input.observed" else None
+                kind = {"type": e["type"]} | ({"source": src} if isinstance(src, str) else {})
+                items.append({"seq": seq, "content": value} | kind | (
                     {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
                     and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
             out = {"items": items}
@@ -5081,16 +5101,40 @@ class SignerService:
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
-        replay and findings runs' (their content never outlives their run's)."""
+        replay and findings runs' (their content never outlives their run's). The dev signer (isolation same-user),
+        where lessons live, keeps a run of a person's answers to lessons alone (_answers)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
         runs = self.log.write(lambda tx: self.log.storage.content_runs())
-        replays, done = self._vault_replays(runs), set()
+        replays, done, dev = self._vault_replays(runs), set(), self.isolation == "same-user"
         for log_id, tenant, run_id, stored in runs:
-            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done:
+            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done \
+                    and not (dev and self._answers((tenant, run_id))):
                 todo = [k for k in replays.get((tenant, run_id), []) if k not in done]
                 self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer",
                             replays=todo)
                 done.update([(tenant, run_id), *todo])
+
+    def _answers(self, key):
+        """Whether run `key` holds nothing but a person's answers to lessons (input.observed, source LESSON_ANSWERS:
+        _observe keeps them to an action, an id and a sha256), at most ANSWERS_KEPT, besides its start and end
+        (ANSWER_RUN). Read up to the first record that isn't one (an agent's run costs a record or two), and a closed
+        run's verdict is kept, so it is read once."""
+        if key in self._answer_runs:
+            return self._answer_runs[key]
+
+        def fn(tx):
+            n, final = 0, (self.log.runs.get(key) or {}).get("final")
+            for r in self.log.storage.iter_run(*key):
+                e = r["event"]
+                if e["type"] == "input.observed" and e["data"].get("source") == LESSON_ANSWERS and n < ANSWERS_KEPT:
+                    n += 1
+                elif e["type"] not in ANSWER_RUN:
+                    return final, False
+            return final, n > 0
+        final, out = self.log.write(fn)
+        if final:
+            self._answer_runs[key] = out
+        return out
 
     # --- OTLP import (tracekit.signer.otel) ---
 
