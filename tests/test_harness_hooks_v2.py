@@ -11,8 +11,11 @@ import io
 import json
 import os
 import shlex
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -25,8 +28,8 @@ from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.policy2.engine import Engine
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.sdk.client import Client, SignerUnavailable
+from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
 from tracekit.signer.service import SignerService, load_policy
 from tracekit.testing import FakeSigner
 
@@ -2592,6 +2595,45 @@ class SlowSignerStart(HarnessCase):
                 c.call("decide", {})
         self.assertLess(time.monotonic() - begun, 1)
         self.assertEqual(calls, ["decide"])
+
+    def test_a_signer_that_stalls_after_hello_fails_each_call_by_its_own_timeout(self):
+        """1.7.0 review: a call that connected waited until the hook's deadline (540 s for a Claude Code PreToolUse)
+        on a signer that answers hello and then nothing: only connecting may wait for the deadline, each call's answer
+        keeps its timeout, and a long poll's timeout_ms stops at the deadline too."""
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # (macOS caps socket paths)
+        self.addCleanup(shutil.rmtree, d, True)
+        srv = socket.socket(socket.AF_UNIX)
+        srv.bind(os.path.join(d, "s"))
+        srv.listen(8)
+        self.addCleanup(srv.close)
+        held = []
+
+        def serve():
+            while True:
+                try:
+                    conn, _ = srv.accept()
+                except OSError:
+                    return
+                held.append(conn)
+                conn.makefile("rb").readline()
+                conn.sendall(json.dumps({"proto": [RPC_VERSION] * 2, "version": __version__}).encode() + b"\n")
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(lambda: [c.close() for c in held])
+        c = claude_code.HookClient(signer=os.path.join(d, "s"), answer_by=time.monotonic() + 6)
+        c.timeout = 1
+        begun = time.monotonic()
+        with self.assertRaises(SignerUnavailable):
+            c.call("status")
+        self.assertLess(time.monotonic() - begun, 2.5)
+        begun = time.monotonic()
+        with self.assertRaises(SignerUnavailable):
+            c.call("approval_wait", run_id="r", run_token="t", approval_id="apr-x", timeout_ms=30000)
+        self.assertLess(time.monotonic() - begun, 6)
+        c = claude_code.HookClient(signer=os.path.join(d, "s"), answer_by=time.monotonic() + 1.5)   # (timeout 30)
+        begun = time.monotonic()
+        with self.assertRaises(SignerUnavailable):
+            c.call("status")
+        self.assertLess(time.monotonic() - begun, 3)
 
     def slow_signer(self, seconds):
         """The dev signer the hooks start from now on takes `seconds` to start once it holds signer.lock."""

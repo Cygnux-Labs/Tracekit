@@ -102,7 +102,7 @@ from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open, named_rules, sendable
+from tracekit.sdk.client import Client, Incompatible, RunHandle, SignerUnavailable, fail_open, named_rules, sendable
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import INSTEAD, RPCError
 
@@ -304,18 +304,29 @@ class HookClient(Client):
     """The hooks' client, by the hook's deadline() (`answer_by`): a call the signer rate-limits (quota_exceeded with
     retry_after_ms) is sent again once that has passed, within the client's timeout and the deadline, as the tailer's
     lines are. In dev mode the hooks and the tailer share the agent's uid, and so its event rate: a tailer reading a
-    long transcript must not have the hook's decide refused. The call that connects waits for a starting dev signer
-    until the deadline, not only for its own share of it (a call's timeout counts its connection, #852)."""
+    long transcript must not have the hook's decide refused. Only connecting waits for a dev signer still starting
+    until the deadline (a call's timeout counts its connection, #852): each call's own wait for its answer keeps its
+    timeout, and no call, a long poll's `timeout_ms` included, waits past the deadline."""
 
     def call(self, method, req=None, **fields):
         end = min(time.monotonic() + self.timeout, self.answer_by or math.inf)
-        timeout = self.timeout
-        if self.answer_by is not None and (self._conn is None or self._pid != os.getpid()):
-            self.timeout = max(timeout, self.answer_by - time.monotonic())
+        req, timeout = {**(req or {}), **fields}, self.timeout
+        asked = req.get("timeout_ms")
+        if self.answer_by is not None and not self._https:
+            with self._lock:
+                self._own()
+                if self._conn is None:   # (one that fails here fails again in the call, which counts its event)
+                    with contextlib.suppress(SignerUnavailable, Incompatible):
+                        self._ensure_conn(max(self.answer_by - time.monotonic(), 0.001))
         try:
             while True:
+                if self.answer_by is not None:   # what is left of the deadline caps the call and its long poll's wait
+                    left = max(self.answer_by - time.monotonic(), 0.001)
+                    if asked is not None:
+                        req["timeout_ms"] = min(asked, int(left * 1000))
+                    self.timeout = max(min(timeout, left - req.get("timeout_ms", 0) / 1000), 0.001)
                 try:
-                    return super().call(method, req, **fields)
+                    return super().call(method, req)
                 except RPCError as e:
                     wait = (e.retry_after_ms or 0) / 1000
                     if e.code != "quota_exceeded" or e.retry_after_ms is None or time.monotonic() + wait > end:

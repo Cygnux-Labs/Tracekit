@@ -485,10 +485,7 @@ class Client:
         """-> the frame to send. Fills in `stream` and `client_seq` and validates `req`; counts the event even when
         `connect()` raises, so the signer's client_counter_gap covers a call it never saw (one a caller then ran with
         its fail mode open). Call under self._lock."""
-        if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
-            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
-            # without either keeps its entries for the client's life
-            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
+        self._own()
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
@@ -511,6 +508,13 @@ class Client:
             self._seqs.pop(run_id, None)
             self._order.pop(run_id, None)
         return data
+
+    def _own(self):
+        """A new client, or a forked child: its own stream and connection. Call under self._lock."""
+        if self._pid != os.getpid():
+            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
+            # without either keeps its entries for the client's life
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
 
     def _send(self, method, req, timeout=CONNECT_TIMEOUT_S, deadline=None):
         with self._lock:
