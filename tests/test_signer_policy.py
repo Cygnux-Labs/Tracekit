@@ -3716,13 +3716,62 @@ class CodingPack(unittest.TestCase):
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
             "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
             "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
-            'bash -c "chown -R me:me /lib"')])
+            'bash -c "chown -R me:me /lib"',
+            # #810 items 1-3: parenthesised find filters, destructive -exec and a literal xargs here-string.
+            r"find /etc \( -type f -o -type d \) -delete",
+            r"find /usr \( -type d -o -type f \) -delete",
+            r"find /etc \( -type f -o -type d \) -exec rm {} +",
+            "find /etc -exec rm {} +", "find /usr -type f -exec rm -f {} +",
+            "find /etc -exec chmod -R 777 {} +", "find /var -exec chown -R root {} +",
+            "find /etc -execdir /bin/rm {} +", "find /etc -exec chgrp -R staff {} +",
+            "find /etc -exec chattr -R +i {} +",
+            "xargs rm -rf <<< /etc", "xargs -r rm -rf <<< /usr",
+            "gxargs rm -rf <<< /var", "xargs rm -rf <<< /mnt/c/Windows",
+            # #810 item 6: policy decisions by command, with matching benign twins below.
+            "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
+            "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var",
+            "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak",
+            "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/",
+            # #810 item 4: WSL and Cygwin Windows-system mounts, including casefolding.
+            "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows", "rm -rf /MNT/C/WINDOWS",
+            "chmod -R 777 /mnt/c/Windows", "chown -R root /cygdrive/c/Windows",
+            "git -C /mnt/c/Windows clean -fdx", "find /cygdrive/c/Windows -delete",
+            # #810 item 5: one child then '..' resolves back to the system folder.
+            "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
+            "rm -rf /etc/.ssh/..", "rm -rf /mnt/c/Windows/.cache/..",
+            "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
+            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx")])
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
             "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
-            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
+            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"',
+            # #810 benign counterparts: same verbs on project paths or inside /var/tmp and /usr/local.
+            r"find ./etc \( -type f -o -type d \) -delete",
+            r"find /var/tmp/x \( -type f -o -type d \) -delete",
+            r"find /etc \( -name '*.log' -o -type d \) -delete",
+            "find ./etc -exec rm {} +", "find /var/tmp/x -type f -exec rm {} +",
+            "find /etc -name '*.log' -exec rm {} +",
+            "find ./etc -exec chmod -R 777 {} +", "find /usr/local/x -exec chown -R me {} +",
+            "find ./etc -execdir /bin/rm {} +", "find /var/tmp/x -exec chgrp -R staff {} +",
+            "find ./etc -exec chattr -R +i {} +",
+            "xargs rm -rf <<< ./etc", "xargs -0 rm -rf <<< /etc",
+            "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /mnt/c/Windows/Temp",
+            "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
+            "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x",
+            "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak",
+            "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/",
+            # Project-local twins, Windows non-system folders, and children not resolving to the root.
+            "rm -rf ./mnt/c/Windows", "rm -rf ./cygdrive/c/Windows",
+            "rm -rf /mnt/c/Windows/System32", "rm -rf /cygdrive/c/Windows.old",
+            "chmod -R 755 /mnt/c/Windows/System32", "find ./cygdrive/c/Windows -delete",
+            "rm -rf ./etc/ssh/..", "rm -rf /etc/ssh/../nginx", "rm -rf /usr/local/x",
+            "rm -rf /MNT/C/WINDOWS/System32", "chown -R root /cygdrive/c/Windows.old",
+            "rm -rf /etc/.ssh/../nginx", "rm -rf /mnt/c/Windows/.cache/../Temp",
+            "git -C ./mnt/c/Windows clean -fdx", "rm -rf /var/tmp/../x",
+            "chmod -R 777 /etc/ssh/../nginx", "find /etc/ssh/../nginx -delete",
+            "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx"))
 
     def test_a_system_folder_is_read_past_plain_words_dot_steps_and_case(self):
         # #783 review: each was only flagged: more than 16 plain words before the folder (TK-D004 reads any number

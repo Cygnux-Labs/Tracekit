@@ -1006,6 +1006,25 @@ class Speed(unittest.TestCase):
                     budget = self.BUDGET_S * machine_scale()
                     self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://", budget), budget)
 
+    def test_find_parentheses_and_xargs_here_string_are_normalised_for_system_folder_rule(self):
+        commands = (
+            ("xargs rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
+            ("xargs -r rm -rf <<< /usr", ["rm", "-rf", "/usr"]),
+            ("gxargs rm -rf <<< /var", ["rm", "-rf", "/var"]),
+        )
+        for text, expected in commands:
+            with self.subTest(command=text):
+                parsed = shell.analyse(text)
+                self.assertIn(expected, [c["argv"] for c in parsed[0]])
+        for text in ("xargs -0 rm -rf <<< /etc", "xargs rm -rf <<< ./etc",
+                     "xargs rm -rf <<< '/etc /usr'"):
+            with self.subTest(command=text):
+                parsed = shell.analyse(text)
+                self.assertFalse(any(c["argv"] == ["rm", "-rf", "/etc"] for c in parsed[0]), parsed[0])
+        parsed = shell.analyse(r"find /etc \( -type f -o -type d \) -delete")
+        self.assertIn("find /etc ( -type f -o -type d ) -delete",
+                      [" ".join(c["argv"]) for c in parsed[0]])
+
     def test_a_system_folders_glob_ending_and_plain_words_search_in_linear_time(self):
         """#783 review: TK-D014 read a pattern after a system folder (`/etc/*/*`) as a repeated group, which the
         fallback engine backs off in time that grows with the square of its length: 64 KiB of `rm -r /etc/*/*/…x`,
@@ -1018,6 +1037,18 @@ class Speed(unittest.TestCase):
                                  ("chmod -R /", "?*/", "x"), ("chmod -R /", "./", "x"), ("find /etc", "/*", "x -delete"),
                                  ("git -C /etc", "/*", "x clean"), ("rm -r C:\\Windows", "\\*", "x"),
                                  ("rm -r /", "./", "x"), ("rm -r /usr/", "./", "x"), ("rm -r /usr", "/", "x"),
+                                 # #810: bounded groups / -exec / additional commands and their near misses.
+                                 ("find /etc", " ( -type f -o -type d )", " x -delete"),
+                                 ("find /etc", " -type f", " x -exec rm {} +"),
+                                 ("find /etc", " ( -type f -o -type d )", " x -exec chmod -R 777 {} +"),
+                                 ("chgrp -R staff", " /etc/ssh/..", " /etcetera"),
+                                 ("chattr -R +i", " /etc/ssh/..", " /etcetera"),
+                                 ("mv", " -f", " /etcetera /tmp/etc.bak"),
+                                 ("rsync --delete", " empty/", " /etcetera"),
+                                 # #810: failed matches with long WSL/Cygwin paths and child/.. sequences.
+                                 ("rm -r /mnt/c/Windows", "/*", "x"),
+                                 ("rm -r /cygdrive/c/Windows", "/.", "x"),
+                                 ("rm -r /etc", "/ssh/..", "x"),
                                  ("rm -rf", " a", " /etcx"), ("rm -rf", " -r", "x"), ("rm", " -f", " -rx"),
                                  ("find /etc", " -depth", "x")):
             s = head + unit * ((n - len(head) - len(tail)) // len(unit)) + tail
