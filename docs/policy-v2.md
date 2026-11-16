@@ -225,15 +225,16 @@ repository (`user/repos`, `orgs/o/repos`) is a route of its own. A remote's push
 `GIT_CONFIG_VALUE_<n>`) is read as its `-c` pair.
 
 The shell field `effects` is each file the commands write, as `WRITE_TARGET:path`, or delete, as
-`DELETE_TARGET:path`, each also with the path casefolded: what a redirection writes, and the files `rm`, `unlink`,
+`DELETE_TARGET:path`, each also with the path casefolded (the shell's append to `.ssh/known_hosts`, `>>` or `tee -a`,
+is `APPEND_TARGET:path`, which no shipped rule reads): what a redirection writes, and the files `rm`, `unlink`,
 `shred`, `truncate`, `tee`, `cp`, `mv`, `install`, `ln`, `dd of=`, `sed -i` and `perl -i` name (`mv` deletes its
 sources; `cp`, `mv`, `install` and `ln` into a directory, `-t`'s or one that ends in `/`, also write each source's name
 there), also when `git`, `docker`, `podman`, `kubectl` or `parallel` runs one from its own words (`git rm`,
 `docker exec c rm`); what awk's `print > "file"` writes; the files `yq -i`, `sd`, `dos2unix`, a decompressor (each
-without its suffix), `ditto`, `git config -f`, `base64 -o`, `emacs`, `split` and `csplit` (their prefix, as a pattern)
-write; the members `tar -x`, `unzip` and `7z x` name in their folder, or that folder (`DIR/`) when they name none; the
-literal path an interpreter's inline code writes (an `open` in a writing mode, `writeFileSync`, `File.write`,
-`file_put_contents`, a copy's or rename's target), read as `tee -a` of it; each file a download writes, read by all of `curl`'s or
+without its suffix, or its `-o`), `ditto`, `git config -f`, `base64 -o`, `uudecode -o`, `emacs`, `split` and `csplit`
+(their prefix, as a pattern) write; the members `tar -x` (`bsdtar`, `gtar`), `unzip` and `7z x` name in their folder,
+or that folder (`DIR/`) when they name none; the literal path an interpreter's inline code writes (an `open` in a
+writing mode, `writeFileSync`, `File.write`, `file_put_contents`, a copy's or rename's target), read as `tee` of it; each file a download writes, read by all of `curl`'s or
 `wget`'s options (curl's `-o` in any cluster, `-so`, each URL's name with `-O` or `--remote-name-all` in its
 `--output-dir`, its header, cookie, trace, error and cache files; wget's `-O`, each URL's name in its `-P` folder,
 its log and cookie files; wget's options by any unique prefix), a download whose file the line can't name (a variable

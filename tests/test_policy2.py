@@ -1034,9 +1034,19 @@ class Speed(unittest.TestCase):
         TK-A047 split a word at each `$` or backquote, and a branch name at each `/protection`, then read on to the end
         from each split (PR #468's review: each spent the 1 s and denied). TK-A072's socket and assignment values read
         `\\S*` past each `;`, so an unspaced line of `;DOCKER_HOST=unix://` went quadratic (PR #731: 1 s, denied); #808 added `nohup`, `nice`, its
-        number and `CONTAINER_HOST` to the same prefix."""
+        number and `CONTAINER_HOST` to the same prefix. A 1.7.0 review: the file writers' option clusters (tar's,
+        yq's, a decompressor's), Perl's two-word open and a container's words each read a 63 KB line in 7 to 12 s,
+        and a 10 KB docker exec line in 16 s."""
+        coding = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         n, scale = MAX_SUBJECT - 200, machine_scale()
+        for command in ("tar -" + "x" * n + "1 -f a.tar", "tar -x '-" + "C" * n + "\n1' -f a.tar",
+                        "yq -" + "i" * n + "1 '.a' x", "gunzip -" + "c" * n + "! a.gz", "xz -" + "d" * n + "! a.xz",
+                        "perl -e 'open(F, \">a" + " " * n + "|\")'", "docker exec c " + "x " * 5000 + "codex"):
+            with self.subTest(command=command[:40]):
+                start = time.perf_counter()
+                self.assertNotIn("nondeterministic", coding.decide("Bash", {"command": command}))
+                self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
         for tool, args in [("Bash", {"command": "git push " + f * (n // len(f))}) for f in self.FILLERS] + [
                 ("Bash", {"command": "gh api '" + "$" * n + "' rulesets"}),
                 ("Bash", {"command": "hub api '" + "`" * n + "' secret x"}),

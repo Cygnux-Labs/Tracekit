@@ -4,6 +4,7 @@ google-re2 when installed, else the `regex` module on the same pattern subset in
 Every decision names the engine (id@version) and the policy_hash. Precedence: deny > ask > flag > allow.
 """
 import bisect
+import collections
 import fnmatch
 import functools
 import itertools
@@ -553,8 +554,12 @@ class Engine:
             # word's move no word after it: sqlite3's SQL is searched once), and with each word that is only a variable
             # the line gives no value there (shell's unresolved: not a loop's, nor one it knows) as UNKNOWN_WORD; each
             # also with `\` as `/` (_slashes), as a line is
+            # and a harness a runner, a JavaScript runtime or python -m starts as `<harness> <its own words>`, the
+            # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
+            # plugin …` and `node node_modules/.bin/claude plugin …` too
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
+                h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -874,20 +879,54 @@ def _harness(argv):
         found = m and next(g for g in m.groups() if g)
         if found:
             return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
-        script = _js_script(argv)
-        located = script and shell.LOCATED.fullmatch(script)
-        script = located.group(2) if located else script and re.sub(r"\.[cm]?js$", "", shell.base_name(script))
-        script = _HARNESS_NAMES.get(script, script)
-        return script if script in _HARNESS_CLIS else None
+        # the script it runs, as a harness installs one: its package's bin link (node_modules/.bin/claude) or the path a
+        # name resolves to (`"$(which claude)"`); a file merely named for one (gemini.js) is none
+        script = _js_script(argv) or ""
+        located = shell.LOCATED_TEXT.fullmatch(script)
+        name = located.group(1) if located else shell.base_name(script) if _BIN_LINK.search(script) else ""
+        name = _HARNESS_NAMES.get(name, name)
+        return name if name in _HARNESS_CLIS else None
     if _PYTHON_EXE.fullmatch(name):
         module = _python_module(argv[1:])[:1]
         return module and {"hermes_cli": "hermes", "gptme": "gptme"}.get(module[0].split(".")[0]) or None
     return None
 
 
-# a JavaScript runtime's options that take the next word, and its subcommands before the script (deno run, bun run)
-_JS_VALUED = ("-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file",
-              "--input-type", "--title", "--config", "-c")
+_BIN_LINK = re.compile(r"(?:^|[/\\])node_modules[/\\]\.bin[/\\][^/\\]+$")   # a package's bin link
+def _as_harness(argv):
+    """`<harness> <its own words>` for a harness an argv starts under another name (a package's, at a version, a
+    JavaScript runtime's script: _harness; python -m's module with its own options, as the packs read it), else
+    None."""
+    h = _harness(argv)
+    name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
+    if not h or name == h:
+        return None
+    if name in _JS_RUNTIMES:
+        script = _js_script(argv)
+        rest = argv[argv.index(script, 1) + 1:] if script in argv[1:] else None
+    else:
+        rest = argv[1:]
+    return None if rest is None else " ".join([h, *rest])
+
+
+# a JavaScript runtime's options that take the next word (node's, then bun's, deno's and tsx's), and its subcommands
+# before the script (deno run, bun run)
+_JS_VALUED = frozenset((
+    "-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file",
+    "--env-file-if-exists", "--input-type", "--title", "--unhandled-rejections", "--disable-warning", "--inspect-port",
+    "--debug-port", "--max-http-header-size", "--redirect-warnings", "--report-dir", "--report-directory",
+    "--report-filename", "--report-signal", "--secure-heap", "--secure-heap-min", "--stack-trace-limit", "--stack-size",
+    "--tls-cipher-list", "--tls-keylog", "--trace-event-categories", "--trace-event-file-pattern", "--watch-path",
+    "--diagnostic-dir", "--dns-result-order", "--heapsnapshot-signal", "--heapsnapshot-near-heap-limit",
+    "--icu-data-dir", "--openssl-config", "--cpu-prof-dir", "--cpu-prof-name", "--cpu-prof-interval", "--heap-prof-dir",
+    "--heap-prof-name", "--heap-prof-interval", "--localstorage-file", "--experimental-sea-config", "--run",
+    "--test-name-pattern", "--test-skip-pattern", "--test-reporter", "--test-reporter-destination",
+    "--test-concurrency", "--test-shard", "--test-timeout", "--test-coverage-include", "--test-coverage-exclude",
+    "--experimental-config-file", "--snapshot-blob", "--build-snapshot-config", "--policy-integrity",
+    "--experimental-policy", "--network-family-autoselection-attempt-timeout", "--max-old-space-size",
+    "--max-semi-space-size", "--use-largepages", "--watch-kill-signal",
+    "--config", "-c", "--cwd", "--preload", "--define", "-d", "--loader", "-l", "--tsconfig-override", "--tsconfig",
+    "--port", "--main-fields", "--location", "--seed", "--cert", "--lock", "--importmap"))
 _JS_SUBCOMMANDS = ("run", "x", "exec")
 
 
@@ -962,14 +1001,12 @@ def _harness_launches(commands, refs=(), learned=None):
     for a key of _SETTINGS_KEY, and its --disable of such a feature), words xargs gives it from its input, or a word
     set at run time (`$(echo --settings)`, `"$@"` after `set -- --bare`, `$OPTS` a live shell exported), which may be
     an option; such a run reads none of the person's settings, the hooks that record it among them. Also codex's
-    `features disable` of such a feature, which saves the change in its settings. A harness a container runs (docker
-    or podman run, exec or create) reads the container's settings, never the person's. learned: what the parse learned
+    `features disable` of such a feature, which saves the change in its settings. learned: what the parse learned
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
-    contained = [f"LAUNCH:{h} in a container" for c in commands if (h := _contained_harness(c["argv"]))]
     if not any(_harness(c["argv"]) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
-        return contained
+        return []
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
     # a variable with a value the line doesn't give it (from the shell it runs in), or one that may hold a word built
@@ -1016,32 +1053,8 @@ def _harness_launches(commands, refs=(), learned=None):
         why += [f"a word set at run time {w[:40]}" for w in args
                 if run_time.match(w) or run_time.search(w) and not re.search(r"\s", w)]
         out += [f"LAUNCH:{exe} {w}" for w in why]
-    return list(dict.fromkeys(contained + out))
+    return list(dict.fromkeys(out))
 
-
-_CONTAINERS = ("docker", "podman", "nerdctl", "finch")
-_CONTAINER_RUNS = ("run", "exec", "create")
-# a word that may name a harness (_HARNESS_CLIS, _HARNESS_NAMES, a package of one): the start of a command to read
-_HARNESS_WORD = re.compile(r"(?i)(?:^|[/@])(?:%s)(?:[@/.-]|$)" % "|".join(
-    sorted(map(re.escape, _HARNESS_CLIS | set(_HARNESS_NAMES)), key=len, reverse=True)))
-
-
-def _contained_harness(argv):
-    """The harness a container program's run, exec or create starts (`docker run IMAGE npx -y @anthropic-ai/claude-code`):
-    the command its words make from the image on, read by the shell parser (wrappers and runners unwrapped); None
-    else. Each word from the subcommand to the one naming a harness is tried as the command's start."""
-    if _program(argv) not in _CONTAINERS:
-        return None
-    sub = next((i for i, a in enumerate(argv[1:], 1) if a in _CONTAINER_RUNS), None)
-    named = next((i for i, a in enumerate(argv) if sub and i > sub and _HARNESS_WORD.search(a)), None)
-    for j in range(sub + 1, named + 1) if named else ():
-        try:
-            found = next(filter(None, (_harness(c["argv"]) for c in shell.parse(shlex.join(argv[j:])))), None)
-        except shell.ParseError:
-            continue
-        if found:
-            return found
-    return None
 
 
 # programs that send what they read off the machine (gh: a gist, an API call or a body it reads from stdin; aws: s3;
@@ -1975,8 +1988,19 @@ def _effects(parsed):
     return learned["effects"]
 
 
+# a host key added to known_hosts: an append to it (`>>`, `tee -a`, `ssh-keyscan … >>`) is APPEND_TARGET, which no
+# shipped rule reads, where any other write of it is a WRITE_TARGET as any file in .ssh/ is (TK-D023)
+_KNOWN_HOSTS = re.compile(r"(?:^|/)\.ssh/known_hosts2?$")
+
+
 def _write_effects(parsed):
-    tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
+    appended = collections.Counter((parsed[5] if len(parsed) > 5 else {}).get("appended", ()))
+    tags = []
+    for ref in parsed[3]:
+        add = appended[ref] > 0 and bool(_KNOWN_HOSTS.search(_text(ref)))
+        appended[ref] -= 1
+        tags.append(("APPEND_TARGET:" if add else "WRITE_TARGET:") + _text(ref))
+    tags += _command_effects(parsed[0])
     # a write to `{}` in code a find's -exec runs (its sh -c script given {} as $1) writes each file the find finds
     if "{}" in parsed[3]:
         tags += ["WRITE_TARGET:" + f for c in parsed[0] if _program(c["argv"]) == "find" and any(
@@ -1992,16 +2016,22 @@ def _write_effects(parsed):
     # && sed -i … config.yaml`; a pattern there as each protected name it may make, which the parse read)
     # (and what env -C runs, in its folder)
     def joined(folder, effects):
-        return [k + ":" + _normal(folder.rstrip("/") + "/" + path) for k, _, path in (t.partition(":") for t in effects)
-                if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "") and not shell._GLOB.search(path)]
-    base = ""
+        out = [(k, _normal(folder.rstrip("/") + "/" + path)) for k, _, path in (t.partition(":") for t in effects)
+               if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "") and not shell._GLOB.search(path)]
+        return [("WRITE_TARGET" if k == "APPEND_TARGET" and not _KNOWN_HOSTS.search(p) else k) + ":" + p
+                for k, p in out]
+    base, appends = "", collections.Counter((parsed[5] if len(parsed) > 5 else {}).get("appended", ()))
     for c in parsed[0]:
         if c["argv"][0] in ("cd", "pushd"):
             to = next((a for a in c["argv"][1:] if not a.startswith("-")), "~")
             base = to if to.startswith(("/", "~", "$")) or not base else posixpath.join(base, to)
             continue
         if base:
-            tags += joined(base, ["WRITE_TARGET:" + o for o in c.get("out", ())] + _command_effects([c]))
+            outs = []
+            for o in c.get("out", ()):   # (an append is one only as many times as the line appends to it)
+                outs.append(("APPEND_TARGET:" if appends[o] > 0 else "WRITE_TARGET:") + o)
+                appends[o] -= 1
+            tags += joined(base, outs + _command_effects([c]))
         folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
         if folder and at:
             folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
@@ -2292,6 +2322,81 @@ def _operands(exe, args):
     return out
 
 
+_COMPRESSORS = ("gzip", "xz", "bzip2", "lzma", "zstd", "lz4", "lzip", "compress", "brotli")
+
+
+def _cluster(a):
+    """Whether `a` is one dash and an option cluster of letters or digits (-xzf, -dfo)."""
+    return len(a) > 1 and a[0] == "-" and a[1] != "-" and a[1:].isalnum()
+
+
+def _in_folder(folder, members):
+    """Each member an extract writes in its folder (a leading / dropped, as tar and unzip drop one), or the folder
+    itself, `DIR/`, when it names none."""
+    return [posixpath.join(folder, m.lstrip("/")) for m in members] if members else [folder.rstrip("/") + "/"]
+
+
+def _decompressed(tool, args):
+    """The files a decompressor writes: its -o or --output (zstd, lz4, brotli; also last in a cluster, -dfo FILE),
+    lz4's second operand, else each file without its suffix (gzip's -S or --suffix too); none when it prints, tests
+    or lists (-c, -t, -l)."""
+    if any(a in ("--stdout", "--to-stdout", "--test", "--list") or _cluster(a) and set(a[1:]) & set("ctl")
+           for a in args):
+        return []
+    outputs, suffix, operands, skip = [], None, [], None
+    for a in args:
+        if skip:
+            outputs, suffix = (outputs + [a], suffix) if skip == "o" else (outputs, a)
+            skip = None
+        elif tool in ("zstd", "lz4", "brotli") and (a == "--output" or _cluster(a) and a[-1] == "o"):
+            skip = "o"
+        elif tool in ("zstd", "lz4", "brotli") and a.startswith("--output="):
+            outputs.append(a.partition("=")[2])
+        elif a in ("-S", "--suffix") or _cluster(a) and a[-1] == "S":
+            skip = "S"
+        elif a.startswith("--suffix="):
+            suffix = a.partition("=")[2]
+        elif not a.startswith("-"):
+            operands.append(a)
+    if outputs:
+        return outputs
+    if tool == "lz4" and len(operands) == 2 and not any(a in ("-m", "--multiple") for a in args):
+        return operands[1:]
+    if suffix:
+        return [a[:-len(suffix)] for a in operands if a.endswith(suffix) and len(a) > len(suffix)]
+    return [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a) for a in operands
+            if _PACKED.search(a)]
+
+
+def _extracted_tar(args):
+    """What tar -x writes (each member it names in -C's folder, or that folder; an old-style first word's letters take
+    the next words in turn), or None for a tar that doesn't extract."""
+    first = args[0] if args and not args[0].startswith("-") else ""
+    if not ("x" in first or any(a in ("--extract", "--get") or _cluster(a) and "x" in a for a in args)):
+        return None
+    rest, folder, takes = (args[1:] if first else args), ".", [c for c in first if c in "fCTXb"]
+    operands, skip = [], None
+    for a in rest:
+        if takes:
+            letter = takes.pop(0)
+            folder = a if letter == "C" else folder
+            continue
+        if skip:
+            folder, skip = (a if skip in ("-C", "--directory") else folder), None
+        elif a.startswith("--directory="):
+            folder = a.partition("=")[2]
+        elif a in _WRITER_VALUED["tar"]:
+            skip = a
+        elif _cluster(a) and a[-1] in "fCTXb":
+            skip = "-" + a[-1]
+        elif a[:1] == "-" and a[1:2] != "-" and (c := a.find("C")) > 0 and len(a) > c + 1 and (
+                c == 1 or a[1:c].isalnum()):
+            folder = a[c + 1:]   # -Cdir, -xCdir
+        elif not a.startswith("-"):
+            operands.append(a)
+    return _in_folder(folder, operands)
+
+
 def _more_writes(exe, args):
     """The files these writers write, or None for a program that is none of them: yq -i's (the files after its
     expression), sd's (in place unless it previews), dos2unix's and kin's (in place, or -n's new files), a decompressor's
@@ -2300,7 +2405,7 @@ def _more_writes(exe, args):
     file, and the files split and csplit make (their prefix, as a pattern)."""
     unix = re.sub(r"^(?:dos|unix|mac)2(?:dos|unix|mac)$", "dos2unix", exe)
     if exe == "yq":
-        if not any(a in ("-i", "--inplace", "--in-place") or re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*", a) for a in args):
+        if not any(a in ("-i", "--inplace", "--in-place") or _cluster(a) and "i" in a for a in args):
             return []
         operands = [a for a in _operands(exe, args) if a not in ("eval", "e", "eval-all", "ea")]
         given = any(a.startswith(("--from-file", "--expression")) for a in args)
@@ -2310,55 +2415,34 @@ def _more_writes(exe, args):
     if unix == "dos2unix":
         operands = _operands("dos2unix", args)
         return operands[1::2] if any(a in ("-n", "--newfile") for a in args) else operands
-    tool = _DECOMPRESSORS.get(exe) or (exe if exe in ("gzip", "xz", "bzip2", "lzma", "zstd", "lz4", "lzip", "compress",
-                                                       "brotli") and any(
-        a in ("--decompress", "--uncompress") or re.fullmatch(r"-[A-Za-z0-9]*d[A-Za-z0-9]*", a) for a in args) else None)
+    tool = _DECOMPRESSORS.get(exe) or (exe if exe in _COMPRESSORS and any(
+        a in ("--decompress", "--uncompress") or _cluster(a) and "d" in a for a in args) else None)
     if tool:
-        if any(a in ("-c", "--stdout", "--to-stdout", "-t", "--test", "-l", "--list") or
-               re.fullmatch(r"-[A-Za-z0-9]*[ctl][A-Za-z0-9]*", a) for a in args):
-            return []
-        outputs = [b for a, b in zip(args, args[1:]) if a == "-o"] if tool in ("zstd", "lz4") else []
-        return outputs or [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a)
-                           for a in args if not a.startswith("-") and _PACKED.search(a)]
+        return _decompressed(tool, args)
     if exe == "ditto":
         operands = _operands(exe, args)
         return operands[-1:] + [operands[-1].rstrip("/") + "/" + s.rstrip("/").rsplit("/", 1)[-1] for s in operands[:-1]
                                 if len(operands) > 2] if len(operands) > 1 else []
-    if exe == "tar":
-        first = args[0] if args and not args[0].startswith("-") else ""
-        extract = "x" in first or any(a in ("--extract", "--get") or re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*", a)
-                                      for a in args)
-        if not extract:
-            return None
-        rest, folder, takes = (args[1:] if first else args), ".", [c for c in first if c in "fCTXb"]
-        operands, skip = [], None
-        for a in rest:
-            if takes:   # an old-style cluster's letters take the next words in turn
-                letter = takes.pop(0)
-                folder = a if letter == "C" else folder
-                continue
-            if skip:
-                folder, skip = (a if skip in ("-C", "--directory") else folder), None
-            elif a.startswith("--directory="):
-                folder = a.partition("=")[2]
-            elif a in _WRITER_VALUED["tar"]:
-                skip = a
-            elif re.fullmatch(r"-[A-Za-z]*[fCTXb]", a):
-                skip = "-" + a[-1]
-            elif re.fullmatch(r"-[A-Za-z]*C.+", a) and not a.startswith("--"):
-                folder = a[a.index("C") + 1:]
-            elif not a.startswith("-"):
-                operands.append(a)
-        return [posixpath.join(folder, m) for m in operands] if operands else [folder.rstrip("/") + "/"]
+    if exe in ("tar", "bsdtar", "gtar"):
+        return _extracted_tar(args)
     if exe == "unzip":
-        folder = next((b for a, b in zip(args, args[1:]) if a == "-d"), None) or next(
-            (a[2:] for a in args if a.startswith("-d") and len(a) > 2), ".")
-        members = _operands(exe, args)[1:]
-        return [posixpath.join(folder, m) for m in members] if members else [folder.rstrip("/") + "/"]
+        folder, members, skip, excluding = ".", [], None, False
+        for a in args:
+            if skip:
+                folder, skip = a, None
+            elif a == "-x":   # the rest are names it leaves out
+                excluding = True
+            elif _cluster(a) and a[-1] == "d":   # -d DIR, -od DIR
+                skip = True
+            elif a.startswith("-d") and len(a) > 2:
+                folder = a[2:]
+            elif not a.startswith("-") and not excluding:
+                members.append(a)
+        return _in_folder(folder, members[1:])
     if exe in ("7z", "7za", "7zz", "7zr") and args[:1] in (["x"], ["e"]):
         folder = next((a[2:] for a in args if a.startswith("-o") and len(a) > 2), ".")
-        members = [a for a in args[2:] if not a.startswith("-")]
-        return [posixpath.join(folder, m) for m in members] if members else [folder.rstrip("/") + "/"]
+        operands = [a for a in args[1:] if not a.startswith("-")]
+        return _in_folder(folder, operands[1:])   # (the first is the archive)
     if exe in ("split", "csplit"):
         operands = _operands(exe, args)
         prefix = next((b for a, b in zip(args, args[1:]) if a in ("-f", "--prefix")), None) or next(
@@ -2465,7 +2549,11 @@ def _command_effects(commands):
                     dest.rstrip("/") + "/" + src.rstrip("/").rsplit("/", 1)[-1] for src in sources
                     if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
                 deleted = sources if exe == "mv" else []
-            out.extend(["DELETE_TARGET:" + path for path in deleted] + ["WRITE_TARGET:" + path for path in written])
+            append = exe == "tee" and any(a in ("-a", "--append") or re.fullmatch(r"-[a-zA-Z]+", a) and "a" in a
+                                          for a in args)
+            out.extend(["DELETE_TARGET:" + path for path in deleted] + [
+                ("APPEND_TARGET:" if append and _KNOWN_HOSTS.search(path) else "WRITE_TARGET:") + path
+                for path in written])
             if exe == "ln" or exe == "cp" and any(a in ("--link", "--symbolic-link")
                                                   or re.fullmatch(r"-[A-Za-z]*[ls]\w*", a) for a in args):
                 out.extend("MAY_WRITE:" + path for path in written)

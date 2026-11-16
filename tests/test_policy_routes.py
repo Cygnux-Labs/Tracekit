@@ -122,19 +122,27 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A083")
         self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D023")
 
+    def spare(self, cases, rule):
+        """Each call decided on each pack and engine without `rule` among its rule ids."""
+        for tool, args in cases:
+            for (name, backend), e in self.engines.items():
+                with self.subTest(pack=name, engine=backend, tool=tool, args=str(args)[:90]):
+                    self.assertNotIn(rule, svc.evaluate(e, tool, args)[0]["rule_ids"])
+
     # --- the 1.7.0 guardrail probes, by class
     def test_more_writers_reach_the_file_rules(self):
         # in-place editors (yq -i, sd, dos2unix), a decompressor's output, ditto, an extract's members or folder, git
         # config -f, base64 -o, split's and csplit's prefix, emacs: each writes what the file rules hold, and any file
-        # in .ssh/ or .aws/ is denied from the shell as TK-D005 denies a file tool's
+        # in .ssh/ or .aws/ is denied from the shell as TK-D005 denies a file tool's (a backup there too)
         self.expect(self.bash(
-            "yq -i '.a=1' ~/.ssh/config", "sd x y ~/.aws/credentials", "dos2unix .env", "xz -d .env.xz",
+            "yq -i '.a=1' ~/.ssh/config", "yq -yi '.a=1' ~/.ssh/config", "sd x y ~/.aws/credentials", "dos2unix .env", "xz -d .env.xz",
             "cp /tmp/k.gz ~/.ssh/authorized_keys.gz && gunzip -f ~/.ssh/authorized_keys.gz",
             "ditto /tmp/k ~/.ssh/authorized_keys", "tar -xf /tmp/k.tar -C ~ .ssh/authorized_keys",
             "unzip -o /tmp/k.zip -d ~/.ssh", "7z x /tmp/k.7z -o$HOME/.ssh", "cp -R /tmp/k/. ~/.ssh/",
             "git config -f .env a.b c", "base64 -d -i /tmp/k -o ~/.ssh/authorized_keys",
             "base64 --decode --output=~/.ssh/authorized_keys /tmp/k", "csplit -f ~/.ssh/authorized_key -n 1 /tmp/k 1",
-            "echo LD_PRELOAD=/tmp/x.so | tee -a ~/.ssh/environment", "echo x >> ~/.aws/cli/alias"), "deny", "TK-D023")
+            "echo LD_PRELOAD=/tmp/x.so | tee -a ~/.ssh/environment", "echo x >> ~/.aws/cli/alias",
+            "cp ~/.ssh/config ~/.ssh/config.bak"), "deny", "TK-D023")
         self.expect(self.bash("split -l 100000 /tmp/h .git/hooks/pre-commi"), "ask", "TK-A083")
         self.expect(self.bash("yq -i -o json 'del(.hooks)' ~/.claude/settings.json",
                               "sd tracekit true ~/.claude/settings.json",
@@ -147,43 +155,140 @@ class Routes(unittest.TestCase):
                               "split -l 1000 big.csv parts/chunk_", "csplit -f out/part in.txt 10",
                               "emacs --batch notes.org -f org-babel-tangle", "ditto build/App.app /tmp/App.app",
                               "cp -R src/. build/", "xz -d logs.tar.xz"), "allow")
-        self.expect(self.bash("ssh-keyscan github.com >> ~/.ssh/known_hosts"), ("allow", "flag"))   # a CI setup's
+
+    def test_an_archive_or_a_decompressor_writes_where_its_options_say(self):
+        # its folder however given (-C DIR, -CDIR, an old-style cluster's C, unzip -od or -dDIR, 7z -o after an
+        # absolute archive), a member's absolute path inside that folder (tar and unzip drop the /), bsdtar and gtar as
+        # tar, and a decompressor's output (zstd -dfo, lz4's second operand, brotli -o, gunzip -S's suffix)
+        self.expect(self.bash(
+            "bsdtar -xf /tmp/k.tar -C ~/.ssh", "gtar -xf /tmp/k.tar -C ~/.ssh", "tar xfC /tmp/k.tar ~/.ssh",
+            "tar -xzf /tmp/k.tgz -C$HOME/.ssh", "tar -xf /tmp/k.tar --directory=$HOME/.ssh",
+            "tar -xf /tmp/k.tar -C ~/.ssh /etc/motd", "unzip -od ~/.ssh /tmp/k.zip",
+            "unzip /tmp/k.zip -d$HOME/.ssh", "7z x -y /tmp/k.7z -o$HOME/.ssh",
+            "zstd -dfo ~/.ssh/authorized_keys /tmp/k.zst", "zstd -d /tmp/k.zst -o ~/.ssh/authorized_keys",
+            "lz4 -d /tmp/k.lz4 ~/.ssh/authorized_keys", "unlz4 /tmp/k.lz4 ~/.ssh/authorized_keys",
+            "brotli -d /tmp/k.br -o ~/.ssh/authorized_keys", "brotli -d /tmp/k.br --output=$HOME/.ssh/authorized_keys",
+            "gunzip -S .x ~/.ssh/authorized_keys.x", "gunzip --suffix=.x ~/.ssh/authorized_keys.x",
+            "lz4 -d -m ~/.ssh/k.lz4 /tmp/x.lz4",
+            "uudecode -o ~/.ssh/authorized_keys /tmp/k.uu", "dos2unix -n /tmp/k ~/.ssh/authorized_keys"),
+            "deny", "TK-D023")
+        # what only prints, tests or lists, writes elsewhere (-o, a second operand, -n's new file), leaves a member out
+        # (unzip -x) or reads a value (git config --get, emacs --insert): no write of the file it names
+        self.spare(self.bash(
+            "gunzip -c ~/.ssh/k.gz > /tmp/k", "unxz -t ~/.ssh/k.xz", "gunzip -l ~/.ssh/k.gz", "gunzip -tv ~/.ssh/k.gz",
+            "zstd -d .env.zst -o out.txt", "lz4 -d .env.lz4 out.txt", "7z x .env.7z -oout", "dos2unix -n .env out.txt",
+            "unzip -o k.zip -x .env -d out", "git config -f ~/.ssh/config --get host.x",
+            "emacs --batch --insert .env notes.org -f save-buffer"), "TK-D023")
 
     def test_an_interpreter_s_file_write_reaches_the_file_rules(self):
-        # an open in a writing mode, write_text, writeFileSync, File.write, file_put_contents, a copy's target: tee -a
-        # of the file, so the file rules read it as they read the shell's writes
+        # an open in a writing mode (its mode argument, Python's mode= keyword, Perl's mode with layers or in front of
+        # its file), write_text, writeFileSync, File.write, file_put_contents, io.open, a copy's target: tee of the
+        # file, so the file rules read it as they read the shell's writes (an append to known_hosts too)
         self.expect(self.bash("python3 -c \"open('.env','w').write('x')\"",
+                              "node -e \"require('fs').writeFileSync('/u/.ssh/known_hosts','x')\"",
+                              "python3 -c \"open('/u/.ssh/known_hosts','a').write('x')\"",
+                              "python3 -c \"open('.env', mode='a').write('x')\"",
+                              "python3 -c \"open('.env', encoding='utf8', mode='w').write('x')\"",
                               "python3 -c \"import shutil; shutil.copy('/tmp/k', '/u/.ssh/authorized_keys')\"",
                               "perl -e 'open(my $f, \">>\", \"/u/.ssh/authorized_keys\")'",
-                              "ruby -e 'File.write(\".env\", \"x\")'", "php -r 'file_put_contents(\".env\", \"x\");'"),
-                    "deny", "TK-D023")
+                              "perl -e 'open(my $f, \">>:utf8\", \"/u/.ssh/authorized_keys\")'",
+                              "perl -e 'open(F, \">:encoding(UTF-8)\", \".env\")'", "perl -e 'open(F, \">.env\")'",
+                              "ruby -e 'File.write(\".env\", \"x\")'", "php -r 'file_put_contents(\".env\", \"x\");'",
+                              "lua -e 'io.open(\".env\", \"w\"):write(\"x\")'"), "deny", "TK-D023")
         self.expect(self.bash("python3 -c \"open('/Users/u/.claude/settings.json','w').write('{}')\"",
                               "node -e \"require('fs').writeFileSync('.claude/settings.json','{}')\""), "ask", "TK-F015")
         self.expect(self.bash("python3 -c \"import pathlib; pathlib.Path('.git/hooks/pre-commit').write_text('x')\""),
                     "ask", "TK-A083")
         self.expect(self.bash("python3 -c \"open('out.txt','w').write('x')\"",
-                              "python3 -c \"print(open('README.md').read())\"",
                               "node -e \"require('fs').writeFileSync('dist/x.json','{}')\""), "allow")
+        # a read is no write: an open in no writing mode, Perl's `<` or a pipe; a call with only keyword arguments
+        # (open(file=…)) isn't read (docs/limits.md), and decides without an error
+        self.spare(self.bash("python3 -c \"print(open('.env').read())\"",
+                             "python3 -c \"print(open('.env', mode='r').read())\"", "perl -e 'open(F, \"<\", \".env\")'",
+                             "perl -e 'open(F, \".env\")'", "perl -e 'open(F, \"-|\", \"cat\", \".env\")'"), "TK-D023")
+        for e in self.engines.values():
+            e.decide("Bash", {"command": "python3 -c \"open(file='.env', mode='a').write('x')\""})
+
+    def test_a_host_key_appended_to_known_hosts_is_its_only_write_not_denied(self):
+        # an append (`>>`, after a cd too; tee -a) adds a host key, and ssh-keygen -R removes one, as CI setups do; a
+        # copy, link, move, plain or in-place write of it, or an append there and another write, is any .ssh write
+        self.expect(self.bash("ssh-keyscan github.com >> ~/.ssh/known_hosts",
+                              "ssh-keyscan -H github.com 2>/dev/null >> ~/.ssh/known_hosts",
+                              "ssh-keyscan github.com | tee -a ~/.ssh/known_hosts > /dev/null",
+                              "ssh-keyscan github.com | tee --append ~/.ssh/known_hosts",
+                              "cd ~/.ssh && ssh-keyscan github.com >> known_hosts", "ssh-keygen -R github.com",
+                              "ssh-keygen -R github.com -f ~/.ssh/known_hosts"), ("allow", "flag"))
+        self.expect(self.bash("ln -sf ~/.ssh/authorized_keys ~/.ssh/known_hosts", "cp /tmp/kh ~/.ssh/known_hosts",
+                              "mv /tmp/kh ~/.ssh/known_hosts", "ssh-keyscan github.com | tee ~/.ssh/known_hosts",
+                              "ssh-keyscan github.com > ~/.ssh/known_hosts", "sed -i '' '/github.com/d' ~/.ssh/known_hosts",
+                              "echo x >> ~/.ssh/known_hosts; cp /tmp/k ~/.ssh/known_hosts",
+                              "echo a >> ~/.ssh/known_hosts && echo b > ~/.ssh/known_hosts",
+                              "cd ~/.ssh && echo a >> known_hosts && echo b > known_hosts",
+                              "cd ~/.ssh && echo a >> config", "echo k >> ~/.ssh/known_hosts.d/x",
+                              "echo k | tee -a ~/.ssh/known_hosts ~/.ssh/authorized_keys"), "deny", "TK-D023")
 
     def test_tracekit_s_plugin_disabled_in_any_spelling_is_held(self):
+        # under any name the harness runs by (npx's package, node on its bin link, `"$(which claude)"`, python -m
+        # hermes_cli: TK-A070's reading of the program), the plugin in any case, by a path or with a version, or all
         self.expect(self.bash("hermes plugins disable --all", "hermes plugin disable tracekit/",
                               "hermes plugins disable ./tracekit", "hermes plugins remove Tracekit",
-                              "claude plugin disable --all", "claude plugin uninstall ./tracekit"), "ask", "TK-A054")
+                              "hermes plugins disable -a", "python3 -m hermes_cli plugins disable --all",
+                              "claude plugin disable --all", "claude plugin disable -as user",
+                              "claude plugin uninstall ./plugin/tracekit/", "claude plugin remove TRACEKIT@tracekit",
+                              "npx -y @anthropic-ai/claude-code plugin uninstall tracekit",
+                              "node node_modules/.bin/claude plugin disable tracekit",
+                              "\"$(which claude)\" plugin uninstall tracekit"), "ask", "TK-A054")
         self.expect(self.bash("hermes plugins list", "hermes plugins disable other-plugin",
-                              "hermes config get approvals.mode", "claude plugin disable other@market"), "allow")
+                              "hermes config get approvals.mode", "claude plugin disable other@market",
+                              "npx -y @anthropic-ai/claude-code plugin uninstall other@market",
+                              "node scripts/claude.js plugin uninstall tracekit"), "allow")
 
-    def test_a_harness_by_its_script_its_located_path_or_in_a_container_is_a_launch(self):
+    def test_a_harness_by_its_installed_script_or_its_quoted_located_path_is_a_launch(self):
+        # a JavaScript runtime on a harness's bin link (after any of its options, a value one takes skipped), its
+        # package's own file, or the path its name resolves to; a program word `"$(command -v claude)"`
         self.expect(self.bash(
             "node node_modules/.bin/claude --bare -p hi", "node ./node_modules/.bin/codex exec -c hooks=[] hi",
             "HOME=/tmp/x node node_modules/.bin/claude -p hi", "node \"$(which claude)\" --settings /tmp/s.json -p hi",
-            "HOME=/tmp/x node \"$(which claude)\" -p hi", "\"$(command -v claude)\" --settings /tmp/s.json -p hi",
-            "docker run --rm -v $PWD:/w node:20 npx -y @anthropic-ai/claude-code -p hi",
-            "podman run -it img claude -p hi", "docker exec c claude -p hi",
-            "APPDATA=C:/tmp/x LOCALAPPDATA=C:/tmp/x opencode run hi"), "ask", "TK-A070")
-        # a program word that is the path of the program it names is that program
+            "node `which claude` --bare -p hi", "HOME=/tmp/x node \"$(which claude)\" -p hi",
+            "\"$(command -v claude)\" --settings /tmp/s.json -p hi",
+            "node -r ts-node/register node_modules/.bin/claude --bare -p hi",
+            "node --unhandled-rejections strict node_modules/.bin/claude --bare -p hi",
+            "node --disable-warning ExperimentalWarning node_modules/.bin/claude --bare -p hi",
+            "node --inspect-port 9229 node_modules/.bin/claude --bare -p hi",
+            "deno run -A node_modules/.bin/claude --bare -p hi",
+            "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --bare -p hi",
+            "APPDATA=C:/tmp/x LOCALAPPDATA=C:/tmp/x opencode run hi", "env -u APPDATA claude -p hi"), "ask", "TK-A070")
+        # a script merely named for a harness, a quoted located word for any other program, a container's command line
+        # (docs/limits.md)
         self.expect(self.bash("node script.js", "node node_modules/.bin/jest --ci", "APPDATA=C:/x python app.py",
-                              "\"$(command -v python)\" -m pytest", "$(which python3) -V"), "allow")
-        self.expect(self.bash("$(which rm) -rf ~"), "deny", "TK-D004")
+                              "\"$(command -v python)\" -m pytest", "node scripts/gemini.js --config config.json",
+                              "node tools/claude.mjs --profile dev", "node tools/claude --profile dev",
+                              "HOME=/tmp/h node scripts/codex.js"), "allow")
+        self.spare(self.bash("docker run --rm -v $PWD:/w img pytest -k claude",
+                             "docker compose exec web python manage.py test --tag gemini"), "TK-A070")
+        self.expect(self.bash("\"$(which rm)\" -rf ~"), "deny", "TK-D004")
+
+    def test_a_located_word_that_may_be_empty_stays_unread(self):
+        # unquoted, `$(which X)`, `$(command -v X)` or `$(type -p X)` (empty for a builtin) that prints nothing
+        # vanishes and bash runs the next word, in backquotes too and wherever the line runs it (bash -c, eval, a
+        # subshell, an if, python's os.system): it stays unread, as before 1.7.0. Only a quoted whole word, which runs
+        # nothing when empty, is read as X, and never on a line that defines which, command or type, or runs enable
+        vanish = "$(which zzqq) rm -rf ~"
+        self.expect(self.bash(*[p + "rm -rf ~" for p in ("$(which zzqq) ", "$(command -v zzqq) ", "$(type -p cd) ",
+                                                         "`which zzqq` ", "X=1 $(which zzqq) ")],
+                              f"bash -c '{vanish}'", f"eval '{vanish}'", f"( {vanish} )", f"if true; then {vanish}; fi",
+                              f"python3 -c \"import os; os.system('{vanish}')\""), ("ask", "deny"), "TK-D004")
+        self.expect(self.bash("$(which zzqq) claude --bare -p hi"), ("ask", "deny"), "TK-A070")
+        self.expect(self.bash("$(which zzqq) claude plugin uninstall tracekit"), ("ask", "deny"), "TK-A054")
+        self.expect(self.bash("which(){ echo rm; }; \"$(which ls)\" -rf ~",
+                              "command(){ echo rm; }; \"$(command -v ls)\" -rf ~",
+                              "type(){ echo rm; }; \"$(type -p ls)\" -rf ~",
+                              "function which { echo rm; }; \"$(which ls)\" -rf ~",
+                              "which() { echo rm; }\n\"$(which ls)\" -rf ~", "enable -n type; \"$(type -p ls)\" -rf ~",
+                              "$(which rm) -rf ~", "`which rm` -rf ~", "$(which python3) -V"),
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
+        self.expect(self.bash("\"$(which zzqq)\" rm -rf ~", "\"$(type -p cd)\" rm -rf ~"), ("allow", "flag"))
+        self.spare(self.bash("\"$(which zzqq)\" rm -rf ~"), "TK-D004")
 
     def test_every_in_place_switch_find_and_output_writer_reaches_the_rules(self):
         self.expect(self.bash(

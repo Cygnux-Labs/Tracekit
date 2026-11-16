@@ -922,21 +922,30 @@ _WRITES = {
 _SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln")   # calls that write their second
 
 
-def _written(kind, call, items):
-    """The file a write call writes (its arguments as _call_args gives them), or None: an open's only in a writing mode
-    (Python's, Ruby's, PHP's and Lua's mode argument with w, a, x, c or +; Perl's `>`, `>>`, `+<` as its mode or in front
-    of its file), a copy's, move's, rename's or link's target, else its first argument."""
+_PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
+_MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+
+
+def _written(kind, call, items, text=""):
+    """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
+    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
+    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
+    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
     name = call.rsplit(".", 1)[-1]
     if kind == "perl" and name == "open":
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
-        if re.fullmatch(r"\s*(?:\+[<>]|>>?)\s*", mode):   # open(FH, '>', file)
+        m = _PERL_MODE.match(mode)
+        rest = mode[m.end():].strip() if m else None
+        if rest is None:
+            target = None
+        elif not rest or rest.startswith(":"):   # open(FH, '>', file), '>>:utf8'
             target = items[2] if len(items) > 2 else None
         else:   # open(FH, ">file")
-            two = re.fullmatch(r"\s*(?:\+[<>]|>>?)\s*([^|&\s][^|&]*?)\s*", mode)
-            target = (two.group(1),) if two else None
+            target = (rest,)
     elif name in ("open", "fopen"):
-        mode = items[1] if len(items) > 1 and isinstance(items[1], tuple) else None
-        target = items[0] if mode and re.search(r"[waxc+]", _text_of(mode)) else None
+        mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
+            (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
+        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
     else:
         target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
     return target if isinstance(target, tuple) else None
@@ -1003,7 +1012,8 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            "globopts": _glob_options(command, globs),
            # each loop value's own reading (_Parser.pieces): its lines and code, what they cost, and whether the budget
            # left them out
-           "pieces": pieces, "piece_lines": [], "piece_batches": [], "piece_work": 0, "pieces_cut": False}
+           "pieces": pieces, "piece_lines": [], "piece_batches": [], "piece_work": 0, "pieces_cut": False,
+           "locator_redefined": bool(_LOCATOR_REDEFINED.search(command))}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1614,11 +1624,12 @@ def _learned(ctx):
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
-    read (pieces) or the budget left them out (pieces_cut)."""
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
-            "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False)}
+            "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
+            "appended": list(ctx.get("appended", ()))}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1853,9 +1864,17 @@ def _git_stdin_message(argv):
                for j in range(len(args)))
 
 
-# a word that is only the path of a program its name names, as bash finds it on PATH: `$(which NAME)`,
-# `$(command -v NAME)`, `$(type -p NAME)` (or -P), in backquotes too, quoted or not
-LOCATED = re.compile(r'("?)(?:\$\(|`)[ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*(?:\)|`)\1')
+# a word that is only the path of a program its name names, as bash finds it on PATH, quoted as a whole word:
+# `"$(which NAME)"`, `"$(command -v NAME)"`, `"$(type -p NAME)"` (or -P). Unquoted, one that prints nothing (a name
+# not found; type -p of a builtin or function) vanishes and the next word runs, so only the quoted word, which runs
+# nothing when empty, is read as NAME (the engine also reads the text, quotes gone, in backquotes too, as the script
+# a JavaScript runtime runs: only more held)
+LOCATED = re.compile(r'"\$\([ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*\)"')
+LOCATED_TEXT = re.compile(r'(?:\$\(|`)[ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*[)`]')
+# a line that defines which, command or type as a function, or turns a builtin off or loads one (enable): what they
+# print is its (a line with an alias is held as the alias reading reads it)
+_LOCATOR_REDEFINED = re.compile(r"(?:^|[\s;&|(){}])(?:function[ \t]+(?:which|command|type)\b|(?:which|command|type)"
+                                r"[ \t]*\([ \t]*\))|\benable\b")
 
 
 def _name_unreadable(text):
@@ -3494,6 +3513,8 @@ class _Parser:
                         m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0]))
                     if writes:
                         self.ctx["written"] += named
+                        if m.group(2) in (">>", "&>>"):   # appended to (engine._write_effects)
+                            self.ctx.setdefault("appended", []).extend(named)
                         outs += named
                         stdout = m.group(2) in ("&>", "&>>") or \
                             m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&")
@@ -3662,9 +3683,10 @@ class _Parser:
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
                     filter(None, map(self.relex, pieces)):
                 # `"$(command -v python)"`, `$(which python3)`: the path of the program it names, which runs it
-                located = not words and pieces is None and LOCATED.fullmatch(raw)
+                located = not words and pieces is None and not self.ctx.get("locator_redefined", True) and \
+                    LOCATED.fullmatch(raw)
                 if located:   # its one reading, a plain word's
-                    text = located.group(2)
+                    text = located.group(1)
                     g = expanded = self.vanish = self.alone = self.spliced = self.unknown = self.joined = False
                     self.readings, self.parts, self.ways_, self.slots, self.full = (text,), [text], {}, None, True
                     self.expanded, self.splits, self.cut, self.given = frozenset(), False, (text,) * 6, False
@@ -4842,16 +4864,17 @@ class _Parser:
             if items and isinstance(items[0], tuple):
                 self.argv([("rm",), ("-rf",), items[0]], pid, via)
         # a write of a file (Python's open in a writing mode, Path(…).write_text, fs.writeFileSync, File.write, a copy or
-        # rename's target): tee -a of it, so the file rules read it as the shell's writes are
+        # rename's target): tee of it, so the file rules read it as the shell's writes are (an append to known_hosts
+        # too: only the shell's `>>` and tee -a are read as appends)
         for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
             if m.group("path"):   # Path("…").write_text(…): its literal
-                self.argv([("tee",), ("-a",), (m.group("path"),)], pid, via)
+                self.argv([("tee",), (m.group("path"),)], pid, via)
                 continue
             items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
             self.charge(end - m.end())
-            target = _written(kind, m.group("call"), items)
+            target = _written(kind, m.group("call"), items, code[m.end():end])
             if target is not None:
-                self.argv([("tee",), ("-a",), target], pid, via)
+                self.argv([("tee",), target], pid, via)
         # a spawner given a name, not a literal: what it runs may be any of the code's literals, each read as shell (one
         # that isn't shell leaves the program unreadable)
         for text in _literals(kind, code, self.charge) if loose else ():
