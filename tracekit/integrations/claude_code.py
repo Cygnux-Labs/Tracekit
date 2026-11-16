@@ -304,18 +304,25 @@ class HookClient(Client):
     """The hooks' client, by the hook's deadline() (`answer_by`): a call the signer rate-limits (quota_exceeded with
     retry_after_ms) is sent again once that has passed, within the client's timeout and the deadline, as the tailer's
     lines are. In dev mode the hooks and the tailer share the agent's uid, and so its event rate: a tailer reading a
-    long transcript must not have the hook's decide refused."""
+    long transcript must not have the hook's decide refused. The call that connects waits for a starting dev signer
+    until the deadline, not only for its own share of it (a call's timeout counts its connection, #852)."""
 
     def call(self, method, req=None, **fields):
         end = min(time.monotonic() + self.timeout, self.answer_by or math.inf)
-        while True:
-            try:
-                return super().call(method, req, **fields)
-            except RPCError as e:
-                wait = (e.retry_after_ms or 0) / 1000
-                if e.code != "quota_exceeded" or e.retry_after_ms is None or time.monotonic() + wait > end:
-                    raise
-                time.sleep(wait)
+        timeout = self.timeout
+        if self.answer_by is not None and (self._conn is None or self._pid != os.getpid()):
+            self.timeout = max(timeout, self.answer_by - time.monotonic())
+        try:
+            while True:
+                try:
+                    return super().call(method, req, **fields)
+                except RPCError as e:
+                    wait = (e.retry_after_ms or 0) / 1000
+                    if e.code != "quota_exceeded" or e.retry_after_ms is None or time.monotonic() + wait > end:
+                        raise
+                    time.sleep(wait)
+        finally:
+            self.timeout = timeout
 
 
 def _state(*ids):
