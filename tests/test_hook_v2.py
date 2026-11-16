@@ -37,6 +37,8 @@ from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+with open(os.path.join(ROOT, "tests", "data", "code_mode", "claude-code-2.1.325.json"), encoding="utf-8") as f:
+    CODE_MODE = json.load(f)   # a Claude Code Code Mode session, recorded and redacted (#862)
 # -X faulthandler: a hook that crashes prints every thread's stack (-I ignores PYTHONFAULTHANDLER; #481)
 HOOK = install._hook_command(install.V2_HOOK).replace(" -I ", " -I -X faulthandler ", 1)
 # what the agent reads it does after a hold's commands, and after a block (claude_code.stopped), when the reason has
@@ -1117,6 +1119,99 @@ class HookV2(unittest.TestCase):
             times.append(time.perf_counter() - t)
         print(f"\nv2 hook PreToolUse median over 20, warm signer: {statistics.median(times) * 1000:.0f} ms")
 
+    # Claude Code 2.1.325's Code Mode (#862), from tests/data/code_mode: a session recorded with a stand-in hook that
+    # refused calls containing deny-me (hook_exit 2), here played to Tracekit's hook, which allows each of them, as
+    # another hook beside it would have refused them
+    def code_mode(self, run, events=None):
+        sent = []
+        for e in events or CODE_MODE["runs"][run]:
+            fields = {k: e[k] for k in ("tool_name", "tool_input", "tool_use_id", "tool_response", "permission_mode")
+                      if k in e}
+            self.assertEqual(self.hook(e["hook_event_name"], **fields), (0, ""), e["tool_use_id"])
+            sent.append(e["tool_use_id"])
+        return sent
+
+    def calls(self, run=None):
+        """Each call's decisions and results, by call id; `run`: a run handle, to read the run after SessionEnd."""
+        out = {}
+        for e in run.call("read")["events"] if run else self.events():
+            if e["type"] in ("policy.decision", "tool.result"):
+                out.setdefault(e["data"]["tool_use_id"], []).append(
+                    (e["type"], e["data"]["decision"] if e["type"] == "policy.decision" else e["data"]["ok"]))
+        return out
+
+    def test_code_mode_calls_from_code_are_decided_and_completed_under_their_own_ids(self):
+        with mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}):
+            ids = self.code_mode("inner_calls")
+        repl, *inner = list(dict.fromkeys(ids))
+        self.assertTrue(repl.startswith("toolu_") and inner and all(i.startswith("repl_") for i in inner), ids)
+        calls = self.calls()
+        # the script is one call the coding pack flags (an unmapped tool), each call its code made one of its own
+        self.assertEqual(calls[repl], [("policy.decision", "flag"), ("tool.result", True)])
+        for tid in inner:
+            self.assertEqual(calls[tid], [("policy.decision", "allow"), ("tool.result", True)], tid)
+        for tid in (repl, *inner):   # none left open
+            self.assertFalse(os.path.exists(claude_code._state("s1", tid)), tid)
+
+    def test_code_mode_tool_globals_reach_the_hook_as_calls_of_their_own(self):
+        with mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}):
+            ids = list(dict.fromkeys(self.code_mode("tool_globals")))
+        tools = {e["tool_use_id"]: e["tool_name"] for e in CODE_MODE["runs"]["tool_globals"]}
+        self.assertEqual([tools[i] for i in ids], ["REPL", "Read", "Glob", "Write", "Edit", "PowerShell"])
+        calls = self.calls()
+        for tid in ids:   # each decided under its own id, whatever the policy said of it
+            self.assertEqual(calls[tid][0][0], "policy.decision", tid)
+
+    def test_code_mode_call_another_hook_refused_completes_with_the_error_the_code_saw(self):
+        run = CODE_MODE["runs"]["refused_inner_call"]
+        refused = next(e["tool_use_id"] for e in run if e["hook_exit"] == 2)
+        with mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}):
+            self.code_mode("refused_inner_call", run[:-1])   # all but the REPL's PostToolUse
+            self.assertEqual(self.calls()[refused], [("policy.decision", "allow")])   # still open
+            self.code_mode("refused_inner_call", run[-1:])
+        calls = self.calls()
+        self.assertEqual(calls[refused], [("policy.decision", "allow"), ("tool.result", False)])
+        for e in run:   # the others completed as they ran
+            if e["tool_use_id"] != refused:
+                self.assertEqual(calls[e["tool_use_id"]][-1], ("tool.result", True), e["tool_use_id"])
+        self.assertFalse(os.path.exists(claude_code._state("s1", refused)))
+
+    def test_code_mode_two_open_calls_of_the_refused_tool_are_left_to_session_end(self):
+        # one of them may still be running when the script ends: the REPL's line names no call id
+        run = CODE_MODE["runs"]["refused_inner_call"]
+        refused = next(e for e in run if e["hook_exit"] == 2)
+        running = dict(refused, tool_use_id="repl_00000000-0000-0000-0000-000000000001",
+                       tool_input={"command": "echo still running"})
+        with mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}):
+            self.code_mode("refused_inner_call", run[:-1] + [running, run[-1]])
+        calls = self.calls()
+        for tid in (refused["tool_use_id"], running["tool_use_id"]):
+            self.assertEqual(calls[tid], [("policy.decision", "allow")], tid)
+        run = self.run_handle()   # SessionEnd removes the session's state
+        self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
+        calls = self.calls(run)
+        for tid in (refused["tool_use_id"], running["tool_use_id"]):
+            self.assertEqual(calls[tid], [("policy.decision", "allow"), ("tool.result", False)], tid)
+
+    def test_code_mode_script_refused_as_a_whole_completes_at_session_end(self):
+        run = CODE_MODE["runs"]["refused_script"]   # its PreToolUse only: refused, it got no PostToolUse
+        with mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}):
+            self.code_mode("refused_script")
+        tid = run[0]["tool_use_id"]
+        self.assertEqual(self.calls()[tid], [("policy.decision", "flag")])   # the coding pack flags REPL, unmapped
+        sent = []
+        real = claude_code._run
+
+        def spy(client, sid, **kw):
+            if kw.get("send") == "complete":
+                sent.append((kw["tool_call_id"], kw["error"]))
+            return real(client, sid, **kw)
+
+        with mock.patch.object(claude_code, "_run", spy):   # in-process, to read the error it is completed with
+            claude_code._unfinished(Client(), "s1")
+        self.assertEqual(sent, [(tid, claude_code.NO_POST_REPL)])
+        self.assertEqual(self.calls()[tid], [("policy.decision", "flag"), ("tool.result", False)])
+
 
 @unittest.skipUnless(os.name == "posix", "as HookV2")
 class HeldCalls(unittest.TestCase):
@@ -2158,3 +2253,27 @@ class StateReads(unittest.TestCase):
         with mock.patch.object(claude_code.os, "name", "nt"), mock.patch("builtins.open", flaky):
             self.assertEqual(claude_code._load(path), {"run_id": "r"})
         self.assertEqual(len(tries), 3)
+
+
+class CodeModeRefusedCalls(unittest.TestCase):
+    """The REPL result's list of the calls Code Mode refused (#862), as Claude Code 2.1.325 wrote it."""
+
+    def test_the_recorded_list_reads_as_tool_and_error(self):
+        post = CODE_MODE["runs"]["refused_inner_call"][-1]
+        self.assertEqual(claude_code._refused_calls(post["tool_response"]), [(
+            "Bash", 'Permission denied for Bash: PreToolUse:Bash hook error: ["<python>" "<test>/log_hook.py"]: '
+                    "refused by the #862 test hook: the command contains deny-me")])
+
+    def test_no_list_or_an_unreadable_one_is_none(self):
+        for resp in (None, "text", {}, {"refusedCalls": None},
+                     {"refusedCalls": "Tool calls that were refused:\n- Bash"}):
+            self.assertEqual(claude_code._refused_calls(resp), [], resp)
+
+    def test_a_line_of_this_hooks_own_block_completes_no_call(self):
+        # the call it blocked was never left open: an open call of the same tool from code may still be running
+        resp = {"refusedCalls": '- "Bash", refused: "Permission denied for Bash: [tracekit] BLOCKED, nothing ran."'}
+        with mock.patch.object(claude_code, "_load", return_value={"run_id": "r1"}), \
+                mock.patch.object(claude_code.glob, "glob") as found, mock.patch.object(claude_code, "_run") as run:
+            claude_code._refused_inner(None, "s1", resp)
+        found.assert_not_called()
+        run.assert_not_called()
