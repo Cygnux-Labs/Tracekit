@@ -124,7 +124,10 @@ Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
 under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `TO ANSWER`) in STATUS, `RUN` the run's start and
-end, `NOTE` a record of something else the run did (a state write, a message sent). The signer's own records (`LOG`:
+end, `NOTE` a record of something else the run did (a state write, a message sent). A denied call, or a hold nobody
+approved, whose result the signer signed under that decision ran anyway: its STATUS and PERMISSIONS row say so in red
+(`BLOCKED · RAN ANYWAY`, `NOT ANSWERED · RAN ANYWAY`, `REJECTED · RAN ANYWAY`, ...), and the run review counts it so.
+The signer's own records (`LOG`:
 content it read for the viewer, its keys) are left out of **All**; **Tracekit's own** lists them. A row marked
 `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `CHECK` findings
 of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings

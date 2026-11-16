@@ -296,8 +296,9 @@ class SignedRuntime(unittest.TestCase):
             run.decide("c1", "Bash", other)
             self.assertFalse(run.approval_consume("c1", "Bash", other)["ok"])
         self.assertEqual(self.used_after("changed-then-use", changed), {
-            "decisions": {"ask": 2}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["ask", "REFUSED: ARGUMENTS CHANGED"]],
-            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"],
+            "decisions": {"ask": 2}, "retries": 0,
+            "calls": [["ask", "APPROVED · RAN"], ["ask", "REFUSED: ARGUMENTS CHANGED · RAN ANYWAY"]],
+            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED · RAN ANYWAY"], ["ask", "APPROVED · RAN"]], "ran": ["ask"],
             "why": [("ask", None)]})   # the SDK's result names its last decision, the changed one: the signer says it ran
 
     def test_a_later_attempt_stays_its_own_call_when_the_earlier_attempts_approval_is_used(self):
@@ -461,8 +462,9 @@ class SignedRuntime(unittest.TestCase):
         self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, approval_id_hint=aid)["ok"])
         run.complete("c1")
         self.assertEqual(self.seen(run), {
-            "decisions": {"ask": 1, "deny": 1}, "retries": 1, "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED"]],
-            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask", "deny"],
+            "decisions": {"ask": 1, "deny": 1}, "retries": 1,
+            "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED · RAN ANYWAY"]],
+            "perm": [["deny", "BLOCKED · RAN ANYWAY"], ["ask", "APPROVED · RAN"]], "ran": ["ask", "deny"],
             "why": [("deny", None), ("ask", "approve")]})
 
     def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):

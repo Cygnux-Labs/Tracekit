@@ -684,18 +684,24 @@ class Oversight(unittest.TestCase):
         self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 1, 1)])
 
     def test_a_deny_or_a_hold_nobody_answered_that_ran_anyway_says_so_in_the_review(self):
-        """The review counted a call with a result under a deny as blocked, and one under an unanswered hold as held."""
+        """The review counted a call with a result under a deny as blocked, one under an unanswered hold as held, and
+        one under a rejected hold as rejected; the rule rows still count that rejection."""
         def rec(seq, type, **data):
             return {"event": {"ts": "2026-11-05T10:00:00Z", "type": type, "run_seq": seq, "data": data}}
         records = [rec(0, "policy.decision", decision="deny", tool_use_id="t0", decision_id="d0"),
                    rec(1, "tool.result", tool_use_id="t0", decision_id="d0"),
                    rec(2, "policy.decision", decision="deny", tool_use_id="t1", decision_id="d1"),
                    rec(3, "policy.decision", decision="ask", tool_use_id="t2", decision_id="d2"),
-                   rec(4, "tool.result", tool_use_id="t2", decision_id="d2")]
-        rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified")
+                   rec(4, "tool.result", tool_use_id="t2", decision_id="d2"),
+                   rec(5, "policy.decision", decision="ask", tool_use_id="t3", decision_id="d3"),
+                   rec(6, "approval", tool_use_id="t3", decision="reject", approver="uid:1"),
+                   rec(7, "tool.result", tool_use_id="t3", decision_id="d3")]
+        outcomes = {}
+        rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified", outcomes)
         self.assertEqual(dict(rv["permissions"]), {"blocked · ran anyway": 1, "blocked": 1,
-                                                   "not answered · ran anyway": 1})
-        self.assertEqual(dict(rv["holds"]), {"not answered · ran anyway": 1})
+                                                   "not answered · ran anyway": 1, "rejected · ran anyway": 1})
+        self.assertEqual(dict(rv["holds"]), {"not answered · ran anyway": 1, "rejected · ran anyway": 1})
+        self.assertEqual(self.hold_rules(records[3:], outcomes), [("ask", 2, 0, 1)])
 
     def hold_rules(self, records, outcomes):
         """(decision, count, approved, rejected or expired) of each rule row of `records`' holds."""

@@ -939,8 +939,9 @@ def review(records, rep, verdict, outcomes=None):
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
     ended = {c: "not answered" if o == OPEN and (out["state"] == "final" or c in ran) else o for c, o in perms.items()}
-    # one the policy refused, or nobody answered, whose result the signer signed under that decision: it ran
-    ended = {c: f"{o} · ran anyway" if c in ran and o in ("blocked", "not answered") else o for c, o in ended.items()}
+    # one the policy refused, or a hold nobody approved, whose result the signer signed under that decision: it ran
+    ended = {c: f"{o} · ran anyway" if c in ran and (o == "blocked" or c in asked and not o.startswith("approved"))
+             else o for c, o in ended.items()}
     out["permissions"] = collections.Counter(ended.values())
     held = {c: o for c, o in ended.items() if c in asked}
     out["holds"] = collections.Counter(held.values())
