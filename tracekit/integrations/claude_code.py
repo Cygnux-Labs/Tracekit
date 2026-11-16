@@ -264,7 +264,12 @@ def approvals_cmd(signer, use_interpreter=False):
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
     command = "tracekit approvals" + (f" --signer {named}" if named else "")
     if use_interpreter:
-        command = f"{shlex.quote(sys.executable)} -m {command}"
+        interpreter = (
+            subprocess.list2cmdline([sys.executable])
+            if os.name == "nt"
+            else shlex.quote(sys.executable)
+        )
+        command = f"{interpreter} -m {command}"
     return command
 
 

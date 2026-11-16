@@ -233,6 +233,53 @@ class Mapping(HarnessCase):
             f"{shlex.quote(interpreter)} -m tracekit approvals",
         )
 
+    def test_codex_approval_command_quotes_interpreter_path_on_windows(self):
+        interpreter = r"C:\Program Files\Tracekit\python.exe"
+
+        with mock.patch.object(claude_code.os, "name", "nt"), \
+                mock.patch.object(claude_code.sys, "executable", interpreter):
+            command = claude_code.approvals_cmd(None, use_interpreter=True)
+
+        self.assertEqual(
+            command,
+            f'{subprocess.list2cmdline([interpreter])} -m tracekit approvals',
+        )
+
+    def test_held_approval_message_uses_harness_specific_command(self):
+        interpreter = "/path/with spaces/python"
+        original_approvals_cmd = claude_code.approvals_cmd
+        original_prefix = claude_code._approval_command_prefix
+
+        def unnamed_approvals_cmd(signer, use_interpreter=False):
+            return original_approvals_cmd(None, use_interpreter)
+
+        def unnamed_prefix(agent, signer):
+            return original_prefix(agent, None)
+
+        for harness, expected in (
+            ("codex", f"!{shlex.quote(interpreter)} -m tracekit approvals approve "),
+            ("gemini", "!tracekit approvals approve "),
+        ):
+            with self.subTest(harness=harness):
+                self.decision = "ask"
+                case = next(c for c in cases(harness) if c["decision"] == "ask")
+
+                with mock.patch.object(
+                    claude_code, "approvals_cmd", side_effect=unnamed_approvals_cmd
+                ), mock.patch.object(
+                    claude_code, "_approval_command_prefix", side_effect=unnamed_prefix
+                ), mock.patch.object(
+                    claude_code.sys, "executable", interpreter
+                ), mock.patch.dict(
+                    os.environ, {claude_code.WAIT_ENV: "0"}
+                ):
+                    code, out, err = self.hook(
+                        harness, case["payload"], case.get("event")
+                    )
+
+                self.assertIn("HELD, nothing ran", err)
+                self.assertIn(expected, err)
+
     def test_opencode(self):
         self.check("opencode")
 
