@@ -85,12 +85,12 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   the Hermes plugin is version 0.2.0 for the catalog update (#708).
 
 ### Changed
-- **Policy packs.** Coding `2026.11-v2-95` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
+- **Policy packs.** Coding `2026.11-v2-96` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
   (from `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud
   `2026.11-server-cloud-18` (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14`
   (from `-9`), and the v1 default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's
-  settings or hooks (they flagged it). Two policy merge trains brought in nineteen pull requests (#799, #850). E17: 951
-  of 951 harmful calls stopped, 1 false alarm in 971. E21: the server pack stops or holds 287 of 420 held-out calls
+  settings or hooks (they flagged it). Two policy merge trains brought in nineteen pull requests (#799, #850). E17: 952
+  of 952 harmful calls stopped, 1 false alarm in 971. E21: the server pack stops or holds 287 of 420 held-out calls
   (255 in 1.6.0), strict 312 (285), with the same false positives.
 - **Signer protocol 26** (from 22): 23 adds `export_run`, 24 `call_state` and `call_claim`, 25 the record `type` and an
   observed input's `source` in `content_get` (#866), and 26 `register_run`'s `continues`. Older clients keep working;

@@ -908,7 +908,7 @@ class TestAudit(unittest.TestCase):
                          "arguments": "[" * 100_000}
         _write_jsonl(self.root / "rollout-a.jsonl", [
             _rollout(old, 30), _rollout(new), _rollout(new), _rollout(changed),
-            _rollout(no_id), _rollout(empty_id), _rollout(numeric_id), _rollout(invalid_namespace),
+            _rollout(no_id), _rollout(no_id), _rollout(empty_id), _rollout(numeric_id), _rollout(invalid_namespace),
             _rollout(deeply_nested),
             _rollout({"type": "function_call", "name": "exec_command", "call_id": "bad", "arguments": "bad json"}),
             _rollout(None), "not json", _call("Bash", {"command": "rm -rf /"}),
@@ -918,10 +918,10 @@ class TestAudit(unittest.TestCase):
                          "arguments": json.dumps({"cmd": "pwd"})}
         _write_jsonl(self.root / "rollout-b.jsonl", [_rollout(new), _rollout(other_session)])
         report = audit.audit(str(self.root), agent="codex", since="7d")
-        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (7, 2, 3))
+        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (8, 2, 3))
         self.assertEqual(report["counts"]["allow"], 3)
-        self.assertEqual(report["counts"]["deny"], 3)
-        self.assertEqual([c["tool"] for c in report["calls"]].count("Bash"), 6)
+        self.assertEqual(report["counts"]["deny"], 4)
+        self.assertEqual([c["tool"] for c in report["calls"]].count("Bash"), 7)
         self.assertTrue(any(c["tool"] == "read_file" for c in report["calls"]))
         self.assertIsNone(harness_hooks._use(no_id))
         self.assertIsNone(harness_hooks._use(empty_id))
@@ -1153,11 +1153,13 @@ class TestAudit(unittest.TestCase):
         """#716: a Cursor tool's name is mapped as its hook maps it."""
         args = {"command": "rm -rf /", "description": "clean"}
         _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
-            {"role": "user", "message": {"content": [{"type": "text", "text": "tidy up"}]}},
+            {"role": "user", "message": {"content": [{"type": "tool_use", "name": "Shell", "input": args}]}},
             _cursor_call("Shell", args)])
         tool, mapped = agent_hooks.tool("cursor", "Shell", args)
         expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
-        call = audit.audit(str(self.root), agent="cursor")["calls"][0]
+        report = audit.audit(str(self.root), agent="cursor")
+        self.assertEqual(len(report["calls"]), 1)
+        call = report["calls"][0]
         self.assertEqual((call["agent"], call["session"], call["tool"], call["time"], call["verdict"], call["rule_ids"]),
                          ("cursor", "c1", "Bash", None, expected["verdict"], expected["rule_ids"]))
         self.assertEqual(call["verdict"], "deny")
