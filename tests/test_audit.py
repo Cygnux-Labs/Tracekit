@@ -111,6 +111,12 @@ class TestAudit(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        # a home of the test's own: the person's Claude Code settings (Tracekit's hooks installed there change audit's
+        # last line, #902) are not the test's
+        env = mock.patch.dict(os.environ, {"HOME": str(self.root / "home"), "USERPROFILE": str(self.root / "home")})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
     def tearDown(self):
         self.tmp.cleanup()
