@@ -2,6 +2,7 @@
 FakeSigner: only a call the signer allows (or a person approves while it waits) runs, the model reads the reason for
 the rest, and every call that ran is completed with its result or its error, and no other is."""
 import asyncio
+import collections
 import importlib.util
 import tempfile
 import threading
@@ -9,6 +10,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from factories import wait_for
 from tracekit.sdk.client import Client, RunHandle, result_field
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.testing import FakeSigner
@@ -18,9 +20,11 @@ if HAVE:
     from inspect_ai import Task, eval
     from inspect_ai.approval import ApprovalPolicy
     from inspect_ai.dataset import Sample
+    from inspect_ai.event import ToolEvent
+    from inspect_ai.hooks import SampleEvent
     from inspect_ai.model import ModelOutput, get_model
     from inspect_ai.solver import generate, use_tools
-    from inspect_ai.tool import ToolError, tool
+    from inspect_ai.tool import ToolCall, ToolCallError, ToolError, tool
 
     from tracekit.integrations import inspect_ai as ti
 
@@ -102,6 +106,7 @@ class Approver(unittest.TestCase):
     def setUp(self):
         ac.RAN.clear()
         self.addCleanup(ti._allowed.clear)
+        self.addCleanup(ti._twins.clear)
 
     def serve(self, person_answers=False):
         """A FakeSigner for `ac._rule` (pay is held, wipe denied); with `person_answers`, a person approves a held call
@@ -164,6 +169,66 @@ class Approver(unittest.TestCase):
         self.assertEqual((ac.RAN, msg.error.type), ([], "approval"))
         self.assertIn("held by Tracekit policy and not approved: requested; R-PAY", msg.error.message)
         self.assertEqual(self.recorded("tool.result"), [])
+
+    def test_a_held_call_whose_wait_a_time_limit_cancels_is_withdrawn_and_never_runs(self):
+        """#571: Inspect doesn't suspend a sample's wall-clock time_limit while an approver waits, so the limit can
+        cancel the wait (on the real signer, which waits for real). The approval is withdrawn, and the call never runs
+        and has no result."""
+        self.client = Client(ac.OnReal.serve_signer(self))
+        self.addCleanup(self.client.close)
+        self.run = self.client.run(agent="inspect")
+        self.sample([("pay", {"to": "acct-42", "cents": 1500})], time_limit=3)
+        types = lambda: [e["type"] for e in ac.OnReal.events(self, {"run_id": self.run.run_id})]  # noqa: E731
+        self.assertTrue(wait_for(lambda: "approval.abandoned" in types()), types())
+        self.assertEqual((ac.RAN, [t for t in types() if t == "tool.result"]), ([], []))
+
+    def test_an_outage_follows_the_runs_fail_mode(self):
+        self.serve()
+        down = {"rule_ids": [], "unavailable": True, "reason": "signer unavailable: down"}
+        with mock.patch.object(RunHandle, "decide", return_value={"decision": "deny", **down}):
+            [msg] = self.sample([("echo", {"text": "hi"})])
+        self.assertEqual((ac.RAN, msg.error.message), ([], "Tool call refused by Tracekit: signer unavailable: down"))
+        with mock.patch.object(RunHandle, "decide", return_value={"decision": "allow", **down}), \
+                mock.patch.object(RunHandle, "approval_consume") as consume:
+            [msg] = self.sample([("echo", {"text": "hi"})])
+        self.assertEqual((ac.RAN, msg.content, msg.error), (["echo"], "hi", None))
+        consume.assert_not_called()
+        self.assertEqual((self.completed, ti._allowed), ([], {}))
+
+    def test_a_call_whose_id_is_still_open_is_refused(self):
+        """Review of #586: one run spans the eval and a call is found by its id, so a second call decided under an id
+        still open (Inspect's cache gives two samples one tool-call id) took the first's place: the first's result was
+        signed under the second's decision, and the second's found nothing. It is refused, with a reason, and its
+        refusal's ToolEvent leaves the open call alone."""
+        self.serve()
+        approve, hook = ti.tracekit(self.run), ti.Outcomes()
+
+        async def both():   # the second is asked while the first is decided
+            calls = [ToolCall(id="dup", function="echo", arguments={"text": t}) for t in ("a", "b")]
+            return await asyncio.gather(*(approve(message="", call=c, view=None, history=[]) for c in calls))
+        first, second = asyncio.run(both())
+        self.assertEqual((first.decision, second.decision, second.explanation),
+                         ("approve", "reject", "Tool call refused by Tracekit: another call with its id (dup) is still "
+                                               "open in this run"))
+        for ev in (ToolEvent(id="dup", function="echo", arguments={"text": "b"},
+                             error=ToolCallError("approval", second.explanation)),
+                   ToolEvent(id="dup", function="echo", arguments={"text": "a"}, result="a")):
+            asyncio.run(hook.on_sample_event(SampleEvent(None, "run", "eval", "sample", ev)))
+        self.assertEqual([d["tool_call_id"] for d in self.recorded("policy.decision")], ["dup"])
+        [sent] = self.completed
+        self.assertEqual((sent["tool_call_id"], sent["status"], sent["result"]), ("dup", "ok", result_field(False, "a")))
+        self.assertEqual((ti._allowed, +ti._twins), ({}, collections.Counter()))
+
+    def test_a_call_whose_arguments_changed_after_the_decision_is_completed_as_an_error(self):
+        """Review of #586: an in-process sentinel's `modify` runs after the approvers, and the ToolEvent carries its
+        arguments: the call was completed `ok` under the decision made for the model's."""
+        self.serve()
+        d = self.run.decide("call-1", "echo", {"text": "hi"})
+        ti._allowed["call-1"] = (self.run, d, {"text": "hi"})
+        ev = ToolEvent(id="call-1", function="echo", arguments={"text": "rm -rf /"}, result="rm -rf /")
+        asyncio.run(ti.Outcomes().on_sample_event(SampleEvent(None, "run", "eval", "sample", ev)))
+        [done] = self.recorded("tool.result")
+        self.assertEqual((done["status"], done["error"]), ("error", "the call's arguments changed after the decision"))
 
     def test_a_signer_error_refuses_the_call(self):
         self.serve()

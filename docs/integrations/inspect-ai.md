@@ -12,7 +12,9 @@ a decision before each call (an `ask` waits for a person), and a hook records th
 pip install tracekit-ai "inspect-ai>=0.3.288,<0.4"
 ```
 
-Tested in CI with Inspect AI 0.3.288 on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`).
+Inspect AI 0.3.288 and later need Python 3.11 or newer. Tested in CI with the newest Inspect AI 0.3.x (0.3.290 on
+2026-11-17) on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`) and, for a held call's
+cancelled wait, the real one.
 
 ## Setup
 
@@ -38,7 +40,7 @@ Importing the module registers one Inspect hook for the process. It does nothing
 
 - **Decides before the call runs.** The signer decides `call.function` with `call.arguments`, under Inspect's tool-call
   id. An `ask` waits up to 5 minutes for `tracekit approvals approve`; Inspect suspends the sample's token, turn and
-  working-time limits while it waits.
+  working-time limits while it waits, but not its wall-clock `time_limit`.
 - **Rejects with the reason.** A deny, an unanswered or rejected approval, a refused consume, a signer error and an
   outage under a closed fail mode all come back as `reject`: the tool never runs and the model gets Tracekit's reason as
   a tool error of type `approval`. A call Tracekit can't decide is refused, never allowed.
@@ -46,9 +48,14 @@ Importing the module registers one Inspect hook for the process. It does nothing
   emits its `ToolEvent`: `ok` with the result, or `error` with the event's message (a `ToolError` the tool raised, or
   an error Inspect made for the call). A refused call is never completed: its `ToolEvent` carries the `approval` error.
 - **Completes a cancelled call as an error.** A call a sample limit cuts short while it runs gets a `ToolEvent` with a
-  `cancelled` error and is completed as `error`. One cut short before it starts (while it waits for an approval) gets
-  no `ToolEvent`: it stays decided, and the signer closes the run with a `decided_not_completed` gap for it
-  ([limits](../limits.md)).
+  `cancelled` error and is completed as `error`. A held call whose wait a `time_limit` cancels has its approval
+  withdrawn: it never ran, and no gap follows. An allowed call cut short after the approver's `approve` and before
+  the tool starts gets no `ToolEvent`: it stays decided, and the signer closes the run with a `decided_not_completed`
+  gap for it ([limits](../limits.md)).
+- **Refuses a call whose id is open, and records changed arguments.** A call whose tool-call id is already being
+  decided or still open in the run is refused, with a reason the model reads (Inspect's model cache can give two
+  samples the same id). A call whose arguments changed after the decision (an in-process sentinel's `modify`) is
+  completed as `error`: "the call's arguments changed after the decision".
 - **Reads the shell tool as a shell.** A framework's tool name is matched ignoring case, so Inspect's `bash` is decided
   as `Bash` and its `command` is read as shell code ([limits](../limits.md#policy)).
 
@@ -58,11 +65,13 @@ Importing the module registers one Inspect hook for the process. It does nothing
   response and the agent runs them itself. A decision there records that the call was *permitted*, not that it ran: no
   `ToolEvent` with a result follows, so each such call ends as a `decided_not_completed` gap. Keep bridged agents out of
   an eval that uses this approver.
-- **Tools the packs don't map.** Inspect's `python` and `text_editor` tools aren't in the policy packs' `tools:` lists.
-  The coding pack only flags them (`unknown_tools: flag`), and the server packs hold them for a person. List them in
-  your policy to give them a class.
+- **Tools the packs don't map.** Inspect's `python`, `text_editor` and `bash_session` tools aren't in the policy
+  packs' `tools:` lists. The dev and coding packs only flag them (`unknown_tools: flag`), and the server packs hold them
+  for a person. A `bash_session` call's `input` is typed into a shell but isn't read as shell code, so on the dev pack
+  it runs with only a flag. List them in your policy to give them a class.
 - **One run per eval.** Every sample and epoch records into the run you gave the approver, and the hook finds a call by
-  Inspect's tool-call id, which must not repeat across them. A run per sample is not supported yet.
+  Inspect's tool-call id, so a call whose id is still open is refused. A run per sample is not supported yet.
+- **The trio backend.** With `INSPECT_ASYNC_BACKEND=trio`, the approver's asyncio calls fail, so every call is refused.
 - **An escalated call.** A Tracekit `ask` is never turned into Inspect's `escalate`: the person's answer goes to
   `tracekit approvals`, not to Inspect's human approver.
 - **What the model said.** Not recorded by the integration. Record the model calls with
