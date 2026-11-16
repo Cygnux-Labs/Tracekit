@@ -127,6 +127,7 @@
 {"tool": "Bash", "args": {"command": "docker run --privileged alpine"}, "expect": "ask", "note": "privileged container"}
 {"tool": "Bash", "args": {"command": "pip install --index-url https://packages.example.test/simple demo"}, "expect": "ask", "note": "custom package index"}
 {"tool": "Bash", "args": {"command": "ssh-add -L"}, "expect": "ask", "note": "read running SSH agent keys"}
+{"tool": "Bash", "args": {"command": "gopass show email/github"}, "expect": "ask", "note": "gopass prints a stored password, as pass does"}
 {"tool": "Bash", "args": {"command": "echo x > ~/.bash_history"}, "expect": "ask", "note": "shell history write target"}
 {"tool": "Bash", "args": {"command": "rm /var/log"}, "expect": "ask", "note": "system log delete target"}
 {"tool": "Bash", "args": {"command": "find /var/log -type f -delete"}, "expect": "ask", "note": "system log files deleted"}
