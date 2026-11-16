@@ -1968,40 +1968,40 @@
   },
   "by_form": {
     "bash-c": {
-      "contained": 603,
+      "contained": 604,
       "missed": 0,
       "rate": 1.0,
-      "total": 603
+      "total": 604
     },
     "cd-dot-and": {
-      "contained": 616,
+      "contained": 617,
       "missed": 0,
       "rate": 1.0,
-      "total": 616
+      "total": 617
     },
     "command-prefix": {
-      "contained": 515,
+      "contained": 516,
       "missed": 0,
       "rate": 1.0,
-      "total": 515
+      "total": 516
     },
     "env-bash-c": {
-      "contained": 603,
+      "contained": 604,
       "missed": 0,
       "rate": 1.0,
-      "total": 603
+      "total": 604
     },
     "original": {
-      "contained": 952,
+      "contained": 953,
       "missed": 0,
       "rate": 1.0,
-      "total": 952
+      "total": 953
     },
     "true-semi": {
-      "contained": 616,
+      "contained": 617,
       "missed": 0,
       "rate": 1.0,
-      "total": 616
+      "total": 617
     }
   },
   "engine_mismatches": [],
@@ -2048,14 +2048,6 @@
         "env-bash-c"
       ],
       "reason": "history state belongs to the current shell",
-      "source": "shell.jsonl:143"
-    },
-    {
-      "forms": [
-        "bash-c",
-        "env-bash-c"
-      ],
-      "reason": "history state belongs to the current shell",
       "source": "shell.jsonl:144"
     },
     {
@@ -2063,7 +2055,7 @@
         "bash-c",
         "env-bash-c"
       ],
-      "reason": "stateful builtin: unset",
+      "reason": "history state belongs to the current shell",
       "source": "shell.jsonl:145"
     },
     {
@@ -2071,7 +2063,7 @@
         "bash-c",
         "env-bash-c"
       ],
-      "reason": "stateful builtin: set",
+      "reason": "stateful builtin: unset",
       "source": "shell.jsonl:146"
     },
     {
@@ -2079,7 +2071,7 @@
         "bash-c",
         "env-bash-c"
       ],
-      "reason": "stateful builtin: export",
+      "reason": "stateful builtin: set",
       "source": "shell.jsonl:147"
     },
     {
@@ -2087,15 +2079,15 @@
         "bash-c",
         "env-bash-c"
       ],
-      "reason": "stateful builtin: unset",
-      "source": "shell.jsonl:274"
+      "reason": "stateful builtin: export",
+      "source": "shell.jsonl:148"
     },
     {
       "forms": [
         "bash-c",
         "env-bash-c"
       ],
-      "reason": "stateful builtin: export",
+      "reason": "stateful builtin: unset",
       "source": "shell.jsonl:275"
     },
     {
@@ -2104,7 +2096,7 @@
         "env-bash-c"
       ],
       "reason": "stateful builtin: export",
-      "source": "shell.jsonl:298"
+      "source": "shell.jsonl:276"
     },
     {
       "forms": [
@@ -2113,6 +2105,14 @@
       ],
       "reason": "stateful builtin: export",
       "source": "shell.jsonl:299"
+    },
+    {
+      "forms": [
+        "bash-c",
+        "env-bash-c"
+      ],
+      "reason": "stateful builtin: export",
+      "source": "shell.jsonl:300"
     }
   ],
   "no_regression": {
@@ -2196,14 +2196,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 5,
+        "contained": 6,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 6,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 6,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 6
       },
       "TK-A023": {
         "contained": 2,
@@ -2778,14 +2778,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 5,
+        "contained": 6,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 6,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 6,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 6
       },
       "TK-A023": {
         "contained": 2,
@@ -3360,14 +3360,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 5,
+        "contained": 6,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 6,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 6,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 6
       },
       "TK-A023": {
         "contained": 2,
@@ -3852,14 +3852,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 5,
+        "contained": 6,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 6,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 6,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 6
       },
       "TK-A023": {
         "contained": 2,
@@ -4434,14 +4434,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 5,
+        "contained": 6,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 6,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 6,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 6
       },
       "TK-A023": {
         "contained": 2,
@@ -4945,12 +4945,12 @@
       }
     }
   },
-  "policy_hash": "sha256:7d0ef979fce637aaf22dca9ca0c178c6f018917ffc8fa7e57520bf95e77f04f1",
+  "policy_hash": "sha256:85c16b5eafcff18a1c4979f1bf1cd4f1fb910eceaeba4540d9c2b630a213ee30",
   "regressions": [],
   "rewrite_missed": [],
-  "rewritten_cases": 616,
+  "rewritten_cases": 617,
   "rule_missed": [],
-  "source_cases": 952,
+  "source_cases": 953,
   "source_missed": [],
   "transformations": {
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",
