@@ -1748,10 +1748,9 @@ class InitV2(unittest.TestCase):
         with mock.patch.object(client, "system_config", return_value=None), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(doctor.main(), 0)
-        self.assertEqual(out.getvalue().splitlines()[-1], "dev setup OK: dev mode decides and records every call "
-                                                          "here; because the agent runs as you, it could still stop "
-                                                          "the signer or reach its key — system mode or Tracekit Box "
-                                                          "close that (D-PROCESS-BOUNDARY)",
+        self.assertEqual(out.getvalue().splitlines()[-1], "dev setup OK: every call is decided and recorded, but the "
+                                                          "agent runs as you and could switch Tracekit off; system "
+                                                          "mode or Tracekit Box close that (D-PROCESS-BOUNDARY)",
                          out.getvalue())
 
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):

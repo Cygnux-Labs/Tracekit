@@ -284,7 +284,7 @@ class TestAudit(unittest.TestCase):
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")   # installed: init is on PATH
     def test_the_text_ends_with_the_weeks_summary(self):
         """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
-        (a flag is no stop) and how to guard from now on."""
+        (a flag is no stop) and how to have Tracekit decide these calls as they run."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
@@ -293,12 +293,12 @@ class TestAudit(unittest.TestCase):
         self.assertTrue(out.endswith(
             "\n\nyour agent's week: 4 tool calls; Tracekit would have held 2 and blocked 1\n"
             "  top: TK-A001 destroying a deployment, database or volume (2), TK-D004 recursive delete of root or home (1)\n"
-            "  to guard from now on: tracekit init --dev --v2\n"), out)
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"), out)
         self.assertIn("\nyour agent's 2 days: 4 tool calls;", _run(str(self.root), "--since", "2d")[1])
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         self.assertTrue(_run(str(self.root))[1].endswith(
             "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
-            "  to guard from now on: tracekit init --dev --v2\n"))
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"))
         self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
 
     def test_without_tracekit_on_path_the_guard_line_says_to_install_it(self):
@@ -306,19 +306,21 @@ class TestAudit(unittest.TestCase):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch("shutil.which", return_value=None):
             out = _run(str(self.root))[1]
-        self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
+        self.assertTrue(out.endswith(
+            "\n  to have Tracekit decide these calls as they run: pip install tracekit-ai, then tracekit init --dev "
+            "--v2\n"))
 
     def test_with_the_hooks_installed_the_last_line_says_they_decide_live(self):
         """audit's last line suggests init only when Tracekit's hooks aren't there; with them installed for a Claude
-        Code audit it says these calls are already decided live (#888)."""
+        Code audit it says new calls are decided as they run (#888)."""
         from tracekit import install
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch.object(install, "user_settings_all", return_value=["settings.json"]), \
                 mock.patch.object(install, "_v2_hooks_in", return_value=True):
             out = _run(str(self.root))[1]
         self.assertTrue(out.endswith(
-            "\n  Tracekit's hooks are installed, so these calls are already decided live as they run\n"), out)
-        self.assertNotIn("to guard from now on", out)
+            "\n  Tracekit's hooks are installed, so new calls are decided as they run\n"), out)
+        self.assertNotIn("to have Tracekit decide these calls as they run", out)
 
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
     def test_the_guard_line_names_the_calls_files_agent(self):
@@ -329,7 +331,8 @@ class TestAudit(unittest.TestCase):
                 code, out, err = _run("--calls", str(self.root / "calls.jsonl"), *(["--agent", agent] if agent else []))
                 self.assertEqual(code, 0, err)
                 flag = f" --agent {agent}" if agent in agent_hooks.AGENT_NAMES else ""   # claude is init's default
-                self.assertTrue(out.endswith(f"\n  to guard from now on: tracekit init --dev --v2{flag}\n"), out)
+                self.assertTrue(out.endswith(
+                    f"\n  to have Tracekit decide these calls as they run: tracekit init --dev --v2{flag}\n"), out)
         with mock.patch("shutil.which", return_value=None):
             out = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex")[1]
         self.assertTrue(out.endswith(", then tracekit init --dev --v2 --agent codex\n"), out)

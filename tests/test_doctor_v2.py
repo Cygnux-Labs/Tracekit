@@ -1238,9 +1238,9 @@ class FirstDay(unittest.TestCase):
                 self.assertEqual(doctor.main(*argv), 0)
             return out.getvalue().splitlines()
         lines = run(ok)
-        self.assertEqual(lines[-1], "dev setup OK: dev mode decides and records every call here; because the agent "
-                                    "runs as you, it could still stop the signer or reach its key — system mode or "
-                                    "Tracekit Box close that (D-PROCESS-BOUNDARY)")
+        self.assertEqual(lines[-1], "dev setup OK: every call is decided and recorded, but the agent runs as you and "
+                                    "could switch Tracekit off; system mode or Tracekit Box close that "
+                                    "(D-PROCESS-BOUNDARY)")
         self.assertIn("info  no witnesses  (D-WITNESS-CONFIGURED)", lines)
         self.assertFalse(any(x.startswith("dev setup OK") for x in run(
             ok + [doctor.result("D-HOOKS-EVENT", doctor.WARN, "unwrapped", "re-run init")])))

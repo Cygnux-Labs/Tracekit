@@ -14,10 +14,10 @@ from unittest import mock
 from tracekit import cli, doctor, install
 from tracekit.sdk import autospawn
 
-LINE = ("Dev mode decides and records every call — a denied call is blocked, a held one waits for you — but it can't "
-        "keep you out: the agent runs as you, so it could stop the signer, change its policy or reach its key. To close "
-        "that, run the signer as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the "
-        "agent in Tracekit Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
+LINE = ("Dev mode decides and records every call: a denied call is blocked, a held one waits for you. But the agent "
+        "runs as you, so it could stop the signer, change its policy or reach its key. To close that, run the signer "
+        "as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the agent in Tracekit "
+        "Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 
 
 def run(argv):
