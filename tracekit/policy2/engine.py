@@ -924,10 +924,10 @@ _JS_VALUED = frozenset((
     "--test-concurrency", "--test-shard", "--test-timeout", "--test-coverage-include", "--test-coverage-exclude",
     "--experimental-config-file", "--snapshot-blob", "--build-snapshot-config", "--policy-integrity",
     "--experimental-policy", "--network-family-autoselection-attempt-timeout", "--max-old-space-size",
-    "--max-semi-space-size", "--use-largepages", "--watch-kill-signal",
+    "--max-semi-space-size", "--use-largepages", "--watch-kill-signal", "--disable-proto", "--v8-pool-size",
     "--config", "-c", "--cwd", "--preload", "--define", "-d", "--loader", "-l", "--tsconfig-override", "--tsconfig",
-    "--port", "--main-fields", "--location", "--seed", "--cert", "--lock", "--importmap"))
-_JS_SUBCOMMANDS = ("run", "x", "exec")
+    "--port", "--main-fields", "--location", "--seed", "--cert", "--lock", "--import-map"))
+_JS_SUBCOMMANDS = ("run", "x", "exec", "watch")
 
 
 def _js_script(argv):
@@ -1990,7 +1990,7 @@ def _effects(parsed):
 
 # a host key added to known_hosts: an append to it (`>>`, `tee -a`, `ssh-keyscan … >>`) is APPEND_TARGET, which no
 # shipped rule reads, where any other write of it is a WRITE_TARGET as any file in .ssh/ is (TK-D023)
-_KNOWN_HOSTS = re.compile(r"(?:^|/)\.ssh/known_hosts2?$")
+_KNOWN_HOSTS = re.compile(r"(?i)(?:^|[/\\])\.ssh[/\\]known_hosts2?$")   # (a Windows spelling too)
 
 
 def _write_effects(parsed):
@@ -2338,16 +2338,21 @@ def _in_folder(folder, members):
 
 def _decompressed(tool, args):
     """The files a decompressor writes: its -o or --output (zstd, lz4, brotli; also last in a cluster, -dfo FILE),
-    lz4's second operand, else each file without its suffix (gzip's -S or --suffix too); none when it prints, tests
-    or lists (-c, -t, -l)."""
+    lz4's second operand, else each file without its suffix (gzip's -S or --suffix too), in zstd's --output-dir-flat
+    folder; none when it prints, tests or lists (-c, -t, -l)."""
     if any(a in ("--stdout", "--to-stdout", "--test", "--list") or _cluster(a) and set(a[1:]) & set("ctl")
            for a in args):
         return []
-    outputs, suffix, operands, skip = [], None, [], None
+    outputs, suffix, operands, skip, flat = [], None, [], None, None
     for a in args:
         if skip:
-            outputs, suffix = (outputs + [a], suffix) if skip == "o" else (outputs, a)
+            outputs, suffix, flat = (outputs + [a], suffix, flat) if skip == "o" else (outputs, a, flat) if \
+                skip == "S" else (outputs, suffix, a)
             skip = None
+        elif tool == "zstd" and a == "--output-dir-flat":
+            skip = "flat"
+        elif tool == "zstd" and a.startswith("--output-dir-flat="):
+            flat = a.partition("=")[2]
         elif tool in ("zstd", "lz4", "brotli") and (a == "--output" or _cluster(a) and a[-1] == "o"):
             skip = "o"
         elif tool in ("zstd", "lz4", "brotli") and a.startswith("--output="):
@@ -2364,37 +2369,42 @@ def _decompressed(tool, args):
         return operands[1:]
     if suffix:
         return [a[:-len(suffix)] for a in operands if a.endswith(suffix) and len(a) > len(suffix)]
-    return [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a) for a in operands
-            if _PACKED.search(a)]
+    out = [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a) for a in operands
+           if _PACKED.search(a)]
+    return [flat.rstrip("/") + "/" + posixpath.basename(a) for a in out] if flat else out
 
 
 def _extracted_tar(args):
-    """What tar -x writes (each member it names in -C's folder, or that folder; an old-style first word's letters take
-    the next words in turn), or None for a tar that doesn't extract."""
+    """What tar -x writes: each member it names in the folder of the last -C before it (GNU tar's) and of the first -C
+    on the line (bsdtar's), or, naming none, those folders (an old-style first word's letters take the next words in
+    turn); None for a tar that doesn't extract."""
     first = args[0] if args and not args[0].startswith("-") else ""
     if not ("x" in first or any(a in ("--extract", "--get") or _cluster(a) and "x" in a for a in args)):
         return None
-    rest, folder, takes = (args[1:] if first else args), ".", [c for c in first if c in "fCTXb"]
+    rest, folders, takes = (args[1:] if first else args), [], [c for c in first if c in "fCTXb"]
     operands, skip = [], None
     for a in rest:
         if takes:
-            letter = takes.pop(0)
-            folder = a if letter == "C" else folder
+            if takes.pop(0) == "C":
+                folders.append(a)
             continue
         if skip:
-            folder, skip = (a if skip in ("-C", "--directory") else folder), None
+            folders += [a] if skip in ("-C", "--directory") else []
+            skip = None
         elif a.startswith("--directory="):
-            folder = a.partition("=")[2]
+            folders.append(a.partition("=")[2])
         elif a in _WRITER_VALUED["tar"]:
             skip = a
         elif _cluster(a) and a[-1] in "fCTXb":
             skip = "-" + a[-1]
         elif a[:1] == "-" and a[1:2] != "-" and (c := a.find("C")) > 0 and len(a) > c + 1 and (
                 c == 1 or a[1:c].isalnum()):
-            folder = a[c + 1:]   # -Cdir, -xCdir
+            folders.append(a[c + 1:])   # -Cdir, -xCdir
         elif not a.startswith("-"):
-            operands.append(a)
-    return _in_folder(folder, operands)
+            operands.append((folders[-1] if folders else ".", a))
+    first = folders[0] if folders else "."
+    return list(dict.fromkeys([w for folder, m in operands for w in _in_folder(folder, [m]) + _in_folder(first, [m])]
+                              or _in_folder(first, []) + _in_folder(folders[-1] if folders else ".", [])))
 
 
 def _more_writes(exe, args):
@@ -2415,8 +2425,10 @@ def _more_writes(exe, args):
     if unix == "dos2unix":
         operands = _operands("dos2unix", args)
         return operands[1::2] if any(a in ("-n", "--newfile") for a in args) else operands
+    # (lz4 decompresses a .lz4 without -d, and writes its second operand either way)
+    lz4 = exe == "lz4" and (len(ops := _operands(exe, args)) == 2 or any(o.lower().endswith(".lz4") for o in ops))
     tool = _DECOMPRESSORS.get(exe) or (exe if exe in _COMPRESSORS and any(
-        a in ("--decompress", "--uncompress") or _cluster(a) and "d" in a for a in args) else None)
+        a in ("--decompress", "--uncompress") or _cluster(a) and "d" in a for a in args) or lz4 else None)
     if tool:
         return _decompressed(tool, args)
     if exe == "ditto":
@@ -2549,8 +2561,11 @@ def _command_effects(commands):
                     dest.rstrip("/") + "/" + src.rstrip("/").rsplit("/", 1)[-1] for src in sources
                     if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
                 deleted = sources if exe == "mv" else []
+            # tee's options come before its first file or `--` (after either, `-a` is a file: BSD's tee reads none
+            # after a file, so `tee FILE -a` overwrites FILE)
+            options = list(itertools.takewhile(lambda a: a.startswith("-") and a != "--", args))
             append = exe == "tee" and any(a in ("-a", "--append") or re.fullmatch(r"-[a-zA-Z]+", a) and "a" in a
-                                          for a in args)
+                                          for a in options)
             out.extend(["DELETE_TARGET:" + path for path in deleted] + [
                 ("APPEND_TARGET:" if append and _KNOWN_HOSTS.search(path) else "WRITE_TARGET:") + path
                 for path in written])

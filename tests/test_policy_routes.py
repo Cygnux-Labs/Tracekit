@@ -170,7 +170,12 @@ class Routes(unittest.TestCase):
             "brotli -d /tmp/k.br -o ~/.ssh/authorized_keys", "brotli -d /tmp/k.br --output=$HOME/.ssh/authorized_keys",
             "gunzip -S .x ~/.ssh/authorized_keys.x", "gunzip --suffix=.x ~/.ssh/authorized_keys.x",
             "lz4 -d -m ~/.ssh/k.lz4 /tmp/x.lz4",
-            "uudecode -o ~/.ssh/authorized_keys /tmp/k.uu", "dos2unix -n /tmp/k ~/.ssh/authorized_keys"),
+            "uudecode -o ~/.ssh/authorized_keys /tmp/k.uu", "dos2unix -n /tmp/k ~/.ssh/authorized_keys",
+            "tar -xf /tmp/k.tar -C ~/.ssh rc -C /tmp x", "bsdtar -xf /tmp/k.tar -C ~/.ssh rc -C /tmp x",
+            "tar -xf /tmp/k.tar -C ~/.ssh -C /tmp", "tar -xf /tmp/k.tar -C /tmp a -C ~/.ssh rc",
+            "tar -xf /tmp/k.tar -C ~/.ssh -C /tmp rc", "lz4 /tmp/k.lz4 ~/.ssh/rc", "lz4 -f ~/.ssh/k.lz4",
+            "lz4 /tmp/k ~/.ssh/authorized_keys", "zstd -d --output-dir-flat ~/.ssh /tmp/k.zst",
+            "zstd -d --output-dir-flat=$HOME/.ssh /tmp/k.zst"),
             "deny", "TK-D023")
         # what only prints, tests or lists, writes elsewhere (-o, a second operand, -n's new file), leaves a member out
         # (unzip -x) or reads a value (git config --get, emacs --insert): no write of the file it names
@@ -178,7 +183,8 @@ class Routes(unittest.TestCase):
             "gunzip -c ~/.ssh/k.gz > /tmp/k", "unxz -t ~/.ssh/k.xz", "gunzip -l ~/.ssh/k.gz", "gunzip -tv ~/.ssh/k.gz",
             "zstd -d .env.zst -o out.txt", "lz4 -d .env.lz4 out.txt", "7z x .env.7z -oout", "dos2unix -n .env out.txt",
             "unzip -o k.zip -x .env -d out", "git config -f ~/.ssh/config --get host.x",
-            "emacs --batch --insert .env notes.org -f save-buffer"), "TK-D023")
+            "emacs --batch --insert .env notes.org -f save-buffer", "lz4 .env", "lz4 -d logs.lz4 out.log",
+            "zstd -d --output-dir-flat out ~/.ssh/k.zst"), "TK-D023")
 
     def test_an_interpreter_s_file_write_reaches_the_file_rules(self):
         # an open in a writing mode (its mode argument, Python's mode= keyword, Perl's mode with layers or in front of
@@ -217,9 +223,14 @@ class Routes(unittest.TestCase):
                               "ssh-keyscan github.com | tee -a ~/.ssh/known_hosts > /dev/null",
                               "ssh-keyscan github.com | tee --append ~/.ssh/known_hosts",
                               "cd ~/.ssh && ssh-keyscan github.com >> known_hosts", "ssh-keygen -R github.com",
+                              "ssh-keyscan github.com >> \"$USERPROFILE\\.ssh\\known_hosts\"",
+                              "ssh-keyscan github.com >> ~/.SSH/known_hosts",
                               "ssh-keygen -R github.com -f ~/.ssh/known_hosts"), ("allow", "flag"))
         self.expect(self.bash("ln -sf ~/.ssh/authorized_keys ~/.ssh/known_hosts", "cp /tmp/kh ~/.ssh/known_hosts",
                               "mv /tmp/kh ~/.ssh/known_hosts", "ssh-keyscan github.com | tee ~/.ssh/known_hosts",
+                              "ssh-keyscan github.com | tee -- -a ~/.ssh/known_hosts",
+                              "ssh-keyscan github.com | tee ~/.ssh/known_hosts -a",
+                              "ssh-keyscan github.com > \"$USERPROFILE\\.ssh\\known_hosts\"",
                               "ssh-keyscan github.com > ~/.ssh/known_hosts", "sed -i '' '/github.com/d' ~/.ssh/known_hosts",
                               "echo x >> ~/.ssh/known_hosts; cp /tmp/k ~/.ssh/known_hosts",
                               "echo a >> ~/.ssh/known_hosts && echo b > ~/.ssh/known_hosts",
@@ -255,6 +266,10 @@ class Routes(unittest.TestCase):
             "node --unhandled-rejections strict node_modules/.bin/claude --bare -p hi",
             "node --disable-warning ExperimentalWarning node_modules/.bin/claude --bare -p hi",
             "node --inspect-port 9229 node_modules/.bin/claude --bare -p hi",
+            "node --disable-proto delete node_modules/.bin/claude --bare -p hi",
+            "node --v8-pool-size 2 node_modules/.bin/claude --bare -p hi",
+            "deno run --import-map map.json node_modules/.bin/claude --bare -p hi",
+            "tsx watch node_modules/.bin/claude --bare -p hi",
             "deno run -A node_modules/.bin/claude --bare -p hi",
             "node /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --bare -p hi",
             "APPDATA=C:/tmp/x LOCALAPPDATA=C:/tmp/x opencode run hi", "env -u APPDATA claude -p hi"), "ask", "TK-A070")
@@ -286,6 +301,18 @@ class Routes(unittest.TestCase):
                               "function which { echo rm; }; \"$(which ls)\" -rf ~",
                               "which() { echo rm; }\n\"$(which ls)\" -rf ~", "enable -n type; \"$(type -p ls)\" -rf ~",
                               "$(which rm) -rf ~", "`which rm` -rf ~", "$(which python3) -V"),
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
+        # what the parse reads, whatever the text: a function the line defines, through eval too (a quote or a variable
+        # hides one from a text pattern), or code eval, source or `.` runs, which may define one
+        self.expect(self.bash("eval 'which(){ echo git; }'; \"$(which ls)\" push --force origin main",
+                              "eval \"whi\"\"ch(){ echo rm; }\"; \"$(which ls)\" -rf ~",
+                              "eval 'function which { echo rm; }'; \"$(which ls)\" -rf ~",
+                              "d='which(){ echo rm; }'; eval \"$d\"; \"$(which ls)\" -rf ~",
+                              "eval 'command(){ echo rm; }'; \"$(command -v ls)\" -rf ~",
+                              "eval $'type(){ echo rm; }'; \"$(type -p ls)\" -rf ~",
+                              "source /tmp/defs.sh; \"$(which ls)\" -rf ~", ". ./defs.sh && \"$(which ls)\" -rf ~",
+                              "f(){ :; }; \"$(command -v python)\" -m pytest",
+                              "eval 'x=1'; \"$(command -v python)\" -m pytest"),
                     {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
         self.expect(self.bash("\"$(which zzqq)\" rm -rf ~", "\"$(type -p cd)\" rm -rf ~"), ("allow", "flag"))
         self.spare(self.bash("\"$(which zzqq)\" rm -rf ~"), "TK-D004")

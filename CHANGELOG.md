@@ -85,7 +85,7 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   the Hermes plugin is version 0.2.0 for the catalog update (#708).
 
 ### Changed
-- **Policy packs.** Coding `2026.11-v2-96` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
+- **Policy packs.** Coding `2026.11-v2-97` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
   (from `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud
   `2026.11-server-cloud-18` (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14`
   (from `-9`), and the v1 default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's
@@ -109,8 +109,9 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
 - Hook deadlines: a hook answers within one deadline, approval waits and a starting dev signer included, so a harness
   never times the hook out first.
 - A program word that is only the path a name resolves to, quoted as a whole word (`"$(command -v python)" -m
-  pytest`, `"$(which python3)"`), is read as that program, where it was held as a name the line builds. Unquoted or in
-  backquotes it stays held: an empty one vanishes and bash runs the next word.
+  pytest`, `"$(which python3)"`), is read as that program, where it was held as a name the line builds, on a line that
+  defines no function and runs no `eval`, `source` or `.`. Unquoted or in backquotes it stays held: an empty one
+  vanishes and bash runs the next word.
 - Flags are quieter (#844): no ask or deny changes, fewer flags on ordinary work; a Claude Code `RemoteTrigger` that
   starts or changes a routine is held (`TK-A081`).
 - The README leads with the tamper-evident flight recorder (#712); contribute links point to the open-to-many label

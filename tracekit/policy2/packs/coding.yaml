@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-96'
+version: '2026.11-v2-97'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -133,12 +133,13 @@ deny:
     # perl -i, awk's print >, find -exec, and each name a pattern there may stand for), as TK-D005 reads a path, so an
     # in-place editor reaches no credentials file TK-D010's list of writers leaves out: any file in or under .ssh/ or
     # .aws/ (the folder itself too, which an archive or a folder copy writes into), as TK-D005 holds a file tool's. An
-    # .env template is exempt, as in TK-D005; a host key appended to known_hosts (`ssh-keyscan >>`, `tee -a`, which CI
-    # setups run) is an APPEND_TARGET, which this rule doesn't read, where a copy, link or plain write of it is denied
+    # .env template is exempt, as in TK-D005; a host key appended to known_hosts by the shell (`ssh-keyscan >>`,
+    # `tee -a`, which CI setups run; a Windows spelling too) is an APPEND_TARGET, which this rule doesn't read, where a
+    # copy, link, in-place edit or plain write of it is denied
     pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:[^/]*?(?:\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|credentials|\.(?:aws|ssh)(?:/[\w\W]*)?)$'
     unless: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt]))$'
     reason: writing to a credentials file from the shell
-    remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
+    remedy: Write a template (.env.example) with the file-editing tool and let a person fill in credentials; remove a stale host key with ssh-keygen -R HOST, add one with ssh-keyscan HOST >> ~/.ssh/known_hosts.
     rationale: TK-D010 for every way the shell writes a file, so sed -i or truncate is no second route to what TK-D005 blocks.
   - id: TK-D011
     class: shell

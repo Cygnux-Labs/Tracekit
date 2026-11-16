@@ -979,7 +979,7 @@ def parse(command):
 
 
 def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, globs=frozenset(),
-            pieces=True):
+            pieces=True, located=True):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
@@ -987,9 +987,11 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     the aliases the line defines ({name: [values]}), read wherever a command has the name (_Parser.emit): bash may
     parse a use after its definition runs (a trap's action, a later line), so the line is read again with them until
     it defines no more; `globs`: the glob options its commands set (_globs_set), read again with them until it sets no
-    more. `pieces`: False reads no loop value's own reading (_Parser.pieces). A line with a NUL is unread: no shell
-    reads one (bash's strings end there; a spawn refuses one), and a terminal's typed text holds one where keys put text
-    in it the hook can't read (agent_hooks.UNKNOWN)."""
+    more. `pieces`: False reads no loop value's own reading (_Parser.pieces). `located`: False reads no program word as
+    the program a quoted `"$(which X)"` locates (LOCATED): the line is read again so when it defines a function or runs
+    eval, source, `.` or enable (as the parse reads them, whatever the text), since what which, command or type print
+    is then its. A line with a NUL is unread: no shell reads one (bash's strings end there; a spawn refuses one), and a
+    terminal's typed text holds one where keys put text in it the hook can't read (agent_hooks.UNKNOWN)."""
     if "\x00" in command:
         raise ParseError("a NUL character")
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
@@ -1013,7 +1015,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # each loop value's own reading (_Parser.pieces): its lines and code, what they cost, and whether the budget
            # left them out
            "pieces": pieces, "piece_lines": [], "piece_batches": [], "piece_work": 0, "pieces_cut": False,
-           "locator_redefined": bool(_LOCATOR_REDEFINED.search(command))}
+           "located": located, "located_read": False}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1082,14 +1084,18 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         e.cmds = ctx["cmds"]   # and the commands it read before (a substitution in a subscript: let 'x[$(cmd)]')
         raise
     again = None
-    if ctx["aliases"] != (aliases or {}):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs, pieces)
+    if ctx["located_read"] and (ctx["functions"] or any(c["argv"][0] in ("eval", "source", ".", "enable")
+                                                         for c in ctx["cmds"])):
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, globs, pieces, False)
+    elif ctx["aliases"] != (aliases or {}):
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs, pieces,
+                        located)
     elif ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
         again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases, globs=globs,
-                        pieces=pieces)
+                        pieces=pieces, located=located)
     elif not (more := _globs_set(ctx["cmds"])) <= ctx["globopts"]:
         again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, ctx["globopts"] | more,
-                        pieces)
+                        pieces, located)
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
@@ -1871,10 +1877,6 @@ def _git_stdin_message(argv):
 # a JavaScript runtime runs: only more held)
 LOCATED = re.compile(r'"\$\([ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*\)"')
 LOCATED_TEXT = re.compile(r'(?:\$\(|`)[ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*[)`]')
-# a line that defines which, command or type as a function, or turns a builtin off or loads one (enable): what they
-# print is its (a line with an alias is held as the alias reading reads it)
-_LOCATOR_REDEFINED = re.compile(r"(?:^|[\s;&|(){}])(?:function[ \t]+(?:which|command|type)\b|(?:which|command|type)"
-                                r"[ \t]*\([ \t]*\))|\benable\b")
 
 
 def _name_unreadable(text):
@@ -3682,10 +3684,10 @@ class _Parser:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
                     filter(None, map(self.relex, pieces)):
-                # `"$(command -v python)"`, `$(which python3)`: the path of the program it names, which runs it
-                located = not words and pieces is None and not self.ctx.get("locator_redefined", True) and \
-                    LOCATED.fullmatch(raw)
+                # `"$(command -v python)"`, `"$(which python3)"`: the path of the program it names, which runs it
+                located = not words and pieces is None and self.ctx.get("located") and LOCATED.fullmatch(raw)
                 if located:   # its one reading, a plain word's
+                    self.ctx["located_read"] = True
                     text = located.group(1)
                     g = expanded = self.vanish = self.alone = self.spliced = self.unknown = self.joined = False
                     self.readings, self.parts, self.ways_, self.slots, self.full = (text,), [text], {}, None, True
