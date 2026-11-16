@@ -3,6 +3,8 @@
 The v2 signer decides every tool call itself, over the raw arguments, with its own policy (`tracekit/policy2/`). The
 agent can't change the policy or the tool's class: a class the adapter declares is a hint, and the class the policy
 maps the tool to wins. The v1 daemon's regex engine is a different one ([migrating](migration.md#what-changes)).
+Adding your own rules for the first time: [your own policy](policy-guide.md) walks one rule from a file to a running
+signer.
 
 ```sh
 tracekit policy lint my-policy.yaml       # every error at once
@@ -545,7 +547,8 @@ with `tracekit signer incidents` ([incidents](incidents.md)).
 runs) or `--bundle B...` runs the policy's detection over recorded runs and prints the incidents it would open. It
 reads the rule ids each decision recorded (arguments are not stored), so for decisions made under another policy, rules
 and labels the new one adds or changes are not applied; it warns with their count. Backtest changes to sequences,
-limits and `respond` this way; measure new rules and labels by running the policy in shadow.
+limits and `respond` this way; measure a new rule by adding it under `flag` and watching new runs, then moving it to
+`ask` or `deny` ([your own policy](policy-guide.md#4-roll-it-out-as-flag-first)).
 
 ### Choosing thresholds
 

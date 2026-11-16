@@ -1087,7 +1087,7 @@ def _run(a):
             if other:
                 print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
                       "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
-                      "(arguments are not stored); run the policy in shadow on new runs to measure those",
+                      "(arguments are not stored); add new rules under flag and watch new runs to measure those",
                       file=sys.stderr)
             for typ, tenant, run_id, d in found:
                 what = {"incident.opened": f"{d.get('trigger')} {','.join(d.get('rule_ids', ()))} scope "
