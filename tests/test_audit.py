@@ -308,6 +308,18 @@ class TestAudit(unittest.TestCase):
             out = _run(str(self.root))[1]
         self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
 
+    def test_with_the_hooks_installed_the_last_line_says_they_decide_live(self):
+        """audit's last line suggests init only when Tracekit's hooks aren't there; with them installed for a Claude
+        Code audit it says these calls are already decided live (#888)."""
+        from tracekit import install
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        with mock.patch.object(install, "user_settings_all", return_value=["settings.json"]), \
+                mock.patch.object(install, "_v2_hooks_in", return_value=True):
+            out = _run(str(self.root))[1]
+        self.assertTrue(out.endswith(
+            "\n  Tracekit's hooks are installed, so these calls are already decided live as they run\n"), out)
+        self.assertNotIn("to guard from now on", out)
+
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
     def test_the_guard_line_names_the_calls_files_agent(self):
         """The 1.7.0 review: audit --agent codex ended with init without --agent, which installs Claude Code's hooks."""

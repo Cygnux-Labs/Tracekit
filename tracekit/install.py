@@ -112,9 +112,10 @@ V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
-DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the "
-                 f"signer as another user (system mode: {wiki_url('docs/deploy.md')}) or the agent in Tracekit Box, "
-                 "a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
+DEV_MODE_LINE = ("Dev mode decides and records every call — a denied call is blocked, a held one waits for you — but "
+                 "it can't keep you out: the agent runs as you, so it could stop the signer, change its policy or reach "
+                 f"its key. To close that, run the signer as another user (system mode: {wiki_url('docs/deploy.md')}) or "
+                 "the agent in Tracekit Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]

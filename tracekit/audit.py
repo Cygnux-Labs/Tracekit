@@ -695,12 +695,17 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         if report["since"] else "calls file" if report["calls_file"] else "transcripts"
     agent = next(iter(report["agents"])) if len(report["agents"]) == 1 else None
     init = "tracekit init --dev --v2" + (f" --agent {agent}" if agent in AGENT_NAMES else "")   # claude: init's default
+    from . import install   # local: view and tips import audit, so keep this off the module's import path
+    live = set(report["agents"]) == {"claude"} and any(install._v2_hooks_in(p) for p in install.user_settings_all())
+    guard = ("  Tracekit's hooks are installed, so these calls are already decided live as they run" if live
+             else "  to guard from now on: " + (init if shutil.which("tracekit")
+                                                 else f"pip install tracekit-ai, then {init}"))
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
               f"{n.get('ask', 0):,} and blocked {n.get('deny', 0):,}",
               *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
                                        for r, k in sorted(stopped.items(), key=lambda x: (-x[1], x[0]))[:3])]
                 if stopped else []),
-              "  to guard from now on: " + (init if shutil.which("tracekit") else f"pip install tracekit-ai, then {init}")]
+              guard]
     # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
