@@ -148,9 +148,18 @@ class Mapping(HarnessCase):
                 ("spawn_agent", {"items": [{"type": "text", "text": "t"}, {"type": "local_audio", "path": "/w/a.wav"},
                                            {"type": "skill", "path": "/w/.agents/skills/s/SKILL.md"},
                                            {"type": "mention", "path": "app://drive"}],
-                                 "file_path": "/w/notes.txt"}, ["/w/a.wav", "/w/.agents/skills/s/SKILL.md"]),
+                                 "file_path": "/w/notes.txt"},
+                 ["/w/a.wav", "/w/.agents/skills/s/SKILL.md", "app://drive"]),
                 ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
-                 ["/w/.env"])):
+                 ["/w/.env"]),
+                # 1.7.0 review: any call of theirs with items (v2's collaboration tools, a renamed one), items as one
+                # item, a JSON string or nested lists, a type in any case
+                ("collaborationspawn_agent", {"items": [{"type": "local_image", "path": "/w/.env"}]}, ["/w/.env"]),
+                ("collaborationsend_input", {"items": json.dumps([{"type": "Local_Image", "path": "/w/.env"}])},
+                 ["/w/.env"]),
+                ("spawn_agent", {"items": {"type": "skill", "path": "/w/s.md"}}, ["/w/s.md"]),
+                ("multi_agent_v1_spawn_agent", {"items": [[{"type": "local_audio", "path": "/w/a.wav"}]]},
+                 ["/w/a.wav"])):
             with self.subTest(tool=name):
                 self.assertEqual(self.hook(harness, dict(base, tool_name=name, tool_input=ti))[0], 0)
                 sent = self.sent[-1]
@@ -159,9 +168,16 @@ class Mapping(HarnessCase):
                     self.assertEqual(sent["args"]["paths"], files)
         self.hook(harness, dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
         self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
+        # a shell or MCP call is the call it is, whatever items it carries
+        self.hook(harness, dict(base, tool_name="mcp__s__t", tool_input={"items": [{"type": "skill", "path": "/w/s"}]}))
+        self.assertEqual(self.sent[-1]["tool"], "mcp__s__t")
         n = len(self.sent)
         for name, ti in (("view_image", {}), ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]}),
-                         ("multi_agent_v1send_input", {"items": [{"type": "skill"}]})):
+                         ("multi_agent_v1send_input", {"items": [{"type": "skill"}]}),
+                         ("view_image", {"path": ["/w/a"]}),
+                         ("collaborationsend_input", {"items": [{"type": "local_image"}]}),
+                         ("spawn_agent", {"items": [{"type": "LOCAL_IMAGE"}]}),
+                         ("spawn_agent", {"items": [{"type": "local_image", "path": "/w/a.png"}, {"type": "skill"}]})):
             with self.subTest(blocked=name):
                 code, out, err = self.hook(harness, dict(base, tool_name=name, tool_input=ti))
                 self.assertEqual(code, CODEX_DENY, err)

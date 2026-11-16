@@ -2339,20 +2339,26 @@ def _in_folder(folder, members):
 def _decompressed(tool, args):
     """The files a decompressor writes: its -o or --output (zstd, lz4, brotli; also last in a cluster, -dfo FILE),
     lz4's second operand, else each file without its suffix (gzip's -S or --suffix too), in zstd's --output-dir-flat
-    folder; none when it prints, tests or lists (-c, -t, -l)."""
+    folder, or under its --output-dir-mirror folder at the file's own path; none when it prints, tests or lists (-c,
+    -t, -l)."""
     if any(a in ("--stdout", "--to-stdout", "--test", "--list") or _cluster(a) and set(a[1:]) & set("ctl")
            for a in args):
         return []
-    outputs, suffix, operands, skip, flat = [], None, [], None, None
+    outputs, suffix, operands, skip, folder = [], None, [], None, None   # folder: (DIR, whether it mirrors the path)
     for a in args:
         if skip:
-            outputs, suffix, flat = (outputs + [a], suffix, flat) if skip == "o" else (outputs, a, flat) if \
-                skip == "S" else (outputs, suffix, a)
+            if skip == "o":
+                outputs.append(a)
+            elif skip == "S":
+                suffix = a
+            else:
+                folder = (a, skip == "--output-dir-mirror")
             skip = None
-        elif tool == "zstd" and a == "--output-dir-flat":
-            skip = "flat"
-        elif tool == "zstd" and a.startswith("--output-dir-flat="):
-            flat = a.partition("=")[2]
+        elif tool == "zstd" and a.partition("=")[0] in ("--output-dir-flat", "--output-dir-mirror"):
+            if "=" in a:
+                folder = (a.partition("=")[2], a.startswith("--output-dir-mirror"))
+            else:
+                skip = a
         elif tool in ("zstd", "lz4", "brotli") and (a == "--output" or _cluster(a) and a[-1] == "o"):
             skip = "o"
         elif tool in ("zstd", "lz4", "brotli") and a.startswith("--output="):
@@ -2371,7 +2377,8 @@ def _decompressed(tool, args):
         return [a[:-len(suffix)] for a in operands if a.endswith(suffix) and len(a) > len(suffix)]
     out = [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a) for a in operands
            if _PACKED.search(a)]
-    return [flat.rstrip("/") + "/" + posixpath.basename(a) for a in out] if flat else out
+    return [folder[0].rstrip("/") + "/" + (a.lstrip("/") if folder[1] else posixpath.basename(a)) for a in out] \
+        if folder else out
 
 
 def _extracted_tar(args):

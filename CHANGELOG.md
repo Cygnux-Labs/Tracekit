@@ -34,12 +34,13 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   running terminal (Codex's and Open Interpreter's `write_stdin`, Copilot's `write_bash`, Devin's
   `write_to_process`, agy's `send_input`) is decided on its own and as the line it completes.
   Crush records the model's text from `TurnEnd` (#873, by @Mr45401).
-- **`tracekit audit` reads more agents**: a calls file (`--calls FILE`, mapped with `--agent NAME` as the live hook
-  maps it; #730, by @samueladebisi-dev), Codex's session rollouts (#693, by @kausthubhk), Cursor's agent transcripts
-  (#755, by @Purv-Kabaria), Gemini CLI's chat files (#764, by @samueladebisi-dev) and Cline's tasks (#784, by
-  @khushi-git-7). `--share` gives the calls by decision for each day of the window (#774, carrying #751 by
-  @HarshRajSinghania) and the cause of each `TK-SHELL-PARSE` hold (#814, carrying #785 by @tylrcc); a call a hook
-  can't read has its own error (#779, by @khushi-git-7); help and docs name the agents it reads (#819, by @hayatexe).
+- **`tracekit audit` reads more agents**: a calls file (`--calls FILE`, mapped with `--agent NAME` as the live hook maps
+  it; #730, by @samueladebisi-dev), Codex's session rollouts (#693, by @kausthubhk), Cursor's agent transcripts (#755,
+  by @Purv-Kabaria), Gemini CLI's chat files (#764, by @samueladebisi-dev), Cline's tasks (#784, by @khushi-git-7) and
+  Qwen Code's sessions (#891, by @khushi-git-7). `--share` gives the calls by decision for each day of the window (#774,
+  carrying #751 by @HarshRajSinghania) and the cause of each `TK-SHELL-PARSE` hold (#814, carrying #785 by @tylrcc); a
+  call a hook can't read has its own error (#779, by @khushi-git-7); help and docs name the agents it reads (#819, by
+  @hayatexe).
 - **LESSONS in TIPS** (experimental, Claude Code only, #866): `tracekit tips` and the viewer's TIPS page find what the
   agents kept relearning in signed runs, a person approves each lesson, and the Claude Code hook gives the approved
   ones to the next session at its first prompt, after signing which ones it gave. Each Claude Code turn's token usage
@@ -80,18 +81,19 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
 - Docs: a recipe for agent spending limits and offline receipts with intent grants (#830); macOS system-mode upgrade
   steps (#703, by @Siri-Durugapu); system-mode init from a root-owned clone (#802, by @FTFaruque; #824, by
   @nabeelbaghoor); the Claude Agent SDK's hooks get no `SessionEnd`, so the app closes the run (#826, by @Razepriv);
-  the Claude Code quickstart's first session (#706).
+  the Claude Code quickstart's first session (#706); your own policy, one rule from a file to a running signer
+  (`docs/policy-guide.md`, #884).
 - Listings: the Claude Code plugin ships the `tracekit-setup` skill, and `glama.json` lists Tracekit on Glama (#705);
   the Hermes plugin is version 0.2.0 for the catalog update (#708).
 
 ### Changed
-- **Policy packs.** Coding `2026.11-v2-97` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
-  (from `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud
-  `2026.11-server-cloud-18` (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14`
-  (from `-9`), and the v1 default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's
-  settings or hooks (they flagged it). Two policy merge trains brought in nineteen pull requests (#799, #850). E17: 952
-  of 952 harmful calls stopped, 1 false alarm in 971. E21: the server pack stops or holds 287 of 420 held-out calls
-  (255 in 1.6.0), strict 312 (285), with the same false positives.
+- **Policy packs.** Coding `2026.11-v2-97` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18` (from
+  `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud `2026.11-server-cloud-18`
+  (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14` (from `-9`), and the v1
+  default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's settings or hooks (they
+  flagged it); `TK-A021` holds gopass reads as it does pass's (#878, by @Seyamalam). Two policy merge trains brought in
+  nineteen pull requests (#799, #850). E17: 952 of 952 harmful calls stopped, 1 false alarm in 971. E21: the server pack
+  stops or holds 287 of 420 held-out calls (255 in 1.6.0), strict 312 (285), with the same false positives.
 - **Signer protocol 26** (from 22): 23 adds `export_run`, 24 `call_state` and `call_claim`, 25 the record `type` and an
   observed input's `source` in `content_get` (#866), and 26 `register_run`'s `continues`. Older clients keep working;
   a 1.7 client refuses a 1.6 signer.
@@ -107,7 +109,10 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   (#821, by @hayatexe); Gemini CLI gets its own `!command` approval prefix (#704, by @Sejal-Kadgi); `approvals show`
   says a live grant's reason when it holds a call (#840, by @amarjithkumar2007-wq).
 - Hook deadlines: a hook answers within one deadline, approval waits and a starting dev signer included, so a harness
-  never times the hook out first.
+  never times the hook out first. The Python and TypeScript SDKs stop retrying, and bound dialing, within a call's
+  deadline (#852, by @X6M-Work).
+- Dev mode's messages say every call is decided and recorded, and that an agent running as you could still stop the
+  signer, change its policy or reach its key (#902, by @hayatexe).
 - A program word that is only the path a name resolves to, quoted as a whole word (`"$(command -v python)" -m
   pytest`, `"$(which python3)"`), is read as that program, where it was held as a name the line builds, on a line that
   defines no function and runs no `eval`, `source` or `.`. Unquoted or in backquotes it stays held: an empty one
@@ -174,8 +179,9 @@ and the hooks together. Advisories follow the release.
 - **Harness tools decided as unknown**: some coding agents' file, process and sub-agent tools reached the policy as
   unknown tools, which the laptop packs only flag, or with a decoy argument; a call whose arguments can't be read is
   now blocked in the hook, and each tool is decided as the call it makes (OpenCode 2.x, Hermes's file tools, Crush,
-  Antigravity CLI, goose, Cursor, Qwen Code, Codex, Gemini CLI). MCP input-required answers are decided and
-  recorded.
+  Antigravity CLI, goose, Cursor, Qwen Code, Codex, Gemini CLI). Codex's `view_image` and the files a call's `items`
+  give the model (`spawn_agent`, `send_input`, any call of Codex's or Open Interpreter's with items) are each decided
+  as a Read (#901, by @khushi-git-7). MCP input-required answers are decided and recorded.
 
 ### Contributors
 @khushi-git-7, @hossainzarif23, @souravC01, @aj-codespy, @Purv-Kabaria, @Mr45401, @samueladebisi-dev, @kausthubhk,
@@ -183,7 +189,7 @@ and the hooks together. Advisories follow the release.
 @cpruijsen, @Shivansh22Saroha, @duchangyi666, @kings-avathar54, @VaishakRR, @Koloyaaa, @shaw778, @keshtib07-ghost,
 @Mr-Neutr0n, @narayanansriram, @Siri-Durugapu, @FTFaruque, @nabeelbaghoor, @Razepriv, @Sejal-Kadgi,
 @amarjithkumar2007-wq, @Vanshchandel17, @shounakjoshi88-a11y, @Seemanshi2104, @nsknojj, @vanshhh18, @tridev-tej,
-@v3ravani and @qwist1233-cpu. Thank you.
+@v3ravani, @qwist1233-cpu, @X6M-Work and @Seyamalam. Thank you.
 
 ## 1.6.0 (2026-11-09) — intent grants for payments, a policy that reads what a command really does, a plain verify result that says ANCHORED or NOT ANCHORED, Devin and Kilo Code
 

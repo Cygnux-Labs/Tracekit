@@ -31,9 +31,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars; typed text checked as Devin's
                                                           write_to_process is), Edit (paths: every file the patch adds,
                                                           updates, deletes or moves to), mcp__s__t;
-            view_image, and spawn_agent or multi_agent_v1send_input (send_input) with file items (local_image,
-            local_audio, skill), as a Read of each file (0.169.0 recorded); wait_agent and v2's collaboration tools
-            (no file) by name
+            view_image, and spawn_agent, multi_agent_v1send_input (send_input) or any other call with `items` (v2's
+            collaboration tools too) with file items (local_image, local_audio, skill, any with a path), as a Read of
+            each file (0.169.0 recorded); wait_agent and a call without items by name
     Open Interpreter  Codex's (a Codex fork, 0.0.61 recorded): Bash (its exec_command), apply_patch (the patch in
             `command`), mcp__s__t, view_image, spawn_agent and send_input, decided as Codex's are; under a non-native
             harness, Claude Code's tools as Claude Code's, and bash, exec_shell, write, write_file, edit, edit_file,
@@ -473,12 +473,10 @@ CLINE_HEREDOC = re.compile(rf"""(?<![<])<<-?[{JS_SPACE}]*(?:"([^"]+)"|'([^']+)'|
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
 CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
 # Codex (0.169.0) and Open Interpreter (0.0.61), recorded: spawn_agent (the hook's name for the model's
-# multi_agent_v1_spawn_agent) and send_input take `items`; an item of these types names a file (`path`) read into the
-# agent's context. A mention's path is an app:// or plugin:// target, not a file. send_input gets no hook name of its own
-# (function_hook_tool_name): the hook sees its namespace and name joined, multi_agent_v1send_input (both names
-# recorded). Codex's multi_agent_v2 tools (collaborationspawn_agent: task_name and a text message) name no file and
-# pass by name
-INTERPRETER_ITEM_TOOLS = ("spawn_agent", "multi_agent_v1send_input")
+# multi_agent_v1_spawn_agent) and send_input (the hook sees its namespace and name joined, multi_agent_v1send_input)
+# take `items`; an item of these types names a file (`path`) read into the agent's context. Any call of theirs with
+# `items` but a shell, patch or MCP one (the v2 collaboration tools, a renamed one) is read so: each item with a
+# `path`, a mention's app:// target too, is a Read of it, and a file item without one is blocked (_blocked)
 INTERPRETER_FILE_ITEMS = ("local_image", "local_audio", "skill")
 # the shell and file tools each non-native harness adds under other names (0.0.61's add_harness_alias_tools and
 # HarnessAliasHandler): exec_shell runs handle_bash, as bash does; ReadMediaFile reads `path` into the model's context
@@ -905,10 +903,6 @@ def tool(harness, name, ti):
             ti.pop("paths", None)
             ti["file_path"] = ti.get("path")
             return "Read", ti
-        files = _interpreter_files(ti) if name in INTERPRETER_ITEM_TOOLS else []
-        if files:
-            ti["file_path"], ti["paths"] = files[0], files
-            return "Read", ti
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
             if isinstance(patch, list):
@@ -927,6 +921,10 @@ def tool(harness, name, ti):
             if isinstance(cmd, list) and all(isinstance(w, str) for w in cmd):   # Codex's argv: a list of strings
                 ti["command"] = " ".join(cmd[2:] if cmd[:2] in (["bash", "-lc"], ["bash", "-c"], ["sh", "-c"]) else cmd)
             return "Bash", ti
+        files = [] if name.startswith("mcp__") else _interpreter_files(ti)   # (INTERPRETER_FILE_ITEMS)
+        if files:
+            ti["file_path"], ti["paths"] = files[0], files
+            return "Read", ti
         return name, ti
     if harness == "cursor":
         if name.startswith("MCP:"):
@@ -1685,11 +1683,23 @@ def _repeated(args):
 
 
 def _interpreter_files(ti):
-    """The `path` of each item in a Codex or Open Interpreter call's `items` that names a file, as sent (None for one
-    sent without a string path, which _blocked denies)."""
-    items = ti.get("items") if isinstance(ti.get("items"), list) else []
-    return [i.get("path") if isinstance(i.get("path"), str) and i.get("path") else None
-            for i in items if isinstance(i, dict) and i.get("type") in INTERPRETER_FILE_ITEMS]
+    """The `path` of each item in a Codex or Open Interpreter call's `items` that has one or is a file item
+    (INTERPRETER_FILE_ITEMS, in any case), as sent (None for one without a string path, which _blocked denies). `items`
+    is read as a list, one item, a JSON string of either, or lists of those at any depth."""
+    items, todo = [], [ti.get("items")]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, str):
+            try:
+                v = json.loads(v)
+            except (ValueError, RecursionError):
+                continue
+        if isinstance(v, dict):
+            items.append(v)
+        elif isinstance(v, list):
+            todo.extend(reversed(v))
+    return [i["path"] if isinstance(i.get("path"), str) and i["path"] else None for i in items
+            if "path" in i or str(i.get("type")).casefold() in INTERPRETER_FILE_ITEMS]
 
 
 def _blocked(harness, p, raw="", line=None):
@@ -1763,9 +1773,9 @@ def _blocked(harness, p, raw="", line=None):
         if isinstance(ti.get("command"), str):
             return _typed(who, name, ti["command"]) or line and _typed(who, name, line.replace(UNKNOWN, "")) or \
                 _twice(harness, name, ti)
-    elif harness in ("codex", "interpreter") and (name == "view_image" and not tool(harness, name, p.get(
-            "tool_input"))[1].get("file_path") or name in INTERPRETER_ITEM_TOOLS and None in _interpreter_files(
-                _input(p.get("tool_input")))):
+    elif harness in ("codex", "interpreter") and (name == "view_image" or "items" in _input(p.get("tool_input"))) and \
+            (read := tool(harness, name, p.get("tool_input")))[0] == "Read" and not (isinstance(
+                read[1].get("file_path"), str) and read[1]["file_path"] and None not in read[1].get("paths", [])):
         who = "Codex" if harness == "codex" else "Open Interpreter"
         return (f"Blocked by Tracekit: {who}'s {name} call names a file without a path Tracekit can read, so it can't "
                 "decide which file the model is given.")

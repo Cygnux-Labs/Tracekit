@@ -175,7 +175,9 @@ class Routes(unittest.TestCase):
             "tar -xf /tmp/k.tar -C ~/.ssh -C /tmp", "tar -xf /tmp/k.tar -C /tmp a -C ~/.ssh rc",
             "tar -xf /tmp/k.tar -C ~/.ssh -C /tmp rc", "lz4 /tmp/k.lz4 ~/.ssh/rc", "lz4 -f ~/.ssh/k.lz4",
             "lz4 /tmp/k ~/.ssh/authorized_keys", "zstd -d --output-dir-flat ~/.ssh /tmp/k.zst",
-            "zstd -d --output-dir-flat=$HOME/.ssh /tmp/k.zst"),
+            "zstd -d --output-dir-flat=$HOME/.ssh /tmp/k.zst", "cd /tmp/x && zstd -d --output-dir-mirror ~/.ssh rc.zst",
+            "cd /tmp/x && zstd -d --output-dir-mirror=$HOME/.aws config.zst",
+            "zstd -d --output-dir-mirror ~ .ssh/rc.zst", "zstd -d --output-dir-mirror=$HOME .ssh/rc.zst"),
             "deny", "TK-D023")
         # what only prints, tests or lists, writes elsewhere (-o, a second operand, -n's new file), leaves a member out
         # (unzip -x) or reads a value (git config --get, emacs --insert): no write of the file it names
