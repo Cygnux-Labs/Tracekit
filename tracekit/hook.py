@@ -9,6 +9,7 @@ A policy deny always blocks, whether or not the signer is reachable.
 
     python -I -m tracekit.hook   (wired by `tracekit init`)
 """
+import functools
 import getpass
 import hashlib
 import json
@@ -180,11 +181,8 @@ def save_ack(path, length):
 
 
 def transcript_mark(path):
-    """{path, length, hash, prefix_length, prefix_hash, read_at} for the transcript as it is now.
+    """{path, length, hash, prefix_length, prefix_hash} for the transcript as it is now.
     prefix_* covers the first N bytes, where N is the length the signer last acknowledged.
-    read_at is the moment the read hit EOF: the signer orders marks by when they were read, not by when they
-    arrive, so a hook that read the file before another one did is not taken for a truncation when it reports
-    later (parallel hooks of one session).
     The file is streamed once, so a multi-hundred-MB transcript costs time, not memory."""
     ack = _load_acks().get(path)
     if not isinstance(ack, int) or isinstance(ack, bool) or ack < 0:
@@ -193,7 +191,7 @@ def transcript_mark(path):
         f = open(path, "rb")
     except FileNotFoundError:
         return {"path": path, "length": 0, "hash": "sha256:" + hashlib.sha256(b"").hexdigest(), "missing": True,
-                "prefix_length": ack, "prefix_hash": None, "read_at": time.time()}
+                "prefix_length": ack, "prefix_hash": None}
     except OSError:
         return None
     full, prefix, total, prefix_hash = hashlib.sha256(), hashlib.sha256(), 0, None
@@ -214,7 +212,7 @@ def transcript_mark(path):
     if ack is not None and prefix_hash is None:  # the file is shorter than what was acknowledged
         prefix_hash = "sha256:" + prefix.hexdigest()
     return {"path": path, "length": total, "hash": "sha256:" + full.hexdigest(), "prefix_length": ack,
-            "prefix_hash": prefix_hash, "read_at": time.time()}
+            "prefix_hash": prefix_hash}
 
 
 # ---------- C8: approvals ----------
@@ -315,9 +313,8 @@ def build_events(p, pol, reasoning=True):
             pass
     if pol.get("transcript_hashing", True) and evs:
         tp = transcript_path_for(p)
-        mark = transcript_mark(tp) if tp else None
-        if mark:
-            evs[-1]["transcript"] = mark   # checked by the signer against the previous mark (C2)
+        if tp:   # its mark is read as main sends the event, and checked by the signer against the previous mark (C2)
+            evs[-1]["_transcript"] = tp
     return evs, deny
 
 
@@ -356,7 +353,9 @@ def main(harness_reasoning=True, raw=None):
     for ev in evs:
         try:
             attach_pol = ev.pop("_attach_policy", False) or ev["type"] == "run.start"
-            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None)
+            tp = ev.pop("_transcript", None)
+            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None,
+                               mark=functools.partial(transcript_mark, tp) if tp else None)
             if not resp.get("ok"):
                 print(f"[tracekit] signer rejected event: {resp.get('error')}", file=sys.stderr)
                 if ev["type"] == "tool.call":

@@ -3,7 +3,6 @@ stale runs (C5), YAML policy (C7), approvals (C8), redaction (C9).
 
     python3 -m unittest tests.test_capture -v
 """
-import hashlib
 import http.server
 import importlib
 import json
@@ -20,13 +19,14 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests  # noqa: E402
-from tracekit import bundle, client, install, peercred, policy, privacy, yamlmini  # noqa: E402
-from tracekit.core import now_ts, read_json, read_text, write_json  # noqa: E402
+from tracekit import bundle, client, hook, install, peercred, policy, privacy, yamlmini  # noqa: E402
+from tracekit.core import read_json, read_text, write_json  # noqa: E402
 from factories import ledger_records, make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
@@ -238,37 +238,25 @@ class TranscriptTamper(Stack):
         self.pre("t9", "ls")
         self.assertEqual(self.of("trace.tamper"), [])
 
-    def mark(self, length, body, prefix_length=None, prefix_body=None, read_at=None):
-        """Send one hook event carrying a transcript mark, so that marks can be given in any order.
+    def test_a_hook_that_read_before_a_parallel_one_sent_is_not_a_truncation(self):
+        """#727: a hook read the transcript, a parallel hook read it grown and sent first, and the first hook's
+        shorter mark, arriving last, was recorded as a truncation. A hook reads its mark under the run's lock, just
+        before its send, so the marks of one run reach the signer in the order they were read."""
+        self.start()
+        real, other = client.send, []
 
-        read_at is when that read hit EOF; the signer orders marks by it instead of by arrival (see #727)."""
-        self._seq = getattr(self, "_seq", 0) + 1
-        m = {"path": self.transcript, "length": length, "hash": "sha256:" + hashlib.sha256(body).hexdigest(),
-             "prefix_length": prefix_length,
-             "prefix_hash": None if prefix_body is None else "sha256:" + hashlib.sha256(prefix_body).hexdigest()}
-        if read_at is not None:
-            m["read_at"] = read_at
-        r = client.send({"run_id": self.run_id, "agent_id": "main", "parent_id": None, "source": "hook",
-                         "ts": now_ts(), "type": "tool.call",
-                         "data": {"tool_use_id": f"m{self._seq}", "name": "Bash",
-                                  "input": {"command": {"value": "ls", "redacted": False}}},
-                         "transcript": m})
-        self.assertTrue(r.get("ok"), r)
-
-    def test_a_mark_read_before_the_last_one_is_not_a_truncation(self):
-        """#727: a hook reads the transcript before it sends the event, so the marks of parallel hooks can arrive in
-        the order they were *sent*, not the order they were read. A shorter mark read earlier is not a truncation."""
-        grew, older = b"x" * 719, b"x" * 631        # the file only grew: 631 bytes are a prefix of 719
-        now = time.time()
-        self.mark(719, grew, 631, older, read_at=now + 0.5)
-        self.mark(631, older, 631, older, read_at=now)
+        def send(*a, **kw):   # the parallel hook runs, whole, before this one's first send
+            if not other:
+                self.say("parallel")
+                other.append(self.pre("p1", "ls"))
+            return real(*a, **kw)
+        p = {"hook_event_name": "PreToolUse", "session_id": self.run_id, "cwd": self.proj,
+             "transcript_path": self.transcript, "tool_name": "Bash", "tool_use_id": "p0", "tool_input": {"command": "ls"}}
+        with mock.patch.object(client, "send", send), mock.patch("sys.stdout"):
+            self.assertEqual(hook.main(raw=json.dumps(p)), 0)
+        self.assertEqual(other[0][0], 0)
         self.assertEqual(self.of("trace.tamper"), [])
-
-    def test_a_mark_read_after_a_truncation_is_still_reported(self):
-        now = time.time()
-        self.mark(719, b"x" * 719, None, None, read_at=now)
-        self.mark(300, b"x" * 300, 719, b"x" * 719, read_at=now + 0.5)   # cut back to an earlier length
-        self.assertEqual([x["data"]["kind"] for x in self.of("trace.tamper")], ["truncated"])
+        self.assertEqual(len([e for e in self.events() if e["type"] == "policy.decision"]), 3)   # t1's, p1's, p0's
 
 
 # ---------------------------------------------------------------- proxy
