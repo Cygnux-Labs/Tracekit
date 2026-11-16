@@ -1,4 +1,5 @@
-"""Where a person starts or checks a dev-mode signer, one plain line says it records and does not guard."""
+"""Where a person starts or checks a dev-mode signer, one plain line says it decides and records every call, and that
+the agent still runs as you."""
 from __future__ import annotations
 
 import contextlib
@@ -13,7 +14,8 @@ from unittest import mock
 from tracekit import cli, doctor, install
 from tracekit.sdk import autospawn
 
-LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the signer "
+LINE = ("Dev mode decides and records every call: a denied call is blocked, a held one waits for you. But the agent "
+        "runs as you, so it could stop the signer, change its policy or reach its key. To close that, run the signer "
         "as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the agent in Tracekit "
         "Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 
