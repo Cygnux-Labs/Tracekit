@@ -13,12 +13,14 @@ Three tips, each worked out from what the agents' own records show, over the las
    they blocked the agent.
 
 Token counts come from signed records where those carry them (a model.exchange response's `usage`: the LLM gateway's,
-an SDK integration's) and from Claude Code's transcripts, read-only as `tracekit audit` reads them (the transcript
-tailer's records carry no usage). A signed run the transcripts also hold counts once, from the transcripts: matched by
-a tool_use id, or by identical token counts within MATCH_S (the gateway signs each exchange under an id of its own,
-and a message without tool calls has no tool_use id). Holds come only from signed records; a transcript adds how long
-each one blocked the agent and where it ran, joined by its tool_use_id. Each tip names every source it mixes. Dollars
-are Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
+an SDK integration's, the transcript tailer's, signed as each Claude Code turn was read) and from Claude Code's
+transcripts, read-only as `tracekit audit` reads them, where none does. A signed step the transcripts also hold counts
+once, at its signed counts, in the transcript's place (which agent took it, when, and how long each cache write lasts,
+which no signed record says): matched by its message id (the tailer's), a tool_use id, or identical token counts within
+MATCH_S (the gateway signs each exchange under an id of its own, and a message without tool calls has no tool_use id).
+Holds come only from signed records; a transcript adds how long each one blocked the agent and where it ran, joined by
+its tool_use_id. Each tip names every source its figures came from, and each step says its own (`src`). Dollars are
+Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
 """
 import collections
 import json
@@ -29,6 +31,7 @@ import statistics
 import threading
 import time
 
+from . import lessons
 from .audit import _entry_time, _iter_transcripts, _safe_open
 from .hook import transcript_entries
 from .signer.service import _escaped
@@ -71,6 +74,7 @@ POLLS = {"sleep", "until", "while", "watch"}
 KEYWORDS = {"for", "if", "case", "select", "function", "do", "then"}
 BUILDS = {"pytest", "make", "npm", "npx", "tox", "cargo", "go", "gradle", "mvn"}
 PERSON = {"AskUserQuestion", "ExitPlanMode"}   # tools that wait for a person's answer: no poll keeps that cache
+READ_CHUNK = 1000   # records one content_get reads for lessons, its most: one signed content.accessed record each
 
 
 def _ctx(s):
@@ -95,9 +99,10 @@ def _start(s):
     return s["t"] - s["lat"] if s["lat"] is not None else s["t"]
 
 
-def _step(t, mid, model):   # a transcript is the agent's to write: a model that isn't a name is none
+def _step(t, mid, model, src="transcripts"):   # a transcript is the agent's to write: a model that isn't a name is none
+    """A step; `src`: where its token counts came from (FROM)."""
     return {"t": t, "t1": t, "id": mid, "model": model if isinstance(model, str) else None, "in": 0, "out": 0, "cr": 0, "w5": 0, "w1h": 0, "w": 0,
-            "lat": None, "calls": []}
+            "lat": None, "calls": [], "src": src}
 
 
 def _usage(s, u):
@@ -129,32 +134,50 @@ def _family(cmd):
 
 def signed_steps(rows, since):
     """{agent key: agent} from the viewer's rows of signed model exchanges that carry usage (observe.Translator's
-    tk_model rows), each step at its record's time. The usage schema has no cache lifetime: its writes are `w`."""
-    agents = {}
+    tk_model rows), each step at its record's time, an exchange id once in a run (a line resent once the signer's
+    answer was lost); each agent with its run's agent name (`name`), each step with whether an LLM gateway signed it
+    for its client (`gw`: the record's source, which only a gateway's identity can give). The usage schema has no cache
+    lifetime: its writes are `w`."""
+    # lean: the tailer signs a Claude Code session's subagents' turns under the session's run, as agent main: without
+    # the transcripts (_join) they count as the main session's steps; record which transcript a turn came from (a
+    # format change) if tips must tell them apart from the store alone
+    agents, seen = {}, set()
     for r in rows:
         u = r.get("usage") if r.get("event") == "tk_model" else None
-        if not u or (r.get("ts") or 0) < since:
+        x = (r.get("v2") or {}).get("exchange_id")
+        if not u or (r.get("ts") or 0) < since or x is not None and (r.get("session_id"), x) in seen:
             continue
+        seen.add((r.get("session_id"), x))
         sub = r.get("agent_id")
         key = r.get("session_id", "") + ("/" + sub if sub else "")
         a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "signed",
+                                    "name": r.get("agent"),
                                     "label": f"{r.get('agent') or 'agent'} run {str(r.get('session_id'))[:8]}"
                                              + (f" · subagent {str(sub)[:8]}" if sub else ""), "steps": []})
-        s = _step(r["ts"], (r.get("v2") or {}).get("exchange_id"), r.get("model"))
+        s = _step(r["ts"], x, r.get("model"), "signed")
         s.update({"in": _int(u.get("input_tokens")) or 0, "out": _int(u.get("output_tokens")) or 0,
                   "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0,
-                  "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)]})
+                  "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)],
+                  "gw": r.get("tk_source") == "gateway"})
         a["steps"].append(s)
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
     return agents
 
 
+def _result_text(content):
+    """A tool result's text (a string, or its text blocks), its first 4,096 characters."""
+    if isinstance(content, list):
+        content = "\n".join(b["text"] for b in content if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return content[:4096] if isinstance(content, str) else None
+
+
 def read_transcripts(root, since):
     """Claude Code's transcripts under root, read-only (audit's walk: no symlink followed, nothing written), from
     `since` on -> (agents, calls, files read, unreadable): one agent per transcript file (a session's main file, or one
     of its subagents'), each step a message (by id: a resumed session's file repeats its earlier ones, counted once);
-    calls: tool_use id -> {id, agent, tool, family, t0, t1}."""
+    calls: tool_use id -> {id, agent, tool, family, t0, t1, project (the folder under root), cwd, error (a failed
+    call's result text, for lessons)}."""
     # lean: every transcript written in the window is read again each time the page is worked out (a 983 MB folder took
     # 6.7 s and 370 MB); keep each file's offset and fold in only its new lines if a team's week outgrows that
     agents, calls, seen, unreadable, files = {}, {}, set(), [], 0
@@ -170,6 +193,7 @@ def read_transcripts(root, since):
             continue
         files += 1
         sub = "subagents" in os.path.relpath(path, root).split(os.sep)
+        project = os.path.relpath(path, os.path.realpath(root)).split(os.sep)[0]   # the walk's paths are real ones
         name = os.path.basename(path)[:-len(".jsonl")]
         key = session + ("/" + name if sub else "")
         mine, last_user = {}, None
@@ -187,7 +211,7 @@ def read_transcripts(root, since):
                         continue
                     s = mine.get(mid)
                     if s is None:
-                        s = mine[mid] = _step(t, mid, m.get("model"))
+                        s = mine[mid] = _step(t, mid, m.get("model"), "transcripts")
                         s["lat"] = t - last_user if last_user is not None else None
                         seen.add(mid)
                     _usage(s, m["usage"])
@@ -197,7 +221,8 @@ def read_transcripts(root, since):
                             inp = b.get("input") if isinstance(b.get("input"), dict) else {}
                             calls[b["id"]] = {"id": b["id"], "agent": key, "tool": str(b.get("name")), "t0": t,
                                               "t1": None, "family": _family(inp.get("command", ""))
-                                              if b.get("name") == "Bash" else str(b.get("name"))}
+                                              if b.get("name") == "Bash" else str(b.get("name")), "project": project,
+                                              "cwd": e.get("cwd") if isinstance(e.get("cwd"), str) else None}
                             s["calls"].append(b["id"])
                     last_user = None
                 elif e.get("type") == "user":
@@ -206,6 +231,8 @@ def read_transcripts(root, since):
                         c = calls.get(tid) if b.get("type") == "tool_result" and isinstance(tid, str) else None
                         if c and c["t1"] is None:
                             c["t1"] = t
+                            if b.get("is_error") is True:   # what failed, for a fix lesson's error line
+                                c["error"] = _result_text(b.get("content"))
                     last_user = t
         except OSError as x:
             unreadable.append({"path": path, "error": f"cannot read: {x}"})
@@ -415,7 +442,8 @@ def context_tip(agents):
     above, below = [d for c, d in lat if c > cap], [d for c, d in lat if c <= cap]
     slower = statistics.median(above) - statistics.median(below) if len(above) >= 10 and len(below) >= 10 else None
     x, act = _series(ctx)
-    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from({x["a"]["source"] for x in rows})},
+    tiers = collections.Counter(s["src"] for x in rows for s in x["steps"])
+    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from(tiers)},
                slower=round(slower, 1) if slower is not None and slower > 0 else None,
                title=f"{'Compact' if claude else 'Trim the history it sends'} at about {_k(cap)} tokens"
                + (f", not at {_k(at)}" if at else ""),
@@ -445,6 +473,9 @@ def context_tip(agents):
                      f"{_about(saved[cap])} of {_money(total)}.",
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
+                     f"Token counts of the {sum(tiers.values()):,} steps these figures rest on: "
+                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts") if tiers[k])
+                     + ".",
                      "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
                      + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
                         "measured saving." if slower is not None and slower > 0 else ".")]
@@ -471,9 +502,9 @@ def cache_tip(agents, calls, held=(), asked=()):
     for a in agents:
         known = sum(s["w1h"] for s in a["steps"]), sum(s["w5"] for s in a["steps"])
         default = LIFE["1h"] if known[0] > known[1] else LIFE["5m"] if known[1] else None
-        if default:
+        if default:   # a cache lifetime only a transcript records
             lives[a["kind"]].add(default)
-            kinds.add(a["source"])
+            kinds.add("transcripts")
         for p, s in zip(a["steps"], a["steps"][1:]):
             ctx = _ctx(s)
             if ctx < MIN_CTX or ctx < DROP * _ctx(p):   # under half the last step's: a compaction rewrote it, no wait
@@ -505,8 +536,10 @@ def cache_tip(agents, calls, held=(), asked=()):
             polls = 0 if blocked and c["id"] in held else math.ceil(gap / (life - MARGIN)) - 1   # a hold could fail at once
             alt = polls * ((ctx - grew) * r["cache_read"] + POLL_OUT * r["output"]) / 1e6 + kept   # polls before it grew
             fix = blocked and alt < now
+            kinds.add(s["src"])
             waits.append({"t": _start(p), "s": round(gap), "usd": round(now, 4), "alt": round(alt, 4),
-                          "tokens": _writes(s), "agent": a["label"], "kind": a["kind"], "life": life, "fix": fix,
+                          "tokens": _writes(s), "src": s["src"], "agent": a["label"], "kind": a["kind"], "life": life,
+                          "fix": fix,
                           "cause": ("a call held for a person" if c["id"] in held else c["family"]) if fix else
                           "idle: waiting for a person" if a["kind"] == "main" or person else
                           "idle: resumed after it handed back"})
@@ -640,44 +673,163 @@ def holds_tip(holds, calls, signed):
     return tip
 
 
-def _same(signed, agents, calls):
-    """{signed run's key: the indexes of its steps Claude Code's transcripts also hold}, step by step: one that shares a
-    tool_use id with a transcript's message, or that takes up one transcript message no other step matched with the
-    same token counts within MATCH_S (the gateway signs each exchange under an id of its own, and a message without
-    tool calls has no tool_use id to join on)."""
-    ids = {i for a in signed.values() for s in a["steps"] for i in s["calls"]}
-    pool = collections.defaultdict(list)   # token counts -> the times of the transcript messages not matched yet
+def _counts(s):
+    return s["in"], s["out"], s["cr"], s["w"]
+
+
+def _join(signed, agents, named):
+    """Count each signed step Claude Code's transcripts also hold once, at its signed counts in the transcript
+    message's place (_signed), and drop it from `signed`. -> ({runs, steps} joined, steps refused). In order, each pass
+    over the steps no earlier one took:
+    1. by its exchange id, the message id the transcript tailer signs a turn under, only from a claude-code run whose
+       records name a tool call of that message's session (`named`: run -> the tool_use ids its records name, as the
+       hook's decisions do) and signed from the message's first line to MATCH_S after its last: any run can sign any
+       message id, with any counts;
+    2. by a tool_use id the message shares, only from an LLM gateway (`gw`), signed within MATCH_S of it;
+    3. by the same token counts within MATCH_S, taking up one message no other step of this pass matched (the gateway
+       signs each exchange under an id of its own, and a message without tool calls has no tool_use id), compared with
+       the counts passes 1 and 2 signed.
+    In pass 1 a turn takes its records' counts only when they all agree; when they don't, it takes none of them and
+    each is refused: a record can push a turn back to the counts it had, never put its own over another's. A gateway's
+    record, signed off the wire, never counts for nothing: in pass 2 its counts are kept over the tailer's (and over
+    the transcript's), and one that joins no message in its window, or disagrees with the first that joined it, counts
+    on its own. A step refused counts for nothing: the transcript's counts stand."""
+    where = {s["id"]: (s, k.split("/")[0]) for k, a in agents.items() for s in a["steps"]}
+    by_call = {c: s for a in agents.values() for s in a["steps"] for c in s["calls"]}
+    calls_of = collections.defaultdict(set)   # a transcript session -> the tool_use ids of its messages
+    for k, a in agents.items():
+        for s in a["steps"]:
+            calls_of[k.split("/")[0]].update(s["calls"])
+    ids = {c for a in signed.values() for s in a["steps"] for c in s["calls"]}
+    taken = collections.defaultdict(dict)   # signed run's key -> {its step's index: the message, or None (refused)}
+
+    def settle(found, gw=False):
+        """[(transcript message, run key, step index, signed step)] a pass joined: each message at its records'
+        counts when they all agree, else at none of them; a gateway's (`gw`) at its first record's, joined by those
+        that agree with it, while one that doesn't counts on its own."""
+        turns = collections.defaultdict(list)
+        for t, k, i, s in found:
+            turns[id(t)].append((t, k, i, s))
+        for group in turns.values():
+            t, first = group[0][0], group[0][3]
+            agree = all(_counts(s) == _counts(first) for *_, s in group)
+            for _, k, i, s in group:
+                if not gw:
+                    taken[k][i] = t if agree else None
+                elif _counts(s) == _counts(first):
+                    taken[k][i] = t
+            if agree or gw:
+                _signed(t, first)
+    found = []
+    for k, a in signed.items():
+        for i, s in enumerate(a["steps"]):
+            if s["id"] in where and not s["gw"]:   # a gateway's id is its own: a transcript line can't claim it
+                t, session = where[s["id"]]
+                if a.get("name") == "claude-code" and named[k.split("/")[0]] & calls_of[session] and \
+                        t["t"] <= s["t"] <= t["t1"] + MATCH_S:
+                    found.append((t, k, i, s))
+                else:
+                    taken[k][i] = None
+    settle(found)
+    found = []
+    for k, a in signed.items():
+        for i, s in enumerate(a["steps"]):
+            t = next((by_call[c] for c in s["calls"] if c in by_call), None)
+            if i not in taken[k] and t is not None:
+                if not s["gw"]:
+                    taken[k][i] = None
+                elif t["t"] - MATCH_S <= s["t"] <= t["t1"] + MATCH_S:   # else the gateway's counts on their own
+                    found.append((t, k, i, s))
+    settle(found, gw=True)
+    pool = collections.defaultdict(list)   # token counts -> the transcript messages pass 3 may still take
     for a in agents.values():
         for s in a["steps"]:
             if not ids.intersection(s["calls"]):
-                pool[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
-    held = collections.defaultdict(set)
+                pool[s["in"], s["out"], s["cr"], _writes(s)].append(s)
     for k, a in signed.items():
         for i, s in enumerate(a["steps"]):
-            times = pool.get((s["in"], s["out"], s["cr"], s["w"]), [])
-            j = next((j for j, t in enumerate(times) if abs(t - s["t"]) <= MATCH_S), None)
-            if any(c in calls for c in s["calls"]) or j is not None:
-                held[k].add(i)
-                if j is not None and not any(c in calls for c in s["calls"]):
-                    times.pop(j)
-    return held
+            left = pool.get(_counts(s), []) if i not in taken[k] else []
+            j = next((j for j, x in enumerate(left) if abs(x["t"] - s["t"]) <= MATCH_S), None)
+            if j is not None:
+                taken[k][i] = left.pop(j)
+                taken[k][i]["src"] = "signed"   # the same counts: the transcript's split of its writes stands
+    refused = 0
+    for k, x in taken.items():
+        signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in x]
+        refused += sum(t is None for t in x.values())
+    joined = {k: x for k, x in taken.items() if any(t is not None for t in x.values())}
+    return {"runs": len(joined), "steps": sum(t is not None for x in joined.values() for t in x.values())}, refused
 
 
-def build(rows, root=None, now=None, since=None):
+def _signed(t, s):
+    """Transcript step t at signed step s's token counts, its `src` signed. The transcript's split of the cache writes by
+    lifetime, which no signed record holds, is kept while it adds up to the signed writes."""
+    if _writes(t) != s["w"]:
+        t["w5"], t["w1h"], t["w"] = 0, 0, s["w"]
+    t.update(src="signed", **{k: s[k] for k in ("in", "out", "cr")})
+
+
+def _costs(agents):
+    """{tool_use id: USD} of the transcripts' `agents`: each step's cost (its input side and its output, at list
+    price), shared by the calls it made. A model without a price costs nothing here."""
+    out = {}
+    for a in agents.values():
+        for s in a["steps"]:
+            r = _RATES.rate(s["model"])
+            if r and s["calls"]:
+                usd = _input_usd(s, r) + s["out"] * r["output"] / 1e6
+                out.update(dict.fromkeys(s["calls"], usd / len(s["calls"])))
+    return out
+
+
+def lessons_part(rows, agents, calls, folder, now, since, known=None):
+    """The LESSONS part (lessons.page) of rows and the transcripts' agents and calls, each project named by the
+    folder its sessions ran in; `known`: the store's run ids, when read."""
+    cwds = {c["project"]: _shown(c["cwd"]) for c in calls.values() if c.get("cwd")}
+    return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds, known)
+
+
+def build(rows, root=None, now=None, since=None, folder=None, known=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
-    price table's date and the three tips. A signed step the transcripts also hold counts once, from the transcripts
-    (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so they may span less than
-    the window: `sources.signed.span`."""
+    price table's date, the lessons (lessons_part; their folder `folder`, None outside the dev store) and the three
+    tips. A signed step the transcripts also hold counts once, at its signed counts in the transcript's place
+    (`sources.signed.also`); one _join refused counts for nothing (`sources.signed.refused`). The signed records are
+    the viewer's live view, its newest rows, so they may span less than the window:
+    `sources.signed.span`."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
-    same = _same(signed, agents, calls)
-    also = {"runs": len(same), "steps": sum(map(len, same.values()))}
-    for k, idx in same.items():
-        signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
+    part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since, known)
+    named = collections.defaultdict(set)
+    for r in rows:
+        v = r.get("v2") or {}
+        named[r.get("session_id")].update(i for i in (v.get("tool_use_id"), *(v.get("tool_ids") or ())) if
+                                          isinstance(i, str))
+    also, refused = _join(signed, agents, named)
+    # an exchange id no transcript holds, signed by more than one run (a subagent transcript a resumed session copied)
+    # counts once when its counts agree; when they don't, a gateway's records count (a run can't hide what a gateway
+    # signed by signing its ids) and the others are refused, and without one none counts
+    same = collections.defaultdict(list)
+    for a in signed.values():
+        for s in a["steps"]:
+            if s["id"] is not None:
+                same[s["id"]].append(s)
+    drop = set()
+    for group in same.values():
+        first = next((s for s in group if s["gw"]), group[0])
+        agree = all(_counts(s) == _counts(first) for s in group)
+        for s in group:
+            if s is not first and (_counts(s) == _counts(first) or not s["gw"]):
+                drop.add(id(s))
+                refused += _counts(s) != _counts(first)
+        if not agree and not first["gw"]:
+            drop.add(id(first))
+            refused += 1
+    for a in signed.values():
+        a["steps"] = [s for s in a["steps"] if id(s) not in drop]
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
     holds = held_calls(rows, since)
@@ -685,11 +837,12 @@ def build(rows, root=None, now=None, since=None):
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
-                                   "also": also, "records": len(times),
+                                   "also": also, "refused": refused, "records": len(times),
                                    "span": [min(times), max(times)] if times else None,
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
                                         "steps": sum(len(a["steps"]) for a in agents.values())}},
+            "lessons": part,
             "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
                                                    {h["id"] for h in holds if h["answered"] is not None}),
                      holds_tip(holds, calls, bool(rows))]}
@@ -700,27 +853,32 @@ class Page:
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
     takes seconds to read)."""
 
-    def __init__(self, rows, root, ttl=60):
-        self.rows, self.root, self.ttl = rows, root, ttl
+    def __init__(self, rows, root, ttl=60, folder=None, known=None):
+        self.rows, self.root, self.ttl, self.folder, self.known = rows, root, ttl, folder, known
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
-                self.body = json.dumps(build(self.rows(), self.root), ensure_ascii=False)
+                self.body = json.dumps(build(self.rows(), self.root, folder=self.folder,
+                                             known=self.known() if self.known else None), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
 
 
-def signed_rows(cfg, since, say=None):
+def signed_rows(cfg, since, say=None, content=None, known=None):
     """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
-    which give no rows. `say(text)`: told how many runs are checked before the checks."""
+    which give no rows. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
+    kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
+    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read. `known`: a set
+    given the store's run ids."""
     import tempfile
 
     from . import view
     from .signer.pipeline import SIGNER_RUN
     from .why.core import ts_seconds
+    from .why.signed import EvidenceAlert
 
     def recent(run):
         # lean: a run is placed by its last record's time as the store says it, before the check; place it by the
@@ -731,22 +889,34 @@ def signed_rows(cfg, since, say=None):
             return True
     vkeys, _ = view.store_trust(cfg)
     tr = view.Translator(view.policy_reasons([], os.path.join(cfg["data_dir"], "policies")))
-    rows, failed = [], 0
+    rows, failed, kept, reads = [], 0, 0, 0
     with tempfile.TemporaryDirectory(prefix="tk-tips-") as tmp:
         trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
         r = view.reader(cfg)
         try:
             note = r.checkpoint_latest()
             keys = [k for k, run in sorted(r.runs.items()) if note and k[1] != SIGNER_RUN[1] and recent(run)]
+            if known is not None:
+                known.update(k[1] for k in r.runs)
             if say and keys:
                 say(f"checking {len(keys)} run{'s' * (len(keys) != 1)} with the verifier, as tracekit view does: a "
                     "busy week takes minutes")
             for key in keys:
                 _, code, _, records = view.check(r, *key, note[1], trust)
                 failed += bool(code)
+                want = [x for x in records if view.wanted(x)] if content else []
+                try:
+                    tr.content.update({(key[1], s): c for s, c in content(key[1], want).items()} if want else {})
+                except EvidenceAlert as x:   # the vault's content does not open its record: none of it is read
+                    if say:
+                        say(str(x))
+                kept, reads = kept + len(want), reads + -(-len(want) // READ_CHUNK)
                 rows += [x for rec in records for x in tr.feed(rec)]
         finally:
             r.close()
+    if say and reads:   # each read is a signed record: said, so a person knows what reading the tips wrote
+        say(f"read the kept content of {kept:,} records from the dev signer's vault: about {reads:,} signed "
+            f"content.accessed records (one a run and {READ_CHUNK:,} records)")
     return rows, failed
 
 
@@ -759,21 +929,77 @@ def _wrap(text, indent="  "):
                          break_long_words=False)
 
 
+KINDS = {"lookup": "LOOKUP", "fix": "FIX", "told": "TOLD", "you": "YOURS"}   # the page's names of the lessons' kinds
+EFFECT = {"lookup": "searched before opening it in", "fix": "failed so in", "told": "said it again in"}
+RULES = {"one_session": "seen too few times", "shown": "past the 8 shown"}   # why one wasn't proposed, where its id says too little
+
+
+def _n(n, word):
+    return f"{n:,} {word}{'s' * (n != 1)}"
+
+
+def effect_words(x):
+    """A lesson in use's effect in plain words, as the page says it."""
+    e = x["effect"]
+    if not e["shown"]:
+        return e["why"].rstrip(".")
+    b, a = e["before"], e["after"]
+    return (f"{EFFECT[x['kind']]} {a['hits']} of {_n(a['exposed'], 'session')} given it, instead of {b['hits']} of "
+            f"{b['exposed']} before" + (": worse" if e["worse"] else "") + f" ({e['basis']})")
+
+
+def lessons_text(L, days=7):
+    """The LESSONS part of `tracekit tips` in plain words: each lesson waiting for the person's OK with its text, how
+    often it was seen, its estimated saving and the command that approves it; each in use with its effect; why the
+    others weren't proposed."""
+    if not L.get("ok"):
+        return ["LESSONS", _wrap(L.get("why") or "")]
+    w, act, nope = L["waiting"], L["active"], L["not_proposed"]
+    out = ["LESSONS · from signed records and Claude Code's transcripts (read-only)",
+           _wrap(f"{len(w)} waiting for your OK, {len(act)} in use, {L['not_proposed_n']} not proposed. A lesson you "
+                 f"approve is given to each Claude Code session of its project at its first prompt, within "
+                 f"{L['budget']:,} bytes; {L['off']} turns that off.")]
+    for x in w:
+        sv = x["saving"]
+        seen = (f"Typed by you in {_n(x['sessions'], 'session')}." if x["kind"] == "told" else
+                f"Seen {_n(x['times'], 'time')} in {_n(x['sessions'], 'session')} on {_n(x['days'], 'day')}. Would "
+                f"save about {_n(sv['calls'], 'call')}" + (f", {_money(sv['usd'])}" if sv.get("usd") else "")
+                + (f" and {_dur(sv['seconds'])}" if sv.get("seconds") else "") + f" in {days} days, an estimate.")
+        out += ["", f"WAITING · {KINDS[x['kind']]} · {x['id']} · {x['where']}" + (" · RISKY: read it twice" if
+                                                                               x["risky"] else ""),
+                x["name"], _wrap(x["text"]), _wrap(seen)] + [
+            _wrap(f"Replaces {o['id']} ({o['name']}).") for o in x["supersedes"]] + [f"    {x['approve']}"]
+    for x in act:
+        out += ["", f"IN USE · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']}"
+                    + (f" · approved {str(x['approved'])[:10]}" if x.get("approved") else ""), x["name"],
+                _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."
+                      + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
+                f"    {x['retire']}"]
+    if nope:
+        out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
+            [_wrap(f"and {L['not_proposed_n'] - 10} more (--json lists the first 40)")] if L["not_proposed_n"] > 10 else [])
+    return out
+
+
 def text(t, store, failed=0, root=None):
     """`tracekit tips` in plain words: what it read from `store` (its name) and the transcripts (looked for in `root`),
-    then each tip's title, evidence, estimated saving and fix, or why it has none; one line when nothing was read."""
+    then the lessons (lessons_text), then each tip's title, evidence, estimated saving and fix, or why it has none; one
+    line when nothing was read."""
     s, tr = t["sources"]["signed"], t["sources"]["transcripts"]
     since = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t["window"][0]))
     read = f"{store}: {s['records']:,} signed records" + (
         f", {failed} run{'s' * (failed != 1)} left out: {'they' if failed != 1 else 'it'} didn't verify (tracekit view "
         "shows why)" if failed else "") + (
+        f", {s['refused']:,} not taken for a transcript's turn (another run's, or signed outside the turn's time: "
+        "the transcript's counts stand)" if s.get("refused") else "") + (
         f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
         f"; no Claude Code transcripts in {_shown(root)}" if root else "")
     if not (s["records"] or tr["steps"]):
         return _escaped(f"tracekit tips: read {read}, since {since}: nothing yet")
     out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's list prices of {t['prices']}: a "
                  "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
-                 "operator-side, not evidence.", "")]
+                 "operator-side, not evidence.", ""), ""]
+    out += lessons_text(t["lessons"], max(1, round((t["window"][1] - t["window"][0]) / 86400)))
     for i, x in enumerate(t["tips"], 1):
         out += ["", f"TIP {i} · {NAMES[x['id']]}" + (f" · from {x['from']}" if x.get("from") else "")]
         if not x["ok"]:
@@ -793,8 +1019,173 @@ def text(t, store, failed=0, root=None):
     return "\n".join(_escaped(line) for line in "\n".join(out).split("\n"))   # a run's agent name is the agent's text
 
 
+ACTIONS = ("approve", "retire", "restore", "add")   # a person's; TK-D012 denies the agent's own (as the first word)
+
+
+def _here():
+    """The working directory as the shell names it ($PWD, which Claude Code's project folder is named after) when it is
+    this one, else its real path."""
+    pwd = os.environ.get("PWD")
+    try:
+        return pwd if pwd and os.path.samefile(pwd, ".") else os.getcwd()
+    except OSError:
+        return os.getcwd()
+
+
+def _running():
+    """A client of the dev signer that runs now, or None while none does. Unlike a hook's client, tracekit tips never
+    starts, stops or replaces a signer: reading the tips changes no process."""
+    from .sdk import autospawn
+    from .sdk.client import Client
+    try:
+        path, token = autospawn.address(autospawn.signer_dir(create=False))
+    except (OSError, ValueError):
+        return None
+    return None if token is None and not os.path.exists(path) else Client(path, token=token)
+
+
+def _vault(say):
+    """The kept content source for lessons (view.dev_content_source, purpose `tracekit tips`) over the dev signer that
+    runs now (_running). None, said, while none runs; a signer of another protocol is said by the source and read
+    from not."""
+    from . import view
+    client = _running()
+    if client is None:
+        say("no dev signer runs here: lessons read the calls' arguments from its vault, so none is found (`tracekit "
+            "up` starts it)")
+        return None
+    return view.dev_content_source("tracekit tips", connect=lambda: client, say=say, chunk=READ_CHUNK)
+
+
+def _signer(client):
+    """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
+    the lesson's id and its text's sha256, never the text) in one run for this command (agent `tracekit tips`),
+    through `client`, which `sign.close()` closes. -> the record's run:run_seq, which the note keeps."""
+    run = []
+
+    def sign(action, lid, sha):
+        run[:] = run or [client.run(agent="tracekit tips")]
+        out = run[0].observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
+        return f"{run[0].run_id}:{out['run_seq']}"
+    sign.close = lambda: run and run[0].close()
+    return sign
+
+
+def _scan(folder, since, say):
+    """The LESSONS part as `tracekit tips` works it out (the dev store's runs that verify, their kept content, Claude
+    Code's transcripts): what approve and retire find a waiting lesson in."""
+    from .audit import default_root
+    known = set()
+    rows, _ = signed_rows({"data_dir": os.path.dirname(folder.path)}, since, say, _vault(say), known)
+    root = default_root()
+    agents, calls, _, _ = read_transcripts(root, since) if os.path.isdir(root) else ({}, {}, 0, [])
+    return lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, time.time(), since,
+                        known)
+
+
+def act(argv, say):
+    """`tracekit tips approve ID [ID ...] | retire ID | restore ID | add TEXT` on the dev data dir's lessons folder:
+    -> exit code. Approve and retire find a waiting lesson in the records as `tracekit tips` reads them, so it is
+    the one the person saw; nothing a proposal says is taken from anywhere else. Each answer is first a signed record
+    on the dev signer that runs (_signer), which the note names: with none running, nothing is written."""
+    import argparse
+    import sys
+
+    from .report import when
+    from .signer.service import dev_data_dir
+    ap = argparse.ArgumentParser(prog="tracekit tips", description="a person's answer to a lesson (docs/viewer.md"
+                                 "#lessons); the agent's own is denied (TK-D012)")
+    sub = ap.add_subparsers(dest="act", required=True)
+    for name, text_ in (("approve", "give these waiting lessons to the next Claude Code sessions of their project"),
+                        ("retire", "stop giving a lesson in use, or never propose a waiting one again"),
+                        ("restore", "undo a retire")):
+        p = sub.add_parser(name, help=text_)
+        p.add_argument("ids", nargs="+" if name == "approve" else 1, metavar="ID")
+        if name != "restore":
+            p.add_argument("--since", type=when, default="7d", help="the window the lesson was found in (default: 7d)")
+    p = sub.add_parser("add", help="your own lesson, given to the project's sessions from now on")
+    p.add_argument("text")
+    p.add_argument("--name", help="one line: what it is about (default: its first line)")
+    p.add_argument("--description", help="one line: when it applies")
+    p.add_argument("--type", default="feedback", choices=lessons.TYPES)
+    p.add_argument("--project", help="the project's folder (default: the current one)")
+    a = ap.parse_args(argv)
+    from .sdk.client import SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    sign = None
+    try:
+        client = _running()
+        if client is None:
+            print("tracekit tips: no dev signer runs here: each answer to a lesson is a signed record, so start it "
+                  "first (`tracekit up`)", file=sys.stderr)
+            return 1
+        sign = _signer(client)
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=sign)
+        if a.act == "add":
+            lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
+                                   a.name, a.description, a.type)
+            print(f"added {lid}: in use from the next session" + (f" ({note})" if note else ""))
+            return 0
+        if a.act == "restore":
+            note = folder.restore(a.ids[0])
+            print(f"restored {a.ids[0]}" + (f" ({note})" if note else ""))
+            return 0
+        if a.act == "retire" and folder.find(a.ids[0]):
+            note = folder.retire(a.ids[0])
+            print(f"retired {a.ids[0]}: no session is given it from now on" + (f" ({note})" if note else ""))
+            return 0
+        L = _scan(folder, a.since, say)
+        if not L.get("ok"):
+            print(f"tracekit tips: {L.get('why')}", file=sys.stderr)
+            return 1
+        found = {x["id"]: x for x in L["not_proposed"] + L["waiting"]}
+        code = 0
+        for lid in a.ids:
+            x = found.get(lid)
+            if x is None or x.get("rule") not in (None, "shown"):
+                print(f"tracekit tips: {lid}: " + (x["why"] if x else f"no lesson {lid} waits in this window (--since): "
+                                                   "tracekit tips lists the ones that do"), file=sys.stderr)
+                code = 1
+                continue
+            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x)
+            print(f"{a.act}d {lid}: {x['name']}" + (" (given to the next sessions of " + x["where"] + ")" if
+                                                     a.act == "approve" else " (never proposed again)")
+                  + (f" ({note})" if note else ""))
+        return code
+    except (lessons.Refused, OSError, ValueError, SignerUnavailable, RPCError) as e:
+        print(f"tracekit tips: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if sign:
+            sign.close()
+
+
+def for_agent(a):
+    """`tracekit tips --for-agent`: the approved lessons of the project, from the lessons folder, each checked with
+    the dev signer that runs as the hook checks it (lessons.verified); with none running, none is given."""
+    import sys
+    from .signer.service import dev_data_dir
+    client = _running()
+    if client is None:
+        print("tracekit tips: no dev signer runs here: no lesson can be checked, so none is given", file=sys.stderr)
+    try:
+        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"))
+        got = lessons.for_agent(os.path.abspath(a.project) if a.project else _here(), a.prompt, a.query, folder,
+                                check=lambda notes: lessons.verified(client, notes) if client else set())
+    except FileNotFoundError:   # no dev signer has run here: nothing approved
+        print(lessons.NOT_YET)
+        return 0
+    except (lessons.Refused, OSError) as e:
+        print(f"tracekit tips: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps({k: got[k] for k in ("project", "commit", "budget", "bytes", "lessons", "left_out")}, indent=2)
+          if a.json else got["block"] or lessons.NOT_YET)
+    return 0
+
+
 def main(argv=None):
-    """`tracekit tips [--dev | --data-dir DIR] [--since 7d] [--json]` (docs/viewer.md#tracekit-tips)."""
+    """`tracekit tips [--dev | --data-dir DIR] [--since 7d] [--json]`, `tracekit tips --for-agent [--project DIR]
+    [--prompt TEXT | --query WORDS] [--json]` and a person's actions (act) (docs/viewer.md#tracekit-tips)."""
     import argparse
     import sys
 
@@ -802,32 +1193,50 @@ def main(argv=None):
     from .report import when
     from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
-    from .view import store_name
+    from . import view
+    argv = list(sys.argv[1:] if argv is None else argv)
+    say = lambda s: print(f"tracekit tips: {s}", file=sys.stderr, flush=True)   # noqa: E731
+    if argv[:1] and argv[0] in ACTIONS:   # the first word only: TK-D012 reads it there
+        return act(argv, say)
     ap = argparse.ArgumentParser(prog="tracekit tips", description="the TIPS page of tracekit view without the viewer: "
-                                 "what each step of your coding agents cost and how to cut it, from the dev signer's "
-                                 "store and Claude Code's transcripts, read-only. No network, no model.")
+                                 "lessons your coding agents keep relearning, and what each step cost and how to cut "
+                                 "it, from the dev signer's store and Claude Code's transcripts, read-only. No network, "
+                                 "no model. A person answers a lesson with `tracekit tips approve|retire|restore ID` "
+                                 "or adds one with `tracekit tips add TEXT`.")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's store and Claude Code's transcripts "
                                                       "(the default)")
     g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey): its store alone, as tracekit view "
                                       "--data-dir reads it")
+    g.add_argument("--for-agent", action="store_true", help="the approved lessons a coding agent reads, as Claude "
+                                                            "Code's hook gives them at a session's first prompt, from "
+                                                            "the lessons folder alone")
     ap.add_argument("--since", type=when, default="7d", help="7d, 24h, 30m, or an ISO date or time, UTC unless it says "
                                                              "(default: 7d)")
     ap.add_argument("--json", action="store_true", help="print the tips as one JSON object, as the TIPS page reads them")
+    ap.add_argument("--project", help="with --for-agent: the project's folder (default: the current one)")
+    ap.add_argument("--prompt", help="with --for-agent: rank the lessons against this prompt")
+    ap.add_argument("--query", help="with --for-agent: only the lessons that share a word with WORDS, best first")
     a = ap.parse_args(argv)
+    if a.for_agent:
+        return for_agent(a)
+    if a.project or a.prompt or a.query:
+        ap.error("--project, --prompt and --query go with --for-agent")
     now = time.time()
     if a.since >= now:
         ap.error("--since must be in the past")
     try:
         cfg = {"data_dir": os.path.abspath(a.data_dir) if a.data_dir else dev_data_dir(create=False)}
-        rows, failed = signed_rows(cfg, a.since, lambda s: print(f"tracekit tips: {s}", file=sys.stderr, flush=True))
+        known = set()
+        rows, failed = signed_rows(cfg, a.since, say, None if a.data_dir else _vault(say), known)
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
     root = None if a.data_dir else default_root()
-    t = build(rows, root, now, a.since)
+    t = build(rows, root, now, a.since, None if a.data_dir else lessons.Folder(os.path.join(cfg["data_dir"], "lessons")),
+              known)
     if a.json and failed:   # the text says it in its first line
         print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",
               file=sys.stderr)
-    print(json.dumps(t, indent=2) if a.json else text(t, _shown(store_name(cfg)), failed, root))
+    print(json.dumps(t, indent=2) if a.json else text(t, _shown(view.store_name(cfg)), failed, root))
     return 0

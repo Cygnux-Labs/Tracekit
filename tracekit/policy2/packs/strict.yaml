@@ -2,11 +2,13 @@
 # id with the coding pack's own patterns, moved from flag to ask; `on_parse_error: deny` denies a shell command the
 # parser can't read (TK-SHELL-PARSE) instead of holding it. Two flags stay flags: TK-F007 (background processes)
 # matches `crontab -l`, which only lists, and TK-F012 (any URL a call acts on) would hold every web request and
-# navigation (a fifth of E17's benign calls). Expect more holds than the server pack:
+# navigation (a fifth of E17's benign calls). TK-F006 keeps the coding pack's earlier, wider flag (every MCP call),
+# and TK-F003, TK-F005 and TK-F012 keep theirs through server.yaml (every destructive word on a line, every
+# secrets-file name, every URL), where the laptop packs narrowed them. Expect more holds than the server pack:
 # docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.11-strict-11'
+version: '2026.11-strict-12'
 description: server-hosted agents where installs, pushes, network commands, uploads and environment changes wait for a person
 on_parse_error: deny
 
@@ -37,3 +39,9 @@ ask:
     label: egress
     reason: an upload tool sending a file off the machine
     remedy: Have a person approve the held call, or keep the file in the workspace.
+
+flag:
+  - id: TK-F006
+    class: mcp
+    pattern: '.*'
+    label: external_tool

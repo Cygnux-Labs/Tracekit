@@ -101,7 +101,8 @@ ask:
   upstream, and the names other MCP clients give the same tool (`mcp__wassette__grant-network-permission` in Claude
   Code).
 - `executor: t2`: the gateway runs the signer's copy of the approved arguments ([approvals](../approvals.md#tiers-t1-and-t2-executors)).
-- The other tools run and are recorded; the server pack flags every MCP call (`TK-F006`).
+- The other tools run and are recorded; the server pack flags an MCP call unless its name says it reads
+  (`TK-F006`).
 
 Each load and grant then waits for a person, answered from outside the agent:
 

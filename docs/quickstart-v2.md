@@ -234,7 +234,7 @@ with Client().run(agent="quickstart") as run:
     print("run", run.run_id)
 ```
 
-The default policy is the coding pack (`tracekit/policy2/packs/coding.yaml`). An approval is bound to the call's
+The default policy is the laptop default (`tracekit/policy2/packs/dev.yaml`). An approval is bound to the call's
 arguments: if they change after the approval, `approval_consume` refuses them.
 
 `run.observe(value, source=..., trust="untrusted")` records content that reached the agent other than as a tool result

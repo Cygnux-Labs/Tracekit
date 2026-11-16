@@ -159,7 +159,9 @@ class WassetteBehindTheGateway(unittest.TestCase):
                 self.assertFalse(self.call(name, args).is_error)
         self.assertEqual(RAN, list(RUN.items()))
         evs = self.decisions()
-        self.assertEqual({n: evs["mcp:wassette/" + n]["data"]["decision"] for n in RUN}, dict.fromkeys(RUN, "flag"))
+        # each recorded; the reads (get-policy, list-components) unflagged, as TK-F006 reads a tool's name
+        self.assertEqual({n: evs["mcp:wassette/" + n]["data"]["decision"] for n in RUN},
+                         {**dict.fromkeys(RUN, "flag"), "get-policy": "allow", "list-components": "allow"})
 
     def test_the_rule_holds_claude_codes_name_for_the_tool_too(self):
         d = self.s.policy.decide("mcp__wassette__grant-network-permission", HELD["grant-network-permission"])

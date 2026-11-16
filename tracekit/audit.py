@@ -199,7 +199,7 @@ def _codex(root: str, since_ts: float, unreadable: list):
                 except RecursionError:
                     yield None
                     continue
-                if mapped is None:  # no PreToolUse (write_stdin, text, tool output, or missing call id)
+                if mapped is None:  # no PreToolUse (write_stdin, text, or tool output)
                     continue
                 tool, args = mapped
                 call_id = item.get("call_id")
@@ -444,6 +444,148 @@ def _cline(root: str, since_ts: float, unreadable: list):
                                b.get("input") if isinstance(b.get("input"), dict) else {})
 
 
+def qwen_root():
+    """Qwen Code's sessions' folder: projects/ in its runtime folder, which is $QWEN_RUNTIME_DIR when set, else
+    $QWEN_HOME (Qwen Code's own folder, not a home that holds .qwen), else ~/.qwen (Qwen Code 0.27.4:
+    Storage.getRuntimeBaseDir, getGlobalQwenDir)."""
+    base = os.environ.get("QWEN_RUNTIME_DIR") or os.environ.get("QWEN_HOME") or os.path.join(
+        os.path.expanduser("~"), ".qwen")
+    return os.path.join(os.path.expanduser(base), "projects")
+
+
+def _qwen_layout(real: str):
+    """(folder to walk, what stands above it in <project>/chats/<id>.jsonl) for a ROOT that is Qwen Code's runtime
+    folder, its projects folder, one project's folder or its chats folder; a ValueError for any other."""
+    def has(*p):
+        return os.path.isdir(os.path.join(real, *p))
+    if os.path.basename(real) != "projects" and has("projects") and not has("chats"):   # ~/.qwen, or $QWEN_HOME
+        return os.path.join(real, "projects"), []
+    if has("chats") and not has("chats", "chats"):   # a project: a project named chats holds one, projects holds that
+        return real, [""]
+    if os.path.basename(real) == "chats" and not has("chats"):
+        return real, ["", "chats"]
+    try:
+        if os.path.basename(real) == "projects" or any(os.path.isdir(os.path.join(real, d, "chats"))
+                                                       for d in os.listdir(real)):
+            return real, []
+    except OSError:   # a folder it can't list: _iter_transcripts reports it
+        return real, []
+    raise ValueError(f"{real} is not a Qwen Code folder: give its projects folder (~/.qwen/projects, or projects in "
+                     "$QWEN_RUNTIME_DIR or $QWEN_HOME), the folder that holds it, a project's folder in it, or that "
+                     "project's chats folder")
+
+
+def _qwen(root: str, since_ts: float, unreadable: list):
+    """Qwen Code's reader: (time, session, tool, args) for each tool call in the sessions under root, its projects
+    folder, the runtime folder that holds it, a project's or its chats folder (<project>/chats/<session id>.jsonl, as
+    Qwen Code 0.27.4 writes them). A call is a functionCall part of an `assistant` record's message, or, when no
+    such part has its id, a `ui_telemetry` tool_call record: a background agent's call (its memory extractor's) has only
+    that one, and its PreToolUse hook sees it, so it counts as the hook would have seen it. A call counts once in its
+    session, by its id, at its record's time (`qwen --continue` appends to the same file and writes no earlier call
+    again). A line that isn't JSON, or an assistant record whose message isn't the object and parts Qwen Code writes,
+    is a malformed entry. A session file with no Qwen Code record in it (none with a sessionId and a type) can't be
+    read as one: it goes into `unreadable`, never counts as a session with no calls."""
+    seen: set[bytes] = set()
+    folder, above = _qwen_layout(os.path.realpath(root))
+    for path, _ in _iter_transcripts(folder, unreadable):
+        parts = above + os.path.relpath(path, folder).split(os.sep)   # by depth: a project may be named chats
+        if len(parts) != 3 or parts[1] != "chats":
+            continue   # the project's other files
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        session, records, bad = None, 0, []
+        calls: dict = {}   # call id -> (time, tool, args), its first copy
+        logged: dict = {}   # call id -> (time, tool, args) of a ui_telemetry tool_call record, its first copy
+        try:
+            for _n, entry in transcript_entries(f, final=True):
+                if not isinstance(entry, dict):
+                    bad.append(None)
+                    continue
+                if isinstance(entry.get("sessionId"), str) and isinstance(entry.get("type"), str):
+                    records += 1
+                    session = session or entry["sessionId"]
+                logged_call = _qwen_logged(entry)
+                if logged_call is None:
+                    bad.append(None)
+                elif logged_call and logged_call[0] not in logged:
+                    logged[logged_call[0]] = (_entry_time(entry), *logged_call[1:])
+                for item in _qwen_calls(entry):
+                    if item is None:
+                        bad.append(None)
+                        continue
+                    cid, c = item
+                    cid = cid if cid is not None else (None, len(calls))   # no id: a call of its own
+                    if cid not in calls:
+                        calls[cid] = (_entry_time(entry), c.get("name") if isinstance(c.get("name"), str) else "",
+                                      c.get("args") if isinstance(c.get("args"), dict) else {})
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+            continue
+        finally:
+            f.close()
+        if not records:   # nothing Qwen Code writes: unreadable, not a clean session
+            unreadable.append({"path": path, "error": "no Qwen Code session record in it"
+                               + (f" ({len(bad)} lines that aren't one)" if bad else " (an empty file)")})
+            continue
+        yield from bad
+        for cid, call in logged.items():   # a call only its telemetry holds: a background agent's, which the hook saw
+            calls.setdefault(cid, call)
+        session = session or parts[2].rsplit(".", 1)[0]
+        for cid, (at, tool, args) in calls.items():
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            try:   # the same id and call in another file of the session: a copy
+                key = isinstance(cid, str) and hashlib.sha256(json.dumps(
+                    [session, cid, tool, args], sort_keys=True, default=str).encode()).digest()
+            except (RecursionError, ValueError):   # arguments the encoder can't take: counted
+                key = None
+            if key in seen:
+                continue
+            if key:
+                seen.add(key)
+            yield at, session, tool, args
+
+
+def _qwen_logged(entry: dict):
+    """(call id, tool, args) of a Qwen Code `ui_telemetry` record of a tool call (`qwen-code.tool_call`), () for any
+    other record, None for one whose call id, name or args aren't what Qwen Code writes. Qwen Code logs every call it
+    runs this way, its session's own (which also have a functionCall record) and a background agent's, such as its
+    memory extractor's, which have no other record: Qwen Code 0.27.4 sends both to the PreToolUse hook."""
+    if entry.get("type") != "system" or entry.get("subtype") != "ui_telemetry":
+        return ()
+    payload = entry.get("systemPayload")
+    event = payload.get("uiEvent") if isinstance(payload, dict) else None
+    if not isinstance(event, dict) or event.get("event.name") != "qwen-code.tool_call":
+        return ()
+    cid, name, args = event.get("call_id"), event.get("function_name"), event.get("function_args")
+    if not isinstance(cid, str) or not isinstance(name, str) or not isinstance(args, dict):
+        return None
+    return cid, name, args
+
+
+def _qwen_calls(entry: dict):
+    """(call id, functionCall) for each functionCall part of a Qwen Code `assistant` record's message; a call with no
+    id is its own call. None for a message or part that isn't the object Qwen Code writes."""
+    if entry.get("type") != "assistant":
+        return
+    msg = entry.get("message")
+    parts = msg.get("parts") if isinstance(msg, dict) else None
+    if not isinstance(parts, list):
+        yield None
+        return
+    for p in parts:
+        if not isinstance(p, dict):
+            yield None
+        elif "functionCall" in p:
+            c = p["functionCall"]
+            if not isinstance(c, dict):
+                yield None
+            else:
+                yield (c["id"] if isinstance(c.get("id"), str) else None), c
+
+
 # one entry per agent: its name, its default folder or folders (read when audit runs, so the env var that moves one
 # counts), where they are as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
@@ -454,7 +596,9 @@ READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set,
            "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
                      "in VS Code's global storage", _cline),
-           "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini)}
+           "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini),
+           "qwen": (qwen_root, "$QWEN_RUNTIME_DIR/projects when it is set, else $QWEN_HOME/projects, else "
+                    "~/.qwen/projects", _qwen)}
 
 
 def _defaults(default) -> list[str]:

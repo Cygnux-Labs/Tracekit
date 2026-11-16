@@ -65,7 +65,7 @@ class Mapping(HarnessCase):
         super().setUp()
         # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
         os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
-        self.decision, self.sent, self.observed, mutex = "allow", [], [], threading.Lock()
+        self.decision, self.sent, self.observed, self.models, mutex = "allow", [], [], [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
         def handle(identity, frame):
@@ -74,6 +74,8 @@ class Mapping(HarnessCase):
                     self.sent.append({k: frame[k] for k in ("tool", "tool_call_id", "args")})
                 if frame["method"] == "observe":
                     self.observed.append(frame["value"])
+                if frame["method"] == "model_event":
+                    self.models.append(dict(frame))
                 return getattr(self.signer, frame.pop("method"))(frame)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
 
@@ -100,8 +102,12 @@ class Mapping(HarnessCase):
                 self.decision = case["decision"]
                 if self.decision == "ask":
                     self.approve_when_asked()
-                code, out, err = self.hook(harness, case["payload"], case.get("event"))   # agy: the command's event
-                self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
+                payload = case["payload"]
+                if harness == "jcode":   # its payload is environment variables and stdin, as recorded
+                    payload = agent_hooks.jcode_payload(payload["stdin"], payload["env"])
+                code, out, err = self.hook(harness, payload, case.get("event"))   # agy: the command's event
+                self.assertEqual(code, CODEX_DENY if harness in ("codex", "interpreter") and case["exit"] == 2
+                                 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
                 if case["request"]["tool_call_id"] is None:   # Gemini, agy, Devin: paired by the hook, never defaulted
@@ -113,6 +119,92 @@ class Mapping(HarnessCase):
 
     def test_codex(self):
         self.check("codex")
+
+    def test_interpreter(self):
+        # Open Interpreter 0.0.61's payloads, recorded on four surfaces (native over Responses and Chat, Code Mode, the
+        # claude-code harness) with a scripted model
+        self.check("interpreter")
+
+    def test_interpreter_files_given_to_the_model_are_reads(self):
+        """Built on a recorded spawn_agent payload: each file a call reads into the model's context (view_image's path,
+        spawn_agent's and send_input's local_image, local_audio and skill items) is decided as a Read of it, never on a
+        decoy file_path beside it; a file item with no path Tracekit can read is denied in the hook. send_input reaches
+        the hook as multi_agent_v1send_input (recorded)."""
+        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "spawn_agent")
+        for name, ti, files in (
+                ("view_image", {"path": "/w/pic.png", "file_path": "/w/notes.txt"}, ["/w/pic.png"]),
+                ("spawn_agent", {"items": [{"type": "text", "text": "t"}, {"type": "local_audio", "path": "/w/a.wav"},
+                                           {"type": "skill", "path": "/w/.agents/skills/s/SKILL.md"},
+                                           {"type": "mention", "path": "app://drive"}],
+                                 "file_path": "/w/notes.txt"}, ["/w/a.wav", "/w/.agents/skills/s/SKILL.md"]),
+                ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
+                 ["/w/.env"])):
+            with self.subTest(tool=name):
+                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], sent["args"]["file_path"]), ("Read", files[0]))
+                if name != "view_image":
+                    self.assertEqual(sent["args"]["paths"], files)
+        self.hook("interpreter", dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
+        self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
+        n = len(self.sent)
+        for name, ti in (("view_image", {}), ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]}),
+                         ("multi_agent_v1send_input", {"items": [{"type": "skill"}]})):
+            with self.subTest(blocked=name):
+                code, out, err = self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))
+                self.assertEqual(code, CODEX_DENY, err)
+                self.assertIn(f"Open Interpreter's {name} call names a file without a path", out + err)
+        self.assertEqual(len(self.sent), n)   # never sent to the signer
+
+    def test_interpreter_alias_tools_and_path_spellings_are_the_calls_they_run(self):
+        """Review of #853: every non-native harness (claude-code, which Open Interpreter picks by itself for Anthropic
+        models, included) registers bash, read, write, edit, glob and grep beside Claude Code's names; deepseek-tui
+        adds exec_shell, write_file, edit_file and read_file, and kimi-code ReadMediaFile (0.0.61's
+        add_harness_alias_tools). Read, Write and Edit take their path as path, file_path or filePath (serde aliases).
+        Each is decided as the Bash line or file call it runs, on every path it may read, an edit on the text it
+        writes. Built on a recorded claude-code payload."""
+        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "Write")
+        hooks, key = "/home/u/.openinterpreter/hooks.json", "/home/u/.ssh/id_rsa"
+        both = {"file_path": hooks, "paths": [hooks]}
+        for name, ti, tool, want in (
+                ("bash", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("exec_shell", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("Write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write_file", {"path": hooks, "content": "{}"}, "Write", both),
+                ("Edit", {"filePath": hooks, "old_string": "a", "new_string": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit", {"path": hooks, "oldString": "a", "newString": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit_file", {"path": hooks, "search": "a", "replace": "b"}, "Edit", dict(both, new_string="b")),
+                ("apply_patch", {"path": hooks, "patch": "@@\n-a\n+b\n"}, "Edit", both),   # deepseek-tui's (source)
+                ("Read", {"filePath": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read_file", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("ReadMediaFile", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("Read", {"file_path": "/w/notes.txt", "filePath": key}, "Read", {"paths": ["/w/notes.txt", key]}),
+                ("glob", {"pattern": "*.txt", "path": "/w"}, "Glob", {"pattern": "*.txt"}),
+                ("grep", {"pattern": "uno", "path": "/w"}, "Grep", {"pattern": "uno"})):
+            with self.subTest(tool=name, args=ti):
+                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], {k: sent["args"].get(k) for k in want}), (tool, want))
+
+    def test_interpreter_results_prompts_and_session_events_answer_nothing(self):
+        """Built from a recorded PreToolUse payload, with the fields each event adds in the recordings (PostToolUse's
+        tool_response, UserPromptSubmit's prompt, SessionStart's source, SessionEnd's reason; Stop isn't installed):
+        none blocks, and a payload the hook can't read blocks the call (exit 2, or 0 with the JSON deny on Windows)."""
+        pre = cases("interpreter")[0]["payload"]
+        self.assertEqual(self.hook("interpreter", pre)[0], 0)
+        base = {k: pre[k] for k in ("session_id", "transcript_path", "cwd", "model", "permission_mode")}
+        for payload in (dict(pre, hook_event_name="PostToolUse", tool_response="rec698\n"),
+                        dict(base, hook_event_name="UserPromptSubmit", turn_id=pre["turn_id"], prompt="Run the plan."),
+                        dict(base, hook_event_name="SessionStart", source="startup"),
+                        dict(base, hook_event_name="Stop", turn_id=pre["turn_id"], stop_hook_active=False),
+                        dict(base, hook_event_name="SessionEnd", reason="other")):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("interpreter", payload)[:2], (0, ""))
+        code, out, err = self.hook("interpreter", "not json", "PreToolUse")
+        self.assertEqual(code, CODEX_DENY, err)
+        self.assertIn("deny", out)
 
     def test_cursor(self):
         self.check("cursor")
@@ -133,6 +225,54 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_jcode(self):
+        self.check("jcode")
+
+    def jcode(self, event, name, ti, sid="jc-batch"):
+        """One jcode hook invocation, its payload built as jcode sends it (agent_hooks.jcode_payload)."""
+        text = json.dumps(ti, separators=(",", ":"))
+        env = {"JCODE_HOOK_EVENT": event, "JCODE_HOOK_SESSION_ID": sid, "JCODE_HOOK_CWD": "/w",
+               "JCODE_HOOK_TOOL_NAME": name, "JCODE_HOOK_TOOL_INPUT": text[:16384]}
+        return self.hook("jcode", agent_hooks.jcode_payload(text, env), "PreToolUse")
+
+    def test_jcode_batch_passes_its_gate_and_its_denied_call_is_denied_on_its_own(self):
+        # #720: every call in a batch reaches its own pre_tool gate, so the batch itself is decided as the tools it
+        # runs, never again on their arguments (which would decide each call twice and could hold it twice)
+        decisions = self.set_signer_policy(load_policy())
+        push = {"tool": "bash", "intent": "push", "command": "git push --force origin main"}
+        code, _, err = self.jcode("pre_tool", "batch", {"tool_calls": [push, {"tool": "read", "intent": "note",
+                                                                              "file_path": "note.txt"}]})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.sent[-1]["args"], {"tool_calls": [{"tool": "bash"}, {"tool": "read"}]})
+        self.assertEqual(decisions[-1]["verdict"], "flag")   # an unknown tool, and nothing else
+        code, _, err = self.jcode("pre_tool", "bash", {"command": push["command"], "intent": "push"})
+        self.assertEqual(code, 2)
+        self.assertEqual(decisions[-1]["verdict"], "deny")
+        self.assertIn("BLOCKED", err)
+
+    def test_jcode_pairs_identical_batch_calls_and_inputs_cut_at_16_kb(self):
+        # #720: two calls of one batch with the same input carry the same JCODE_HOOK_TOOL_INPUT and run in parallel,
+        # so either post_tool pairs with either pre_tool, first in first out: harmless (the same input gets the same
+        # decision), and pinned here. A write over 16 KB pairs on the cut copy both events carry
+        read = {"file_path": "note.txt", "intent": "note"}
+        for _ in range(2):
+            self.assertEqual(self.jcode("pre_tool", "read", read, sid="jc-pair")[0], 0)
+        first, second = (s["tool_call_id"] for s in self.sent[-2:])
+        big = {"content": "x" * 20000, "file_path": "big.txt"}
+        self.assertEqual(self.jcode("pre_tool", "write", big, sid="jc-pair")[0], 0)
+        self.assertEqual(self.sent[-1]["args"]["content"], big["content"])   # decided on the whole input (stdin)
+        written = self.sent[-1]["tool_call_id"]
+        posts = []
+        for name, ti, status in (("read", read, "ok"), ("read", read, "error"), ("write", big, "ok")):
+            p = json.loads(agent_hooks.jcode_payload("", {
+                "JCODE_HOOK_EVENT": "post_tool", "JCODE_HOOK_SESSION_ID": "jc-pair", "JCODE_HOOK_TOOL_NAME": name,
+                "JCODE_HOOK_TOOL_INPUT": json.dumps(ti, separators=(",", ":"))[:16384], "JCODE_HOOK_STATUS": status,
+                "JCODE_HOOK_ERROR": "File not found: note.txt" if status == "error" else ""}))
+            posts.append(agent_hooks.normalise("jcode", p))
+        self.assertEqual([q["tool_use_id"] for q in posts], [first, second, written])
+        self.assertEqual([q["hook_event_name"] for q in posts], ["PostToolUse", "PostToolUseFailure", "PostToolUse"])
+        self.assertEqual(posts[1]["error"], "File not found: note.txt")
 
     def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
         prefix = "notes-"
@@ -396,6 +536,72 @@ class Mapping(HarnessCase):
         self.assertEqual([(r["tool_call_id"], r["status"]) for r in done], [("call_h1", "error")])
         self.assertIn("NOT APPROVED, nothing ran", done[0]["error"])
 
+    def test_kiro(self):
+        self.check("kiro")
+
+    def test_kiro_results_prompts_and_session_events_answer_nothing(self):
+        # Kiro CLI 3.3.0's SessionStart, UserPromptSubmit, PostToolUse (no call id; its result a string) and Stop as
+        # recorded (tests/data/harness/kiro_events.json); SessionEnd, which `chat --no-interactive` never fired, is
+        # built. A payload the hook can't read blocks the call (exit 2, Kiro's block)
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        post = rec["PostToolUse"]
+        pre = {k: v for k, v in post.items() if k != "tool_response"} | {"hook_event_name": "PreToolUse"}
+        self.assertEqual(self.hook("kiro", pre)[0], 0)
+        built = {"session_id": post["session_id"], "cwd": post["cwd"], "hook_event_name": "SessionEnd"}
+        for payload in (rec["SessionStart"], rec["UserPromptSubmit"], post, rec["Stop"], built):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("kiro", payload)[:2], (0, ""))
+        code, out, err = self.hook("kiro", "not json", "PreToolUse")
+        self.assertEqual((code, out), (2, ""), err)
+
+    def test_kiro_calls_denied_in_the_hook_never_reach_the_signer(self):
+        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides, and invoke_sub_agent hands
+        # the sub-agent its contextFiles with no read_file of them
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            recorded = json.load(f)["denied_in_hook"]
+        create = recorded[0]
+        built = [dict(create, tool_name=name, tool_input=ti) for name, ti in (
+            ("subagent/reviewer", {"prompt": "x"}), ("kiro_powers", {"action": "list"}),
+            ("code", {"operation": "rename_symbol", "file_path": "C:\\work\\kiro-rec\\sample.py", "new_name": "x"}),
+            ("code", {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}))]
+        for payload in (*recorded, *built):
+            with self.subTest(tool=payload["tool_name"], ti=payload["tool_input"]):
+                code, out, err = self.hook("kiro", payload)
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertIn("Blocked by Tracekit: Kiro's", err)
+        self.assertEqual(self.sent, [])
+
+    def test_kiro_windows_pre_tool_command_fails_closed_under_cmd(self):
+        # Kiro runs a Windows hook under cmd.exe and the call on any exit but 2: a v2 PreToolUse hook that can't start
+        # exits 2; the other events, and a v1 hook, keep their command as it is
+        d = ac.tmpdir(self)
+        with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", r"C:\Python311\python.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for v2 in (True, False):
+                agent_hooks.install("kiro", d, v2=v2)
+                with open(agent_hooks.config_path("kiro", d)) as f:
+                    cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+                for ev, c in cmds.items():
+                    with self.subTest(v2=v2, event=ev):
+                        self.assertEqual(c.endswith("& exit 2)"), v2 and ev == "PreToolUse", c)
+                        self.assertRegex(c, rf"\b{ev}\b")   # v1 too: a pre-tool payload it can't read is blocked
+
+    @unittest.skipUnless(os.name == "nt", "Kiro runs Windows hooks under cmd.exe")
+    def test_kiro_cmd_blocks_a_tool_call_whose_hook_cannot_start(self):
+        d = ac.tmpdir(self)
+        with mock.patch.object(sys, "executable", os.path.join(d, "gone", "python.exe")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, v2=True)
+        with open(agent_hooks.config_path("kiro", d)) as f:
+            cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+        for ev, c in cmds.items():
+            with self.subTest(event=ev):
+                p = subprocess.run(c, shell=True, input="{}", capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode == 2, ev == "PreToolUse", (p.returncode, p.stderr))
+        p = subprocess.run(cmds["PreToolUse"], shell=True, input="{}", capture_output=True, text=True, timeout=30)
+        self.assertIn("call blocked (fail-closed)", p.stderr)
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -456,6 +662,29 @@ class Mapping(HarnessCase):
         self.assertEqual(code, 2)
         self.assertIn("Docker MCP Gateway's code-mode", err)
         self.assertEqual(len(self.sent), 1)
+
+    def test_crush_turn_end_records_only_a_nonempty_last_assistant_message(self):
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-te", "cwd": "/w"}
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7},
+                      {"last_assistant_message": ["hi"]}, {"last_assistant_message": {"text": "hi"}}):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.hook("crush", {**base, **extra}, "TurnEnd"), (0, "", ""))
+        self.assertEqual(self.models, [])
+        self.assertFalse(os.path.exists(claude_code._state("cr-te")))
+        self.assertEqual(self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd"), (0, "", ""))
+        (ev,) = self.models
+        self.assertEqual((ev["phase"], ev["provider"], ev["model"], ev.get("said_only"), "tool_uses" in ev),
+                         ("response", "unknown", "unknown", True, False))
+        self.assertEqual(ev["content_digest"],
+                         event_hash({"output": harness_hooks.said.text("Done."), "source": "crush hook"}))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, out, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
+        code, out, err = self.hook("crush", "[]", "TurnEnd")
+        self.assertEqual((code, out), (0, ""))
+        self.assertIn("event not recorded", err)
 
     def test_droid_pairs_results_and_drops_a_blocked_call_before_allowing_a_retry(self):
         pre = {"session_id": "s-droid", "hook_event_name": "PreToolUse", "tool_name": "Execute",
@@ -1103,7 +1332,7 @@ class Installer(unittest.TestCase):
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    project = None if harness == "gptme" else d
+                    project = None if harness in ("gptme", "jcode") else d   # their user config only
                     path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
                         agent_hooks.install(harness, project)   # v1
@@ -1122,6 +1351,13 @@ class Installer(unittest.TestCase):
                         self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
                         self.assertFalse(os.path.exists(bridge))
                         self.assertTrue(os.path.isfile(path))
+                        continue
+                    if harness == "jcode":   # a TOML table in its config.toml
+                        code, out = self.cli("uninstall", "--agent", harness)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
+                        with open(path, encoding="utf-8") as f:
+                            self.assertNotIn("tracekit", f.read())
                         continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
@@ -1180,20 +1416,23 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map
-                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
+                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map; Kiro's file a list of
+                    # hooks, each with its command under `action`
+                    hooks = [h["action"] for h in blob["hooks"]] if harness == "kiro" else \
+                        [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    # Cursor: and what its model said; agy and Copilot: their tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "codebuddy": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
+                    # Cursor and Crush: and what their model said; agy and Copilot: their tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "crush": 6, "qwen": 6, "codebuddy": 6, "antigravity": 2,
+                                                 "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
                     # isn't documented: a path with a space keeps cmd.exe's. CodeBuddy Code runs them under Git Bash, as
-                    # Claude Code does
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy"):
+                    # Claude Code does, and Kiro under cmd.exe
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy", "kiro"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -1211,7 +1450,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
+                    if harness in ("droid", "copilot", "kiro"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
@@ -1313,9 +1552,14 @@ class Installer(unittest.TestCase):
                     with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                         init()   # as init before 1.3 wrote it
                     init()
-                    with open(path) as f:
-                        blob = json.load(f)
-                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                    if harness == "jcode":
+                        table = agent_hooks.jcode_config(path)["hooks"]
+                        hooks = [(ev, {"command": table[key]}) for key, ev in agent_hooks.JCODE_EVENTS.items()]
+                    else:
+                        with open(path) as f:
+                            blob = json.load(f)
+                        hooks = [(h["trigger"], h["action"]) for h in blob["hooks"]] if harness == "kiro" else \
+                            [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
                              for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
                     for ev, h in hooks:
                         p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
@@ -1703,6 +1947,62 @@ class CodexHookTrust(unittest.TestCase):
                                                         f"{self.hooks} ({self.toml}: "))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_open_interpreter_keeps_codexs_trust_in_its_own_home(self):
+        """#698: Open Interpreter, a Codex fork, runs a hook only once it is trusted, kept as Codex keeps it, in
+        $INTERPRETER_HOME's config.toml (else ~/.openinterpreter's): recorded on 0.0.61, where a trusted_hash written
+        from _codex_hash ran every hook and an untrusted `interpreter exec` ran none, without a word. It never reads
+        CODEX_HOME."""
+        oi = os.path.join(self.home, "oi")
+        os.makedirs(oi)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": os.path.join(self.home, "cx")}):
+            self.assertEqual(agent_hooks.config_path("interpreter"),
+                             os.path.join(self.home, ".openinterpreter", "hooks.json"))
+        self.assertEqual(agent_hooks.config_path("interpreter", "/repo"),
+                         os.path.join("/repo", ".openinterpreter", "hooks.json"))
+        with mock.patch.dict(os.environ, {"INTERPRETER_HOME": oi}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch.object(install, "init_dev", return_value={"socket": "s"}):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "interpreter"]), 0)
+            real = os.path.realpath(oi)
+            self.hooks, self.toml = os.path.join(real, "hooks.json"), os.path.join(real, "config.toml")
+            line = out.getvalue().splitlines()[-1]
+            self.assertEqual(line, agent_hooks.codex_trust_line(harness="interpreter"))
+            self.assertIn(f"Run interpreter with INTERPRETER_HOME={oi} in a terminal, type /hooks and trust "
+                          f"Tracekit's hooks (Open Interpreter records that in {self.toml})", line)
+            self.assertIn("`interpreter exec` never asks and skips them without a word", line)
+            self.assertTrue(line.endswith("These hooks are for Open Interpreter 0.0.x (the Rust CLI); the Python "
+                                          "open-interpreter 0.4.x runs no hooks, so Tracekit sees none of its calls"))
+            self.assertNotIn("open-interpreter 0.4.x", agent_hooks.codex_trust_line())
+            with open(self.hooks) as f:
+                hooks = json.load(f)["hooks"]
+            self.assertEqual(sorted(hooks), sorted(self.EVENTS.values()))
+            self.assertEqual({ev: g[0]["hooks"][0]["timeout"] for ev, g in hooks.items()},
+                             {"PreToolUse": 600, "PostToolUse": 30, "UserPromptSubmit": 30, "SessionStart": 30,
+                              "SessionEnd": 3})   # Open Interpreter holds SessionEnd to 3 s
+            self.assertEqual({ev: g[0].get("matcher") for ev, g in hooks.items() if ev.endswith("ToolUse")},
+                             {"PreToolUse": "*", "PostToolUse": "*"})
+
+            def row():
+                return next(r for r in doctor.v2_checks({"data_dir": self.home}, "dev",
+                                                        harnesses={"interpreter": self.hooks})
+                            if r["id"] == "D-INTERPRETER-HOOK-TRUST")
+            got = row()
+            self.assertEqual((got["status"], got["fix"]), (
+                "warn", f"run interpreter in a terminal, type /hooks and trust Tracekit's hooks (from {self.hooks}); "
+                        "Open Interpreter asks again whenever they change, as after tracekit init"))
+            self.assertEqual(got["detail"], "Open Interpreter skips Tracekit's PostToolUse, PreToolUse, SessionEnd, "
+                                            f"SessionStart, UserPromptSubmit hook(s) in {self.hooks}: nobody trusted "
+                                            f"them in Open Interpreter ({self.toml} records no trust), so no Open "
+                                            "Interpreter call is decided or recorded (interactive interpreter asks at "
+                                            "startup; `interpreter exec` doesn't)")
+            self.trust(*self.EVENTS)
+            self.assertEqual(row(), {"id": "D-INTERPRETER-HOOK-TRUST", "status": "ok", "fix": "",
+                                     "detail": "Open Interpreter trusts each of Tracekit's hooks in "
+                                               f"{self.hooks} as they are now ({self.toml})"})
+        self.assertEqual(agent_hooks.codex_trust_store("/home/agent", "interpreter"),   # system mode
+                         os.path.join("/home/agent", ".openinterpreter", "config.toml"))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_codex_home_is_where_the_hooks_and_their_trust_go(self):
         """Codex reads $CODEX_HOME in place of ~/.codex: init wrote the hooks to ~/.codex, which that Codex never reads,
         and doctor looked for their trust there."""
@@ -1768,6 +2068,26 @@ class CodexHookTrust(unittest.TestCase):
             cli.main(["doctor", "--json"])
         self.assertEqual([r["status"] for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST"], ["warn"])
 
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Open Interpreter's config.toml")
+    def test_doctor_checks_open_interpreters_v1_hooks_trust_too(self):
+        """Review of #853: init --dev --agent interpreter (v1) writes hooks Open Interpreter skips just the same until
+        trusted, and only doctor's sweep of the v1 hooks sees them."""
+        oi = os.path.join(self.home, ".openinterpreter")
+        env = {k: v for k, v in os.environ.items() if k != "INTERPRETER_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "init_dev", return_value={"socket": "s"}):
+                self.assertEqual(cli.main(["init", "--dev", "--agent", "interpreter"]), 0)
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(self.home)
+            with mock.patch.object(client, "system_config", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cli.main(["doctor", "--json"])
+        got = [r for r in json.loads(out.getvalue()) if r["id"] == "D-INTERPRETER-HOOK-TRUST"]
+        self.assertEqual([r["status"] for r in got], ["warn"])
+        self.assertIn(f"hook(s) in {os.path.join(oi, 'hooks.json')}: nobody trusted them in Open Interpreter (",
+                      got[0]["detail"])
+
     def test_doctor_says_when_it_cant_tell(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
             got = self.row()
@@ -1796,7 +2116,7 @@ ROLLOUT = [{"timestamp": "t", "type": "session_meta", "payload": {"id": "cx-s"}}
 @unittest.skipIf(os.name == "nt", "the content vault test reads as the socket's uid")
 class WhatTheModelSaid(HarnessCase):
     """Each harness hook records what the model said since the session's last hook, before deciding: Codex's rollout
-    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought."""
+    responses (its calls linked by call_id), Gemini CLI's thoughts, Cursor's afterAgentThought, Crush's TurnEnd."""
 
     def setUp(self):
         super().setUp()
@@ -1960,8 +2280,9 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual((self.frames[0]["provider"], self.frames[0]["model"]), ("google", "gemini-3-pro"))
 
     def test_a_harness_that_names_no_call_is_never_accused_of_fabricating_one(self):
-        """Gemini CLI's and Cursor's messages are recorded without their calls (neither gives a call an id): the
-        signer must not read each decided call as one no model message asked for (reconcile.fabricated)."""
+        """Gemini CLI's, Cursor's and Crush's messages are recorded without their calls (none names a call id in what
+        carries the text): the signer must not read each decided call as one no model message asked for
+        (reconcile.fabricated)."""
         self.serve()
         msg = {"id": "m1", "timestamp": "t", "type": "gemini", "content": "Listing.", "model": "gemini-3-pro",
                "thoughts": [{"subject": "Listing", "description": "list the files first", "timestamp": "t"}]}
@@ -1975,9 +2296,17 @@ class WhatTheModelSaid(HarnessCase):
                "tool_input": {"command": "ls"}, "cwd": self.d}
         self.assertEqual(self.hook("cursor", cur)[0], 0)
         self.hook("cursor", dict(cur, hook_event_name="postToolUse", tool_output="a.txt"))
-        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f")}
+        cr = {"session_id": "cr-f", "hook_event_name": "PreToolUse", "tool_name": "ls", "tool_use_id": "call_1",
+              "tool_input": {"path": self.d}, "cwd": self.d}
+        self.assertEqual(self.hook("crush", cr, "PreToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", dict(cr, hook_event_name="PostToolUse", tool_response="a.txt"),
+                                   "PostToolUse")[0], 0)
+        self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-f",
+                                             "cwd": self.d, "last_assistant_message": "Listed."}, "TurnEnd")[0], 0)
+        runs = {sid: self.events(sid)[0]["run_id"] for sid in ("g-f", "cu-f", "cr-f")}
         self.hook("gemini", dict(pre, hook_event_name="SessionEnd", reason="exit"))
         self.hook("cursor", {"conversation_id": "cu-f", "hook_event_name": "sessionEnd", "reason": "exit"})
+        self.hook("crush", {"session_id": "cr-f", "hook_event_name": "SessionEnd", "cwd": self.d}, "SessionEnd")
         self.service.sweep()
         for sid, run_id in runs.items():
             recs = [r["event"]["type"] for r in self.service.log.storage.iter_run("default", run_id)]
@@ -1996,6 +2325,33 @@ class WhatTheModelSaid(HarnessCase):
         self.assertEqual(self.frames[0]["body"]["source"], "cursor hook")
         self.hook("cursor", {"conversation_id": "cu-s", "hook_event_name": "afterAgentResponse", "text": "Done."})
         self.assertEqual(self.frames[1]["body"]["output"][0]["content"][0]["text"], "Done.")
+
+    def test_crush_turn_end_is_recorded(self):
+        self.serve()
+        base = {"event": "TurnEnd", "hook_event_name": "TurnEnd", "session_id": "cr-s", "cwd": self.d}
+        out = self.hook("crush", {**base, "last_assistant_message": "Done."}, "TurnEnd")
+        self.assertEqual(out, (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertTrue(self.frames[0].get("said_only"))
+        self.assertNotIn("tool_uses", self.frames[0])
+        self.assertEqual(self.frames[0]["body"]["source"], "crush hook")
+        self.assertEqual([(x["kind"], x["text"]) for x in parsers.said("openai:responses", self.frames[0]["body"])],
+                         [("text", "Done.")])
+        st, c, events = self.events("cr-s")
+        (ex,) = [e for e in events if e["type"] == "model.exchange"]
+        got = c.call("content_get", {"run_id": st["run_id"], "seqs": [ex["run_seq"]], "purpose": "test"})["items"]
+        self.assertEqual(got[0]["content"], self.frames[0]["body"])
+        for extra in ({}, {"last_assistant_message": ""}, {"last_assistant_message": "  "},
+                      {"last_assistant_message": None}, {"last_assistant_message": 7}):
+            self.assertEqual(self.hook("crush", {"event": "TurnEnd", "hook_event_name": "TurnEnd",
+                                                 "session_id": "cr-empty", "cwd": self.d, **extra}, "TurnEnd"),
+                             (0, "", ""))
+        self.assertEqual(len(self.frames), 1)
+        self.assertFalse(os.path.exists(claude_code._state("cr-empty")))
+        with mock.patch.object(harness_hooks.said.Said, "__init__", side_effect=RuntimeError("boom")):
+            code, stdout, err = self.hook("crush", {**base, "last_assistant_message": "Again."}, "TurnEnd")
+        self.assertEqual((code, stdout), (0, ""))
+        self.assertIn("what the model said was not recorded (RuntimeError: boom)", err)
 
     def test_a_failure_to_record_never_changes_the_decision(self):
         self.serve()

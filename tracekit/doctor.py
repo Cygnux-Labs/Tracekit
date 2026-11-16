@@ -49,6 +49,7 @@ _PY = sys.executable if sys.executable and not sys.executable.startswith(install
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
+V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -94,8 +95,10 @@ def collect(config=None, issuer_key=None):
     """The checks that apply to the setup on this host (or to signer.yaml `config`)."""
     try:
         sc = client.system_config()
-    except client.SystemConfigError as e:
-        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT)]
+    except client.SystemConfigError as e:   # of init's flags, only init --managed's hooks can be seen then
+        flags, tail = install.reinit_flags(None, _managed() if install._v2_hooks_in(_managed()) else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} records them, and it can't be read")
+        return [result("D-SYSTEM-CONFIG", FAIL, str(e), REINIT + flags + tail)]
     out = install.v1_results() if sc and "socket" in sc and not config else []
     if config or (sc and sc.get("signer")):
         h = (sc or {}).get("hooks") or {}
@@ -105,7 +108,12 @@ def collect(config=None, issuer_key=None):
         settings = h.get("settings") if agent_name == "claude" else None
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
-        plugin = agent and install.plugin_enabled([home])
+        project = (os.path.dirname(os.path.dirname(settings))
+                   if settings and settings not in (home, *install.MANAGED_SETTINGS.values())
+                   and os.path.basename(os.path.dirname(settings)) == ".claude" else None)
+        users = [home] if home else []
+        plugin = install.plugin_enabled(users, project) if project else install.plugin_enabled(users)
+        layers = [p for p in (home, settings, _managed()) if p]
         # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT (CodeBuddy Code's D-HOOKS-ORDER
         # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
@@ -113,18 +121,35 @@ def collect(config=None, issuer_key=None):
         rows = v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                          signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                          client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                         sandbox_settings=[p for p in (home, settings, _managed()) if p],
+                         sandbox_settings=layers,
                          gemini_settings=_gemini(agent and agent.pw_dir,
                                                  h.get("settings") if h.get("agent") == "gemini" else None),
                          harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
                          else None, no_hooks=h.get("no_hooks") is True)
-        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
-        # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
-        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off
-        again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
-            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude"
-            and settings not in install.MANAGED_SETTINGS.values() else "")
-        return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
+        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or Claude Code's
+        # root-trusted managed settings enable the Tracekit plugin (else init writes its hooks beside the plugin's,
+        # deciding each call twice); not over init --managed's hooks, nor from the agent's own or project settings,
+        # which the agent's user can write to make a re-init drop init's hooks. It keeps --managed, else init moves the
+        # hooks from the root-owned file into the agent's own settings, and --managed-only, else init turns
+        # allowManagedHooksOnly off. And the rest of init's flags, which only root-owned client.json gives
+        # (install.reinit_flags): without them init puts its defaults (its own policy, no harness binding) in place of
+        # the host's
+        managed = settings in install.MANAGED_SETTINGS.values()
+        flags, tail = install.reinit_flags(h.get("init_flags"), settings if managed else None, V2_FLAGS,
+                                           f"{client.SYSTEM_CONFIG} doesn't record them" if sc else
+                                           f"there's no {client.SYSTEM_CONFIG} here to record them")
+        agent_flag = f" --agent {shlex.quote(agent_name)}" if agent_name != "claude" else ""
+        active_plugin = plugin if plugin and not _plugin_idle(plugin, True, settings) else None
+        no_hooks = (" --no-hooks"
+                    if h.get("no_hooks") is True or active_plugin and agent_name == "claude" and not managed else "")
+
+        def again(text, extra):
+            if " --managed-only" in extra:   # a fix's own (D-HOOKS-PRESENT's) is init's already
+                text = text.replace(REINIT + " --managed-only", REINIT)
+            return text.replace(REINIT, REINIT + extra) + tail if REINIT in text else text
+        # a detail's re-init (D-HOOKS-PRESENT after init --no-hooks) is the one that adds the hooks
+        return out + [dict(r, fix=again(r["fix"], agent_flag + no_hooks + flags),
+                           detail=again(r["detail"], agent_flag + flags)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -141,17 +166,19 @@ def collect(config=None, issuer_key=None):
                                        os.path.join(project, "settings.local.json"), _managed()],
                      gemini_settings=_gemini(os.path.expanduser("~"),
                                              os.path.join(os.getcwd(), ".gemini", "settings.json")))
-    if "codex" not in harnesses:   # v1 Codex hooks (init --dev --agent codex) run only once trusted, as v2 ones do
+    for trusting in agent_hooks.TRUSTING:   # their v1 hooks (init --dev --agent codex) run only once trusted, as v2 do
+        if trusting in harnesses:
+            continue
         paths = {}   # one file once: from $HOME the user's and the project's are the same
-        for p in (agent_hooks.config_path("codex"), agent_hooks.config_path("codex", os.getcwd())):
+        for p in (agent_hooks.config_path(trusting), agent_hooks.config_path(trusting, os.getcwd())):
             paths.setdefault(os.path.realpath(p), p)
         for path in paths.values():
             try:
-                hooks = _harness_hooks("codex", _json(path) or {})
+                hooks = _harness_hooks(trusting, _json(path) or {})
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
                 continue
             _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
-                         path, hooks if isinstance(hooks, dict) else {}, None, WARN)
+                         path, hooks if isinstance(hooks, dict) else {}, None, WARN, trusting)
     if "gptme" not in harnesses:
         path = agent_hooks.config_path("gptme")
         bridge = agent_hooks._gptme_hook_path(path)
@@ -212,8 +239,16 @@ def _dev_settings():
 
 def _harness_hooks(harness, config):
     """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map (a Devin project's
-    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
+    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), Kiro's is a list of hooks, each
+    naming its event (`trigger`) and its command (`action`), less those Kiro skips (`"enabled": false`), the others'
+    is under `hooks`."""
     from . import agent_hooks
+    if harness == "kiro":
+        out = {}
+        for h in config.get("hooks") or ():
+            if isinstance(h, dict) and isinstance(h.get("action"), dict) and h.get("enabled") is not False:
+                out.setdefault(h.get("trigger"), []).append({**h, "command": h["action"].get("command")})
+        return out
     if harness == "droid":
         return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
     if harness == "devin" and "hooks" not in config:
@@ -224,7 +259,21 @@ def _harness_hooks(harness, config):
     if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
         named = config.get(agent_hooks.AGY_HOOK) or {}
         return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
+    if harness == "jcode":   # its [hooks] table: each key a command or a list of them; one gate timeout, in ms (5 s
+        # when unset), for every pre_tool command
+        table = config.get("hooks") or {}
+        timeout = table.get("pre_tool_timeout_ms", 5000)
+        timeout = timeout / 1000 if type(timeout) in (int, float) else 0
+        return {ev: [{"command": c, **({"timeout": timeout} if ev in agent_hooks.PRE else {})}
+                     for c in (table[k] if isinstance(table[k], list) else [table[k]])]
+                for k, ev in agent_hooks.JCODE_EVENTS.items() if k in table}
     return config.get("hooks") or {}
+
+
+def _config(harness, path):
+    """A coding agent's hook config at `path`, parsed: jcode's TOML, the others' JSON."""
+    from . import agent_hooks
+    return agent_hooks.jcode_config(path) if harness == "jcode" else _json(path) or {}
 
 
 def _dev_harnesses():
@@ -273,7 +322,7 @@ def _hook_commands(harness, path):
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
-    hooks = _harness_hooks(harness, _json(path) or {})
+    hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
             if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
@@ -668,14 +717,18 @@ def _codex_hash(ev, group, hook):
                                                  ensure_ascii=False).encode()).hexdigest()
 
 
-def _codex_trust(add, path, hooks, home, bad):
+def _codex_trust(add, path, hooks, home, bad, harness="codex"):
     """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks, v2 or v1, in `path` (a Codex hooks.json, read as
     `hooks`). Codex runs a hook that isn't managed only once a person trusted it as it is now, and records that in the
     user's config.toml ($CODEX_HOME's, else ~/.codex's; `home`: the agent user's, whose ~/.codex it is) as
     [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (_codex_hash; enabled = false for a hook
     turned off). Interactive codex asks at startup for a hook that is new or changed; `codex exec` skips it without a
-    word (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and engine/discovery.rs)."""
+    word (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and engine/discovery.rs). harness "interpreter":
+    D-INTERPRETER-HOOK-TRUST, Open Interpreter's, which keeps the same trust in its own home's config.toml (0.0.61,
+    recorded: a trusted_hash written from _codex_hash runs the hook)."""
     from . import agent_hooks
+    name, cmd, _ = agent_hooks.TRUSTING[harness]
+    check = "D-CODEX-HOOK-TRUST" if harness == "codex" else "D-INTERPRETER-HOOK-TRUST"
     keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}":
             (ev, _codex_hash(ev, group, hook))
             for ev, groups in hooks.items() for g, group in enumerate(groups if isinstance(groups, list) else ())
@@ -684,7 +737,7 @@ def _codex_trust(add, path, hooks, home, bad):
             if isinstance(hook, dict) and agent_hooks._version(hook.get("command"))}
     if not keys:   # D-HOOKS-EVENT says there are none
         return
-    store, state, why = agent_hooks.codex_trust_store(home), {}, None
+    store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
         import tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
@@ -693,7 +746,7 @@ def _codex_trust(add, path, hooks, home, bad):
     except FileNotFoundError:   # no config.toml: Codex recorded no trust
         pass
     except ImportError:
-        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+        why = f"Python 3.11 or newer reads {name}'s config.toml, this is " + sys.version.split()[0]
     except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
         why = f"{store}: {e}"
     entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
@@ -702,26 +755,26 @@ def _codex_trust(add, path, hooks, home, bad):
                       and s["trusted_hash"] != keys[k][1]})
     unsure = sorted({keys[k][0] for k, s in entry.items() if s.get("trusted_hash") and not keys[k][1]})
     off = sorted({keys[k][0] for k, s in entry.items() if s.get("enabled") is False})
-    step = (f"run codex in a terminal, type /hooks and trust Tracekit's hooks (from {path}); Codex asks again "
+    step = (f"run {cmd} in a terminal, type /hooks and trust Tracekit's hooks (from {path}); {name} asks again "
             "whenever they change, as after tracekit init")
-    silent = "so no Codex call is decided or recorded (interactive codex asks at startup; `codex exec` doesn't)"
+    silent = f"so no {name} call is decided or recorded (interactive {cmd} asks at startup; `{cmd} exec` doesn't)"
     if why:
-        add("D-CODEX-HOOK-TRUST", False, f"can't confirm that Codex trusts Tracekit's hooks in {path} ({why}): Codex "
-            "runs a hook only once a person trusted it, and `codex exec` skips one without a word", step, bad=WARN)
+        add(check, False, f"can't confirm that {name} trusts Tracekit's hooks in {path} ({why}): {name} runs a hook "
+            f"only once a person trusted it, and `{cmd} exec` skips one without a word", step, bad=WARN)
         return
     if unsure and not (untrusted or changed or off):
-        add("D-CODEX-HOOK-TRUST", False, f"Codex's trust is recorded for Tracekit's hooks in {path} ({store}); doctor "
-            f"can't confirm it's for these exact hooks: the {', '.join(unsure)} hook(s) have settings Tracekit doesn't "
-            "write, whose hash doctor doesn't rebuild", step, bad=WARN)
+        add(check, False, f"{name}'s trust is recorded for Tracekit's hooks in {path} ({store}); doctor can't confirm "
+            f"it's for these exact hooks: the {', '.join(unsure)} hook(s) have settings Tracekit doesn't write, whose "
+            "hash doctor doesn't rebuild", step, bad=WARN)
         return
-    add("D-CODEX-HOOK-TRUST", not (untrusted or changed or off),
-        f"Codex skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in Codex ({store} "
+    add(check, not (untrusted or changed or off),
+        f"{name} skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in {name} ({store} "
         f"records no trust), {silent}" if untrusted else
-        f"Codex skips Tracekit's {', '.join(changed)} hook(s) in {path}: they changed since a person trusted them "
+        f"{name} skips Tracekit's {', '.join(changed)} hook(s) in {path}: they changed since a person trusted them "
         f"(the trust {store} records is for an earlier version of them, as after tracekit init), {silent}" if changed
-        else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in Codex's /hooks ({store}): Codex runs "
-        "none of them" if off else f"Codex trusts each of Tracekit's hooks in {path} as they are now ({store})",
-        step if untrusted or changed else "run codex in a terminal, type /hooks and turn Tracekit's hooks back on",
+        else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in {name}'s /hooks ({store}): {name} runs "
+        "none of them" if off else f"{name} trusts each of Tracekit's hooks in {path} as they are now ({store})",
+        step if untrusted or changed else f"run {cmd} in a terminal, type /hooks and turn Tracekit's hooks back on",
         bad=bad)
 
 
@@ -796,16 +849,30 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
+        if harness == "kiro":
+            version = agent_hooks.kiro_version()
+            old = version is not None and version < (3,)
+            add("D-HOOKS-EVENT", not old,
+                agent_hooks.KIRO_OLD.format(".".join(map(str, version))) if old else
+                f"Kiro CLI {'.'.join(map(str, version)) if version else '(version unread)'} runs the hook files in "
+                f"{os.path.dirname(path)}", "upgrade Kiro CLI to 3.0 or later", bad=WARN)
+            with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+                off = sorted({h.get("trigger") for h in (_json(path) or {}).get("hooks") or ()
+                              if isinstance(h, dict) and h.get("enabled") is False and isinstance(h.get("action"), dict)
+                              and agent_hooks._version(h["action"].get("command")) is not None})
+                add("D-HOOKS-EVENT", not off,
+                    f'Tracekit\'s Kiro {", ".join(map(str, off))} hook(s) are "enabled": false in {path}, so Kiro '
+                    "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
-            hooks = _harness_hooks(harness, _json(path) or {})
+            hooks = _harness_hooks(harness, _config(harness, path))
             cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
                     for h in (g.get("hooks") or () if "hooks" in g else [g])
                     if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
-        if harness == "codex":
-            _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
+        if harness in agent_hooks.TRUSTING:
+            _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
             _openhands_checks(add, path, home, fix)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
@@ -833,6 +900,18 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                 "the last hook's permissionDecision: its allow runs a call Tracekit denied" if later else
                 "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
                 "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
+        if harness == "jcode":   # jcode runs its gates in order, and one's updatedInput replaces the input the next
+            # gates get and the tool runs with. Find the first Tracekit module even under another interpreter;
+            # any later gate but an exact command init writes may rewrite the call, as for CodeBuddy Code
+            gates = [h["command"] for h in hooks.get("PreToolUse", ())]
+            mine = {agent_hooks._command("jcode", "PreToolUse", v2, python)
+                    for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
+            start = next((i + 1 for i, c in enumerate(gates) if agent_hooks._version(c) is not None), len(gates))
+            after = [c for c in gates[start:] if c not in mine]
+            add("D-HOOKS-ORDER", not after,
+                f"{len(after)} jcode pre_tool command(s) in {path} run after Tracekit's: a gate's updatedInput replaces "
+                "the input of the call Tracekit decided" if after else "Tracekit's is the last jcode pre_tool command",
+                f"put Tracekit's command last in pre_tool in {path}", bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
         default = 30 if harness in ("antigravity", "crush", "copilot") else 60
@@ -884,13 +963,7 @@ def _json(path):
     return json.loads(install.agent_file(path))
 
 
-def _setting(path, key):
-    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable."""
-    try:
-        s = _json(path)
-    except (OSError, ValueError):
-        return None
-    return s.get(key) if isinstance(s, dict) else None
+_setting = install.setting   # a Claude Code settings file's key, or None
 
 
 def _user(name):
@@ -974,6 +1047,43 @@ def _hooks(settings):
     return {ev: [{**h, "matcher": g.get("matcher")} for g in hooks.get(ev) or ()
                  if isinstance(g, dict) and install._hook_version(g) == "v2"
                  for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
+
+
+def _plugin_idle(plugin, prod, settings=None):
+    """Why `plugin` (`(settings_path, key)`) doesn't count as active Claude Code hooks, or None when it does.
+    In system mode (`prod`), only a root-trusted managed settings file counts: collect()'s --no-hooks and
+    D-HOOKS-PRESENT's decided-twice check both call this so the two never disagree."""
+    if not plugin:
+        return None
+    plugin_settings, _ = plugin
+    admin = settings if settings in install.MANAGED_SETTINGS.values() else _managed()
+    in_managed = plugin_settings in install.MANAGED_SETTINGS.values()
+    if not in_managed and _setting(admin, "allowManagedHooksOnly") is True:
+        return "allowManagedHooksOnly"
+    if not prod:
+        return None
+    if not in_managed:
+        return "not_managed"
+    bad = trusted_file(plugin_settings)
+    if bad:
+        return f"untrusted: {bad}"
+    if _setting(plugin_settings, "disableAllHooks") not in (None, False, 0, ""):
+        return f"disableAllHooks in {plugin_settings}"
+    return None
+
+
+def _plugin_note(plugin_settings, why, kept=False):
+    if not why:
+        return ""
+    if why == "allowManagedHooksOnly":
+        return f"; the Tracekit plugin's, enabled in {plugin_settings}, don't run (allowManagedHooksOnly)"
+    prefix = "; init's hooks kept: " if kept else "; "
+    if why == "not_managed":
+        return f"{prefix}the Tracekit plugin is enabled in {plugin_settings}, not managed settings"
+    if why.startswith("disableAllHooks "):
+        return f"{prefix}the Tracekit plugin, enabled in {plugin_settings}, doesn't run ({why})"
+    reason = why[len("untrusted: "):]
+    return f"{prefix}the Tracekit plugin is enabled in {plugin_settings}, which isn't root-only ({reason})"
 
 
 def _vault_off(cfg, keys):
@@ -1256,13 +1366,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         if cfg.get("harness_binding"):
             out.append(helper_result(
                 os.path.join(os.path.dirname(unit), (install.HELPER_LABEL + ".plist") if unit.endswith(".plist")
-                             else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
+                             else install.V2_HELPER + ".service"), REINIT))   # collect() adds init's --harness
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
-    # an init without --managed-only turns off the allowManagedHooksOnly an init with it turned on
-    only = managed and _setting(settings, "_tracekit_allowManagedHooksOnly") is True
-    hook_fix = (REINIT + " --managed" + (" --managed-only" if only else "") if managed else REINIT) if prod else \
-        "tracekit init --dev --v2"
+    hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
@@ -1270,14 +1377,22 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
             + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
+    layers = list(dict.fromkeys(sandbox_settings or [p for p in (
+        os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
+        settings, _managed()) if p]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
+    only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
+    why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
+    active_plugin = plugin if plugin and not why else None
+    note = _plugin_note(plugin_settings, why)
     from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin_settings}"
     others = "v2 hooks for " + ", ".join(f"{h} in {p}" for h, p in sorted((harnesses or {}).items()))
     chosen = ("no Claude Code hooks, as init --no-hooks chose: runs that SDK clients send (tracekit.instrument()) are "
               f"still recorded; to record Claude Code's calls too, run {hook_fix}")
     if not settings:
-        add("D-HOOKS-PRESENT", bool(plugin or harnesses or no_hooks), from_plugin if plugin else others if harnesses
-            else chosen if no_hooks else "no hooks recorded in client.json", REINIT, bad=WARN)
+        add("D-HOOKS-PRESENT", bool(active_plugin or harnesses or no_hooks),
+            from_plugin if active_plugin else (others if harnesses else chosen if no_hooks
+                                               else "no hooks recorded in client.json") + note, REINIT, bad=WARN)
     else:
         try:
             hooks = _hooks(settings)
@@ -1288,15 +1403,17 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", False, f"{settings}: {e}", f"make {settings} "
                 f"{'readable' if isinstance(e, OSError) else 'a JSON object'} (move it aside, or fix it), then {hook_fix}",
                 bad=sev)
-        if hooks is not None and plugin:   # init's hooks too would decide every call twice
+        if hooks is not None and active_plugin:   # init's hooks too would decide every call twice
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
-                "twice, and every approved call is blocked" if both else from_plugin,
-                f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}", bad=sev)
+                "twice, and every approved call is blocked" if both else from_plugin, (
+                    f"keep one: take {plugin_key} out of enabledPlugins in {plugin_settings}"
+                    + ("" if managed else f", or {hook_fix}") if prod else
+                    f"keep one: tracekit uninstall (init's hooks), or /plugin disable {plugin_key}"), bad=sev)
         elif hooks is not None and harnesses and not any(hooks.values()):   # another coding agent's, not Claude's
-            add("D-HOOKS-PRESENT", True, others, "")
+            add("D-HOOKS-PRESENT", True, others + note, "")
         elif hooks is not None and no_hooks and not any(hooks.values()):
-            add("D-HOOKS-PRESENT", True, chosen, "")
+            add("D-HOOKS-PRESENT", True, chosen + note, "")
         elif hooks is not None and not prod and not any(hooks.values()) and not shutil.which("claude") \
                 and not os.path.isdir(os.path.dirname(install.user_settings())):   # no Claude Code here to hook
             add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
@@ -1306,15 +1423,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
             twice = not missing and own and install._v2_hooks_in(own)   # Claude Code runs both files' hooks
-            unused = twice and _setting(settings, "allowManagedHooksOnly") is True   # unless it runs managed ones only
+            unused = twice and only   # unless it runs managed ones only
             add("D-HOOKS-PRESENT", not (missing or twice) or unused,
-                f"no v2 hook for {', '.join(missing)} in {settings}" if missing
-                else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
-                else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
-                if twice else f"v2 hooks in {settings}", hook_fix, bad=WARN if twice else sev)
+                (f"no v2 hook for {', '.join(missing)} in {settings}" if missing
+                 else f"v2 hooks in {settings}; those in {own} don't run (allowManagedHooksOnly)" if unused
+                 else f"v2 hooks in {settings}, and in {own} too: Claude Code runs both, so every call is decided twice"
+                 if twice else f"v2 hooks in {settings}")
+                + _plugin_note(plugin_settings, why, kept=not missing), hook_fix, bad=WARN if twice else sev)
         if hooks is not None:
-            layers = sandbox_settings or dict.fromkeys((os.path.join(agent.pw_dir, ".claude", "settings.json") if agent
-                                                        else install.user_settings(), settings))
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
             blocking = sorted({ev for ev, c in cmds if ev != "PreToolUse" and FAIL_CLOSED in c})
@@ -1322,9 +1438,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
             # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
-            off = [p for p in ([settings] if managed else dict.fromkeys([*layers, settings]))   # the hooks' own file too
+            managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
+            off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
+                               else dict.fromkeys([*layers, settings]))   # the hooks' own file too
                    if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
-                if any(hooks.values()) or plugin else []
+                if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
                         if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
             unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
@@ -1353,7 +1471,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s; " + _hook_run(),
                     f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
-            if any(hooks.values()) or plugin:   # without Claude Code's hooks none of its reasoning is recorded
+            if any(hooks.values()) or active_plugin:   # without Claude Code's hooks none of its reasoning is recorded
                 vault = isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True
                 value, where = None, None   # Claude Code's precedence: the last file that sets it wins
                 for p in layers:

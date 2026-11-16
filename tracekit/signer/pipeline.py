@@ -63,9 +63,10 @@ def new_run(tenant, run_id):
 # which no findings or replay run may be about (SignerService._register_run)
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails", "replay")
-# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
+# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
+# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller")
+             "detect_ids", "via", "caller", "refused", "ended")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
@@ -113,6 +114,21 @@ def ran(a):
     """(tool_call_id, attempt, decision_id) of the call approval `a` lets run: its own, or the later call of the same
     tool and arguments in its run that consumed it (`used_by`: the agent's retry after a person approved)."""
     return tuple(a.get("used_by") or (a["tool_call_id"], a["attempt"], a["decision_id"]))
+
+
+def outcome(calls, e):
+    """What record `e` says of its call's latest attempt in `calls` (a run's): `ended`, [run_seq, ok] of its
+    tool.result; `refused`, a refused consume's rule ids, which a consume that went through clears. The writer keeps
+    them as it writes (SignerService._complete, _approval_consume), for call_state."""
+    latest = calls.get(e.get("tool_call_id"))
+    if not latest or latest["attempt"] != e.get("attempt", 0):
+        return
+    if e["type"] == "tool.result" and "decision_id" in e["data"]:
+        latest["ended"] = [e["run_seq"], e["data"].get("ok") is True]
+    elif e["type"] in ("approval.refused", "approval.binding_mismatch"):
+        latest["refused"] = e["data"].get("rule_ids") or ["TK-APPROVAL-MISMATCH"]
+    elif e["type"] == "approval.consumed":
+        latest["refused"] = None
 
 
 def person_only_keys(a):
@@ -456,11 +472,11 @@ class RecordLog:
     # --- state from storage ---
 
     def _state(self):
-        """The run state as replay rebuilds it, as JSON: no deny sets, args digests or pending arguments; monotonic
-        times as wall clock times."""
+        """The run state as replay rebuilds it, as JSON: no deny sets, args digests, pending arguments or claims
+        (SignerService._call_claim); monotonic times as wall clock times."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
-            r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov")}
+            r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov", "claims")}
             if "calls" in r:
                 r["calls"] = {t: {k: c.get(k) for k in CALL_KEYS} for t, c in run["calls"].items()}
                 r["decisions"] = {d: c and {k: c.get(k) for k in CALL_KEYS} for d, c in run["decisions"].items()}
@@ -529,6 +545,9 @@ class RecordLog:
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
                             c["tool"] = tools.get(c["decision_id"])
+                    if any("ended" not in c for c in r["calls"].values()):   # before call_state (RPC 24)
+                        for x in s.iter_run(r["tenant"], r["run_id"]):
+                            outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
@@ -640,12 +659,16 @@ class RecordLog:
             elif e["type"] in APPROVAL_ENDS:
                 a = approvals[e["data"]["approval_id"]]
                 a["state"] = APPROVAL_ENDS[e["type"]]
+                if e["type"] == "approval.consumed":
+                    a["consumed_at"] = e["seq"]   # SignerService._approval_consume
                 used = [e.get("tool_call_id"), e.get("attempt", 0)]
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
             elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
                 approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval
+            if "calls" in run:   # a final run's state keeps none
+                outcome(run["calls"], e)
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
@@ -888,16 +911,18 @@ class RecordLog:
             self.storage.close()
         except Exception:
             pass
-        # the provenance indexes live in memory only: the replay can't rebuild them, and nothing in them was lost
-        prov = {k: r["prov"] for k, r in self.runs.items() if r.get("prov") is not None}
+        # the provenance indexes and the claims (SignerService._call_claim) live in memory only: the replay can't
+        # rebuild them, and nothing in them was lost
+        kept = {k: {f: r[f] for f in ("prov", "claims") if r.get(f) is not None} for k, r in self.runs.items()}
         try:
             self.storage = self.open_storage()
             self._replay()
         except Exception:
             return False
-        for k, p in prov.items():
-            if k in self.runs and not self.runs[k]["final"]:
-                self.runs[k]["prov"] = p
+        finally:   # a replay that failed partway may have rebuilt the runs already: the next attempt starts from them
+            for k, fields in kept.items():
+                if k in self.runs and not self.runs[k]["final"]:
+                    self.runs[k].update(fields)
         since, err = self.down
         self.down = None
         fut = Future()

@@ -435,7 +435,7 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -456,6 +456,15 @@ EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
 EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
+# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
+# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
+# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+LESSON_ANSWERS = "tracekit:lessons:person"
+LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
+                 re.compile(r"[0-9a-f]{64}"))
+ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
+ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
@@ -918,6 +927,7 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.content = content_config(content)
+        self._answer_runs = {}   # expire_content's verdict on each closed run: a run of a person's answers or not
         if posture is not None and not (isinstance(posture, dict) and set(posture) <= {"network", "tool_calls"}
                                         and all(v in ("enforced", "open") for v in posture.values())):
             raise ValueError("posture takes network and tool_calls, each enforced or open (gateway_mandatory is a "
@@ -996,6 +1006,9 @@ class SignerService:
             storage.close()
             raise
         self.log.respond = self._respond
+        # where the log stood when this process started: a consume before it may have run under a claim this process
+        # never saw (_call_claim)
+        self._started_at = self.log.head["seq"]
         self._suspensions = Suspensions(suspensions or os.path.join(data_dir, "suspensions.json"))
         start = storage.tail_state()["tree_size"]
         self._webhooks = [webhook.Sender(w["url"], set(w["events"]) - {"incident"}, w["secret"],
@@ -3076,6 +3089,9 @@ class SignerService:
                                                      **({"via": holder[0]} if gw else {})},
                            tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
+            latest = run["calls"].get(tcid)
+            if latest and latest["attempt"] == attempt:   # what call_state answers
+                tx.set(latest, "ended", [seq, req["status"] == "ok"])
             comparable = req["status"] == "ok" and "result" in req and "error" not in req   # no result: nothing to compare
             tx.set(run["results"], tcid, run["results"].get(tcid, [])[1 - RESULTS_PER_CALL:] + [
                 [did, output["hash"], comparable, output["redacted"], None]])
@@ -3110,6 +3126,14 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
+        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
+                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                and lid.fullmatch(v["id"])
+                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+            raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
+                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
+                                              "and nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -3784,6 +3808,8 @@ class SignerService:
                     "approved_commitment": a["commitment"],
                     "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
                         source="signer", **top)
+                if call and call["attempt"] == attempt:   # what call_state answers
+                    tx.set(call, "refused", ["TK-APPROVAL-MISMATCH"])
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
@@ -3803,11 +3829,14 @@ class SignerService:
                         raise RPCError("unavailable", f"the stored arguments of {aid} are gone")
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
+                tx.set(a, "consumed_at", self.log.head["seq"])   # the seq its approval.consumed takes (_call_claim)
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
                 # under this call's tool_call_id; the approval.request it names has the earlier attempt's
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
+                    tx.set(call, "refused", None)
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
                     if tcid in rec["l2"]:
@@ -3819,6 +3848,8 @@ class SignerService:
             if a is not None:
                 data["approval_id"] = aid
             tx.emit(run, "approval.refused", data, source="signer", **top)
+            if call and call["attempt"] == attempt:   # what call_state answers
+                tx.set(call, "refused", [why[0]])
             return {"ok": False, **{k: v for k, v in data.items() if k != "tool_use_id"}}
         out = self.log.submit(identity, "approval_consume", req, fn, key)
         if "args" in out:   # T2: the approved copy; a retry, which the cache answers, opened the same commitment
@@ -4672,6 +4703,66 @@ class SignerService:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         return {"events": events, "next_seq": next_seq}
 
+    def _call_state(self, identity, req):
+        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
+        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
+        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
+        nothing."""
+        key, tcid = self._authorize(identity, req), req["tool_call_id"]
+
+        def state(tx):
+            call = self.log.runs[key].get("calls", {}).get(tcid)
+            if call is None:
+                return {}
+            attempt = call["attempt"]
+            out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
+                   "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
+            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
+                out["reason"] = why
+            if call.get("tool") and self.policy.untrusted_results(call["tool"]):
+                out["send_result"] = True
+            if "args_digest" in req:
+                out["same_args"] = self._same(call, req["args_digest"])
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            a = self.log.approvals.get(aid)
+            if a is not None:
+                out.update(approval_id=aid, approval="requested" if _waiting(a, time.time()) else a["state"],
+                           consumed=a["state"] == "consumed" and ran(a)[:2] == (tcid, attempt))
+            if call.get("refused"):
+                out["refused"] = call["refused"]
+            if call.get("ended"):
+                out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
+            return out
+        return self.log.write(state)
+
+    def _call_claim(self, identity, req):
+        """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
+        under the approval this attempt consumed: the first claim after `answers` answered interrupts of the node is
+        ok, any other is not (another resume of the same thread, in any process). A call this attempt didn't consume,
+        or that has a result, has nothing to go on with. Claims are run state in memory, so one whose approval was
+        consumed before this process started (it may have gone on under a claim a crash took with it) is refused: a
+        person approves the call again. Writes no record."""
+        key, tcid, attempt = self._authorize(identity, req), req["tool_call_id"], req["attempt"]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            call = run["calls"].get(tcid)
+            a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt))) or {}
+            if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
+                    and ran(a)[:2] == (tcid, attempt)):
+                return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            if a.get("consumed_at", -1) < self._started_at:
+                return {"ok": False, "reason": "the signer restarted since this call's approval was used; ask again"}
+            claimed = f"{tcid}/{attempt}/{req['answers']}"
+            if claimed in run.get("claims", {}):
+                return {"ok": False, "reason": f"{tcid} already went on after that pause: its thread was resumed twice "
+                                               "at once"}
+            if "claims" not in run:
+                tx.set(run, "claims", {})
+            tx.set(run["claims"], claimed, True)
+            return {"ok": True}
+        return self.log.submit(identity, "call_claim", req, fn, key)
+
     def _export_run(self, identity, req):
         """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,
         kept since a chunk before (else conflict: the download starts again); else of its bundle now, kept since the
@@ -4948,7 +5039,9 @@ class SignerService:
                 # the salt also opens a model exchange's args_commitments, over the arguments before redaction
                 guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
                     "args_commitment" in u for u in e["data"].get("tool_uses", ()))
-                items.append({"seq": seq, "content": value} | (
+                src = e["data"].get("source") if e["type"] == "input.observed" else None
+                kind = {"type": e["type"]} | ({"source": src} if isinstance(src, str) else {})
+                items.append({"seq": seq, "content": value} | kind | (
                     {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
                     and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
             out = {"items": items}
@@ -5008,16 +5101,40 @@ class SignerService:
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
-        replay and findings runs' (their content never outlives their run's)."""
+        replay and findings runs' (their content never outlives their run's). The dev signer (isolation same-user),
+        where lessons live, keeps a run of a person's answers to lessons alone (_answers)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
         runs = self.log.write(lambda tx: self.log.storage.content_runs())
-        replays, done = self._vault_replays(runs), set()
+        replays, done, dev = self._vault_replays(runs), set(), self.isolation == "same-user"
         for log_id, tenant, run_id, stored in runs:
-            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done:
+            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done \
+                    and not (dev and self._answers((tenant, run_id))):
                 todo = [k for k in replays.get((tenant, run_id), []) if k not in done]
                 self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer",
                             replays=todo)
                 done.update([(tenant, run_id), *todo])
+
+    def _answers(self, key):
+        """Whether run `key` holds nothing but a person's answers to lessons (input.observed, source LESSON_ANSWERS:
+        _observe keeps them to an action, an id and a sha256), at most ANSWERS_KEPT, besides its start and end
+        (ANSWER_RUN). Read up to the first record that isn't one (an agent's run costs a record or two), and a closed
+        run's verdict is kept, so it is read once."""
+        if key in self._answer_runs:
+            return self._answer_runs[key]
+
+        def fn(tx):
+            n, final = 0, (self.log.runs.get(key) or {}).get("final")
+            for r in self.log.storage.iter_run(*key):
+                e = r["event"]
+                if e["type"] == "input.observed" and e["data"].get("source") == LESSON_ANSWERS and n < ANSWERS_KEPT:
+                    n += 1
+                elif e["type"] not in ANSWER_RUN:
+                    return final, False
+            return final, n > 0
+        final, out = self.log.write(fn)
+        if final:
+            self._answer_runs[key] = out
+        return out
 
     # --- OTLP import (tracekit.signer.otel) ---
 

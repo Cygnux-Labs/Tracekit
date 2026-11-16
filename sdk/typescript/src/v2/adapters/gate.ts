@@ -36,10 +36,13 @@ export const failure = (e: unknown) => (e instanceof Error ? `${e.name}: ${e.mes
 
 /** The run's approvals by tool call id: requested, approved, rejected or expired. */
 export async function approvalStates(run: RunHandle): Promise<Map<string, string>> {
-  // lean: the first page of approval_list (the signer's default limit); follow `cursor` if runs hold more
-  const { approvals } = await run.client.call("approval_list", { run_id: run.runId });
   const states = new Map<string, string>();
-  for (const a of approvals) if (!states.has(a.tool_call_id)) states.set(a.tool_call_id, a.state);
+  let cursor: string | null | undefined;
+  do {   // every page: a call approved after the first page's worth would stay waiting
+    const page = await run.client.call("approval_list", { run_id: run.runId, ...(cursor ? { cursor } : {}) });
+    for (const a of page.approvals) if (!states.has(a.tool_call_id)) states.set(a.tool_call_id, a.state);
+    cursor = page.next_cursor;
+  } while (cursor);
   return states;
 }
 
