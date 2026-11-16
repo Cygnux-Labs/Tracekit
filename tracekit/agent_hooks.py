@@ -220,10 +220,10 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
-# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process), a command left running (Qwen Code's
+# (Codex's and Open Interpreter's write_stdin, agy's manage_task send_input, Devin's write_to_process), a command left running (Qwen Code's
 # monitor, Kilo's background_process) or run later (Qwen Code's cron_create gate); normalise marks their payload
 # `later`, and the hook takes no receipt of what they write (tracekit.model_receipt)
-LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("qwen", "cron_create"),
+LATER = frozenset((("codex", "write_stdin"), ("interpreter", "write_stdin"), ("qwen", "monitor"), ("qwen", "cron_create"),
                    ("antigravity", "manage_task"), ("devin", "write_to_process"), ("kilo", "background_process"),
                    ("copilot", "write_bash"), ("copilot", "write_powershell")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
@@ -328,9 +328,10 @@ TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t
 # reading stands (typed_line). What stays unfinished once a call ran is kept for the next (keep_typed); a key a line
 # editor acts on (Esc, an arrow) adds nothing to it, but one that puts text in it (EDITS) leaves it unknown. Where it
 # is kept: per session and per terminal, under the
-# field each tool names its terminal by: Codex's exec session, Devin's shell (in any case), agy's background task,
+# field each tool names its terminal by: Codex's (and Open Interpreter's) exec session, Devin's shell (in any case), agy's background task,
 # Copilot's shell
-TYPED_INTO = {("codex", "write_stdin"): "session_id", ("devin", "write_to_process"): "shell_id",
+TYPED_INTO = {("codex", "write_stdin"): "session_id", ("interpreter", "write_stdin"): "session_id",
+              ("devin", "write_to_process"): "shell_id",
               ("antigravity", "manage_task"): "TaskId", ("copilot", "write_bash"): "shellId",
               ("copilot", "write_powershell"): "shellId"}
 LINE_END = re.compile(r"[\n\x0f\x04]")   # a line end, readline's Ctrl-O (operate-and-get-next), a ^D that flushes
@@ -1752,10 +1753,10 @@ def _blocked(harness, p, raw="", line=None):
             return _typed("Devin's", name, v, devin=True) or line and _typed("Devin's", name, line.replace(UNKNOWN, ""),
                                                                     devin=True) or \
                 _twice(harness, name, ti)
-    if harness == "codex" and name == "write_stdin":
-        ti = tool(harness, name, p.get("tool_input"))[1]
+    if harness in ("codex", "interpreter") and name == "write_stdin":   # Open Interpreter: a Codex fork
+        ti, who = tool(harness, name, p.get("tool_input"))[1], "Codex's" if harness == "codex" else "Open Interpreter's"
         if isinstance(ti.get("command"), str):
-            return _typed("Codex's", name, ti["command"]) or line and _typed("Codex's", name, line.replace(UNKNOWN, "")) or \
+            return _typed(who, name, ti["command"]) or line and _typed(who, name, line.replace(UNKNOWN, "")) or \
                 _twice(harness, name, ti)
     elif harness == "interpreter" and (name == "view_image" and not tool(harness, name, p.get("tool_input"))[1].get(
             "file_path") or name in INTERPRETER_ITEM_TOOLS and None in _interpreter_files(_input(p.get("tool_input")))):

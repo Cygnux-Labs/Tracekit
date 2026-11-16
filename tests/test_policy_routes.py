@@ -1160,13 +1160,15 @@ class TypedText(unittest.TestCase):
         return verdict
 
     def test_a_line_typed_in_parts_is_decided_whole(self):
-        for harness in ("codex", "devin", "antigravity", "copilot", "copilot-ps"):
+        # Open Interpreter, a Codex fork, sends Codex's write_stdin (merging #853 into the release left it out)
+        for harness in ("codex", "interpreter", "devin", "antigravity", "copilot", "copilot-ps"):
             for parts in (["git ", "push --fo" + "rce origin main\n"], ["git \\\n", "push --fo" + "rce origin main\n"],
                           ["echo '\n", "' ; sudo id ; echo '\n"], ["echo $(\n", "sudo id)\n"]):
                 with self.subTest(harness=harness, parts=parts):
                     first = self.call(harness, parts[0], session=f"{harness}{parts}")
                     self.assertIn(first, ("allow", "flag", "ask"))   # flag: a PowerShell call (write_powershell)
                     self.assertEqual(self.call(harness, parts[1], session=f"{harness}{parts}"), "deny")
+        self.assertIn("Open Interpreter's write_stdin types '!'", self.call("interpreter", "echo !!\n", "i"))
         # a line that ended is read alone again, and a ^C drops what was typed before it
         self.assertEqual(self.call("codex", "ls\n", "t"), "allow")
         self.assertEqual(self.call("codex", "sudo", "u"), "deny")
