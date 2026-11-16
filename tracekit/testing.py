@@ -172,8 +172,12 @@ class FakeSigner:
                 return {"kind": "executed_against_policy", "tool_use_id": tcid,
                         "reason": f"{tcid} ran after a {d[3]} decision"}
             return None
-        return self._event("complete", "tool.result", ("tool_call_id", "decision_id", "attempt", "status", "error"), req,
-                           check=consume)
+        out = self._event("complete", "tool.result", ("tool_call_id", "decision_id", "attempt", "status", "error"),
+                          req, check=consume)
+        latest = self._runs[req["run_id"]]["calls"].get(req["tool_call_id"])
+        if latest and latest["attempt"] == req.get("attempt", 0):   # what call_state answers
+            latest["ended"] = [out["run_seq"], req["status"] == "ok"]
+        return out
 
     def state_write(self, req):
         return self._event("state_write", "state.write", ("key", "value_digest", "prev_digest"), req)
@@ -281,6 +285,8 @@ class FakeSigner:
                 code = "TK-APPROVAL-REQUIRED"
             elif a["args_digest"] != digest:
                 self._append(run, "approval.binding_mismatch", {"approval_id": aid, "tool_call_id": req["tool_call_id"]})
+                if call and call["attempt"] == attempt:
+                    call["refused"] = ["TK-APPROVAL-MISMATCH"]
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid}
             elif a["state"] != "approved":
                 code = "TK-APPROVAL-" + a["state"].upper()
@@ -294,14 +300,56 @@ class FakeSigner:
                 elif self._approval_decision.get(aid) and a["attempt"] == attempt:
                     ext = {"approval.decision": self._approval_decision[aid]}
                 self._append(run, "approval.consumed", {"approval_id": aid}, ext=ext)
+                if call and call["attempt"] == attempt:
+                    call.pop("refused", None)   # a refused consume before it
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
                 if a["executor"] == "t2":   # the real arguments, never the approver's redacted copy
                     x = a["exec_args"]
                     out["args"] = loads_strict(x) if a["args_source"] == "raw" else copy.deepcopy(x)
                 return out
             self._append(run, "approval.refused", {"tool_call_id": req["tool_call_id"], "rule_ids": [code]})
+            if call and call["attempt"] == attempt:   # what call_state answers
+                call["refused"] = [code]
             return {"ok": False, "rule_ids": [code], **({"approval_id": aid} if a else {})}
         return self._call("approval_consume", req, handle)
+
+    def call_state(self, req):
+        def handle(req):
+            run, tcid = self._run(req, open_only=False), req["tool_call_id"]
+            call = run["calls"].get(tcid)
+            if call is None:
+                return {}
+            attempt = call["attempt"]
+            out = {"attempt": attempt, "decision": call["decision"], "decision_id": call["decision_id"],
+                   "rule_ids": call["rule_ids"]}
+            if "args_digest" in req:
+                out["same_args"] = req["args_digest"] == call["args_digest"]
+            aid = self._index.get((req["run_id"], tcid, attempt))
+            if aid is not None:
+                a = self._approvals[aid]
+                out.update(approval_id=aid, approval=a["state"],
+                           consumed=a["state"] == "consumed" and a.get("used_by") == (tcid, attempt))
+            if call.get("refused"):
+                out["refused"] = call["refused"]
+            if call.get("ended"):
+                out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
+            return out
+        return self._call("call_state", req, handle)
+
+    def call_claim(self, req):
+        def handle(req):
+            run, tcid, attempt = self._run(req), req["tool_call_id"], req["attempt"]
+            call = run["calls"].get(tcid)
+            a = self._approvals.get(self._index.get((req["run_id"], tcid, attempt))) or {}
+            if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
+                    and a.get("used_by") == (tcid, attempt)):
+                return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            claimed = (tcid, attempt, req["answers"])
+            if claimed in run.setdefault("claims", set()):
+                return {"ok": False, "reason": f"{tcid} already went on after that pause"}
+            run["claims"].add(claimed)
+            return {"ok": True}
+        return self._call("call_claim", req, handle)
 
     def approval_get(self, req):
         def handle(req):

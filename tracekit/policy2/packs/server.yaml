@@ -8,7 +8,7 @@
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-server-17'
+version: '2026.11-server-18'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -54,3 +54,34 @@ respond:
   # a host an egress observer saw a run reach that no http or model call nor explains entry covers (docs/egress.md):
   # notify only until the deployment's explains list is tuned
   - {trigger: unexplained_effect, mode: shadow, action: notify}
+
+# The labels detection counts above keep their wider rules here, as the coding pack had them before it narrowed them
+# for the laptop (where no detection reads them): destructive (TK-F003, every such command word on a line: a delete
+# in the project counts for TK-L002 too), secrets_access (TK-F005, every secrets-file name) and egress (TK-F012, every
+# URL; TK-F013, every network command: a plain read or a request to this machine counts for TK-Q001 too)
+flag:
+  - id: TK-F003
+    class: shell
+    field: line
+    pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
+    label: destructive
+  - id: TK-F005
+    # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
+    # shell, file and MCP tool counts, not only the coding agents' own; writes included. A target that is one env
+    # template path (no space: never a whole command) is exempt
+    field: target
+    pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    label: secrets_access
+  - id: TK-F012
+    # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
+    # a query string sends data too, so egress is not only what TK-P003's sends_to reads
+    field: target
+    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
+    label: egress
+  - id: TK-F013
+    # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL;
+    # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too
+    class: shell
+    pattern: '^(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|dig|nslookup|host|http|https|xh|xhs|aria2c)( |$)|^openssl s_client( |$)'
+    label: egress

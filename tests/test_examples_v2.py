@@ -71,6 +71,19 @@ class Examples(unittest.TestCase):
     def test_openai_agents(self):
         self.run_example("openai_agents")
 
+    def test_openai_agents_spending(self):
+        """docs/quickstarts/agent-spending.md: held, granted, two payments within the grant, one held past its total
+        and rejected, and the bundle verified with its grant line."""
+        if any(importlib.util.find_spec(m) is None for m in NEEDS["openai_agents"]):
+            self.skipTest("openai-agents not installed")
+        p = python(os.path.join(ROOT, "examples", "v2", "openai_agents", "spending.py"), "--scripted", env=self.env,
+                   cwd=self.dir)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        for said in ("90 of 120 USD left", "call-3: (pretend) paid 25.00 USD to acct-print-shop",
+                     "call-4: Tool call rejected in Tracekit", "20 of 120 USD left", "[PASS] intent grants — 1 grant(s)",
+                     "Integrity: VERIFIED.", "100 of 120 USD used; this call needs 40 USD"):
+            self.assertIn(said, p.stdout)
+
     def test_claude_agent_sdk(self):
         self.run_example("claude_agent_sdk")
 

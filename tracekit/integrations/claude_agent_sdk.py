@@ -8,6 +8,7 @@
     said = tracekit_said(signer, run)   # optional: what the model said before each call
     async for message in query(prompt="...", options=options):
         await said(message)
+    signer.close_run({"run_id": run["run_id"], "run_token": run["run_token"]})   # the CLI sends no SessionEnd
 
 The gate is the PreToolUse hook, not `can_use_tool`: the CLI skips `can_use_tool` for every call its permission mode or
 allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
@@ -15,7 +16,9 @@ gets as the tool's error result, and the session goes on. `ask` holds the call i
 the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call not
 approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
 approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
-PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run. The tools of
+PostToolUse and PostToolUseFailure complete the call against its decision. The CLI doesn't send the SDK's hooks
+SessionEnd (checked with claude-agent-sdk 0.2.165 and 0.2.181, CLI 2.1.294 and 2.1.323), so the app closes the run
+after its message loop (`close_run`); the SessionEnd hook closes it should a CLI send one. The tools of
 the tool executor's server are left to the executor when the app hands the hooks the `mcp_servers` it gives
 ClaudeAgentOptions and the server under `tracekit-executor` there is the in-process one executor_tools.claude_agent_sdk
 built: for its actions' exact tool names, the hook only notes the call's tool_use_id for the server's handler, which
@@ -42,13 +45,14 @@ import rfc8785
 from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingBlock, ToolUseBlock
 
 from tracekit.format.canon import event_hash
-from tracekit.integrations import executor_tools, said
+from tracekit.integrations import executor_tools, said, version_check
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
+_FRAMEWORK = version_check.framework("claude-agent-sdk")
 EXECUTOR_TOOL = f"mcp__{SERVER}__"   # the tool executor's actions, as the model names them
 HOOK_TIMEOUT_S = 600     # the SDK's default (60 s) is too short to wait for a person
 APPROVAL_WAIT_S = 540    # below HOOK_TIMEOUT_S, so the hook answers before the CLI gives up on it
@@ -107,6 +111,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
     """The `hooks=` mapping for ClaudeAgentOptions. `signer` is a tracekit Client or any `SignerAPI`; `run` is its
     `register_run` response (`run_id`, `run_token`); `mcp_servers`: the mapping given ClaudeAgentOptions, when it holds
     a tool executor's server. To add hooks of your own, extend the lists."""
+    version_check.warn_untested(*_FRAMEWORK)
     rpc, calls = _Run(signer, run), {}   # calls: tool_use_id -> (decision_id, args_digest), from Pre to PostToolUse
 
     async def pre(inp, tool_use_id, ctx):
@@ -176,6 +181,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
 
     return {"PreToolUse": [HookMatcher(hooks=[pre], timeout=HOOK_TIMEOUT_S)],
             "PostToolUse": [HookMatcher(hooks=[post])], "PostToolUseFailure": [HookMatcher(hooks=[post])],
+            # not a HookEvent the SDK lists, and the CLI sends it no SessionEnd (2.1.323): the app closes the run
             "SessionEnd": [HookMatcher(hooks=[end])]}
 
 
@@ -216,6 +222,7 @@ class TracekitSessionStore:
     between two writes (seen on `load`, when a session resumes) makes the signer record a `state_tamper` gap."""
 
     def __init__(self, store, signer, run):
+        version_check.warn_untested(*_FRAMEWORK)
         self._store, self._rpc = store, _Run(signer, run)
         # lean: one digest per transcript for the store's life; prune at session end if one process serves many
         self._digests = {}   # what the store holds now; None once an entry is not canonical JSON (not committed)

@@ -42,7 +42,10 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 | `tool.result` | output | hash | redacted text |
 | `tool.result` | ok, duration_ms | clear | clear |
 | `model.message` | content (only with `reasoning_capture`) | hash | redacted text |
-| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing | clear | clear |
+| `model.exchange` (proxy) | model, status, stop reason, tool_use ids and names, timing, token usage | clear | clear |
+| `model.exchange` (v2: LLM gateway) | model, stop reason, tool_use ids and names, usage (input, output, cache-read and cache-write tokens), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | model, the message id, usage (input, output, cache-read and cache-write tokens, once per message), each tool use's id and name, the ids of the tool results sent since the last response (`tool_results_sent`), the record's signed time | clear | clear |
+| `model.exchange` (v2: Claude Code transcript tailer) | the transcript line: the model's thinking, text and tool uses, the line's own timestamp | salted commitment; the line is kept only in the [content vault](#the-content-vault), when the signer keeps content | same |
 | `model.exchange` (proxy) | request body, response body | hash (after redaction) | redacted text |
 | `model.exchange` (proxy) | HTTP headers, including `x-api-key` / `authorization` | **never recorded** | **never recorded** |
 | every hook event | `transcript` mark: path, length, sha256 of the transcript | clear (hash only, never content) | same |
@@ -62,6 +65,7 @@ Redaction is pattern-based and will miss secrets it doesn't recognise. A command
 - **Paths and commands are in clear** (after redaction): file names, URLs, search queries and whole command lines can themselves be sensitive.
 - **Hashes of low-entropy content can be guessed**: a hashed "yes", a short prompt or a known file can be confirmed by hashing candidates. Hashes are unsalted so reviewers can match known files; treat them as confirmable. The v2 signer publishes salted commitments instead (below).
 - **Sizes and timing**: content sizes, tool durations and timestamps reveal activity patterns even when content is hashed.
+- **Token counts**: a model response's usage is in clear (the gateway's records, and the transcript tailer's for Claude Code), so its output tokens say how long each reply was, and its input and cache counts how large the context was, even where the text is only committed.
 - **Correlation**: the same file hashed in two runs links them; tool_use ids link proxy and hook events by design.
 - **Witnesses** learn when checkpoints happen and how many records exist, nothing else.
 
@@ -133,7 +137,8 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   `tracekit_content_keys` (schema version 2: run `tracekit signer migrate`). Neither is in the readers' grants.
 - **Access is signed.** Only the signer reads the vault, through the `content_get` RPC: `{run_id, seqs (at most 1000
   run_seqs), purpose}`, for a run of the caller's tenant. The caller needs the `content_read` grant in `authorize`,
-  which no identity has by default (agents never do). Each item comes back as `{content, salt}`, with the record's salt
+  which no identity has by default (agents never do). Each item says its record's `type` (and an `input.observed`'s
+  `source`, RPC version 25) and comes back as `{content, salt}`, with the record's salt
   as `tracekit signer reveal` gives it, so the caller recomputes the commitment, as `{content, redacted: true}` (no
   salt) for decision arguments redaction changed and for a model exchange redaction changed whose `tool_uses` carry
   `args_commitment` (the record's salt opens those too, over the arguments before redaction), or as `{state: not_retained | too_large
@@ -141,7 +146,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   tenant's signer run (`tracekit/signer`). From the shell: `tracekit signer content get --run R --seq N... --purpose
   CASE-1`; from Python: `Client().content_get({...})`.
 - **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
-  retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago.
+  retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago,
+  except, on the dev signer, a run holding nothing but a person's answers to TIPS' lessons, at most 64 (each
+  `tracekit:lessons:person` observe is an action, a lesson's id and its text's sha256; the signer refuses any other
+  value under that source), which the Claude Code hook reads back before it gives a lesson
+  ([coding agents](coding-agents.md#lessons-at-the-first-prompt)). Other signers keep no such exception.
   Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
   is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
   nothing more for an erased run in its live store. Erasure doesn't reach copies taken before it: a backup, a WAL
@@ -167,11 +176,11 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   reasoning and text before each tool call can be read by `tracekit analyze --v2`; with it off, the record holds only
   the commitment.
 - **Model messages from integrations and coding agents.** A framework integration records each model message it sees,
-  and a Codex, Gemini CLI or Cursor hook what the model said since the last hook (from Codex's rollout, Gemini CLI's
-  chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`): a commitment always, and the message (its
-  reasoning, sealed forms byte for byte, text and calls) as the record's `body` only when the signer says the vault is
-  on. Without the vault the text stays where it came from: the framework's memory, the agent's own files
-  ([reasoning](reasoning.md)).
+  and a Codex, Gemini CLI, Cursor or Crush hook what the model said since the last hook (from Codex's rollout, Gemini
+  CLI's chat recording, Cursor's `afterAgentThought` and `afterAgentResponse`, Crush's `TurnEnd`
+  `last_assistant_message`): a commitment always, and the message (its reasoning, sealed forms byte for byte, text and
+  calls) as the record's `body` only when the signer says the vault is on. Without the vault the text stays where it
+  came from: the framework's memory, the agent's own files ([reasoning](reasoning.md)).
 - **Reasoning summaries through the LLM gateway.** The gateway asks the provider to show the reasoning a request has
   the model do but hides ([gateway](gateway.md#readable-reasoning); `show_reasoning: false` turns it off), so its
   responses carry the provider's summaries of the reasoning, to the agent and, with the vault on, into the response's
@@ -184,6 +193,26 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   and the model's explanation) are kept there as content, erased with the analysed run.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
+
+## The lessons folder
+
+TIPS' [lessons](viewer.md#lessons) read the dev signer's vault (the calls' arguments and the typed part of your
+prompts), each read a signed `content.accessed` record with purpose `tracekit tips` or `tracekit view`. Nothing is
+written until you approve a lesson (or add one). Then `<dev data dir>/lessons/` holds, per Claude Code project folder,
+one Markdown note per lesson and a `MEMORY.md` index: the lesson's text (an identifier the agent searched for, a path,
+a program, a flag or a setting, an error's name, or your own sentence quoted as you typed it), its kind, its status,
+when you approved it, the `run:run_seq` of up to 8 signed records it rests on, and that of the signed record of your
+answer (an observe whose kept value is the action, the id and the sha256 of the lesson's text, never the text). A
+lesson whose text matches a secret's shape, a bank
+number or a value the signer redacted is refused, never cut. The folder is a git repository: every approve, retire,
+restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
+ids of the lessons it was given and the block's sha256, never their text.
+
+The dev data dir is `~/Library/Application Support/tracekit/data` on macOS, `$XDG_DATA_HOME/tracekit` (else
+`~/.local/share/tracekit`) on Linux and `%LOCALAPPDATA%\tracekit` on Windows. To erase the lessons and their history,
+delete the folder: `rm -rf "<dev data dir>/lessons"`; a later approve starts a new one. Retiring a lesson stops it
+being given but keeps it, and its text stays in the git history until the folder is deleted. Erasing a run's content
+(`tracekit signer content erase --run R`) doesn't touch a lesson already approved from it.
 
 ## What leaves the machine
 

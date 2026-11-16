@@ -95,7 +95,7 @@ class WassetteBehindTheGateway(unittest.TestCase):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(os.path.join(self.dir, "signer"), policy=policy(self.dir),
                                    gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/mcp": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume", "observe"]})
         self.addCleanup(self.s.close)
@@ -159,7 +159,9 @@ class WassetteBehindTheGateway(unittest.TestCase):
                 self.assertFalse(self.call(name, args).is_error)
         self.assertEqual(RAN, list(RUN.items()))
         evs = self.decisions()
-        self.assertEqual({n: evs["mcp:wassette/" + n]["data"]["decision"] for n in RUN}, dict.fromkeys(RUN, "flag"))
+        # each recorded; the reads (get-policy, list-components) unflagged, as TK-F006 reads a tool's name
+        self.assertEqual({n: evs["mcp:wassette/" + n]["data"]["decision"] for n in RUN},
+                         {**dict.fromkeys(RUN, "flag"), "get-policy": "allow", "list-components": "allow"})
 
     def test_the_rule_holds_claude_codes_name_for_the_tool_too(self):
         d = self.s.policy.decide("mcp__wassette__grant-network-permission", HELD["grant-network-permission"])

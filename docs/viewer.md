@@ -348,10 +348,11 @@ confirmed it says "caused".
 
 ### TIPS
 
-**TIPS** reads the last 7 days and says what each step of your coding agents cost and how to cut it. Each tip is a
-card: one plain statement; its evidence, a chart drawn to scale or a table; what it would have saved in dollars and
-time, an estimate, with **THE ARITHMETIC** one click away; and the fix, with **COPY** where it is a command or a line
-to paste.
+**TIPS** reads the last 7 days. First, **LESSONS**: what your coding agents keep relearning, which a person approves
+and the next Claude Code session is given ([Lessons](#lessons)). Then **COST**: what each step of your coding agents
+cost and how to cut it. Each cost tip is a card: one plain statement; its evidence, a chart drawn to scale or a table;
+what it would have saved in dollars and time, an estimate, with **THE ARITHMETIC** one click away; and the fix, with
+**COPY** where it is a command or a line to paste.
 
 | Tip | Evidence | Fix |
 |---|---|---|
@@ -360,12 +361,21 @@ to paste.
 | 3 · HOLDS NOBODY ANSWERED | held calls answered and not (the agent's retry of a held call counted with it, as PERMISSIONS and the run review count them), in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | when they waited: remove `TRACEKIT_APPROVAL_WAIT` from the `env` block of the Claude Code settings that set it (`~/.claude/settings.json` or `$CLAUDE_CONFIG_DIR/settings.json`, the project's `.claude/settings.json` or `.claude/settings.local.json`; **COPY** gives the `jq` edit of the first), unset it in the agent's shell, then restart the agent; otherwise the rule's remedy and `tracekit approvals list` |
 
 Token counts come from signed records where they carry them (a `model.exchange` response's `usage`: the LLM gateway's,
-an SDK integration's). Claude Code's transcript tailer records no usage, so for Claude Code the viewer reads its
-transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with the dev store
-`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts once, from the
-transcripts: it is matched step by step, by a tool_use id or by identical token counts within 5 minutes of one
-transcript message no other step matched (the gateway signs each exchange under an id of its own, and a message
-without tool calls has no tool_use id). The page's first line says how many signed steps that was, and the time span
+an SDK integration's, and Claude Code's transcript tailer's, which signs each turn's usage as it reads the transcript),
+else from Claude Code's transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with
+the dev store `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts
+once, at its signed counts, in the transcript's place (the transcript says which agent took the step, when, and how
+long each cache write lasts, which no signed record holds): it is matched step by step, by its message id (the
+tailer's records, taken only from a claude-code run whose records name a call of that session, signed from the
+turn's first line to 5 minutes after its last), by a tool_use id (an LLM gateway's records, within 5 minutes), or by
+identical token counts within 5 minutes of one transcript message no other step matched (the gateway signs each exchange
+under an id of its own, and a message without tool calls has no tool_use id). Where the gateway and the tailer both
+signed a turn, the gateway's counts are kept, and a gateway's record always counts: one that joins no turn counts on
+its own. Other records of one turn that disagree, and any other record of a transcript's turn, are refused: the transcript's counts stand, and the page's first line says how many
+([limits](limits.md#viewer)). The page's TOKENS IN and OUT count a turn the gateway and the tailer both signed once, the
+same way. Each card's `from` names where its token counts came from, the context card's arithmetic says how many steps each
+source gave, and each wait of the cache card has its own (`src`). The page's first line says how many signed steps
+took a transcript step's place, and the time span
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
 whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
@@ -375,19 +385,88 @@ no price are left out, with a note naming it. A tip without enough data says so 
 once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
 
+#### Lessons
+
+A lesson (experimental) is something the signed records show an agent kept working out again, across sessions, in one
+Claude Code project. It is found the same way every time, from the signed records of runs that verify, each run joined
+to its session and project by its calls' `tool_use_id` in Claude Code's transcripts:
+
+| Kind | Found when | The lesson says |
+|---|---|---|
+| LOOKUP | the same search (Grep, Glob, WebSearch, or a shell `rg`, `grep -r`, `git grep`, `find -name`) for an identifier of 4 or more characters, then the same file read within 3 calls, in 3 sessions on 2 days; a file written, or a call denied or held, between them makes it none | ``Searching for `held_calls` here leads to `tracekit/why/import_v2.py`.`` |
+| FIX | the same plain shell call (one program, maybe after `cd DIR &&` and NAME=value settings; no quotes, pipes, redirects, expansions or comments) failing with one of a fixed list of errors (no module named X, X not installed, a file that doesn't exist, refused access: only the name X is kept from the transcript's error text, and only when a signed call or read of the session names X too), then within 5 calls the same call with another program or `cd DIR` first (a relative path, no `..`, that an earlier signed read of the session named, such as `ls .venv/bin/python` or a Read under `site/`), a flag removed, or a setting added (shown by its name, never its value), that worked, 3 times in 2 sessions; a flag the fix added makes none (it is the agent's word), a write, a deny or a hold between them makes none, and so does a value it names (the program, the error's name, the change) that reads as words: split at spaces and `_ . - = /`, more than 5 words or 64 characters, or a "from now on" word or a word about holds or approvals (`--note=never_wait_for_the_person`) | ``` `python3` fails here: no module named `pytest`. With `.venv/bin/python` in its place it worked.``` |
+| TOLD | a sentence you typed with "from now on", "always", "never", "every time", "going forward", "remember to" or "don't forget", from the Claude Code hook's signed record of the prompt's typed part (`claude-code:UserPromptSubmit`; never a paste, what the harness added, a prompt sent through Claude Code's SDK (`claude-code:sdk:UserPromptSubmit`), or another source), and not a question, a hedge, a quote or code | `The person said: “From now on, run make lint before you commit.”` |
+
+A lesson's words are a template over values a pattern read (an identifier, a path, a program, a flag, a setting, an
+error's name), or your own sentence: never a command, a comment or an error line, the agent's or a page's. An
+occurrence is dropped when a value it uses came only from untrusted content, as the signer's provenance shows it: its
+decision's `provenance` names the argument, the run's provenance index isn't complete, or any decision in the window
+carried that value from untrusted content (a page the agent fetched in another session, or a memory note it wrote from
+one). A
+lookup or a fix stops at a deny or a hold, so none rests on one; a lesson whose words talk about holds, approvals,
+permission, a sign-off, confirming or asking first, denies, Tracekit or its policy (a hyphen breaks words) is never
+given to the agent: **NOT PROPOSED** shows it to you, with the reason in plain words, as it shows a candidate
+seen in too few sessions, a duplicate, one past the 8 shown per project, and one a check refused.
+
+**WAITING FOR YOUR OK** has a card per lesson: its kind, its tier (`signed + transcript`) and its project; the exact
+text the agent would get; **EVIDENCE**, each session's signed records, each with **OPEN** to that record on its run's
+tape; what it would save (the calls a session that knew it wouldn't make, their signed run time and, with token counts,
+the dollars of the model steps that made them: an estimate, with **THE ARITHMETIC**); how often the detector saw it
+(of the sessions that opened the file, how many searched first); **RISKY** when its words name a limit, an exemption, a
+payment, a host, an email or an account; and the commands that answer it, with **COPY**. Approving is a command you
+run in your own terminal, never a click: a click is one an agent holding the viewer's token could make, and the
+policy denies the agent's own `tracekit tips approve` (`TK-D012`). A lesson's id covers its exact text, so the text
+you approve is the text written; any other text is another lesson. Each answer (approve, retire, restore, add) is
+first a signed record on the dev signer that runs: an `input.observed`, source `tracekit:lessons:person`, whose kept
+value is the action, the id and the sha256 of the lesson's text, never the text, in a run of its own (agent `tracekit
+tips`); the note names it. With no dev signer running, nothing is written.
+
+**IN USE** shows each lesson you approved: how many sessions the signed record says were given it, and its **EFFECT**,
+measured on the detector that found it: before its approval (recorded then) against the sessions given it since, for
+14 days, shown once each side has 5 sessions ("3 of 5 sessions so far" until then); a worse after is in the warning
+colour. It is a before and after on the same detector, not a controlled test. Each card also says whether the signed
+record of your answer names its text: a note written any other way (a script, a hand), changed since, or naming a run
+the store doesn't hold is said in the warning colour, and none of those is given to the agent (the hook reads each
+note's record back from the signer first); a record from before the window is said to be outside it. **WHAT THE NEXT SESSION READS** shows,
+per project, the block a session's first prompt gets with an empty prompt and how many bytes of the 8,000 it takes.
+
+A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its
+`MEMORY.md` index; the folder is a git repo, one commit per action, so every change can be read back and undone.
+`tracekit tips retire ID` stops giving it (a waiting one is never proposed again), `restore ID` undoes that, and
+`add TEXT` writes your own. Proposals are worked out from the records each time and never stored. How a session gets
+them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in
+[privacy](privacy.md).
+
 #### tracekit tips
 
-`tracekit tips` (experimental) prints the same three tips without the viewer, for a terminal or an agent. It reads
-the dev signer's store (or `--data-dir DIR`'s, without transcripts, as `tracekit view --data-dir` reads it) and Claude
-Code's transcripts, read-only, with no network and no model. It checks each run with a record in the window with the
-verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify is left out and
-counted. Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
+`tracekit tips` (experimental) prints the same lessons and three tips without the viewer, for a terminal or an agent.
+It reads the dev signer's store (or `--data-dir DIR`'s, without transcripts or lessons, as `tracekit view --data-dir`
+reads it) and Claude Code's transcripts, read-only, with no network and no model. It checks each run with a record in
+the window with the verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify
+is left out and counted. For lessons it reads the calls' arguments and the prompts' typed parts from the dev signer's
+content vault, as `tracekit view --dev` does: each read is a signed `content.accessed` record (purpose `tracekit tips`).
+Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
 
 ```bash
-tracekit tips                  # the last 7 days
+tracekit tips                  # the last 7 days: LESSONS, then the three tips
 tracekit tips --since 24h      # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
 tracekit tips --json           # the TIPS page's data as one JSON object, for agents and scripts
+tracekit tips approve L-3f2a91c0 [L-...]   # a person: give these waiting lessons to the next sessions
+tracekit tips retire L-3f2a91c0            # a person: stop giving one, or never propose a waiting one again
+tracekit tips restore L-3f2a91c0           # a person: undo a retire
+tracekit tips add "Docs build with make docs." [--name N] [--description WHEN] [--project DIR]
+tracekit tips --for-agent [--project DIR] [--prompt TEXT | --query WORDS] [--json]
 ```
+
+`approve`, `retire`, `restore` and `add` are a person's: the action is read only as the first word after `tips`, and
+the policy denies an agent's own (`TK-D012`). Approve and retire find the waiting lesson in the records as `tracekit
+tips` reads them, so it is the one you saw. `--for-agent` is the agent's: the approved lessons of the project (by
+default the current folder's), as the hook gives them at a session's first prompt: from the lessons folder, each
+lesson's signed record read back from the dev signer that runs (none is given while none runs; no store read, no
+verifier, well under a second); `--prompt` ranks them against a prompt, `--query` keeps only those that share
+a word with it, best first, and `--json` prints `project`, `commit` (the folder's), `budget`, `bytes` and `lessons`
+(each with `id`, `file`, `name`, `description`, `type`, `kind`, `origin`, `score`, `given`: whole or line, `text` and
+`evidence`), and `left_out`.
 
 ```text
 TIP 1 · CONTEXT · from Claude Code's transcripts (read-only)
@@ -403,8 +482,11 @@ Compact at about 500k tokens, not at 696k
 Each tip prints its title, its evidence, what it would have saved (dollars where the model has a price, and time) and
 the fix, or why it has none; with nothing in the window, one line says what it read. `--json` prints what `/api/tips`
 serves: `window` (`[since, now]`, seconds since the epoch), `prices` (the price table's date), `root` (the transcripts
-folder, or null), `sources` (what was read: `signed` records, steps and holds, `transcripts` files and steps) and
-`tips`, one object per tip in the order above. Each tip has `id` (`context`, `cache` or `holds`) and `ok`; one
+folder, or null), `sources` (what was read: `signed` records, steps and holds, `transcripts` files and steps),
+`lessons` (`ok`, or `why`; `waiting`, `active`, `not_proposed` (the first 40) with `not_proposed_n` and `not_proposed_by` (a count per reason), `earlier`, `next`, `budget`,
+`folder`, `commit` and `measure`: each waiting lesson with `id`, `kind`, `project`, `key`, `name`, `description`, `text`,
+`sessions`, `days`, `times`, `risky`, `evidence`, `seen`, `saving` (`calls`, `usd`, `seconds`), `math`, `supersedes`,
+`approve` and `retire`; each in use with its `effect`) and `tips`, one object per tip in the order above. Each tip has `id` (`context`, `cache` or `holds`) and `ok`; one
 without enough data has `why`, one with it has `title`, `line` (its evidence), `from` (its sources), `saving` (`usd`
 and `minutes`, each null when not measured; the context tip adds `pct`), `math` (the arithmetic, one step a line) and
 `fix` (`text` and `copy`, the command or line to paste, or null; null when there is nothing to fix), with the chart's

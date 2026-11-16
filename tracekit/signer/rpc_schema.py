@@ -1,6 +1,13 @@
-"""The signer RPC contract, version 22: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 25: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 22 adds intent grants (docs/intent-grants.md):
+Frozen: a change to any schema here is a new RPC_VERSION. Version 25 adds content_get's `type` of each record whose
+content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
+(tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
+what the signer recorded of a call's latest attempt, which the LangChain gate reads to go on with a ToolNode's calls
+after a resume (tracekit.integrations.langchain), and `call_claim`: the one pass of a node that goes on with a call,
+consumed, after its tool paused the run itself, so two resumes of one thread never run it twice. Version 23 adds `export_run` (docs/remote-ingest.md): a run
+of the caller's tenant as the .tkb bundle the operator's `tracekit export --v2` writes, in chunks that each fit a frame.
+Version 22 adds intent grants (docs/intent-grants.md):
 `grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
 `grant_revoke`. Version 21 adds Tracekit Box's agent channel (experimental):
 register_run's `box` (a `box_daemons` identity's box run: its id, image digest and allowlist names, which the signer
@@ -38,7 +45,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 22
+RPC_VERSION = 25
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -476,6 +483,17 @@ REQUESTS = {
                         description=_str(512), tools=_TOOLS),
     "grant_list": _obj([], run_id=ID),
     "grant_revoke": _obj(["request_id", "grant_id"], request_id=ID, grant_id=GRANT_ID, reason=REASON),
+    # a run of the caller's tenant as its .tkb bundle (version 23; an `authorize` grant, never a default), from byte
+    # `offset` on: with `digest`, of that bundle (a download's later chunks), else of its bundle at the latest checkpoint
+    "export_run": _obj(["run_id"], run_id=ID, offset=SEQ, digest=DIGEST),
+    # what the signer recorded of the call's latest attempt (version 24); `args_digest` (sha256(JCS({tool, args})))
+    # asks whether those are the arguments it was decided for
+    "call_state": _obj(["run_id", "run_token", "tool_call_id"], run_id=ID, run_token=TOKEN, tool_call_id=ID,
+                       args_digest=DIGEST),
+    # (version 24) the one pass of a call's node that goes on with the call, consumed, after its tool paused the run
+    # itself: `answers`, the interrupt() calls of the node the run had answered when the pass started
+    "call_claim": _obj(_RUN_REQ + ["tool_call_id", "attempt", "answers"], **_RUN, tool_call_id=ID, attempt=SEQ,
+                       answers=SEQ),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -567,8 +585,8 @@ RESPONSES = {
     # per seq, in request order: the content and the record's salt (as `tracekit signer reveal` gives it), the content
     # marked redacted (changed by redaction, so it opens no commitment: no salt), or why not
     "content_get": _obj(["items"], items={"type": "array", "maxItems": 1000, "items": dict(
-        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True},
-             state={"enum": ["not_retained", "too_large", "erased"]}),
+        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True}, type=_str(64),
+             source=_str(256), state={"enum": ["not_retained", "too_large", "erased"]}),
         oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,
@@ -603,9 +621,23 @@ RESPONSES = {
                         self_approved={"type": "boolean"}, run_seq=SEQ),
     "grant_list": _obj(["grants"], grants={"type": "array", "maxItems": 1000, "items": _GRANT_VIEW}),
     "grant_revoke": _obj(["grant_id", "run_id", "run_seq"], grant_id=GRANT_ID, run_id=ID, run_seq=SEQ),
+    # the bundle's `size` bytes and sha256 `digest`, and `data`: base64 of its bytes from `offset`, as many as fit a
+    # frame (the transport's 1 MiB)
+    "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
+                       data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
+    # {} when the run never decided the call; else its latest attempt's decision (as decide answered it), whether
+    # `args_digest` opens it (`same_args`), its approval and whether this attempt consumed it, a refused consume's rule
+    # ids, and its tool.result
+    "call_state": _obj([], attempt=SEQ, decision={"enum": ["allow", "deny", "ask"]}, decision_id=ID,
+                       rule_ids=RULE_IDS, reason=REASON, send_result={"const": True},
+                       same_args={"type": "boolean"}, approval_id=ID, approval=APPROVAL_STATE,
+                       consumed={"type": "boolean"}, refused=RULE_IDS,
+                       result=_obj(["run_seq", "ok"], run_seq=SEQ, ok={"type": "boolean"})),
+    # ok: this pass goes on with the call; else `reason` says why not (another pass took it, or nothing to go on with)
+    "call_claim": _obj(["ok"], ok={"type": "boolean"}, reason=REASON),
 }
 
-ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
+ERROR =_obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
                                    retry_after_ms=SEQ))
 
 
@@ -618,11 +650,13 @@ def validate(schema, value):
 
 class RPCError(Exception):
     def __init__(self, code, message, retry_after_ms=None):
-        assert code in ERROR_CODES, code
+        # a client keeps the code it was sent as it came, one a newer signer added included: only the signer's own
+        # errors are held to ERROR_CODES, in wire()
         super().__init__(f"{code}: {message}")
-        self.code, self.message, self.retry_after_ms = code, message[:1024], retry_after_ms
+        self.code, self.message, self.retry_after_ms = code, str(message)[:1024], retry_after_ms
 
     def wire(self):
+        assert self.code in ERROR_CODES, self.code
         e = {"code": self.code, "message": self.message}
         if self.retry_after_ms is not None:
             e["retry_after_ms"] = self.retry_after_ms
@@ -682,3 +716,6 @@ class SignerAPI(Protocol):
     def grant_issue(self, req: dict) -> dict: ...
     def grant_list(self, req: dict) -> dict: ...
     def grant_revoke(self, req: dict) -> dict: ...
+    def export_run(self, req: dict) -> dict: ...
+    def call_state(self, req: dict) -> dict: ...
+    def call_claim(self, req: dict) -> dict: ...
