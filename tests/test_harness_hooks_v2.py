@@ -212,13 +212,26 @@ class Mapping(HarnessCase):
     def test_gemini(self):
         self.check("gemini")
 
-    def test_gemini_person_approval_command_prefix(self):
+    def test_person_approval_command_prefix(self):
         prefix = claude_code._approval_command_prefix
 
         self.assertEqual(prefix("claude-code", None), "! ")
         self.assertEqual(prefix("claude-code", "/path/to/signer.sock"), "")
         self.assertEqual(prefix("gemini-cli", None), "!")
         self.assertEqual(prefix("gemini-cli", "/path/to/signer.sock"), "")
+        self.assertEqual(prefix("codex", None), "!")
+        self.assertEqual(prefix("codex", "/path/to/signer.sock"), "")
+
+    def test_codex_approval_command_quotes_interpreter_path(self):
+        interpreter = "/path/with spaces/python"
+
+        with mock.patch.object(claude_code.sys, "executable", interpreter):
+            command = claude_code.approvals_cmd(None, use_interpreter=True)
+
+        self.assertEqual(
+            command,
+            f"{shlex.quote(interpreter)} -m tracekit approvals",
+        )
 
     def test_opencode(self):
         self.check("opencode")

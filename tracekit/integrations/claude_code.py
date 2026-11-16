@@ -253,7 +253,7 @@ def _block(msg):
     return 2
 
 
-def approvals_cmd(signer):
+def approvals_cmd(signer, use_interpreter=False):
     """`tracekit approvals`, for a person to run, naming `signer` when there is one: a named signer (system mode's,
     $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
     Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
@@ -262,7 +262,10 @@ def approvals_cmd(signer):
     unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
     named = signer and (shlex.quote(signer) if os.name != "nt" else
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
-    return "tracekit approvals" + (f" --signer {named}" if named else "")
+    command = "tracekit approvals" + (f" --signer {named}" if named else "")
+    if use_interpreter:
+        command = f"{shlex.quote(sys.executable)} -m {command}"
+    return command
 
 
 def _utc(ts):
@@ -679,7 +682,7 @@ def _approval_command_prefix(agent, signer):
         return ""
     if agent == "claude-code":
         return "! "
-    if agent == "gemini-cli":
+    if agent in ("gemini-cli", "codex"):
         return "!"
     return ""
 
@@ -716,7 +719,7 @@ def _pre(client, p, sid, tid):
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
             asked = run.call("approval_request", tool_call_id=tid)
             aid, state = asked["approval_id"], asked["state"]
-            cmd = approvals_cmd(client.signer)
+            cmd = approvals_cmd(client.signer, use_interpreter=AGENT == "codex")
             wait_s = approval_wait_s()
             # the commands before the reasons, as in the held line: a harness that cuts the message keeps them
             if state == "requested" and wait_s:
