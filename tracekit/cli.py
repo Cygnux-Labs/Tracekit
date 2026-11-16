@@ -1367,7 +1367,6 @@ def _last(a):
     closing is waited for, up to LAST_WAIT_S; a newer one still open is named and skipped, or with --open taken as it
     stands."""
     import argparse
-    import collections
     import time
 
     from .signer.pipeline import SIGNER_RUN
@@ -1382,12 +1381,15 @@ def _last(a):
         cfg = signer_config(None)
         while True:
             r = open_reader(cfg)
-            try:   # newest first, by their last record; each with the type of that record and its agent's name
+            try:   # newest first, by their last record; each with its state (run.final, run.closing: closed, which
+                # late records, a tailer's model events, may follow until it is final; else open) and its agent's name
                 runs = []
                 for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key[1] != SIGNER_RUN[1]),
                                      reverse=True):
-                    first = next(iter(r.iter_run(*key)))["event"]
-                    runs.append((key, collections.deque(r.iter_run(*key), 1)[0]["event"]["type"],
+                    events = (x["event"] for x in r.iter_run(*key))
+                    first = next(events)
+                    kinds = {first["type"]} | {e["type"] for e in events}
+                    runs.append((key, next((k for k in ("run.final", "run.closing") if k in kinds), "open"),
                                  ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
                     if runs[-1][1] == "run.final":
                         break
