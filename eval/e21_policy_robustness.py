@@ -18,10 +18,10 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     each decision over a fixed reference workload timed right after each try (`reference`: no Tracekit code), which a
     busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
-    runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
-    E17, blind) doesn't rise; p99_ref stays under its recorded cap on the same machine (re-measured once before
-    failing; another machine is not compared): 25% over the first run's, or a cap recorded again since, as the comment
-    above the gates says. False positives over 2% (default) or 5% (strict) are reported as over target.
+    runs: per profile, held-out recall doesn't drop, the false-positive rate of each benign set (held-out, sessions,
+    E17) doesn't rise, and neither does each blind pool's count of false positives, recorded at its first run; p99_ref
+    stays under its recorded cap on the same machine (re-measured once before failing; another machine is not
+    compared): 25% over the first run's, or a cap recorded again since, as the comment above the gates says. False positives over 2% (default) or 5% (strict) are reported as over target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
 import collections
 import glob
@@ -167,11 +167,19 @@ def run(record=False):
     # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
     # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
     # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
-    # Default's is still the first run's.
+    # Default's is still the first run's. dev/regex was re-recorded on 2026-11-11, the same way: 8.25, 5% over the
+    # highest of seven runs at #605's head (7.62 to 7.86), as the dev pack carries the server parts' rules since #605:
+    # a deliberate cost of about 5% against main on the fallback engine (the larger pack about 12% slower, the engine's
+    # own changes faster). The results file's latency rows stay main's recorded ones, as E21 records no new baseline.
+    # The blind set is gated pool by pool (max_blind_fp), each by its own count of false positives: a pooled rate,
+    # recorded again when a pool joins (strict's rose to 14.17% with email_ops), let the older pools get worse.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
-        "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p} for n, p in out["profiles"].items()},
+        "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p and k != "blind"}
+                        for n, p in out["profiles"].items()},
+        "max_blind_fp": {n: {pool: t["totals"].get("fp", 0) for pool, t in p["blind"]["pools"].items()}
+                         for n, p in out["profiles"].items() if "blind" in p},
         "max_p99_ref": {k: round(v["p99_ref"] * 1.25, 2) for k, v in out["latency"].items()}})
     out["over_target"] = [f"{n} {k} false positives {p[k]['fp_rate']:.2%} over the {TARGET_FP[n]:.0%} target"
                           for n, p in out["profiles"].items() for k in SETS
@@ -195,6 +203,10 @@ def gate(out, calls):
             cap = g["max_fp_rate"].get(name, {}).get(key)
             if key in p and cap is not None and p[key]["fp_rate"] > cap:
                 failed.append(f"{name} {key} false positives {p[key]['fp_rate']:.2%} > the first run's {cap:.2%}")
+        pools = p.get("blind", {}).get("pools", {})
+        for pool, cap in g.get("max_blind_fp", {}).get(name, {}).items():
+            if (fp := pools.get(pool, {}).get("totals", {}).get("fp", 0)) > cap:
+                failed.append(f"{name} blind pool {pool} false positives {fp} > the recorded {cap}")
         want = g["min_heldout_recall"].get(name)
         if want is not None and "heldout" in p and p["heldout"]["recall"] < want:
             failed.append(f"{name} held-out recall {p['heldout']['recall']:.2%} < {want:.2%}")

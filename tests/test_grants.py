@@ -2,6 +2,7 @@
 and the exact reason it holds the rest, the attacks it must hold (the agent issuing, widening or extending a grant,
 amounts in other units, payee look-alikes, totals split across calls, an expired or revoked grant), its totals across a
 restart, the operator's ceiling, and what the verifier re-checks in the bundle, forged ones included."""
+import asyncio
 import importlib.util
 import io
 import itertools
@@ -702,6 +703,294 @@ class TestHeldPayment(unittest.TestCase):
         self.assertIn("live", listed)
         self.assertIn("30 of 500 USDC left", listed)
         self.assertIn('"this week\'s two contractors"', listed)
+
+    def test_show_says_why_the_live_grant_held_it(self):
+        """#831: `approvals show` on a call a live grant holds says the grant's reason from the call's signed decision,
+        and names the live grant with what it has left instead of offering a new grant as if none were live."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        out = self.tk("approvals", "approve", err.split()[4], "--grant", "--payee", P1, "--max", "120 USDC",
+                      "--total", "150 USDC", "--for", "1h")
+        gid = out.split()[1]
+        self.runs("pay-1-retry", pay())   # the grant's first payment: 120 of 150 USDC used, 30 left
+
+        code, err = self.hook("pay-2", pay(40 * USDC))   # over the 30 left: the grant holds it
+        self.assertEqual(code, 2, err)
+        show = self.tk("approvals", "show", err.split()[4])
+        self.assertIn(f"grant {gid}: 120 of 150 USDC used; this call needs 40 USDC", show)   # the signed decision's reason
+        self.assertIn(f"grant {gid} is live: to {P1}, up to 120 USDC each, 30 of 150 USDC left", show)
+        self.assertNotIn("set your own limits", show)   # no new grant offered as if none were live
+
+        code, err = self.hook("pay-3", pay(10 * USDC, P2))   # a payee the grant never names: held too
+        self.assertEqual(code, 2, err)
+        show = self.tk("approvals", "show", err.split()[4])
+        self.assertIn(f'grant {gid}: payee "{P2}" is not "{P1}"', show)
+        self.assertIn(f"grant {gid} is live: to {P1}, up to 120 USDC each, 30 of 150 USDC left", show)
+
+    def test_show_keeps_the_offer_for_a_hold_from_before_the_grant(self):
+        """#831 review: a call held before any grant existed has no grant in its signed reasons, so `approvals show`
+        names no grant for it (the new grant would cover the call, but it did not hold it) and keeps the offer."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        aid1 = err.split()[4]
+        code, err = self.hook("pay-2", pay(40 * USDC))   # held too, before any grant exists
+        self.assertEqual(code, 2, err)
+        aid2 = err.split()[4]
+        self.tk("approvals", "approve", aid1, "--grant", "--payee", P1, "--max", "120 USDC", "--total",
+                "500 USDC", "--for", "1h")
+        show = self.tk("approvals", "show", aid2)
+        self.assertNotIn("is live", show)   # the grant did not exist when pay-2 was decided
+        self.assertIn("set your own limits", show)   # today's offer stands
+
+    def test_show_prints_the_decision_the_approval_was_requested_for(self):
+        """#831 review: the agent chooses call ids; a second decide with the same call id and attempt writes a second
+        decision, but the call keeps its first approval, whose signed approval.request names the decision it was
+        asked for. show prints that decision's reasons, not the call's latest decision's."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        aid1 = err.split()[4]
+        code, err = self.hook("pay-2", pay(40 * USDC))   # held as aid2, before any grant exists
+        self.assertEqual(code, 2, err)
+        aid2 = err.split()[4]
+        self.tk("approvals", "approve", aid1, "--grant", "--payee", P1, "--max", "120 USDC", "--total",
+                "500 USDC", "--for", "1h")
+        code, err = self.hook("pay-2", pay(10 * USDC, P2))   # the same call id with other arguments
+        self.assertEqual(code, 2, err)
+        self.assertIn(aid2, err)   # the call keeps its first approval
+        show = self.tk("approvals", "show", aid2)
+        self.assertNotIn(f'payee "{P2}"', show)   # the second decision's grant reason is not its approval's
+        self.assertNotIn("is live", show)   # the grant did not exist when this approval's call was decided
+        self.assertIn("set your own limits", show)
+
+    def test_show_names_the_live_grant_not_the_revoked_one(self):
+        """#831 review: the signed reason explains each grant in issue order, an old one first; the line names the
+        first grant the decision was checked against that is still live, never the revoked one named first."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        out = self.tk("approvals", "approve", err.split()[4], "--grant", "--payee", P1, "--max", "120 USDC",
+                      "--total", "150 USDC", "--for", "1h")
+        gid_a = out.split()[1]
+        show = self.tk("approvals", "show", err.split()[4])
+        run_id = show.split("run         ")[1].splitlines()[0]
+        self.tk("grant", "revoke", gid_a)
+        out = self.tk("grant", "add", "--run", run_id, "--tool", "mcp__payments__send_money", "--payee", P1,
+                      "--max", "120 USDC", "--total", "500 USDC", "--for", "1h")
+        gid_b = out.split()[1]
+        code, err = self.hook("pay-3", pay(10 * USDC, P2))   # held: its reason names the revoked grant first
+        self.assertEqual(code, 2, err)
+        show = self.tk("approvals", "show", err.split()[4])
+        self.assertIn(f"grant {gid_a} was revoked", show)   # the signed reason, as recorded
+        self.assertIn(f"grant {gid_b} is live: to {P1}, up to 120 USDC each, 500 of 500 USDC left", show)
+
+    def test_show_names_no_grant_recorded_after_the_decision(self):
+        """#831 review: only the grants recorded before the held decision were checked against it; one issued
+        later, live and covering though it is, is not named - it did not hold the call."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        out = self.tk("approvals", "approve", err.split()[4], "--grant", "--payee", P1, "--max", "120 USDC",
+                      "--total", "150 USDC", "--for", "1h")
+        gid_a = out.split()[1]
+        code, err = self.hook("pay-2", pay(10 * USDC, P2))   # held by g-A as apr-2
+        self.assertEqual(code, 2, err)
+        aid2 = err.split()[4]
+        run_id = self.tk("approvals", "show", aid2).split("run         ")[1].splitlines()[0]
+        self.tk("grant", "revoke", gid_a)
+        self.tk("grant", "add", "--run", run_id, "--tool", "mcp__payments__send_money", "--payee", P1,
+                "--max", "120 USDC", "--total", "500 USDC", "--for", "1h")   # g-B, after apr-2's decision
+        show = self.tk("approvals", "show", aid2)
+        self.assertNotIn("is live", show)   # g-B did not exist when apr-2 was decided
+        self.assertIn("set your own limits", show)
+
+    def test_show_names_no_grant_that_cannot_release(self):
+        """#831 review: the grant line names the reason's grant only while it is live: not after it is revoked, and
+        not after it expires."""
+        code, err = self.hook("pay-1", pay())
+        self.assertEqual(code, 2, err)
+        out = self.tk("approvals", "approve", err.split()[4], "--grant", "--payee", P1, "--max", "120 USDC",
+                      "--total", "150 USDC", "--for", "1h")
+        gid = out.split()[1]
+        code, err = self.hook("pay-2", pay(10 * USDC, P2))   # held: its signed reason names the grant
+        self.assertEqual(code, 2, err)
+        aid2 = err.split()[4]
+        self.assertIn(f"grant {gid} is live:", self.tk("approvals", "show", aid2))   # while it is live
+        self.tk("grant", "revoke", gid)
+        show = self.tk("approvals", "show", aid2)
+        self.assertNotIn("is live", show)
+        self.assertIn("set your own limits", show)
+
+        import datetime   # the expired case, as reviewed: a grant issued with an expiry 2 s away (the signer takes
+        from tracekit.sdk.client import Client   # any expiry after now), not a one-minute one and a 62 s sleep
+        run_id = show.split("run         ")[1].splitlines()[0]
+        until = (datetime.datetime.now(datetime.timezone.utc)
+                 + datetime.timedelta(seconds=2)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        c = Client()
+        try:
+            g = c.grant_issue({"run_id": run_id, "intent": "payment.send", "expires_at": until,
+                               "caveats": [{"field": "currency", "op": "==", "value": "USDC"},
+                                           {"field": "payee", "op": "in", "value": [P1]},
+                                           {"field": "amount", "op": "<=", "value": 120 * USDC}],
+                               "limits": [{"op": "sum", "field": "amount", "max": 500 * USDC}],
+                               "tools": ["mcp__payments__send_money"]})
+        finally:
+            c.close()
+        time.sleep(3)   # let it expire: grant_list then reports it expired
+        code, err = self.hook("pay-4", pay(10 * USDC, P2))   # held: its signed reason names the expired grant
+        self.assertEqual(code, 2, err)
+        show = self.tk("approvals", "show", err.split()[4])
+        self.assertIn(f"grant {g['grant_id']} expired at", show)
+        self.assertNotIn("is live", show)
+        self.assertIn("set your own limits", show)
+
+
+class TestGrantLookup(unittest.TestCase):
+    """#831 review: `_live_grant` names a grant only from the run's own `intent.grant` records before the held
+    decision, and only the first still live and covering the call's tool - never an id from the reason's text
+    (an agent's quoted value could plant one), and never another tenant's grant of a same-named run."""
+
+    class Stub:
+        def __init__(self, entries):
+            self.entries = entries
+
+        def grant_list(self, req):
+            return {"grants": self.entries}
+
+    def entry(self, gid, state="live", tools=("mcp__payments__send_money",)):
+        return {"grant_id": gid, "state": state, "tools": list(tools), "grant": {}, "limits": [], "used": []}
+
+    def lookup(self, reasons, grant_ids, entries):
+        x = {"run_id": "r1", "tool": "mcp__payments__send_money"}
+        return cli._live_grant(self.Stub(entries), x, reasons, grant_ids)
+
+    def test_names_the_first_live_grant_the_decision_was_checked_against(self):
+        old, new = "g-" + "a" * 16, "g-" + "b" * 16
+        reasons = [f"grant {old} was revoked", f'grant {new}: payee "x" is not "y"']
+        gid, e = self.lookup(reasons, [old, new], [self.entry(old, "revoked"), self.entry(new)])
+        self.assertEqual(gid, new)
+
+    def test_not_another_tenant_grant_of_a_same_named_run(self):
+        named, other = "g-" + "a" * 16, "g-" + "b" * 16
+        entries = [self.entry(other)]   # grant_list filters by run id alone: another tenant's grant of run r1
+        self.assertIsNone(self.lookup([f'grant {named}: payee "x" is not "y"'], [named], entries))
+
+    def test_no_grant_in_the_signed_reason(self):
+        g = "g-" + "a" * 16
+        self.assertIsNone(self.lookup([], [g], [self.entry(g)]))
+        self.assertIsNone(self.lookup(["no grant of this run covers payment.send"], [], [self.entry(g)]))
+        self.assertIsNone(self.lookup([], [], [self.entry(g)]))
+
+    def test_not_a_grant_that_cannot_release(self):
+        g = "g-" + "a" * 16
+        for state in ("revoked", "expired", "used_up"):
+            with self.subTest(state=state):
+                self.assertIsNone(self.lookup([f"grant {g}: 120 of 150 USDC used; this call needs 40 USDC"],
+                                              [g], [self.entry(g, state)]))
+        self.assertIsNone(self.lookup([f'grant {g}: payee "x" is not "y"'], [g],
+                                      [self.entry(g, "live", ("other_tool",))]))
+
+
+@unittest.skipIf(importlib.util.find_spec("agents") is None, "openai-agents not installed")
+class TestAgentSpending(Case):
+    """docs/quickstarts/agent-spending.md's recipe (examples/v2/openai_agents/spending.py) in-process: an OpenAI Agents
+    SDK agent pays through `send_payment` under the dev signer's policy. The first payment is held, the person approves
+    it with the grant `approvals approve --grant` builds, two payments run within it, one past its total is held with
+    the reason, and the bundle verifies with the grant line."""
+    PRINTS, HOSTING = "acct-print-shop", "acct-hosting"
+
+    def setUp(self):
+        super().setUp()
+        # the agent's run, as this process's uid: on the dev signer the person who answers is that uid too
+        self.me = self.s.identity
+        self.reg = self.call("register_run", self.me, agent={"name": "bills"})
+        self.run = {"run_id": self.reg["run_id"], "run_token": self.reg["run_token"]}
+
+    def open(self):
+        s = svc.SignerService(self.dir)   # the dev signer's policy, packs/dev.yaml
+        self.addCleanup(s.close)
+        return s
+
+    def decision(self, call_id):
+        return [e for e in self.records() if e["type"] == "policy.decision"
+                and e["data"]["tool_use_id"] == call_id][-1]
+
+    def test_held_granted_released_held_verified(self):
+        from agents import Agent, Model, ModelResponse, Runner, function_tool, set_tracing_disabled
+        from agents.usage import Usage
+        from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText
+
+        from tracekit.integrations.openai_agents import TracekitAgents
+        set_tracing_disabled(True)
+
+        def pay(n, payee, cents):
+            return [ResponseFunctionToolCall(id=f"fc_{n}", call_id=f"call-{n}", type="function_call",
+                                             name="send_payment", status="completed",
+                                             arguments=json.dumps({"payee": payee, "amount": cents, "currency": "USD"}))]
+        replies = [pay(1, self.PRINTS, 3000), pay(2, self.HOSTING, 4500), pay(3, self.PRINTS, 2500),
+                   pay(4, self.HOSTING, 4000),
+                   [ResponseOutputMessage(id="m", type="message", role="assistant", status="completed",
+                                          content=[ResponseOutputText(type="output_text", annotations=[], text="ok")])]]
+
+        class Scripted(Model):
+            async def get_response(self, *a, **kw):
+                return ModelResponse(output=replies.pop(0), usage=Usage(), response_id=None)
+
+            async def stream_response(self, *a, **kw):
+                raise NotImplementedError
+        paid = []
+
+        @function_tool
+        def send_payment(payee: str, amount: int, currency: str) -> str:
+            """Pay `amount` (in cents) of `currency` to `payee`."""
+            paid.append((payee, amount))
+            return "paid"
+        tk = TracekitAgents(self.s, self.reg)
+        agent = Agent(name="bills", model=Scripted(), tools=[tk.tool(send_payment)])
+
+        async def resume(result, answer):
+            for item in result.interruptions:
+                answer(result.context_wrapper.context["tracekit"]["approvals"][item.raw_item.call_id])
+            state = result.to_state()
+            await tk.apply_decisions(state)
+            return await Runner.run(agent, state, hooks=tk)
+
+        def grant(aid):   # tracekit approvals approve AID --grant ..., as the recipe writes it
+            flags = mock.Mock(payee=[self.PRINTS, self.HOSTING], max="50 USD", total="120 USD", for_="1h", count=None,
+                              tool=None, note="the print and hosting bills")
+            self.issued = self.call("grant_issue", self.me, **cli._grant_req(flags, self.run["run_id"], aid))
+            self.call("approval_decide", self.me, approval_id=aid, decision="approve")
+
+        async def flow():
+            result = await Runner.run(agent, "pay the bills", context={}, hooks=tk)
+            self.assertEqual(([i.raw_item.call_id for i in result.interruptions], paid), (["call-1"], []))   # held
+            self.assertEqual(self.decision("call-1")["data"]["decision"], "ask")
+            result = await resume(result, grant)
+            self.assertEqual([i.raw_item.call_id for i in result.interruptions], ["call-4"])
+            self.assertEqual(paid, [(self.PRINTS, 3000), (self.HOSTING, 4500), (self.PRINTS, 2500)])
+            result = await resume(result, lambda aid: self.call("approval_decide", self.me, approval_id=aid,
+                                                                decision="reject"))
+            self.assertEqual((result.interruptions, result.final_output), ([], "ok"))
+
+        asyncio.run(flow())
+        g = self.issued
+        self.assertTrue(g["self_approved"])   # the dev signer can't tell the person from the agent
+        self.assertEqual((g["tools"], g["used"]), (["send_payment"], [3000]))   # the held payment is its first
+        for call_id, payee, cents, left in (("call-2", self.HOSTING, 4500, 45), ("call-3", self.PRINTS, 2500, 20)):
+            d = self.decision(call_id)
+            self.assertEqual((d["data"]["decision"], d["data"]["rule_ids"][-1]), ("flag", "TK-GRANT"))
+            self.assertEqual(d["data"]["reasons"],
+                             [f"within grant {g['grant_id']}: {cents // 100} USD to {payee}; {left} of 120 USD left"])
+            self.assertEqual(d["ext"]["grant"]["fields"], {"amount": cents, "currency": "USD", "payee": payee})
+        d = self.decision("call-4")["data"]
+        self.assertEqual((d["decision"], d["reasons"]),
+                         ("ask", [f"grant {g['grant_id']}: 100 of 120 USD used; this call needs 40 USD"]))
+        self.assertEqual(paid, [(self.PRINTS, 3000), (self.HOSTING, 4500), (self.PRINTS, 2500)])   # call-4 never ran
+        self.assertEqual(self.call("grant_list", self.me, run_id=self.run["run_id"])["grants"][0]["used"], [10000])
+        out, rep, code = self.bundle()
+        self.assertEqual(code, 0, rep.checks)
+        self.assertTrue(rep.integrity.startswith("VERIFIED"), rep.integrity)
+        line = next(c for c in rep.checks if c["check"] == "intent grants")
+        self.assertEqual(line["status"], "pass", line)
+        self.assertTrue(line["detail"].startswith("1 grant(s) (1 self-approved: issued by the run's own user, which "
+                                                  "the agent can be); 2 call(s) released within them"), line)
 
 
 class TestPolicy(unittest.TestCase):

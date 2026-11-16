@@ -37,6 +37,10 @@ SYS_HOME = "/var/lib/tracekit"
 SYS_USER = "tracekit"
 OPT = "/opt/tracekit"   # system mode: root-owned virtualenv the signer and hooks run from
 OPT_PYTHON = os.path.join(OPT, "bin", "python")
+# v1 system mode's init, worded like doctor.REINIT: under PEP 668 (Debian 12, Ubuntu 23.04+) the system Python runs it
+# only from a clone of the release
+V1_REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), "
+             "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
 SYSTEMD_DIR = "/etc/systemd/system"
 TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
 OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart", "SessionEnd"]
@@ -108,9 +112,10 @@ V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
-DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the "
-                 f"signer as another user (system mode: {wiki_url('docs/deploy.md')}) or the agent in Tracekit Box, "
-                 "a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
+DEV_MODE_LINE = ("Dev mode decides and records every call: a denied call is blocked, a held one waits for you. But the "
+                 "agent runs as you, so it could stop the signer, change its policy or reach its key. To close that, "
+                 f"run the signer as another user (system mode: {wiki_url('docs/deploy.md')}) or the agent in Tracekit "
+                 "Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
@@ -214,6 +219,8 @@ def _install_helper(name, signer, sig, sock, darwin):
         _write_root_file(os.path.join(SYSTEMD_DIR, name + suffix), text.encode())
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     subprocess.run(["systemctl", "enable", "--now", name + ".socket"], check=False)
+    # a helper already running keeps the replaced venv's code until restarted; a stopped one starts from its socket
+    subprocess.run(["systemctl", "try-restart", name + ".service"], check=False)
 
 
 def launchd_plist(label, user, python, module, home, extra_args=()):
@@ -507,16 +514,19 @@ def agent_file(path):
     return data
 
 
-def plugin_enabled(user=None):
+def plugin_enabled(user=None, project=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
-    or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
-    managed settings: a later file's enabledPlugins entry wins, as in Claude Code. -> (settings path, plugin key)."""
+    or None. Reads `user` (default user_settings_all()), the project's (default: the working directory) project and
+    local settings, then the managed settings: a later file's enabledPlugins entry wins, as in Claude Code. ->
+    (settings path, plugin key)."""
     # lean: enabledPlugins plus Claude Code's install state; a plugin on through --plugin-dir, --settings or its
     # defaultEnabled with no entry, or from a claude.ai-synced marketplace (no known_marketplaces.json entry), goes
     # unseen; read those too if users hit that
     active, order, managed = {}, 0, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
-    for p in (*(user or user_settings_all()), *project, managed):
+    users = user_settings_all() if user is None else [p for p in user if p]
+    root = os.path.join(os.path.abspath(project or os.getcwd()), ".claude")
+    for p in (*users, *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
+              managed):
         try:
             enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
@@ -525,7 +535,7 @@ def plugin_enabled(user=None):
             continue
         for key, value in enabled.items():
             if (key == PLUGIN or key.rpartition("@")[0] == PLUGIN_NAME and
-                    _installed_tracekit_plugin(key, p)) and isinstance(value, bool):
+                    _installed_tracekit_plugin(key, p, root)) and isinstance(value, bool):
                 order += 1
                 if value:
                     active[key] = (p, key, order)
@@ -534,19 +544,19 @@ def plugin_enabled(user=None):
     return max(active.values(), key=lambda found: found[2])[:2] if active else None
 
 
-def _plugin_config_dirs(settings_path):
+def _plugin_config_dirs(settings_path, project=None):
     """The Claude config root whose plugins/ holds the install state for a plugin enabled in settings_path: a user
     settings file's own directory (another user's too: system-mode doctor reads the agent's), else this user's.
-    Claude Code never writes plugin state into a project's .claude."""
+    Claude Code never writes plugin state into a project's .claude (`project`, default the working directory's)."""
     parent = os.path.dirname(os.path.abspath(settings_path))
     config = os.environ.get("CLAUDE_CONFIG_DIR")
-    project = os.path.join(os.path.abspath(os.getcwd()), ".claude")
+    project = project or os.path.join(os.path.abspath(os.getcwd()), ".claude")
     if (os.path.basename(parent) == ".claude" and parent != project) or (config and parent == os.path.abspath(config)):
         return [os.path.realpath(parent)]
     return [os.path.realpath(config or os.path.join(os.path.expanduser("~"), ".claude"))]
 
 
-def _installed_tracekit_plugin(plugin_id, settings_path):
+def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
     """True only when Claude's install record and marketplace catalog point at Tracekit's plugin directory."""
     def tracekit_repo(value):
         if not isinstance(value, str):
@@ -556,7 +566,7 @@ def _installed_tracekit_plugin(plugin_id, settings_path):
         return value == "Cygnux-Labs/Tracekit"
 
     marketplace = plugin_id.rpartition("@")[2]
-    for config_dir in _plugin_config_dirs(settings_path):
+    for config_dir in _plugin_config_dirs(settings_path, project):
         try:
             installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
             records = installed.get("plugins", {}).get(plugin_id)
@@ -839,17 +849,51 @@ HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agen
                     "opencode": "opencode", "qwen": "qwen"}
 
 
-def resolve_harness(spec, agent="claude"):
-    """`--harness` value -> registered harness. spec is PATH or NAME=PATH; a script (#!) registers its interpreter as
-    the executable and the script itself, because that is what the kernel shows for the running harness."""
+def harness_spec(spec, agent="claude"):
+    """`--harness` value -> NAME=PATH, the spec init records: PATH absolute as given (found on PATH when it's a name),
+    its links kept, so a re-init binds what it names then, as a package upgrade moves a link's target; but its real
+    path when a user other than root could repoint it (_fixed), or a re-init would bind whatever they chose."""
     name, path = spec.split("=", 1) if "=" in spec else (agent, spec)
     found = path if os.path.isabs(path) else shutil.which(path)
     if not found or not os.path.exists(found):
         raise SystemExit(f"--harness: {path} not found")
+    given = os.path.abspath(found)
+    return f"{name or agent}={given if _fixed(given) else os.path.realpath(given)}"
+
+
+def _fixed(path):
+    """Whether only root can change what the absolute `path` names: every directory its lookup reads, the ones its
+    links' targets go through included, is root-owned and not group- or world-writable (a link is replaced only
+    through its directory)."""
+    todo, cur, hops = [c for c in path.split("/") if c], "/", 0
+    try:
+        while todo:
+            st = os.stat(cur)
+            if st.st_uid != 0 or st.st_mode & 0o022:
+                return False
+            nxt = os.path.join(cur, todo.pop(0))
+            if os.path.islink(nxt):
+                hops += 1
+                target = os.readlink(nxt)
+                todo[:0] = [c for c in target.split("/") if c]
+                cur = "/" if target.startswith("/") else cur
+                if hops > 40:   # a loop, as the kernel's limit
+                    return False
+            else:
+                cur = os.path.normpath(nxt)
+    except OSError:
+        return False
+    return True
+
+
+def resolve_harness(spec, agent="claude"):
+    """`--harness` value -> registered harness. spec is PATH or NAME=PATH; a script (#!) registers its interpreter as
+    the executable and the script itself, because that is what the kernel shows for the running harness."""
+    name, found = harness_spec(spec, agent).split("=", 1)
     real = os.path.realpath(found)
     with open(real, "rb") as f:
         head = f.read(256)
-    entry = {"name": name or agent, "exe": real}
+    entry = {"name": name, "exe": real}
     if head.startswith(b"#!"):
         interp = head[2:].split(b"\n", 1)[0].decode(errors="replace").strip().split()
         if interp and os.path.basename(interp[0]) == "env":
@@ -1202,7 +1246,7 @@ def migrate_system(fail_mode=None, harnesses=None):
         raise SystemExit(f"migrate --system needs root: sudo {OPT_PYTHON} -I -m tracekit migrate --system")
     signer_cfg = os.path.join(SYS_HOME, "config.json")
     if not os.path.exists(signer_cfg):
-        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` instead")
+        raise SystemExit(f"no system-mode signer at {SYS_HOME}; init one instead: {V1_REINIT}")
     unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
     try:
         runs_opt = f"ExecStart={OPT_PYTHON} " in read_text(unit)
@@ -1217,9 +1261,11 @@ def migrate_system(fail_mode=None, harnesses=None):
            "signer_isolation": "separate-user", "mode": "system", "fail_mode": fail_mode or "closed"}
     if scfg.get("proxy"):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
-    policy = (client.system_config() or {}).get("policy")
-    cfg["policy"] = policy or _opt_default_policy()  # 0.2.x configs have no policy key; use the root-owned default
-    _write_system_client_config(dict(cfg, **_v2_client_keys()))
+    old = client.system_config() or {}
+    cfg["policy"] = old.get("policy") or _opt_default_policy()  # 0.2.x configs have none: the root-owned default
+    # init's record stays, so doctor's re-init fixes still give its flags
+    _write_system_client_config(dict(cfg, **({"init_flags": old["init_flags"]} if "init_flags" in old else {}),
+                                     **_v2_client_keys()))
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses) if harnesses or not scfg.get("harnesses") else {}
     _update_signer_config(SYS_HOME, dict(hcfg, harness_helper=V1_HELPER_SOCKET), tk)
@@ -1282,25 +1328,29 @@ def _root_only(path):
     return None
 
 
-def _install_source():
+def _install_source(init):
     """Check, before init changes anything, that it runs a root-owned Python and installs Tracekit from a source the
-    agent's user cannot modify. Returns the pip requirement for an installed release, or None for this source checkout."""
+    agent's user cannot modify; `init` is the command its hints name (`init --v2 --user <agent-user>`). Returns the pip
+    requirement for an installed release, or None for this source checkout."""
+    from . import __version__
     from .harness_helper import trusted_file
+    # a clone of this release needs no pip in the system Python, which may refuse it (PEP 668); docs/deploy.md's route
+    src = f"/usr/local/src/tracekit-{__version__}"   # one per release: the next one's clone doesn't meet this one's
+    clone = (f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit {src}, then "
+             f"cd {src} && sudo /usr/bin/python3 -m tracekit {init}")
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
         if bad:
             raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
-                             "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
+                             f"root-owned Python from a root-owned clone, e.g. {clone}")
     if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
-        from . import __version__
         # lean: trusts PyPI over TLS for the exact version; hash pinning comes with signed release artifacts (M3-15)
         return (["--pre"] if any(c.isalpha() for c in __version__) else []) + [f"tracekit-ai=={__version__}"]
     # lean: one stat per file and ancestor; fine for a checkout of a few thousand files
     bad = trusted_file(ROOT) or _first_problem(ROOT, trusted_file, skip=(".git",))
     if bad:
         raise SystemExit(f"the source checkout could be modified by a non-root user ({bad}). Clone into a root-owned "
-                         "directory, e.g. sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit, "
-                         "then cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+                         f"directory, e.g. {clone}")
     return None
 
 
@@ -1319,7 +1369,10 @@ def _install_venv(requirement, extra=""):
             tmp = tempfile.mkdtemp()
             requirement = [os.path.join(tmp, "Tracekit")]
             shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
-        subprocess.run([sys.executable, "-m", "venv", "--clear", "--prompt", "tracekit", new], check=True)
+        # the base interpreter: before Python 3.11 a venv built by a venv's python links to that python, which the
+        # swap below replaces (init run from /opt/tracekit/bin/python would leave OPT's python linking to itself)
+        subprocess.run([os.path.realpath(sys.executable), "-m", "venv", "--clear", "--prompt", "tracekit", new],
+                       check=True)
         name, eq, version = requirement[-1].partition("==")
         subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement[:-1],
                         name + extra + eq + version], check=True)
@@ -1378,19 +1431,20 @@ def v1_results(checks=None):
                                         f"sudo {OPT_PYTHON} -I -m tracekit migrate --system")]
         except (OSError, ValueError, AttributeError):   # no or unreadable signer config: the other checks say so
             pass
-        for h in _installed_hooks():
+        found = _installed_hooks()
+        for h in found:
             out.append(result("D-V1-HOOKS", OK, "hooks: " + (' and '.join(h.get('versions', ())) or h.get('error')
                                                              or 'none') + f" in {h['settings']}"))
+        managed = any(h.get("managed") and "v1" in h.get("versions", ()) for h in found)   # init --managed's
         try:
             sc = client.system_config()
         except client.SystemConfigError as e:
-            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}",
-                                 "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")]
+            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}", v1_reinit(None, managed))]
         if sc is None:
             return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {client.SYSTEM_CONFIG} is missing or not "
-                                 "root-owned", "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")]
+                                 "root-owned", v1_reinit(None, managed))]
         from .policy import DEFAULT_POLICY
-        reinstall = "re-run sudo /usr/bin/python3 -m tracekit init --user <agent-user> to reinstall into " + OPT
+        reinstall = f"re-run init to reinstall into {OPT}: " + v1_reinit(sc, managed)
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
                   ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
@@ -1402,6 +1456,52 @@ def v1_results(checks=None):
             bad = _first_problem(path, _root_only)
         out.append(result("D-V1-" + label.upper().replace(" ", "-"), FAIL if bad else OK, f"{label}: {bad or path}", fix))
     return out + helper
+
+
+def v1_reinit(sc, managed):
+    """V1_REINIT with the flags v1 init recorded in the system config `sc` (None: it's missing or can't be read), as
+    doctor's v2 fixes get theirs (reinit_flags); without a record, --managed where `managed` (the managed settings
+    hold v1 hooks)."""
+    record = (sc or {}).get("init_flags")
+    path = MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    flags, tail = reinit_flags(record, path if managed or isinstance(record, list) and "--managed" in record else None,
+                               "--managed, --managed-only, --project DIR, --proxy, --no-hooks, --no-service",
+                               f"{client.SYSTEM_CONFIG} " + ("doesn't record them" if sc else
+                                                             "records them, and it's missing or can't be read"))
+    return V1_REINIT + flags + tail
+
+
+MANAGED_ONLY_OFF = ("; init turned on allowManagedHooksOnly and it is off now; drop --managed-only only if you turned "
+                    "it off on purpose")
+
+
+def setting(path, key):
+    """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable (read as
+    agent_file reads: a FIFO or a device can't hang or flood the reader)."""
+    try:
+        s = json.loads(agent_file(path))
+    except (OSError, ValueError):
+        return None
+    return s.get(key) if isinstance(s, dict) else None
+
+
+def reinit_flags(record, managed, examples, why):
+    """What a fix that re-runs system init (doctor's, v1_reinit) adds for init's own flags: (the flags, shell-quoted;
+    what follows the command). record: the flags init recorded in root-owned client.json, never anything the agent's
+    user can write. managed: Claude Code's managed settings file when init put its hooks there. --managed-only stays
+    when init was run with it (the record, else init's marker in `managed`), with a note when allowManagedHooksOnly is
+    off now: an MDM policy or an admin may have replaced the file, and a re-init without it would leave every user's
+    own hooks running. Without a record (an older init's): --managed[-only] from `managed`, and a note that doctor
+    can't tell the rest (`examples` names some, `why` says why)."""
+    known = isinstance(record, list) and all(isinstance(f, str) for f in record)
+    only = "--managed-only" in record if known else bool(managed) and setting(
+        managed, "_tracekit_allowManagedHooksOnly") is True
+    off = MANAGED_ONLY_OFF if only and managed and setting(managed, "allowManagedHooksOnly") is not True else ""
+    if known:
+        return "".join(f" {shlex.quote(f)}" for f in record), off
+    return (" --managed" + " --managed-only" * only if managed else ""), off + (
+        f"; add each flag this host's init was run with that this lacks ({examples}, ...): {why}, so doctor can't "
+        "tell them, and init without them goes back to its defaults")
 
 
 def _require_system(experimental_macos, other=", or use tracekit init --dev for a same-user signer"):
@@ -1589,13 +1689,22 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         if bad:
             raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
                              f"{target_user} cannot change it")
-    harnesses = [resolve_harness(h, agent) for h in harnesses]
+    given = [harness_spec(h, agent) for h in harnesses]
+    harnesses = [resolve_harness(h, agent) for h in given]
+    # the flags doctor's re-init fixes give again (client.json records init's agent and --no-hooks already). Not
+    # --i-understand-agent-is-privileged: init's refusal names it, for a user that gained a privilege since; nor the
+    # witness flags: V2_NO_WITNESS keeps --no-witness, and --public-witness again can only make init fail
+    flags = [f for f, on in (("--managed", managed), ("--managed-only", managed_only)) if on] + [
+        "--approver", approver.pw_name, *(["--policy", policy] if policy else []),
+        *(["--project", project] if project else []), *(a for h in given for a in ("--harness", h))] + [
+        f for f, on in (("--egress", egress), ("--no-thinking-summaries", not thinking), ("--no-service", no_service))
+        if on]
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     recorded = (sc.get("hooks") or {}).get("settings")
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
-    requirement = _install_source()
+    requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
     for path, mode in ((V2_DATA, 0o700),) + (((run_dir, 0o755),) if darwin else ()):
@@ -1699,7 +1808,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
                                      hooks={"user": target_user, "settings": settings, "agent": agent,
                                             **({"env": proxy} if proxy else {}),
-                                            **({} if hooks else {"no_hooks": True})},   # doctor: the choice it is
+                                            **({} if hooks else {"no_hooks": True}),   # doctor: the choice it is
+                                            "init_flags": flags},
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if not harnesses:
@@ -1821,7 +1931,7 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     darwin = _require_system(experimental_macos)
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     owner = _agent_user(target_user, allow_privileged)
-    requirement = _install_source()
+    requirement = _install_source("init --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:
         pwd.getpwnam(user)
@@ -1887,7 +1997,16 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
-    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, **_v2_client_keys()))
+    # the flags doctor's re-init fixes give again; the signer's config keeps the witnesses, the checkpoint interval,
+    # the harnesses and the external signer over a later init. Not --i-understand-agent-is-privileged (init_system_v2)
+    flags = [f for f, on in (("--managed", managed), ("--managed-only", managed_only), ("--no-hooks", not hooks),
+                             ("--no-service", no_service), ("--proxy", proxy), ("--experimental", proxy),
+                             ("--fail-closed", fail_mode == "closed"), ("--experimental-macos", darwin)) if on] + (
+        ["--project", project] if project else []) + (
+        ["--proxy-port", str(proxy_port)] if proxy and proxy_port != 8787 else []) + (
+        ["--agent", agent] if agent != "claude" else [])
+    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, init_flags=flags,
+                                     **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
     failed = []   # what to check for each service that did not start
     for plist in plists:   # after the pin, and booted out first: a running signer must reload its config

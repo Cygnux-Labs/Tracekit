@@ -1,6 +1,7 @@
 """Client side: send events to tracekitd over its local transport. Runs as the agent's user and
 never writes the ledger. Its own small state (per-run counters, pending gaps) is agent-writable
 by design: tampering with it only produces capture.gap events on the signer side."""
+import functools
 import hashlib
 import json
 import os
@@ -141,7 +142,21 @@ def remote_url_error(url):
 
 def no_redirect_opener(context=None):
     """A urllib opener that bypasses proxies and returns any 3xx as an HTTPError instead of following it,
-    so credential headers are never re-sent to a redirect target. `context`: an ssl.SSLContext for HTTPS."""
+    so credential headers are never re-sent to a redirect target. `context`: an ssl.SSLContext for HTTPS; without
+    one, every call gets the same opener (_shared_opener)."""
+    return _no_redirect_opener(context) if context is not None else _shared_opener()
+
+
+@functools.lru_cache(maxsize=1)
+def _shared_opener():
+    """The opener for calls without a context, built once: building one makes an SSL context (Python 3.12 on), which on
+    Windows loads the system's certificates each time, ~40 ms a call (#722). It is shared across threads: neither the
+    OpenerDirector nor its handlers keep per-request state (a redirect's state is on the request, and each request
+    opens its own connection)."""
+    return _no_redirect_opener(None)
+
+
+def _no_redirect_opener(context):
     import urllib.request
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):

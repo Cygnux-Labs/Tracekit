@@ -73,6 +73,40 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertFalse([c for c in cmds if "--now" in c])
         self.assertIn("restarted tracekitd and tracekit-proxy", out.getvalue())
 
+    def test_init_records_the_flags_doctor_gives_again(self):
+        """V1_REINIT, doctor's fix, named none of init's flags: one followed on an init --managed host wrote the hooks
+        into the agent's own settings, beside the managed ones. Init records them in root-owned client.json, with
+        --managed-only (here the managed file holds none of init's settings, as when MDM replaced it: the fix keeps
+        it and says so); not --i-understand-agent-is-privileged, whose refusal init names."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        me, managed = install.pwd.getpwuid(os.getuid()), os.path.join(d, "managed-settings.json")
+        with as_root_on_linux(), mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
+                mock.patch.object(install, "SYS_HOME", os.path.join(d, "home")), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=me), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "harness_config", return_value={"harness_binding": "off"}), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", return_value=mock.Mock(returncode=0, stdout="")), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install.client, "system_config", return_value=None), \
+                mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                mock.patch.object(install, "_pin_policy"), mock.patch.object(install, "install_hooks"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            install.init_system("agent", [], managed=True, managed_only=True, no_service=True, proxy=True,
+                                proxy_port=9000, fail_mode="closed", allow_privileged=True)
+            sc = sys_cfg.call_args.args[0]
+            self.assertEqual(sc["init_flags"], ["--managed", "--managed-only", "--no-service", "--proxy",
+                                                "--experimental", "--fail-closed", "--proxy-port", "9000"])
+            self.assertEqual(install.v1_reinit(sc, False), install.V1_REINIT + " --managed --managed-only --no-service "
+                             "--proxy --experimental --fail-closed --proxy-port 9000; init turned on "
+                             "allowManagedHooksOnly and it is off now; drop --managed-only only if you turned it off "
+                             "on purpose")
+            install.init_system("agent", [], project=os.path.join(d, "my repo"), no_service=True)
+            self.assertEqual(sys_cfg.call_args.args[0]["init_flags"], ["--no-service", "--project",
+                                                                       os.path.join(d, "my repo")])
+
     def test_rerun_without_harness_keeps_the_registered_binding(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -242,10 +276,14 @@ class SystemModeUsesOpt(unittest.TestCase):
             self.assertNotIn("CAP_", unit)
             self.assertIn("ProtectKernelTunables=true\n", unit)
 
-    def test_migrate_keeps_a_policy_path(self):
+    def test_migrate_keeps_a_policy_path_and_inits_record(self):
+        """migrate --system, a fix doctor gives, rewrote client.json without init's init_flags: the re-init fixes doctor
+        gave after it dropped init's flags again."""
         d = self.migrate_dir()
         me = install.pwd.getpwuid(os.getuid())
-        for existing, expected in (({"policy": "/etc/tracekit/p.yaml", **V2_KEYS}, "/etc/tracekit/p.yaml"), (None, POLICY)):
+        flags = ["--managed", "--proxy", "--experimental"]
+        for existing, expected in (({"policy": "/etc/tracekit/p.yaml", "init_flags": flags, **V2_KEYS},
+                                    "/etc/tracekit/p.yaml"), (None, POLICY)):
             with as_root_on_linux(), mock.patch.object(install, "SYS_HOME", d), \
                     mock.patch.object(install, "SYSTEMD_DIR", d), \
                     mock.patch.object(install.client, "system_config", return_value=existing), \
@@ -261,13 +299,14 @@ class SystemModeUsesOpt(unittest.TestCase):
                 install.migrate_system()
             self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
             self.assertEqual(sys_cfg.call_args.args[0].get("signer"), existing and V2_KEYS["signer"])
+            self.assertEqual(sys_cfg.call_args.args[0].get("init_flags"), existing and flags)
 
     def test_release_install_pins_the_pypi_name_and_version(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.object(install, "ROOT", d), \
                 mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
-            req = install._install_source()
+            req = install._install_source("init")
         self.assertEqual(req[-1], f"tracekit-ai=={__version__}")
         self.assertEqual("--pre" in req, any(c.isalpha() for c in __version__))
 
@@ -283,12 +322,13 @@ class SystemModeUsesOpt(unittest.TestCase):
             return None if p in (sys.executable, os.path.dirname(os.__file__), src) or p.startswith(vcs) else f"{p} is mine"
         with mock.patch.object(install, "ROOT", src), mock.patch("tracekit.harness_helper.trusted_file", trusted_file):
             with self.assertRaises(SystemExit) as cm:
-                install._install_source()
+                install._install_source("init")
         self.assertIn("pyproject.toml is mine", str(cm.exception))
-        self.assertIn("sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit", str(cm.exception))
+        self.assertIn(f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit "
+                      f"/usr/local/src/tracekit-{__version__}", str(cm.exception))   # this release, as docs/deploy.md
         with mock.patch.object(install, "ROOT", src), \
                 mock.patch("tracekit.harness_helper.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
-            self.assertIsNone(install._install_source())  # the repository metadata is not installed
+            self.assertIsNone(install._install_source("init"))  # the repository metadata is not installed
 
     def opt(self):
         d = tempfile.mkdtemp()
@@ -363,6 +403,25 @@ class SystemModeUsesOpt(unittest.TestCase):
             self.assertEqual(f.read(), f'VIRTUAL_ENV="{opt}"\n')
         self.assertEqual(venv[venv.index("--prompt") + 1], "tracekit")
         self.assertEqual(os.readlink(os.path.join(b, "python")), sys.executable)
+
+    def test_init_run_from_a_venv_builds_the_new_venv_from_the_base_python(self):
+        """#463: init run from a venv (/opt/tracekit/bin/python, a link) built the new venv from that link. Before
+        Python 3.11 the new venv's python then links to the old venv's, and after the swap to itself (ELOOP)."""
+        opt = self.opt()
+        link = os.path.join(os.path.dirname(opt), "python")
+        os.symlink(sys.executable, link)
+        venv = []
+
+        def run(cmd, **kw):
+            if "venv" in cmd:
+                venv.extend(cmd)
+                os.makedirs(os.path.join(cmd[-1], "bin"))
+        with mock.patch.object(install, "OPT", opt), mock.patch.object(install.sys, "executable", link), \
+                mock.patch.object(install.subprocess, "run", side_effect=run), \
+                mock.patch.object(install.os, "lchown"), \
+                mock.patch.object(install, "_opt_default_policy", return_value=POLICY):
+            install._install_venv(["tracekit-ai==0"])
+        self.assertEqual(venv[0], os.path.realpath(sys.executable))
 
     def test_hook_command_runs_the_opt_interpreter(self):
         self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.hook;", install._hook_command(python=install.OPT_PYTHON))
@@ -460,6 +519,49 @@ class Doctor(unittest.TestCase):
     def test_fails_without_a_system_install(self):
         with mock.patch.object(install.client, "system_config", return_value=None):
             self.assertEqual(self.run_doctor(None)[0], 1)
+
+    def test_system_config_fix_names_the_root_owned_clone(self):
+        # under PEP 668 (Debian 12, Ubuntu 23.04+) the bare system-Python init fails outside a clone of the release
+        with mock.patch.object(install.client, "system_config", return_value=None):
+            out = self.run_doctor(None)[1]
+        self.assertIn("fix: from a root-owned clone of the release (", out)
+        self.assertIn("#laptop-system-mode), sudo /usr/bin/python3 -m tracekit init --user <agent-user>", out)
+
+    def test_the_reinit_fix_keeps_inits_managed_hooks_and_flags(self):
+        """V1_REINIT named no --managed: following it on an init --managed host wrote user hooks beside the managed
+        ones. With init's record the fix gives its flags again, shell-quoted; without one (an older init's), --managed
+        where the managed file has v1 hooks (--managed-only where init's marker is), and that doctor can't tell the
+        rest."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        managed = os.path.join(d, "managed-settings.json")
+        hooks = [{"settings": managed, "managed": True, "events": install.TOOL_EVENTS, "versions": ["v1"]}]
+
+        def fixes(sc):
+            with mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
+                    mock.patch.object(install, "_installed_hooks", return_value=hooks), \
+                    mock.patch.object(install, "OPT", d), \
+                    mock.patch.object(install.client, "system_config",
+                                      **({"side_effect": sc} if isinstance(sc, Exception) else {"return_value": sc})):
+                return {r["id"]: r["fix"] for r in install.v1_results()}
+        cant = ("; add each flag this host's init was run with that this lacks (--managed, --managed-only, --project "
+                f"DIR, --proxy, --no-hooks, --no-service, ...): {client.SYSTEM_CONFIG} ")
+        reinstall = f"re-run init to reinstall into {d}: {install.V1_REINIT}"
+        self.assertEqual(fixes({"socket": "/s"})["D-V1-RUNTIME"], reinstall + " --managed" + cant
+                         + "doesn't record them, so doctor can't tell them, and init without them goes back to its "
+                           "defaults")
+        self.assertEqual(fixes(client.SystemConfigError("not root's"))["D-SYSTEM-CONFIG"], install.V1_REINIT
+                         + " --managed" + cant + "records them, and it's missing or can't be read, so doctor can't "
+                         "tell them, and init without them goes back to its defaults")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, managed, install.OPT_PYTHON)
+        self.assertTrue(fixes({"socket": "/s"})["D-V1-RUNTIME"].startswith(reinstall + " --managed --managed-only;"))
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--managed", "--managed-only", "--proxy",
+                                                               "--experimental"]})["D-V1-RUNTIME"],
+                         reinstall + " --managed --managed-only --proxy --experimental")
+        hooks.clear()   # a record without --managed: no hooks moved into the managed file
+        self.assertEqual(fixes({"socket": "/s", "init_flags": ["--project", "/srv/my repo"]})["D-V1-RUNTIME"],
+                         reinstall + " --project '/srv/my repo'")
 
     def test_untrusted_system_config_is_a_fail_line(self):
         with mock.patch.object(install.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):

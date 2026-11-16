@@ -39,10 +39,12 @@ OUTCOMES = {*view.OUTCOMES.values(), *view.ANSWERS.values(), view.OPEN, "not ans
 SHARE = [re.compile(x) for x in (
     r"Tracekit [\w.+-]+ field report \(tracekit (?:report|audit) --share\): "
     r"(?:[\d.]+ (?:day|hour|minute|second)s?|every transcript)",
-    rf"a replay against today's policy, not a signed record: {N} Claude Code sessions?",
+    rf"a replay against today's policy, not a signed record: {N} (?:Claude Code|coding-agent) sessions?",
     r"Integrity: the store \w+, \d+ of \d+ runs verify",
     rf"Runs that verify, by agent: (?:{_counts(AGENTS | {'other'})}|none)",
     rf"Tool calls: {N}   {_counts(DECISIONS)}",
+    r"Calls by decision and day \(24 hours each, day 1 from the window's start\):",
+    rf"  (?:Day {N}|No time): {_counts(DECISIONS)}",
     rf"Holds: {N}(?:   {_counts(OUTCOMES)})?(?:   \({N} of the agent's retries of a held call, counted with it\))?",
     rf"Gaps \(signed records that something may be missing\): {N}(?:   {_counts(set(view.GAP_WORDS) | {'other'})})?",
     r"(?:Denied and flagged calls, by rule|Calls by decision and rule) \(one call can match several rules\):(?: none)?",
@@ -197,7 +199,7 @@ class TestFeedback(unittest.TestCase):
         self.assertEqual(query["title"], ["Field report"])
         # the machine and the hooks go in "agent"; "How long, and on what" is the person's to fill in
         self.assertRegex(query["agent"][0], rf"^Tracekit {re.escape(__version__)}, .+, Python \S+\nCoding-agent hooks "
-                         r"installed: codex\n\(filed with `tracekit feedback`, for #385\)$")
+                         r"installed: codex\n\(filed with `tracekit feedback`\)$")
         self.assertNotIn("how-long", query)
         self.assertEqual(query["share"], ["no dev store on this machine (tracekit audit --share --since 7d prints a "
                                           "replay's counts)"])   # no dev store in this HOME; the form requires it
@@ -246,11 +248,26 @@ class TestFeedback(unittest.TestCase):
         is no count line; a FreeBSD release is an OS feedback._os gives."""
         ok = "\n".join(["# Tracekit field report", "", "OS: FreeBSD-14.0-RELEASE", "", "## Counts", "", "```text", WEEK])
         self.assertEqual(report_problems(ok + "\n```\n"), [])
+        replay = "a replay against today's policy, not a signed record: 1 coding-agent session"
+        self.assertEqual(report_problems(f"{ok}\n{replay}\n```\n"), [])
         for line in ("Runs that verify, by agent: acme payroll bot 1", "  acme-payroll-guard 1, 0, 0",
                      "Holds: 3   psql -h prod drop customers 1"):
             with self.subTest(line):
                 self.assertEqual(report_problems(f"{ok}\n{line}\n```\n"),
                                  [f"line 18 ({line[:40]!r}): the counts hold only what tracekit report --share prints"])
+
+    def test_audit_shares_day_lines_are_count_lines(self):
+        """#746: the day lines tracekit audit --share prints with --since may go in a field report file."""
+        from tracekit import audit
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "calls.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"tool": "Bash", "args": {"command": "ls"}}\n')
+            days = [line for line in audit.share(audit.audit(calls=path, since="2d")).splitlines()
+                    if line.startswith(("Calls by decision and day", "  Day ", "  No time"))]
+        self.assertEqual(len(days), 4)
+        text = "\n".join(["# Tracekit field report", "", "## Counts", "", "```text", WEEK, *days, "```", ""])
+        self.assertEqual(report_problems(text), [])
 
     def test_every_field_report_in_docs_is_report_shaped(self):
         for name in sorted(os.listdir(REPORTS)):

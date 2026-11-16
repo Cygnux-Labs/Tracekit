@@ -9,7 +9,7 @@ It is experimental ([support](support.md)): it works and is tested, but may chan
 ## Usage
 
 ```
-tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json | --share]
+tracekit audit [ROOT | --calls FILE] [--agent NAME] [--policy PATH] [--since 7d] [--show] [--all] [--json | --share]
 ```
 
 ```
@@ -17,6 +17,7 @@ $ tracekit audit --since 7d --show
 a replay against today's policy, not a signed record
 policy: …/tracekit/policy2/packs/dev.yaml (sha256:…)
 
+read: claude (~/.claude/projects): 1204 calls in 31 sessions
 1204 tool calls in 31 sessions since 7d: Tracekit would have denied 2 and held 9 for a person; it would have flagged 57 and allowed 1136.
 …
 by rule:
@@ -30,8 +31,24 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` defaults to `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set (Claude Code keeps its config
-  there then), else `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
+- `ROOT` is a Claude Code transcripts' folder (Codex's with `--agent codex`, Cursor's with `--agent cursor`,
+  Cline's with `--agent cline`, Gemini CLI's with `--agent gemini`, Qwen Code's with `--agent qwen`, and another agent's once it has a reader); a folder that doesn't exist is
+  an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
+  (see [What it reads](#what-it-reads)), and exits 2 when there is none.
+- `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
+  file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
+  exits 2 with the reason; for a FILE that isn't a regular file, what it is: a directory, a pipe, a symlink (audit
+  follows none), or another file that isn't regular, such as `/dev/null`.
+- `--agent NAME` takes an agent's name as `tracekit init --agent` does (`claude`, `codex`, `cursor`, `gemini`,
+  `qwen`, `opencode`, ...). With `--calls`, each call is decided as that agent's Tracekit hook would decide it: a call the hook
+  denies before it maps it (Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent` and `agentic_fetch`, a Devin
+  call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
+  them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
+  as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
+  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
+  `--calls`. An agent with no reader (every agent but `claude`, `codex`, `cursor`, `cline`, `gemini` and `qwen`)
+  needs `--calls FILE`, and `--agent claude`, `codex`, `cursor`, `cline`, `gemini` or `qwen` a ROOT or `--calls FILE`:
+  without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -42,26 +59,136 @@ denied and held calls (--all for every call):
 - `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
   of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
   not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
-  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description. A TK-SHELL-PARSE
+  hold also gives its cause's count on its own line (e.g. `ask TK-SHELL-PARSE quote 2`): the lines hold only how
+  many calls the policy couldn't read for each cause in the engine's fixed list of cause names (`quote`, `input`,
+  `name`, …), never the command itself. With `--since`, it also prints the calls by decision for each day of the
+  window, 24 hours each and numbered from the window's start (`Day 1`), a day with no calls too, and the calls with no
+  time (a calls-file line without `time`) on a `No time` line. A day line holds no date, weekday or hour, and the
+  window's start isn't printed, but with the date you post it, a reader can tell which days the agent ran. Without
+  `--since` there are no day lines: day 1 would be the first call's, and say how far back the transcripts go.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
 ## What it reads
 
-Every `.jsonl` file under ROOT, at any depth: each Claude Code session's transcript, and its subagents' files
+One reader per agent, each with its default folder:
+
+| Agent | Default folder |
+|---|---|
+| `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `codex` | `$CODEX_HOME/sessions` when it is set, else `~/.codex/sessions` |
+| `cursor` | `~/.cursor/projects` |
+| `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
+| `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
+| `qwen` | `$QWEN_RUNTIME_DIR/projects` when it is set, else `$QWEN_HOME/projects`, else `~/.qwen/projects` |
+
+The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
+`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`. An
+agent read from more than one of its default folders is one entry: its calls and sessions add up, and `folder` is the
+list of them.
+
+Claude Code's reader reads every `.jsonl` file under its folder, at any depth: each Claude Code session's transcript, and its subagents' files
 (`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
-It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
+Codex's reader reads `rollout-*.jsonl` files under `$CODEX_HOME/sessions/YYYY/MM/DD/` when `CODEX_HOME` is set, else
+`~/.codex/sessions/YYYY/MM/DD/`. To replay Codex only, use `tracekit audit "$CODEX_HOME/sessions" --agent codex --since 7d`,
+or `tracekit audit ~/.codex/sessions --agent codex --since 7d` when `CODEX_HOME` is unset. Each `response_item` call
+is rebuilt as the PreToolUse payload Codex sends for it (`exec_command` arrives as `Bash` with its `cmd` as `command`,
+and MCP tools arrive as `mcp__<server>__<tool>`), then decided as Tracekit's Codex hook decides that payload
+(`apply_patch` as an `Edit` of the files its patch names). Calls without a matching PreToolUse hook, such as
+`write_stdin`, are skipped. Repeated calls with the same id and mapped contents count once; calls with no valid id
+are counted without deduplication.
+
+Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
+CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
+subagent's file in `<id>/subagents/`, which counts under `<id>`). A ROOT can also be one project's folder or its
+`agent-transcripts` folder. Each line is a JSON object; a `role: assistant` line's message may contain `tool_use`
+blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is decided as `Bash`). A line has no time,
+no id and no tool result: with `--since`, a file last written before the window is skipped and one written in it
+counts whole, and a call can't be told from a copy of it, so each line counts. The IDE's chat database (`state.vscdb`)
+isn't read.
+
+Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
+VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
+kept a task, in VS Code's global storage (`saoudrizwan.claude-dev/tasks` under `~/Library/Application
+Support/Code/User/globalStorage` on macOS, `~/.config/Code/User/globalStorage` on Linux and
+`%APPDATA%\Code\User\globalStorage` on Windows; Cline 4 reads those but doesn't move them, so with no ROOT audit
+reads each of those that exists as well). Like Claude Code's reader, it stays inside its folder, through a Windows
+directory junction too. Each `tool_use` block of an assistant message is a call, mapped as Tracekit's Cline hook maps
+it, so every command of a `run_commands` and every file of a `read_files` is decided; a call the hook can't read is a
+deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
+session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
+message's text, rather than as a `tool_use` block, isn't read.
+
+Gemini CLI's reader reads each project's `chats` folder under its tmp folder (give that, `~/.gemini`, one project's
+folder or its `chats` folder as ROOT; any other folder is refused, naming the one to give): `<project>/chats/session-*.jsonl` (JSON
+lines, since Gemini CLI 0.39), `<project>/chats/session-*.json` (one JSON object a session, before 0.39), and a
+subagent's `<project>/chats/<parent session id>/<id>.jsonl` (`<id>.json` before 0.39), which counts under its parent's
+session. The project's other files are not read, whatever the project is named. Tool calls are in a message's
+`toolCalls`, and in a `$set` line's full history; Gemini CLI writes a message again each time it updates, so a call
+counts once, by its id, as its last copy has it. A call stays counted after a `$rewindTo`: the conversation dropped it,
+but the agent made it. Each call is decided as Gemini CLI's Tracekit hook decides it, so `run_shell_command` is decided
+as `Bash`. A record whose messages or tool calls aren't the lists and objects Gemini CLI writes counts as one malformed
+entry.
+
+Qwen Code's reader reads each project's `chats` folder under its projects folder, as Qwen Code 0.27.4 writes them
+(give that, the folder that holds it, such as `~/.qwen`, one project's folder or its `chats` folder as ROOT; any other
+folder is refused, naming the one to give): `<project>/chats/<session id>.jsonl`, one JSON record a line. The project's
+other files are not read. Its folder is in Qwen Code's runtime folder: `$QWEN_RUNTIME_DIR` when it is set, else
+`$QWEN_HOME`, which is Qwen Code's own folder (it replaces `~/.qwen`, not `~`), else `~/.qwen`. A call is a
+`functionCall` part of an `assistant` record's message, at that record's time; it counts once in its session, by its
+id (`qwen --continue` appends to the same file and writes no earlier call again). Qwen Code also logs each call it
+runs in a `ui_telemetry` record (`qwen-code.tool_call`), the session's own and a background agent's, such as its memory
+extractor's, which has no other record; Qwen Code 0.27.4 sends those to the PreToolUse hook too, so a call only
+telemetry holds counts as well, and one both hold counts once. Each call is decided as Qwen Code's Tracekit hook
+decides it, so `run_shell_command` is decided as `Bash`. A line that isn't JSON, or a record of the wrong shape, counts
+as one malformed entry; a session file with no Qwen Code record in it (an empty file, or one that isn't Qwen Code's)
+is reported unreadable, never read as a session with no calls.
+
+Two kinds of Gemini CLI session aren't in the default folder. When Gemini CLI runs in its macOS Seatbelt sandbox (turned
+on with `-s` or `GEMINI_SANDBOX`, which sets `SANDBOX=sandbox-exec` inside it), its runtime state, sessions included, is
+in `~/.cache/.gemini/tmp` (under `$GEMINI_CLI_HOME` when that is set): read it with `tracekit audit
+~/.cache/.gemini/tmp --agent gemini`. And Gemini CLI deletes sessions older than 30 days by default
+(`general.sessionRetention`), so older calls can't be audited: set a longer `general.sessionRetention.maxAge` in its
+settings to keep them.
+
+The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
+JSON.
+
+## Calls file
+
+Any agent, or any log, can be audited by turning it into a calls file: one JSON object a line.
+
+```json
+{"time": "2026-11-10T14:02:11Z", "session": "s1", "tool": "Bash", "args": {"command": "rm -rf build"}}
+```
+
+`tool` (a string) and `args` (an object) are required; a line without them counts as malformed. `time` (ISO-8601, UTC
+unless it gives an offset) and `session` are optional: a call without a time is kept whatever `--since`, a `time`
+that isn't ISO-8601 (an epoch number, say) counts the line as malformed, and a call without a session counts under
+the file's name (`stdin` for `-`). With `--share`, a calls file read without `--since` is "the whole calls file".
+
+For example, a log of one JSON object a line with `ts`, `tool` and `input`:
+
+```
+jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --calls - --since 7d
+```
 
 ## Output
 
-- One line first: how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and
-  allowed.
+- After the disclaimer and the policy, the `read:` line: each agent read, with its folder, calls and sessions.
+- Then how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and allowed.
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`). A call the policy engine fails on counts as a deny
-  (`TK-ENGINE-ERROR`), as the signer would decide it.
+  (`TK-ENGINE-ERROR`), as the signer would decide it. A shell command that is neither text nor an argv of strings
+  (an argv with an item that isn't a string, say), with any `--agent` or none, is held (`TK-SHELL-PARSE`), as the
+  signer holds it; with `--agent cline` or `--agent devin`, a call that agent's hook can't read is denied
+  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it. So is a goose `read_image` call whose source
+  Tracekit can't read as a URL (`http://[::1/cat.png`): that is the v2 hook's answer, while the v1 hook allows such a
+  call under the default fail-open mode.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
   engine's own rules).
 - The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with

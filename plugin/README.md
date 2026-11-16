@@ -5,7 +5,9 @@
 
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
 `/tracekit-pending`, and the `tracekit-holds` skill, which tells Claude what to do when Tracekit holds or blocks one of
-its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it.
+its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it. The
+`tracekit-setup` skill, a copy of the one in [tracekit-skills](https://github.com/Cygnux-Labs/tracekit-skills), has
+Claude set Tracekit up for you, asking before each step.
 
 ```text
 /plugin marketplace add Cygnux-Labs/Tracekit
@@ -17,9 +19,12 @@ The plugin only carries the hooks. The signer and the verifier are the `tracekit
 ```bash
 pip install tracekit-ai==1.6.0
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
-# or, for tamper resistance against the agent's own user (Linux):
+# or, for tamper resistance against the agent's own user (Linux), in a root-owned clone of the release:
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
 ```
+
+System mode runs init from a root-owned clone of the release, which
+[laptop system mode](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy#laptop-system-mode) sets up.
 
 What is recorded: every tool call (the command, file path or URL in clear, file contents and outputs as hashes), the
 policy's decision on it, and your prompts as hashes. In dev mode the signer also keeps each call's redacted arguments
@@ -81,7 +86,7 @@ tracekit export --last -o last-v1-run.tkb                # each v1 run you need 
 tracekit uninstall                                         # stops tracekitd
 tracekit signer bridge --v1-home ~/.tracekit-signer --dev  # only before the v2 signer records anything
 tracekit init --dev --v2 --no-hooks
-# system mode instead: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
+# system mode instead, in a root-owned clone of the release: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
 ```
 
 If the v2 signer has already recorded something, the bridge refuses and the two logs stay separate; both keep
