@@ -1384,18 +1384,37 @@ class Codex(unittest.TestCase):
         s = out["sources"]
         self.assertEqual((s["signed"]["steps"], s["signed"]["also"]["steps"], s["codex"]["steps"]), (1, 0, 1))
 
-    def test_a_matched_step_counts_at_its_signed_counts_in_the_sessions_place(self):
-        """The 2nd review of #653: a joined step kept the session's unsigned counts; it counts at its signed counts,
-        in the session step's place, with `src` signed — what `_join` does for a transcript."""
+    def test_a_matched_step_is_marked_signed_in_the_sessions_place(self):
+        """The 2nd review of #653: a session step a record of its own Codex run also holds (the same counts within
+        MATCH_S) said it came from Codex's session files; it counts once, in its place, marked signed."""
+        sid = "9f0c9a11-0000-4000-8000-000000000001"   # week()'s session, whose step 0 the record holds
+        out = tips.build(self.codex_run(sid), codex=self.week(), now=NOW)
+        s = out["sources"]
+        self.assertEqual((s["signed"]["steps"], s["signed"]["also"], s["codex"]["steps"]),
+                         (0, {"runs": 1, "steps": 1}, 300))
+        self.assertIn("Token counts of the 300 steps these figures rest on: 1 from signed records and 299 from Codex's "
+                      "session files (read-only).", out["tips"][0]["math"])
+
+    def test_a_signed_step_whose_counts_differ_from_its_sessions_step_counts_apart(self):
+        """The 3rd review of #653: a record took the nearest step of its own session by time alone and put its counts
+        over the session's, so a record could inflate or hide spend. Only the same counts join, as _join's pass 3;
+        a record whose counts differ counts on its own, and the session's step stays at its own counts."""
         sid, d = self.step(cached=40_000, out=250)
-        out = tips.build(self.codex_run(sid, cached=60_000, write=3_000, out=200), codex=d, now=NOW)
-        s = out["sources"]["signed"]
-        self.assertEqual((s["steps"], s["also"]), (0, {"runs": 1, "steps": 1}))
-        signed = tips.signed_steps(self.codex_run(sid, cached=60_000, write=3_000, out=200), 0)
+        records = self.codex_run(sid, cached=60_000, write=3_000, out=200)
+        s = tips.build(records, codex=d, now=NOW)["sources"]
+        self.assertEqual((s["signed"]["steps"], s["signed"]["also"]["steps"], s["codex"]["steps"]), (1, 0, 1))
         agents = tips.read_codex_sessions(d, 0)[0]
-        self.assertEqual(tips._same(signed, agents), {sid: {0}})
+        self.assertEqual(tips._same(tips.signed_steps(records, 0), agents), {})
         t = agents[sid]["steps"][0]
-        self.assertEqual((t["src"], tips._counts(t)), ("signed", (0, 200, 60_000, 3_000)))   # the signed counts, its own place
+        self.assertEqual((t["src"], tips._counts(t)), ("codex", (0, 250, 40_000, 3_000)))
+
+    def test_a_session_step_joins_one_signed_step(self):
+        """Two signed steps of one Codex session (its main lane's and a subagent lane's) with one session step's
+        counts: one takes it up, the other counts on its own."""
+        sid, d = self.step()
+        agents = tips.read_codex_sessions(d, 0)[0]
+        twin = lambda: {"name": "codex", "steps": [dict(agents[sid]["steps"][0], src="signed")]}  # noqa: E731
+        self.assertEqual(tips._same({sid: twin(), sid + "/sub1": twin()}, agents), {sid: {0}})
 
     def test_a_codex_only_week_reads_the_sessions_and_gets_the_context_tip(self):
         body = tips.build([], codex=self.week(), now=NOW)

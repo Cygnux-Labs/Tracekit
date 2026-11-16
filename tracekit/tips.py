@@ -863,17 +863,18 @@ def _signed(t, s):
 
 
 def _same(signed, agents):
-    """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: one that takes up
-    one step of its own session no other step matched within MATCH_S (a Codex run's records name no call ids, so the
-    session is all that can join them: a run of another agent, or of another session — the run's key is the session
-    file's session_meta id — joins none of it) counts at its signed counts in the session step's place (_signed), and
-    the session step's `src` becomes `signed`."""
-    held = collections.defaultdict(set)
+    """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: a step of a Codex
+    run takes up one step of its own session (the run's key is the session file's session_meta id) with the same
+    token counts within MATCH_S that no other step took, as _join's pass 3 does (a Codex run's records name no call
+    ids), and that session step's `src` becomes `signed` (_signed). A run of another agent, or of another session,
+    joins none of it, and a step with no equal one counts on its own."""
+    held, pools = collections.defaultdict(set), {}
     for k, a in signed.items():
         own = agents.get(k.split("/")[0]) if a.get("name") == "codex" else None   # its own session, or none
-        left = list(own["steps"]) if own is not None else []
+        left = pools.setdefault(own["key"], list(own["steps"])) if own is not None else []
         for i, s in enumerate(a["steps"]):
-            j = next((j for j, t in enumerate(left) if abs(t["t"] - s["t"]) <= MATCH_S), None)
+            j = next((j for j, t in enumerate(left) if _counts(t) == _counts(s) and abs(t["t"] - s["t"]) <= MATCH_S),
+                     None)
             if j is not None:
                 held[k].add(i)
                 _signed(left.pop(j), s)
