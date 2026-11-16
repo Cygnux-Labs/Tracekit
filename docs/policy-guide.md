@@ -13,9 +13,15 @@ extends: packs/server.yaml
 ```
 
 `extends` keeps the pack's rules and adds yours. Pick the pack for where your agents run: `server.yaml` for agents in
-your product or on servers, `coding.yaml` for coding agents ([packs shipped](policy-v2.md#packs-shipped)). The path is
-relative to your file: the container image and the Helm charts put the packs in `/etc/tracekit/packs`, so a policy at
-`/etc/tracekit/policy.yaml` extends `packs/server.yaml` ([deploy](deploy.md)).
+your product or on servers, `dev.yaml` for coding agents on a laptop (the laptop default: `coding.yaml` plus holds on
+the costly short list) ([packs shipped](policy-v2.md#packs-shipped)). The path is relative to your file. The container
+image and the Helm charts put the packs in `/etc/tracekit/packs`, so a policy at `/etc/tracekit/policy.yaml` extends
+`packs/server.yaml` ([deploy](deploy.md)). Anywhere else, link the installed packs next to your file once (in system
+mode, in `/etc/tracekit` with `sudo` and `/opt/tracekit/bin/python -I`):
+
+```sh
+ln -s "$(python -c 'import os, tracekit.policy2 as p; print(os.path.join(os.path.dirname(p.__file__), "packs"))')" packs
+```
 
 ## 2. Write a rule
 
@@ -59,7 +65,8 @@ not new `deny`, `ask` or `flag` rules.
 - **Agents on servers:** set `policy: /etc/tracekit/policy.yaml` in the signer's `signer.yaml` (Helm's
   `signer.policy`, the compose stack's `policy.yaml`); [deploy](deploy.md).
 - **Coding agents on laptops:** system mode takes the file at install, root-owned so the agent can't change it:
-  `tracekit init --v2 --user <agent user> --policy /etc/tracekit/policy.yaml` ([deploy](deploy.md)).
+  `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user <agent user> --approver <admin> --policy
+  /etc/tracekit/policy.yaml` ([deploy](deploy.md)).
 - **To try it on your machine:** `tracekit signer serve --config signer.yaml` with `policy:` set, then point a client
   or a hook at it with `TRACEKIT_SIGNER` (its socket path or URL). The dev signer that `tracekit up` starts always runs
   the built-in dev pack.
