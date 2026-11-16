@@ -1104,7 +1104,7 @@ export function checkApprovalDecision(rep: Report, events: J[]): void {
     bad.length === 0 ? `${n} record(s) name a policy.decision of their run, call id and attempt before them`
       : `the record(s) at seq ${bad.slice(0, 5).map((e) => str(get(e, "seq"))).join(", ")} carry `
         + "ext.approval.decision without naming a policy.decision of their run, call id and attempt before it",
-    [], bad.length > 0);
+    [], true);
 }
 
 /**

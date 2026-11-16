@@ -42,14 +42,11 @@ class Scenarios(rc.Harness):
         return self.call("approval_consume", req)
 
     def stored(self, typ):
-        """The signed event of `typ`, from the signer's store where the test holds it (the read RPC keeps `data` only)."""
-        signer = self.signer
-        if hasattr(signer, "log"):   # the service in process
-            return next(r["event"] for r in signer.log.storage.iter_run("default", self.run_id)
+        """The signed event of `typ`, from the store of the signer the test holds (the read RPC keeps `data` only)."""
+        if isinstance(self.signer, svc.SignerService):
+            return next(r["event"] for r in self.signer.log.storage.iter_run("default", self.run_id)
                         if r["event"]["type"] == typ)
-        if hasattr(signer, "_runs"):   # FakeSigner
-            return next(e for e in signer._runs[self.run_id]["events"] if e["type"] == typ)
-        return next(e for e in self.read() if e["type"] == typ)
+        return next(e for e in self.signer._runs[self.run_id]["events"] if e["type"] == typ)   # FakeSigner
 
     def refused_with(self, code, out):
         self.assertEqual((out["ok"], out["rule_ids"]), (False, [code]), out)
@@ -197,8 +194,7 @@ class Scenarios(rc.Harness):
         self.assertEqual((types.count("approval.consumed"), types.count("approval.request")), (1, 3))
         self.assertNotIn("capture.gap", types)   # tc-3 ran under a consumed approval
         used = self.stored("approval.consumed")
-        if "ext" in used:   # the read RPC of a service over its socket keeps data only
-            self.assertEqual(used["ext"]["approval.decision"], d["decision_id"])   # the retry's, not the held call's
+        self.assertEqual(used["ext"]["approval.decision"], d["decision_id"])   # the retry's, not the held call's
 
     def test_a_retry_of_the_held_calls_own_id_names_its_decision(self):
         """LangGraph sends the held call again under its own id: the consume names that decision, not the held one."""
@@ -207,8 +203,6 @@ class Scenarios(rc.Harness):
         _, d, _ = self.retry(tcid="tc-1")
         self.assertTrue(self.consume(tcid="tc-1", hint=aid)["ok"])
         used = self.stored("approval.consumed")
-        if "ext" not in used:
-            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
         self.assertEqual(used["ext"]["approval.decision"], d["decision_id"])
 
     def test_a_changed_arguments_decision_does_not_take_the_consumes_decision_id(self):
@@ -220,8 +214,6 @@ class Scenarios(rc.Harness):
         self.decide(tool="pay", args=dict(PAY, cents=999))
         self.assertTrue(self.consume(hint=aid)["ok"])
         used = self.stored("approval.consumed")
-        if "ext" not in used:
-            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
         self.assertEqual(used["ext"]["approval.decision"], held)
 
     def test_a_consume_names_a_decision_of_its_attempt(self):
@@ -233,8 +225,6 @@ class Scenarios(rc.Harness):
         self.decide(tool="pay", args=PAY, tcid="tc-1", attempt=1)
         self.assertTrue(self.consume(tcid="tc-1", hint=aid)["ok"])
         used = self.stored("approval.consumed")
-        if "ext" not in used:
-            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
         self.assertEqual(used["ext"]["approval.decision"], held)
 
     def test_the_first_attempt_run_anyway_after_its_retry_used_the_approval_ran_against_the_policy(self):
@@ -358,6 +348,9 @@ class TestServiceApprovals(Scenarios, unittest.TestCase):
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
 class TestServeApprovals(Scenarios, unittest.TestCase):
     make_signer = ts.TestServeContract.make_signer
+
+    def stored(self, typ):
+        self.skipTest("the signer over its socket: its read RPC keeps data only; TestServiceApprovals reads its store")
 
 
 class TestRealSigner(unittest.TestCase):

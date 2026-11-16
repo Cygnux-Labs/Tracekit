@@ -112,8 +112,9 @@ verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) a
 interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
 This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`),
 `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
-policy`) and `box` (the label of a Tracekit Box box's run and of its agent channel's runs: `boxed agent`, which says
-what they prove instead of the general claim).
+policy`), `box` (the label of a Tracekit Box box's run and of its agent channel's runs: `boxed agent`, which says
+what they prove instead of the general claim) and `approval.decision` (the decision an approval.consumed was used for:
+`approval decision`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -451,10 +452,7 @@ def _approval_decision(rep, events):
             decisions.setdefault((e.get("run_id"), d["decision_id"]), []).append(e)
     n, bad = 0, []
     for e in events:
-        names = list(e["ext"]) if isinstance(e.get("ext"), dict) else []
-        if e.get("type") == "ext" and isinstance((e.get("data") or {}).get("name"), str):
-            names.append(e["data"]["name"])
-        if "approval.decision" not in names:
+        if "approval.decision" not in ext_names(e):
             continue
         n += 1
         if e.get("type") != "approval.consumed":
@@ -473,7 +471,7 @@ def _approval_decision(rep, events):
                   f"{n} record(s) name a policy.decision of their run, call id and attempt before them"
                   if not bad else
                   f"the record(s) at seq {', '.join(str(s) for s in bad[:5])} carry ext.approval.decision without "
-                  "naming a policy.decision of their run, call id and attempt before it", warn=bool(bad))
+                  "naming a policy.decision of their run, call id and attempt before it", warn=True)
 
 
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
