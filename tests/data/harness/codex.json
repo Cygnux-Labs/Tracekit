@@ -40,10 +40,10 @@
                "args": {"patch": "*** Begin Patch\n*** Update File: README.md\n@@\n-a\n+b\n*** Update File: .env\n@@\n-A=1\n+A=2\n*** End Patch",
                         "file_path": "README.md", "paths": ["README.md", ".env"]}},
    "exit": 0, "stdout": ""},
-  {"name": "unknown tool passes through under its own name",
+  {"name": "view_image is a Read of its path",
    "payload": {"session_id": "cx-1", "cwd": "/w", "hook_event_name": "PreToolUse", "tool_name": "view_image",
                "tool_use_id": "call_6", "tool_input": {"path": "a.png"}},
    "decision": "allow",
-   "request": {"tool": "view_image", "tool_call_id": "call_6", "args": {"path": "a.png"}},
+   "request": {"tool": "Read", "tool_call_id": "call_6", "args": {"path": "a.png", "file_path": "a.png"}},
    "exit": 0, "stdout": ""}
 ]

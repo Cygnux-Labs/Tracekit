@@ -156,6 +156,31 @@ class Mapping(HarnessCase):
                 self.assertIn(f"Open Interpreter's {name} call names a file without a path", out + err)
         self.assertEqual(len(self.sent), n)   # never sent to the signer
 
+    def test_codex_files_given_to_the_model_are_reads(self):
+        """#879: Codex's view_image, spawn_agent and multi_agent_v1send_input decide the files they give the model as
+        Reads, as Open Interpreter's do; a file item with no readable path is denied in the hook."""
+        base = next(c["payload"] for c in cases("codex") if c["payload"]["tool_name"] == "view_image")
+        for name, ti, files in (
+                ("view_image", {"path": "/w/pic.png"}, ["/w/pic.png"]),
+                ("spawn_agent", {"items": [{"type": "text", "text": "t"}, {"type": "local_image", "path": "/w/a.png"}]},
+                 ["/w/a.png"]),
+                ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
+                 ["/w/.env"])):
+            with self.subTest(tool=name):
+                self.assertEqual(self.hook("codex", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], sent["args"]["file_path"]), ("Read", files[0]))
+        self.hook("codex", dict(base, tool_name="spawn_agent", tool_input={"items": [{"type": "text", "text": "t"}]}))
+        self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
+        n = len(self.sent)
+        for name, ti in (("view_image", {}), ("view_image", None), ("view_image", "a.png"),
+                         ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]})):
+            with self.subTest(blocked=name):
+                code, out, err = self.hook("codex", dict(base, tool_name=name, tool_input=ti))
+                self.assertEqual(code, CODEX_DENY, err)
+                self.assertIn(f"Codex's {name} call names a file without a path", out + err)
+        self.assertEqual(len(self.sent), n)   # never sent to the signer
+
     def test_interpreter_alias_tools_and_path_spellings_are_the_calls_they_run(self):
         """Review of #853: every non-native harness (claude-code, which Open Interpreter picks by itself for Anthropic
         models, included) registers bash, read, write, edit, glob and grep beside Claude Code's names; deepseek-tui

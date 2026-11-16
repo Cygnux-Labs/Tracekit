@@ -683,7 +683,15 @@ def tool(harness, name, ti):
             return name, {"tool_calls": [{"tool": c.get("tool", c.get("name"))} for c in calls if isinstance(c, dict)]
                           if isinstance(calls, list) else []}
         return JCODE_TOOLS.get(name, name), ti
-    if harness == "interpreter":   # the files a call reads into the model's context, each decided as a Read of its path
+    if harness in ("codex", "interpreter") and name == "view_image":   # the file a call reads into the model's context
+        ti.pop("paths", None)
+        ti["file_path"] = ti.get("path")
+        return "Read", ti
+    if harness in ("codex", "interpreter") and name in INTERPRETER_ITEM_TOOLS and _interpreter_files(ti):
+        files = _interpreter_files(ti)
+        ti["file_path"], ti["paths"] = files[0], files
+        return "Read", ti
+    if harness == "interpreter":
         sent, name = name, INTERPRETER_TOOLS.get(name, name)
         if name in ("Read", "Write", "Edit"):   # every path the handler may read, so no spelling gets past the file rules
             files = list(dict.fromkeys(ti[k] for k in INTERPRETER_PATH_KEYS if isinstance(ti.get(k), str) and ti[k]))
@@ -702,14 +710,6 @@ def tool(harness, name, ti):
             ti["paths"] = list(dict.fromkeys([ti["path"], *(ti.get("paths") or [])]))
             ti["file_path"] = ti["path"]
             return "Edit", ti
-        if name == "view_image":
-            ti.pop("paths", None)
-            ti["file_path"] = ti.get("path")
-            return "Read", ti
-        files = _interpreter_files(ti) if name in INTERPRETER_ITEM_TOOLS else []
-        if files:
-            ti["file_path"], ti["paths"] = files[0], files
-            return "Read", ti
     if harness in ("codex", "interpreter"):
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
@@ -1508,9 +1508,11 @@ def _blocked(harness, p, raw=""):
             reason = _typed(f"Devin's {name}", v, name == "write_to_process")
             if reason:
                 return reason
-    elif harness == "interpreter" and (name == "view_image" and not tool(harness, name, p.get("tool_input"))[1].get(
-            "file_path") or name in INTERPRETER_ITEM_TOOLS and None in _interpreter_files(_input(p.get("tool_input")))):
-        return (f"Blocked by Tracekit: Open Interpreter's {name} call names a file without a path Tracekit can read, "
+    elif harness in ("codex", "interpreter") and (name == "view_image" and not tool(
+            harness, name, _input(p.get("tool_input")))[1].get("file_path") or name in INTERPRETER_ITEM_TOOLS and None in
+            _interpreter_files(_input(p.get("tool_input")))):
+        who = "Codex" if harness == "codex" else "Open Interpreter"
+        return (f"Blocked by Tracekit: {who}'s {name} call names a file without a path Tracekit can read, "
                 "so it can't decide which file the model is given.")
     elif harness == "copilot":
         cname = str(p.get("toolName") or "")
