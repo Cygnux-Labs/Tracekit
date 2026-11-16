@@ -1011,13 +1011,16 @@ class Speed(unittest.TestCase):
             ("xargs rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
             ("xargs -r rm -rf <<< /usr", ["rm", "-rf", "/usr"]),
             ("gxargs rm -rf <<< /var", ["rm", "-rf", "/var"]),
+            ("printf x | xargs rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
         )
         for text, expected in commands:
             with self.subTest(command=text):
                 parsed = shell.analyse(text)
                 self.assertIn(expected, [c["argv"] for c in parsed[0]])
         for text in ("xargs -0 rm -rf <<< /etc", "xargs rm -rf <<< ./etc",
-                     "xargs rm -rf <<< '/etc /usr'"):
+                     "xargs rm -rf <<< '/etc /usr'",
+                     "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc",
+                     'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc'):
             with self.subTest(command=text):
                 parsed = shell.analyse(text)
                 self.assertFalse(any(c["argv"] == ["rm", "-rf", "/etc"] for c in parsed[0]), parsed[0])

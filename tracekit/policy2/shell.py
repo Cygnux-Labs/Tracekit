@@ -1251,7 +1251,7 @@ def _xargs_here_readings(ctx):
         # Matching the original wrapper also avoids applying this to a later
         # unrelated rm in the same pipeline.
         if not any(w["argv"][0] == c["via"][-1] and w["pipeline"] == c["pipeline"] and
-                   w["argv"][1:] in (c["argv"], ["-r", *c["argv"]])
+                   w["stage"] == c["stage"] and w["argv"][1:] in (c["argv"], ["-r", *c["argv"]])
                    for w in cmds):
             continue
         # `stdin` contains literal here-string data; it is empty when xargs

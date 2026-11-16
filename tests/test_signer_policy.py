@@ -3710,7 +3710,7 @@ class CodingPack(unittest.TestCase):
     def test_deleting_or_locking_a_system_folder_is_denied(self):
         # #749: each was only flagged (TK-F003), or allowed (find, git clean); TK-D014 reads the folder as TK-D004
         # reads a home
-        self.every_pack_verdicts([(c, "TK-D014") for c in (
+        commands = (
             "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
             "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
@@ -3724,14 +3724,14 @@ class CodingPack(unittest.TestCase):
             "find /etc -exec rm {} +", "find /usr -type f -exec rm -f {} +",
             "find /etc -exec chmod -R 777 {} +", "find /var -exec chown -R root {} +",
             "find /etc -execdir /bin/rm {} +", "find /etc -exec chgrp -R staff {} +",
-            "find /etc -exec chattr -R +i {} +",
+            "find /etc -exec chattr -R +i {} +", r"find /etc -exec /bin/rm {} \;",
             "xargs rm -rf <<< /etc", "xargs -r rm -rf <<< /usr",
             "gxargs rm -rf <<< /var", "xargs rm -rf <<< /mnt/c/Windows",
             # #810 item 6: policy decisions by command, with matching benign twins below.
             "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
-            "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var",
-            "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak",
-            "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/",
+            "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var", "chattr -R =a /etc",
+            "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak", "mv -- /etc /tmp/etc.bak",
+            "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/", "rsync -a empty/ /etc/ --delete",
             # #810 item 4: WSL and Cygwin Windows-system mounts, including casefolding.
             "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows", "rm -rf /MNT/C/WINDOWS",
             "chmod -R 777 /mnt/c/Windows", "chown -R root /cygdrive/c/Windows",
@@ -3740,7 +3740,13 @@ class CodingPack(unittest.TestCase):
             "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
             "rm -rf /etc/.ssh/..", "rm -rf /mnt/c/Windows/.cache/..",
             "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
-            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx")])
+            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx")
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D014", d["rule_ids"], d)
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
@@ -3755,13 +3761,23 @@ class CodingPack(unittest.TestCase):
             "find /etc -name '*.log' -exec rm {} +",
             "find ./etc -exec chmod -R 777 {} +", "find /usr/local/x -exec chown -R me {} +",
             "find ./etc -execdir /bin/rm {} +", "find /var/tmp/x -exec chgrp -R staff {} +",
-            "find ./etc -exec chattr -R +i {} +",
+            "find ./etc -exec chattr -R +i {} +", r"find ./etc -exec /bin/rm {} \;",
             "xargs rm -rf <<< ./etc", "xargs -0 rm -rf <<< /etc",
+            "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc",
+            'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc',
             "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /mnt/c/Windows/Temp",
             "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
-            "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x",
-            "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak",
-            "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/",
+            "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x", "chattr -R =a ./etc",
+            "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak", "mv -- ./etc /tmp/etc.bak",
+            "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/", "rsync -a empty/ ./etc/ --delete",
+            r"find ./usr \( -type d -o -type f \) -delete",
+            r"find ./etc \( -type f -o -type d \) -exec rm {} +",
+            "find ./usr -type f -exec rm -f {} +", "find ./var -exec chown -R root {} +",
+            "xargs -r rm -rf <<< ./usr", "chattr -R =i ./var", "mv -f ./usr /tmp/usr.bak",
+            "rm -rf ./MNT/C/WINDOWS", "chown -R root ./cygdrive/c/Windows",
+            "chmod -R 777 ./mnt/c/Windows", "rm -rf ./usr/local/..", "rm -rf ./var/tmp/../.",
+            "rm -rf ./etc/.ssh/..", "rm -rf ./mnt/c/Windows/.cache/..",
+            "chmod -R 777 ./etc/ssh/..", "chown -R root ./usr/local/..", "find ./etc/ssh/.. -delete",
             # Project-local twins, Windows non-system folders, and children not resolving to the root.
             "rm -rf ./mnt/c/Windows", "rm -rf ./cygdrive/c/Windows",
             "rm -rf /mnt/c/Windows/System32", "rm -rf /cygdrive/c/Windows.old",
