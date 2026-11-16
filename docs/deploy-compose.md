@@ -6,13 +6,18 @@
 Docker host. `tracekit deploy compose` writes a ready-to-run copy with its own keys and passwords.
 
 ```sh
-sudo tracekit deploy compose --dir /srv/tracekit     # from a source checkout: the stack builds its images from it
+# in a source checkout, with a Python that has Tracekit's packages: the stack builds its images from it
+sudo "$(command -v python3)" -m tracekit deploy compose --dir /srv/tracekit
 cd /srv/tracekit
 cp .env.example .env                                  # ports only
 docker compose up -d --build --wait
 docker compose run --rm agent                         # registers a run from the agent service; prints its run id
 docker compose logs viewer                            # the viewer's URL with its token (http://127.0.0.1:7778/?token=...)
 ```
+
+It runs as root so that each secret is owned by its container's uid. It names your Python by its path because root's
+`PATH` has no `tracekit` unless pip installed it into the system Python, and `-m` without `-I` runs the checkout's copy,
+as `deploy/compose/e2e.sh` does.
 
 | Service | What | Reaches |
 |---|---|---|
@@ -77,7 +82,8 @@ team: `customer`; a third party: `public`) on infrastructure you can't change, p
 write the stack with that class:
 
 ```sh
-sudo tracekit deploy compose --dir /srv/tracekit --witness-class customer
+# in the source checkout, as above: from /srv/tracekit, python -m doesn't find it
+sudo "$(command -v python3)" -m tracekit deploy compose --dir /srv/tracekit --witness-class customer
 ```
 
 Then export and verify with the trust config of the signer:

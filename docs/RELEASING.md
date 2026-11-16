@@ -16,11 +16,19 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    (`VERSION`, which the verifier reports), in `docs/deploy-container.md`'s build example and `docs/deploy.md`'s
    clone example (the tag and the directory), in `server.json` and
    `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
-   and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
-   <version>"), and add a dated entry to `CHANGELOG.md`. In `sdk/typescript/package-lock.json` set the root package's
-   `version` (twice) and `optionalDependencies` too, and put back each `node_modules/@cygnuxlabs/tracekit-signer-*`
-   entry as `{"optional": true}`: the last release's locked versions don't satisfy the new ones, so `npm ci` (the
-   release build) fails until they are unlocked; step 5 locks the new ones.
+   and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("Version
+   <version>") and its CI example (`uses: Cygnux-Labs/Tracekit@v<version>`; `tests/test_version.py` checks both).
+   Pin it in the plugin's install lines, `tracekit-ai==<version>` in `plugin/scripts/tracekit-hook` and
+   `plugin/README.md` (`tests/test_hook_invocation.py` checks they match `plugin.json`), and in docs no test checks:
+   `uses: Cygnux-Labs/Tracekit@v<version>` in `docs/verdicts.md` and `docs/concepts/verification.md`, and
+   `uvx --from tracekit-ai==<version>` in `docs/for-auditors.md`.
+   Raise the upper bound of `tracekit-ai` in `integrations/hermes/plugin.yaml` (`python_dependencies`) to the next
+   minor (`<1.8` for a 1.7.x), so the plugin takes the release (`tests/test_version.py` checks it takes
+   `__version__`). Add a dated entry to `CHANGELOG.md`. In
+   `sdk/typescript/package-lock.json` set the root package's `version` (twice) and `optionalDependencies` too, and put
+   back each `node_modules/@cygnuxlabs/tracekit-signer-*` entry as `{"optional": true}`: the last release's locked
+   versions don't satisfy the new ones, so `npm ci` (the release build) fails until they are unlocked; step 5 locks
+   the new ones.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag other than `v` +
    `__version__`, and a `package.json` version that isn't its npm form.

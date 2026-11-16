@@ -13,6 +13,7 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+from factories import VersionCheckCases
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
 
@@ -227,6 +228,18 @@ class TestToolNodeOnFakeSigner(ac.Contract, ac.OnFake, unittest.TestCase):
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
 class TestToolNodeOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
     driver = ToolNodeDriver
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "langchain", "1.2.0"
+    message = "LangGraph 0.0.1 is wired but untested; Tracekit is tested with langgraph>=1.2,<1.3"
+
+    def entries(self, integration):
+        run = {"run_id": "r", "run_token": "t"}
+        return (lambda: integration.TracekitMiddleware(mock.Mock(), "r", "t"),
+                lambda: integration.tracekit_tool_node([], mock.Mock(), run),
+                lambda: integration.TracekitCheckpointer(InMemorySaver(), mock.Mock(), run))
 
 
 if __name__ == "__main__":

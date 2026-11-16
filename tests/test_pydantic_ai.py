@@ -11,6 +11,7 @@ from unittest import mock
 import adapter_contract as ac
 import test_gateway
 import test_said as ts
+from factories import VersionCheckCases
 
 HAVE = importlib.util.find_spec("pydantic_ai") is not None
 OPENAI = HAVE and importlib.util.find_spec("openai") is not None
@@ -336,6 +337,8 @@ class Setup(unittest.TestCase):
         from mcp import ClientSession
         original = mock.AsyncMock(return_value="result")
         self.addCleanup(setattr, ClientSession, "call_tool", ClientSession.call_tool)
+        self.addCleanup(setattr, ClientSession, "get_prompt", ClientSession.get_prompt)
+        self.addCleanup(setattr, ClientSession, "read_resource", ClientSession.read_resource)
         self.addCleanup(setattr, ClientSession, "initialize", ClientSession.initialize)
         for name in ("list_tools", "list_resources", "list_prompts"):
             if hasattr(ClientSession, name):
@@ -585,6 +588,12 @@ class VerifiedToolResults(test_gateway.Gateway):
                                                                               message_history=first.all_messages())
         self.assertEqual((first.output, out.output), ("HI", "follow-up answer"))
         self.assertEqual(self.mismatches(r.run_id), [])
+
+
+@unittest.skipUnless(HAVE, "pydantic_ai not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "pydantic_ai", "2.57.0"
+    message = "Pydantic AI 0.0.1 is wired but untested; Tracekit is tested with pydantic-ai-slim>=2.57,<2.58"
 
 
 if __name__ == "__main__":

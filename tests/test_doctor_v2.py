@@ -10,6 +10,8 @@ import json
 import os
 import shlex
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -155,7 +157,7 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         got = {r["id"]: r for r in doctor.v2_checks(
             {"data_dir": self.d}, "production", harnesses={harness: path})}
-        self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT + f" --agent {harness}")
+        self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT)   # collect() adds --agent (NoHooksChosen)
 
     def test_cursor_fail_closed_on_an_event_but_a_tool_call_warns(self):
         # Cursor blocks the event when a failClosed hook can't run: a person's prompt (beforeSubmitPrompt) too
@@ -252,6 +254,82 @@ class CodingAgentHooks(unittest.TestCase):
                     doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: got.setdefault(
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+
+    def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
+        """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
+        .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
+        a later hook's allow runs a call Tracekit denied: doctor names each file such a hook is in."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+        other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py"}]}
+
+        def later():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail)),
+                                            {"codebuddy": user}, False, home)
+            (row,) = [r for r in rows if "after Tracekit's" in r[2]]
+            return row
+
+        self.assertEqual(later()[:2], ("D-HOOKS-ORDER", True))
+        with open(user) as f:
+            settings = json.load(f)
+        settings["hooks"]["PreToolUse"].insert(0, other)   # before Tracekit's: its allow is overridden by a deny
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertTrue(later()[1])
+        os.makedirs(os.path.dirname(project))
+        # #761's re-review: a hook that only names Tracekit's module (in a comment) is not the command init writes
+        disguised = {"matcher": "*", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py  "
+                                                                              "# tracekit.integrations.harness_hooks"}]}
+        for f, hook in ((project, disguised), (project, other), (local, other)):
+            with open(f, "w") as out:
+                json.dump({"hooks": {"PreToolUse": [hook]}}, out)
+            rid, ok, detail = later()
+            self.assertEqual((rid, ok), ("D-HOOKS-ORDER", False))
+            self.assertIn(f, detail)
+        settings["hooks"]["PreToolUse"].append(other)   # after Tracekit's in the same file
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertIn(user, later()[2])
+
+    def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
+        """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
+        gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""
+        path = os.path.join(self.d, "jh", "config.toml")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("jcode", path=path, v2=True)
+        ours = agent_hooks._command("jcode", "PreToolUse", True, None)
+
+        def rows(table=None):
+            if table is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    # between Tracekit's markers, so Python 3.9 (no tomllib) reads it too
+                    f.write("\n".join([agent_hooks.JCODE_BEGIN, "[hooks]", *agent_hooks._jcode_lines(table),
+                                       agent_hooks.JCODE_END]) + "\n")
+            got = {}
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.setdefault(rid, (ok, detail)),
+                                        {"jcode": path}, False, self.d)
+            return got
+
+        got = rows()
+        self.assertEqual({k: v[0] for k, v in got.items()},
+                         {"D-HOOKS-EVENT": True, "D-HOOKS-ORDER": True, "D-HOOKS-TIMEOUT": True})
+        hooks = agent_hooks._jcode_hooks(True, None)
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", ours]})["D-HOOKS-ORDER"][0])
+        other_python = agent_hooks._command("jcode", "PreToolUse", True, "/opt/other/bin/python3")
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", other_python]})["D-HOOKS-ORDER"][0])
+        self.assertFalse(rows({**hooks, "pre_tool": [other_python, "/usr/local/bin/rewriter"]})["D-HOOKS-ORDER"][0])
+        for later in ("~/bin/rewrite", "~/bin/rewrite  # tracekit.integrations.harness_hooks"):
+            with self.subTest(later=later):
+                ok, detail = rows({**hooks, "pre_tool": [ours, later]})["D-HOOKS-ORDER"]
+                self.assertFalse(ok)
+                self.assertIn("1 jcode pre_tool command(s)", detail)
+        no_timeout = {k: v for k, v in hooks.items() if k != "pre_tool_timeout_ms"}   # jcode's default: 5 s
+        self.assertFalse(rows(no_timeout)["D-HOOKS-TIMEOUT"][0])
 
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
@@ -444,9 +522,9 @@ class ManagedHooks(unittest.TestCase):
             install.install_managed(None, False, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
                                     signer="/run/s.sock")
 
-    def rows(self, trusted=None, readable=True, user=None, managed=None):
+    def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None):
         """Doctor's rows; `trusted`: what trusted_file says of the managed file, `readable`: whether the agent's user
-        can read it (None: not probed), `user`/`managed`: settings to add."""
+        can read it (None: not probed), `user`/`managed`: settings to add, `plugin`: install.plugin_enabled's."""
         for path, extra in ((self.user, user or {}), (self.managed, managed or {})):
             s = {}
             if os.path.exists(path):
@@ -459,7 +537,7 @@ class ManagedHooks(unittest.TestCase):
                                   return_value={True: [[self.managed, "read"]], False: []}.get(readable)):
             return {r["id"]: r for r in doctor.v2_checks(
                 {"data_dir": self.d}, "production", agent=self.agent, settings=self.managed, opt=install.OPT,
-                signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed])}
+                signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed], plugin=plugin)}
 
     def test_managed_hooks_are_inits_and_only_root_can_change_them(self):
         got = self.rows()
@@ -468,21 +546,17 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"]["detail"], f"v2 hooks in {self.managed}")
         bad = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]
         self.assertEqual((bad["status"], bad["detail"]), ("fail", "/etc/claude-code is group- or world-writable"))
-        self.assertTrue(bad["fix"].endswith(" --managed"), bad["fix"])
+        self.assertTrue(bad["fix"].endswith("; or " + doctor.REINIT), bad["fix"])   # collect() adds --managed
         bad = self.rows(readable=False)["D-HOOKS-MANAGED"]
         self.assertEqual(bad["status"], "fail")
         self.assertIn(f"agent can't read {self.managed}, so its Claude Code starts without it", bad["detail"])
 
-    def test_the_fix_keeps_managed_only_and_runs_on_macos(self):
-        """Following the fix after init --managed-only turned allowManagedHooksOnly off: init without --managed-only
-        removes the setting an earlier init turned on. And `chown root:root` fails on macOS, which has no root group."""
-        for only, want in ((True, " --managed --managed-only"), (False, " --managed")):
-            with self.subTest(managed_only=only), contextlib.redirect_stdout(io.StringIO()):
-                install.install_managed(None, only, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
-                                        signer="/run/s.sock")
-                fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
-                self.assertTrue(fix.endswith(want), fix)
-                self.assertTrue(fix.startswith(f"sudo chown 0:0 and sudo chmod 644 {self.managed}, "), fix)
+    def test_the_fix_runs_on_macos(self):
+        """`chown root:root` fails on macOS, which has no root group. (collect() adds --managed and --managed-only to
+        the re-init: NoHooksChosen.)"""
+        fix = self.rows(trusted="/etc/claude-code is group- or world-writable")["D-HOOKS-MANAGED"]["fix"]
+        self.assertEqual(fix, f"sudo chown 0:0 and sudo chmod 644 {self.managed}, and sudo chmod go-w the directories "
+                         f"above it; or {doctor.REINIT}")
 
     def test_managed_file_check_claims_only_what_it_checked(self):
         """D-HOOKS-MANAGED said the file was readable by every user, though doctor probes only the agent's user, and
@@ -511,7 +585,7 @@ class ManagedHooks(unittest.TestCase):
         self.assertEqual(got["status"], "warn")
         self.assertEqual(got["detail"], f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so "
                          "every call is decided twice")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
     def test_own_hooks_allow_managed_hooks_only_stops_are_not_decided_twice(self):
         """With allowManagedHooksOnly on, Claude Code runs none of the agent's own hooks, yet doctor warned that init's
@@ -528,12 +602,33 @@ class ManagedHooks(unittest.TestCase):
                 got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
                 self.assertEqual((got["status"], got["detail"]), want)
 
+    def test_the_plugin_beside_managed_hooks_counts_only_where_claude_code_runs_it(self):
+        """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host when only the agent's own
+        settings enabled the plugin: the agent's user could fail doctor by turning the plugin on in its own settings.
+        In system mode only managed settings count for the plugin; with allowManagedHooksOnly on, the detail says the
+        plugin's hooks don't run, and with it off, init's managed hooks stay and the detail notes the non-managed
+        entry."""
+        own, managed = (self.user, install.PLUGIN), (self.managed, install.PLUGIN)
+        got = self.rows(managed={"allowManagedHooksOnly": True}, plugin=own)["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), ("ok", f"v2 hooks in {self.managed}; the Tracekit plugin's, "
+                                                                f"enabled in {self.user}, don't run (allowManagedHooksOnly)"))
+        got = self.rows(managed={"allowManagedHooksOnly": False}, plugin=own)["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]),
+                         ("ok", f"v2 hooks in {self.managed}; init's hooks kept: the Tracekit plugin is enabled in "
+                                f"{self.user}, not managed settings"))
+        both = f"{self.managed}: every call is decided twice, and every approved call is blocked"
+        for only in (True, False):
+            got = self.rows(managed={"allowManagedHooksOnly": only}, plugin=managed)["D-HOOKS-PRESENT"]
+            self.assertEqual((got["status"], got["fix"]),
+                             ("fail", f"keep one: take {install.PLUGIN} out of enabledPlugins in {self.managed}"))
+            self.assertTrue(got["detail"].endswith(both), got["detail"])
+
     def test_the_fix_for_missing_managed_hooks_keeps_them_managed(self):
         with contextlib.redirect_stdout(io.StringIO()):
             install.install_managed(None, False, self.managed, uninstall=True)
         got = self.rows()["D-HOOKS-PRESENT"]
         self.assertEqual(got["status"], "fail")
-        self.assertTrue(got["fix"].endswith(" --managed"), got["fix"])
+        self.assertEqual(got["fix"], doctor.REINIT)   # collect() adds --managed
 
 
 class DroidHooks(unittest.TestCase):
@@ -575,6 +670,32 @@ class DroidHooks(unittest.TestCase):
             self.assertIn("60 s", row["detail"])
 
 
+class KiroHooks(unittest.TestCase):
+    def test_kiro_hooks_kiro_skips_and_a_cli_before_3_are_warned_about_on_either_path(self):
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(agent_hooks, "kiro_version", return_value=(3, 3, 0)):
+            path = agent_hooks.config_path("kiro", os.path.join(d, "p"))   # a project's
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("kiro", os.path.join(d, "p"), v2=True)
+
+            def rows():
+                return [r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"kiro": path})
+                        if r["id"] in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT")]
+            self.assertEqual({r["status"] for r in rows()}, {"ok"}, rows())
+            with mock.patch.object(agent_hooks, "kiro_version", return_value=(2, 9, 0)):
+                self.assertTrue(any(r["status"] == "warn" and "came with CLI V3" in r["detail"] for r in rows()))
+            with open(path) as f:
+                config = json.load(f)
+            config["hooks"][0]["enabled"] = False   # PreToolUse: Kiro skips it
+            with open(path, "w") as f:
+                json.dump(config, f)
+            warned = [r["detail"] for r in rows() if r["status"] == "warn"]
+            self.assertTrue(any('PreToolUse hook(s) are "enabled": false' in w for w in warned), warned)
+            self.assertTrue(any("no Tracekit v2 hook on the pre-tool event" in w for w in warned), warned)
+
+
 class AntigravityHooks(unittest.TestCase):
     def test_agy_hooks_under_tracekits_hook_name_are_found_and_checked_in_seconds(self):
         # agy's hooks.json maps each hook's name to its events: Tracekit's are under AGY_HOOK, not `hooks`, and an
@@ -607,6 +728,49 @@ class AntigravityHooks(unittest.TestCase):
             self.assertIn("539 s", row["detail"])
             self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
             self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
+
+    def test_openhands_project_hooks_that_replace_the_users_are_warned_about(self):
+        # #563 review: the CLI's working directory ($OPENHANDS_WORK_DIR, else the current one) has a .openhands/hooks.json
+        # that replaces the user's (a repo can switch Tracekit off); only a Tracekit v2 PreToolUse hook there decides calls
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d:
+            repo, work = os.path.join(d, "repo"), os.path.join(d, "work")
+            for p in (repo, work):
+                os.makedirs(os.path.join(p, ".openhands"))
+            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for k in ("OPENHANDS_WORK_DIR", "OH_PERSISTENCE_DIR"):
+                    os.environ.pop(k, None)
+                os.environ["OPENHANDS_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # the CLI's settings, not hooks
+                path = agent_hooks.install("openhands", v2=True)
+                self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
+
+                def rows():
+                    return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                                 harnesses={"openhands": path})}
+                got = rows()
+                for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                    self.assertEqual(got[rid]["status"], "ok", got[rid])
+                self.assertNotIn("D-OPENHANDS-PROJECT", got)
+                project = os.path.join(repo, ".openhands", "hooks.json")
+                with open(project, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "true"}]}]}}, f)
+                got = rows()["D-OPENHANDS-PROJECT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{project} replaces {path}", got["detail"])
+                agent_hooks.install("openhands", project=repo, v2=True)   # Tracekit's own project hooks: fine
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "ok")
+                with open(project) as f:   # Tracekit's hooks on every event but PreToolUse: its calls go undecided
+                    blob = json.load(f)
+                blob["hooks"].pop("PreToolUse")
+                with open(project, "w") as f:
+                    json.dump(blob, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
+                os.environ["OPENHANDS_WORK_DIR"] = work   # the CLI's working directory, not the current one
+                self.assertNotIn("D-OPENHANDS-PROJECT", rows())
+                with open(os.path.join(work, ".openhands", "hooks.json"), "w") as f:
+                    json.dump({"pre_tool_use": []}, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
 
     def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
         # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or
@@ -819,6 +983,201 @@ class NoHooksChosen(unittest.TestCase):
             got = next(r for r in doctor.v2_checks({"data_dir": d}, no_hooks=chosen) if r["id"] == "D-HOOKS-PRESENT")
             self.assertEqual((got["status"], got["detail"]), want)
 
+    def test_the_reinit_fix_keeps_inits_agent_and_no_hooks(self):
+        """Doctor's re-init fix had no --no-hooks, while plugin/README.md runs system init with it: a plugin user who
+        followed the fix got init's hooks beside the plugin's (D-HOOKS-PRESENT then warned), and an SDK agent's
+        host got Claude Code hooks it had declined (#464). Not over init --managed's hooks: --no-hooks there removed
+        them, leaving the plugin's, which the agent's user can turn off. Nor did it name init's agent, so another
+        coding agent's host was set up again for Claude Code. And on an init --managed host only D-HOOKS-MANAGED's fix
+        had --managed: following any other moved the hooks from the root-owned managed file into the agent's own
+        settings, which the agent can edit (with the plugin on, each call was decided twice), and one without
+        --managed-only turned off the allowManagedHooksOnly an init with it had turned on."""
+        row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        managed = os.path.join(d, "managed-settings.json")
+        own_plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
+        managed_plugin = (managed, install.PLUGIN)
+        for hooks, enabled, only, want in (
+                ({"no_hooks": True}, None, None, " --no-hooks"),
+                ({}, managed_plugin, None, " --no-hooks"),
+                ({}, own_plugin, None, ""),   # #864: the agent's own settings never add --no-hooks in system mode
+                ({"agent": "codex"}, managed_plugin, None, " --agent codex"), ({}, None, None, ""),
+                ({"agent": "codex", "settings": "/home/a/.codex/hooks.json"}, managed_plugin, None, " --agent codex"),
+                ({"agent": "codex", "no_hooks": True}, None, None, " --agent codex --no-hooks"),
+                ({"settings": managed}, managed_plugin, False, " --managed"),
+                ({"settings": managed}, None, False, " --managed"),
+                ({"settings": managed}, managed_plugin, True, " --managed --managed-only"),
+                ({"settings": managed}, None, True, " --managed --managed-only"),
+                ({"settings": managed}, None, "admin", " --managed")):   # the admin's own setting: init leaves it
+            # an older init's client.json for the managed hosts: --managed[-only] from the managed file (ReinitFlags
+            # has the record's)
+            record = {} if only is not None else {"init_flags": []}
+            sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **record, **hooks}}
+            with self.subTest(hooks=hooks, plugin=enabled, managed_only=only), \
+                    mock.patch.dict(install.MANAGED_SETTINGS, linux=managed, darwin=managed), \
+                    mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                    mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                    mock.patch.object(doctor, "trusted_file", return_value=None), \
+                    mock.patch.object(install, "plugin_enabled", return_value=enabled), \
+                    mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                if only is not None:   # init --managed [--managed-only] writes the file, over an admin's setting
+                    with open(managed, "w") as f:
+                        json.dump({"allowManagedHooksOnly": True} if only == "admin" else {}, f)
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_managed(None, only is True, managed, install.OPT_PYTHON,
+                                                module=install.V2_HOOK, signer="/run/s.sock")
+                elif os.path.exists(managed):
+                    os.unlink(managed)
+                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want + (
+                    ReinitFlags.old if only is not None else ""))
+
+
+class SystemPluginTrust(unittest.TestCase):
+    """#864: in system mode, only root-trusted managed settings count for the Claude Code plugin. Nothing in the
+    agent's own or project settings may add --no-hooks to doctor's sudo re-init fix or fail D-HOOKS-PRESENT with
+    "decided twice", and the two checks never disagree."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.root = os.path.join(self.d, "root")
+        self.home = os.path.join(self.d, "home", "agent")
+        self.project = os.path.join(self.d, "proj")
+        for p in (self.root, os.path.join(self.home, ".claude"), os.path.join(self.project, ".claude"),
+                  os.path.join(self.root, "data")):
+            os.makedirs(p, exist_ok=True)
+        self.managed = os.path.join(self.root, "managed-settings.json")
+        self.own = os.path.join(self.home, ".claude", "settings.json")
+        self.proj_settings = os.path.join(self.project, ".claude", "settings.json")
+        self.signer_yaml = os.path.join(self.root, "signer.yaml")
+        with open(self.signer_yaml, "w") as f:
+            f.write(f"data_dir: {json.dumps(os.path.join(self.root, 'data'))}\n")
+        self.agent = types.SimpleNamespace(pw_name="agent", pw_uid=64101, pw_gid=64101, pw_dir=self.home)
+        for p in (mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed),
+                  mock.patch.object(install, "_privileges", return_value=[])):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _collect(self, has_init_hooks=True, own_extra=None, managed_extra=None, proj_extra=None, settings_path=None,
+                 managed_trusted=True):
+        target = settings_path or self.own
+        for p in (self.own, self.proj_settings):
+            if os.path.exists(p):
+                os.unlink(p)
+        if has_init_hooks:
+            with contextlib.redirect_stdout(io.StringIO()):
+                install.install_hooks(target, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        for path, extra in ((self.own, own_extra), (self.proj_settings, proj_extra)):
+            if extra is not None or os.path.exists(path):
+                s = {}
+                if os.path.exists(path):
+                    with open(path) as f:
+                        s = json.load(f)
+                with open(path, "w") as f:
+                    json.dump({**s, **(extra or {})}, f)
+        if managed_extra is not None:
+            with open(self.managed, "w") as f:
+                json.dump(managed_extra, f)
+        elif os.path.exists(self.managed):
+            os.unlink(self.managed)
+
+        def trusted(path):
+            p = os.path.abspath(path)
+            if p == os.path.abspath(self.managed) and not managed_trusted:
+                return f"{path} is group- or world-writable"
+            root = os.path.abspath(self.root)
+            return None if p == root or p.startswith(root + os.sep) else f"{path} is not owned by root"
+
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "agent", "settings": target, "agent": "claude",
+                                                 "init_flags": []}}
+        with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                mock.patch.object(doctor, "_user", return_value=self.agent), \
+                mock.patch.object(doctor, "trusted_file", side_effect=trusted), \
+                mock.patch("os.getcwd", return_value=self.d):
+            return {r["id"]: r for r in doctor.collect(self.signer_yaml)}
+
+    def test_plugin_enabled_only_in_agents_settings_not_installed_has_no_no_hooks(self):
+        """#864 item 2: the plugin enabled only in the agent's own settings, not installed, gives a fix without
+        --no-hooks, keeps init's hooks, and says why in D-HOOKS-PRESENT's detail."""
+        rows = self._collect(has_init_hooks=True, own_extra={"enabledPlugins": {install.PLUGIN: True}})
+        reinit_fixes = [r["fix"] for r in rows.values() if doctor.REINIT in r["fix"]]
+        self.assertTrue(reinit_fixes)
+        for fix in reinit_fixes:
+            self.assertNotIn("--no-hooks", fix)
+        hp = rows["D-HOOKS-PRESENT"]
+        self.assertEqual(hp["status"], "ok")
+        self.assertEqual(hp["detail"], f"v2 hooks in {self.own}; init's hooks kept: the Tracekit plugin is enabled in "
+                                       f"{self.own}, not managed settings")
+
+        # Even if the agent also deletes init's hooks from its own settings, D-HOOKS-PRESENT fails and its re-init fix
+        # restores init's hooks rather than dropping them with --no-hooks.
+        rows = self._collect(has_init_hooks=False, own_extra={"enabledPlugins": {install.PLUGIN: True}})
+        hp = rows["D-HOOKS-PRESENT"]
+        self.assertEqual(hp["status"], "fail")
+        self.assertIn(f"the Tracekit plugin is enabled in {self.own}, not managed settings", hp["detail"])
+        self.assertEqual(hp["fix"], doctor.REINIT)
+        self.assertNotIn("--no-hooks", hp["fix"])
+
+    def test_managed_plugin_counts_and_empty_user_list_ignores_callers_home(self):
+        """A root-trusted managed settings file enabling the plugin counts in system mode (including `doctor --config`
+        with no agent user, where `plugin_enabled([])` must not fall back to the caller's own ~/.claude/settings.json)."""
+        rows = self._collect(has_init_hooks=True, managed_extra={"enabledPlugins": {install.PLUGIN: True}})
+        self.assertIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
+        hp = rows["D-HOOKS-PRESENT"]
+        self.assertEqual(hp["status"], "fail")
+        self.assertIn("every call is decided twice", hp["detail"])
+        self.assertEqual(hp["fix"], f"keep one: take {install.PLUGIN} out of enabledPlugins in {self.managed}, or "
+                                    f"{doctor.REINIT} --no-hooks")
+
+        caller_home = os.path.join(self.d, "caller")
+        os.makedirs(os.path.join(caller_home, ".claude"), exist_ok=True)
+        with open(os.path.join(caller_home, ".claude", "settings.json"), "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        if os.path.exists(self.managed):
+            os.unlink(self.managed)
+        with mock.patch.dict(os.environ, {"HOME": caller_home, "USERPROFILE": caller_home}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None), \
+                mock.patch.object(doctor, "trusted_file", return_value=None), \
+                mock.patch("os.getcwd", return_value=self.d):
+            self.assertIsNone(install.plugin_enabled([]))
+            rows = {r["id"]: r for r in doctor.collect(self.signer_yaml)}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "warn")
+            self.assertNotIn("--no-hooks", rows["D-HOOKS-PRESENT"]["fix"])
+            with open(self.managed, "w") as f:
+                json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+            rows = {r["id"]: r for r in doctor.collect(self.signer_yaml)}
+            self.assertEqual(rows["D-HOOKS-PRESENT"]["status"], "ok")
+            self.assertIn("--no-hooks", rows["D-UNIT-HARDENING"]["fix"])
+
+    def test_no_hooks_and_decided_twice_never_disagree(self):
+        """#864 item 3: collect()'s --no-hooks and D-HOOKS-PRESENT's "decided twice" FAIL use the exact same rule."""
+        for name, kw, want_active in (
+                ("own-settings", {"own_extra": {"enabledPlugins": {install.PLUGIN: True}}}, False),
+                ("project-settings", {"proj_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                      "settings_path": self.proj_settings}, False),
+                ("own-blocked-by-managed-only", {"own_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                                 "managed_extra": {"allowManagedHooksOnly": True}}, False),
+                ("own-disabled-all-hooks", {"own_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                          "disableAllHooks": True}}, False),
+                ("managed-untrusted", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True}},
+                                       "managed_trusted": False}, False),
+                ("managed-disabled-all-hooks", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                                  "disableAllHooks": True}}, False),
+                ("managed-enabled", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True}}}, True),
+                ("managed-enabled-managed-only", {"managed_extra": {"enabledPlugins": {install.PLUGIN: True},
+                                                                    "allowManagedHooksOnly": True}}, True),
+                ("managed-ignores-own-disable-all", {"own_extra": {"disableAllHooks": True},
+                                                     "managed_extra": {"enabledPlugins": {install.PLUGIN: True}}},
+                 True)):
+            with self.subTest(case=name):
+                rows = self._collect(has_init_hooks=True, **kw)
+                has_no_hooks = "--no-hooks" in rows["D-UNIT-HARDENING"]["fix"]
+                hp = rows["D-HOOKS-PRESENT"]
+                decided_twice = hp["status"] == "fail" and "every call is decided twice" in hp["detail"]
+                self.assertEqual(has_no_hooks, want_active, rows["D-UNIT-HARDENING"]["fix"])
+                self.assertEqual(decided_twice, want_active, hp)
+
 
 class FirstDay(unittest.TestCase):
     """A new user's healthy dev setup got three warnings: no hooks where there is no Claude Code, no witness (the dev
@@ -879,8 +1238,9 @@ class FirstDay(unittest.TestCase):
                 self.assertEqual(doctor.main(*argv), 0)
             return out.getvalue().splitlines()
         lines = run(ok)
-        self.assertEqual(lines[-1], "dev setup OK: everything checks out for dev mode, which records but does not "
-                                    "guard (D-PROCESS-BOUNDARY)")
+        self.assertEqual(lines[-1], "dev setup OK: every call is decided and recorded, but the agent runs as you and "
+                                    "could switch Tracekit off; system mode or Tracekit Box close that "
+                                    "(D-PROCESS-BOUNDARY)")
         self.assertIn("info  no witnesses  (D-WITNESS-CONFIGURED)", lines)
         self.assertFalse(any(x.startswith("dev setup OK") for x in run(
             ok + [doctor.result("D-HOOKS-EVENT", doctor.WARN, "unwrapped", "re-run init")])))
@@ -916,6 +1276,131 @@ class Reinit(unittest.TestCase):
         self.assertEqual(reinit("/home/me/.venv/bin/python", False), "/usr/bin/python3")
         self.assertEqual(reinit(install.OPT_PYTHON, True), "/usr/bin/python3")   # 3.9, 3.10: init fails there
         self.assertNotIn("docs/deploy.md", doctor.REINIT)
+
+
+class ReinitFlags(unittest.TestCase):
+    """A re-init fix gave init's agent, --no-hooks and --managed again, and none of its other flags: one followed on a
+    host set up with --policy and --harness rewrote signer.yaml with init's own policy and no harness binding, and
+    doctor didn't say. Init records them in root-owned client.json (tests/test_system_v2.py:
+    test_init_records_the_flags_doctor_gives_again)."""
+    fix = "re-run init to reinstall the venv: " + doctor.REINIT
+    # --project DIR, not a bare --project: run from the release's clone, that puts the hooks in the clone
+    cant = ("; add each flag this host's init was run with that this lacks (--approver, --policy, --harness, --egress, "
+            "--project DIR, --managed-only, ...): {}, so doctor can't tell them, and init without them goes back to its "
+            "defaults")
+    old = cant.format(f"{client.SYSTEM_CONFIG} doesn't record them")
+    off = ("; init turned on allowManagedHooksOnly and it is off now; drop --managed-only only if you turned it off on "
+           "purpose")
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.managed = os.path.join(self.d, "managed-settings.json")
+        p = mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def collect(self, hooks, row=None, sc=True):
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}} if sc else None
+        with mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                mock.patch.object(doctor, "_user", return_value=None), \
+                mock.patch.object(doctor, "v2_checks", return_value=[
+                    row or doctor.result("D-CODE-TRUST", "fail", "detail", self.fix)]):
+            return doctor.collect(None if sc else os.path.join(self.d, "signer.yaml"))[-1]
+
+    def test_the_fix_gives_inits_recorded_flags_again_shell_quoted(self):
+        flags = ["--approver", "admin", "--policy", "/srv/policies/$(id) policy.yaml", "--harness",
+                 "claude=/usr/local/bin/claude", "--egress"]
+        fix = self.collect({"init_flags": flags})["fix"]
+        self.assertEqual(fix, self.fix + " --approver admin --policy '/srv/policies/$(id) policy.yaml' --harness "
+                         "claude=/usr/local/bin/claude --egress")
+        self.assertEqual(shlex.split(fix.split(" --user <agent-user>")[1])[-len(flags):], flags)
+        self.assertEqual(self.collect({"agent": "codex", "no_hooks": True, "init_flags": ["--no-service"]})["fix"],
+                         self.fix + " --agent codex --no-hooks --no-service")
+
+    def test_without_a_record_the_fix_says_doctor_cant_tell_inits_flags(self):
+        """An older init's client.json records none of them: the fix says so, rather than give a re-init that drops
+        them unseen. And doctor --config on a host with no client.json says there is none, not that it records none."""
+        self.assertEqual(self.collect({})["fix"], self.fix + self.old)
+        self.assertEqual(self.collect({"agent": "codex"})["fix"], self.fix + " --agent codex" + self.old)
+        for bad in ("--policy /p", ["--policy", 1], None):   # not a list of strings: no record
+            with self.subTest(init_flags=bad):
+                self.assertEqual(self.collect({"init_flags": bad})["fix"], self.fix + self.old)
+        self.assertEqual(self.collect({}, sc=False)["fix"],
+                         self.fix + self.cant.format(f"there's no {client.SYSTEM_CONFIG} here to record them"))
+
+    def test_a_project_init_is_given_its_directory_and_runs_from_the_clone(self):
+        """The fix told the person to run `sudo python3 -m tracekit init --project` in the project: the agent's own
+        directory, where `-m` imports a planted tracekit/ before the release's, as root. Init takes --project DIR, so
+        the fix runs from the root-owned clone, as every re-init does, and names the directory."""
+        got = self.collect({"init_flags": ["--approver", "admin", "--project", "/srv/my repo"]})["fix"]
+        self.assertEqual(got, self.fix + " --approver admin --project '/srv/my repo'")
+        self.assertTrue(got.startswith("re-run init to reinstall the venv: from a root-owned clone of the release "), got)
+
+    def test_the_re_init_that_adds_hooks_after_no_hooks_keeps_the_rest(self):
+        """D-HOOKS-PRESENT after init --no-hooks names, in its detail, the re-init that adds the hooks."""
+        row = doctor.result("D-HOOKS-PRESENT", "ok", "to record Claude Code's calls too, run " + doctor.REINIT)
+        got = self.collect({"no_hooks": True, "init_flags": ["--approver", "admin", "--policy", "/srv/p.yaml"]}, row)
+        self.assertEqual((got["detail"], got["fix"]), ("to record Claude Code's calls too, run " + doctor.REINIT
+                                                       + " --approver admin --policy /srv/p.yaml", ""))
+
+    def test_managed_only_stays_and_says_so_when_the_setting_is_off_now(self):
+        """--managed-only came only from init's marker in the managed settings: an MDM policy that replaced the file
+        took it away, and the fix re-inited without it, leaving every user's own hooks running. Init records it; when
+        allowManagedHooksOnly is off now the fix keeps it, the safe default, and says when to drop it."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
+                                    signer="/run/s.sock")
+        hooks = {"settings": self.managed, "init_flags": ["--managed", "--managed-only", "--approver", "admin"]}
+        self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed --managed-only --approver admin")
+        with open(self.managed) as f:
+            s = json.load(f)
+        for name, replaced in (("an admin turns it off; the marker stays", dict(s, allowManagedHooksOnly=False)),
+                               ("MDM replaces the file", {"env": {"CORP": "1"}})):
+            with self.subTest(name):
+                with open(self.managed, "w") as f:
+                    json.dump(replaced, f)
+                self.assertEqual(self.collect(hooks)["fix"], self.fix + " --managed --managed-only --approver admin"
+                                 + self.off)
+        with open(self.managed, "w") as f:   # an older init's client.json: init's marker is all there is
+            json.dump(dict(s, allowManagedHooksOnly=False), f)
+        self.assertEqual(self.collect({"settings": self.managed})["fix"], self.fix + " --managed --managed-only"
+                         + self.off + self.old)
+
+    def test_a_fixs_own_managed_only_is_not_given_twice(self):
+        """D-HOOKS-PRESENT's fix names --managed-only itself; init's record has it too."""
+        row = doctor.result("D-HOOKS-PRESENT", "fail", "detail", "keep one: /plugin disable tracekit@tracekit in the "
+                            f"agent's Claude Code, or {doctor.REINIT} --managed-only, which stops every user's own "
+                            "Claude Code hooks and plugins on this machine")
+        hooks = {"settings": self.managed, "init_flags": ["--managed", "--managed-only", "--approver", "admin"]}
+        self.assertEqual(self.collect(hooks, row)["fix"], "keep one: /plugin disable tracekit@tracekit in the agent's "
+                         f"Claude Code, or {doctor.REINIT} --managed --managed-only --approver admin, which stops every "
+                         "user's own Claude Code hooks and plugins on this machine" + self.off)
+
+    def test_the_harness_helpers_fix_is_the_re_init_with_inits_harness(self):
+        """D-HARNESS-HELPER added a --harness [NAME=]PATH placeholder to the re-init, beside the --harness init
+        recorded."""
+        rows = {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d, "harness_binding": {"helper": "/run/h"}},
+                                                      "production", unit=os.path.join(self.d, "tracekit-signer.service"))}
+        self.assertEqual((rows["D-HARNESS-HELPER"]["status"], rows["D-HARNESS-HELPER"]["fix"]), ("fail", doctor.REINIT))
+        got = self.collect({"init_flags": ["--harness", "claude=/usr/local/bin/claude"]}, rows["D-HARNESS-HELPER"])
+        self.assertEqual(got["fix"], doctor.REINIT + " --harness claude=/usr/local/bin/claude")
+
+    def test_an_unreadable_client_json_keeps_managed_hooks_managed(self):
+        """D-SYSTEM-CONFIG gave a plain re-init when client.json couldn't be read: on an init --managed host it moved
+        the hooks out of the root-owned managed settings into the agent's own."""
+        unreadable = self.cant.format(f"{client.SYSTEM_CONFIG} records them, and it can't be read")
+
+        def fix():
+            with mock.patch.object(doctor.client, "system_config", side_effect=client.SystemConfigError("not root's")):
+                rows = doctor.collect()
+            self.assertEqual([r["id"] for r in rows], ["D-SYSTEM-CONFIG"])
+            return rows[0]["fix"]
+        self.assertEqual(fix(), doctor.REINIT + unreadable)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
+                                    signer="/run/s.sock")
+        self.assertEqual(fix(), doctor.REINIT + " --managed --managed-only" + unreadable)
 
 
 class K8s(unittest.TestCase):
@@ -1738,6 +2223,20 @@ class Versions(unittest.TestCase):
         self.assertNotIn(planted, mine)
         self.assertIn(home, relative)
 
+    def test_codebuddys_config_dir_places_its_user_hook_file(self):
+        """#761's review: $CODEBUDDY_CONFIG_DIR moves CodeBuddy Code's user settings (agent_hooks.config_path), so it
+        is one of the variables that place a user's hook files: an absolute one places the user's own, and a relative
+        one, which resolves against the working directory, is named instead."""
+        cb = os.path.join(os.path.realpath(self.d), "cb")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": cb}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn(os.path.join(cb, "settings.json"), mine)
+        self.assertNotIn("CODEBUDDY_CONFIG_DIR", relative)
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": "cb"}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn("CODEBUDDY_CONFIG_DIR", relative)
+        self.assertNotIn(os.path.realpath(os.path.join("cb", "settings.json")), mine)
+
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
         doctor's working directory, not the hook's: doctor runs neither, from the user's own hook file either."""
@@ -1832,6 +2331,164 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(fs.call_args.args[0], data)
         self.assertIn(f"{data} is on apfs", got["D-DATA-FS"]["detail"])
         self.assertNotIn("will be on", got["D-DATA-FS"]["detail"])
+
+
+class Tailer(unittest.TestCase):
+    """#797: a tailer_lost gap's signed reason says to run doctor to check the tailer, and doctor had no tailer check.
+    The client config, the sudoers file and getfacl's output are faked in a temp folder: no root needed."""
+    UID = 4242
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home = os.path.join(self.d, "home")
+        self.dot, self.projects = os.path.join(self.home, ".claude"), os.path.join(self.home, ".claude", "projects")
+        self.agent = types.SimpleNamespace(pw_name="agent", pw_uid=1000, pw_dir=self.home)
+        self.client_json, self.sudoers = os.path.join(self.d, "client.json"), os.path.join(self.d, "tracekit-tailer")
+        self.client = {"signer": "/run/s.sock", "hooks": {"user": "agent", "agent": "claude"},
+                       "tailer": {"user": "tracekit-tailer", "uid": self.UID, "python": install.OPT_PYTHON}}
+        self.rule = f"agent ALL=(tracekit-tailer) NOPASSWD: {install.OPT_PYTHON} -I -m tracekit.tailer\n"
+        self.owner, self.mode = 0, 0o440
+        self.users = {"tracekit-tailer": types.SimpleNamespace(pw_uid=self.UID)}
+        self.acl = {self.home: f"user:{self.UID}:--x", self.dot: f"user:{self.UID}:--x",
+                    self.projects: f"user:{self.UID}:r-x"}
+        self.platform, self.getfacl = "linux", "/usr/bin/getfacl"
+        self.other, self.getfacl_fails = "---", None
+
+    def getfacl_run(self, argv, **kw):
+        path = argv[-1]
+        if path == self.getfacl_fails:
+            return subprocess.CompletedProcess(argv, 2, "", "")
+        if path not in self.acl:
+            return subprocess.CompletedProcess(argv, 1, "", f"getfacl: {path}: No such file or directory\n")
+        entry = f"{self.acl[path]}\n" if self.acl[path] else ""
+        return subprocess.CompletedProcess(argv, 0, f"# file: {path}\n# owner: 1000\nuser::rwx\n{entry}"
+                                                    f"group::---\nmask::r-x\nother::{self.other}\n\n", "")
+
+    def check(self, agent=True):
+        with open(self.client_json, "w") as f:
+            json.dump(self.client, f)
+        if self.rule is not None:
+            with open(self.sudoers, "w") as f:
+                f.write(self.rule)
+        real = os.lstat
+
+        def lstat(p, *a, **k):
+            st = real(p, *a, **k)
+            return types.SimpleNamespace(st_mode=stat.S_IFREG | self.mode, st_uid=self.owner) if p == self.sudoers \
+                else st
+        rows = []
+        with mock.patch.object(install, "TAILER_SUDOERS", self.sudoers), \
+                mock.patch.object(doctor.os, "lstat", lstat), \
+                mock.patch.object(doctor, "_user", side_effect=self.users.get), \
+                mock.patch.object(doctor.shutil, "which", return_value=self.getfacl), \
+                mock.patch.object(doctor.subprocess, "run", side_effect=self.getfacl_run), \
+                mock.patch.object(doctor.sys, "platform", self.platform):
+            doctor._tailer_checks(lambda id, ok, detail, fix, bad=doctor.FAIL: rows.append(
+                doctor.result(id, doctor.OK if ok else bad, detail, fix)), self.client_json, self.agent if agent else None)
+        return {r["id"]: r for r in rows}
+
+    def test_a_correct_setup_passes(self):
+        got = self.check()
+        self.assertEqual(sorted(got), ["D-TAILER-ACL", "D-TAILER-CONFIG", "D-TAILER-SUDO", "D-TAILER-USER"])
+        self.assertEqual({r["status"] for r in got.values()}, {"ok"}, got)
+
+    def test_no_tailer_key_warns_that_sessions_record_a_gap(self):
+        del self.client["tailer"]
+        got = self.check()
+        self.assertEqual(list(got), ["D-TAILER-CONFIG"])
+        self.assertEqual((got["D-TAILER-CONFIG"]["status"], got["D-TAILER-CONFIG"]["fix"]), ("warn", doctor.REINIT))
+        self.assertIn("tailer_lost gap", got["D-TAILER-CONFIG"]["detail"])
+
+    def test_v2_checks_runs_them_in_system_mode_for_claude_code_only(self):
+        del self.client["tailer"]
+        with open(self.client_json, "w") as f:
+            json.dump(self.client, f)
+        ids = {r["id"]: r["status"] for r in doctor.v2_checks({"data_dir": self.d}, client_json=self.client_json)}
+        self.assertEqual(ids["D-TAILER-CONFIG"], "warn")
+        self.assertNotIn("D-TAILER-CONFIG", {r["id"] for r in doctor.v2_checks(
+            {"data_dir": self.d}, "dev", client_json=self.client_json, settings=os.path.join(self.d, "none"))})
+        self.client["hooks"]["agent"] = "codex"
+        self.assertEqual(self.check(), {})
+
+    def test_the_tailer_user_is_missing_or_has_another_uid(self):
+        self.users = {}
+        self.assertEqual(self.check()["D-TAILER-USER"]["status"], "warn")
+        self.users = {"tracekit-tailer": types.SimpleNamespace(pw_uid=999)}
+        got = self.check()["D-TAILER-USER"]
+        self.assertEqual(got["status"], "warn")
+        self.assertIn(f"uid 999, not {self.UID}", got["detail"])
+
+    def test_the_sudo_rule_is_missing_wrong_or_not_root_only(self):
+        for name, change, want, says in (
+                ("missing", lambda: setattr(self, "rule", None), "warn", "is missing"),
+                ("another command", lambda: setattr(self, "rule", "agent ALL=(tracekit-tailer) NOPASSWD: "
+                                                                  "/usr/bin/python3 -I -m tracekit.tailer\n"),
+                 "warn", "has no rule for"),
+                ("commented out", lambda: setattr(self, "rule", "# " + self.rule), "warn", "has no rule for"),
+                ("another user's", lambda: setattr(self, "rule", self.rule.replace("agent ALL", "bob ALL")),
+                 "warn", "has no rule for"),
+                ("another run-as user", lambda: setattr(self, "rule", self.rule.replace("(tracekit-tailer)", "(root)")),
+                 "warn", "has no rule for"),
+                ("not root's", lambda: setattr(self, "owner", 1000), "fail", "belongs to uid 1000"),
+                ("writable", lambda: setattr(self, "mode", 0o664), "fail", "is 0664, not 0440")):
+            with self.subTest(name):
+                self.setUp()
+                if os.path.exists(self.sudoers):
+                    os.remove(self.sudoers)
+                change()
+                got = self.check()["D-TAILER-SUDO"]
+                self.assertEqual(got["status"], want, got)
+                self.assertIn(says, got["detail"])
+
+    def test_a_sudoers_file_that_is_not_utf8_warns_instead_of_crashing(self):
+        self.rule = None
+        with open(self.sudoers, "wb") as f:
+            f.write(b"agent ALL=(tracekit-tailer) NOPASSWD: \xff\xfe\n")
+        got = self.check()["D-TAILER-SUDO"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn("cannot read", got["detail"])
+
+    def test_the_acl_misses_a_folder_or_the_mask_takes_it_away(self):
+        for name, where, entry in (("no read on projects", "projects", f"user:{self.UID}:--x"),
+                                   ("no search on home", "home", "user:1:--x"),
+                                   ("masked", "dot", f"user:{self.UID}:r-x\t#effective:r--"),
+                                   ("projects missing", "projects", None)):
+            with self.subTest(name):
+                self.setUp()
+                path = getattr(self, where)
+                self.acl[path] = entry
+                if entry is None:
+                    del self.acl[path]
+                got = self.check()["D-TAILER-ACL"]
+                self.assertEqual(got["status"], "warn", got)
+                self.assertIn(path, got["detail"])
+
+    def test_getfacl_exiting_non_zero_warns_with_its_exit_code(self):
+        self.getfacl_fails = self.dot
+        got = self.check()["D-TAILER-ACL"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn(f"{self.dot}: getfacl exited 2", got["detail"])
+
+    def test_with_no_named_entry_other_decides(self):
+        self.acl = {self.home: "", self.dot: "", self.projects: ""}
+        self.other = "r-x"   # a 0755 home: no named entry, other can read and search
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "ok")
+        self.other = "---"
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "warn")
+
+    def test_the_acl_check_is_skipped_not_passed_where_it_cannot_run(self):
+        for name, attr, value, says in (("no getfacl", "getfacl", None, "no getfacl"),
+                                        ("macOS", "platform", "darwin", "Linux only")):
+            with self.subTest(name):
+                self.setUp()
+                setattr(self, attr, value)
+                got = self.check()["D-TAILER-ACL"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn("not checked", got["detail"])
+                self.assertIn(says, got["detail"])
+        self.setUp()
+        self.assertIn("no agent user", self.check(agent=False)["D-TAILER-ACL"]["detail"])
 
 
 if __name__ == "__main__":

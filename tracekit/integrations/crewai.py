@@ -14,10 +14,12 @@ import contextvars
 import uuid
 import warnings
 
+from tracekit.integrations import version_check
 from tracekit.sdk.client import refusal, result_field
 
 ERRORS = ("Error executing tool:",                                   # native tool calls
           "I encountered an error while trying to use the tool.")        # the text path (its tool_usage_exception)
+_FRAMEWORK = version_check.framework("crewai")
 WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
 _call = contextvars.ContextVar("tracekit_crewai_call", default=None)
 
@@ -25,6 +27,7 @@ _call = contextvars.ContextVar("tracekit_crewai_call", default=None)
 def hooks(run):
     """(before, after): CrewAI tool hooks recording into `run` (a RunHandle; instrument()'s routes to the current run).
     Register them with crewai.hooks.register_before_tool_call_hook / register_after_tool_call_hook."""
+    version_check.warn_untested(*_FRAMEWORK)
 
     def before(ctx):
         st = {"id": f"crewai-{uuid.uuid4().hex}", "decision": None, "blocked": None}

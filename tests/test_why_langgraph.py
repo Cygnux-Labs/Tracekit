@@ -310,8 +310,26 @@ class Branches(unittest.TestCase):
         frozen, collect, before = [], lw.gc.collect, lw.gc.get_freeze_count()
         with mock.patch.object(lw.gc, "collect", lambda *a: frozen.append(lw.gc.get_freeze_count()) or collect(*a)):
             fork_replay(graph, CONF, None, "fetch0", "tool=send", n=4)
-        self.assertTrue(frozen and all(frozen), frozen)   # the host's objects were out of every branch's collection
-        self.assertEqual(lw.gc.get_freeze_count(), before)   # and as they were after (a host's own freeze is kept)
+        # the host's objects were out of every branch's collection: frozen beyond what was frozen before, not only
+        # some (Python 3.12 starts with objects frozen, and that start-up freeze used to stand in for the trials')
+        floor = max(before, lw._FROZEN_AT_IMPORT)
+        self.assertTrue(frozen and all(n > floor for n in frozen), (floor, frozen[:3]))
+        # and unfrozen after, Python's start-up freeze with them
+        self.assertEqual(lw.gc.get_freeze_count(), 0 if before <= lw._FROZEN_AT_IMPORT else before)
+
+    def test_a_host_s_own_freeze_is_kept(self):
+        graph = _loop(self.follows, ToolNode(self.tools))
+        graph.invoke(GO, CONF)
+        lw.gc.freeze()
+        self.addCleanup(lw.gc.unfreeze)
+        host = lw.gc.get_freeze_count()
+        frozen, collect = [], lw.gc.collect
+        with mock.patch.object(lw.gc, "collect", lambda *a: frozen.append(lw.gc.get_freeze_count()) or collect(*a)):
+            fork_replay(graph, CONF, None, "fetch0", "tool=send", n=4)
+        # neither frozen further nor unfrozen, during the trials or after: the count only falls a little, as frozen
+        # objects nothing holds any more are freed (unfrozen, it would be near 0)
+        self.assertTrue(frozen and all(host // 2 < n <= host for n in frozen), (host, frozen[:3]))
+        self.assertTrue(host // 2 < lw.gc.get_freeze_count() <= host, (host, lw.gc.get_freeze_count()))
 
 
 @unittest.skipUnless(HAVE_LG, "langchain>=1 / langgraph not installed")

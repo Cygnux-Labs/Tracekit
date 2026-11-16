@@ -615,6 +615,19 @@ class PolicySafety(unittest.TestCase):
         for tool, ti in bad:
             self.assertEqual(policy.evaluate(pol, tool, ti, "/p")["decision"], "deny", ti)
 
+    def test_a_windows_path_is_read_with_its_backslashes_as_separators(self):
+        # a Cursor StrReplace of C:\w\.env was allowed on Windows: TK-D005 is written with `/`
+        pol = policy.load()[0]
+        for tool, ti in (("Edit", {"file_path": r"C:\w\.env"}), ("Write", {"file_path": r"C:\w\.env.production"}),
+                         ("Write", {"file_path": r"C:\Users\u\.ssh\authorized_keys"}),
+                         ("Write", {"file_path": r"C:\w\.aws\config"}),
+                         ("Edit", {"file_path": r"C:\w\app.py", "paths": [r"C:\w\app.py", r"C:\w\.env"]})):
+            with self.subTest(ti=ti):
+                d = policy.evaluate(pol, tool, ti, r"C:\w")
+                self.assertEqual((d["decision"], d["rule_ids"][:1]), ("deny", ["TK-D005"]))
+        for ti in ({"file_path": r"C:\w\app.py"}, {"file_path": r"C:\w\.env.example"}):
+            self.assertNotEqual(policy.evaluate(pol, "Edit", ti, r"C:\w")["decision"], "deny", ti)
+
 
 class BoundedFeed(unittest.TestCase):
     def test_feed_drops_oldest_and_keeps_absolute_positions(self):
