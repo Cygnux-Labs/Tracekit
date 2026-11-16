@@ -994,6 +994,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                 c["opaque"] = True
         _made_text(ctx)
         _home_readings(ctx)
+        _xargs_here_readings(ctx)
         _tracekit_copies(ctx)
         # a value the line gives with a substitution in a subscript (x='a[$(cmd)]'), on a line where bash may evaluate
         # one as a name or a number (_Parser.word): bash runs the substitution then
@@ -1229,6 +1230,36 @@ def _home_readings(ctx):
             read.append(a)
         if read != c["argv"]:
             ctx["cmds"].append({**c, "argv": read, "via": c["via"] + ["read at home"]})
+
+
+def _xargs_here_readings(ctx):
+    """Read literal single-path here-string input to xargs rm as an rm operand (#810).
+
+    xargs passes a plain /etc from `<<< /etc` to rm even though it is not
+    part of rm's command line as written.  Only promote one absolute path of
+    safe pathname characters; quoted xargs input, shell expansions, multiple
+    words, and generated text do not have the same argv semantics. Keep a
+    strict size limit, so crafted input cannot inflate a policy decision.
+    """
+    cmds = list(ctx["cmds"])
+    for c in cmds:
+        if c["argv"][0] != "rm" or c["via"][-1:] not in (["xargs"], ["gxargs"]):
+            continue
+        # Only default whitespace-separated xargs input, optionally -r (which
+        # does not change splitting). -0/-d treat the here-string's terminating
+        # newline as data; -I/-J replacement changes the resulting operands.
+        # Matching the original wrapper also avoids applying this to a later
+        # unrelated rm in the same pipeline.
+        if not any(w["argv"][0] == c["via"][-1] and w["pipeline"] == c["pipeline"] and
+                   w["argv"][1:] in (c["argv"], ["-r", *c["argv"]])
+                   for w in cmds):
+            continue
+        # `stdin` contains literal here-string data; it is empty when xargs
+        # reads a pipe, inherited stdin or an input file.
+        for data in c.get("stdin", ())[:8]:
+            if isinstance(data, str) and len(data) <= 512 and re.fullmatch(r"/[A-Za-z0-9_./:-]*", data):
+                ctx["cmds"].append({**c, "argv": [*c["argv"], data],
+                                    "via": [*c["via"], "xargs literal here-string"]})
 
 
 def hidden_commands(cmds, refs):
