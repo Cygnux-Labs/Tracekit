@@ -71,7 +71,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, grants, parsers
+from . import findings_text, findings_v2, grants, lessons, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -485,10 +485,11 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "SessionStart"),
                      "source": f"{d.get('signer_isolation')} signer · {_who(d.get('identity'))}"
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
-        if t == "input.observed":
+        if t == "input.observed":   # with its kept content when it was read (wanted): what TIPS' lessons read
+            kept = self.content.pop((e["run_id"], e.get("run_seq")), None)
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
-                        source=d.get("source"))
+                        source=d.get("source"), **({"value": kept} if kept is not None else {}))
         if t == "content.accessed":   # the tape folds a row of reads by one reader for one purpose
             seqs = d.get("seqs") or []
             what = f"the kept content of {len(seqs)} record{'s' * (len(seqs) != 1)} of run {d.get('run_id')}"
@@ -944,12 +945,26 @@ def review(records, rep, verdict, outcomes=None):
     return out
 
 
-def dev_content_source(purpose="tracekit view", connect=None, say=None):
+def wanted(r):
+    """Whether the viewer (and tracekit tips) reads record r's kept content: a decision's arguments, a model exchange's
+    content, and the trusted observes TIPS' lessons read: a prompt's typed part and the lessons a session was given
+    (the hooks send them), and a person's answer to a lesson (tracekit tips sends it)."""
+    e = r["event"]
+    d = e.get("data") or {}
+    return bool(e["type"] == "policy.decision" and d.get("args_commitment")
+                or e["type"] == "model.exchange" and d.get("content_digest")
+                or e["type"] == "input.observed" and d.get("trust") == "trusted" and (
+                    str(d.get("source")).endswith(lessons.PROMPT)
+                    or d.get("source") in (lessons.SOURCE, lessons.PERSON)))
+
+
+def dev_content_source(purpose="tracekit view", connect=None, say=None, chunk=None):
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
-    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
-    record naming `purpose`. `connect()`: the client (default Client(), which starts the dev signer when none runs). A
+    doesn't, and nothing is shown; content redaction changed is left out). Each read, of up to `chunk` records
+    (default vault_content's), is one signed content.accessed record naming `purpose`. `connect()`: the client
+    (default Client(), which starts the dev signer when none runs). A
     refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good; while the signer is down or
     speaks another protocol it reads nothing. `say(text)` is told once why calls show no arguments, for a refusal or a
     signer of another protocol (default: printed to stderr after `purpose`)."""
@@ -967,7 +982,8 @@ def dev_content_source(purpose="tracekit view", connect=None, say=None):
         try:
             state["client"] = state["client"] or (connect or Client)()
             # content redaction changed opens no commitment: not shown as what the record holds
-            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose)
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose,
+                                                                          **({"chunk": chunk} if chunk else {}))
                    if opened}
         except RPCError as e:
             state["off"] = True
@@ -1300,9 +1316,7 @@ class StoreFeed:
                 oldest = next((x["tk_seq"] for x in self.records if x is not observe.RETRACTED
                                and x.get("tk_seq") is not None), None) if self.base else None
             hidden = not state["shown"] and oldest is not None and records[-1]["event"]["seq"] < oldest
-            want = [r for r in records[state["shown"]:] if self.content and not hidden and (
-                r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
-                or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
+            want = [r for r in records[state["shown"]:] if self.content and not hidden and wanted(r)]
             from .why.signed import EvidenceAlert
             new = []
             if want:   # content_get per run and refresh, each a content.accessed record
@@ -1539,6 +1553,13 @@ class StoreFeed:
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
                     + [f"{again} run(s) being checked again: the store's bytes changed after the viewer read them"]
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
+
+
+def known_runs(feed):
+    """The ids of the store's client runs at the feed's latest refresh, None before its first (TIPS' lessons: a lesson
+    naming a run the store doesn't hold was written by hand)."""
+    with feed.lock:
+        return {run for _, run in feed.listed} or None
 
 
 def shown(feed):
@@ -1970,7 +1991,9 @@ def main(argv=None):
             if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
-                                      transcripts or (audit.default_root() if dev else None))
+                                      transcripts or (audit.default_root() if dev else None),
+                                      folder=lessons.Folder(os.path.join(cfg["data_dir"], "lessons")) if dev else None,
+                                      known=functools.partial(known_runs, feed))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
