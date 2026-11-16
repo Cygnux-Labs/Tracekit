@@ -16,7 +16,7 @@ import zipfile
 
 import test_signer_service as ts
 import test_ts_verifier as tv
-from factories import process_pool
+from factories import process_pool, signer_without_fsync
 from test_verify_v2_property import zipped
 
 from tracekit import merkle
@@ -371,14 +371,21 @@ class ApprovalStateSpace(unittest.TestCase):
         starts = range(0, len(actions) ** APPROVALS_DEPTH, RUNS_PER_SIGNER)
         with process_pool() as pool:
             parts = list(pool.map(self.part, [actions] * len(starts), [prefix] * len(starts), starts))
-        self.assertEqual([w for wrong, _ in parts for w in wrong][:20], [])
+        self.assertEqual([w for wrong, _, _ in parts for w in wrong][:20], [])
+        self.assertEqual(sorted({m for _, _, elsewhere in parts for m in elsewhere}), [])   # every sync was skipped
         if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
-            self.assertEqual(set().union(*(reached for _, reached in parts)), need)
+            self.assertEqual(set().union(*(reached for _, reached, _ in parts)), need)
 
     @staticmethod
     def part(actions, prefix, start):
-        """(in a worker process) Sequences start.. of the space, RUNS_PER_SIGNER of them, on a signer of their own:
-        (what was wrong, the outcomes reached)."""
+        """(in a worker process) Sequences start.. of the space, RUNS_PER_SIGNER of them, on a signer of their own,
+        without its fsync: (what was wrong, the outcomes reached, the modules of the syncs made outside the signer)."""
+        with signer_without_fsync() as elsewhere:
+            wrong, reached = ApprovalStateSpace._part(actions, prefix, start)
+        return wrong, reached, elsewhere
+
+    @staticmethod
+    def _part(actions, prefix, start):
         d, expect, wrong, reached = tempfile.mkdtemp(), {}, [], set()   # lean: left behind when a part raises
         s = svc.SignerService(d, policy=ts.PAY_ASKS, limits=LIMITS)
         sequences = itertools.islice(itertools.product(actions, repeat=APPROVALS_DEPTH), start, start + RUNS_PER_SIGNER)

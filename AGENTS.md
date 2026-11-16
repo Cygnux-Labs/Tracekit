@@ -12,8 +12,8 @@
 
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
-bundles. Today's code (1.5) has two generations: the v1 laptop path (tracekitd, the
-JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush hooks) and the v2 signer service for server-hosted agents (evidence
+bundles. Today's code (1.6) has two generations: the v1 laptop path (tracekitd, the
+JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush / Devin / Cline / gptme / OpenHands / Copilot CLI / CodeBuddy Code / jcode / Kiro CLI hooks) and the v2 signer service for server-hosted agents (evidence
 format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
@@ -32,6 +32,8 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/a2a_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, A2A gateway (experimental), egress observer | [HIGH CONFIDENCE] |
 | `tracekit/graph.py` | `tracekit graph`: a graded graph of what agents did across verified bundles (experimental) | [HIGH CONFIDENCE] |
 | `tracekit/report.py` | `tracekit report`: a window of a signer's store on one page, built on the viewer's reader, check and review (experimental) | [HIGH CONFIDENCE] |
+| `tracekit/tips.py` | `tracekit tips` and the viewer's TIPS page (`/api/tips`): the cost tips from signed records and Claude Code's transcripts, the LESSONS part, and a person's lesson actions (`approve`, `retire`, `restore`, `add`) and `--for-agent` (experimental) | [HIGH CONFIDENCE] |
+| `tracekit/lessons.py` | Lessons (experimental, docs/viewer.md#lessons): the lookup, fix and told detectors over verified runs (taint from signed provenance, the never-evasion gate), the lessons folder in the dev data dir (auto-memory notes, MEMORY.md, git as history), the block the Claude Code hook gives (BM25 within 8,000 bytes) and each lesson's effect | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
 | `tracekit/pcm/` | PCM 0.1, proof-carrying messages (experimental): `__init__.py` (message, schema and grant checks, replay, `verify`), `claims.py` (claim evidence), `cli.py` (`tracekit pcm verify`, `tracekit pcm demo`), `tools.json` (the frozen tool placement table, part of the protocol); its signer RPCs (`pcm_*`, contract version 20) are in `tracekit/signer/` | [HIGH CONFIDENCE] |
 | `tracekit/grants.py` | Intent grants (experimental, docs/intent-grants.md): the `payment.send` intent, amounts, the payment reader and the caveat and limit checks the signer (`grant_*` RPCs, contract version 22; releases in `_decide`), the CLI (`tracekit grant`, `approvals approve --grant`) and the verifier (`intent grants`) share; a grant is a PCM grant as it is | [HIGH CONFIDENCE] |
@@ -41,7 +43,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
 | `tracekit/core.py` | Canonical JSON, hashing, v1 signature message, scrub | [HIGH CONFIDENCE] |
 | `tracekit/schema/tracekit.event.v1.json` | Frozen v1 event schema (validated by `tracekit/schema.py`) | [HIGH CONFIDENCE] |
-| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush hook capture | [HIGH CONFIDENCE] |
+| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush / Devin / Cline / gptme / OpenHands / Copilot CLI / CodeBuddy Code / jcode / Kiro CLI hook capture | [HIGH CONFIDENCE] |
 | `tracekit/agent_sdk.py`, `tracekit/autotrace.py`, `tracekit/adapters/` | Python SDK, model-SDK autotrace, framework adapters | [HIGH CONFIDENCE] |
 | `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
 | `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
