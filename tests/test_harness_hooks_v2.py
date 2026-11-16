@@ -228,9 +228,14 @@ class Mapping(HarnessCase):
         with mock.patch.object(claude_code.sys, "executable", interpreter):
             command = claude_code.approvals_cmd(None, use_interpreter=True)
 
+        expected_interpreter = (
+            subprocess.list2cmdline([interpreter])
+            if claude_code.os.name == "nt"
+            else shlex.quote(interpreter)
+        )
         self.assertEqual(
             command,
-            f"{shlex.quote(interpreter)} -m tracekit approvals",
+            f"{expected_interpreter} -m tracekit approvals",
         )
 
     def test_codex_approval_command_quotes_interpreter_path_on_windows(self):
@@ -249,6 +254,11 @@ class Mapping(HarnessCase):
         interpreter = "/path/with spaces/python"
         original_approvals_cmd = claude_code.approvals_cmd
         original_prefix = claude_code._approval_command_prefix
+        quoted_interpreter = (
+            subprocess.list2cmdline([interpreter])
+            if claude_code.os.name == "nt"
+            else shlex.quote(interpreter)
+        )
 
         def unnamed_approvals_cmd(signer, use_interpreter=False):
             return original_approvals_cmd(None, use_interpreter)
@@ -257,7 +267,7 @@ class Mapping(HarnessCase):
             return original_prefix(agent, None)
 
         for harness, expected in (
-            ("codex", f"!{shlex.quote(interpreter)} -m tracekit approvals approve "),
+            ("codex", f"!{quoted_interpreter} -m tracekit approvals approve "),
             ("gemini", "!tracekit approvals approve "),
         ):
             with self.subTest(harness=harness):
