@@ -52,7 +52,9 @@ export class SignerUnavailable extends Error {
   recorded: boolean | null = false;   // a write call's error: see Client
 }
 
-class TimeoutUnavailable extends SignerUnavailable {}
+class TimeoutUnavailable extends SignerUnavailable {
+  what = "no answer from the signer";   // the message Client.call re-raises it with, before " within {timeout}s"
+}
 
 /** The signer answered but does not speak this client's protocol version. It is left running. */
 export class Incompatible extends Error {
@@ -356,8 +358,12 @@ class Https {
       });
       let connected = false;   // nothing goes out until it connects (and the TLS handshake is done)
       req.on("timeout", () => {
-        reject(connected ? unanswered(timeoutMs)
-          : new TimeoutUnavailable(`could not connect to the signer at ${this.url.origin} within ${timeoutMs / 1000}s`));
+        if (connected) reject(unanswered(timeoutMs));
+        else {
+          const e = new TimeoutUnavailable(`could not connect to the signer at ${this.url.origin} within ${timeoutMs / 1000}s`);
+          e.what = `could not connect to the signer at ${this.url.origin}`;
+          reject(e);
+        }
         req.destroy();
       });
       req.on("socket", (s) => {
@@ -522,7 +528,7 @@ export class Client {
           }
           if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
           if (e instanceof TimeoutUnavailable) {   // worded with the call's timeout; keeps whether the try went out
-            const err = new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
+            const err = new SignerUnavailable(`${e.what} within ${timeout / 1000}s`);
             err.recorded = e.recorded;
             throw err;
           }

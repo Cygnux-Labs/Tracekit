@@ -116,6 +116,7 @@ def _unanswered(timeout, cls=SignerUnavailable):
 
 class _TimeoutUnavailable(SignerUnavailable):
     """Timed out waiting on a transport/call deadline; Client.call re-raises with the call's timeout."""
+    what = "no answer from the signer"   # the re-raised message, before " within {timeout}s"
 
 
 def _new_id():
@@ -276,7 +277,9 @@ class _Https:
         except socket.timeout:
             conn.close()   # reopened by the next request
             if connecting:   # nothing went out
-                raise _TimeoutUnavailable(f"could not connect to the signer at {self.url} within {timeout:g}s") from None
+                e = _TimeoutUnavailable(f"could not connect to the signer at {self.url} within {timeout:g}s")
+                e.what = f"could not connect to the signer at {self.url}"
+                raise e from None
             raise _unanswered(timeout, _TimeoutUnavailable) from None
         except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
@@ -471,7 +474,7 @@ class Client:
                         sent = sent or e.sent and (self._https is None or self._https.hello is not None)
                         continue
                     except _TimeoutUnavailable as e:   # worded with the call's timeout; keeps whether the try went out
-                        err = SignerUnavailable(f"no answer from the signer within {timeout:g}s")
+                        err = SignerUnavailable(f"{e.what} within {timeout:g}s")
                         err.recorded = e.recorded
                         raise err from None
                     except concurrent.futures.TimeoutError:
