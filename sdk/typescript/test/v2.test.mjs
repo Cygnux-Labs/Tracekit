@@ -240,7 +240,12 @@ async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "
         const f = JSON.parse(buf.slice(0, n));
         buf = buf.slice(n + 1);
         if (f.method !== "hello") frames.push({ ...f, conn });
-        queue = queue.then(async () => sock.write(JSON.stringify(f.method === "hello" ? hello : (await handle(f)) || (await answer(f))) + "\n"));
+        queue = queue.then(async () => {
+          const reply = f.method === "hello"
+            ? (typeof hello === "function" ? await hello(conn, sock) : hello)
+            : (await handle(f, { conn, sock })) || (await answer(f));
+          if (reply !== true && !sock.destroyed) sock.write(JSON.stringify(reply) + "\n");
+        });
       }
     });
   });
@@ -586,4 +591,211 @@ test("instrument() rejects, never throws, when its client can't be built", async
   } finally {
     if (before === undefined) delete process.env.TRACEKIT_SIGNER_CA; else process.env.TRACEKIT_SIGNER_CA = before;
   }
+});
+
+test("HTTPS: a retry after a lost connection does not run past timeoutMs", async () => {
+  const sent = [];
+  const c = https(async (f) => {
+    sent.push(f);
+    await sleep(180);
+    return Object.getPrototypeOf(c.https).post.call(
+      { url: new URL("https://127.0.0.1:1/v2/rpc"), agent: c.https.agent }, f, 1000);
+  }, 100);
+  const t = Date.now();
+  await assert.rejects(c.call("decide", event("r1", "c1")), (e) => e instanceof SignerUnavailable && /0\.1s/.test(e.message));
+  assert.equal(sent.length, 1);
+  assert.ok(Date.now() - t < 600);
+});
+
+test("TCP: a stalled handshake stops within timeoutMs instead of waiting CONNECT_TIMEOUT_MS", async (t) => {
+  const held = [];
+  const srv = createServer((sock) => held.push(sock));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => {
+    for (const s of held) s.destroy();
+    srv.close();
+  });
+  const before = process.env.TRACEKIT_SIGNER_TOKEN;
+  process.env.TRACEKIT_SIGNER_TOKEN = "0".repeat(32);
+  try {
+    const c = new Client({ signer: `tcp://127.0.0.1:${srv.address().port}`, timeoutMs: 120 });
+    const start = Date.now();
+    await assert.rejects(c.call("status", {}), SignerUnavailable);
+    assert.ok(Date.now() - start < 1000);
+  } finally {
+    if (before === undefined) delete process.env.TRACEKIT_SIGNER_TOKEN;
+    else process.env.TRACEKIT_SIGNER_TOKEN = before;
+  }
+});
+
+async function assertHungConnectReportsAddress(path) {
+  const c = new Client({ signer: path, timeoutMs: 5000 });
+  const start = Date.now();
+  const results = await Promise.allSettled([
+    c.call("status", {}),
+    c.call("approval_wait", { run_id: "r1", run_token: "t", approval_id: "a1", timeout_ms: 0 }),
+  ]);
+  assert.ok(Date.now() - start < 3500);
+  for (const r of results) {
+    assert.equal(r.status, "rejected");
+    assert.ok(r.reason instanceof SignerUnavailable);
+    assert.ok(r.reason.message.startsWith(`no signer answering at ${path}: no answer from the signer within `), r.reason.message);
+    assert.doesNotMatch(r.reason.message, /within 5s/);
+  }
+  await c.close();
+}
+
+test("TCP: a hung signer reports its address at CONNECT_TIMEOUT_MS, not timeoutMs", async (t) => {
+  const held = [];
+  const srv = createServer((sock) => held.push(sock));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => {
+    for (const s of held) s.destroy();
+    srv.close();
+  });
+  const before = process.env.TRACEKIT_SIGNER_TOKEN;
+  process.env.TRACEKIT_SIGNER_TOKEN = "0".repeat(32);
+  try {
+    await assertHungConnectReportsAddress(`tcp://127.0.0.1:${srv.address().port}`);
+  } finally {
+    if (before === undefined) delete process.env.TRACEKIT_SIGNER_TOKEN;
+    else process.env.TRACEKIT_SIGNER_TOKEN = before;
+  }
+});
+
+test("HTTPS: a call timed out before its first try uses its client_seq", async () => {
+  const seen = [];
+  const c = https(async (f) => {
+    seen.push(f.client_seq);
+    return { ok: true };
+  }, 0);
+  await assert.rejects(c.call("decide", event("r1", "c1")), (e) => e instanceof SignerUnavailable && /within 0s/.test(e.message));
+  c.timeoutMs = 2000;
+  await c.call("decide", event("r1", "c2"));
+  assert.deepEqual(seen, [1]);
+});
+
+test("HTTPS: a slow hello bounds the following RPC and reports timeoutMs", async (t) => {
+  const held = [];
+  const srv = createServer((sock) => held.push(sock));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  const c = new Client({ signer: `https://127.0.0.1:${srv.address().port}`, timeoutMs: 500 });
+  t.after(() => {
+    c.https.agent.destroy();
+    for (const s of held) s.destroy();
+    srv.close();
+  });
+  const origPost = Object.getPrototypeOf(c.https).post;
+  c.https.post = (f, ms) => f.method === "hello"
+    ? sleep(350).then(() => ({ proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }))
+    : origPost.call(c.https, f, ms);
+  const start = Date.now();
+  await assert.rejects(c.call("status", {}), (e) => e instanceof SignerUnavailable && /within 0\.5s/.test(e.message));
+  assert.ok(Date.now() - start < 750);
+});
+
+test("fake: a retry after a dropped connection stops within timeoutMs on a slow reconnect hello", async (t) => {
+  let hello2Done;
+  const onHello2 = new Promise((r) => (hello2Done = r));
+  const { frames, path } = await fake(t, {
+    hello: async (conn) => {
+      if (conn === 2) {
+        await sleep(1500);
+        hello2Done();
+      }
+      return { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 };
+    },
+    handle: (_f, { conn, sock }) => {
+      if (conn === 1) {
+        sock.destroy();
+        return true;
+      }
+    },
+  });
+  const c = new Client({ signer: path, timeoutMs: 500 });
+  const start = Date.now();
+  await assert.rejects(c.call("status", {}), (e) => e instanceof SignerUnavailable && /within 0\.5s/.test(e.message));
+  assert.ok(Date.now() - start < 1000);
+  await onHello2;
+  await sleep(50);
+  assert.equal(frames.length, 1);
+  await c.close();
+});
+
+test("fake: a long-poll dial stops within timeoutMs on a slow hello", async (t) => {
+  const ac = new AbortController();
+  t.after(() => ac.abort());
+  const { frames, path } = await fake(t, {
+    hello: async () => {
+      await sleep(1500, undefined, { signal: ac.signal }).catch(() => {});
+      return { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 };
+    },
+  });
+  const c = new Client({ signer: path, timeoutMs: 300 });
+  const start = Date.now();
+  await assert.rejects(c.call("approval_wait", { run_id: "r1", run_token: "t", approval_id: "a1", timeout_ms: 0 }),
+    (e) => e instanceof SignerUnavailable && /within 0\.3s/.test(e.message));
+  assert.ok(Date.now() - start < 750);
+  assert.equal(frames.length, 0);
+  await c.close();
+});
+
+test("fake: a reconnect after a slow hello bounds the answer wait to what is left", async (t) => {
+  const ac = new AbortController();
+  t.after(() => ac.abort());
+  const { path } = await fake(t, {
+    hello: async (conn) => {
+      if (conn === 2) await sleep(350, undefined, { signal: ac.signal }).catch(() => {});
+      return { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 };
+    },
+    handle: async (_f, { conn, sock }) => {
+      if (conn === 1) {
+        sock.destroy();
+        return true;
+      }
+      await new Promise((r) => sock.once("close", r));
+      return true;
+    },
+  });
+  const c = new Client({ signer: path, timeoutMs: 500 });
+  const start = Date.now();
+  await assert.rejects(c.call("status", {}), (e) => e instanceof SignerUnavailable && /within 0\.5s/.test(e.message));
+  assert.ok(Date.now() - start < 750);
+  await c.close();
+});
+
+test("fake: a call joining another call's reconnect keeps its own timeout budget", async (t) => {
+  let dial2;
+  const onDial2 = new Promise((r) => (dial2 = r));
+  const ac = new AbortController();
+  t.after(() => ac.abort());
+  const { path } = await fake(t, {
+    hello: async (conn) => {
+      if (conn === 2) {
+        dial2();
+        await sleep(300, undefined, { signal: ac.signal }).catch(() => {});
+      }
+      return { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 };
+    },
+    handle: async (_f, { conn, sock }) => {
+      if (conn === 1) {
+        await sleep(800, undefined, { signal: ac.signal }).catch(() => {});
+        sock.destroy();
+        return true;
+      }
+      return { ok: true };
+    },
+  });
+  const c = new Client({ signer: path, timeoutMs: 1000 });
+  const callA = c.call("status", {});
+  await onDial2;
+  const callB = c.call("status", {});
+  await assert.rejects(callA, (e) => e instanceof SignerUnavailable && /within 1s/.test(e.message));
+  assert.deepEqual(await callB, { ok: true });
+  await c.close();
+});
+
+test("fake: a hung signer reports its address at CONNECT_TIMEOUT_MS, not timeoutMs", async (t) => {
+  const { path } = await fake(t, { hello: () => true });
+  await assertHungConnectReportsAddress(path);
 });

@@ -59,7 +59,7 @@ class InProcess(client.Client):
         super().__init__(signer="in-process")
         self.s, self.who = s, who
 
-    def _send(self, method, req):
+    def _send(self, method, req, *_):
         with self._lock:
             self._prepare(method, req)
         fut = concurrent.futures.Future()
