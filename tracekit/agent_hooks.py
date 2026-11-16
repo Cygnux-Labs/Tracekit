@@ -32,8 +32,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
                                                           write_to_process is), Edit (paths: every file the patch adds,
                                                           updates, deletes or moves to), mcp__s__t;
             view_image, and spawn_agent, multi_agent_v1send_input (send_input) or any other call with `items` (v2's
-            collaboration tools too) with file items (local_image, local_audio, skill, any with a path), as a Read of
-            each file (0.169.0 recorded); wait_agent and a call without items by name
+            collaboration tools too) with file items (local_image, local_audio, skill, any with a path or a file:
+            image_url), as a Read of each file (0.169.0 recorded); wait_agent and a call without items by name
     Open Interpreter  Codex's (a Codex fork, 0.0.61 recorded): Bash (its exec_command), apply_patch (the patch in
             `command`), mcp__s__t, view_image, spawn_agent and send_input, decided as Codex's are; under a non-native
             harness, Claude Code's tools as Claude Code's, and bash, exec_shell, write, write_file, edit, edit_file,
@@ -1684,9 +1684,10 @@ def _repeated(args):
 
 def _interpreter_files(ti):
     """The `path` of each item in a Codex or Open Interpreter call's `items` that has one or is a file item
-    (INTERPRETER_FILE_ITEMS, in any case), as sent (None for one without a string path, which _blocked denies). `items`
-    is read as a list, one item, a JSON string of either, or lists of those at any depth."""
-    items, todo = [], [ti.get("items")]
+    (INTERPRETER_FILE_ITEMS, in any case), as sent, and the local path of a `file:` image_url (_file_url_path); None for
+    one without a path Tracekit can read, which _blocked denies. `items` is read as a list, one item, a JSON string of
+    either, or lists of those at any depth."""
+    items, todo, out = [], [ti.get("items")], []
     while todo:
         v = todo.pop()
         if isinstance(v, str):
@@ -1698,8 +1699,23 @@ def _interpreter_files(ti):
             items.append(v)
         elif isinstance(v, list):
             todo.extend(reversed(v))
-    return [i["path"] if isinstance(i.get("path"), str) and i["path"] else None for i in items
-            if "path" in i or str(i.get("type")).casefold() in INTERPRETER_FILE_ITEMS]
+    for i in items:
+        if "path" in i or str(i.get("type")).casefold() in INTERPRETER_FILE_ITEMS:
+            out.append(i["path"] if isinstance(i.get("path"), str) and i["path"] else None)
+        url = i["image_url"].get("url") if isinstance(i.get("image_url"), dict) else i.get("image_url")
+        if isinstance(url, str) and url[:5].casefold() == "file:":   # (an http(s) image is no file)
+            out.append(_file_url_path(url))
+    return out
+
+
+def _file_url_path(url):
+    """The local path a `file:` URL names, percent-decoded (`file:///x`, `file://localhost/x`, `file:/x`; a drive's
+    `file:///C:/x` as C:/x), or None for one that names no local path (another host, no absolute path)."""
+    u = urllib.parse.urlsplit(url)
+    if u.netloc.casefold() not in ("", "localhost") or not u.path.startswith("/"):
+        return None
+    path = urllib.parse.unquote(u.path)
+    return path[1:] if re.match(r"/[A-Za-z]:[/\\]", path) else path
 
 
 def _blocked(harness, p, raw="", line=None):

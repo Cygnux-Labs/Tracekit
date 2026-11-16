@@ -2,7 +2,7 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.7.0 (2026-11-16) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
+## 1.7.0 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
 
 A feature and security release. The laptop default (`dev.yaml`, which the dev signer uses) now holds the costly short
 list: secrets and credentials, deletes outside the project or on remotes, access changes, guardrail changes, and
@@ -180,8 +180,8 @@ and the hooks together. Advisories follow the release.
   unknown tools, which the laptop packs only flag, or with a decoy argument; a call whose arguments can't be read is
   now blocked in the hook, and each tool is decided as the call it makes (OpenCode 2.x, Hermes's file tools, Crush,
   Antigravity CLI, goose, Cursor, Qwen Code, Codex, Gemini CLI). Codex's `view_image` and the files a call's `items`
-  give the model (`spawn_agent`, `send_input`, any call of Codex's or Open Interpreter's with items) are each decided
-  as a Read (#901, by @khushi-git-7). MCP input-required answers are decided and recorded.
+  give the model (`spawn_agent`, `send_input`, any call of Codex's or Open Interpreter's with items; an image's `file:`
+  URL too) are each decided as a Read (#901, by @khushi-git-7). MCP input-required answers are decided and recorded.
 
 ### Contributors
 @khushi-git-7, @hossainzarif23, @souravC01, @aj-codespy, @Purv-Kabaria, @Mr45401, @samueladebisi-dev, @kausthubhk,

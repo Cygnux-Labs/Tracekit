@@ -159,15 +159,23 @@ class Mapping(HarnessCase):
                  ["/w/.env"]),
                 ("spawn_agent", {"items": {"type": "skill", "path": "/w/s.md"}}, ["/w/s.md"]),
                 ("multi_agent_v1_spawn_agent", {"items": [[{"type": "local_audio", "path": "/w/a.wav"}]]},
-                 ["/w/a.wav"])):
+                 ["/w/a.wav"]),
+                # an image item's file: URL is the local file it names, decoded (an http(s) one is no file)
+                ("spawn_agent", {"items": [{"type": "image", "image_url": "file:///w/.env"},
+                                           {"type": "input_image", "image_url": "File://localhost/w/a%20b.png"},
+                                           {"type": "image", "image_url": {"url": "file:/w/c.png"}},
+                                           {"type": "image", "image_url": "file:///C:/w/d.png"},
+                                           {"type": "image", "image_url": "https://example.com/e.png"}]},
+                 ["/w/.env", "/w/a b.png", "/w/c.png", "C:/w/d.png"])):
             with self.subTest(tool=name):
                 self.assertEqual(self.hook(harness, dict(base, tool_name=name, tool_input=ti))[0], 0)
                 sent = self.sent[-1]
                 self.assertEqual((sent["tool"], sent["args"]["file_path"]), ("Read", files[0]))
                 if name != "view_image":
                     self.assertEqual(sent["args"]["paths"], files)
-        self.hook(harness, dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
-        self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
+        for items in ([{"type": "text", "text": "t"}], [{"type": "image", "image_url": "https://example.com/a.png"}]):
+            self.hook(harness, dict(base, tool_input={"items": items}))   # no file
+            self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
         # a shell or MCP call is the call it is, whatever items it carries
         self.hook(harness, dict(base, tool_name="mcp__s__t", tool_input={"items": [{"type": "skill", "path": "/w/s"}]}))
         self.assertEqual(self.sent[-1]["tool"], "mcp__s__t")
@@ -177,7 +185,9 @@ class Mapping(HarnessCase):
                          ("view_image", {"path": ["/w/a"]}),
                          ("collaborationsend_input", {"items": [{"type": "local_image"}]}),
                          ("spawn_agent", {"items": [{"type": "LOCAL_IMAGE"}]}),
-                         ("spawn_agent", {"items": [{"type": "local_image", "path": "/w/a.png"}, {"type": "skill"}]})):
+                         ("spawn_agent", {"items": [{"type": "local_image", "path": "/w/a.png"}, {"type": "skill"}]}),
+                         ("spawn_agent", {"items": [{"type": "image", "image_url": "file://host.example/w/a.png"}]}),
+                         ("spawn_agent", {"items": [{"type": "image", "image_url": "file:a.png"}]})):
             with self.subTest(blocked=name):
                 code, out, err = self.hook(harness, dict(base, tool_name=name, tool_input=ti))
                 self.assertEqual(code, CODEX_DENY, err)
