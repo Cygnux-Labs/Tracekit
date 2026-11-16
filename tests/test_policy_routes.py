@@ -115,12 +115,75 @@ class Routes(unittest.TestCase):
     def test_a_pattern_is_read_as_each_protected_name_it_may_make(self):
         # bash expands a redirection's pattern that matches one file, and an argument's to each file it matches
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
-        self.expect(self.bash("echo k >> ~/.ssh/authorized_key?", "echo x > .en?", "sed -i 's/a/b/' .e[n]v"), held,
-                    "TK-D023")
+        self.expect(self.bash("echo x > .en?", "sed -i 's/a/b/' .e[n]v"), held, "TK-D023")
+        self.expect(self.bash("echo k >> ~/.ssh/authorized_key?"), "deny", "TK-D023")   # any file in .ssh/, as TK-D005
         self.expect(self.bash("echo x > ~/.bashr?", "sed -i 's/a/b/' ~/.b*", "echo x >> ~/.zsh*"),
                     {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
         self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A083")
         self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D023")
+
+    # --- the 1.7.0 guardrail probes, by class
+    def test_more_writers_reach_the_file_rules(self):
+        # in-place editors (yq -i, sd, dos2unix), a decompressor's output, ditto, an extract's members or folder, git
+        # config -f, base64 -o, split's and csplit's prefix, emacs: each writes what the file rules hold, and any file
+        # in .ssh/ or .aws/ is denied from the shell as TK-D005 denies a file tool's
+        self.expect(self.bash(
+            "yq -i '.a=1' ~/.ssh/config", "sd x y ~/.aws/credentials", "dos2unix .env", "xz -d .env.xz",
+            "cp /tmp/k.gz ~/.ssh/authorized_keys.gz && gunzip -f ~/.ssh/authorized_keys.gz",
+            "ditto /tmp/k ~/.ssh/authorized_keys", "tar -xf /tmp/k.tar -C ~ .ssh/authorized_keys",
+            "unzip -o /tmp/k.zip -d ~/.ssh", "7z x /tmp/k.7z -o$HOME/.ssh", "cp -R /tmp/k/. ~/.ssh/",
+            "git config -f .env a.b c", "base64 -d -i /tmp/k -o ~/.ssh/authorized_keys",
+            "base64 --decode --output=~/.ssh/authorized_keys /tmp/k", "csplit -f ~/.ssh/authorized_key -n 1 /tmp/k 1",
+            "echo LD_PRELOAD=/tmp/x.so | tee -a ~/.ssh/environment", "echo x >> ~/.aws/cli/alias"), "deny", "TK-D023")
+        self.expect(self.bash("split -l 100000 /tmp/h .git/hooks/pre-commi"), "ask", "TK-A083")
+        self.expect(self.bash("yq -i -o json 'del(.hooks)' ~/.claude/settings.json",
+                              "sd tracekit true ~/.claude/settings.json",
+                              "yq -i '.approvals.mode = \"off\"' ~/.hermes/config.yaml"), "ask", "TK-F015")
+        self.expect(self.bash("xz -df ~/.bashrc.xz", "emacs --batch ~/.bashrc --eval '(save-buffer)'"),
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
+        self.expect(self.bash("yq '.a' x.yaml", "yq -i '.a=1' ./deploy.yaml", "sd 'foo' 'bar' src/app.py",
+                              "dos2unix scripts/build.sh", "gunzip -k data.csv.gz", "tar -xzf dist.tgz -C build",
+                              "unzip -o artifacts.zip -d out", "base64 -d -i in.txt -o out.bin",
+                              "split -l 1000 big.csv parts/chunk_", "csplit -f out/part in.txt 10",
+                              "emacs --batch notes.org -f org-babel-tangle", "ditto build/App.app /tmp/App.app",
+                              "cp -R src/. build/", "xz -d logs.tar.xz"), "allow")
+        self.expect(self.bash("ssh-keyscan github.com >> ~/.ssh/known_hosts"), ("allow", "flag"))   # a CI setup's
+
+    def test_an_interpreter_s_file_write_reaches_the_file_rules(self):
+        # an open in a writing mode, write_text, writeFileSync, File.write, file_put_contents, a copy's target: tee -a
+        # of the file, so the file rules read it as they read the shell's writes
+        self.expect(self.bash("python3 -c \"open('.env','w').write('x')\"",
+                              "python3 -c \"import shutil; shutil.copy('/tmp/k', '/u/.ssh/authorized_keys')\"",
+                              "perl -e 'open(my $f, \">>\", \"/u/.ssh/authorized_keys\")'",
+                              "ruby -e 'File.write(\".env\", \"x\")'", "php -r 'file_put_contents(\".env\", \"x\");'"),
+                    "deny", "TK-D023")
+        self.expect(self.bash("python3 -c \"open('/Users/u/.claude/settings.json','w').write('{}')\"",
+                              "node -e \"require('fs').writeFileSync('.claude/settings.json','{}')\""), "ask", "TK-F015")
+        self.expect(self.bash("python3 -c \"import pathlib; pathlib.Path('.git/hooks/pre-commit').write_text('x')\""),
+                    "ask", "TK-A083")
+        self.expect(self.bash("python3 -c \"open('out.txt','w').write('x')\"",
+                              "python3 -c \"print(open('README.md').read())\"",
+                              "node -e \"require('fs').writeFileSync('dist/x.json','{}')\""), "allow")
+
+    def test_tracekit_s_plugin_disabled_in_any_spelling_is_held(self):
+        self.expect(self.bash("hermes plugins disable --all", "hermes plugin disable tracekit/",
+                              "hermes plugins disable ./tracekit", "hermes plugins remove Tracekit",
+                              "claude plugin disable --all", "claude plugin uninstall ./tracekit"), "ask", "TK-A054")
+        self.expect(self.bash("hermes plugins list", "hermes plugins disable other-plugin",
+                              "hermes config get approvals.mode", "claude plugin disable other@market"), "allow")
+
+    def test_a_harness_by_its_script_its_located_path_or_in_a_container_is_a_launch(self):
+        self.expect(self.bash(
+            "node node_modules/.bin/claude --bare -p hi", "node ./node_modules/.bin/codex exec -c hooks=[] hi",
+            "HOME=/tmp/x node node_modules/.bin/claude -p hi", "node \"$(which claude)\" --settings /tmp/s.json -p hi",
+            "HOME=/tmp/x node \"$(which claude)\" -p hi", "\"$(command -v claude)\" --settings /tmp/s.json -p hi",
+            "docker run --rm -v $PWD:/w node:20 npx -y @anthropic-ai/claude-code -p hi",
+            "podman run -it img claude -p hi", "docker exec c claude -p hi",
+            "APPDATA=C:/tmp/x LOCALAPPDATA=C:/tmp/x opencode run hi"), "ask", "TK-A070")
+        # a program word that is the path of the program it names is that program
+        self.expect(self.bash("node script.js", "node node_modules/.bin/jest --ci", "APPDATA=C:/x python app.py",
+                              "\"$(command -v python)\" -m pytest", "$(which python3) -V"), "allow")
+        self.expect(self.bash("$(which rm) -rf ~"), "deny", "TK-D004")
 
     def test_every_in_place_switch_find_and_output_writer_reaches_the_rules(self):
         self.expect(self.bash(
@@ -250,9 +313,10 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("bash -O dotglob -c 'sed -i s/a/b/ *env'", "BASHOPTS=dotglob bash -c 'sed -i s/a/b/ *env'",
                               "shopt -s dot''glob; sed -i s/a/b/ *env", "$'\\x73hopt' -s dotglob; sed -i s/a/b/ *env",
                               "for GLOBIGNORE in x; do :; done; sed -i s/a/b/ *env",
-                              "read GLOBIGNORE <<< x; sed -i s/a/b/ *env", "printf -v GLOBIGNORE x; sed -i s/a/b/ *env",
-                              "cat /tmp/k >> ~/.ssh/authorized[[.underscore.]]keys",
-                              "cat /tmp/k >> ~/.ssh/authorized[[=__=]keys"), held, "TK-D023")
+                              "read GLOBIGNORE <<< x; sed -i s/a/b/ *env", "printf -v GLOBIGNORE x; sed -i s/a/b/ *env"),
+                    held, "TK-D023")
+        self.expect(self.bash("cat /tmp/k >> ~/.ssh/authorized[[.underscore.]]keys",   # any file in .ssh/, as TK-D005
+                              "cat /tmp/k >> ~/.ssh/authorized[[=__=]keys"), "deny", "TK-D023")
         self.expect(self.bash("find . -name '*env' -exec sed -i s/a/b/ {} +"), "deny", "TK-D023")
         # an option the parser can't read (a name in a variable, zsh's setopt) holds a pattern it may widen
         self.expect(self.bash("o=dotglob; shopt -s $o; sed -i s/a/b/ *env", "setopt globdots; sed -i s/a/b/ *env"),

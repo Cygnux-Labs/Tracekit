@@ -85,7 +85,7 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   the Hermes plugin is version 0.2.0 for the catalog update (#708).
 
 ### Changed
-- **Policy packs.** Coding `2026.11-v2-93` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
+- **Policy packs.** Coding `2026.11-v2-94` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18`
   (from `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud
   `2026.11-server-cloud-18` (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14`
   (from `-9`), and the v1 default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's
@@ -108,6 +108,8 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   says a live grant's reason when it holds a call (#840, by @amarjithkumar2007-wq).
 - Hook deadlines: a hook answers within one deadline, approval waits and a starting dev signer included, so a harness
   never times the hook out first.
+- A program word that is only the path a name resolves to (`"$(command -v python)" -m pytest`, `$(which python3)`)
+  is read as that program, where it was held as a name the line builds.
 - Flags are quieter (#844): no ask or deny changes, fewer flags on ordinary work; a Claude Code `RemoteTrigger` that
   starts or changes a routine is held (`TK-A081`).
 - The README leads with the tamper-evident flight recorder (#712); contribute links point to the open-to-many label
@@ -149,12 +151,16 @@ and the hooks together. Advisories follow the release.
 - **Redaction counts**: a value hidden by a redaction mark in the content itself was not counted in the signed
   `redaction.count`; it is now.
 - **Guardrail changes**: an agent could turn off its harness's Tracekit hooks or approvals with the harness's own
-  commands, start a nested harness with a config of its choosing, or write a harness's hooks, settings or skills
-  through the shell. These are held (`TK-A069`, `TK-A070`, `TK-F009`, `TK-F015`, `TK-A085`).
+  commands (Tracekit's plugin named in any spelling, or all plugins at once), start a nested harness with a config of
+  its choosing (by its script's name, by the path a name resolves to, in a container, or with a Windows config home
+  moved), or write a harness's hooks, settings or skills through the shell or an interpreter. These are held
+  (`TK-A054`, `TK-A069`, `TK-A070`, `TK-F009`, `TK-F015`, `TK-A085`).
 - **Protected files through the shell**: an in-place editor, a download's output file, a redirection whose target is
-  a pattern, a copy or move into place, or a Windows spelling of a path or program could write a credentials file, a
-  startup file or a Git hook without the file rules' deny or hold. The shell's writers are now read as file writes
-  (`TK-D023`, `TK-A082`, `TK-A083`), and Windows paths, homes and program names are read as Windows opens them.
+  a pattern, a copy or move into place, an archive extracted or a file decompressed into place, an output option, an
+  interpreter's one-line write, or a Windows spelling of a path or program could write a credentials file, a startup
+  file or a Git hook without the file rules' deny or hold. The shell's writers are now read as file writes (`TK-D023`,
+  `TK-A082`, `TK-A083`), any file in `.ssh/` or `.aws/` is denied from the shell as from a file tool, and Windows
+  paths, homes and program names are read as Windows opens them.
 - **Shell reading**: values a loop takes, entries of a `commands` list, shell option clusters, a runner's exec after
   its options, wrappers after a pipe or named by a path, `cmd /c` and `wsl`, `.cmd`, `.bat` and `.ps1` shims, a
   variable whose value names the home or working folder, `gh`'s options before its command, and a line typed into a

@@ -907,6 +907,39 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+_WRITES = {
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+                         r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
+                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+    "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
+                       r"cp|link|symlink)(?:Sync)?\s*\("),
+    "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
+    "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
+                       r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
+    "php": re.compile(r"(?P<path>(?!))?\b(?P<call>file_put_contents|fopen|copy|rename|symlink|link|touch)\s*\("),
+    "lua": re.compile(r"(?P<path>(?!))?\b(?P<call>io\.open|os\.rename)\s*\(")}
+_SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln")   # calls that write their second
+
+
+def _written(kind, call, items):
+    """The file a write call writes (its arguments as _call_args gives them), or None: an open's only in a writing mode
+    (Python's, Ruby's, PHP's and Lua's mode argument with w, a, x, c or +; Perl's `>`, `>>`, `+<` as its mode or in front
+    of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    name = call.rsplit(".", 1)[-1]
+    if kind == "perl" and name == "open":
+        mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
+        if re.fullmatch(r"\s*(?:\+[<>]|>>?)\s*", mode):   # open(FH, '>', file)
+            target = items[2] if len(items) > 2 else None
+        else:   # open(FH, ">file")
+            two = re.fullmatch(r"\s*(?:\+[<>]|>>?)\s*([^|&\s][^|&]*?)\s*", mode)
+            target = (two.group(1),) if two else None
+    elif name in ("open", "fopen"):
+        mode = items[1] if len(items) > 1 and isinstance(items[1], tuple) else None
+        target = items[0] if mode and re.search(r"[waxc+]", _text_of(mode)) else None
+    else:
+        target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
+    return target if isinstance(target, tuple) else None
 # git's config keys whose value it runs as a shell command (an alias's only with a leading !), and its value if given
 _GIT_RUNS_KEY = (r"alias\.[^=\s]+|core\.(?:editor|pager|sshcommand|fsmonitor|askpass|gitproxy|alternaterefscommand)|"
                  r"sequence\.editor|credential\.(?:[^=\s]*\.)?helper|diff\.(?:external|[^=\s]*\.(?:textconv|command))|"
@@ -1818,6 +1851,11 @@ def _git_stdin_message(argv):
     args = argv[i + 1:]
     return any((args[j] == "-F" and j + 1 < len(args) and args[j + 1] == "-") or args[j] == "--file=-"
                for j in range(len(args)))
+
+
+# a word that is only the path of a program its name names, as bash finds it on PATH: `$(which NAME)`,
+# `$(command -v NAME)`, `$(type -p NAME)` (or -P), in backquotes too, quoted or not
+LOCATED = re.compile(r'("?)(?:\$\(|`)[ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*(?:\)|`)\1')
 
 
 def _name_unreadable(text):
@@ -3623,12 +3661,21 @@ class _Parser:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
                     filter(None, map(self.relex, pieces)):
-                if pieces is None and text == "" and self.alone:
+                # `"$(command -v python)"`, `$(which python3)`: the path of the program it names, which runs it
+                located = not words and pieces is None and LOCATED.fullmatch(raw)
+                if located:   # its one reading, a plain word's
+                    text = located.group(2)
+                    g = expanded = self.vanish = self.alone = self.spliced = self.unknown = self.joined = False
+                    self.readings, self.parts, self.ways_, self.slots, self.full = (text,), [text], {}, None, True
+                    self.expanded, self.splits, self.cut, self.given = frozenset(), False, (text,) * 6, False
+                elif pieces is None and text == "" and self.alone:
                     self.out.pop()
                     continue
                 if pieces is not None:
                     self.out.append(text)
-                if self.spliced or self.expanded or self.unknown or g:
+                if located:
+                    pass
+                elif self.spliced or self.expanded or self.unknown or g:
                     text = (_Spliced if self.spliced else _Expanded)(text)
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
                 words.append(text)
@@ -4794,6 +4841,17 @@ class _Parser:
             self.charge(end - m.end())
             if items and isinstance(items[0], tuple):
                 self.argv([("rm",), ("-rf",), items[0]], pid, via)
+        # a write of a file (Python's open in a writing mode, Path(…).write_text, fs.writeFileSync, File.write, a copy or
+        # rename's target): tee -a of it, so the file rules read it as the shell's writes are
+        for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
+            if m.group("path"):   # Path("…").write_text(…): its literal
+                self.argv([("tee",), ("-a",), (m.group("path"),)], pid, via)
+                continue
+            items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
+            self.charge(end - m.end())
+            target = _written(kind, m.group("call"), items)
+            if target is not None:
+                self.argv([("tee",), ("-a",), target], pid, via)
         # a spawner given a name, not a literal: what it runs may be any of the code's literals, each read as shell (one
         # that isn't shell leaves the program unreadable)
         for text in _literals(kind, code, self.charge) if loose else ():

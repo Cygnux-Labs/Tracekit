@@ -836,7 +836,8 @@ _HARNESS_PACKAGE = re.compile(r"(?<![\w.-])(?:@anthropic-ai/(claude-code)|@opena
                               r"@qwen-code/(qwen-code)|(opencode-ai)|@kilocode/(cli)|(cline)|(hermes-agent)|"
                               r"@github/(copilot)|@tencent-ai/(codebuddy-code))(?:/|$)")
 _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
-# what makes a harness read settings other than the person's, or none: HOME, XDG_CONFIG_HOME and each harness's own
+# what makes a harness read settings other than the person's, or none: HOME, XDG_CONFIG_HOME, Windows' APPDATA and
+# LOCALAPPDATA (where a harness there keeps its settings), and each harness's own
 # home, config, settings or data variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG,
 # OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, COPILOT_HOME, CODEBUDDY_CONFIG_DIR, CLAUDE_CODE_SIMPLE, as
 # --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme); an option that loads other
@@ -844,8 +845,9 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only for a key
 # of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
 # model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
-_SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|"
-                                r"GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
+_SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME|"
+                                r"(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|"
+                                r"AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
                                 r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
                                 re.I)
 _SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
@@ -861,7 +863,8 @@ _SETS_VARIABLE = ("env", "export", "declare", "typeset", "local", "readonly", "r
 def _harness(argv):
     """The harness CLI (_HARNESS_CLIS) an argv starts, by its name, a package's at any version (npx, bunx, pnpm dlx run
     one by it: claude-code@latest), a script under a harness package a JavaScript runtime runs (after any options:
-    node -r x …/cli.js), or a module python -m runs; else None."""
+    node -r x …/cli.js), or one it runs by the harness's name (node_modules/.bin/claude, `"$(which claude)"`), or a
+    module python -m runs; else None."""
     name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
     name = _HARNESS_NAMES.get(name, name)
     if name in _HARNESS_CLIS:
@@ -869,10 +872,38 @@ def _harness(argv):
     if name in _JS_RUNTIMES:
         m = next(filter(None, (_HARNESS_PACKAGE.search(a.replace("\\", "/")) for a in argv[1:])), None)
         found = m and next(g for g in m.groups() if g)
-        return found and _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
+        if found:
+            return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
+        script = _js_script(argv)
+        located = script and shell.LOCATED.fullmatch(script)
+        script = located.group(2) if located else script and re.sub(r"\.[cm]?js$", "", shell.base_name(script))
+        script = _HARNESS_NAMES.get(script, script)
+        return script if script in _HARNESS_CLIS else None
     if _PYTHON_EXE.fullmatch(name):
         module = _python_module(argv[1:])[:1]
         return module and {"hermes_cli": "hermes", "gptme": "gptme"}.get(module[0].split(".")[0]) or None
+    return None
+
+
+# a JavaScript runtime's options that take the next word, and its subcommands before the script (deno run, bun run)
+_JS_VALUED = ("-r", "--require", "--import", "--loader", "--experimental-loader", "-C", "--conditions", "--env-file",
+              "--input-type", "--title", "--config", "-c")
+_JS_SUBCOMMANDS = ("run", "x", "exec")
+
+
+def _js_script(argv):
+    """The script a JavaScript runtime runs: its first word that is no option, an option's value or a subcommand; None
+    for code it is given (-e, -p, --eval) or none."""
+    skip = False
+    for a in argv[1:]:
+        if skip:
+            skip = False
+        elif a in ("-e", "--eval", "-p", "--print"):
+            return None
+        elif a in _JS_VALUED:
+            skip = True
+        elif not a.startswith("-") and a not in _JS_SUBCOMMANDS:
+            return a
     return None
 
 
@@ -931,12 +962,14 @@ def _harness_launches(commands, refs=(), learned=None):
     for a key of _SETTINGS_KEY, and its --disable of such a feature), words xargs gives it from its input, or a word
     set at run time (`$(echo --settings)`, `"$@"` after `set -- --bare`, `$OPTS` a live shell exported), which may be
     an option; such a run reads none of the person's settings, the hooks that record it among them. Also codex's
-    `features disable` of such a feature, which saves the change in its settings. learned: what the parse learned
+    `features disable` of such a feature, which saves the change in its settings. A harness a container runs (docker
+    or podman run, exec or create) reads the container's settings, never the person's. learned: what the parse learned
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
+    contained = [f"LAUNCH:{h} in a container" for c in commands if (h := _contained_harness(c["argv"]))]
     if not any(_harness(c["argv"]) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
-        return []
+        return contained
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
     # a variable with a value the line doesn't give it (from the shell it runs in), or one that may hold a word built
@@ -983,7 +1016,32 @@ def _harness_launches(commands, refs=(), learned=None):
         why += [f"a word set at run time {w[:40]}" for w in args
                 if run_time.match(w) or run_time.search(w) and not re.search(r"\s", w)]
         out += [f"LAUNCH:{exe} {w}" for w in why]
-    return list(dict.fromkeys(out))
+    return list(dict.fromkeys(contained + out))
+
+
+_CONTAINERS = ("docker", "podman", "nerdctl", "finch")
+_CONTAINER_RUNS = ("run", "exec", "create")
+# a word that may name a harness (_HARNESS_CLIS, _HARNESS_NAMES, a package of one): the start of a command to read
+_HARNESS_WORD = re.compile(r"(?i)(?:^|[/@])(?:%s)(?:[@/.-]|$)" % "|".join(
+    sorted(map(re.escape, _HARNESS_CLIS | set(_HARNESS_NAMES)), key=len, reverse=True)))
+
+
+def _contained_harness(argv):
+    """The harness a container program's run, exec or create starts (`docker run IMAGE npx -y @anthropic-ai/claude-code`):
+    the command its words make from the image on, read by the shell parser (wrappers and runners unwrapped); None
+    else. Each word from the subcommand to the one naming a harness is tried as the command's start."""
+    if _program(argv) not in _CONTAINERS:
+        return None
+    sub = next((i for i, a in enumerate(argv[1:], 1) if a in _CONTAINER_RUNS), None)
+    named = next((i for i, a in enumerate(argv) if sub and i > sub and _HARNESS_WORD.search(a)), None)
+    for j in range(sub + 1, named + 1) if named else ():
+        try:
+            found = next(filter(None, (_harness(c["argv"]) for c in shell.parse(shlex.join(argv[j:])))), None)
+        except shell.ParseError:
+            continue
+        if found:
+            return found
+    return None
 
 
 # programs that send what they read off the machine (gh: a gist, an API call or a body it reads from stdin; aws: s3;
@@ -2130,20 +2188,25 @@ def _awk_outputs(args):
     return out
 
 
-# programs that write the file an option names (sort -o, iconv -o, gpg -o, openssl -out; a download's: download_writes)
-# or one of
-# their operands: uniq's second, xxd -r's second, sponge's, patch's (the file it patches, in its -d folder), ed's and
-# ex's, and vim's, vi's or nvim's unless read-only (-R, -M; a script, -c, + or --headless edits them unseen, and a
-# terminal's keys in one); the options of theirs that take a value, which is no operand
+# programs that write the file an option names (sort -o, iconv -o, gpg -o, openssl -out, base64 -o, uudecode -o; a
+# download's: download_writes) or one of their operands: uniq's second, xxd -r's second, sponge's, patch's (the file
+# it patches, in its -d folder), ed's and ex's, emacs's (--batch with --eval edits them unseen), and vim's, vi's or
+# nvim's unless read-only (-R, -M; a script, -c, + or --headless edits them unseen, and a terminal's keys in one); the
+# options of theirs that take a value, which is no operand
 _OUTPUT_OPTION = {"sort": ("-o", "--output"), "iconv": ("-o", "--output"), "gpg": ("-o", "--output"),
-                  "gpg2": ("-o", "--output"), "openssl": ("-out",), "patch": ("-o", "--output")}
+                  "gpg2": ("-o", "--output"), "openssl": ("-out",), "patch": ("-o", "--output"),
+                  "base64": ("-o", "--output"), "uudecode": ("-o", "--output-file")}
 _OUTPUT_OPERAND = {"uniq": 1, "xxd": 1, "sponge": 0, "patch": 0, "ed": 0, "red": 0, "ex": 0, "vim": 0, "vi": 0,
-                   "nvim": 0}
+                   "nvim": 0, "emacs": 0}
+_EDITS_ALL = ("ed", "red", "ex", "vim", "vi", "nvim", "emacs")   # an editor: every file it is given
 _VALUED = {"patch": ("-i", "--input", "-p", "--strip", "-d", "--directory", "-D", "--ifdef", "-F", "--fuzz", "-r",
                      "--reject-file", "-B", "--prefix", "-Y", "--basename-prefix", "-z", "--suffix", "-V",
                      "--version-control", "-g", "--get"),
            **dict.fromkeys(("vim", "vi", "nvim", "ex"), ("-c", "--cmd", "-S", "-u", "-U", "-i", "-T", "-w", "-W", "-t",
-                                                          "-q", "--listen", "--startuptime"))}
+                                                          "-q", "--listen", "--startuptime")),
+           "emacs": ("--eval", "-l", "--load", "-f", "--funcall", "--insert", "-L", "--directory", "-t", "--terminal",
+                     "-d", "--display", "--chdir", "-u", "--user", "--script", "-x", "--dump-file", "-T", "--title",
+                     "--name", "-g", "--geometry", "-fn", "--font", "-fg", "-bg")}
 
 
 def _outputs(exe, args):
@@ -2158,7 +2221,7 @@ def _outputs(exe, args):
                                                                            for a in args)) and (
             exe != "xxd" or any(re.fullmatch(r"-[a-z]*r[a-z]*", a) for a in args)):
         operands = [a for a, before in zip(args, [""] + args) if not a.startswith(("-", "+")) and before not in valued]
-        out += operands[_OUTPUT_OPERAND[exe]:][:None if exe in ("ed", "red", "ex", "vim", "vi", "nvim") else 1]
+        out += operands[_OUTPUT_OPERAND[exe]:][:None if exe in _EDITS_ALL else 1]
         folder = [b for a, b in zip(args, args[1:]) if a in ("-d", "--directory")] + [
             a.partition("=")[2] for a in args if a.startswith("--directory=")] if exe == "patch" else []
         out += [posixpath.join(folder[-1], o) for o in out if folder and not o.startswith(("/", "~", "$"))]
@@ -2195,6 +2258,114 @@ def _in_place(editor, arg):
         else:
             return False
     return False
+
+
+# decompressors (also gzip -d and kin) and the suffix each file loses (.tgz is a .tar)
+_DECOMPRESSORS = {"gunzip": "gzip", "unxz": "xz", "bunzip2": "bzip2", "unlzma": "lzma", "unzstd": "zstd",
+                  "uncompress": "compress", "unlz4": "lz4"}
+_PACKED = re.compile(r"(?i)\.(?:t(?:gz|az|xz|bz2?|lz|zst))$|\.(?:gz|z|xz|lzma|bz2|zst|lz4|lz|br)$")
+# the options of these writers that take the next word (which is then no file)
+_WRITER_VALUED = {
+    "yq": ("-o", "--output-format", "-p", "--input-format", "-I", "--indent", "--from-file", "--expression",
+           "--split-exp", "--arg", "--argjson", "--rawfile", "--slurpfile"),
+    "sd": ("-f", "--flags", "-n", "--max-replacements"),
+    "dos2unix": ("-c", "--convmode", "-ul", "-cp"), "split": ("-l", "--lines", "-b", "--bytes", "-C", "--line-bytes",
+                                                             "-n", "--number", "-a", "--suffix-length", "-t",
+                                                             "--separator", "--additional-suffix", "--filter"),
+    "csplit": ("-f", "--prefix", "-b", "--suffix-format", "-n", "--digits"),
+    "tar": ("-f", "--file", "-C", "--directory", "-T", "--files-from", "-X", "--exclude-from", "-b",
+            "--blocking-factor", "-H", "--format", "-I", "--use-compress-program", "--transform", "--strip-components",
+            "-N", "--newer"),
+    "unzip": ("-d", "-P", "-x"), "ditto": ("--arch", "--bom")}
+
+
+def _operands(exe, args):
+    """`args` without options and the words _WRITER_VALUED's options take."""
+    valued, out, skip = _WRITER_VALUED.get(exe, ()), [], 0
+    for a in args:
+        if skip:
+            skip -= 1
+        elif a in valued:
+            skip = 2 if a in ("--arg", "--argjson", "--rawfile", "--slurpfile") else 1
+        elif not a.startswith("-") or a == "-":
+            out.append(a)
+    return out
+
+
+def _more_writes(exe, args):
+    """The files these writers write, or None for a program that is none of them: yq -i's (the files after its
+    expression), sd's (in place unless it previews), dos2unix's and kin's (in place, or -n's new files), a decompressor's
+    (each file without its suffix, unless it prints or tests), ditto's (as cp's), an extract's (tar -x, unzip, 7z x or
+    e: each member it names in its folder, or the folder itself, `DIR/`, whose files it can't tell), git config -f's
+    file, and the files split and csplit make (their prefix, as a pattern)."""
+    unix = re.sub(r"^(?:dos|unix|mac)2(?:dos|unix|mac)$", "dos2unix", exe)
+    if exe == "yq":
+        if not any(a in ("-i", "--inplace", "--in-place") or re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*", a) for a in args):
+            return []
+        operands = [a for a in _operands(exe, args) if a not in ("eval", "e", "eval-all", "ea")]
+        given = any(a.startswith(("--from-file", "--expression")) for a in args)
+        return operands if given else operands[1:]
+    if exe == "sd":
+        return [] if any(a in ("-p", "--preview") for a in args) else _operands(exe, args)[2:]
+    if unix == "dos2unix":
+        operands = _operands("dos2unix", args)
+        return operands[1::2] if any(a in ("-n", "--newfile") for a in args) else operands
+    tool = _DECOMPRESSORS.get(exe) or (exe if exe in ("gzip", "xz", "bzip2", "lzma", "zstd", "lz4", "lzip", "compress",
+                                                       "brotli") and any(
+        a in ("--decompress", "--uncompress") or re.fullmatch(r"-[A-Za-z0-9]*d[A-Za-z0-9]*", a) for a in args) else None)
+    if tool:
+        if any(a in ("-c", "--stdout", "--to-stdout", "-t", "--test", "-l", "--list") or
+               re.fullmatch(r"-[A-Za-z0-9]*[ctl][A-Za-z0-9]*", a) for a in args):
+            return []
+        outputs = [b for a, b in zip(args, args[1:]) if a == "-o"] if tool in ("zstd", "lz4") else []
+        return outputs or [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a)
+                           for a in args if not a.startswith("-") and _PACKED.search(a)]
+    if exe == "ditto":
+        operands = _operands(exe, args)
+        return operands[-1:] + [operands[-1].rstrip("/") + "/" + s.rstrip("/").rsplit("/", 1)[-1] for s in operands[:-1]
+                                if len(operands) > 2] if len(operands) > 1 else []
+    if exe == "tar":
+        first = args[0] if args and not args[0].startswith("-") else ""
+        extract = "x" in first or any(a in ("--extract", "--get") or re.fullmatch(r"-[A-Za-z]*x[A-Za-z]*", a)
+                                      for a in args)
+        if not extract:
+            return None
+        rest, folder, takes = (args[1:] if first else args), ".", [c for c in first if c in "fCTXb"]
+        operands, skip = [], None
+        for a in rest:
+            if takes:   # an old-style cluster's letters take the next words in turn
+                letter = takes.pop(0)
+                folder = a if letter == "C" else folder
+                continue
+            if skip:
+                folder, skip = (a if skip in ("-C", "--directory") else folder), None
+            elif a.startswith("--directory="):
+                folder = a.partition("=")[2]
+            elif a in _WRITER_VALUED["tar"]:
+                skip = a
+            elif re.fullmatch(r"-[A-Za-z]*[fCTXb]", a):
+                skip = "-" + a[-1]
+            elif re.fullmatch(r"-[A-Za-z]*C.+", a) and not a.startswith("--"):
+                folder = a[a.index("C") + 1:]
+            elif not a.startswith("-"):
+                operands.append(a)
+        return [posixpath.join(folder, m) for m in operands] if operands else [folder.rstrip("/") + "/"]
+    if exe == "unzip":
+        folder = next((b for a, b in zip(args, args[1:]) if a == "-d"), None) or next(
+            (a[2:] for a in args if a.startswith("-d") and len(a) > 2), ".")
+        members = _operands(exe, args)[1:]
+        return [posixpath.join(folder, m) for m in members] if members else [folder.rstrip("/") + "/"]
+    if exe in ("7z", "7za", "7zz", "7zr") and args[:1] in (["x"], ["e"]):
+        folder = next((a[2:] for a in args if a.startswith("-o") and len(a) > 2), ".")
+        members = [a for a in args[2:] if not a.startswith("-")]
+        return [posixpath.join(folder, m) for m in members] if members else [folder.rstrip("/") + "/"]
+    if exe in ("split", "csplit"):
+        operands = _operands(exe, args)
+        prefix = next((b for a, b in zip(args, args[1:]) if a in ("-f", "--prefix")), None) or next(
+            (a.partition("=")[2] for a in args if a.startswith("--prefix=")), None) if exe == "csplit" else \
+            (operands[1] if len(operands) > 1 else None)
+        return [(prefix or ("xx" if exe == "csplit" else "x")) + "*"]
+    return None
 
 
 def _printf_words(args):
@@ -2300,6 +2471,8 @@ def _command_effects(commands):
                 out.extend("MAY_WRITE:" + path for path in written)
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
+        elif (written := _more_writes(exe, args)) is not None:
+            out.extend("WRITE_TARGET:" + path for path in written)
         elif exe in ("gzip", "bzip2", "xz", "lzma", "lzip", "compress") and not any(
                 a in ("-k", "--keep", "-c", "--stdout", "--to-stdout", "-t", "--test", "-l", "--list") or
                 re.fullmatch(r"-[A-Za-z0-9]*[kctl][A-Za-z0-9]*", a) for a in args):
@@ -2350,6 +2523,11 @@ def _command_effects(commands):
                     files = args[positional[0] + 1:] if positional else []
             out.extend("WRITE_TARGET:" + path for path in files)
         elif exe in ("git", "docker", "podman", "kubectl", "parallel"):
+            # git config's -f file, unless it only reads (--get, --list)
+            if exe == "git" and "config" in args and not any(a.startswith(("--get", "--list")) or a == "-l"
+                                                              for a in args):
+                out.extend("WRITE_TARGET:" + f for f in [b for a, b in zip(args, args[1:]) if a in ("-f", "--file")] +
+                           [a.partition("=")[2] for a in args if a.startswith("--file=")])
             # the writer they are or run from their own words (git rm or mv, docker exec c rm, kubectl cp, parallel rm
             # ::: …), read from its name on (a git message or grep pattern is data)
             data = shell.data_words(argv)
