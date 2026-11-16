@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-84'
+version: '2026.11-v2-85'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -244,7 +244,9 @@ deny:
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
     # `eval` and a path to the binary resolved): `tracekit approve|reject`, `tracekit approvals [OPTIONS]
-    # approve|reject` (with --grant too) and every `tracekit grant` whatever follows it: a grant releases calls like an
+    # approve|reject` (with --grant too), a person's answer to a lesson (`tracekit tips approve|retire|restore|add`, its
+    # first word: `tracekit tips` reads the action nowhere else; a lesson changes what every later session reads) and
+    # every `tracekit grant` whatever follows it: a grant releases calls like an
     # approval, and an agent needs no grant command (listing or revoking included), so its options and action aren't
     # read at all and no spelling of them (an argparse prefix of --signer, a repeated or spaced value, an action from
     # stdin or computed) gets past; also as `python -m tracekit[.cli]` (python,
@@ -280,9 +282,9 @@ deny:
     # "${S:-/tmp/s}" list`) is denied, and so is a variable as the action where the line also uses it unknown (`for c
     # in a b; do tracekit $c; done; echo $c`: the parser's unresolved names are the line's); use a literal path, or a
     # person runs it
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant)( |$)|(approvals( --[\w\W]*?)? )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals )?\$\x7f( |$))'
-    reason: answering an approval or issuing a grant from the agent's session
-    remedy: Leave answering held calls and granting calls to a person at their own terminal; `tracekit approvals list` and `show` stay allowed.
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant|tips (approve|retire|restore|add))( |$)|(approvals( --[\w\W]*?)? |tips )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals |tips )?\$\x7f( |$))'
+    reason: answering an approval, a lesson or a grant from the agent's session
+    remedy: Leave answering held calls, lessons and granting calls to a person at their own terminal; `tracekit approvals list` and `show`, `tracekit tips` and `tracekit tips --for-agent` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
   - id: TK-D020
     class: shell
