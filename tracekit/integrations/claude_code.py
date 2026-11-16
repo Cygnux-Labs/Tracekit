@@ -43,7 +43,8 @@ lines before are an earlier run's. Each such later run is registered with `conti
 earlier run read, so the signer starts the run's provenance index `partial` (a fresh session's starts `complete`).
 
 At UserPromptSubmit, the typed part of the harness's prompt is recorded (`observe`, source <agent>:UserPromptSubmit,
-trusted); harness-wrapped parts are separate untrusted observations, and so is the whole of a turn Claude Code's payload
+trusted; <agent>:sdk:UserPromptSubmit for a prompt Claude Code's payload says a program sent through its SDK, its
+`source` sdk); harness-wrapped parts are separate untrusted observations, and so is the whole of a turn Claude Code's payload
 says no person typed (a `source` other than user or sdk; recorded as <agent>:<source>). `tracekit analyze --v2` reads a
 transcript prompt line as the person's only when one of these has its typed text (TK-X208 flags a line none has). Each
 constraint the typed part states (tracekit.constraints: "don't touch X", "read-only", "don't push", ...), and each a
@@ -59,6 +60,12 @@ hook tells the person (exit 1, FULL on stderr, and in the prompt's notice when i
 At Stop (the harness says the model ended its turn; not SubagentStop) an empty trusted observation (source
 <agent>:Stop) marks the end of the turn: `tracekit analyze --v2` ends a denial's task only at one in a run that has
 them, which a line written into the transcript can't produce. A Stop the hook can't record is just missing.
+
+At the session's first UserPromptSubmit, and at a SessionStart after a compaction or a resume, the approved lessons of
+the session's project (tracekit.lessons: a person approved each one in `tracekit tips`) are given as Claude Code's
+additionalContext, after a signed observe (source tracekit:lessons) that names their ids and the block's sha256, never
+their text (_lessons): only those whose note names a record the signer keeps as the person's answer for that id and
+text (lessons.verified). TRACEKIT_LESSONS=0 turns it off; a failure gives nothing and never blocks the prompt.
 
 A signer of another Tracekit version than this hook's is told to the person once per session (_skew), on an event the
 hook lets through, with what to run (skew_notice); the client's warning about it is not printed.
@@ -413,7 +420,7 @@ def _register(client, path, prev=None, offsets=None, continues=True):
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
           "stream": uuid.uuid4().hex, "seq": 0,
-          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints", "skew")},
+          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints", "skew", "lessons")},
           **({"offsets": offsets} if offsets else {})}
     files.write_json(path, st)
     return st
@@ -1195,6 +1202,9 @@ def _handle(client, p, event, sid, tid, end=None):
         _prune()
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers
         source = p.get("source") if AGENT == "claude-code" else None
+        # a program's prompt through Claude Code's SDK is recorded as the request it is, under a source of its own:
+        # only what a person typed is `<agent>:UserPromptSubmit` (TIPS' TOLD lessons read that alone)
+        typed_by = f"{AGENT}:sdk:UserPromptSubmit" if source == "sdk" else f"{AGENT}:UserPromptSubmit"
         if source in (None, "user", "sdk"):
             typed, wrapped = prompt_parts(prompt)
         else:   # a turn no person typed (system, loop_wakeup, schedule_wakeup, poll_event): untrusted as a whole
@@ -1214,8 +1224,8 @@ def _handle(client, p, event, sid, tid, end=None):
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:UserPromptSubmit",
-                     trust="trusted", value=typed)
+                _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
+                     value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
@@ -1253,13 +1263,53 @@ def _handle(client, p, event, sid, tid, end=None):
             messages.append(f"[tracekit] oversized untrusted text was cut after {MAX_HARNESS_TEXT} characters "
                             f"({', '.join(cut)}); for the rest of the run a from: untrusted rule applies to every "
                             f"call its pattern matches, whatever the value's source")
-        if messages and AGENT == "claude-code":   # Claude Code then shows this, not stderr: FULL goes here too
-            print(json.dumps({"systemMessage": "\n".join([FULL] * bool(refused) + messages)}))
+        answer = {"systemMessage": "\n".join([FULL] * bool(refused) + messages)} if messages and \
+            AGENT == "claude-code" else {}   # Claude Code then shows this, not stderr: FULL goes here too
+        given = None if refused else _lessons(client, p, sid, transcript, event, typed)   # read only at exit 0
+        if given:
+            answer["hookSpecificOutput"] = {"hookEventName": event, "additionalContext": given}
+        if answer:
+            print(json.dumps(answer))
         return 1 if refused else 0   # shown to the person (FULL, on stderr), never blocking the prompt
     # SessionStart, or any other first event of the session, registers the run; a resumed (or forked) session's
     # transcript holds its earlier history, which earlier runs recorded
     _run(client, sid, transcript=transcript, start=(p.get("source") or "") if event == "SessionStart" else None)
+    given = _lessons(client, p, sid, transcript, event) if event == "SessionStart" and p.get("source") in (
+        "compact", "resume") else None
+    if given:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": given}}))
     return 0
+
+
+def _lessons(client, p, sid, transcript, event, prompt=None):
+    """The lessons block (lessons.for_agent: the approved lessons of the session's project) at the session's first
+    prompt, ranked against its typed part, and again at a SessionStart after a compaction or a resume, which may have
+    summarised it away. Before it, a signed observe (source lessons.SOURCE) names the ids of the lessons given and the
+    block's sha256, never their text: a lesson's values never enter the run's provenance index, and the folder's git
+    history with the hash proves the text. None, and nothing given, when TRACEKIT_LESSONS=0, the session had it, there
+    is none, or anything fails: a prompt is never blocked for it. Reads only the lessons folder."""
+    if AGENT != "claude-code":
+        return None
+    from tracekit import lessons   # here: a PreToolUse never pays for importing it
+    if os.environ.get(lessons.OFF) == "0":
+        return None
+    try:
+        path = _state(sid)
+        if event == "UserPromptSubmit" and (_load(path) or {}).get("lessons"):
+            return None
+        got = lessons.for_agent(p.get("cwd"), prompt, check=lambda notes: lessons.verified(client, notes))
+        if not got["block"]:
+            return None
+        _run(client, sid, send="observe", transcript=transcript, source=lessons.SOURCE, trust="trusted",
+             value=got["given"])
+        with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks must not lose its other keys
+            lock_file(lk)
+            st = _load(path)
+            if st:
+                files.write_json(path, dict(st, lessons=True))
+        return got["block"]
+    except Exception:   # advice only: the prompt goes on without it
+        return None
 
 
 def _entry(event=None):

@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:022f1bd5e25e895f18b41699bb328d31057ce14c645b25149b7e03b3e5d9d0b5",
+      "policy_hash": "sha256:bedf209bc56b5453557747b094f1f88184ac87ff1cd001c0d7ddbb6698e4ce49",
       "heldout": {
         "recall": 0.6833333333333333,
         "deny_recall": 0.2904761904761905,
@@ -2543,7 +2543,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:b3508bd4967e36157c1b522d3b9a3f0f6a87d96077dd68619fa9524c3a659051",
+      "policy_hash": "sha256:3cb95e35aa4e51c7ddb86daa62f2b225c45ec259be918c9544a8c700371ef9aa",
       "heldout": {
         "recall": 0.7428571428571429,
         "deny_recall": 0.3761904761904762,
@@ -5730,65 +5730,65 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 156,
-      "p99_us": 439,
-      "max_us": 1198,
+      "p50_us": 147,
+      "p99_us": 418,
+      "max_us": 1151,
       "calls": 2904,
-      "p99_ref": 7.82
+      "p99_ref": 7.8
     },
     "default/regex": {
-      "p50_us": 171,
-      "p99_us": 491,
-      "max_us": 1546,
+      "p50_us": 162,
+      "p99_us": 465,
+      "max_us": 1481,
       "calls": 2904,
-      "p99_ref": 8.72
+      "p99_ref": 8.83
     },
     "strict/re2": {
-      "p50_us": 157,
-      "p99_us": 407,
-      "max_us": 1131,
+      "p50_us": 149,
+      "p99_us": 393,
+      "max_us": 1051,
       "calls": 2904,
-      "p99_ref": 7.15
+      "p99_ref": 7.39
     },
     "strict/regex": {
-      "p50_us": 170,
-      "p99_us": 470,
-      "max_us": 1488,
+      "p50_us": 164,
+      "p99_us": 441,
+      "max_us": 1452,
       "calls": 2904,
-      "p99_ref": 8.13
+      "p99_ref": 8.33
     },
     "dev/re2": {
-      "p50_us": 163,
-      "p99_us": 445,
-      "max_us": 1213,
+      "p50_us": 155,
+      "p99_us": 427,
+      "max_us": 1152,
       "calls": 2904,
-      "p99_ref": 7.96
+      "p99_ref": 8.19
     },
     "dev/regex": {
-      "p50_us": 178,
-      "p99_us": 525,
-      "max_us": 1624,
+      "p50_us": 172,
+      "p99_us": 493,
+      "max_us": 1488,
       "calls": 2904,
-      "p99_ref": 9.14
+      "p99_ref": 9.12
     }
   },
   "engine_mismatches": [],
   "gates": {
     "machine": "Darwin arm64 arm python 3.11.15",
     "min_heldout_recall": {
-      "default": 0.6666666666666666,
-      "strict": 0.7261904761904762
+      "default": 0.6833333333333333,
+      "strict": 0.7428571428571429
     },
     "max_fp_rate": {
       "default": {
         "heldout": 0.041666666666666664,
         "sessions": 0.015384615384615385,
-        "e17": 0.001059322033898305
+        "e17": 0.0010298661174047373
       },
       "strict": {
         "heldout": 0.12962962962962962,
         "sessions": 0.15384615384615385,
-        "e17": 0.05296610169491525
+        "e17": 0.05149330587023687
       }
     },
     "max_blind_fp": {
@@ -5806,12 +5806,12 @@
       }
     },
     "max_p99_ref": {
-      "default/re2": 8.02,
-      "default/regex": 9.46,
-      "strict/re2": 7.62,
-      "strict/regex": 8.56,
-      "dev/re2": 8.31,
-      "dev/regex": 9.2
+      "default/re2": 8.19,
+      "default/regex": 9.5,
+      "strict/re2": 7.76,
+      "strict/regex": 8.75,
+      "dev/re2": 8.6,
+      "dev/regex": 9.63
     }
   },
   "over_target": [

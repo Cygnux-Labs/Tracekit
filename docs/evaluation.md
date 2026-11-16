@@ -584,14 +584,14 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 156 / 171 | 439 / 491 | 1198 / 1546 | 7.82 / 8.72 |
-| strict, RE2 / regex | 157 / 170 | 407 / 470 | 1131 / 1488 | 7.15 / 8.13 |
-| dev, RE2 / regex | 163 / 178 | 445 / 525 | 1213 / 1624 | 7.96 / 9.14 |
+| default, RE2 / regex | 147 / 162 | 418 / 465 | 1151 / 1481 | 7.8 / 8.83 |
+| strict, RE2 / regex | 149 / 164 | 393 / 441 | 1051 / 1452 | 7.39 / 8.33 |
+| dev, RE2 / regex | 155 / 172 | 427 / 493 | 1152 / 1488 | 8.19 / 9.12 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
-recorded run: per profile, held-out recall doesn't drop below its (66.7% default, 72.6% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.11% default; 13.0%, 15.4%, 5.3%
-strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it; re-measured once before failing; another machine,
+recorded run: per profile, held-out recall doesn't drop below its (68.3% default, 74.3% strict) and no benign set's
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.1%
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, and on 2026-11-16, with main's rules merged into the release's; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5

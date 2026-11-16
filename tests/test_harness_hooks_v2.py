@@ -107,7 +107,8 @@ class Mapping(HarnessCase):
                 if harness == "jcode":   # its payload is environment variables and stdin, as recorded
                     payload = agent_hooks.jcode_payload(payload["stdin"], payload["env"])
                 code, out, err = self.hook(harness, payload, case.get("event"))   # agy: the command's event
-                self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
+                self.assertEqual(code, CODEX_DENY if harness in ("codex", "interpreter") and case["exit"] == 2
+                                 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
                 if case["request"]["tool_call_id"] is None:   # Gemini, agy, Devin: paired by the hook, never defaulted
@@ -119,6 +120,92 @@ class Mapping(HarnessCase):
 
     def test_codex(self):
         self.check("codex")
+
+    def test_interpreter(self):
+        # Open Interpreter 0.0.61's payloads, recorded on four surfaces (native over Responses and Chat, Code Mode, the
+        # claude-code harness) with a scripted model
+        self.check("interpreter")
+
+    def test_interpreter_files_given_to_the_model_are_reads(self):
+        """Built on a recorded spawn_agent payload: each file a call reads into the model's context (view_image's path,
+        spawn_agent's and send_input's local_image, local_audio and skill items) is decided as a Read of it, never on a
+        decoy file_path beside it; a file item with no path Tracekit can read is denied in the hook. send_input reaches
+        the hook as multi_agent_v1send_input (recorded)."""
+        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "spawn_agent")
+        for name, ti, files in (
+                ("view_image", {"path": "/w/pic.png", "file_path": "/w/notes.txt"}, ["/w/pic.png"]),
+                ("spawn_agent", {"items": [{"type": "text", "text": "t"}, {"type": "local_audio", "path": "/w/a.wav"},
+                                           {"type": "skill", "path": "/w/.agents/skills/s/SKILL.md"},
+                                           {"type": "mention", "path": "app://drive"}],
+                                 "file_path": "/w/notes.txt"}, ["/w/a.wav", "/w/.agents/skills/s/SKILL.md"]),
+                ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
+                 ["/w/.env"])):
+            with self.subTest(tool=name):
+                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], sent["args"]["file_path"]), ("Read", files[0]))
+                if name != "view_image":
+                    self.assertEqual(sent["args"]["paths"], files)
+        self.hook("interpreter", dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
+        self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
+        n = len(self.sent)
+        for name, ti in (("view_image", {}), ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]}),
+                         ("multi_agent_v1send_input", {"items": [{"type": "skill"}]})):
+            with self.subTest(blocked=name):
+                code, out, err = self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))
+                self.assertEqual(code, CODEX_DENY, err)
+                self.assertIn(f"Open Interpreter's {name} call names a file without a path", out + err)
+        self.assertEqual(len(self.sent), n)   # never sent to the signer
+
+    def test_interpreter_alias_tools_and_path_spellings_are_the_calls_they_run(self):
+        """Review of #853: every non-native harness (claude-code, which Open Interpreter picks by itself for Anthropic
+        models, included) registers bash, read, write, edit, glob and grep beside Claude Code's names; deepseek-tui
+        adds exec_shell, write_file, edit_file and read_file, and kimi-code ReadMediaFile (0.0.61's
+        add_harness_alias_tools). Read, Write and Edit take their path as path, file_path or filePath (serde aliases).
+        Each is decided as the Bash line or file call it runs, on every path it may read, an edit on the text it
+        writes. Built on a recorded claude-code payload."""
+        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "Write")
+        hooks, key = "/home/u/.openinterpreter/hooks.json", "/home/u/.ssh/id_rsa"
+        both = {"file_path": hooks, "paths": [hooks]}
+        for name, ti, tool, want in (
+                ("bash", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("exec_shell", {"command": "sudo id"}, "Bash", {"command": "sudo id"}),
+                ("Write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write", {"filePath": hooks, "content": "{}"}, "Write", both),
+                ("write_file", {"path": hooks, "content": "{}"}, "Write", both),
+                ("Edit", {"filePath": hooks, "old_string": "a", "new_string": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit", {"path": hooks, "oldString": "a", "newString": "b"}, "Edit", dict(both, new_string="b")),
+                ("edit_file", {"path": hooks, "search": "a", "replace": "b"}, "Edit", dict(both, new_string="b")),
+                ("apply_patch", {"path": hooks, "patch": "@@\n-a\n+b\n"}, "Edit", both),   # deepseek-tui's (source)
+                ("Read", {"filePath": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("read_file", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("ReadMediaFile", {"path": key}, "Read", {"file_path": key, "paths": [key]}),
+                ("Read", {"file_path": "/w/notes.txt", "filePath": key}, "Read", {"paths": ["/w/notes.txt", key]}),
+                ("glob", {"pattern": "*.txt", "path": "/w"}, "Glob", {"pattern": "*.txt"}),
+                ("grep", {"pattern": "uno", "path": "/w"}, "Grep", {"pattern": "uno"})):
+            with self.subTest(tool=name, args=ti):
+                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                sent = self.sent[-1]
+                self.assertEqual((sent["tool"], {k: sent["args"].get(k) for k in want}), (tool, want))
+
+    def test_interpreter_results_prompts_and_session_events_answer_nothing(self):
+        """Built from a recorded PreToolUse payload, with the fields each event adds in the recordings (PostToolUse's
+        tool_response, UserPromptSubmit's prompt, SessionStart's source, SessionEnd's reason; Stop isn't installed):
+        none blocks, and a payload the hook can't read blocks the call (exit 2, or 0 with the JSON deny on Windows)."""
+        pre = cases("interpreter")[0]["payload"]
+        self.assertEqual(self.hook("interpreter", pre)[0], 0)
+        base = {k: pre[k] for k in ("session_id", "transcript_path", "cwd", "model", "permission_mode")}
+        for payload in (dict(pre, hook_event_name="PostToolUse", tool_response="rec698\n"),
+                        dict(base, hook_event_name="UserPromptSubmit", turn_id=pre["turn_id"], prompt="Run the plan."),
+                        dict(base, hook_event_name="SessionStart", source="startup"),
+                        dict(base, hook_event_name="Stop", turn_id=pre["turn_id"], stop_hook_active=False),
+                        dict(base, hook_event_name="SessionEnd", reason="other")):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("interpreter", payload)[:2], (0, ""))
+        code, out, err = self.hook("interpreter", "not json", "PreToolUse")
+        self.assertEqual(code, CODEX_DENY, err)
+        self.assertIn("deny", out)
 
     def test_cursor(self):
         self.check("cursor")
@@ -2036,6 +2123,62 @@ class CodexHookTrust(unittest.TestCase):
                                                         f"{self.hooks} ({self.toml}: "))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_open_interpreter_keeps_codexs_trust_in_its_own_home(self):
+        """#698: Open Interpreter, a Codex fork, runs a hook only once it is trusted, kept as Codex keeps it, in
+        $INTERPRETER_HOME's config.toml (else ~/.openinterpreter's): recorded on 0.0.61, where a trusted_hash written
+        from _codex_hash ran every hook and an untrusted `interpreter exec` ran none, without a word. It never reads
+        CODEX_HOME."""
+        oi = os.path.join(self.home, "oi")
+        os.makedirs(oi)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": os.path.join(self.home, "cx")}):
+            self.assertEqual(agent_hooks.config_path("interpreter"),
+                             os.path.join(self.home, ".openinterpreter", "hooks.json"))
+        self.assertEqual(agent_hooks.config_path("interpreter", "/repo"),
+                         os.path.join("/repo", ".openinterpreter", "hooks.json"))
+        with mock.patch.dict(os.environ, {"INTERPRETER_HOME": oi}):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), mock.patch.object(install, "init_dev", return_value={"socket": "s"}):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "interpreter"]), 0)
+            real = os.path.realpath(oi)
+            self.hooks, self.toml = os.path.join(real, "hooks.json"), os.path.join(real, "config.toml")
+            line = out.getvalue().splitlines()[-1]
+            self.assertEqual(line, agent_hooks.codex_trust_line(harness="interpreter"))
+            self.assertIn(f"Run interpreter with INTERPRETER_HOME={oi} in a terminal, type /hooks and trust "
+                          f"Tracekit's hooks (Open Interpreter records that in {self.toml})", line)
+            self.assertIn("`interpreter exec` never asks and skips them without a word", line)
+            self.assertTrue(line.endswith("These hooks are for Open Interpreter 0.0.x (the Rust CLI); the Python "
+                                          "open-interpreter 0.4.x runs no hooks, so Tracekit sees none of its calls"))
+            self.assertNotIn("open-interpreter 0.4.x", agent_hooks.codex_trust_line())
+            with open(self.hooks) as f:
+                hooks = json.load(f)["hooks"]
+            self.assertEqual(sorted(hooks), sorted(self.EVENTS.values()))
+            self.assertEqual({ev: g[0]["hooks"][0]["timeout"] for ev, g in hooks.items()},
+                             {"PreToolUse": 600, "PostToolUse": 30, "UserPromptSubmit": 30, "SessionStart": 30,
+                              "SessionEnd": 3})   # Open Interpreter holds SessionEnd to 3 s
+            self.assertEqual({ev: g[0].get("matcher") for ev, g in hooks.items() if ev.endswith("ToolUse")},
+                             {"PreToolUse": "*", "PostToolUse": "*"})
+
+            def row():
+                return next(r for r in doctor.v2_checks({"data_dir": self.home}, "dev",
+                                                        harnesses={"interpreter": self.hooks})
+                            if r["id"] == "D-INTERPRETER-HOOK-TRUST")
+            got = row()
+            self.assertEqual((got["status"], got["fix"]), (
+                "warn", f"run interpreter in a terminal, type /hooks and trust Tracekit's hooks (from {self.hooks}); "
+                        "Open Interpreter asks again whenever they change, as after tracekit init"))
+            self.assertEqual(got["detail"], "Open Interpreter skips Tracekit's PostToolUse, PreToolUse, SessionEnd, "
+                                            f"SessionStart, UserPromptSubmit hook(s) in {self.hooks}: nobody trusted "
+                                            f"them in Open Interpreter ({self.toml} records no trust), so no Open "
+                                            "Interpreter call is decided or recorded (interactive interpreter asks at "
+                                            "startup; `interpreter exec` doesn't)")
+            self.trust(*self.EVENTS)
+            self.assertEqual(row(), {"id": "D-INTERPRETER-HOOK-TRUST", "status": "ok", "fix": "",
+                                     "detail": "Open Interpreter trusts each of Tracekit's hooks in "
+                                               f"{self.hooks} as they are now ({self.toml})"})
+        self.assertEqual(agent_hooks.codex_trust_store("/home/agent", "interpreter"),   # system mode
+                         os.path.join("/home/agent", ".openinterpreter", "config.toml"))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_codex_home_is_where_the_hooks_and_their_trust_go(self):
         """Codex reads $CODEX_HOME in place of ~/.codex: init wrote the hooks to ~/.codex, which that Codex never reads,
         and doctor looked for their trust there."""
@@ -2100,6 +2243,26 @@ class CodexHookTrust(unittest.TestCase):
                 contextlib.redirect_stdout(io.StringIO()) as out:
             cli.main(["doctor", "--json"])
         self.assertEqual([r["status"] for r in json.loads(out.getvalue()) if r["id"] == "D-CODEX-HOOK-TRUST"], ["warn"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Open Interpreter's config.toml")
+    def test_doctor_checks_open_interpreters_v1_hooks_trust_too(self):
+        """Review of #853: init --dev --agent interpreter (v1) writes hooks Open Interpreter skips just the same until
+        trusted, and only doctor's sweep of the v1 hooks sees them."""
+        oi = os.path.join(self.home, ".openinterpreter")
+        env = {k: v for k, v in os.environ.items() if k != "INTERPRETER_HOME"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    mock.patch.object(install, "init_dev", return_value={"socket": "s"}):
+                self.assertEqual(cli.main(["init", "--dev", "--agent", "interpreter"]), 0)
+            self.addCleanup(os.chdir, os.getcwd())
+            os.chdir(self.home)
+            with mock.patch.object(client, "system_config", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                cli.main(["doctor", "--json"])
+        got = [r for r in json.loads(out.getvalue()) if r["id"] == "D-INTERPRETER-HOOK-TRUST"]
+        self.assertEqual([r["status"] for r in got], ["warn"])
+        self.assertIn(f"hook(s) in {os.path.join(oi, 'hooks.json')}: nobody trusted them in Open Interpreter (",
+                      got[0]["detail"])
 
     def test_doctor_says_when_it_cant_tell(self):
         with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
