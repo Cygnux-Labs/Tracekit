@@ -84,8 +84,8 @@ def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None)
         # the dev profile's own warning (D-PROCESS-BOUNDARY: it runs as you) and nothing else: say it is healthy
         if not as_json and any(r["detail"] == install.DEV_MODE_LINE for r in rows) and \
                 all(r["status"] in (OK, INFO) or r["id"] == "D-PROCESS-BOUNDARY" for r in rows):
-            print("dev setup OK: everything checks out for dev mode, which records but does not guard "
-                  "(D-PROCESS-BOUNDARY)")
+            print("dev setup OK: every call is decided and recorded, but the agent runs as you and could switch "
+                  "Tracekit off; system mode or Tracekit Box close that (D-PROCESS-BOUNDARY)")
         return code
     out = k8s_checks(*load_manifests(manifests)) if manifests else in_pod()
     return report(out + (v2_checks(config, issuer_key=issuer_key) if config else []), as_json)

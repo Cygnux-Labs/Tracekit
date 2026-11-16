@@ -134,7 +134,15 @@ class Mapping(HarnessCase):
         spawn_agent's and send_input's local_image, local_audio and skill items) is decided as a Read of it, never on a
         decoy file_path beside it; a file item with no path Tracekit can read is denied in the hook. send_input reaches
         the hook as multi_agent_v1send_input (recorded)."""
-        base = next(c["payload"] for c in cases("interpreter") if c["payload"]["tool_name"] == "spawn_agent")
+        self.files_given_to_the_model_are_reads("interpreter", "Open Interpreter")
+
+    def test_codex_files_given_to_the_model_are_reads(self):
+        """#879: Codex (0.169.0, recorded) has the same view_image, spawn_agent and send_input as Open Interpreter, and
+        they passed through by name, flagged as unknown tools: the file rules never saw the file the model is given."""
+        self.files_given_to_the_model_are_reads("codex", "Codex")
+
+    def files_given_to_the_model_are_reads(self, harness, who):
+        base = next(c["payload"] for c in cases(harness) if c["payload"]["tool_name"] == "spawn_agent")
         for name, ti, files in (
                 ("view_image", {"path": "/w/pic.png", "file_path": "/w/notes.txt"}, ["/w/pic.png"]),
                 ("spawn_agent", {"items": [{"type": "text", "text": "t"}, {"type": "local_audio", "path": "/w/a.wav"},
@@ -144,20 +152,20 @@ class Mapping(HarnessCase):
                 ("multi_agent_v1send_input", {"target": "a1", "items": [{"type": "local_image", "path": "/w/.env"}]},
                  ["/w/.env"])):
             with self.subTest(tool=name):
-                self.assertEqual(self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))[0], 0)
+                self.assertEqual(self.hook(harness, dict(base, tool_name=name, tool_input=ti))[0], 0)
                 sent = self.sent[-1]
                 self.assertEqual((sent["tool"], sent["args"]["file_path"]), ("Read", files[0]))
                 if name != "view_image":
                     self.assertEqual(sent["args"]["paths"], files)
-        self.hook("interpreter", dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
+        self.hook(harness, dict(base, tool_input={"items": [{"type": "text", "text": "t"}]}))   # no file
         self.assertEqual(self.sent[-1]["tool"], "spawn_agent")
         n = len(self.sent)
         for name, ti in (("view_image", {}), ("spawn_agent", {"items": [{"type": "local_image", "path": 7}]}),
                          ("multi_agent_v1send_input", {"items": [{"type": "skill"}]})):
             with self.subTest(blocked=name):
-                code, out, err = self.hook("interpreter", dict(base, tool_name=name, tool_input=ti))
+                code, out, err = self.hook(harness, dict(base, tool_name=name, tool_input=ti))
                 self.assertEqual(code, CODEX_DENY, err)
-                self.assertIn(f"Open Interpreter's {name} call names a file without a path", out + err)
+                self.assertIn(f"{who}'s {name} call names a file without a path", out + err)
         self.assertEqual(len(self.sent), n)   # never sent to the signer
 
     def test_interpreter_alias_tools_and_path_spellings_are_the_calls_they_run(self):
