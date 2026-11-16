@@ -2968,6 +2968,66 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_open_interpreter_config_changes_are_harness_config_in_every_pack(self):
+        # #698: Open Interpreter reads its hooks.json and the hooks' trust (config.toml) from ~/.openinterpreter
+        # ($INTERPRETER_HOME) and a project's .openinterpreter/; near names and reads stay unflagged
+        paths = ("/repo/.openinterpreter/hooks.json", ".openinterpreter/config.toml",
+                 "/home/u/.openinterpreter/hooks.json", "/home/u/.openinterpreter/config.toml",
+                 r"C:\Users\u\.openinterpreter\hooks.json")
+        commands = ("echo '{}' > .openinterpreter/hooks.json", "sed -i s/600/1/ ~/.openinterpreter/hooks.json",
+                    "rm -rf ~/.openinterpreter", 'echo x > "$INTERPRETER_HOME/config.toml"',
+                    "tee ${INTERPRETER_HOME}/hooks.json", 'rm -rf "$INTERPRETER_HOME"')
+        benign = [("Bash", {"command": c}) for c in (
+            "cat ~/.openinterpreter/hooks.json", "ls .openinterpreter", "echo x > .openinterpreter-old/x",
+            "interpreter --version", 'cat "$INTERPRETER_HOME/config.toml"')]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [("Write", {"file_path": "/repo/src/openinterpreter/x.py", "content": "{}"})]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_open_interpreter_alias_tools_and_path_spellings_meet_the_rules_their_calls_do(self):
+        # review of #853: Open Interpreter runs bash and exec_shell as Bash, write and write_file as Write, edit and
+        # edit_file as Edit, read, read_file and ReadMediaFile as Read, and its Read, Write and Edit take path,
+        # file_path or filePath. Mapped as its hook maps them, each is decided as Claude Code's call to the same place
+        from tracekit import agent_hooks
+        hooks, toml, key = ("/home/u/.openinterpreter/hooks.json", "/home/u/.openinterpreter/config.toml",
+                            "/home/u/.ssh/id_rsa")
+        off = "[features]\nhooks = false\n"
+        same = ((("Bash", {"command": "sudo id"}), [("bash", {"command": "sudo id"}),
+                                                     ("exec_shell", {"command": "sudo id"})]),
+                (("Write", {"file_path": hooks, "content": "{}"}), [
+                    ("Write", {"filePath": hooks, "content": "{}"}), ("write", {"filePath": hooks, "content": "{}"}),
+                    ("write_file", {"path": hooks, "content": "{}"})]),
+                (("Write", {"file_path": toml, "content": off}), [("Write", {"filePath": toml, "content": off})]),
+                (("Edit", {"file_path": hooks, "old_string": "600", "new_string": "1"}), [
+                    ("Edit", {"filePath": hooks, "old_string": "600", "new_string": "1"}),
+                    ("edit", {"path": hooks, "oldString": "600", "newString": "1"}),
+                    ("edit_file", {"path": hooks, "search": "600", "replace": "1"})]),
+                (("Read", {"file_path": key}), [
+                    ("Read", {"filePath": key}), ("read", {"path": key}), ("read_file", {"path": key}),
+                    ("ReadMediaFile", {"path": key})]))
+        for pack, engine, e in self.every_pack():
+            for (tool, args), theirs in same:
+                want = e.decide(tool, args)
+                self.assertTrue(want["rule_ids"], (pack, tool, args))   # each meets a rule as Claude Code's call
+                for name, ti in theirs:
+                    with self.subTest(pack=pack, engine=engine, tool=name, args=ti):
+                        got = e.decide(*agent_hooks.tool("interpreter", name, ti))
+                        self.assertEqual((got["verdict"], sorted(got["rule_ids"])),
+                                         (want["verdict"], sorted(want["rule_ids"])))
+            # a decoy path beside the one the tool reads never replaces it
+            got = e.decide(*agent_hooks.tool("interpreter", "Read", {"file_path": "/w/notes.txt", "filePath": key}))
+            self.assertLessEqual(set(e.decide("Read", {"file_path": key})["rule_ids"]), set(got["rule_ids"]), pack)
+
     def test_crush_config_changes_are_harness_config_in_every_pack(self):
         # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
         # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged
@@ -4196,12 +4256,18 @@ class CodingPack(unittest.TestCase):
 
     def test_credential_store_commands_as_their_tools_read_them(self):
         # security's global options came before the command unseen; `pass show --all` isn't pass's, `pass grep`
-        # decrypts every entry and `pass NAME` shows NAME
+        # decrypts every entry and `pass NAME` shows NAME; gopass's find/search showed the secret on a match
+        # until gopass stopped it, so they stay held where pass's aren't
         self.verdicts([("security -q dump-keychain -d", "TK-D020"), ("pass grep .", "TK-D020"), ("ssh-add -L", "TK-A021"),
                        ("security -q find-generic-password -s x -w", "TK-A021"),
                        ("security -v -p go find-internet-password -s x", "TK-A021"), ("pass example/site", "TK-A021"),
-                       ("pass show -c example/site", "TK-A021"), ("pass -c example/site", "TK-A021")])
-        for command in ("ssh-add -l", "pass", "pass ls", "pass insert example/new", "pass git log"):
+                       ("pass show -c example/site", "TK-A021"), ("pass -c example/site", "TK-A021"),
+                       ("gopass show email/github", "TK-A021"), ("gopass email/github", "TK-A021"),
+                       ("gopass cat secrets/prod", "TK-A021"), ("gopass otp accounts/github", "TK-A021"),
+                       ("gopass find email", "TK-A021"), ("gopass search infra", "TK-A021")])
+        for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
+                        "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
+                        "gopass mounts", "gopass config"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)

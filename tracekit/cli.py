@@ -755,10 +755,10 @@ def _run(a):
                 print(public_witness.LOST if off else public_witness.NOT_CONFIGURED)
             if settings:
                 print(guidance())
-            if settings and a.agent == "codex":
+            if settings and a.agent in agent_hooks.TRUSTING:
                 import pwd
 
-                print(agent_hooks.codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
+                print(agent_hooks.codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir, a.agent))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
             if not _signer_extra():
@@ -777,8 +777,8 @@ def _run(a):
                 print(agent_hooks.reasoning_line(*summary))
             if path:
                 print(guidance())
-            if path and a.agent == "codex":
-                print(agent_hooks.codex_trust_line())
+            if path and a.agent in agent_hooks.TRUSTING:
+                print(agent_hooks.codex_trust_line(harness=a.agent))
             return 0
         if a.dev and a.agent != "claude":
             home = a.home or os.path.expanduser("~/.tracekit-signer")
@@ -791,8 +791,8 @@ def _run(a):
             print(f"dev signer running (same-user): {cfg['socket']}")
             print(install.DEV_MODE_LINE)
             print(f"{a.agent} hooks:", path or "not installed")
-            if path and a.agent == "codex":
-                print(agent_hooks.codex_trust_line())
+            if path and a.agent in agent_hooks.TRUSTING:
+                print(agent_hooks.codex_trust_line(harness=a.agent))
             return 0
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
@@ -1087,7 +1087,7 @@ def _run(a):
             if other:
                 print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
                       "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
-                      "(arguments are not stored); run the policy in shadow on new runs to measure those",
+                      "(arguments are not stored); add new rules under flag and watch new runs to measure those",
                       file=sys.stderr)
             for typ, tenant, run_id, d in found:
                 what = {"incident.opened": f"{d.get('trigger')} {','.join(d.get('rule_ids', ()))} scope "

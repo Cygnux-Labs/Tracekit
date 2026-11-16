@@ -1360,6 +1360,9 @@ class View(unittest.TestCase):
         added checked one by one (the checks of the run as a whole run again, over all of them)."""
         run = self.client.run(agent="grow")
         run.decide("c1", "Bash", {"command": "ls"})
+        # a decision doesn't nudge a checkpoint, and the feed reads a growing run up to the newest one: nudge it, not
+        # wait for the signer's every-CHECKPOINT_S note
+        self.client.call("checkpoint_nudge", {})
         storage, key = self.service.log.storage, ("default", run.run_id)
         covered = lambda: (storage.checkpoint_latest() or (0,))[0] == storage.tree.size  # noqa: E731
         self.assertTrue(wait_for(covered, 20))
@@ -1369,6 +1372,7 @@ class View(unittest.TestCase):
             self.assertTrue(wait_for(lambda: (feed.runs.get(key) or {}).get("count") == 2, 15))
             with mock.patch.object(view.v2, "verify_record", wraps=view.v2.verify_record) as checked:
                 run.decide("c2", "Bash", {"command": "pwd"})
+                self.client.call("checkpoint_nudge", {})
                 self.assertTrue(wait_for(covered, 20))
                 self.assertTrue(wait_for(lambda: feed.runs[key]["count"] == 3, 15))
         self.assertEqual(len(opened), 1)
@@ -1411,9 +1415,11 @@ class View(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.failed(feed, first), 10))
         run = self.client.run(agent="grow")   # an earlier record of a run edited while it grows
         run.decide("c1", "Bash", {"command": "ls"})
+        self.client.call("checkpoint_nudge", {})   # the feed reads a growing run up to the newest checkpoint
         self.assertTrue(wait_for(lambda: (feed.runs.get(("default", run.run_id)) or {}).get("count"), 15))
         self.edit_decision(run.run_id)
         run.decide("c2", "Bash", {"command": "pwd"})
+        self.client.call("checkpoint_nudge", {})
         self.assertTrue(wait_for(lambda: self.failed(feed, run.run_id), 10))
         quiet = self.finished_run()   # an edit no change shows: when the store is hashed again
         self.assertTrue(wait_for(lambda: feed.runs.get(("default", quiet), {}).get("count"), 15))

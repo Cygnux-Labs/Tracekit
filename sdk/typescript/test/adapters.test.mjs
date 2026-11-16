@@ -639,9 +639,11 @@ describe("approval_list pagination across pages (#842)", () => {
     const oldest = { approval_id: "apr-1", tool_call_id: "call-1", state: "rejected" };
     const rest = [{ approval_id: "apr-2", tool_call_id: "call-2", state: "approved" }];
     const signer = await fakeSigner({
-      override: (f) => f.method === "approval_list" && (f.cursor
+      override: (f) => f.method === "approval_list" && (f.cursor === oldest.approval_id
         ? { approvals: rest, next_cursor: null }
-        : { approvals: [oldest], next_cursor: oldest.approval_id }),
+        : f.cursor != null
+          ? { approvals: [], next_cursor: null }
+          : { approvals: [oldest], next_cursor: oldest.approval_id }),
     });
     const client = new Client({ signer: signer.path });
     t.after(() => (client.close(), signer.stop()));

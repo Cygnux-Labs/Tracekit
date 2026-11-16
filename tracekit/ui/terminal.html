@@ -2967,6 +2967,51 @@
       color: var(--cyan)
     }
 
+    /* TIPS' LESSONS: what waits for a person's OK and what is in use (two thirds), how they are given, what wasn't
+       proposed and what the next session reads (one third); one column on a narrow screen */
+    .lgrid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+      gap: 10px;
+      align-items: start
+    }
+
+    .lgrid>div {
+      display: grid;
+      gap: 10px;
+      min-width: 0
+    }
+
+    .ltext {
+      margin: 0;
+      padding: 6px 8px;
+      background: var(--panel2);
+      border: 1px solid var(--line);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-family: var(--mono);
+      line-height: 1.5
+    }
+
+    .tcard.luse {
+      border-left-color: var(--green)
+    }
+
+    .tsave b.lworse {
+      color: var(--red)
+    }
+
+    .lrow {
+      line-height: 1.5;
+      overflow-wrap: anywhere
+    }
+
+    @media (max-width:900px) {
+      .lgrid {
+        grid-template-columns: minmax(0, 1fr)
+      }
+    }
+
     .tchart {
       display: block;
       width: 100%;
@@ -4221,6 +4266,57 @@
         + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
         + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
     }
+    // LESSONS (tracekit/lessons.py): each lesson waiting for a person's OK with its evidence (each signed record OPENs
+    // on its run's tape), its estimated saving and the commands that answer it; each in use with its effect; what wasn't
+    // proposed and why; what the next session of each project reads. Approving is a command a person runs, never a click
+    const LKIND = { lookup: "LOOKUP", fix: "FIX", told: "TOLD", you: "YOURS" };
+    const LEFFECT = { lookup: "searched before opening it in", fix: "failed so in", told: "said it again in" };
+    const LSEEN = { lookup: "sessions that opened it searched for it first", fix: "sessions that ran it hit the failure", told: "sessions you typed it in" };
+    const lessonCmd = c => `<div><code class="shell">${esc(c)}</code>` + cp(c) + `</div>`;
+    function lessonCard(x, days) {
+      const sv = x.saving || {}, told = x.kind === "told";
+      return `<section class="tcard"><div class="tsrc">${esc(`${LKIND[x.kind] || x.kind} · ${x.tier.replace("+", " + ")} · ${x.where} · ${x.id}`)}${x.risky ? ' <span class="sev med">RISKY: READ IT TWICE</span>' : ""}</div>`
+        + `<h3>${esc(x.name)}</h3><div class="tst">${esc(x.description)}</div><pre class="ltext">${esc(x.text)}</pre>`
+        + `<details class="tmore"><summary>${esc("EVIDENCE · " + (told ? plural(x.sessions, "session") : `${plural(x.times, "time")} in ${plural(x.sessions, "session")} on ${plural(x.days, "day")}`))}</summary>`
+        + `<table class="wt"><thead><tr><th>SESSION</th><th>WHEN</th><th>SIGNED RECORDS</th></tr></thead><tbody>` + x.evidence.map(o => `<tr><td>${esc(String(o.session).slice(0, 8))}</td><td>${esc(fmtD(o.t) + " " + fmtT(o.t).slice(0, 5))}</td><td>`
+          + o.calls.map(c => `${esc(c.what)} <a href="#" data-lrec="${esc(c.run)}" data-lseq="${esc(c.seq)}" title="${esc(`run ${c.run} record ${c.seq}` + (c.hash ? " · " + c.hash : ""))}">OPEN</a>`).join("<br>") + `</td></tr>`).join("") + `</tbody></table></details>`
+        + `<div class="tsave">` + (told ? `<span>TYPED BY YOU<b>${esc(plural(x.sessions, "session"))}</b>${esc("in the last " + plural(days, "day"))}</span>`
+          : `<span>WOULD SAVE<b>${esc("about " + plural(sv.calls, "call"))}</b>${esc([sv.usd ? tipUsd(sv.usd) : "", sv.seconds ? tipDur(sv.seconds) : ""].filter(Boolean).join(" and ") + ` in ${plural(days, "day")}, an estimate`)}</span>`)
+        + `<span>SEEN<b>${esc(`${x.seen.hits} of ${x.seen.exposed}`)}</b>${esc(LSEEN[x.kind] || "")}</span></div>`
+        + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + x.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
+        + (x.supersedes.length ? `<div class="dim">${esc("Replaces " + x.supersedes.map(o => `${o.id} (${o.name})`).join(", ") + " once approved.")}</div>` : "")
+        + `<div class="tfix"><div class="tsrc">A PERSON ANSWERS IT, IN THEIR OWN TERMINAL</div>` + lessonCmd(x.approve) + lessonCmd(x.retire) + `</div></section>`;
+    }
+    function lessonEffect(x) {
+      const e = x.effect, b = e.before, a = e.after;
+      if (!e.shown) return `<span>EFFECT<b class="tzero">not yet</b>${esc(e.why)}</span>`;
+      return `<span>EFFECT<b class="${e.worse ? "lworse" : ""}">${esc(`${a.hits} of ${a.exposed}`)}</b>${esc(`${LEFFECT[x.kind]} ${a.hits} of ${plural(a.exposed, "session")} given it, instead of ${b.hits} of ${b.exposed} before`
+        + (e.change != null ? ` (${e.change > 0 ? "+" : ""}${e.change}%)` : "") + (e.worse ? ": worse" : ""))}</span>`;
+    }
+    // a lesson in use rests on the signed record of a person's answer: "none" (never given to the agent), "changed" and
+    // "unknown" (a run the store doesn't hold: written by hand) in the warning colour, "not read" (outside the window) plain
+    const LSIGNED = { signed: "dim", "not read": "dim", none: "s-deny", changed: "s-deny", unknown: "s-deny" };
+    function lessonUse(x) {
+      const sg = x.signed || { state: "none", why: "" };
+      return `<section class="tcard luse"><div class="tsrc">${esc(`${LKIND[x.kind] || x.kind} · ${x.where} · ${x.id}` + (x.approved ? ` · approved ${String(x.approved).slice(0, 10)}` : "") + (x.origin === "you" ? " · your words" : ""))}</div>`
+        + `<h3>${esc(x.name)}</h3><div class="${esc(LSIGNED[sg.state] || "s-deny")}">${esc(sg.why)}</div><pre class="ltext">${esc(x.text)}</pre>`
+        + `<div class="tsave"><span>GIVEN TO<b>${esc(plural(x.effect.given, "session"))}</b>signed: each session's tracekit:lessons record names it</span>` + lessonEffect(x) + `</div>`
+        + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + `</section>`;
+    }
+    function renderLessons(L, days) {
+      const head = `<div class="tsrc">LESSONS · what your coding agents keep relearning, from signed records · a person approves each one</div>`;
+      if (!L || !L.ok) return head + `<section class="tcard tno"><div class="tst">${esc(L?.why || "No lessons here.")}</div></section>`;
+      const nope = L.not_proposed, more = L.not_proposed_n - nope.length;
+      return head + `<div class="lgrid"><div>`
+        + (L.waiting.length ? `<div class="tsrc">WAITING FOR YOUR OK ${esc(L.waiting.length)}</div>` + L.waiting.map(x => lessonCard(x, days)).join("")
+          : `<section class="tcard tno"><div class="tst">Nothing waits for your OK: no lookup, fix or instruction repeats enough in the signed records to propose.</div></section>`)
+        + (L.active.length ? `<div class="tsrc">IN USE ${esc(L.active.length)} · each session of its project reads them at its first prompt</div>` + L.active.map(lessonUse).join("") : "")
+        + `</div><div><section class="tcard tno"><div class="tsrc">HOW THEY ARE GIVEN</div><div class="tst">${esc(`At each Claude Code session's first prompt, and again after a compaction or a resume, within ${L.budget.toLocaleString("en-US")} bytes, the ones that bear on the prompt first. The session's run signs which ones it got, by id and the block's hash, never the text. Off: ${L.off}.`)}</div></section>`
+        + `<section class="tcard tno"><div class="tsrc">NOT PROPOSED ${esc(L.not_proposed_n)}</div>` + (nope.length ? nope.map(x => `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.why)}</span></div>`).join("")
+          + (more > 0 ? `<div class="dim">${esc(`and ${more} more (tracekit tips --json)`)}</div>` : "") : `<div class="tst">Nothing left out.</div>`) + `</section>`
+        + `<section class="tcard tno"><div class="tsrc">WHAT THE NEXT SESSION READS</div>` + (L.next.length ? L.next.map(n => `<div class="lrow"><b>${esc(n.shown)}</b> <span class="dim">${esc(`${n.bytes.toLocaleString("en-US")} of ${n.budget.toLocaleString("en-US")} bytes · ${plural(n.whole.length, "lesson")} whole, ${n.lines.length} as lines, ${n.left_out.length} left out`)}</span></div>`
+          + `<details class="tmore"><summary>THE BLOCK</summary><pre class="ltext">${esc(n.block)}</pre></details>`).join("") : `<div class="tst">Nothing yet: no lesson is in use.</div>`) + `</section></div></div>`;
+    }
     // TIPS: what the store's signed records and Claude Code's transcripts say each step cost, and the three tips
     function renderTipsPage() {
       if (PAGE !== "tips") return;
@@ -4246,8 +4342,11 @@
           + "; they are read only with --dev"
           : "")
         + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's and OpenAI's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
-        + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
-      $("tipssum").textContent = `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} with enough data · operator-side, not evidence`;
+        + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + renderLessons(TIPS.lessons, days)
+        + `<div class="tsrc">COST · what each step cost, and how to cut it</div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
+      const L = TIPS.lessons?.ok ? TIPS.lessons : null;
+      $("tipssum").textContent = (L ? `${plural(L.waiting.length, "lesson")} waiting · ${L.active.length} in use · ` : "")
+        + `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} tips with enough data · operator-side, not evidence`;
     }
     // the calls held for a person (decided ask) in every run the page has, with what came of each (PERMISSIONS' words)
     let heldKey = [], heldList = [];
@@ -7039,7 +7138,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl],[data-tipsre]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -7053,6 +7152,12 @@
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
       if (t.dataset.tipsre !== undefined) { TIPS = null; TIPSERR = ""; tipsKey = null; loadTips(true); return schedule(); }
+      if (t.dataset.lrec) {   // a lesson's evidence: its run's tape, at the signed record when the live view holds it
+        setScope(t.dataset.lrec); show("calls");
+        const r = ALL.find(r => r.session_id === t.dataset.lrec && r.v2?.run_seq === +t.dataset.lseq);
+        if (r) select(S.actList.find(a => a.pre === r || a.post === r) || r);
+        return schedule();
+      }
       if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }
       if (t.dataset.openrun) { setScope(t.dataset.openrun); show("calls"); return schedule(); }
       if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }

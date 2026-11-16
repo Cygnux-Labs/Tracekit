@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -69,6 +70,29 @@ def _cline_use(name, args, ts=None):
 def _write_json(path: Path, doc):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+
+
+QWEN_RECORDED = Path(__file__).parent / "data" / "audit" / "qwen-code-0.27.4"
+
+
+def _qwen_rec(kind, days_ago=0, session="q1", **extra):
+    """A Qwen Code session record (#869): kind is user, assistant, tool_result or system."""
+    at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat().replace("+00:00", "Z")
+    return {"uuid": f"u-{kind}", "parentUuid": None, "sessionId": session, "timestamp": at, "type": kind,
+            "cwd": "/w", "version": "0.27.4", **extra}
+
+
+def _qwen_call(cid, name, args, days_ago=0, session="q1"):
+    """An assistant record with one functionCall part, as Qwen Code 0.27.4 writes it."""
+    return _qwen_rec("assistant", days_ago, session, message={"role": "model", "parts": [
+        {"functionCall": {"id": cid, "name": name, "args": args}}]})
+
+
+def _qwen_logged(cid, name, args, days_ago=0, session="q1"):
+    """A ui_telemetry record of a tool call, as Qwen Code 0.27.4 writes one for each call it runs."""
+    return _qwen_rec("system", days_ago, session, subtype="ui_telemetry", systemPayload={"uiEvent": {
+        "event.name": "qwen-code.tool_call", "call_id": cid, "function_name": name, "function_args": args,
+        "status": "success"}})
 
 
 def _home(home: Path) -> dict:
@@ -284,7 +308,7 @@ class TestAudit(unittest.TestCase):
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")   # installed: init is on PATH
     def test_the_text_ends_with_the_weeks_summary(self):
         """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
-        (a flag is no stop) and how to guard from now on."""
+        (a flag is no stop) and how to have Tracekit decide these calls as they run."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
@@ -293,12 +317,12 @@ class TestAudit(unittest.TestCase):
         self.assertTrue(out.endswith(
             "\n\nyour agent's week: 4 tool calls; Tracekit would have held 2 and blocked 1\n"
             "  top: TK-A001 destroying a deployment, database or volume (2), TK-D004 recursive delete of root or home (1)\n"
-            "  to guard from now on: tracekit init --dev --v2\n"), out)
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"), out)
         self.assertIn("\nyour agent's 2 days: 4 tool calls;", _run(str(self.root), "--since", "2d")[1])
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         self.assertTrue(_run(str(self.root))[1].endswith(
             "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
-            "  to guard from now on: tracekit init --dev --v2\n"))
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"))
         self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
 
     def test_without_tracekit_on_path_the_guard_line_says_to_install_it(self):
@@ -306,7 +330,21 @@ class TestAudit(unittest.TestCase):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch("shutil.which", return_value=None):
             out = _run(str(self.root))[1]
-        self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
+        self.assertTrue(out.endswith(
+            "\n  to have Tracekit decide these calls as they run: pip install tracekit-ai, then tracekit init --dev "
+            "--v2\n"))
+
+    def test_with_the_hooks_installed_the_last_line_says_they_decide_live(self):
+        """audit's last line suggests init only when Tracekit's hooks aren't there; with them installed for a Claude
+        Code audit it says new calls are decided as they run (#888)."""
+        from tracekit import install
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        with mock.patch.object(install, "user_settings_all", return_value=["settings.json"]), \
+                mock.patch.object(install, "_v2_hooks_in", return_value=True):
+            out = _run(str(self.root))[1]
+        self.assertTrue(out.endswith(
+            "\n  Tracekit's hooks are installed, so new calls are decided as they run\n"), out)
+        self.assertNotIn("to have Tracekit decide these calls as they run", out)
 
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
     def test_the_guard_line_names_the_calls_files_agent(self):
@@ -317,7 +355,8 @@ class TestAudit(unittest.TestCase):
                 code, out, err = _run("--calls", str(self.root / "calls.jsonl"), *(["--agent", agent] if agent else []))
                 self.assertEqual(code, 0, err)
                 flag = f" --agent {agent}" if agent in agent_hooks.AGENT_NAMES else ""   # claude is init's default
-                self.assertTrue(out.endswith(f"\n  to guard from now on: tracekit init --dev --v2{flag}\n"), out)
+                self.assertTrue(out.endswith(
+                    f"\n  to have Tracekit decide these calls as they run: tracekit init --dev --v2{flag}\n"), out)
         with mock.patch("shutil.which", return_value=None):
             out = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex")[1]
         self.assertTrue(out.endswith(", then tracekit init --dev --v2 --agent codex\n"), out)
@@ -895,7 +934,7 @@ class TestAudit(unittest.TestCase):
                          "arguments": "[" * 100_000}
         _write_jsonl(self.root / "rollout-a.jsonl", [
             _rollout(old, 30), _rollout(new), _rollout(new), _rollout(changed),
-            _rollout(no_id), _rollout(empty_id), _rollout(numeric_id), _rollout(invalid_namespace),
+            _rollout(no_id), _rollout(no_id), _rollout(empty_id), _rollout(numeric_id), _rollout(invalid_namespace),
             _rollout(deeply_nested),
             _rollout({"type": "function_call", "name": "exec_command", "call_id": "bad", "arguments": "bad json"}),
             _rollout(None), "not json", _call("Bash", {"command": "rm -rf /"}),
@@ -905,10 +944,10 @@ class TestAudit(unittest.TestCase):
                          "arguments": json.dumps({"cmd": "pwd"})}
         _write_jsonl(self.root / "rollout-b.jsonl", [_rollout(new), _rollout(other_session)])
         report = audit.audit(str(self.root), agent="codex", since="7d")
-        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (7, 2, 3))
+        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (8, 2, 3))
         self.assertEqual(report["counts"]["allow"], 3)
-        self.assertEqual(report["counts"]["deny"], 3)
-        self.assertEqual([c["tool"] for c in report["calls"]].count("Bash"), 6)
+        self.assertEqual(report["counts"]["deny"], 4)
+        self.assertEqual([c["tool"] for c in report["calls"]].count("Bash"), 7)
         self.assertTrue(any(c["tool"] == "read_file" for c in report["calls"]))
         self.assertIsNone(harness_hooks._use(no_id))
         self.assertIsNone(harness_hooks._use(empty_id))
@@ -1127,6 +1166,134 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual(json.loads(out)["agents"], {"gemini": {"folder": str(tmp), "calls": 5, "sessions": 2}})
 
+    def _qwen_sessions(self) -> Path:
+        """The recorded Qwen Code 0.27.4 sessions (tests/data/audit/qwen-code-0.27.4), copied to <root>/.qwen."""
+        dst = self.root / ".qwen"
+        shutil.copytree(QWEN_RECORDED / "projects", dst / "projects")
+        return dst
+
+    def test_qwen_code_recorded_sessions_are_read_as_its_hook_maps_them(self):
+        """#869: every call of the recorded sessions, each mapped as Qwen Code's hook maps it, the memory extractor's
+        three too (only telemetry holds them; the PreToolUse hook saw them), and none twice."""
+        qwen = self._qwen_sessions()
+        code, out, err = _run(str(qwen / "projects"), "--agent", "qwen", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        notes = "/home/runner/work/_temp/work869/notes.txt"
+        main, second = "992a9d3d-f7c5-4317-954d-add496ce60c9", "39e5e1e8-cf40-4805-9e22-b747ea4c8885"
+        recorded = [(main, "write_file", {"file_path": notes, "content": "one\n"}),
+                    (main, "read_file", {"file_path": notes}),
+                    (main, "edit", {"file_path": notes, "old_string": "one", "new_string": "uno"}),
+                    (main, "run_shell_command", {"command": "echo rec869", "description": "recording step"}),
+                    (main, "run_shell_command", {"command": "echo resumed869", "description": "recording step"}),
+                    (main, "write_file", {"file_path": notes, "content": "one\n"}),   # the memory extractor's
+                    (main, "read_file", {"file_path": notes}),
+                    (main, "edit", {"file_path": notes, "old_string": "one", "new_string": "uno"}),
+                    (second, "run_shell_command", {"command": "echo resumed869", "description": "recording step"})]
+        engine = load_policy(DEFAULT_POLICY)
+        expected = []
+        for session, name, args in recorded:
+            tool, mapped = agent_hooks.tool("qwen", name, args)
+            expected.append((session, tool, evaluate(engine, tool, mapped)[0]["verdict"]))
+        self.assertEqual(sorted((c["session"], c["tool"], c["verdict"]) for c in report["calls"]), sorted(expected))
+        self.assertEqual(sorted({c["tool"] for c in report["calls"]}), ["Bash", "Edit", "Read", "Write"])
+        self.assertEqual((report["skipped_malformed"], report["unreadable"]), (0, []))
+        self.assertEqual(report["agents"], {"qwen": {"folder": str(qwen / "projects"), "calls": 9, "sessions": 2}})
+
+    def test_qwen_code_counts_a_telemetry_call_only_when_no_function_call_has_its_id(self):
+        """#869: a call is logged twice, as a functionCall and in telemetry, and counts once; a call only telemetry
+        holds (a background agent's) counts, with its own name and args."""
+        _write_jsonl(self.root / "projects" / "p" / "chats" / "q1.jsonl", [
+            _qwen_call("c1", "run_shell_command", {"command": "ls"}),
+            _qwen_logged("c1", "run_shell_command", {"command": "ls"}),
+            _qwen_logged("c2", "run_shell_command", {"command": "rm -rf /"}),
+            _qwen_logged("c2", "run_shell_command", {"command": "rm -rf /"})])
+        report = audit.audit(str(self.root / "projects"), agent="qwen")
+        self.assertEqual(sorted((c["tool"], c["verdict"]) for c in report["calls"]),
+                         [("Bash", "allow"), ("Bash", "deny")])
+
+    def test_a_qwen_code_file_it_cant_read_is_unreadable_never_an_empty_session(self):
+        """#869 review: a session file with no Qwen Code record in it (not JSON, an empty file, JSON of another shape)
+        is reported unreadable, and no session or call is counted for it."""
+        chats = self.root / "projects" / "p" / "chats"
+        _write_jsonl(chats / "a.jsonl", ["not json", "{broken"])
+        _write_jsonl(chats / "b.jsonl", [])
+        _write_jsonl(chats / "c.jsonl", [{"role": "assistant", "content": [{"type": "tool_use", "name": "Bash"}]}])
+        report = audit.audit(str(self.root / "projects"), agent="qwen")
+        self.assertEqual(sorted(os.path.basename(u["path"]) for u in report["unreadable"]),
+                         ["a.jsonl", "b.jsonl", "c.jsonl"])
+        self.assertTrue(all("no Qwen Code session record" in u["error"] for u in report["unreadable"]))
+        self.assertEqual((report["sessions"], report["calls"], report["skipped_malformed"]), (0, [], 0))
+
+    def test_qwen_code_lines_of_the_wrong_shape_are_malformed_and_the_rest_is_read(self):
+        """#869: in a session file, a line that isn't JSON, an assistant record whose message or parts aren't Qwen
+        Code's, a functionCall that isn't an object and a tool_call telemetry record without its id, name or args are
+        each one malformed entry; the session's calls are still read."""
+        _write_jsonl(self.root / "projects" / "p" / "chats" / "q1.jsonl", [
+            _qwen_rec("user"), "not json",
+            _qwen_rec("assistant", message="x"), _qwen_rec("assistant", message={"parts": [1]}),
+            _qwen_rec("assistant", message={"parts": [{"functionCall": "x"}]}),
+            _qwen_logged(1, "run_shell_command", {"command": "ls"}),
+            _qwen_call("c1", "run_shell_command", {"command": "rm -rf /"})])
+        report = audit.audit(str(self.root / "projects"), agent="qwen")
+        self.assertEqual(report["skipped_malformed"], 5)
+        self.assertEqual([(c["session"], c["verdict"]) for c in report["calls"]], [("q1", "deny")])
+
+    def test_qwen_code_since_goes_by_each_calls_record_time(self):
+        _write_jsonl(self.root / "projects" / "p" / "chats" / "q1.jsonl", [
+            _qwen_call("c1", "run_shell_command", {"command": "rm -rf /"}, days_ago=10),
+            _qwen_call("c2", "run_shell_command", {"command": "ls"}, days_ago=1)])
+        report = audit.audit(str(self.root / "projects"), agent="qwen", since="7d")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+
+    def test_qwen_code_call_counts_once_in_its_session_by_its_id(self):
+        """A functionCall written again with its id (in the file, or in a copy of the session's file) counts once; a
+        call with no id is a call of its own; a session's name is its sessionId."""
+        call = _qwen_call("c1", "read_file", {"file_path": "a"})
+        chats = self.root / "projects" / "p" / "chats"
+        _write_jsonl(chats / "q1.jsonl", [call, call])
+        _write_jsonl(chats / "q1-copy.jsonl", [call])
+        noid = _qwen_call("x", "read_file", {"file_path": "b"}, session="q2")
+        del noid["message"]["parts"][0]["functionCall"]["id"]
+        _write_jsonl(chats / "q2.jsonl", [noid, noid])
+        calls = audit.audit(str(self.root / "projects"), agent="qwen")["calls"]
+        self.assertEqual(sorted(c["session"] for c in calls), ["q1", "q2", "q2"])
+
+    def test_qwen_code_root_is_its_projects_folder_what_holds_it_a_project_or_its_chats_folder(self):
+        """Each level of ROOT reads the same sessions, and a folder that is none of them is refused with the folder to
+        give, not read as a clean zero; a project's other files aren't read."""
+        qwen = self._qwen_sessions()
+        project = qwen / "projects" / "-home-runner-work--temp-work869"
+        _write_jsonl(project / "memory" / "x.jsonl", [_qwen_call("m1", "run_shell_command", {"command": "rm -rf /"})])
+        for root in (qwen, qwen / "projects", project, project / "chats"):
+            with self.subTest(root=str(root)):
+                report = audit.audit(str(root), agent="qwen")
+                self.assertEqual((len(report["calls"]), report["sessions"], report["unreadable"]), (9, 2, []))
+        other = self.root / "other"
+        _write_jsonl(other / "s.jsonl", [_qwen_call("c1", "read_file", {"file_path": "a"})])
+        code, _, err = _run(str(other), "--agent", "qwen")
+        self.assertEqual(code, 2)
+        self.assertIn("~/.qwen/projects", err)
+
+    def test_qwen_code_folder_is_qwen_runtime_dir_else_qwen_home_else_home(self):
+        """Qwen Code 0.27.4 keeps its sessions in projects/ of $QWEN_RUNTIME_DIR, else of $QWEN_HOME (its own folder,
+        not a home that holds .qwen), else of ~/.qwen; with no ROOT, audit reads that folder."""
+        home = self.root / "home"
+        with mock.patch.dict(os.environ, _home(home)):
+            for k in ("QWEN_RUNTIME_DIR", "QWEN_HOME", "CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR",
+                      "CLAUDE_CONFIG_DIR", "GEMINI_CLI_HOME", "CODEX_HOME"):
+                os.environ.pop(k, None)
+            self.assertEqual(audit.qwen_root(), str(home / ".qwen" / "projects"))
+            os.environ["QWEN_HOME"] = str(self.root / "qh")
+            self.assertEqual(audit.qwen_root(), str(self.root / "qh" / "projects"))
+            os.environ["QWEN_RUNTIME_DIR"] = str(self.root / "rt")
+            self.assertEqual(audit.qwen_root(), str(self.root / "rt" / "projects"))
+            shutil.copytree(QWEN_RECORDED / "projects", self.root / "rt" / "projects")
+            code, out, err = _run("--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["agents"],
+                         {"qwen": {"folder": str(self.root / "rt" / "projects"), "calls": 9, "sessions": 2}})
+
     def test_share_over_a_calls_file(self):
         _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, session="s1")])
         page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl")))
@@ -1140,11 +1307,13 @@ class TestAudit(unittest.TestCase):
         """#716: a Cursor tool's name is mapped as its hook maps it."""
         args = {"command": "rm -rf /", "description": "clean"}
         _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
-            {"role": "user", "message": {"content": [{"type": "text", "text": "tidy up"}]}},
+            {"role": "user", "message": {"content": [{"type": "tool_use", "name": "Shell", "input": args}]}},
             _cursor_call("Shell", args)])
         tool, mapped = agent_hooks.tool("cursor", "Shell", args)
         expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
-        call = audit.audit(str(self.root), agent="cursor")["calls"][0]
+        report = audit.audit(str(self.root), agent="cursor")
+        self.assertEqual(len(report["calls"]), 1)
+        call = report["calls"][0]
         self.assertEqual((call["agent"], call["session"], call["tool"], call["time"], call["verdict"], call["rule_ids"]),
                          ("cursor", "c1", "Bash", None, expected["verdict"], expected["rule_ids"]))
         self.assertEqual(call["verdict"], "deny")
