@@ -680,6 +680,21 @@ class TestReview(Case):
         self.assertTrue(shown.startswith("echo Thanks\\U000e0143\\U000e0135"), shown)   # S E, shown
         self.assertTrue(shown.endswith("\\u3164"), shown)
 
+    def test_the_reviewer_sees_the_command_and_how_much_redaction_hid(self):
+        """The shell line after a value stays in view; text redaction may hide more than values in (a heredoc body
+        fed to a shell) is counted in the copy itself, which view_digest covers."""
+        aid, agent = self.ask({"command": "A=1 && make deploy\nbash <<EOF\nB=2; make ship\nEOF\n# .env"}, "tc-1",
+                              tool="ship")
+        self.assertTrue(agent["eligible"])
+        view = self.s.call(AGENT, "approval_review", {"approval_id": aid})
+        self.assertEqual(validate(RESPONSES["approval_review"], view), [], view)
+        self.assertEqual(view["args"]["command"], svc._escaped(
+            f"# [{len('1') + len('2; make ship')} characters hidden by redaction]\n"
+            "A=[REDACTED:dotenv] && make deploy\nbash <<EOF\nB=[REDACTED:dotenv]\nEOF\n# .env"))
+        self.assertEqual(view["redacted"], ["command"])
+        rest = {k: v for k, v in view.items() if k != "view_digest"}
+        self.assertEqual(view["view_digest"], "sha256:" + hashlib.sha256(canonical(rest)).hexdigest())
+
     def test_control_and_bidi_characters_are_escaped(self):
         self.assertEqual(svc._escaped({"a\u202e": ["x\x07", "\u2066y"]}), {"a\\u202e": ["x\\u0007", "\\u2066y"]})
 

@@ -57,7 +57,7 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 
 ## Redaction patterns
 
-Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments, and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret.
+Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments, and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret. In a command, a value is hidden only up to where the shell ends it (a blank, a line end, an operator or code outside quotes), so what the command runs after it stays in clear; when the command names a `.env` file, a heredoc body's `KEY=value` lines are hidden to their ends, up to the body's end line.
 
 Redaction is pattern-based and will miss secrets it doesn't recognise. A command line kept in clear can still contain one. If that's a concern, deny the pattern in policy or keep bundles internal.
 
@@ -81,8 +81,14 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
 - **What is redacted where.** A tool result and error (`complete`) go through the same redaction patterns before the
   signer commits to them; when the call's `command`, `file_path`, `path` or `pattern` mentions a `.env` file, every
   `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
-  redacted the same way and shows `[REDACTED:<kind>]` markers. The policy decides on the unredacted arguments: the
-  signer saw them, the record never holds them.
+  redacted the same way and shows `[REDACTED:<kind>]` markers, but in a shell line (a `command`, `cmd` or `script`
+  argument and the like) a value is hidden only up to where the shell ends it: a blank, a line end, an operator or
+  code outside quotes. What runs after it stays in view; a heredoc body and a comment are text, redacted as content.
+  When redaction may have hidden more than values in an argument (more than 256 characters, or text with a blank, a
+  line end, a quote or another character the shell reads), the copy's argument starts with a line saying how many
+  characters it hid, `# [N characters hidden by redaction]`: a shell comment, so what reads the copy as a command
+  (`tracekit analyze --v2`, `tracekit why`) reads the rest as before. The policy decides on the unredacted arguments:
+  the signer saw them, the record never holds them.
 - **The manifest.** A `tool.result` record carries `redaction: {rules, count, client_claimed}`: the rules that fired
   and how often, never the values. A client may send content it already redacted (`redacted: true` and its own
   `redaction: {rules, count}`); the signer records that claim under `client`, redacts again anyway, and adds

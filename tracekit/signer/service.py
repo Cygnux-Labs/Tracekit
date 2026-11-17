@@ -683,9 +683,12 @@ def _digested(v):
 
 
 def _shown(args, dotenv):
-    """The approver's copy of parsed `args`: privacy.redact, and each digest under `typed_secrets` (a secret the
-    Browser Use adapter typed) hidden, since an approver could test guesses of a weak secret against it."""
-    shown = privacy.redact(args, dotenv)[0]
+    """The approver's copy of parsed `args`: privacy.redact, with each shell line under an argument the engine reads as
+    a command (engine._COMMAND_KEYS) redacted as the shell reads it (privacy.redact_command), so a value hides nothing
+    that runs after it, and a string redaction may have hid more than values in starting with how much it hid
+    (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use adapter typed) hidden, since an
+    approver could test guesses of a weak secret against it."""
+    shown = privacy.redact(args, dotenv, commands=engine._COMMAND_KEYS, noted=True)[0]
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
         shown = {**shown, "typed_secrets": {n: [d if not (isinstance(d, str) and _DIGEST.fullmatch(d))
                                                 else "[REDACTED:typed_secret]" for d in v] if isinstance(v, list) else v

@@ -3979,6 +3979,25 @@ class Installer(unittest.TestCase):
                     for w in want:
                         self.assertIn(w, shown)
 
+    def test_a_v1_approver_sees_what_a_held_command_runs_after_a_value(self):
+        """The v1 hook asks its approver about the call as its record keeps it (privacy.tool_input), which hid a
+        secret-looking name's value to its next blank, across `;`, and the lines after a heredoc's first as .env
+        content: `TOKEN=abcd;rm ...` was asked about as `Bash command=TOKEN=[REDACTED:assignment]`."""
+        from tracekit import hook, privacy
+        for command, runs in (("TOKEN=abcd;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=1; rm -rf ~/w")):
+            with self.subTest(command=command):
+                seen = []
+                call = {"run_id": "r", "agent_id": "a",
+                        "data": {"name": "Bash", "tool_use_id": "t", "input": privacy.tool_input("Bash", {"command": command})}}
+                with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                        {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else {"decision": "timeout"})), \
+                        mock.patch.object(hook, "APPROVAL_CAP_S", 1), contextlib.redirect_stderr(io.StringIO()):
+                    hook.wait_for_approval(call, {"rule_ids": ["R"], "reasons": ["r"]}, {"approval_timeout_s": 1})
+                summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                self.assertIn(runs, summary)
+                self.assertNotIn("abcd", summary)
+
     def test_cline_caps_the_approval_wait_as_the_hook_reads_it(self):
         # the extension runs a call whose hook takes over 30 s: every value float() reads above the cap is capped
         for value, want in (("300.5", "20"), ("1e3", "20"), ("1_000", "20"), ("inf", "20"), ("5", "5"), ("x", "x"),

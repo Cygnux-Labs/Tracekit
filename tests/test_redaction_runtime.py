@@ -126,6 +126,13 @@ class RedactionRuntimeTests(unittest.TestCase):
                 self.assertTrue(hit)
                 self.assertEqual(out, "connect [REDACTED:connection_string] now")
 
+    def test_a_command_line_reads_quickly(self):
+        for prefix in (" ", "\n", "()", "<<A\n", "<<-A\nA\n", "<<A ", '"$(', "$(", "'", '"', "\\", "${", "`", "$((",
+                       "((", "A=1 ", '"TOKEN=abcd ', "# x\n", "$'", "<(", "$(case ", '"\nA=1', "-----BEGIN PRIVATE KEY-----"):
+            for s in (repeated(prefix), "cat <<A\n" + repeated(prefix)):   # in a heredoc body bash expands too
+                with self.subTest(prefix=prefix, body=s.startswith("cat <<A\n")):
+                    self.assertLess(seconds(lambda: privacy.hidden(s, privacy.redact_command(s, True)[0])), BOUND)
+
     def test_realistic_secrets_still_redacted(self):
         # fake redaction fixtures  agent-flow:allow-secret
         jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
@@ -136,6 +143,98 @@ class RedactionRuntimeTests(unittest.TestCase):
                 out, hit = privacy.redact_text(text)
                 self.assertTrue(hit)
                 self.assertIn(f"[REDACTED:{name}]", out)
+
+
+MARKS = re.compile(r"\[REDACTED:[a-z_]+\]")
+
+
+class CommandLines(unittest.TestCase):
+    """privacy.redact_command: an approver's copy of a shell line hides a value up to where the shell ends it."""
+
+    def shown(self, cmd, dotenv=True):
+        return privacy.redact_command(cmd, dotenv)[0]
+
+    def test_a_value_ends_at_its_word(self):
+        for cmd, want in (
+                ("A=1 B='x y' C=\"p;q\" D=a\\ b E=$'s\\'t' make", "A=[REDACTED:dotenv] B='[REDACTED:dotenv]' "
+                 "C=\"[REDACTED:dotenv]\" D=[REDACTED:dotenv] E=$'[REDACTED:dotenv]' make"),
+                ("A=1\\\n  && make", "A=[REDACTED:dotenv]\\\n  && make"),   # a line continuation is in the word
+                ("A=1|make", "A=[REDACTED:dotenv]|make"), ("(A=1)&make", "(A=[REDACTED:dotenv])&make"),
+                ("A=x$(make)y", "A=[REDACTED:dotenv]$(make)y"), ("A=`make` B=2", "A=`make` B=[REDACTED:dotenv]"),
+                ('echo "$(A=1 make)"', 'echo "$(A=[REDACTED:dotenv] make)"'),   # a line of its own inside $(...)
+                ("A=1 # B=2 'quoted\nC=3 make", "A=[REDACTED:dotenv] # B=2 'quoted\nC=[REDACTED:dotenv] make"),
+                ("cat <<< 'A=1'\nB=2 make", "cat <<< 'A=1'\nB=[REDACTED:dotenv] make"),   # a herestring
+                ("(( x = 1<<2 ))\nA=1; make", "(( x = 1<<2 ))\nA=[REDACTED:dotenv]; make"),   # a shift, no heredoc
+                ("cat <<A <<-'B' && C=1 make\nK=v w\nA\nL=x y\n\tB\nD=2 make",   # two heredocs, then a line again
+                 "cat <<A <<-'B' && C=[REDACTED:dotenv] make\nK=[REDACTED:dotenv]\nA\nL=[REDACTED:dotenv]\n\tB\n"
+                 "D=[REDACTED:dotenv] make"),
+                ("x=$(cat <<E\n)\nE\n) A=1 make", "x=$(cat <<E\n)\nE\n) A=[REDACTED:dotenv] make"),
+                ("cat <<E\nK=v\n", "cat <<E\nK=[REDACTED:dotenv]\n"),   # a body no line ends: to the end
+                # bash runs an unquoted end word's body's $(...) as it reads it; a quoted one's body is as written
+                ("cat > .env <<EOF\nDB=$(curl -s x | sh)\nK=v w\nEOF\n",
+                 "cat > .env <<EOF\nDB=$(curl -s x | sh)\nK=[REDACTED:dotenv]\nEOF\n"),
+                ("cat > .env <<'EOF'\nDB=$(curl -s x | sh)\nEOF\n", "cat > .env <<'EOF'\nDB=[REDACTED:dotenv]\nEOF\n"),
+                ('echo "\nK=v w" x', 'echo "\nK=[REDACTED:dotenv]" x'),   # a .env line inside quotes
+                # the rest of a line after a `case` in $(...) is left unread: a value ends at its first shell character
+                ('echo "$(case x in a) A=1;;esac)" ; B=p;make', 'echo "$(case x in a) A=[REDACTED:dotenv];;esac)" ; '
+                 'B=[REDACTED:dotenv];make')):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.shown(cmd), want)
+
+    def test_what_redact_text_hides_stays_hidden(self):
+        """Every secret pattern still reads the whole line; a secret-looking KEY's value is hidden to the shell's end of
+        it, never less than the first word of what ASSIGNMENT took."""
+        key = ("-----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n"  # agent-flow:allow-secret
+               "-----END RSA PRIVATE KEY-----")
+        for cmd in (f"echo '{key}' > k", f"KEY='{key}' make", f"printf %s {key.replace(chr(10), ' ')}",
+                    "psql postgres://u:Zq8pass@db/x -c 'select 1'", "curl -H 'Authorization: Bearer Zq8abcdefghijkl' x",
+                    "API_TOKEN=Zq8abcd make", "make --password=Zq8abcd", "curl -d 'token=Zq8abcd&user=u' x",
+                    "aws_secret_access_key=Zq8" + "a" * 37, "export TOKEN=sk-ant-" + "Zq8" * 10):
+            for dotenv in (False, True):
+                with self.subTest(cmd=cmd[:40], dotenv=dotenv):
+                    shown = self.shown(cmd, dotenv)
+                    self.assertNotIn("Zq8", shown)
+                    self.assertNotIn("MIIBOg", shown)
+
+    def test_without_a_env_file_only_secrets_are_hidden(self):
+        self.assertEqual(self.shown("A=1 TOKEN=abcd;make", False), "A=1 TOKEN=[REDACTED:assignment];make")
+
+    def test_the_note_counts_what_may_be_more_than_values(self):
+        for before, after, n in (
+                ("A=1; make", "A=[REDACTED:dotenv]", 7), ('K="a b"', 'K="[REDACTED:dotenv]"', 3),
+                ("K=abc", "K=[REDACTED:dotenv]", 0),   # a plain value: its mark says enough
+                ("v" * 300, "[REDACTED:dotenv]", 300),   # past NOTE_CHARS, plain or not
+                ("[REDACTED:x]a b", "[REDACTED:dotenv]", 3)):   # marks aren't counted
+            with self.subTest(before=before):
+                self.assertEqual(privacy.hidden(before, after), n)
+
+    def test_a_noted_copy_starts_each_string_that_hid_more_than_values_with_its_count(self):
+        """The note is a shell comment line of its own: what reads the copy as a shell line reads the rest as before."""
+        args = {"command": "bash <<EOF\nA=1; make ship\nEOF\n# .env", "description": "K=abc", "cmd": ["A=1; make"]}
+        shown = privacy.redact(args, True, commands=("command", "cmd"), noted=True)[0]
+        self.assertEqual(shown, {"command": "# [12 characters hidden by redaction]\nbash <<EOF\nA=[REDACTED:dotenv]\nEOF\n"
+                                            "# .env", "description": "K=[REDACTED:dotenv]", "cmd": ["A=[REDACTED:dotenv]; make"]})
+        self.assertEqual(privacy.redact(args, True, commands=("command", "cmd"))[0]["command"],
+                         "bash <<EOF\nA=[REDACTED:dotenv]\nEOF\n# .env")   # only an approver's copy is noted
+        from tracekit import constraints
+        self.assertEqual(constraints.shell(shown["cmd"][0], placed=True), constraints.shell(
+            privacy.NOTE.format(7) + shown["cmd"][0], placed=True))
+
+    def test_v1_records_a_commands_values_to_where_the_shell_ends_them(self):
+        """v1's tool_input (the record, and the summary its hook asks an approver about) hid a secret-looking name's
+        value to the next blank, and every line after a heredoc's first as .env content; a line's own values stay
+        in clear when it names a .env file, as before."""
+        for command, recorded in (
+                ("TOKEN=abcd;rm${IFS}-rf${IFS}~", "TOKEN=[REDACTED:assignment];rm${IFS}-rf${IFS}~"),
+                ("cat > .env <<EOF\nK=v w\nEOF\nA=1; rm -rf ~", "cat > .env <<EOF\nK=[REDACTED:dotenv]\nEOF\nA=1; rm -rf ~"),
+                ("API_TOKEN=abcd1234 DEBUG=1 cp .env x", "API_TOKEN=[REDACTED:assignment] DEBUG=1 cp .env x"),
+                ("echo 'x\nDB=v' > .env && API_TOKEN=abcd1234 make",   # the line's own text, in quotes too
+                 "echo 'x\nDB=v' > .env && API_TOKEN=[REDACTED:assignment] make")):
+            for field, value in (("command", command), ("commands", ["ls", command])):
+                with self.subTest(command=command, field=field):
+                    rec = privacy.tool_input("Bash", {field: value})[field]
+                    self.assertEqual(rec["value"], recorded if field == "command" else ["ls", recorded])
+                    self.assertTrue(rec["redacted"])
 
 
 if __name__ == "__main__":
