@@ -261,7 +261,7 @@ def ensure(wait=True, timeout=TIMEOUT_S, start_wait=START_WAIT_S):
         return _ensure(_private(_side(d), True), wait, timeout, start_wait)
 
 
-def _ensure(d, wait, timeout, start_wait):
+def _ensure(d, wait, timeout, start_wait=START_WAIT_S):
     lock, begun = os.path.join(d, LOCK), time.monotonic()
     try:
         conn = _try(d)
@@ -305,8 +305,12 @@ def _ensure(d, wait, timeout, start_wait):
             if now > deadline and (now > begun + start_wait or not _starting(d)) or (exited and not _held(lock)):
                 break
             time.sleep(0.02)
+
     if _held(lock):
-        raise Hung(f"a dev signer (pid {_pid(d)}) holds {lock} but does not answer; see {os.path.join(d, LOG)}")
+        log = os.path.join(d, LOG)
+        if p is not None and p.poll() is None:
+            raise Hung(f"a dev signer (pid {p.pid}) was still starting after {timeout}s; see {log}")
+        raise Hung(f"a dev signer (pid {_pid(d)}) holds {lock} but does not answer; see {log}")
     raise SignerUnavailable(f"the dev signer did not start ({_last_line(os.path.join(d, LOG))}); see "
                             f"{os.path.join(d, LOG)}")
 
