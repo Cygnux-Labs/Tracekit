@@ -566,9 +566,11 @@ class Packaging(unittest.TestCase):
         else:
             self.assertEqual(re.search(r'^version = "([^"]+)"', toml, re.M).group(1), tracekit.__version__)
 
-    def test_google_re2_marker_excludes_unsupported_platforms(self):
+    def test_google_re2_marker_matches_doctor_support(self):
+        import itertools
         import re
         from packaging.requirements import Requirement
+        from tracekit import doctor
 
         with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
             toml_text = f.read()
@@ -582,29 +584,30 @@ class Packaging(unittest.TestCase):
         marker = requirements[0].marker
         self.assertEqual(requirements[1].marker, marker, "google-re2 markers must remain identical")
 
-        # PyPy has no google-re2 wheel.
-        self.assertFalse(marker.evaluate({
-            "python_version": "3.13",
-            "platform_python_implementation": "PyPy",
-            "sys_platform": "linux",
-            "platform_machine": "x86_64",
-        }))
+        versions = [f"3.{minor}" for minor in range(9, 16)]
+        implementations = ("CPython", "PyPy")
+        platforms = ("win32", "linux", "darwin", "freebsd")
+        machines = ("x86", "AMD64", "ARM64", "x86_64", "aarch64", "arm64", "unknown")
 
-        # CPython 3.13 Linux x86_64 has a compatible wheel.
-        self.assertTrue(marker.evaluate({
-            "python_version": "3.13",
-            "platform_python_implementation": "CPython",
-            "sys_platform": "linux",
-            "platform_machine": "x86_64",
-        }))
-
-        # CPython 3.15 is excluded until google-re2 publishes cp315 wheels.
-        self.assertFalse(marker.evaluate({
-            "python_version": "3.15",
-            "platform_python_implementation": "CPython",
-            "sys_platform": "linux",
-            "platform_machine": "x86_64",
-        }))
+        for version, implementation, sys_platform, machine in itertools.product(
+            versions, implementations, platforms, machines
+        ):
+            environment = {
+                "python_version": version,
+                "platform_python_implementation": implementation,
+                "sys_platform": sys_platform,
+                "platform_machine": machine,
+            }
+            with self.subTest(**environment):
+                self.assertEqual(
+                    doctor._google_re2_supported(version, implementation, sys_platform, machine),
+                    marker.evaluate(environment),
+                    f"doctor support disagrees with pyproject.toml for {environment}",
+                )
+        self.assertEqual(
+            doctor._google_re2_supported(),
+            marker.evaluate(),
+        )
 
     def test_python_dash_m_tracekit(self):
         r = subprocess.run([sys.executable, "-m", "tracekit", "--version"], capture_output=True, text=True, cwd=ROOT)
