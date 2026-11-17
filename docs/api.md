@@ -10,11 +10,77 @@ TODO: finish the introduction once the other sections are written.
 
 ## Versioning
 
-TODO: `hello` and its answer; the contract version and the oldest version a signer serves; what each later version added.
+The contract has one version number, and this page describes version 25. A released version never changes: any change to
+a request or an answer is a new version.
+
+A signer serves a range of versions, from 15 up to its own highest. The first frame on every connection is `hello`,
+which is not one of the calls in this page. Its answer gives `proto`, the lowest and highest version the signer serves,
+the signer's Tracekit `version`, and its `pid`. A client checks that its own version is inside `proto`. If it is not,
+the SDK refuses to go on and says so, and tells the person to stop the signer with `tracekit down` or replace it with
+`tracekit up --replace`. Over HTTPS the SDK sends `hello` once, before its first call. `status` gives the signer's
+highest version as `rpc_version`.
+
+Two rules let older and newer clients work together:
+
+- A signer refuses a request that has a field the contract does not name (`invalid_request`), so a client sends only the
+  fields of the version it speaks.
+- An answer may carry optional fields that a later version added. A client ignores fields it does not know.
+
+A call or field that this page does not list below was already in version 15. These are the changes since:
+
+| Version | What it added |
+|---|---|
+| 16 (all of Tracekit 1.2) | `register_run`'s `parent`; `close_run`'s `last_client_seq`; `tailer_heartbeat`; `observe_effect`; agent approvers (`approval_review`, `approval_revoke`, `approval_agents`, `approval_decide`'s `escalate` and `asserted`, filters on `approval_list`); the operator calls (`incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend`); `decide`'s `incident_id` |
+| 17 (Tracekit 1.3) | `model_event`'s `tool_results` and the answer's `refused` |
+| 18 | The kernel sensor's events in `observe_effect` |
+| 19 | `review_finding`; `constraint_add`; `model_event`'s `amended` and `said_only`; `register_run`'s `caller`; `observe_effect`'s `callers` and its OpenShell import |
+| 20 | `pcm_sign`, `pcm_grant`, `pcm_delegate`, `pcm_evidence` (experimental) |
+| 21 | Tracekit Box's agent channel (experimental): `register_run`'s `box` and `channel_open` |
+| 22 | Intent grants: `grant_issue`, `grant_list`, `grant_revoke` |
+| 23 | `export_run` |
+| 24 | `call_state`, `call_claim` |
+| 25 | `content_get`'s `type` and `source` |
 
 ## Errors
 
-TODO: the error answer, the error codes, which to retry, and the HTTP statuses.
+A call the signer refuses answers with an error frame instead of the answer described in its section:
+`{"error": {"code": ..., "message": ..., "retry_after_ms": ...}}`. `message` is text for a person, up to 1024
+characters. `retry_after_ms` is there only when the signer says when to try again. A client acts on `code`, and keeps a
+code it does not know, because a later version may add one.
+
+| Code | What it means | HTTP status |
+|---|---|---|
+| `invalid_request` | The request does not fit the call's schema, or breaks a rule the call's section states. | 400 |
+| `unauthenticated` | The transport could not tell who the caller is. | 401 |
+| `forbidden` | The caller may not make this call, or not in this state, for example an approver who is also the requester. | 403 |
+| `run_token_invalid` | The run token is missing, wrong, or belongs to another run. | 403 |
+| `unknown_run` | The run does not exist, as far as the caller can see. | 404 |
+| `unknown_tool_call` | `approval_request` for a tool call that the run never decided. | 404 |
+| `unknown_decision` | `complete` with a `decision_id` that is not this call's, or that was completed already. | 404 |
+| `unknown_approval` | No approval with that id. | 404 |
+| `unknown_incident` | An operator call names an incident that the caller's tenant does not have. | 404 |
+| `run_exists` | `register_run` with a `run_id` that is registered already. | 409 |
+| `run_closed` | The run has ended, or is ending. | 409 |
+| `conflict` | A `request_id` used again with a different payload; or an observer that another process took over from. | 409 |
+| `client_seq_reused` | A `client_seq` at or below the last one of its stream, under a new `request_id`. | 409 |
+| `args_mismatch` | `complete` with arguments other than the decided ones; also `pcm_grant` for a call that was approved with other arguments. | 409 |
+| `approval_not_pending` | The approval is not waiting for an answer any more. | 409 |
+| `quota_exceeded` | A rate, open-run, pending-approval or size limit. | 429 with `retry_after_ms`, 413 without |
+| `unavailable` | The signer cannot do it now: a disk error, a storage lock, or, for `export_run`, a run that no checkpoint covers yet because the signer is still writing one. Try later. | 503 |
+
+The HTTP status is sent only to a client that asks for it with the header `Tracekit-Errors: http-status`. Without the
+header the answer is the same error frame with status 200, as the SDKs read it. A 429 or 503 carries `Retry-After`,
+which is `retry_after_ms` rounded up to whole seconds, and a 401 carries `WWW-Authenticate: Bearer`. More: [calling the
+signer over HTTP](remote-ingest.md#calling-the-signer-over-http).
+
+Some answers that say no are not errors. `decide` answers `allow`, `deny` or `ask` as an ordinary answer, and
+`approval_consume` answers `ok: false` with a reason when it refuses.
+
+A call that changes state carries a `request_id`, which belongs to the caller's identity. Sent again with the same
+payload, it gets the first answer. Sent with another payload, it gets `conflict`. The SDKs send the five event calls
+(`decide`, `complete`, `observe`, `state_write` and `model_event`) again after `unavailable`, or after `quota_exceeded`
+with `retry_after_ms`, up to three tries, waiting at least `retry_after_ms`. They send no other call again, because the
+signer remembers a `request_id` only in memory, and a retry after `unavailable` could record the call twice.
 
 ## Who may call what
 
