@@ -5070,6 +5070,18 @@ class GuardrailsAndPushes(unittest.TestCase):
                     self.assertEqual(d["verdict"], "allow", d)
                     self.assertNotIn("TK-A056", d["rule_ids"], d)
 
+    def test_a_draft_flag_inside_a_quoted_value_reads_as_a_draft(self):
+        """#908 review, a documented limit (docs/limits.md): TK-A056 reads a command's words joined by spaces, so a -d
+        inside another option's quoted value reads as an option of its own and the release is allowed, though it
+        publishes. A -d that is a whole value stays that option's value and is held."""
+        for c in ("gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, command=c):
+                    d = e.decide("Bash", {"command": c})
+                    self.assertEqual(d["verdict"], "allow", d)
+                    self.assertNotIn("TK-A056", d["rule_ids"], d)
+        self.verdicts([("Bash", {"command": "gh release create v1.0 --notes '-d'"})], "ask", "TK-A056")
+
     def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
         """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])

@@ -114,8 +114,9 @@ ask:
     # --environment or serverless --stage naming a dev, staging, preview, test, qa, sandbox or local environment (any
     # other name, prod included, is held). A preview deploy stays allowed: vercel without --prod, netlify deploy
     # without --prod, wrangler dev, firebase hosting:channel:deploy.
-    # lean: a deploy CLI not named here (heroku, render, wrangler pages or versions deploy) is recorded, not held; a
-    # gh or hub api GET of
+    # lean: a deploy CLI not named here (heroku, render, wrangler pages or versions deploy) is recorded, not held; the
+    # subject is a command's words joined by spaces, so a -d or --draft inside another option's quoted value
+    # (`--notes 'see -d'`) reads as a draft and the release is allowed (docs/limits.md); a gh or hub api GET of
     # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
     # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
     # engine seconds on 64 KiB); add a verb here when one is in use
