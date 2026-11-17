@@ -835,18 +835,31 @@ class FirstDay(unittest.TestCase):
     def test_policy_engine_warns_when_using_regex_fallback(self):
         from tracekit.signer import service
 
-        for engine_name, expected_status, expected_fix in (
-            ("re2@1.0", "ok", ""),
-            ("regex@2.0", "warn", "RE2 acceleration unavailable; the regex fallback is active. Install google-re2 where a compatible wheel is available."),
-        ):
-            with self.subTest(engine=engine_name), \
+        cases = (
+            ("re2@1.0", True, "ok", "", ""),
+            ("regex@2.0", True, "warn", "pip install google-re2", ""),
+            (
+                "regex@2.0",
+                False,
+                "info",
+                "",
+                " (google-re2 has no wheel for this Python or platform)",
+            ),
+        )
+
+        for engine_name, supported, expected_status, expected_fix, detail_suffix in cases:
+            with self.subTest(engine=engine_name, supported=supported), \
                     mock.patch.object(
                         service, "load_policy",
                         return_value=types.SimpleNamespace(engine=engine_name)
+                    ), \
+                    mock.patch.object(
+                        doctor, "_google_re2_supported", return_value=supported
                     ):
                 row = self.rows()["D-POLICY-ENGINE"]
                 self.assertEqual(row["status"], expected_status)
                 self.assertIn(engine_name, row["detail"])
+                self.assertTrue(row["detail"].endswith(detail_suffix))
                 self.assertEqual(row["fix"], expected_fix)
 
     def test_no_claude_code_and_no_witness_are_info_in_dev(self):

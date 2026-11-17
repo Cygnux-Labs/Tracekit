@@ -1144,8 +1144,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
         loaded = service.load_policy(policy)
         using_re2 = loaded.engine.startswith("re2@")
-        add("D-POLICY-ENGINE", using_re2, f"{policy} loads on {loaded.engine}",
-            "" if using_re2 else "RE2 acceleration unavailable; the regex fallback is active. Install google-re2 where a compatible wheel is available.", bad=WARN)
+        supported = _google_re2_supported()
+        add("D-POLICY-ENGINE", using_re2,
+            f"{policy} loads on {loaded.engine}" + (
+                "" if using_re2 or supported else
+                " (google-re2 has no wheel for this Python or platform)"
+            ),
+            "pip install google-re2" if supported else "",
+            bad=WARN if supported else INFO)
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}",
             "pip install tracekit-ai (a --no-deps install leaves the engine out)")
