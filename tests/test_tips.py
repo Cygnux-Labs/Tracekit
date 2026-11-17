@@ -1440,7 +1440,7 @@ class Codex(unittest.TestCase):
         from tracekit import audit
         home = tmp(self)
         os.makedirs(os.path.join(home, ".codex", "sessions"))
-        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}, clear=False):
             os.environ.pop("CODEX_HOME", None)
             self.assertEqual(audit.codex_root(), os.path.join(home, ".codex", "sessions"))
         os.environ["CODEX_HOME"] = os.path.join(home, "elsewhere")
