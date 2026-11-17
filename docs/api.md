@@ -534,9 +534,13 @@ lists `call_claim`.
 
 ### `approval_request`
 
-TODO: what this RPC is for.
+Asks for a person's approval of a call that `decide` answered with `ask`. The signer signs an `approval.request` with a
+random `approval_id`, the rule ids, the requester's identity, an expiry, and a binding to the exact tool and arguments
+of this one call. Asking again for the same call attempt returns the same approval, whatever its state. `reason` is the
+agent's own words: the approver sees it marked as unverified, never as the arguments.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_request`. A box's agent channel may call it too.
 
 <!-- api-doc:begin approval_request -->
 <details>
@@ -567,9 +571,13 @@ TODO: who may call.
 
 ### `approval_wait`
 
-TODO: what this RPC is for.
+Waits up to `timeout_ms` (at most 300000, five minutes) for an approval to leave `requested`, then answers with its
+state. An approval an agent approver has approved still reads `requested` until the delay in which a person may revoke
+it has passed; its `reason` then says how many seconds to wait. A rejected approval's `reason` says who rejected or
+revoked it, and `escalated` is true when an agent approver handed it to people.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_wait`. A box's agent channel may call it too.
 
 <!-- api-doc:begin approval_wait -->
 <details>
@@ -599,9 +607,13 @@ TODO: who may call.
 
 ### `approval_get`
 
-TODO: what this RPC is for.
+Reads one approval: its state, the tool, the rule ids, the requester, the expiry, the signer's own redacted copy of the
+arguments, and the binding digest. The caller sees only the approvals it may see, which are those of its own runs and
+those it may answer; another tenant's are never shown. A bridge, such as the viewer, sends `on_behalf` to read as the
+person who signed in.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_get`. A box's agent channel may call it too.
 
 <!-- api-doc:begin approval_get -->
 <details>
@@ -652,9 +664,13 @@ TODO: who may call.
 
 ### `approval_list`
 
-TODO: what this RPC is for.
+Lists the approvals the caller may see, a page at a time, oldest first. Send the previous answer's `next_cursor` as
+`cursor` to get the next page. `state`, `escalated` and `for` narrow the list: `for: agent` gives the approvals an agent
+approver may answer now, and `for: person` gives all the others. An agent approver lists without `run_id`, and the
+signer refuses the request if it sends one.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_list`. An agent approver may call it too, with an `authorize` entry that lists it.
 
 <!-- api-doc:begin approval_list -->
 <details>
@@ -688,9 +704,17 @@ TODO: who may call.
 
 ### `approval_decide`
 
-TODO: what this RPC is for.
+Answers a held call: `approve` or `reject`. `escalate` is an agent approver's answer, and the signer refuses it from a
+person. The signer records who answered as its transport established it, and whether the approver is the call's own
+requester (`self_approved`). The requester, the run's owner and its principal may not answer unless the signer allows
+self-approval, and a break-glass identity must give a `reason`. A call marked as high risk needs a `passkey` assertion
+to be approved, and a rejection needs none. A bridge, such as the viewer, sends `on_behalf` to answer as the person who
+signed in. An agent approver in shadow mode gets `suggested: true`, and its answer changes nothing.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_decide`. An agent approver may call it too, with an `authorize` entry that lists it. Whether the caller
+may answer a given approval is decided by the signer's `approvals` configuration: see [who may
+answer](approvals.md#who-may-answer).
 
 <!-- api-doc:begin approval_decide -->
 <details>
@@ -734,9 +758,13 @@ TODO: who may call.
 
 ### `approval_decide_on_behalf`
 
-TODO: what this RPC is for.
+Answers a held call for the person a chat bridge acts for, such as a Slack user who clicked a button. `approver` names
+the person (`slack:<team>/<user>`) and `groups` the user groups of the same team the bridge found them in. The decision
+is `approve` or `reject`. The signer applies its rules to that person, not to the bridge, and the record names both. It
+is refused for an agent approver.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `approval_decide_on_behalf`. It is never granted by
+default.
 
 <!-- api-doc:begin approval_decide_on_behalf -->
 <details>
@@ -765,9 +793,13 @@ TODO: who may call.
 
 ### `approval_review`
 
-TODO: what this RPC is for.
+Shows an agent approver an approval it may answer: the tool, the rules with the policy's reason, whether each bound
+passed, the budget left, the signer's redacted copy of the arguments, and a `view_digest` over all of it. It never shows
+the requesting agent's reason, the run, the tool call id or where a value came from. A caller that is not an agent
+approver is refused, and so is a request for an approval that is no longer pending.
 
-TODO: who may call.
+**Who may call:** only an agent approver, and only with an `authorize` entry that lists `approval_review`. It is never
+granted by default.
 
 <!-- api-doc:begin approval_review -->
 <details>
@@ -804,9 +836,16 @@ TODO: who may call.
 
 ### `approval_consume`
 
-TODO: what this RPC is for.
+Asks to run a call under its approval, just before the adapter runs it. The signer recomputes the digest of the
+arguments and answers `ok: true` only if the approval for this exact call attempt is approved, not expired and opens the
+bound arguments. It then records `approval.consumed`, and the approval can never be used again. A refusal is an answer
+with `ok: false`, a rule id and a `reason`, signed as `approval.refused` or `approval.binding_mismatch`, not an error. A
+call that `decide` allowed needs no approval and gets `ok: true`. `approval_id_hint` is only a hint from the framework's
+saved state: the signer uses its own index. For executors that run the signer's stored copy, the answer also carries the
+approved `args` (see [tiers](approvals.md#tiers-t1-and-t2-executors)).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_consume`. A box's agent channel may call it too.
 
 <!-- api-doc:begin approval_consume -->
 <details>
@@ -842,9 +881,13 @@ TODO: who may call.
 
 ### `approval_revoke`
 
-TODO: what this RPC is for.
+Lets a person veto an agent approver's approval before it is consumed. The signer records `approval.revoked`, and the
+call never runs. Only an approval that an agent approved and nothing has consumed yet can be revoked: any other gets
+`approval_not_pending`.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_revoke`. When the signer has an `approvals` configuration, the caller must also be one of its approvers
+or a break-glass identity.
 
 <!-- api-doc:begin approval_revoke -->
 <details>
@@ -875,9 +918,12 @@ TODO: who may call.
 
 ### `approval_abandon`
 
-TODO: what this RPC is for.
+Tells the signer that the adapter will never resume a paused call, for example because the user cancelled the run. The
+approval ends at once, the signer records `approval.abandoned`, and a later consume is refused. The coding-agent hooks
+don't call it: a call they blocked keeps its approval `requested`, for the agent's retry.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `approval_abandon`. A box's agent channel may call it too.
 
 <!-- api-doc:begin approval_abandon -->
 <details>
@@ -905,9 +951,12 @@ TODO: who may call.
 
 ### `approval_agents`
 
-TODO: what this RPC is for.
+The operator's kill switch for agent approvals. `enabled: false` revokes every agent approval that is not consumed yet,
+hands every pending approval an agent could answer to people, and leaves people to answer every approval from then on.
+`enabled: true` switches agent approvals back on. The signer records it as `approval.agents`, and the answer lists the
+approvals it revoked.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `approval_agents`. It is never granted by default.
 
 <!-- api-doc:begin approval_agents -->
 <details>
@@ -933,9 +982,13 @@ TODO: who may call.
 
 ### `passkey_register`
 
-TODO: what this RPC is for.
+Registers the passkey of the person a bridge acts for, named in `on_behalf`: its `credential_id` and its `public_key`
+(DER SubjectPublicKeyInfo, P-256 or Ed25519). A person keeps the first passkey registered: a second registration is
+refused, and only an operator can remove one. The signer takes the bridge's word for who the person is. A passkey is
+what a high-risk approval requires.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `passkey_register`. In practice a bridge, such as the viewer, calls it for the person it acts for.
 
 <!-- api-doc:begin passkey_register -->
 <details>
@@ -966,9 +1019,13 @@ TODO: who may call.
 
 ### `status`
 
-TODO: what this RPC is for.
+Asks the signer what it is and who it takes the caller to be. The answer gives the contract version (`rpc_version`), the
+signer's name and version, and the caller's identity as the signer sees it: `scheme`, `subject`, and `attested`, which
+says whether the signer verified that identity itself. When the content vault is on, the answer also has
+`content.max_record_bytes`, the largest record content the signer keeps. It takes no run token and writes nothing.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `status`. A box's agent channel may call it too.
 
 <!-- api-doc:begin status -->
 <details>
@@ -999,9 +1056,13 @@ TODO: who may call.
 
 ### `read`
 
-TODO: what this RPC is for.
+Reads the records of one run from the log, in order, starting at `from_seq` (default 0). It returns at most `limit`
+records (default 100, at most 1000), each with its `run_seq`, `type`, `data` and `event_hash`. `next_seq` is the
+`run_seq` to ask for next, or null when there are no more records. It needs the run's token, so it reads only that run,
+and it writes nothing.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `read`.
 
 <!-- api-doc:begin read -->
 <details>
@@ -1032,9 +1093,14 @@ TODO: who may call.
 
 ### `checkpoint_nudge`
 
-TODO: what this RPC is for.
+Asks the signer to sign a new checkpoint soon, instead of waiting for its regular round (every 10 seconds while the log
+grows). A checkpoint is a signed note over the log's records, and a record can be proved only once a checkpoint covers
+it. The signer writes at most one per second. The answer is `scheduled: true` straight away, before the checkpoint
+exists, so a caller that needs the checkpoint asks again for what it needs. The SDK does this while it waits for
+`pcm_evidence` to stop saying `pending`. The call itself writes no record.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `checkpoint_nudge`.
 
 <!-- api-doc:begin checkpoint_nudge -->
 <details>
@@ -1056,9 +1122,18 @@ TODO: who may call.
 
 ### `content_get`
 
-Reads the content of records in a run: for each `seq` asked for, the content and its salt, the content marked redacted, or the reason there is none.
+Reads back the content the vault kept for records of a run of the caller's tenant: up to 1000 `seqs` per call. For each
+`seq` the answer gives the content and the record's salt, so the caller can work out the record's commitment again. When
+redaction changed the content, so that it no longer opens the commitment, the content comes back marked `redacted` and
+with no salt. When there is no content, the item has a `state` instead: `not_retained`, `too_large` or `erased`. Each
+item also says the record's `type` and, for an `input.observed` record, its `source` (both added in version 25).
+`purpose`, such as a case id, is recorded. Every successful call writes a signed `content.accessed` record, and the
+vault must be on, or the call is refused. If the content is too large for one answer, the call fails with
+`quota_exceeded`: ask for fewer `seqs`. More: [the content vault](privacy.md#the-content-vault).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `content_read`, the name of the grant for this call
+(`content_get` itself is not accepted there). It is never granted by default, except that the dev signer grants it to
+your own user.
 
 <!-- api-doc:begin content_get -->
 <details>
@@ -1090,9 +1165,14 @@ TODO: who may call.
 
 ### `content_erase`
 
-TODO: what this RPC is for.
+Deletes for good the content the vault kept for a run of the caller's tenant: the run's key and its stored content. The
+signer then writes a signed `content.erased` record with the `reason` (by default "erased on request") and who asked,
+and the answer gives that record's `run_seq`. Records and commitments are untouched, so the run still verifies; only the
+content is gone. The runs made to replay or analyse the run are erased with it, each with its own `content.erased`. If
+the storage fails, no record is written and the call can be repeated. Copies taken before, such as a backup, are not
+reached. The vault must be on, or the call is refused. More: [the content vault](privacy.md#the-content-vault).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `content_erase`. It is never granted by default.
 
 <!-- api-doc:begin content_erase -->
 <details>
@@ -1117,9 +1197,19 @@ TODO: who may call.
 
 ### `export_run`
 
-TODO: what this RPC is for.
+Downloads one run of the caller's tenant as a `.tkb` bundle, the file `tracekit verify` checks, in chunks. The first
+call names the `run_id` and gets the bundle's `digest`, its `size`, and the first chunk in `data` (base64, up to 783360
+bytes of the bundle). Each later call sends the same `digest` and the next `offset`, until the offset reaches the size.
+If the signer no longer holds that bundle, because a newer checkpoint came or it sat unused too long, it answers
+`conflict` and the download starts again from its first chunk. A run still open is exported up to the latest checkpoint;
+if none covers it yet, the signer writes one and the caller asks again. The signer builds one bundle at a time per
+tenant, so a busy signer answers `unavailable` with `retry_after_ms`, and the clients wait that long. Added in version
+23. More: [downloading a run](remote-ingest.md#downloading-a-run).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `export_run`. It is never granted by default. Only an
+identity that otherwise reads, and writes nothing, may hold it: the signer refuses the call with `forbidden` for an
+identity that is also granted a call that writes, or that has no tenant of its own. A run of another tenant answers as a
+run that does not exist.
 
 <!-- api-doc:begin export_run -->
 <details>
