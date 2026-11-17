@@ -69,8 +69,13 @@ def notes(schema):
             out.append("at least %d characters" % lo)
     if "maxItems" in schema:
         out.append("up to %d items" % schema["maxItems"])
-    if "minimum" in schema and schema.get("minimum") != 0:
+    # 2 ** 53 - 1, the largest whole number JSON holds exactly, caps every whole number: the page says it once
+    top = schema.get("maximum")
+    top = None if top == 2 ** 53 - 1 else top
+    if "minimum" in schema and (schema["minimum"] != 0 or top is not None):
         out.append("at least %s" % schema["minimum"])
+    if top is not None:
+        out.append("at most %s" % top)
     if "pattern" in schema:
         out.append("matches `%s`" % schema["pattern"])
     return "; ".join(out)

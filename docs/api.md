@@ -33,8 +33,9 @@ name such as `parent.run_id` is a field inside an object, and `[]` in a name, as
 item in a list. Required says whether a request must carry the field, or an answer always does. Types are in plain
 words: text, whole number, number, true or false, object, list of ..., and any value, which is any JSON. Nothing is JSON
 null, so "text or nothing" is a text or null. "One of" lists the only values the field may have, and "always" with a
-value means that is the only value it may have. The notes give limits: lengths are in characters, and `matches` gives a
-regular expression in which `(?![\s\S])` means the end of the text.
+value means that is the only value it may have. The notes give limits: lengths are in characters, a whole number is at
+most 9007199254740991 (2^53 - 1, the largest whole number JSON holds exactly) unless its note says less, and `matches`
+gives a regular expression in which `(?![\s\S])` means the end of the text.
 
 **Words this page uses.** These terms come up in several sections.
 
@@ -781,7 +782,7 @@ lists `approval_wait`. A box's agent channel may call it too.
 | `run_token` | text | yes | 1 to 1024 characters |
 | `caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `timeout_ms` | whole number | no |  |
+| `timeout_ms` | whole number | no | at least 0; at most 300000 |
 
 **Answer**
 
@@ -872,7 +873,7 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 |---|---|---|---|
 | `run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `cursor` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `limit` | whole number | no | at least 1 |
+| `limit` | whole number | no | at least 1; at most 1000 |
 | `on_behalf` | object | no |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
@@ -1265,7 +1266,7 @@ lists `read`.
 | `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `run_token` | text | yes | 1 to 1024 characters |
 | `from_seq` | whole number | no |  |
-| `limit` | whole number | no | at least 1 |
+| `limit` | whole number | no | at least 1; at most 1000 |
 
 **Answer**
 
@@ -1522,9 +1523,9 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `finding.target` | text | yes | up to 1024 characters |
 | `finding.intervention` | text | yes | up to 1024 characters |
 | `finding.n` | whole number | yes |  |
-| `finding.p_with` | number | yes |  |
-| `finding.p_without` | number | yes |  |
-| `finding.effect` | number | yes | at least -1 |
+| `finding.p_with` | number | yes | at least 0; at most 1 |
+| `finding.p_without` | number | yes | at least 0; at most 1 |
+| `finding.effect` | number | yes | at least -1; at most 1 |
 | `finding.interval` | list of numbers | yes | up to 2 items |
 | `finding.verdict` | one of `causal`, `suppressive`, `ruled-out`, `inconclusive`, `not-applied` | yes |  |
 | `finding.replay_runs` | list of objects | yes | up to 4096 items |
@@ -1535,9 +1536,9 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `finding.rung` | one of `1`, `2` | yes |  |
 | `finding.off_tape` | whole number | yes |  |
 | `finding.investigation` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `finding.looks` | whole number | yes | at least 1 |
-| `finding.family` | whole number | yes | at least 1 |
-| `finding.min_effect` | number | yes |  |
+| `finding.looks` | whole number | yes | at least 1; at most 4096 |
+| `finding.family` | whole number | yes | at least 1; at most 4096 |
+| `finding.min_effect` | number | yes | at least 0; at most 1 |
 | `finding.applied` | true or false | yes |  |
 | `finding.stopped` | one of `decisive`, `futility`, `n_max`, `budget` | yes |  |
 | `finding.uncounted` | list of objects | no | up to 4096 items |
@@ -1657,7 +1658,7 @@ or owns open runs. More: [operators](incidents.md#operators).
 |---|---|---|---|
 | `state` | one of `open`, `resolved` | no |  |
 | `cursor` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `limit` | whole number | no | at least 1 |
+| `limit` | whole number | no | at least 1; at most 1000 |
 
 **Answer**
 
