@@ -1,10 +1,10 @@
 # Signer API reference
 
-The signer answers one request at a time. A request is one JSON object that names its RPC in the `method` field, sent
-to `POST /v2/rpc` over HTTPS (or over the Unix socket on the same machine); the answer is one JSON object. This page
-lists what each RPC takes and returns. The field tables are written from `tracekit/signer/rpc_schema.py` by
-`scripts/api_doc.py`: edit the schema, run the script, never the tables. How callers connect and prove who they are is
-under [Transport and auth](#transport-and-auth).
+A request is one JSON object that names its RPC in the `method` field, sent to `POST /v2/rpc` over HTTPS (or over the
+Unix socket on the same machine); the answer is one JSON object. On one connection the signer answers requests in the
+order it received them. This page lists what each RPC takes and returns. The field tables are written from
+`tracekit/signer/rpc_schema.py` by `scripts/api_doc.py`: edit the schema, run the script, never the tables. How callers
+connect and prove who they are is under [Transport and auth](#transport-and-auth).
 
 The signer is the part of Tracekit that decides whether an agent's tool calls may run, and that signs and chains the
 records of what happened. [Versioning](#versioning) says which versions of this contract a signer serves.
@@ -27,6 +27,14 @@ apply to every call. The RPCs follow in groups, and [Transport and auth](#transp
 - [Holds and pauses](#holds-and-pauses): an operator's holds, quarantines, pauses and suspensions.
 - [Permission records](#permission-records): signing, granting and delegating permission records, and evidence.
 - [Grants and channels](#grants-and-channels): intent grants, and a box's agent channel.
+
+**Reading the field tables.** Each RPC has a request table and an answer table, with one row for each field. A dotted
+name such as `parent.run_id` is a field inside an object, and `[]` in a name, as in `events[].type`, is a field of each
+item in a list. Required says whether a request must carry the field, or an answer always does. Types are in plain
+words: text, whole number, number, true or false, object, list of ..., and any value, which is any JSON. Nothing is JSON
+null, so "text or nothing" is a text or null. "One of" lists the only values the field may have, and "always" with a
+value means that is the only value it may have. The notes give limits: lengths are in characters, and `matches` gives a
+regular expression in which `(?![\s\S])` means the end of the text.
 
 **Words this page uses.** These terms come up in several sections.
 
@@ -53,10 +61,10 @@ apply to every call. The RPCs follow in groups, and [Transport and auth](#transp
 The contract has one version number, and this page describes version 25. A released version never changes: any change to
 a request or an answer is a new version.
 
-A signer serves a range of versions, from 15 up to its own highest. The first frame on every connection is `hello`,
-which is not one of the calls in this page. Its answer gives `proto`, the lowest and highest version the signer serves,
-the signer's Tracekit `version`, and its `pid`. A client checks that its own version is inside `proto`. If it is not,
-the SDK refuses to go on and says so, and tells the person to stop the signer with `tracekit down` or replace it with
+A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
+the calls on this page. Its answer gives `proto`, the lowest and highest version the signer serves, the signer's
+Tracekit `version`, and its `pid`. A client checks that its own version is inside `proto`. If it is not, the SDK refuses
+to go on and says so, and tells the person to stop the signer with `tracekit down` or replace it with
 `tracekit up --replace`. Over HTTPS the SDK sends `hello` once, before its first call. `status` gives the signer's
 highest version as `rpc_version`.
 
@@ -101,7 +109,7 @@ code it does not know, because a later version may add one.
 | `unknown_incident` | An operator call names an incident that the caller's tenant does not have. | 404 |
 | `run_exists` | `register_run` with a `run_id` that is registered already. | 409 |
 | `run_closed` | The run has ended, or is ending. | 409 |
-| `conflict` | A `request_id` used again with a different payload; or an observer that another process took over from. | 409 |
+| `conflict` | A `request_id` used again with a different payload; an observer that another process took over from; or, for `export_run`, a download whose bundle the signer no longer holds. | 409 |
 | `client_seq_reused` | A `client_seq` at or below the last one of its stream, under a new `request_id`. | 409 |
 | `args_mismatch` | `complete` with arguments other than the decided ones; also `pcm_grant` for a call that was approved with other arguments. | 409 |
 | `approval_not_pending` | The approval is not waiting for an answer any more. | 409 |
@@ -116,11 +124,13 @@ signer over HTTP](remote-ingest.md#calling-the-signer-over-http).
 Some answers that say no are not errors. `decide` answers `allow`, `deny` or `ask` as an ordinary answer, and
 `approval_consume` answers `ok: false` with a reason when it refuses.
 
-A call that changes state carries a `request_id`, which belongs to the caller's identity. Sent again with the same
-payload, it gets the first answer. Sent with another payload, it gets `conflict`. The SDKs send the five event calls
-(`decide`, `complete`, `observe`, `state_write` and `model_event`) again after `unavailable`, or after `quota_exceeded`
-with `retry_after_ms`, up to three tries, waiting at least `retry_after_ms`. They send no other call again, because the
-signer remembers a `request_id` only in memory, and a retry after `unavailable` could record the call twice.
+Most calls that change state carry a `request_id`, which belongs to the caller's identity (the tables show which calls
+have one). Sent again with the same payload, it gets the first answer. Sent with another payload, it gets `conflict`.
+When the connection drops, the SDKs send a call again with the same `request_id`, up to three tries. When the signer
+refuses a call, the SDKs send only the five event calls (`decide`, `complete`, `observe`, `state_write` and
+`model_event`) again: after `unavailable`, or after `quota_exceeded` with `retry_after_ms`, up to three tries, waiting
+at least `retry_after_ms`. They send no other refused call again, because the signer remembers a `request_id` only in
+memory, and a retry after `unavailable` could record the call twice.
 
 ## Who may call what
 
@@ -205,7 +215,9 @@ user.
 Starts a run, which is one agent session, and returns its `run_id` and a run token. Every later call for the run
 presents that token. The signer records the start as `run.registered`. A sub-agent sends its parent's run token in
 `parent`, which links the two runs. The fields `tenant`, `source`, `analyzes`, `replay_of` and `box` are for special
-callers: the signer refuses them unless its configuration allows the caller to use them.
+callers: the signer refuses them unless its configuration allows the caller to use them. The answer's `fail_modes` says,
+for each tool class and for `default`, whether a call may run when the client cannot reach the signer: `open` lets it
+run unrecorded, and `closed`, which is also what no entry means, stops it.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `register_run`. A box's agent channel may call it too.
@@ -2529,9 +2541,10 @@ entry lists. It is never granted by default. A Box daemon reaches the signer ove
 ## Transport and auth
 
 A caller reaches the signer in one of three ways: over HTTPS, over a Unix socket on the same machine, or, for a dev
-signer on Windows, over a loopback TCP port. All three carry the same JSON frames, and `hello` is the first frame on
-every connection (see [Versioning](#versioning)). On every one the signer works out who the caller is from the
-connection or the credential, again for every frame, and never from anything the frame says.
+signer on Windows, over a loopback TCP port. All three carry the same JSON frames, and a client sends `hello` first (see
+[Versioning](#versioning)). On every one the signer works out who the caller is from the connection or the credential,
+never from anything the frame says. Over HTTPS it does so again for every request; the Unix socket and loopback TCP
+paragraphs say what they do.
 
 | Where the signer runs | How a caller reaches it | Who the signer takes the caller to be |
 |---|---|---|
@@ -2542,7 +2555,10 @@ connection or the credential, again for every frame, and never from anything the
 | Central signer, or Compose | HTTPS | `token:`, `k8s_sa:`, `mtls:` or `oidc:` and the name the credential gives |
 
 The agent's code does not change between these. The environment variable `TRACEKIT_SIGNER` tells the client where the
-signer is: a socket path, an `https://` URL, or `http://` on a loopback address. See [Deploying the signer](deploy.md).
+signer is: a socket path, `tcp://host:port` on a loopback address (the Windows dev signer, whose token goes in
+`TRACEKIT_SIGNER_TOKEN`), an `https://` URL, or `http://` on a loopback address. In system mode the client takes the
+signer from the root-owned file `/etc/tracekit/client.json` and refuses a `TRACEKIT_SIGNER` that names another signer,
+so an agent cannot point itself at a signer it runs. See [Deploying the signer](deploy.md).
 
 **HTTPS.** A central signer listens on the address in the `http` section of its configuration. Each call is one
 `POST /v2/rpc` whose body is one JSON frame, `{"method": ..., ...}`, and the answer is one JSON frame. The body must
@@ -2554,13 +2570,16 @@ HTTPS it needs credentials like any other frame.
 
 ```bash
 curl -si https://tracekit.example:8443/v2/rpc -H "Authorization: Bearer $TRACEKIT_API_KEY" \
-  -H 'Tracekit-Errors: http-status' -d '{"method": "status"}'
+  -H 'Content-Type: application/json' -H 'Tracekit-Errors: http-status' -d '{"method": "status"}'
 ```
 
+This call succeeds only for a caller that may call `status` (see [Who may call what](#who-may-call-what)).
+
 To reach a signer, the SDKs read `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (a file holding the token,
-read again on every call, so a rotated token is picked up) and `TRACEKIT_SIGNER_CA` (the CA that the signer's
-certificate must chain to). Without a token file they use the token in `TRACEKIT_API_KEY`. See
-[Remote clients](remote-ingest.md#calling-the-signer-over-http).
+read again on every call, so a rotated token is picked up), `TRACEKIT_SIGNER_CA` (the CA that the signer's certificate
+must chain to) and, for `mtls`, `TRACEKIT_SIGNER_CERT` and `TRACEKIT_SIGNER_KEY` (the client certificate and, if it is
+in another file, its key). Without a token file they use the token in `TRACEKIT_API_KEY`. An SDK refuses a plain
+`http://` URL whose host is not a loopback address. See [Remote clients](remote-ingest.md#calling-the-signer-over-http).
 
 **Proving who you are over HTTPS.** The `authenticators` list in the `http` section turns on any of four ways to prove
 identity. The signer asks them in the order listed, and the first one that recognises its credential decides. If none
@@ -2598,7 +2617,8 @@ signer never sees their refusals and never retries or drops the signer. A client
 `Retry-After` (whole seconds) on a 429 or 503 that has `retry_after_ms`, and `WWW-Authenticate: Bearer` on a 401. A
 `quota_exceeded` without `retry_after_ms` is a size limit and gets 413. A decision, even a deny or an ask, is an answer
 and always gets 200. Problems with the HTTP request itself get an HTTP status whatever the header says: 404 for a wrong
-path, 400 or 411 for a bad or missing `Content-Length`, and 413 for a body over 1 MiB.
+path, 400 or 411 for a bad or missing `Content-Length`, and 413 for a body over the limit (1 MiB for an RPC, 4 MiB for
+OTLP).
 
 **Request-Id.** Every answer carries a `Request-Id` header: `req_` and 24 hex digits, made by the signer for that
 answer. It is not the `request_id` that a call sends. The signer writes one INFO line per answer, on the logger
@@ -2613,9 +2633,13 @@ so a call such as `approval_wait` can take as long as it needs. The signer serve
 waits a second for a free place and is then closed.
 
 **OTLP import.** When the signer's `otlp` setting is on (it needs the `http` listener), `POST /v1/traces` accepts
-OpenTelemetry (OTLP/HTTP) data from the same authenticators. This is not an RPC. The caller is authenticated before its
-body is read: a request with no accepted credential gets 401, too many failed attempts get 429, and an identity without
-the `otlp_import` grant gets 403.
+OpenTelemetry (OTLP/HTTP) data from the same authenticators. This is not an RPC. The body is OTLP protobuf
+(`Content-Type: application/x-protobuf`) or OTLP JSON (`application/json`), plain or compressed with gzip or deflate
+(`Content-Encoding`). It may be up to 4 MiB as sent, and a longer one gets 413. The unpacked body is limited to 16 MiB,
+and to 32 times the size sent (but not below 1 MiB), and a request may hold up to 10,000 spans. The signer refuses a
+request over these limits, with another content type or encoding, or that cannot be read. The caller is authenticated
+before its body is read: a request with no accepted credential gets 401, too many failed attempts get 429, and an
+identity without the `otlp_import` grant gets 403.
 
 **Unix socket.** On the same machine the caller connects to a Unix socket, and the signer takes the caller's identity
 from the operating system: the effective user id of the process that connected, `uid:<number>`. A connection whose user
@@ -2628,7 +2652,9 @@ socket file itself. A frame is one line: one JSON object per line in the request
 that is not a JSON object gets `invalid_request` and the connection stays open. A line over 1 MiB (1,048,576 bytes) gets
 `quota_exceeded` and the connection closes, because the signer cannot tell where the next frame starts. A failed
 authentication (`unauthenticated`) also closes the connection. The signer closes a connection that sends nothing for 30
-seconds. After `channel_open` succeeds, the rest of that connection is handled as the box's identity (see
+seconds. The signer answers the requests of one connection in the order it received them, so a client that makes a call
+that can wait a long time, such as `approval_wait`, gives it a connection of its own, as the SDK does. After
+`channel_open` succeeds, the rest of that connection is handled as the box's identity (see
 [Who may call what](#who-may-call-what)), and each frame is still checked as before.
 
 **Loopback TCP port (dev signer on Windows).** Where Unix sockets are missing, a dev signer listens on `127.0.0.1` on a
