@@ -566,6 +566,35 @@ class Packaging(unittest.TestCase):
         else:
             self.assertEqual(re.search(r'^version = "([^"]+)"', toml, re.M).group(1), tracekit.__version__)
 
+    def test_google_re2_marker_excludes_unsupported_platforms(self):
+        import re
+        from packaging.requirements import Requirement
+
+        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            toml_text = f.read()
+
+        match = re.search(r'"(google-re2[^"]+)"', toml_text)
+        self.assertIsNotNone(match, "google-re2 dependency missing from pyproject.toml")
+
+        requirement = Requirement(match.group(1))
+        marker = requirement.marker
+
+        # PyPy has no google-re2 wheel.
+        self.assertFalse(marker.evaluate({
+            "python_version": "3.13",
+            "platform_python_implementation": "PyPy",
+            "sys_platform": "linux",
+            "platform_machine": "x86_64",
+        }))
+
+        # CPython 3.13 Linux x86_64 has a compatible wheel.
+        self.assertTrue(marker.evaluate({
+            "python_version": "3.13",
+            "platform_python_implementation": "CPython",
+            "sys_platform": "linux",
+            "platform_machine": "x86_64",
+        }))
+
     def test_python_dash_m_tracekit(self):
         r = subprocess.run([sys.executable, "-m", "tracekit", "--version"], capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(r.returncode, 0, r.stderr)

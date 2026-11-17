@@ -1110,11 +1110,16 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "root-owned and not group/world-writable, or set policy: in signer.yaml to such a file")
     try:
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
-        add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
+        loaded = service.load_policy(policy)
+        using_re2 = loaded.engine.startswith("re2@")
+        add("D-POLICY-ENGINE", using_re2, f"{policy} loads on {loaded.engine}",
+            "" if using_re2 else "RE2 acceleration unavailable; the regex fallback is active. Install google-re2 where a compatible wheel is available.", bad=WARN)
     except ImportError as e:
-        add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
+        add("D-POLICY-ENGINE", False, f"no regex engine: {e}",
+            "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
-        add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
+        add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}",
+            f"fix the policy: tracekit policy lint {policy}")
 
     mode = cfg.get("durability", ACK_ON_WRITE)
     add("D-DURABILITY", not prod or mode == ACK_ON_FSYNC, f"durability {mode}" + (

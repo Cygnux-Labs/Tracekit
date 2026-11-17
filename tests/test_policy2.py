@@ -2,6 +2,7 @@
 import functools
 import glob
 import importlib.util
+import builtins
 import io
 import itertools
 import json
@@ -509,6 +510,34 @@ class Engines(unittest.TestCase):
             scans = glob.call_count
             self.assertEqual(e.tool_class("mcp__s__t"), "mcp")
             self.assertEqual(glob.call_count, scans)
+
+    def test_default_engine_falls_back_when_re2_cannot_be_imported(self):
+        real_import = builtins.__import__
+
+        def without_re2(name, *args, **kwargs):
+            if name == "re2":
+                raise ImportError("google-re2 unavailable")
+            return real_import(name, *args, **kwargs)
+
+        policy = {
+            "tools": {"Bash": "shell"},
+            "deny": [{
+                "id": "TEST-SUDO",
+                "class": "shell",
+                "field": "command",
+                "pattern": "^sudo",
+            }],
+        }
+
+        with mock.patch("builtins.__import__", side_effect=without_re2):
+            e = Engine(policy)
+
+        self.assertTrue(e.engine.startswith("regex@"))
+        decision = e.decide("Bash", {"command": "sudo whoami"})
+        self.assertEqual(
+            (decision["verdict"], decision["rule_ids"]),
+            ("deny", ["TEST-SUDO"]),
+        )
 
 
 PACKS = os.path.join(os.path.dirname(pc.__file__), "packs")
