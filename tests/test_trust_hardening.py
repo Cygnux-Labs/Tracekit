@@ -81,7 +81,7 @@ class HookMain(_ClientHome):
         pol = dict(pol, fail_mode=fail_mode, **pol_extra)
         sent = []
 
-        def fake_send(ev, attach=None, stream="hook"):
+        def fake_send(ev, attach=None, stream="hook", mark=None):
             sent.append(ev)
             return send(ev) if send else {"ok": True}
         with mock.patch.object(policy, "load", return_value=(pol, raw)), mock.patch.object(client, "send", fake_send), \
