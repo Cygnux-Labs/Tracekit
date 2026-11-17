@@ -1,8 +1,8 @@
 {
-  "policy_hash": "sha256:0b8bbb72e873bfcdf98032979b207c0c7cf35c02bf708d84a82efa5805d28c96",
+  "policy_hash": "sha256:5321d4423f166c8c6e08a579973e11ce11a7eec8c6978f2ff12c5dc9e90fa099",
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.9.29"
+    "regex@2026.11.15"
   ],
   "classes": {
     "browser": {
@@ -62,7 +62,7 @@
     "shell": {
       "deny": 451,
       "caught": 451,
-      "benign": 339,
+      "benign": 340,
       "fp": 0
     },
     "sql": {
@@ -1894,6 +1894,7 @@
     "benign/shell:337": "allow",
     "benign/shell:338": "allow",
     "benign/shell:339": "allow",
+    "benign/shell:340": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2019,6 +2020,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0010298661174047373,
+  "benign_fp_rate": 0.00102880658436214,
   "ok": true
 }
