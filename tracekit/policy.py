@@ -245,15 +245,17 @@ def _matches(r, tool, ti):
 
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
-    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's) is decided on each
-    one as its file_path: a rule that matches any of them applies. Batched shell commands are also read individually."""
+    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's), commands (a `commands`
+    list, as Cline's run_commands or gptme's tmux batch, each run in its own shell) or URLs (`urls`) is decided on each
+    one as its file_path, command or url: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
-    paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
-    calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
-    commands = ti.get("commands") if tool == "Bash" and "command" not in ti else None
-    if isinstance(commands, list) and all(isinstance(command, str) for command in commands):
-        calls.extend(dict(ti, command=command) for command in commands)
+    field = FIELD_FOR_TOOL.get(tool)
+    each = ti.get({"file_path": "paths", "command": "commands", "url": "urls"}.get(field))
+    calls = [ti] + [{**ti, field: x} for x in each] if isinstance(each, list) else [ti]
+    # typed input is also decided as the line a shell would read it into (agent_hooks.typed_line)
+    if field == "command" and isinstance(ti.get("typed_line"), str):
+        calls.append(dict(ti, command=ti["typed_line"]))
     # a Windows path's separator is a backslash: the file rules, written with `/`, read it with `/` too
     ruled = calls + [dict(c, **{k: c[k].replace("\\", "/")}) for c in calls for k in ("file_path", "notebook_path")
                      if isinstance(c.get(k), str) and "\\" in c[k]]

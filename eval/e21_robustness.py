@@ -57,7 +57,8 @@ def rewrites(command):
         return out
     if stateful_reason(command) is None:
         out.update({"bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"})
-    top_level = [cmd for cmd in parsed if not cmd["via"]]
+    # (a program named by a Windows path is read twice, as written and with its `\` as `/`: one command)
+    top_level = {(cmd["word"].replace("\\", "/"), tuple(cmd["argv"][1:])) for cmd in parsed if not cmd["via"]}
     if (len(top_level) == 1 and all(not cmd["opaque"] for cmd in parsed)
             and not any(op in command for op in ("&&", "||", ";", "|", "\n", ">", "<", "$(", "`"))):
         out["command-prefix"] = f"command {command}"

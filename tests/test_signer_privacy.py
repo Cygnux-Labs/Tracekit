@@ -101,6 +101,30 @@ class SignerPrivacy(Harness, unittest.TestCase):
         self.assertEqual(self.result("tc-2")["data"]["redaction"],
                          {"rules": [], "count": 0, "client_claimed": True, "client": claim})
 
+    def test_the_count_is_of_what_redaction_took_out_whatever_marks_the_content_held(self):
+        """A redaction that takes marks the content held with a value between them still counts; one that writes a mark
+        over the same mark takes nothing out."""
+        self.register()
+        hidden = "token=[REDACTED:assignment]evil@x.example[REDACTED:assignment]"
+        self.complete(*self.decide(), result={"stdout": hidden})
+        self.complete(*self.decide(tcid="tc-2"), result={"stdout": "token=[REDACTED:assignment]"})
+        data = self.result("tc-1")["data"]
+        self.assertEqual((data["redaction"], data["output"]["redacted"]),
+                         ({"rules": ["assignment"], "count": 1, "client_claimed": False}, True))
+        data = self.result("tc-2")["data"]
+        self.assertEqual((data["redaction"]["count"], data["output"]["redacted"]), (0, False))
+
+    def test_a_value_nested_too_deep_counts_as_redacted(self):
+        """What lies past privacy.MAX_DEPTH is replaced by a marker: the content changed, so the manifest says so."""
+        self.register()
+        deep = "evil@x.example"
+        for _ in range(70):
+            deep = [deep]
+        self.complete(*self.decide(), result={"stdout": deep})
+        data = self.result("tc-1")["data"]
+        self.assertEqual((data["redaction"], data["output"]["redacted"]),
+                         ({"rules": ["nesting"], "count": 1, "client_claimed": False}, True))
+
     def test_the_approver_sees_the_signers_copy_redacted(self):
         self.register()
         self.decide("wire", {"to": "acct-1", "memo": SECRET})

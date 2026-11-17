@@ -74,8 +74,15 @@ session's next call.
 The shipped packs name Hermes's `terminal` tool (class `shell`), so their shell rules read its `command`. Hermes's
 other tools (`write_file`, `patch`, `read_file`, `web_search`, `browser_*`, `execute_code`, ...) are unknown to them,
 and so are its `tool_search` and `tool_describe` catalog reads, which the hook decides too: the laptop packs flag such
-a call and let it run, and the server pack holds it for a person. Give them classes in your policy's `tools:`
-([file format](../policy-v2.md#file-format)).
+a call and let it run, and the server pack holds it for a person. The signer also decides `write_file`, `patch`,
+`read_file` and `search_files` as the file tools they are, on the `path` each reads and every file a V4A patch names,
+and `process_manage`'s `write` and `submit` as the shell line they type, and the stricter decision stands: a write to
+a credentials file, a startup file, a Git hook or Hermes's own settings in `~/.hermes` is held or denied as a `Write`
+is. Text typed into a process that doesn't end a line is kept, and the next call is decided on its own and as the
+line it completes (`\r` ends a line, as Enter does); a call or line holding a control character is blocked, as for
+Codex's `write_stdin`, and keys typed alone aren't kept. Hermes's own `hermes plugins disable tracekit`, `hermes config set` and a Hermes started with another
+profile or `HERMES_HOME` are held (`TK-A054`, `TK-A069`, `TK-A070`). Give the other tools classes in your policy's
+`tools:` ([file format](../policy-v2.md#file-format)).
 
 ## What the model said
 

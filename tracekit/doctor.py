@@ -839,9 +839,11 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     f"PowerShell's execution policy ({policy or 'unread'}) lets Cline's CLI start Tracekit's hooks",
                     "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned", bad=WARN)
             continue
+        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
+        if harness == "opencode":
+            _opencode_loads(add, path, fix, FAIL if prod else WARN)
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
-        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
         if harness == "gptme":
             if not prod:
                 ok, detail = _gptme_load_check(path)
@@ -920,6 +922,30 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _opencode_loads(add, path, fix, bad):
+    """D-OPENCODE-PLUGIN: whether the OpenCode on PATH loads Tracekit's plugin at `path`. OpenCode 2.x (@opencode/cli)
+    loads a plugin only from its default export, {id, setup}; one without it (as an earlier Tracekit wrote) it logs as
+    failed to load and runs every call undecided, and says nothing else.
+    lean: reads `opencode --version` from doctor's PATH, which is OpenCode's only when doctor runs where OpenCode does"""
+    try:
+        default = re.search(r"^export default \{", install.agent_file(path).decode("utf-8", "replace"), re.M)
+    except OSError as e:
+        add("D-OPENCODE-PLUGIN", False, f"cannot read Tracekit's OpenCode plugin {path}: {e}", fix, bad=bad)
+        return
+    exe, out = shutil.which("opencode"), ""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):   # never a program the working directory placed
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15).stdout \
+            if _outside_cwd(exe) else ""
+    major = re.search(r"(\d+)\.\d+\.\d+", out)
+    two = major is not None and int(major[1]) >= 2
+    add("D-OPENCODE-PLUGIN", bool(default),
+        f"Tracekit's plugin {path} has the default export OpenCode 2.x loads, and the plugin 1.x loads"
+        if default else f"Tracekit's plugin {path} has no default export: OpenCode {major[0]} can't load it, so every "
+        "call runs undecided and unrecorded (its log says \"failed to load plugin\")" if two else
+        f"Tracekit's plugin {path} has no default export: OpenCode 2.x can't load it, so after an upgrade every call "
+        "would run undecided and unrecorded", fix, bad=bad if two else WARN)
 
 
 def _codebuddy_later(home=None):

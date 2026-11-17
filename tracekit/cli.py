@@ -1367,7 +1367,6 @@ def _last(a):
     closing is waited for, up to LAST_WAIT_S; a newer one still open is named and skipped, or with --open taken as it
     stands."""
     import argparse
-    import collections
     import time
 
     from .signer.pipeline import SIGNER_RUN
@@ -1382,12 +1381,15 @@ def _last(a):
         cfg = signer_config(None)
         while True:
             r = open_reader(cfg)
-            try:   # newest first, by their last record; each with the type of that record and its agent's name
+            try:   # newest first, by their last record; each with its state (run.final, run.closing: closed, which
+                # late records, a tailer's model events, may follow until it is final; else open) and its agent's name
                 runs = []
                 for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key[1] != SIGNER_RUN[1]),
                                      reverse=True):
-                    first = next(iter(r.iter_run(*key)))["event"]
-                    runs.append((key, collections.deque(r.iter_run(*key), 1)[0]["event"]["type"],
+                    events = (x["event"] for x in r.iter_run(*key))
+                    first = next(events)
+                    kinds = {first["type"]} | {e["type"] for e in events}
+                    runs.append((key, next((k for k in ("run.final", "run.closing") if k in kinds), "open"),
                                  ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
                     if runs[-1][1] == "run.final":
                         break
@@ -1503,7 +1505,8 @@ def _args(x):
 
 def _gist(c, aid, n=60):
     """The call approval `aid` holds, in at most `n` characters: its command, file path or URL, else its arguments as
-    JSON, from the signer's copy; "" when the signer gives none."""
+    JSON, from the signer's copy; "" when the signer gives none. A call on several commands, files or URLs, each
+    decided on its own, gives every one, their count first, in at most 400: never a harmless first one alone."""
     from .signer.rpc_schema import RPCError
     try:
         args = _args(c.approval_get({"approval_id": aid}))
@@ -1511,9 +1514,12 @@ def _gist(c, aid, n=60):
         return ""
     if args is None:
         return ""
+    k, many = next(((k, x) for k in ("commands", "paths", "urls") if isinstance(args, dict)
+                    and isinstance(x := args.get(k), list) and len(x) > 1), (None, None))
     v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
               and isinstance(args.get(k), str)), None)
-    text = " ".join((json.dumps(args) if v is None else v).split())
+    text = " ".join((f"{len(many)} {k}: {json.dumps(many)}" if many else json.dumps(args) if v is None else v).split())
+    n = max(n, 400) if many else n
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
