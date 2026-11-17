@@ -1239,9 +1239,14 @@ run that does not exist.
 
 ### `tailer_lost`
 
-TODO: what this RPC is for.
+Reports that a transcript tailer has lost the thread of the agent's transcript. The signer records a `capture.gap` of
+kind `tailer_lost` in the run, with the `reason` (secrets removed), the transcript `offset` and the identity that
+reported it, and the answer gives that record's `run_seq`. The gap tells a reader that part of what the agent did may
+not be recorded. The signer writes the same gap itself when a tailer goes silent. A tailer that reports its own loss is
+no longer watched, so its silence afterwards is not a second gap. The call is also accepted while the run is closing.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `tailer_lost`. A box's agent channel may call it too.
 
 <!-- api-doc:begin tailer_lost -->
 <details>
@@ -1268,9 +1273,14 @@ TODO: who may call.
 
 ### `tailer_heartbeat`
 
-TODO: what this RPC is for.
+Tells the signer that a transcript tailer is still working. A tailer sends one every 30 seconds. If neither a heartbeat
+nor any other call of the tailer comes for 90 seconds while the run is open, the signer records a `tailer_lost` gap. The
+call takes the run's token and answers with an empty object. It is refused with `run_closed` once the run has ended. A
+tailer gets its token from `delegate_run`.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `tailer_heartbeat`. It is never granted by default.
+Holding it is what marks an identity as a transcript tailer, so the agent cannot keep a dead tailer's heartbeat going
+with its own token.
 
 <!-- api-doc:begin tailer_heartbeat -->
 <details>
@@ -1295,9 +1305,17 @@ TODO: who may call.
 
 ### `why_finding`
 
-TODO: what this RPC is for.
+Records the result of a finished `tracekit why` test as a signed `why.finding` record. `tracekit why` replays a run
+without a suspect input and measures whether an action still happens. The finding names the `target` and the
+`intervention`, gives the counts and rates with and without it, the `effect` and its `interval`, and a `verdict`
+(`causal`, `suppressive`, `ruled-out`, `inconclusive` or `not-applied`), and lists the replay runs it came from. The
+record goes into the findings run, and nothing is written into the run that was analysed. The answer gives the new
+record's `run_seq`. More: [why](why.md).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `why_finding`. It works only in a findings run, which is a run registered with `analyzes`, and only an identity
+listed under `analyzers` in the signer's configuration may register one. In any other run the signer refuses it with
+`forbidden`.
 
 <!-- api-doc:begin why_finding -->
 <details>
@@ -1347,9 +1365,18 @@ TODO: who may call.
 
 ### `review_finding`
 
-TODO: what this RPC is for.
+Records one signed finding of `tracekit analyze --v2` as a `review` record in a findings run. The finding names the
+`reviewer`, gives a verdict, and lists in `cites` the records of the analysed run it rests on, each by `run_seq` and
+hash (at most 256). The signer refuses a finding with `invalid_request` unless every cited record exists in the analysed
+run with that hash. The verdict is a closed set of fields: a check (`rule`) with its severity, or a coverage summary of
+what the analysis could and could not check. The signer writes the rule's fixed title, and no text of the run goes into
+a signed record, because a signed record cannot be erased. Nothing is written into the analysed run. The answer gives
+the new record's `run_seq`. More: [findings](findings.md).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `review_finding`. It works only in a findings run, which is a run registered with `analyzes`, and only an identity
+listed under `analyzers` in the signer's configuration may register one. In any other run the signer refuses it with
+`forbidden`.
 
 <!-- api-doc:begin review_finding -->
 <details>
@@ -1380,9 +1407,18 @@ TODO: who may call.
 
 ### `constraint_add`
 
-TODO: what this RPC is for.
+Adds a live constraint to the run: a limit that a person's request put on the rest of the run, such as "don't touch
+billing.py" or "don't push". The `kind` is `keep_away`, `only_change`, `read_only`, `no_push` or `no_network`.
+`keep_away` and `only_change` name a file in `object`; the other kinds name none. The signer records `constraint.added`
+with a salted commitment to the file name, never the name. After that, a call that breaks the constraint is raised to
+`ask` with the rule `TK-CONSTRAINT`, and a person answers it like any other ask. A constraint never lowers a decision,
+which is why any client of the run may add one. Adding one that the run already has returns that constraint's `run_seq`
+and writes nothing. A run takes 32 file constraints. A further one is recorded as a `constraint_refused` gap, the answer
+says `refused: true`, and every write of the run is held from then on. More: [live
+constraints](policy-v2.md#live-constraints).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `constraint_add`. A box's agent channel may call it too.
 
 <!-- api-doc:begin constraint_add -->
 <details>
@@ -1411,9 +1447,15 @@ TODO: who may call.
 
 ### `incident_list`
 
-TODO: what this RPC is for.
+Lists the incidents of the caller's tenant on this signer, in pages. `state` keeps only `open` or `resolved` ones, and
+`limit` sets the page size (default 100, at most 1000). Each incident gives its `incident_id`, the `run_id` that opened
+it, the time, what fired it (`trigger`, `rule_ids`), its `scope`, its `mode` (`shadow` or `enforce`), the `actions`
+taken, its `state`, and each run it holds with that run's state now (`held`, `quarantined`, `resumed` or `final`).
+`next_cursor` is the id to send as `cursor` for the next page, or null at the end. The call writes nothing.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `incident_list`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin incident_list -->
 <details>
@@ -1453,9 +1495,12 @@ TODO: who may call.
 
 ### `incident_show`
 
-TODO: what this RPC is for.
+Reads one incident of the caller's tenant by `incident_id`, with the same fields as an entry of `incident_list`. An id
+that does not exist in the caller's tenant is refused with `unknown_incident`. The call writes nothing.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `incident_show`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin incident_show -->
 <details>
@@ -1491,9 +1536,16 @@ TODO: who may call.
 
 ### `incident_resolve`
 
-TODO: what this RPC is for.
+Resolves an open incident. The signer ends the hold the incident put on each run that is still held, with a
+`run.resumed` record in that run, and then writes `incident.resolved` in the tenant's signer run. The answer lists the
+runs it resumed in `resumed`. A quarantine stays, because resolving is not undoing. An incident that is resolved already
+is refused with `invalid_request`. The `reason` is redacted and recorded.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `incident_resolve`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators). The caller must also be a person: an identity mapped in
+`approvals.persons`, or an OIDC person, who is an approver, or a break-glass identity giving a `reason`. It may not be
+the owner, principal or requester of a run the incident concerns.
 
 <!-- api-doc:begin incident_resolve -->
 <details>
