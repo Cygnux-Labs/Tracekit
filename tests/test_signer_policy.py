@@ -3345,7 +3345,31 @@ class CodingPack(unittest.TestCase):
                     "infisical export",
 
                     # LastPass
-                    "lpass show db",]
+                    "lpass show db",
+                    # Whole-vault exports
+                    "bw export",
+                    "bw export --format json",
+                    "lpass export",
+
+                     # Doppler default value output
+                    "doppler secrets -p proj -c dev",
+                    "doppler secrets --project proj",
+                    "doppler secrets --raw",
+
+                    # Infisical default value output
+                    "infisical secrets",
+                    "infisical secrets --env prod",
+
+                    # Global options before subcommands
+                    "op --account my read op://v/db/password",
+                    "bw --session S get password db",
+                    "doppler --token T secrets get DB_URL",
+
+                    # Additional 1Password value reads
+                    "op item get db --fields=password",
+                    "op item get db --otp",
+                    "op item get db --format json",
+                    "op document get key.pem",]
 
     def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
         held = self.SECRET_READS
@@ -3360,8 +3384,7 @@ class CodingPack(unittest.TestCase):
                    "bw list folders",
                    "doppler secrets --only-names",
                    "doppler secrets --only-names --json",
-                   "lpass ls",
-                   "infisical secrets list",]
+                   "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
@@ -3435,7 +3458,22 @@ class CodingPack(unittest.TestCase):
                 {"command": "doppler secrets get DB_URL --plain"},
                 {"command": "doppler secrets --json"},
                 {"cmd": "infisical secrets get DB_URL"},
-                {"cli_command": "lpass show db"}]
+                {"cli_command": "lpass show db"},
+                {"command": "bw export"},
+                {"command": "bw export --format json"},
+                {"command": "lpass export"},
+                {"command": "doppler secrets -p proj -c dev"},
+                {"command": "doppler secrets --project proj"},
+                {"command": "doppler secrets --raw"},
+                {"command": "infisical secrets"},
+                {"command": "infisical secrets --env prod"},
+                {"cli_command": "op --account my read op://v/db/password"},
+                {"cli_command": "bw --session S get password db"},
+                {"command": "doppler --token T secrets get DB_URL"},
+                {"cli_command": "op item get db --fields=password"},
+                {"cli_command": "op item get db --otp"},
+                {"cli_command": "op item get db --format json"},
+                {"cli_command": "op document get key.pem"},]
         routine = [{"cli_command": "aws secretsmanager list-secrets"},
                    {"cli_command": "aws ssm get-parameter --name /p"},
                    {"command": "gcloud secrets list"},
@@ -3443,8 +3481,7 @@ class CodingPack(unittest.TestCase):
                    {"cli_command": "bw list folders"},
                    {"command": "doppler secrets --only-names"},
                    {"command": "doppler secrets --only-names --json"},
-                   {"cmd": "lpass ls"},
-                   {"cmd": "infisical secrets list"}]
+                   {"cmd": "lpass ls"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
                 for args in held + routine:
@@ -3466,7 +3503,6 @@ class CodingPack(unittest.TestCase):
                    "op  item  list",
                    "bw\tlist\tfolders",
                    "doppler  secrets  --only-names",
-                   "infisical\tsecrets\tlist",
                    "lpass  ls"]
         for pack, engine, e in self.every_pack():
             for cmd in cmds:
