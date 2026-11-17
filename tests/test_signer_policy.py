@@ -3448,16 +3448,90 @@ class CodingPack(unittest.TestCase):
                     "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
                     "gcloud secrets --project p versions access latest --secret=db",
                     "gcloud beta --project p secrets versions access latest --secret=db",
-                    "az keyvault --subscription s secret show --name n --vault-name v"]
+                    "az keyvault --subscription s secret show --name n --vault-name v",
+                    # 1Password
+                    "op read op://vault/db/password",
+                    "op item get db --reveal",
+                    "op item get db --fields password",
+                    "op inject -i config.tpl",
 
-    def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
+                    # Bitwarden
+                    "bw get password db",
+                    "bw get item db",
+                    "bw get notes db",
+                    "bw get totp db",
+                    "bw get attachment k.pem --itemid x",
+                    "bw list items",
+
+                    # Doppler
+                    "doppler secrets get DB_URL --plain",
+                    "doppler secrets download",
+                    "doppler secrets",
+                    "doppler secrets --json",
+                    "doppler secrets set API_KEY=x",
+
+                    # Infisical
+                    "infisical secrets get DB_URL",
+                    "infisical export",
+
+                    # LastPass
+                    "lpass show db",
+                    # Whole-vault exports
+                    "bw export",
+                    "bw export --format json",
+                    "lpass export",
+
+                     # Doppler default value output
+                    "doppler secrets -p proj -c dev",
+                    "doppler secrets --project proj",
+                    "doppler secrets --raw",
+
+                    # Infisical default value output
+                    "infisical secrets",
+                    "infisical secrets --env prod",
+
+                    # Global options before subcommands
+                    "op --account my read op://v/db/password",
+                    "bw --session S get password db",
+                    "doppler --token T secrets get DB_URL",
+
+                    # Additional 1Password value reads
+                    "op item get db --fields=password",
+                    "op item get db --otp",
+                    "op item get db --format json",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-names",
+                    "bw get password db --only-names",
+                    "op read op://v/db/password --only-names",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx",
+                    "op document get key.pem",]
+
+    def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
         held = self.SECRET_READS
         routine = ["aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
                    "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
                    "aws ssm get-parameters-by-path --path /p", "aws ssm get-parameter --name x --wait",
                    "gcloud secrets list", "gcloud secrets versions list db", "az keyvault secret list --vault-name v",
                    "az keyvault secret list-versions --vault-name v --name n", "echo aws secretsmanager get-secret-value",
-                   "git commit -m 'aws secretsmanager get-secret-value'"]
+                   "git commit -m 'aws secretsmanager get-secret-value'",
+                   "op item list",
+                   "op vault list",
+                   "bw list folders",
+                   "doppler secrets --only-names",
+                   "doppler secrets --only-names --json",
+                   "doppler secrets delete API_KEY",
+                   "doppler secrets upload .env",
+                   "infisical secrets set A=b",
+                   "infisical secrets delete A",
+                   "infisical secrets folders create --name x",
+                   "infisical secrets folders get",
+                   "infisical secrets generate-example-env",
+                   "doppler secrets --help",
+                   "infisical secrets --help",
+                   "doppler --help secrets",
+                   "infisical --help secrets",
+                   "doppler secrets -p proj --only-names",
+                   "doppler secrets -c dev --only-names --json",
+                   "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
@@ -3525,9 +3599,54 @@ class CodingPack(unittest.TestCase):
                 {"cliCommand": "aws secretsmanager get-secret-value --secret-id x"},
                 {"cli_command": " aws secretsmanager get-secret-value --secret-id x"},
                 {"command": "gcloud secrets versions access latest --secret=db"},
-                {"cmd": "az keyvault secret show --vault-name v --name n"}]
-        routine = [{"cli_command": "aws secretsmanager list-secrets"}, {"cli_command": "aws ssm get-parameter --name /p"},
-                   {"command": "gcloud secrets list"}]
+                {"cmd": "az keyvault secret show --vault-name v --name n"},
+                {"cli_command": "op read op://vault/db/password"},
+                {"cli_command": "bw get password db"},
+                {"cli_command": "bw get attachment k.pem --itemid x"},
+                {"command": "doppler secrets get DB_URL --plain"},
+                {"command": "doppler secrets --json"},
+                {"cmd": "infisical secrets get DB_URL"},
+                {"cli_command": "lpass show db"},
+                {"command": "bw export"},
+                {"command": "bw export --format json"},
+                {"command": "lpass export"},
+                {"command": "doppler secrets -p proj -c dev"},
+                {"command": "doppler secrets --project proj"},
+                {"command": "doppler secrets --raw"},
+                {"command": "infisical secrets"},
+                {"command": "infisical secrets --env prod"},
+                {"cli_command": "op --account my read op://v/db/password"},
+                {"cli_command": "bw --session S get password db"},
+                {"command": "doppler --token T secrets get DB_URL"},
+                {"cli_command": "op item get db --fields=password"},
+                {"cli_command": "op item get db --otp"},
+                {"cli_command": "op item get db --format json"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-names"},
+                {"cli_command": "bw get password db --only-names"},
+                {"cli_command": "op read op://v/db/password --only-names"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx"},
+                {"cli_command": "op document get key.pem"},]
+        routine = [{"cli_command": "aws secretsmanager list-secrets"},
+                   {"cli_command": "aws ssm get-parameter --name /p"},
+                   {"command": "gcloud secrets list"},
+                   {"cli_command": "op item list"},
+                   {"cli_command": "bw list folders"},
+                   {"command": "doppler secrets --only-names"},
+                   {"command": "doppler secrets --only-names --json"},
+                   {"command": "doppler secrets delete API_KEY"},
+                   {"command": "doppler secrets upload .env"},
+                   {"command": "infisical secrets set A=b"},
+                   {"command": "infisical secrets delete A"},
+                   {"command": "infisical secrets folders create --name x"},
+                   {"command": "infisical secrets folders get"},
+                   {"command": "infisical secrets generate-example-env"},
+                   {"command": "doppler secrets --help"},
+                   {"command": "infisical secrets --help"},
+                   {"command": "doppler --help secrets"},
+                   {"command": "infisical --help secrets"},
+                   {"command": "doppler secrets -p proj --only-names"},
+                   {"command": "doppler secrets -c dev --only-names --json"},
+                   {"cmd": "lpass ls"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
                 for args in held + routine:
@@ -3542,9 +3661,14 @@ class CodingPack(unittest.TestCase):
     def test_every_command_tk_a035_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
         """TK-A036 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
         newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
-        cmds = [c for c in self.SECRET_READS if c.split()[0] in ("aws", "gcloud", "az")]
+        cmds = [c for c in self.SECRET_READS
+                if c.split()[0] in ("aws", "gcloud", "az", "op", "bw", "doppler", "infisical", "lpass")]
         routine = ["aws  secretsmanager  list-secrets", "aws\tssm\tget-parameter --name /p", "gcloud  secrets list",
-                   'aws --query "SecretString" secretsmanager list-secrets']
+                   'aws --query "SecretString" secretsmanager list-secrets',
+                   "op  item  list",
+                   "bw\tlist\tfolders",
+                   "doppler  secrets  --only-names",
+                   "lpass  ls"]
         for pack, engine, e in self.every_pack():
             for cmd in cmds:
                 for sep in (" ", "  ", "\t", "\n", " \t "):
@@ -5520,7 +5644,7 @@ class GuardrailsAndPushes(unittest.TestCase):
         `--` ended by CR, MySQL's `#`, an alias in UPDATE, INSERT IGNORE, DELETE alias FROM, DROP TEMPORARY, ALTER
         TABLE … DROP, and an unterminated GRANT, ALTER USER, CREATE USER or COPY TO PROGRAM are each read as the
         statement they are. A bare SELECT, and English shaped otherwise, stay flagged."""
-        held = ["DROP\fTABLE users", "\fDROP TABLE users", "DROP\x0bTABLE users", "DROP TABLE users",
+        held = ["DROP\fTABLE users", "\fDROP TABLE users", "DROP\x0bTABLE users", "DROP\u2028TABLE users",
                 "/* a*b */ DROP TABLE users", "/* " + "x" * 300 + " */ DROP TABLE users", "-- x\rDROP TABLE users",
                 "# x\nDROP TABLE users", "DROP -- x\nTABLE users", "COPY (SELECT '') TO PROGRAM 'id'",
                 "COPY users TO '/tmp/users.csv'", "GRANT ALL PRIVILEGES ON DATABASE prod TO agent", "GRANT admin TO bob",
