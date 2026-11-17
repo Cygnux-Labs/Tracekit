@@ -1573,9 +1573,18 @@ the owner, principal or requester of a run the incident concerns.
 
 ### `run_hold`
 
-TODO: what this RPC is for.
+Holds a run because an operator says so. The signer opens an incident with the trigger `operator`, expires the run's
+live approvals, and records `run.held` with the calls still in flight. From then on every call of the run is an `ask`
+(rule `TK-HOLD`) that only a person answers, never the run's owner, principal or requester. For one hour, a new run of
+the same owner and attested principal starts held too. The answer gives the `run_id`, the new `incident_id` and
+`state: held`. A person ends the hold with `run_resume` or `incident_resolve`. The signer refuses with `invalid_request`
+a run that is quarantined already, and refuses every hold when no person approver is configured (`approvals.approvers`),
+because no one could answer a held call: quarantine the run instead. More: [what each response
+does](incidents.md#what-each-response-does).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `run_hold`. It is never granted by default. The identity
+must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`, or owns
+open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin run_hold -->
 <details>
@@ -1602,9 +1611,17 @@ TODO: who may call.
 
 ### `run_quarantine`
 
-TODO: what this RPC is for.
+Quarantines a run because an operator says so, and nothing ends it. The signer opens an incident with the trigger
+`operator`, expires the run's live approvals, and records `run.quarantined`. From then on every call of the run is
+denied (rule `TK-QUARANTINE`), every approval consume is refused, a gateway's model request is refused, and the run
+closes. After 100 recorded denies the signer refuses further calls without recording them. For one hour, a new run of
+the same owner and attested principal starts quarantined too. The answer gives the `run_id`, the new `incident_id` and
+`state: quarantined`. A run that is quarantined already is refused with `invalid_request`. More: [what each response
+does](incidents.md#what-each-response-does).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `run_quarantine`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin run_quarantine -->
 <details>
@@ -1631,9 +1648,16 @@ TODO: who may call.
 
 ### `run_resume`
 
-TODO: what this RPC is for.
+Ends the holds on a run. The signer writes a `run.resumed` record for each incident that holds the run. The incidents
+stay open: `incident_resolve` closes them. A run that is not held, and a quarantined run, is refused with
+`invalid_request`, because a quarantine is final. The answer gives the `run_id`, `state: resumed`, and the `incident_id`
+of the first incident that held it. The `reason` is redacted and recorded.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `run_resume`. It is never granted by default. The identity
+must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`, or owns
+open runs. More: [operators](incidents.md#operators). The caller must also be a person: an identity mapped in
+`approvals.persons`, or an OIDC person, who is an approver, or a break-glass identity giving a `reason`. It may not be
+the owner, principal or requester of the run.
 
 <!-- api-doc:begin run_resume -->
 <details>
@@ -1660,9 +1684,14 @@ TODO: who may call.
 
 ### `response_pause`
 
-TODO: what this RPC is for.
+Pauses the response engine of the caller's tenant on this signer. Incidents are still detected and recorded, and the
+signer takes no action on them: nothing is held or quarantined while the engine is paused. Holds and quarantines that
+are already in place stay. The signer records `incident.response` with `enabled: false` in the tenant's signer run, and
+the answer is `enabled: false`. A signer pauses only its own engine, so a deployment of several signers pauses each one.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `response_pause`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin response_pause -->
 <details>
@@ -1686,9 +1715,13 @@ TODO: who may call.
 
 ### `response_resume`
 
-TODO: what this RPC is for.
+Starts the response engine of the caller's tenant on this signer again after `response_pause`. The signer records
+`incident.response` with `enabled: true` in the tenant's signer run, and the answer is `enabled: true`. It does not go
+back over incidents detected while the engine was paused.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `response_resume`. It is never granted by default. The
+identity must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`,
+or owns open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin response_resume -->
 <details>
@@ -1712,9 +1745,16 @@ TODO: who may call.
 
 ### `suspend`
 
-TODO: what this RPC is for.
+Suspends an identity of the caller's tenant: from then on the signer refuses every call the identity makes. `identity`
+is `scheme:subject`, or a prefix that ends in `:*` or `/*` to cover several. The entry goes into the suspension list
+that every signer replica reads, and each replica writes an `identity.suspension` record when it first enforces the
+entry. No token is revoked, so revoke a lost token yourself. The signer refuses with `forbidden` an identity that is not
+of the caller's tenant, and with `invalid_request` one that is suspended already. The answer gives the `identity` and
+`state: suspended`. The `reason` is redacted and recorded.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `suspend`. It is never granted by default. The identity
+must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`, or owns
+open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin suspend -->
 <details>
@@ -1740,9 +1780,13 @@ TODO: who may call.
 
 ### `unsuspend`
 
-TODO: what this RPC is for.
+Lifts the suspension of an identity of the caller's tenant, so that the signer accepts its calls again. `identity` names
+the same entry that `suspend` was given. The signer writes `identity.suspension` with `state: lifted`, and the answer
+gives the `identity` and `state: lifted`. An identity that is not suspended is refused with `invalid_request`.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `unsuspend`. It is never granted by default. The identity
+must run no agent: the signer refuses the call with `forbidden` if the identity is also granted `register_run`, or owns
+open runs. More: [operators](incidents.md#operators).
 
 <!-- api-doc:begin unsuspend -->
 <details>
