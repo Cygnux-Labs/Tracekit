@@ -107,13 +107,16 @@ def held_calls(recs: List[Dict[str, Any]]):
     """(folds, owners) of a run's records. owners: approval_id -> the run_seq of the decision its request was for (the
     latest decision under the request's call id and attempt). folds: run_seq -> the held call's run_seq, for each decision
     that is the held call's retry with its own id (LangGraph's resume). A consume whose ext.approval.decision names a
-    decision (format 1.8) folds exactly that decision; one without it names a call id and attempt, not a decision, so a
-    decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has no approval
-    request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that approval under
-    the id does. When in doubt a decision is a call of its own: a call shown twice is a small fault, a deny hidden under
-    an approved call a serious one."""
+    decision (format 1.8) folds it when it is an ask of the held call's tool and tool_call_id (a later attempt included),
+    recorded after the held call and before the consume, and the consume is under that decision's own call and attempt;
+    another name, or one the bundle doesn't hold there, is a call of its own. Without the name a consume gives a call id
+    and attempt, not a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and
+    attempt; it has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a
+    consume of that approval under the id does. When in doubt a decision is a call of its own: a call shown twice is a
+    small fault, a deny hidden under an approved call a serious one."""
     decs, owners, mism, cons = {}, {}, {}, {}   # (id, attempt) -> its decisions; approval_id -> (its owner, key)
-    named, dec_by_id = {}, {}                   # approval_id -> the decisions its consumes name; decision_id -> it
+    named = {}                                  # approval_id -> (decision_id, the consume's run_seq, its key)
+    dec_by_id = {}                              # decision_id -> (run_seq, key, tool, decision)
     for r in recs:
         e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
         key = (_call_id(r), e.get("attempt"))
@@ -129,13 +132,16 @@ def held_calls(recs: List[Dict[str, Any]]):
             cons.setdefault(d.get("approval_id"), []).append((e["run_seq"], key))
             ext = e.get("ext") if isinstance(e.get("ext"), dict) else {}
             if isinstance(ext.get("approval.decision"), str):
-                named.setdefault(d.get("approval_id"), []).append(ext["approval.decision"])
+                named.setdefault(d.get("approval_id"), []).append((ext["approval.decision"], e["run_seq"], key))
     folds, own = {}, {o[0][0] for o in owners.values()}
     for aid, ((h, tool, _), key) in owners.items():
         if aid in named:   # the consume names its decision (format 1.8): the named ask folds; another kind stays visible
-            for did in named[aid]:
+            for did, cseq, ckey in named[aid]:
                 seq, dkey, dtool, decision = dec_by_id.get(did, (None, None, None, None))
-                if seq is not None and seq > h and dkey == key and dtool == tool and decision == "ask" and seq not in own:
+                # the consume must be the named decision's own call and after it; the retry may be a later attempt
+                # of the held call's id (the signer reuses the approval), never another call's
+                if seq is not None and seq > h and cseq > seq and ckey == dkey and dkey[0] == key[0] \
+                        and dtool == tool and decision == "ask" and seq not in own:
                     folds[seq] = h
             continue
         for seq, dtool, decision in decs[key]:
