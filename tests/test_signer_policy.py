@@ -4278,11 +4278,52 @@ class CodingPack(unittest.TestCase):
             "cp x.list /etc/apt/sources.list.d/", "cat > ~/.PyPIrc")])
         self.verdicts([({"file_path": p}, "TK-A020") for p in (
             "/Users/u/library/keychains/login.keychain-db", "/Users/u/Library/Application Support/Google/Chrome/"
-            "Default/login data", r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\LOGIN DATA")], tool="Read")
+            "Default/login data", r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\LOGIN DATA",
+            "/Users/u/Library/Application Support/Arc/User Data/Default/Login Data",
+            "/Users/u/Library/Application Support/Arc/User Data/Local State",
+            "/home/u/.config/vivaldi/Default/Cookies",
+            "/home/u/.config/vivaldi/Local State",
+            "/home/u/.config/opera/Default/Login Data",
+            "/home/u/.config/opera/Local State",
+            "/Users/u/Library/Application Support/com.operasoftware.Opera/Login Data",
+            "/Users/u/Library/Application Support/com.operasoftware.Opera/Local State",
+            "/Users/u/Library/Application Support/Vivaldi/Default/Login Data",
+            "/Users/u/Library/Application Support/Vivaldi/Local State",
+            r"C:\Users\u\AppData\Local\Arc\User Data\Default\Login Data",
+            r"C:\Users\u\AppData\Local\Arc\User Data\Local State",
+            r"C:\Users\u\AppData\Local\Packages\TheBrowserCompany.Arc_123\LocalCache\Local\Arc\User Data\Default\Cookies",
+            r"C:\Users\u\AppData\Local\Packages\TheBrowserCompany.Arc_123\LocalCache\Local\Arc\User Data\Local State",
+            r"C:\Users\u\AppData\Local\Vivaldi\User Data\Default\Login Data",
+            r"C:\Users\u\AppData\Local\Vivaldi\User Data\Local State",
+            r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Login Data",
+            r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Local State")], tool="Read")
         self.verdicts([({"path": "/Users/u/Library/Keychains", "pattern": "x"}, "TK-A020")], tool="Grep")
         self.verdicts([({"file_path": "C:/Users/u/AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine/"
                                       "consolehost_history.txt"}, "TK-A026")], tool="Write")
-        self.verdicts([("cat '/Users/u/Library/Application Support/Google/Chrome/Default/login data'", "TK-A021")])
+        self.verdicts([(c, "TK-A021") for c in (
+            "cat '/Users/u/Library/Application Support/Google/Chrome/Default/login data'",
+            "cat '/Users/u/Library/Application Support/Arc/User Data/Default/Login Data'",
+            "cat '/Users/u/Library/Application Support/Arc/User Data/Local State'",
+            "cat ~/.config/vivaldi/Default/Cookies",
+            "cat ~/.config/vivaldi/Local State",
+            "cat ~/.config/opera/Default/Login Data",
+            "cat ~/.config/opera/Local State",
+            "cat '/Users/u/Library/Application Support/com.operasoftware.Opera/Login Data'",
+            "cat '/Users/u/Library/Application Support/com.operasoftware.Opera/Local State'",
+            "cat '/Users/u/Library/Application Support/Vivaldi/Default/Login Data'",
+            "cat '/Users/u/Library/Application Support/Vivaldi/Local State'",
+            "sqlite3 'c:/users/u/appdata/local/arc/user data/default/login data' .dump",
+            "sqlite3 'c:/users/u/appdata/roaming/opera software/opera stable/login data' .dump")])
+        for safe in (
+            "/Users/u/Library/Application Support/Arc/User Data/Default/Preferences",
+            "/Users/u/Library/Application Support/Arc/User Data/Preferences",
+            "/Users/u/Library/Application Support/Vivaldi/Default/Preferences",
+            "/home/u/.config/vivaldi/Default/Preferences",
+            "/home/u/.config/opera/Default/Preferences",
+            r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Preferences"):
+            with self.subTest(safe=safe):
+                d = self.e.decide("Read", {"file_path": safe})
+                self.assertNotIn("TK-A020", d["rule_ids"], d)
         for command in ("cp ~/.bash_history /tmp/history-copy", "sed -e 's/x/y/' -i notes.txt", "cat ~/.npmrc",
                         "cp ~/.npmrc /tmp/npmrc"):
             with self.subTest(command=command):
