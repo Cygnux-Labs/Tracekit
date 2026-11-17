@@ -709,6 +709,7 @@ describe("instrument", () => {
     await run.decide("c2", "echo", {});
     assert.notEqual(run.runId, first);
     assert.deepEqual(frames.findLast((f) => f.method === "register_run").parent, { run_id: first, run_token: "tok" });
+    assert.equal(frames.findLast((f) => f.method === "register_run").continues, true);   // its index starts partial
     await run.complete("c1");
     await run.complete("c2");
     const results = (id) => frames.filter((f) => f.method === "complete" && f.run_id === id).map((f) => f.tool_call_id);

@@ -408,6 +408,17 @@ def wait_for(cond, timeout=10, interval=0.05):
         time.sleep(interval)
 
 
+def mcp_tools(n, last=""):
+    """A wide MCP tool list: `n` tools (dicts, as mcp's ListToolsResult takes them) of 8 described string parameters,
+    about 850 bytes and 18 values each (300 of them: over the 4096 values one observe is read for); the first is
+    send_email, and `last` ends the last one's description."""
+    return [{"name": "send_email" if i == 0 else f"tool_{i}",
+             "description": f"Does thing number {i} for the account in the workspace" + last * (i == n - 1),
+             "inputSchema": {"type": "object", "properties": {
+                 f"param_{i}_{j}": {"type": "string", "description": f"The value of field {j} used by tool {i}"}
+                 for j in range(8)}}} for i in range(n)]
+
+
 class VersionCheckCases:
     """The version check a hand-wired integration shares with the others (tracekit.integrations.version_check): a
     framework outside the versions Tracekit is tested with warns once when the integration is built, one inside the
