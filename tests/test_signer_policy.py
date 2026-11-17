@@ -3513,7 +3513,11 @@ class CodingPack(unittest.TestCase):
                     "doppler secrets --scope \"/home/me/p --only-names\"",
                     "doppler secrets get DB --plain --only-names",
                     "doppler secrets delete API_KEY",
-                    "doppler secrets upload .env",]
+                    "doppler secrets upload .env",
+                    # a quoted last word ending in --help reads as help after a word: a file to write, an item the
+                    # agent could rename first, an argument the CLI ignores
+                    "doppler secrets download \"f --help\"", "bw list items \"x --help\"",
+                    "op document get \"k --help\"", "lpass show \"x --help\"", "bw get password \"x --help\"",]
 
     def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
         held = self.SECRET_READS
@@ -3540,7 +3544,8 @@ class CodingPack(unittest.TestCase):
                    "doppler secrets -p proj --only-names",
                    "doppler secrets -c dev --only-names --json",
                    "aws secretsmanager get-secret-value --help", "gcloud secrets versions access --help",
-                   "op read --help", "bw get password github --help",
+                   "op read --help", "op item get --help", "bw get password --help", "bw list items --help",
+                   "doppler secrets get --help", "doppler secrets download --help", "lpass show --help",
                    "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
