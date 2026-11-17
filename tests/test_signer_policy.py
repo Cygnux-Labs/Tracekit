@@ -5043,7 +5043,13 @@ class GuardrailsAndPushes(unittest.TestCase):
             "cdk deploy", "aws cloudformation deploy --template-file t.yaml --stack-name s",
             "aws --region eu-west-1 cloudformation deploy --stack-name s", "gh release create v1.0",
             "gh release create v1.0 --notes x", "gh release create v1.0 --draft=false",
-            "gh release create v1.0 --notes-file x-d")], "ask", "TK-A056")
+            "gh release create v1.0 --notes-file x-d",
+            # -d or --draft right after an option that takes a value is that value: the release publishes
+            "gh release create v1.0 --notes -d", "gh release create v1.0 -n -d", "gh release create v1.0 --title -d",
+            "gh release create v1.0 -t -d", "gh release create v1.0 --target -d", "gh release create v1.0 -F -d",
+            "gh release create v1.0 --notes-file --draft", "gh release create v1.0 -R -d",
+            "gh release create v1.0 --discussion-category -d", "gh release create v1.0 --notes-start-tag -d")],
+                      "ask", "TK-A056")
 
     def test_a_preview_or_local_deploy_stays_allowed(self):
         """#892: TK-A056 holds a platform CLI's production deploy only. A preview, a draft, a deploy that sends no
@@ -5054,7 +5060,10 @@ class GuardrailsAndPushes(unittest.TestCase):
                   "firebase emulators:start", "firebase serve", "gcloud run deploy api --no-traffic",
                   "gcloud app deploy --no-promote", "railway up --environment staging", "railway up -e dev",
                   "serverless deploy --stage dev", "sls deploy -s staging", "gh release create v1.0 --draft",
-                  "gh release create v1.0 -d", "gh release list", "fly status", "cdk diff", "sam build"):
+                  "gh release create v1.0 -d", "gh release create -d v1.0", "gh release create v1.0 --notes x -d",
+                  "gh release create v1.0 --notes=x -d", "gh release create v1.0 -p -d",
+                  "gh release create v1.0 --latest=false --draft", "gh release create v1.0 --notes -d --draft",
+                  "gh release list", "fly status", "cdk diff", "sam build"):
             for e in self.engines:
                 with self.subTest(engine=e.engine, command=c):
                     d = e.decide("Bash", {"command": c})
