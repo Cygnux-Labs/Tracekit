@@ -33,7 +33,12 @@ spec.loader.exec_module(e16)
 class E16(unittest.TestCase):
     def test_clean_layout_passes_every_check(self):
         results = e16.run_case(None)
-        self.assertEqual([r for r in results if r["status"] != "ok"], [])
+        # Where google-re2 has no wheel, the regex engine is expected: an info row, not a fault.
+        expected = {} if doctor._google_re2_supported() else {"D-POLICY-ENGINE": "info"}
+        self.assertEqual(
+            {r["id"]: r["status"] for r in results if r["status"] != "ok"},
+            expected,
+        )
         self.assertEqual({r["id"] for r in results}, {want for _, want, _ in e16.CASES})
 
     def test_every_misconfiguration_is_flagged(self):
