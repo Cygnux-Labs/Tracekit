@@ -1285,7 +1285,7 @@ class CodingPack(unittest.TestCase):
             "dotnet ef migrations add Init", "dotnet ef database update", "dotnet ef migrations list", "dotnet build",
             # asking for help runs nothing
             "prisma migrate reset --help", "prisma migrate reset -h", "rails db:drop --help", "supabase db reset --help",
-            "php artisan db:wipe --help",
+            "php artisan db:wipe --help", "django-admin flush --help", "django-admin flush -h",
             "echo rails db:drop", "grep -rn 'db:reset' config", "git commit -m 'npx prisma migrate reset in CI'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
