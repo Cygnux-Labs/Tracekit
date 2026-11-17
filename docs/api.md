@@ -6,7 +6,47 @@ lists what each RPC takes and returns. The field tables are written from `tracek
 `scripts/api_doc.py`: edit the schema, run the script, never the tables. How callers connect and prove who they are is
 under [Transport and auth](#transport-and-auth).
 
-TODO: finish the introduction once the other sections are written.
+The signer is the part of Tracekit that decides whether an agent's tool calls may run, and that signs and chains the
+records of what happened. [Versioning](#versioning) says which versions of this contract a signer serves.
+
+**Where to start.** If you are connecting a caller for the first time, read [Transport and auth](#transport-and-auth)
+and [Who may call what](#who-may-call-what) first: they say how a caller proves who it is and what it may then call. A
+normal agent session uses four calls in this order: `register_run` starts the run, `decide` asks whether a tool call may
+run, `complete` reports what the call did, and `close_run` ends the run.
+
+**How the page is arranged.** [Versioning](#versioning), [Errors](#errors) and [Who may call what](#who-may-call-what)
+apply to every call. The RPCs follow in groups, and [Transport and auth](#transport-and-auth) comes last:
+
+- [Runs and calls](#runs-and-calls): starting and ending a run, asking whether a tool call may run, and reporting what
+  happened.
+- [Approvals](#approvals): asking for, answering and using an approval.
+- [Reading the log](#reading-the-log): reading a run's records, reading kept content, and downloading a run.
+- [Transcript tailer gaps](#transcript-tailer-gaps): what a transcript tailer reports.
+- [Findings and incidents](#findings-and-incidents): recording findings, adding a live constraint, and listing and
+  resolving incidents.
+- [Holds and pauses](#holds-and-pauses): an operator's holds, quarantines, pauses and suspensions.
+- [Permission records](#permission-records): signing, granting and delegating permission records, and evidence.
+- [Grants and channels](#grants-and-channels): intent grants, and a box's agent channel.
+
+**Words this page uses.** These terms come up in several sections.
+
+- **binding**: ties an approval to one exact tool call, the tool and its arguments, as a digest. The approval cannot be
+  used for any other call.
+- **break-glass**: an identity listed under `approvals.break_glass` may answer approvals and resolve incidents without
+  being a regular approver. It must give a `reason`, and the record says so. See
+  [Who may answer](approvals.md#who-may-answer).
+- **bridge**: a program that acts for a person, such as the Slack bridge or the viewer. It calls with `on_behalf` to
+  answer as that person. The signer applies its rules to the person, not to the bridge, and takes the bridge's word for
+  who the person is.
+- **commitment**: a digest of some content, made with a salt. A record holds the commitment, not the content, so the log
+  can prove what was said without keeping it. With the content and the salt, anyone can work the commitment out again
+  and compare.
+- **escalate**: an agent approver does this to hand an approval it will not decide over to people.
+- **gap**: a signed `capture.gap` record that the signer writes when it knows something is missing or went wrong in a
+  run, such as a lost transcript tailer, a call that ran after a deny, or a saved state that was tampered with. Gaps are
+  never silent, and no request field can write one. See [Gaps](concepts/capture-and-completeness.md#gaps).
+- **run token**: the secret that `register_run` returns for a run. Every later call for that run presents it.
+  `delegate_run` issues a second one to another identity.
 
 ## Versioning
 
