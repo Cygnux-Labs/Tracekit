@@ -4258,7 +4258,8 @@ class CodingPack(unittest.TestCase):
         # security's global options came before the command unseen; `pass show --all` isn't pass's, `pass grep`
         # decrypts every entry and `pass NAME` shows NAME; gopass's find/search showed the secret on a match
         # until gopass stopped it, so they stay held where pass's aren't; `gh auth token` prints the stored
-        # token and `gh auth status` masks it unless -t/--show-token (a short cluster with t too)
+        # token (for `token`, -h is the host, not help) and `gh auth status` masks it unless -t/--show-token (a short
+        # cluster with t too)
         self.verdicts([("security -q dump-keychain -d", "TK-D020"), ("pass grep .", "TK-D020"), ("ssh-add -L", "TK-A021"),
                        ("security -q find-generic-password -s x -w", "TK-A021"),
                        ("security -v -p go find-internet-password -s x", "TK-A021"), ("pass example/site", "TK-A021"),
@@ -4267,6 +4268,7 @@ class CodingPack(unittest.TestCase):
                        ("gopass cat secrets/prod", "TK-A021"), ("gopass otp accounts/github", "TK-A021"),
                        ("gopass find email", "TK-A021"), ("gopass search infra", "TK-A021"),
                        ("gh auth token", "TK-A021"), ("gh auth token --hostname ghe.corp", "TK-A021"),
+                       ("gh auth token -h ghe.corp", "TK-A021"),
                        ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
                        ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
