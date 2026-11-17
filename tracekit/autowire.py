@@ -147,7 +147,8 @@ def _process_client(Client, RPCError, current_run, schemas):
                 old, token = p.run_id, p.run_token
                 if closed != old:
                     return   # another thread's call renewed it already
-                agent = {"agent": {"name": self.agent}}
+                # a later run of the process's agent, whose model may still hold what the closed run read
+                agent = {"agent": {"name": self.agent}, "continues": True}
                 try:   # linked to the closed run while it is still closing
                     new = super().call("register_run", {**agent, "parent": {"run_id": old, "run_token": token}})
                 except RPCError:

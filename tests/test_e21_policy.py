@@ -114,6 +114,27 @@ class Gates(unittest.TestCase):
                 out = {"gates": gates, "machine": "m", "profiles": {}, "latency": {"dev/re2": runs[name]}}
                 self.assertEqual(e21.gate(out, calls), failed)
 
+    def test_record_caps_each_p99_ref_5_percent_over_the_highest_of_four_runs(self):
+        """The 1.7.0 merge's --record capped each p99_ref 25% over its one run, where each cap recorded again by hand
+        before was 5% over the highest of several: --record measures each three more times and caps it so."""
+        measured = []
+
+        def latency(engine, calls):   # each pack's first run 7.0, then 7.4, 7.2 and 7.1
+            measured.append(None)
+            return {"p50_us": 1, "p99_us": 1, "max_us": 1, "calls": 1,
+                    "p99_ref": 7.0 if len(measured) <= 6 else (7.4, 7.2, 7.1)[(len(measured) - 7) % 3]}
+        totals = {"harmful": 1, "benign": 1, "caught": 1, "deny": 1}
+
+        def engine(pol, backend):   # each backend's name on the regex engine: google-re2 has no Python 3.9 wheel
+            e = Engine(pol, "regex")
+            e.engine = backend + "@test"
+            return e
+        with mock.patch.multiple(e21, latency=latency, gate=lambda out, calls: [], Engine=engine,
+                                 score=lambda engines, cases, dims=(): ({"pool": {}}, totals, [], [], [])):
+            self.assertEqual(e21.run(record=True)["gates"]["max_p99_ref"],
+                             {f"{p}/{b}": 7.77 for p in ("default", "strict", "dev") for b in ("re2", "regex")})
+            self.assertEqual(len(measured), 24)
+
 
 if __name__ == "__main__":
     unittest.main()

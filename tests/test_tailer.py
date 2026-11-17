@@ -814,6 +814,18 @@ class HookStartsTheTailer(unittest.TestCase):
         self.cc._prune()
         self.assertEqual([os.path.exists(f) for f in (*kept, *gone)], [True, True, False, False])
 
+    def test_a_sessions_end_marker_is_kept_as_long_as_its_state(self):
+        # the marker says the session's next run continues it (_run), however long after its SessionEnd it resumes
+        marker, call = self.cc._state("s1", self.cc.ENDED), self.cc._state("s1", "tc-1")
+        for f, age in ((marker, svc.IDLE_S + 1), (call, svc.IDLE_S + 1)):
+            files.write_json(f, {})
+            os.utime(f, (time.time() - age,) * 2)
+        self.cc._prune()
+        self.assertEqual([os.path.exists(marker), os.path.exists(call)], [True, False])
+        os.utime(marker, (time.time() - self.cc.SESSION_KEEP_S - 1,) * 2)
+        self.cc._prune()
+        self.assertFalse(os.path.exists(marker))
+
     def test_a_lock_its_tailer_removed_as_it_ended_is_not_taken_for_a_stopped_tailers(self):
         lock, _ = self.cc._tailer_files(self.cc._state("s1"), "run-1")
         tailers = self.cc._free(lock, create=True)
