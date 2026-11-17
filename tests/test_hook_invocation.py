@@ -238,9 +238,9 @@ class PluginShim(unittest.TestCase):
         with open(self.script, "w", encoding="utf-8") as f:
             f.write(text.replace("SYSTEM_CONFIG=/etc/tracekit/client.json", f"SYSTEM_CONFIG={self.config}")
                     .replace("SYSTEM_PYTHON=/opt/tracekit/bin/python", f"SYSTEM_PYTHON={self.system_python}"))
-        self.bin = os.path.join(self.d, "bin")  # grep and uname only: no python on PATH, so the package is missing
+        self.bin = os.path.join(self.d, "bin")  # grep, uname, readlink: no python on PATH, so the package is missing
         os.makedirs(self.bin)
-        for tool in ("grep", "uname"):
+        for tool in ("grep", "uname", "readlink"):
             os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
         self.home, self.data = os.path.join(self.d, "home"), os.path.join(self.d, "data")
 
@@ -255,9 +255,11 @@ class PluginShim(unittest.TestCase):
                 self.assertTrue(pins)
                 self.assertEqual(set(pins), {"==" + version})
 
-    def hook(self, event="PreToolUse", **env):
-        """(exit code, stderr) of the plugin's hook for `event`, with this test's PATH, HOME and XDG_DATA_HOME."""
-        r = subprocess.run(["/bin/sh", self.script, event], input="{}", capture_output=True, text=True,
+    def hook(self, event="PreToolUse", agent=None, **env):
+        """(exit code, stderr) of the plugin's hook for `event` (and `agent`, as hooks/<agent>.json names it), with this
+        test's PATH, HOME and XDG_DATA_HOME."""
+        r = subprocess.run(["/bin/sh", self.script, event, *([agent] if agent else [])], input="{}",
+                           capture_output=True, text=True,
                            env={"PATH": self.bin, "HOME": self.home, "XDG_DATA_HOME": self.data, "TRACEKIT_PYTHON": "",
                                 **env})
         return r.returncode, r.stderr
@@ -318,6 +320,45 @@ class PluginShim(unittest.TestCase):
                 self.assertIn(f"/plugin disable {key}\n", err)
                 self.assertNotIn("turn the plugin off in /plugin", err)
 
+    def test_copilot_and_cursor_run_calls_before_tracekit_is_set_up(self):
+        """Copilot CLI denies a preToolUse call at any exit but 0, and so does Cursor with failClosed: the notice's exit
+        1 would block every call, the agent's own install of Tracekit included."""
+        for agent, pre, want in (("copilot", "preToolUse", 0), ("cursor", "preToolUse", 0), ("codex", "PreToolUse", 1),
+                                 (None, "PreToolUse", 1), ("cursor", "postToolUse", 0)):
+            with self.subTest(agent=agent, event=pre):
+                code, err = self.hook(pre, agent)
+                self.assertEqual(code, want, err)
+                self.assertIn(f"this {pre} event was NOT recorded", err)
+        self.set_up_tracekit()   # then a call no hook can decide is blocked, under every harness
+        for agent, pre in (("copilot", "preToolUse"), ("cursor", "preToolUse"), ("codex", "PreToolUse")):
+            with self.subTest(agent=agent, set_up=True):
+                code, err = self.hook(pre, agent)
+                self.assertEqual(code, 2, err)
+                self.assertIn("turn the Tracekit plugin off", err)
+                self.assertNotIn("/plugin", err)   # Claude Code's command
+
+    def test_a_tracekit_command_installed_on_its_own_runs_the_hook(self):
+        """`uv tool install tracekit-ai` and pipx give tracekit a venv of its own, which python3 doesn't import: the
+        hook found none, and once Tracekit was set up blocked every call. The command on PATH links (here through a
+        relative link and an absolute one) to the venv's bin/tracekit, beside its python. Its #! line doesn't always
+        name that python: uv and pip write a /bin/sh trampoline for a long path, or one with spaces."""
+        venv_bin = os.path.join(self.d, "tools", "tracekit ai", "bin")
+        os.makedirs(venv_bin)
+        tool_python = self.fake_python(os.path.join(venv_bin, "python"))
+        with open(os.path.join(venv_bin, "tracekit"), "w", encoding="utf-8") as f:
+            f.write(f"#!/bin/sh\n'''exec' '{tool_python}' \"$0\" \"$@\"\n' '''\nimport sys\n")
+        os.chmod(os.path.join(venv_bin, "tracekit"), 0o755)
+        os.symlink(os.path.join(venv_bin, "tracekit"), os.path.join(self.d, "tools", "link"))
+        os.symlink(os.path.join("..", "tools", "link"), os.path.join(self.bin, "tracekit"))
+        self.set_up_tracekit()
+        for agent in (None, "codex"):
+            with self.subTest(agent=agent):
+                self.assertEqual(self.hook("PreToolUse", agent)[0], 0)
+        self.assertIn(f"{tool_python} -I -c", self.calls())
+        self.assertIn("tracekit.integrations.claude_code import _entry", self.calls())
+        self.assertIn("harness_hooks import entry", self.calls())
+        self.assertIn(" codex PreToolUse", self.calls())   # harness_hooks takes the harness, then the event
+
     def test_no_disable_command_when_the_plugins_key_is_not_known(self):
         """No CLAUDE_PLUGIN_ROOT, a --plugin-dir or local-marketplace plugin (which loads in place), a claude.ai-synced
         one, or a cache path with no version: none of them names a key here."""
@@ -334,7 +375,8 @@ class PluginShim(unittest.TestCase):
         self.assertEqual(self.hook(TRACEKIT_PYTHON=os.path.join(self.d, "gone", "python"))[0], 2)
 
     def install_tracekit(self, hook_source):
-        """A python3 on PATH whose only tracekit is a stub in the user site-packages (`pip install --user`)."""
+        """A python3 on PATH whose only tracekit is a stub in the user site-packages (`pip install --user`). -> the
+        stub package's directory."""
         py = os.path.join(self.bin, "python3")
         with open(py, "w", encoding="utf-8") as f:   # -S: none of this interpreter's own site-packages
             f.write(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n')
@@ -346,6 +388,7 @@ class PluginShim(unittest.TestCase):
                            ("integrations/claude_code.py", hook_source)):
             with open(os.path.join(site, "tracekit", path), "w", encoding="utf-8") as f:
                 f.write(text)
+        return os.path.join(site, "tracekit")
 
     def test_a_tracekit_before_1_2_blocks_tool_calls_and_says_to_upgrade(self):
         """0.4 and 1.0 define _entry() without the event: the plugin's call raised TypeError, and the wrapper blocked
@@ -359,6 +402,19 @@ class PluginShim(unittest.TestCase):
             self.assertIn(f"Ask the person to run: pip install tracekit-ai=={__version__} && tracekit init --dev --v2 "
                           "--no-hooks", err)
             self.assertNotIn("Traceback", err)
+
+    def test_a_tracekit_without_the_harness_hook_blocks_tool_calls_and_says_to_upgrade(self):
+        """1.6.0 has no Copilot CLI hook: its harness_hooks printed a usage line, and the call was blocked unexplained."""
+        package = self.install_tracekit("def _entry(event=None):\n    return 0\n")
+        for path, text in (("agent_hooks.py", 'HARNESSES = ("codex",)\n'),
+                           ("integrations/harness_hooks.py", "def entry(harness, event):\n    return 0\n")):
+            with open(os.path.join(package, path), "w", encoding="utf-8") as f:
+                f.write(text)
+        self.assertEqual(self.hook("PreToolUse", "codex")[0], 0)
+        code, err = self.hook("preToolUse", "copilot")
+        self.assertEqual(code, 2, err)
+        self.assertIn("has no copilot hook (it is older than this plugin)", err)
+        self.assertIn(f"pip install tracekit-ai=={__version__}", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):
         self.install_tracekit("import a_dependency_that_is_missing\n")

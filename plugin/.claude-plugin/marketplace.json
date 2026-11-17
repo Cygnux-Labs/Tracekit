@@ -1,0 +1,14 @@
+{
+  "name": "tracekit",
+  "owner": {
+    "name": "Cygnux Labs"
+  },
+  "description": "Tracekit: every tool call your coding agent makes, checked before it runs and signed into a record you can verify offline",
+  "plugins": [
+    {
+      "name": "tracekit",
+      "source": "./",
+      "description": "Checks every tool call before it runs, holds risky ones for you, and signs each into a tamper-evident record; skills to set it up, connect to Tracekit Cloud and explain what it did"
+    }
+  ]
+}

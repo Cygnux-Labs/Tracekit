@@ -1077,7 +1077,7 @@ class HookV2(unittest.TestCase):
 
     def test_the_plugin_decides_through_the_dev_signer(self):
         os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"), TRACEKIT_PYTHON=sys.executable)
-        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
             cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         for tid, command, code in (("t1", "pkill tracekitd", 2), ("t2", "ls", 0)):   # no hook_event_name: hooks.json names it
             p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
@@ -1093,6 +1093,41 @@ class HookV2(unittest.TestCase):
                                                                         "tool_name": "Bash", "tool_input": {}}))
             self.assertEqual(p.returncode, code, (event, p.stderr))
             self.assertIn("signer unreachable", p.stderr.splitlines()[0])
+
+    def test_the_plugins_codex_copilot_and_cursor_hooks_decide_through_the_dev_signer(self):
+        """The plugin's hooks for Codex, Copilot CLI and Cursor run each harness's own hook (harness_hooks), with the
+        harness's payload, from the variable each sets to the plugin's directory, and answer in the harness's own form
+        (Claude Code's hook, which those harnesses ran from the plugin's default hooks file, answers in Claude Code's)."""
+        os.environ.update(TRACEKIT_PYTHON=sys.executable)
+        plugin = os.path.join(ROOT, "plugin")
+        harnesses = {   # (root variable, the pre-tool event, its entry's command field, a payload for a shell call,
+            # the deny the harness reads on stdout)
+            "codex": ("PLUGIN_ROOT", "PreToolUse", lambda g: g["hooks"][0]["command"],
+                      lambda tid, c: {"session_id": "cx", "turn_id": "1", "hook_event_name": "PreToolUse",
+                                      "tool_name": "Bash", "tool_use_id": tid, "tool_input": {"command": c}},
+                      lambda out: set(out) == {"hookSpecificOutput"} and
+                      out["hookSpecificOutput"]["permissionDecision"] == "deny"),
+            "copilot": ("COPILOT_PLUGIN_ROOT", "preToolUse", lambda g: g["bash"],
+                        lambda tid, c: {"sessionId": "cp", "toolCallId": tid, "toolName": "bash",
+                                        "toolArgs": {"command": c}},
+                        lambda out: out["permissionDecision"] == "deny"),
+            "cursor": ("CURSOR_PLUGIN_ROOT", "preToolUse", lambda g: g["command"],
+                       lambda tid, c: {"conversation_id": "cu", "generation_id": "1", "hook_event_name": "preToolUse",
+                                       "tool_name": "Shell", "tool_use_id": tid, "tool_input": {"command": c}},
+                       lambda out: out["permission"] == "deny"),
+        }
+        for harness, (var, pre, field, payload, denied) in harnesses.items():
+            with self.subTest(harness=harness):
+                with open(os.path.join(plugin, "hooks", harness + ".json")) as f:
+                    cmd = field(json.load(f)["hooks"][pre][0])
+                env = dict(os.environ, **{var: plugin})
+                for tid, command, code in ((f"{harness}-1", "pkill tracekitd", 2), (f"{harness}-2", "ls", 0)):
+                    p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                                       env=env, input=json.dumps(payload(tid, command)))
+                    self.assertEqual(p.returncode, code, p.stderr)
+                    if code == 2:
+                        self.assertIn("TK-D007", p.stdout + p.stderr)
+                        self.assertTrue(denied(json.loads(p.stdout)), p.stdout)
 
     def test_only_a_tool_call_is_blocked_by_the_hooks_init_writes(self):
         """A hook that could not finish exited 2 on every event: an unreachable signer erased each prompt and sent

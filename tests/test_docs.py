@@ -178,13 +178,26 @@ class DocCommands(unittest.TestCase):
 
 
 class PluginSkills(unittest.TestCase):
+    def test_every_skill_states_the_fixed_rule(self):
+        """A harness loads each skill on its own, so each says it: the agent never answers a hold or changes Tracekit,
+        and gives the person the approve command to run. Each is named as its folder, as Agent Skills requires."""
+        skills = glob.glob(os.path.join(ROOT, "plugin", "skills", "*", "SKILL.md"))
+        self.assertGreaterEqual(len(skills), 5)
+        for path in skills:
+            text = read(path)
+            words = " ".join(text.split())
+            with self.subTest(skill=os.path.basename(os.path.dirname(path))):
+                self.assertTrue(text.startswith(f"---\nname: {os.path.basename(os.path.dirname(path))}\n"))
+                self.assertIn("change Tracekit's policy, signer, hooks or files", words)
+                self.assertIn("`tracekit approvals approve", words)
+
     def test_the_plugins_setup_skill_is_the_public_one(self):
         """The plugin ships Cygnux-Labs/tracekit-skills' skills/tracekit-setup/SKILL.md byte for byte, so skill indexes
         find one text. Change it there first, copy it here, then pin its git blob id: `git rev-parse
         main:skills/tracekit-setup/SKILL.md` in that repository."""
         data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
         self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
-                         "91a5eb5ca2a8c2acf89250299a3aba98faea80a3")   # tracekit-skills#3 (skills/kiro)
+                         "1f0ce97ea57875bba6acf04ff13b3271926e8dbc")   # the plugin's skills, for every agent
 
 
 class DocTableCells(unittest.TestCase):
