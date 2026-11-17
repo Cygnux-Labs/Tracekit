@@ -3846,6 +3846,7 @@ class CodingPack(unittest.TestCase):
             "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
             "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
+            "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows",
             "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
             "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
             'bash -c "chown -R me:me /lib"')])
@@ -3853,6 +3854,7 @@ class CodingPack(unittest.TestCase):
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
             "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
+            "rm -rf /mnt/c/Users/build", "rm -rf /cygdrive/c/Users/build",
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
             'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
 
@@ -3865,12 +3867,13 @@ class CodingPack(unittest.TestCase):
             "rm a b c d e f g h i j k l m n o p q -rf /var", "rm -rf /./etc", "rm -rf /usr/../etc",
             "rm -rf //tmp//..//./var/", "chmod -R 000 /./usr", "find /./opt -delete", "rm -rf /system",
             "rm -rf /LIBRARY", "rm -rf /ETC", "rm -rf /Private/Var", "rm -rf 'C:\\WINDOWS'", "rm -rf /c/WINDOWS",
+            "rm -rf /mnt/c/WINDOWS", "rm -rf /cygdrive/c/WINDOWS",
             "chown -R me /USR/*")])
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var", "chmod -R u+w build/", "rm -rf /var/lib/apt/lists/*", "rm -rf /Applications/Foo.app",
             "chown -R www-data /var/www", "find /var/log -name '*.log' -delete", "rm -rf /.etc", "rm -rf /tmp/../tmp/x",
             "rm -rf /usr/../tmp/etc", "rm -rf a b c d e f g h i j k l m n o p q ./etc", "rm -rf /ETC/nginx",
-            "rm -rf 'C:\\WINDOWS\\Temp\\x'"))
+            "rm -rf 'C:\\WINDOWS\\Temp\\x'", "rm -rf /mnt/c/WINDOWS/Temp/x", "rm -rf /cygdrive/c/WINDOWS/Temp/x"))
 
     def test_pip_reads_an_abbreviated_index_option(self):
         """pip's option parser takes a long option's unique prefix (`--index-u URL` sets the index); the 1.5.2 sweep
