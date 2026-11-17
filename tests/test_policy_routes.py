@@ -177,7 +177,12 @@ class Routes(unittest.TestCase):
             "lz4 /tmp/k ~/.ssh/authorized_keys", "zstd -d --output-dir-flat ~/.ssh /tmp/k.zst",
             "zstd -d --output-dir-flat=$HOME/.ssh /tmp/k.zst", "cd /tmp/x && zstd -d --output-dir-mirror ~/.ssh rc.zst",
             "cd /tmp/x && zstd -d --output-dir-mirror=$HOME/.aws config.zst",
-            "zstd -d --output-dir-mirror ~ .ssh/rc.zst", "zstd -d --output-dir-mirror=$HOME .ssh/rc.zst"),
+            "zstd -d --output-dir-mirror ~ .ssh/rc.zst", "zstd -d --output-dir-mirror=$HOME .ssh/rc.zst",
+            # recursive, or given a folder: files the line doesn't name, in the folder
+            "zstd -d -r --output-dir-flat ~/.ssh /tmp/zs/", "zstd -dr --output-dir-flat ~/.aws /tmp/zs",
+            "cd /tmp/zs && zstd -d -r --output-dir-mirror ~/.ssh .",
+            "zstd -d --recursive --output-dir-flat=$HOME/.ssh /tmp/zs", "zstd -d --output-dir-flat ~/.ssh /tmp/zs/",
+            "cd /tmp/zs && zstd -d --output-dir-mirror ~/.ssh ."),
             "deny", "TK-D023")
         # what only prints, tests or lists, writes elsewhere (-o, a second operand, -n's new file), leaves a member out
         # (unzip -x) or reads a value (git config --get, emacs --insert): no write of the file it names
@@ -186,7 +191,8 @@ class Routes(unittest.TestCase):
             "zstd -d .env.zst -o out.txt", "lz4 -d .env.lz4 out.txt", "7z x .env.7z -oout", "dos2unix -n .env out.txt",
             "unzip -o k.zip -x .env -d out", "git config -f ~/.ssh/config --get host.x",
             "emacs --batch --insert .env notes.org -f save-buffer", "lz4 .env", "lz4 -d logs.lz4 out.log",
-            "zstd -d --output-dir-flat out ~/.ssh/k.zst"), "TK-D023")
+            "zstd -d --output-dir-flat out ~/.ssh/k.zst", "zstd -d -r --output-dir-flat out /tmp/zs/",
+            "zstd -d --output-dir-flat ~/.ssh /tmp/k"), "TK-D023")
 
     def test_an_interpreter_s_file_write_reaches_the_file_rules(self):
         # an open in a writing mode (its mode argument, Python's mode= keyword, Perl's mode with layers or in front of

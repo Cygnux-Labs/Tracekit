@@ -2377,8 +2377,13 @@ def _decompressed(tool, args):
         return [a[:-len(suffix)] for a in operands if a.endswith(suffix) and len(a) > len(suffix)]
     out = [_PACKED.sub(lambda m: ".tar" if m.group().lower().startswith(".t") else "", a) for a in operands
            if _PACKED.search(a)]
-    return [folder[0].rstrip("/") + "/" + (a.lstrip("/") if folder[1] else posixpath.basename(a)) for a in out] \
-        if folder else out
+    if not folder:
+        return out
+    # recursive (-r) or given a folder, it writes files the line doesn't name into the folder: the folder itself
+    walks = any(a == "--recursive" or _cluster(a) and "r" in a for a in args) or any(
+        a in (".", "..") or a.endswith("/") for a in operands)
+    return [folder[0].rstrip("/") + "/"] * walks + [
+        folder[0].rstrip("/") + "/" + (a.lstrip("/") if folder[1] else posixpath.basename(a)) for a in out]
 
 
 def _extracted_tar(args):

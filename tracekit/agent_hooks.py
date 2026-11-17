@@ -1703,7 +1703,9 @@ def _interpreter_files(ti):
         if "path" in i or str(i.get("type")).casefold() in INTERPRETER_FILE_ITEMS:
             out.append(i["path"] if isinstance(i.get("path"), str) and i["path"] else None)
         url = i["image_url"].get("url") if isinstance(i.get("image_url"), dict) else i.get("image_url")
-        if isinstance(url, str) and url[:5].casefold() == "file:":   # (an http(s) image is no file)
+        # the scheme as a URL parser reads it: leading spaces and control characters dropped, tabs and line ends taken
+        # out (` file:`, `fi\tle:`); an http(s) image is no file
+        if isinstance(url, str) and urllib.parse.urlsplit(url).scheme.casefold() == "file":
             out.append(_file_url_path(url))
     return out
 

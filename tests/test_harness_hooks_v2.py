@@ -165,8 +165,11 @@ class Mapping(HarnessCase):
                                            {"type": "input_image", "image_url": "File://localhost/w/a%20b.png"},
                                            {"type": "image", "image_url": {"url": "file:/w/c.png"}},
                                            {"type": "image", "image_url": "file:///C:/w/d.png"},
-                                           {"type": "image", "image_url": "https://example.com/e.png"}]},
-                 ["/w/.env", "/w/a b.png", "/w/c.png", "C:/w/d.png"])):
+                                           {"type": "image", "image_url": "https://example.com/e.png"},
+                                           # the scheme as a URL parser reads it (a leading space, a tab in it)
+                                           {"type": "image", "image_url": " file:///w/f.png"},
+                                           {"type": "image", "image_url": "fi\tle:///w/g.png"}]},
+                 ["/w/.env", "/w/a b.png", "/w/c.png", "C:/w/d.png", "/w/f.png", "/w/g.png"])):
             with self.subTest(tool=name):
                 self.assertEqual(self.hook(harness, dict(base, tool_name=name, tool_input=ti))[0], 0)
                 sent = self.sent[-1]
