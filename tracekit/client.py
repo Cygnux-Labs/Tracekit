@@ -310,10 +310,12 @@ class _RunLock:
             self.fh.close()
 
 
-def send(event, attach=None, stream="hook"):
+def send(event, attach=None, stream="hook", mark=None):
     """Send one event; returns the signer's response. Raises SignerUnavailable.
     A failed send is remembered so the next successful one is preceded by a capture.gap.
-    Each stream (hook, proxy) keeps its own counter per run."""
+    Each stream (hook, proxy) keeps its own counter per run. `mark`: returns the transcript mark the event carries,
+    read under the run's lock just before the append, so the marks of a run's parallel hooks reach the signer in the
+    order they were read (#727)."""
     run_id = event["run_id"]
     with _RunLock(run_id, stream) as rl:
         gap = rl.state.get("gap")
@@ -327,6 +329,9 @@ def send(event, attach=None, stream="hook"):
                              "to_ts": gap["to_ts"], "missed_events": gap["missed"], "kind": "signer_down"}}})
                 rl.state["gap"] = None
             rl.state["cseq"] += 1
+            transcript = mark() if mark else None
+            if transcript:
+                event["transcript"] = transcript
             resp = _rpc({"op": "append", "stream": stream, "cseq": rl.state["cseq"], "event": event, "attach": attach or {}})
             if not resp.get("ok") and resp.get("retryable"):
                 raise SignerUnavailable(resp.get("error", "signer could not write"))

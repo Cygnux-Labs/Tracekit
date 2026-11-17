@@ -19,12 +19,13 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests  # noqa: E402
-from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
+from tracekit import bundle, client, hook, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_json  # noqa: E402
 from factories import ledger_records, make_signer, wait_for  # noqa: E402
 
@@ -236,6 +237,26 @@ class TranscriptTamper(Stack):
             p.wait(30)
         self.pre("t9", "ls")
         self.assertEqual(self.of("trace.tamper"), [])
+
+    def test_a_hook_that_read_before_a_parallel_one_sent_is_not_a_truncation(self):
+        """#727: a hook read the transcript, a parallel hook read it grown and sent first, and the first hook's
+        shorter mark, arriving last, was recorded as a truncation. A hook reads its mark under the run's lock, just
+        before its send, so the marks of one run reach the signer in the order they were read."""
+        self.start()
+        real, other = client.send, []
+
+        def send(*a, **kw):   # the parallel hook runs, whole, before this one's first send
+            if not other:
+                self.say("parallel")
+                other.append(self.pre("p1", "ls"))
+            return real(*a, **kw)
+        p = {"hook_event_name": "PreToolUse", "session_id": self.run_id, "cwd": self.proj,
+             "transcript_path": self.transcript, "tool_name": "Bash", "tool_use_id": "p0", "tool_input": {"command": "ls"}}
+        with mock.patch.object(client, "send", send), mock.patch("sys.stdout"):
+            self.assertEqual(hook.main(raw=json.dumps(p)), 0)
+        self.assertEqual(other[0][0], 0)
+        self.assertEqual(self.of("trace.tamper"), [])
+        self.assertEqual(len([e for e in self.events() if e["type"] == "policy.decision"]), 3)   # t1's, p1's, p0's
 
 
 # ---------------------------------------------------------------- proxy
