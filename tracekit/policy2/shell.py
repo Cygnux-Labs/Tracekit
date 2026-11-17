@@ -1358,9 +1358,13 @@ _WGET_UNNAMED = {"execute", "config", "input-file", "input-metalink", "trust-ser
 def _url_basename(url, query=False):
     """The name a URL's path ends in (wget's with its query, which it keeps in the name). One urllib can't split (a
     bracket that is no IPv6 host: curl's glob `http://10.0.0.[1-2]/.env`) is read from its raw path, after the scheme
-    and the host's first `/`; None when it has no path there, whose name the line can't tell."""
+    and the host's first `/`; None when it has no path there, whose name the line can't tell. Any host with a bracket is
+    read so (an IPv6 one to the same name), since urlsplit refuses a bracket that is no IPv6 host only from Python
+    3.9.21 and 3.11.4 on."""
     try:
         parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+        if re.search(r"[][]", parts.netloc):
+            raise ValueError("a bracket in the host")
     except ValueError:
         rest = re.sub(r"^[A-Za-z][\w+.-]*://", "", url)
         if "/" not in rest:

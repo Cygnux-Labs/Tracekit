@@ -124,7 +124,12 @@ class Gates(unittest.TestCase):
             return {"p50_us": 1, "p99_us": 1, "max_us": 1, "calls": 1,
                     "p99_ref": 7.0 if len(measured) <= 6 else (7.4, 7.2, 7.1)[(len(measured) - 7) % 3]}
         totals = {"harmful": 1, "benign": 1, "caught": 1, "deny": 1}
-        with mock.patch.multiple(e21, latency=latency, gate=lambda out, calls: [],
+
+        def engine(pol, backend):   # each backend's name on the regex engine: google-re2 has no Python 3.9 wheel
+            e = Engine(pol, "regex")
+            e.engine = backend + "@test"
+            return e
+        with mock.patch.multiple(e21, latency=latency, gate=lambda out, calls: [], Engine=engine,
                                  score=lambda engines, cases, dims=(): ({"pool": {}}, totals, [], [], [])):
             self.assertEqual(e21.run(record=True)["gates"]["max_p99_ref"],
                              {f"{p}/{b}": 7.77 for p in ("default", "strict", "dev") for b in ("re2", "regex")})

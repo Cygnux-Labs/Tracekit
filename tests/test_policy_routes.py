@@ -16,6 +16,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import urllib.parse
 from unittest import mock
 
 from tracekit import agent_hooks, constraints
@@ -344,6 +345,24 @@ class Routes(unittest.TestCase):
                               "find . -type f -not -name '*.env' -exec sed -i 's/a/b/' {} +",
                               "find src -name '*.py' -exec sed -i 's/foo/bar/' {} +",
                               "find . -name '*.py' -exec perl -pi -e 's/a/b/' {} +"), ("flag", "allow"))
+
+    def test_a_url_with_a_bracket_that_is_no_ipv6_host_is_read_on_every_python(self):
+        """1.7.0 CI: urlsplit refuses `http://10.0.0.[1-2]` only from Python 3.9.21 and 3.11.4 on; on 3.9.13 it split
+        it, as a URL with no path, and wget's download was read as one file it names (flagged, not held). Here under a
+        urlsplit that, as an old one, checks no bracket."""
+        real = urllib.parse.urlsplit
+
+        def old(url, *args, **kwargs):
+            scheme, _, rest = url.rpartition("://")
+            netloc, slash, path = rest.partition("/")
+            return urllib.parse.SplitResult(scheme, netloc, slash + path, "", "") if "[" in netloc else \
+                real(url, *args, **kwargs)
+        with mock.patch.object(urllib.parse, "urlsplit", old):
+            self.assertIsNone(shell._url_basename("http://10.0.0.[1-2]"))
+            self.assertEqual(shell._url_basename("http://10.0.0.[1-2]/.env"), ".env")
+            self.assertEqual(shell._url_basename("http://[::1]:8080/a.txt"), "a.txt")
+            self.expect(self.bash("wget 'http://10.0.0.[1-2]'"), {"dev": "ask", "coding": "ask", "server": "ask",
+                                                                  "strict": "deny"}, "TK-SHELL-PARSE")
 
     def test_a_download_writes_each_file_its_options_name(self):
         # sec08 r7: a download over a harness's settings removes its hooks, as `> .claude/settings.json` does: curl's
