@@ -1703,11 +1703,17 @@ def _interpreter_files(ti):
         if "path" in i or str(i.get("type")).casefold() in INTERPRETER_FILE_ITEMS:
             out.append(i["path"] if isinstance(i.get("path"), str) and i["path"] else None)
         url = i["image_url"].get("url") if isinstance(i.get("image_url"), dict) else i.get("image_url")
-        # the scheme as a URL parser reads it: leading spaces and control characters dropped, tabs and line ends taken
-        # out (` file:`, `fi\tle:`); an http(s) image is no file
-        if isinstance(url, str) and urllib.parse.urlsplit(url).scheme.casefold() == "file":
+        url = _url_text(url) if isinstance(url, str) else None
+        if url is not None and urllib.parse.urlsplit(url).scheme.casefold() == "file":   # (an http(s) image: no file)
             out.append(_file_url_path(url))
     return out
+
+
+def _url_text(url):
+    """A URL as a WHATWG parser reads it: C0 controls and spaces at either end dropped, and every tab, CR and LF taken
+    out (` file:`, `fi\\tle:`). Python's urlsplit does so only from 3.9.17 and 3.10.12 on, and a hook may run under an
+    older one (macOS's 3.9.6)."""
+    return re.sub(r"[\t\r\n]", "", url).strip("".join(map(chr, range(0x21))))
 
 
 def _file_url_path(url):

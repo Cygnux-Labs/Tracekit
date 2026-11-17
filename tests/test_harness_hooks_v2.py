@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shlex
 import shutil
 import socket
@@ -19,6 +20,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import warnings
 from unittest import mock
 
@@ -140,6 +142,24 @@ class Mapping(HarnessCase):
         """#879: Codex (0.169.0, recorded) has the same view_image, spawn_agent and send_input as Open Interpreter, and
         they passed through by name, flagged as unknown tools: the file rules never saw the file the model is given."""
         self.files_given_to_the_model_are_reads("codex", "Codex")
+
+    def test_a_file_image_url_is_read_whatever_python_s_urlsplit_strips(self):
+        """1.7.0 review: urlsplit drops leading spaces and controls and takes out tabs and line ends only from 3.9.17
+        and 3.10.12 on, and a hook may run under an older Python (macOS's 3.9.6): the hook reads the URL as WHATWG
+        does itself. Here under a urlsplit that, as an old one, strips and removes nothing."""
+        self.assertEqual(agent_hooks._url_text(" \x00fi\tle:///w/a\r\n.png\x1f "), "file:///w/a.png")
+        real = urllib.parse.urlsplit
+
+        def old(url, *args, **kwargs):   # no scheme read past a leading control or space, or across a tab or line end
+            if re.search(r"^[\x00-\x20]|[\x00-\x20]$|[\t\r\n]", url):
+                return urllib.parse.SplitResult("", "", url, "", "")
+            return real(url, *args, **kwargs)
+        with mock.patch.object(urllib.parse, "urlsplit", old):
+            for harness in ("codex", "interpreter"):
+                with self.subTest(harness=harness):
+                    name, ti = agent_hooks.tool(harness, "spawn_agent", {"items": [
+                        {"type": "image", "image_url": " \tfi\tle:///w/.e\nnv\x00"}]})
+                    self.assertEqual((name, ti["paths"]), ("Read", ["/w/.env"]))
 
     def files_given_to_the_model_are_reads(self, harness, who):
         base = next(c["payload"] for c in cases(harness) if c["payload"]["tool_name"] == "spawn_agent")
