@@ -1348,6 +1348,8 @@ class CodingPack(unittest.TestCase):
             # asking for help runs nothing
             "prisma migrate reset --help", "prisma migrate reset -h", "rails db:drop --help", "supabase db reset --help",
             "php artisan db:wipe --help", "django-admin flush --help", "django-admin flush -h",
+            # #918 let a hyphen into the program's name, so other hyphenated tools' help is exempt too
+            "sequelize-cli db:drop --help", "dotnet-ef database drop -h",
             "echo rails db:drop", "grep -rn 'db:reset' config", "git commit -m 'npx prisma migrate reset in CI'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
@@ -3503,7 +3505,15 @@ class CodingPack(unittest.TestCase):
                     "bw get password db --only-names",
                     "op read op://v/db/password --only-names",
                     "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx",
-                    "op document get key.pem",]
+                    "op document get key.pem",
+                    # train 3 review: `--help` or `--only-names` inside a value isn't the flag, and delete and
+                    # upload print every value afterwards
+                    "aws secretsmanager get-secret-value --secret-id prod/db --output text --query \"[SecretString,'--help ']\"",
+                    "op read op://v/i/password --out-file --help",
+                    "doppler secrets --scope \"/home/me/p --only-names\"",
+                    "doppler secrets get DB --plain --only-names",
+                    "doppler secrets delete API_KEY",
+                    "doppler secrets upload .env",]
 
     def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
         held = self.SECRET_READS
@@ -3518,8 +3528,6 @@ class CodingPack(unittest.TestCase):
                    "bw list folders",
                    "doppler secrets --only-names",
                    "doppler secrets --only-names --json",
-                   "doppler secrets delete API_KEY",
-                   "doppler secrets upload .env",
                    "infisical secrets set A=b",
                    "infisical secrets delete A",
                    "infisical secrets folders create --name x",
@@ -3531,6 +3539,8 @@ class CodingPack(unittest.TestCase):
                    "infisical --help secrets",
                    "doppler secrets -p proj --only-names",
                    "doppler secrets -c dev --only-names --json",
+                   "aws secretsmanager get-secret-value --help", "gcloud secrets versions access --help",
+                   "op read --help", "bw get password github --help",
                    "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
@@ -3625,27 +3635,20 @@ class CodingPack(unittest.TestCase):
                 {"cli_command": "bw get password db --only-names"},
                 {"cli_command": "op read op://v/db/password --only-names"},
                 {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx"},
-                {"cli_command": "op document get key.pem"},]
+                {"cli_command": "op document get key.pem"},
+                # train 3 review: the call is one subject, so TK-A036 exempts nothing: an exemption could come from
+                # a decoy argument beside the read, and the help and names-only forms are held through MCP too
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod", "cmd": "--help"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod", "cmd": "doppler secrets --only-names"},
+                {"command": "doppler secrets --only-names"},
+                {"command": "doppler secrets delete API_KEY"},
+                {"command": "infisical secrets set A=b"},
+                {"command": "doppler secrets --help"}]
         routine = [{"cli_command": "aws secretsmanager list-secrets"},
                    {"cli_command": "aws ssm get-parameter --name /p"},
                    {"command": "gcloud secrets list"},
                    {"cli_command": "op item list"},
                    {"cli_command": "bw list folders"},
-                   {"command": "doppler secrets --only-names"},
-                   {"command": "doppler secrets --only-names --json"},
-                   {"command": "doppler secrets delete API_KEY"},
-                   {"command": "doppler secrets upload .env"},
-                   {"command": "infisical secrets set A=b"},
-                   {"command": "infisical secrets delete A"},
-                   {"command": "infisical secrets folders create --name x"},
-                   {"command": "infisical secrets folders get"},
-                   {"command": "infisical secrets generate-example-env"},
-                   {"command": "doppler secrets --help"},
-                   {"command": "infisical secrets --help"},
-                   {"command": "doppler --help secrets"},
-                   {"command": "infisical --help secrets"},
-                   {"command": "doppler secrets -p proj --only-names"},
-                   {"command": "doppler secrets -c dev --only-names --json"},
                    {"cmd": "lpass ls"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
@@ -3667,7 +3670,6 @@ class CodingPack(unittest.TestCase):
                    'aws --query "SecretString" secretsmanager list-secrets',
                    "op  item  list",
                    "bw\tlist\tfolders",
-                   "doppler  secrets  --only-names",
                    "lpass  ls"]
         for pack, engine, e in self.every_pack():
             for cmd in cmds:
@@ -4136,6 +4138,7 @@ class CodingPack(unittest.TestCase):
             ("Read", {"file_path": "/home/app/.config/opera/Preferences"}, "allow", ""),
             ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Default\Preferences"}, "allow", ""),
             ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera GX Stable\Preferences"}, "allow", ""),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/com.operasoftware.OperaGX/Preferences"}, "allow", ""),
             ("Grep", {"path": "/home/app/.password-store", "pattern": "secret"}, "ask", "TK-A020"),
             ("Bash", {"command": "security find-generic-password -s example"}, "ask", "TK-A021"),
             ("Bash", {"command": "cat ~/.config/google-chrome/Default/Cookies"}, "ask", "TK-A021"),
@@ -4160,6 +4163,7 @@ class CodingPack(unittest.TestCase):
             ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Roaming/Opera Software/Opera GX Stable/Login Data'"}, "ask", "TK-A021"),
             ("Bash", {"command": "cat ~/.config/vivaldi/Default/Preferences"}, "allow", ""),
             ("Bash", {"command": "cat ~/.config/opera/Preferences"}, "allow", ""),
+            ("Bash", {"command": "cat ~/Library/Application Support/com.operasoftware.OperaGX/Preferences"}, "allow", ""),
             ("Bash", {"command": "security dump-keychain"}, "deny", "TK-D020"),
             ("Bash", {"command": "pip install https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
             ("Bash", {"command": "uv pip install --no-deps https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
@@ -4575,7 +4579,8 @@ class CodingPack(unittest.TestCase):
                        ("keepassxc-cli attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
                        ("keepassxc-cli.exe attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
                        ("gh auth token", "TK-A021"), ("gh auth token --hostname ghe.corp", "TK-A021"),
-                       ("gh auth token -h ghe.corp", "TK-A021"),
+                       ("gh auth token -h ghe.corp", "TK-A021"), ("gh auth token; echo --help", "TK-A021"),
+                       ("gh auth token && echo --help", "TK-A021"), ("gh auth token | tee x --help", "TK-A021"),
                        ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
                        ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
