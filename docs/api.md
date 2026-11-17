@@ -195,9 +195,11 @@ and `status`, whatever `authorize` lists. When its daemon is suspended, the chan
 **Operator calls.** `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`,
 `response_pause`, `response_resume`, `suspend` and `unsuspend` are for people who run containment (see
 [Operators](incidents.md#operators)). An agent's identity cannot operate its own containment. The signer refuses to
-start if one `authorize` entry lists `register_run` together with an operator call. A call is also refused for an
-identity that may `register_run` or owns open runs, so give operators an identity of their own. `incident_resolve` and
-`run_resume` apply a second check to the person who calls: see [Operators](incidents.md#operators).
+start if one `authorize` entry lists `register_run` together with an operator call, and it checks again on every call,
+because an identity can match several entries. A call is also refused with `forbidden` for an identity that may
+`register_run` through all its entries together, or that owns open runs, so give operators an identity of their own.
+`incident_resolve` and `run_resume` apply a second check to the person who calls: see
+[Operators](incidents.md#operators).
 
 **Downloading runs.** `export_run` is for an identity that only reads. One `authorize` entry may list it together with
 `status`, `read`, `approval_get`, `approval_list`, `grant_list`, `incident_list` and `incident_show` only, and the
@@ -349,10 +351,12 @@ lists `decide`. A box's agent channel may call it too.
 
 ### `complete`
 
-Reports the result of a tool call that was decided. The client sends the `decision_id`, the digest of the arguments it
-actually ran, and the result or error. The signer checks that the digest matches the decision (otherwise
-`args_mismatch`), removes secrets from the result, and records a commitment to it. If the call ran after a deny, or
-after an ask with no consumed approval, the signer also records an `executed_against_policy` gap.
+Reports the result of a tool call that was decided. The client sends the `decision_id`, an `args_digest` of the tool and
+arguments it actually ran, and the result or error. The digest is `sha256:` and the SHA-256 of the canonical JSON (RFC
+8785) of `{"tool": <name>, "args": <arguments>}`, in lowercase hexadecimal, with the `tool` name sent to `decide` and
+the arguments as parsed JSON, also when `decide` got them as raw text. The signer checks that the digest matches the
+decision (otherwise `args_mismatch`), removes secrets from the result, and records a commitment to it. If the call ran
+after a deny, or after an ask with no consumed approval, the signer also records an `executed_against_policy` gap.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `complete`. A box's agent channel may call it too.
