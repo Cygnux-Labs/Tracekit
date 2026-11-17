@@ -1814,9 +1814,17 @@ open runs. More: [operators](incidents.md#operators).
 
 ### `pcm_sign`
 
-TODO: what this RPC is for.
+Signs a message as the run's own agent, for it to send to another agent. This is part of PCM, proof-carrying messages,
+which are experimental. The request holds the message body: `from` (which must name the run's own agent, run and
+tenant), `to`, the typed `intent`, and optionally `claims`, `grants` and a `payload`. The signer adds the protocol
+number, an `id`, a time and a nonce, signs the whole message with its log key, and records `pcm.sent` in the run: ids
+and digests, never the arguments. The answer gives the signed `message` and the `run_seq`. The signer refuses with
+`forbidden` a `from` that names anyone else, and any call in a run that is held or quarantined. More: [PCM signer
+calls](pcm.md#signer-calls).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `pcm_sign`. Only the run's own agent, the identity that registered the run, may use it: a tailer or observer
+holding a delegated run token is refused with `forbidden`.
 
 <!-- api-doc:begin pcm_sign -->
 <details>
@@ -1936,9 +1944,19 @@ TODO: who may call.
 
 ### `pcm_grant`
 
-TODO: what this RPC is for.
+Turns a person's approval into a root grant: a signed statement that a person let this run's agent make a kind of
+request, within limits, until a time. The request names the run's `pcm.grant` call (`tool_call_id` and `attempt`,
+default 0) and the `args` of that call: the `subject`, the `intent`, the `caveats`, `expires_at` and `delegable`. The
+signer issues the grant only if a person approved that call with exactly these arguments and the call consumed the
+approval. The person must be one that `approvals.persons` names, and neither the run's agent nor the grant's subject.
+One approval issues one grant, and the call must come before the `pcm.grant` call completes. A grant expires within 24
+hours, and the signer needs `approvals` in its configuration. The answer gives the signed `grant` and the `run_seq` of
+the `pcm.grant` record. The signer refuses with `forbidden`, or with `args_mismatch` when the approval was for other
+arguments, and refuses any call in a run that is held or quarantined. More: [PCM signer calls](pcm.md#signer-calls).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `pcm_grant`. Only the run's own agent, the identity that registered the run, may use it: a tailer or observer
+holding a delegated run token is refused with `forbidden`.
 
 <!-- api-doc:begin pcm_grant -->
 <details>
@@ -1996,9 +2014,18 @@ TODO: who may call.
 
 ### `pcm_delegate`
 
-TODO: what this RPC is for.
+Passes a grant on in a narrower form. `parent` is a grant this signer signed for the run's agent and that may be passed
+on (`delegable`). The new grant goes to `subject`, with the same intent, `caveats` that only narrow the parent's, and an
+`expires_at` that is in the future and not after the parent's. It needs no approval, because a child can only be
+narrower. The answer gives the signed `grant` and the `run_seq`. The signer refuses with `invalid_request` a parent
+whose signature is not its own or that has expired, an `expires_at` that is past or after the parent's, and caveats that
+do not narrow, and with `forbidden` a grant issued in another tenant, a caller that is not the grant's subject, and a
+grant that cannot be passed on. An intent grant, from `grant_issue`, can't be a parent. A held or quarantined run is
+refused. More: [PCM signer calls](pcm.md#signer-calls).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `pcm_delegate`. Only the run's own agent, the identity that registered the run, may use it: a tailer or observer
+holding a delegated run token is refused with `forbidden`.
 
 <!-- api-doc:begin pcm_delegate -->
 <details>
@@ -2074,9 +2101,16 @@ TODO: who may call.
 
 ### `pcm_evidence`
 
-TODO: what this RPC is for.
+Returns records of the run with proof that they are in the log, as evidence for the claims in a message. `run_seqs`
+lists 1 to 16 records of the run. For each record the answer gives the event, its hash, and an inclusion proof under the
+latest checkpoint. A `policy.decision` also comes with its salt, which opens the commitment to its arguments, and that
+is why only the run's own agent may ask. A record the latest checkpoint does not cover yet is listed in `pending`: send
+`checkpoint_nudge` and ask again. A `run_seq` the run does not have is refused with `invalid_request`. The call writes
+nothing, and it still works in a held or quarantined run. More: [PCM signer calls](pcm.md#signer-calls).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `pcm_evidence`. Only the run's own agent, the identity that registered the run, may use it: a tailer or observer
+holding a delegated run token is refused with `forbidden`.
 
 <!-- api-doc:begin pcm_evidence -->
 <details>
@@ -2110,9 +2144,23 @@ TODO: who may call.
 
 ### `grant_issue`
 
-TODO: what this RPC is for.
+Lets a person give the run's agent an intent grant: leave to make a kind of costly call, such as `payment.send`, without
+asking each time. The grant covers the `tools` named, within `caveats` (conditions on each call, such as who may be
+paid) and `limits` (totals over every call that uses the grant: a sum of a field or a count of calls), until
+`expires_at`, at most 24 hours ahead. A grant covers one run and can't be passed on. The signer signs it and writes an
+`intent.grant` record into the run. With `approval_id`, the grant is issued from a call that the run has held and that
+is still pending: the call must be held only by rules that opt into the intent and must fall within the grant, and it
+counts as the grant's first use. The answer gives the `grant_id`, the signed `grant`, the `tools`, the totals so far in
+`used`, `self_approved` and the `run_seq`. `self_approved` is true when the run's own user issued the grant, which the
+verifiers read as a self-approval. The signer refuses with `invalid_request` a grant that breaks the intent's rules or
+the signer's ceiling, and with `forbidden` or `run_closed` a run that is held, quarantined or ending. Added in version
+22. More: [intent grants](intent-grants.md).
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `grant_issue`. The signer then applies the rules for who may answer the run's approvals. With `approvals`
+configured, the issuer must be an approver of the run's tenant, and never the run's own user or principal unless
+`self_approval: allow`. On the dev signer, any identity of the run's tenant may issue one. An agent approver never may.
+More: [who may issue a grant](intent-grants.md#who-may-issue-a-grant).
 
 <!-- api-doc:begin grant_issue -->
 <details>
@@ -2175,9 +2223,14 @@ TODO: who may call.
 
 ### `grant_list`
 
-TODO: what this RPC is for.
+Lists the intent grants of the open runs the caller may see, or of one run when `run_id` is given, at most 1000. Each
+entry gives the `grant_id`, the `run_id`, the signed `grant`, its `tools`, `limits`, the totals so far in `used`,
+`self_approved`, any `description`, and its `state`: `live`, `revoked`, `expired` or `used_up`, which says whether it
+can still release a call. The call writes nothing.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `grant_list`. It lists only the runs the caller may see: the run's own user, a break-glass identity, or, with
+`approvals` configured, an approver of the run's tenant.
 
 <!-- api-doc:begin grant_list -->
 <details>
@@ -2233,9 +2286,13 @@ TODO: who may call.
 
 ### `grant_revoke`
 
-TODO: what this RPC is for.
+Ends an intent grant of an open run the caller may see. The signer writes an `intent.revoked` record, and from then on
+every call the grant would have released is held again for a person. The answer gives the `grant_id`, the `run_id` and
+the `run_seq`. The signer refuses with `invalid_request` a grant that is not in an open run the caller may see, and one
+that is revoked already. Revoking only narrows what the agent may do, so the run's own user may do it too.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `grant_revoke`. It works only on runs the caller may see, as for `grant_list`.
 
 <!-- api-doc:begin grant_revoke -->
 <details>
@@ -2262,9 +2319,14 @@ TODO: who may call.
 
 ### `channel_open`
 
-TODO: what this RPC is for.
+Opens the agent channel of one box, for a Tracekit Box daemon. Box is experimental. The daemon names its own open box
+run, `run_id` and `run_token`. After that, the rest of the connection acts as the box's own identity,
+`box:<uid>/<box id>`, in the box run's tenant, and may make only the calls a box's agent channel may make. The answer
+gives that `identity`. The signer refuses with `run_closed` a box run that has closed, and with `invalid_request` a run
+that was not registered with `box`. Added in version 21. More: [Tracekit Box](limits.md#tracekit-box-experimental).
 
-TODO: who may call.
+**Who may call:** only an identity that `box_daemons` in the signer's configuration names, whatever its `authorize`
+entry lists. It is never granted by default. A Box daemon reaches the signer over its Unix socket, never over HTTPS.
 
 <!-- api-doc:begin channel_open -->
 <details>
