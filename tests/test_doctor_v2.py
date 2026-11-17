@@ -1576,11 +1576,12 @@ class Kms(unittest.TestCase):
     def test_signer_yaml_with_kms_and_postgres_runs_both(self):
         def mutate(L):
             L.signer_yaml(log_key={"aws_kms": {"key_id": "alias/log", "region": "eu-west-1"}},
-                          storage={"postgres": {"dsn_file": "pg.dsn"}})
+                          storage={"postgres": {"dsn_file": "pg.dsn"}}, content={"retain": True})
         with mock.patch.object(doctor, "pg_checks", return_value=[doctor.result("D-PG-SIGNER-ROLE", "ok", "")]) as pg:
             got = {r["id"] for r in e16.run_case(mutate)}
         self.assertTrue({"D-KMS-LOG-KEY", "D-PG-SIGNER-ROLE"} <= got)
         self.assertTrue(pg.call_args.args[0]["dsn_file"].endswith("pg.dsn"))
+        self.assertIs(pg.call_args.args[1], True)   # the vault on: its grants are checked too
 
 
 class Probe(unittest.TestCase):

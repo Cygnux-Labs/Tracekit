@@ -68,6 +68,7 @@ from . import pg_schema
 
 SCHEMA, VERSION = pg_schema.SCHEMA, pg_schema.VERSION
 GRANTS, READ_GRANTS = pg_schema.GRANTS, pg_schema.READ_GRANTS   # the roles' grants (docs, deploy compose)
+VAULT_GRANTS = pg_schema.VAULT_GRANTS
 
 PAGE = 1000
 LOCK_CLASS = 0x746b   # the advisory lock's first key: "tk"
@@ -107,6 +108,15 @@ def migrate(dsn):
         elif row[0] > VERSION:
             raise ValueError(f"the store's schema is version {row[0]}, newer than this tracekit's {VERSION}")
     return VERSION
+
+
+def version(dsn):
+    """The store's schema version, None before migrate()."""
+    with _connect(dsn) as conn:
+        try:
+            return conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()[0]
+        except errors.UndefinedTable:
+            return None
 
 
 def _check_version(conn, need=1):
