@@ -791,6 +791,21 @@ ask:
     reason: removing a repository's secrets, branch protection, rulesets or security features through GitHub
     remedy: Have a person approve the held call, or leave the change to a person in the repository's settings.
     rationale: Deleting secrets or branch protection, or turning secret scanning off, removes what guards a repository's code and deploys; a person confirms it.
+  - id: TK-A087
+    class: shell
+    # taking a GitLab project's protections apart through glab or its API, as TK-A047 does for GitHub (#897): glab
+    # variable delete (or remove, rm), with up to four options before each word as TK-A047 reads them; a DELETE
+    # through glab api or curl, the method flag before or after the path (after -X ending a cluster of short options
+    # too: -iX), on a project's protected_branches/<name> (to 250 characters), protected_tags/<name>, variables/<key>
+    # or push_rule, or a group's variables/<key>; each path bare, after /api/v4/ or after a host, with or without a
+    # scheme in any case; the project or group id numeric or URL-encoded (group%2Fproj); up to sixteen words (empty
+    # ones too) before the method flag or the path and sixteen between them; the method in any case. A GET of the same
+    # paths, glab variable list, get and set aren't held; a PUT or PATCH that loosens a protection isn't read, nor is
+    # a method or path set at run time. Every gap is bounded, so the fallback engine stays linear
+    pattern: '^(?:glab +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}variable +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:delete|remove|rm)(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#]{1,250}|protected_tags/[^ ?#]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#]{1,250}|protected_tags/[^ ?#]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee](?: |$))'
+    reason: removing a GitLab project's protected branches, protected tags, push rule or CI/CD variables, or a group's variables
+    remedy: Have a person approve the held call, or leave the change to a person in the project's settings.
+    rationale: Deleting a protected branch or the CI/CD variables that hold deploy credentials removes what guards a project's code and deploys; a person confirms it, as for GitHub's (TK-A047).
   - id: TK-A043
     class: shell
     # moving money through Stripe, PayPal or Square from the shell, each command's argv: the Stripe CLI's refunds,

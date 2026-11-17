@@ -831,6 +831,68 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_a_gitlab_projects_protections_and_variables_ask_in_every_pack(self):
+        """TK-A087 reads GitLab as TK-A047 reads GitHub (#897): deleting a project's protected branches or tags, its
+        push rule or its CI/CD variables, or a group's variables, through glab or GitLab's API is held for a person;
+        reading them, setting a variable and deleting other things are not."""
+        held = [
+            # glab variable delete, in its project and group forms, with options before each word
+            "glab variable delete DB_PASSWORD", "glab variable delete DEPLOY_KEY --group acme",
+            "glab variable delete DEPLOY_KEY -g acme", "glab variable remove KEY", "glab variable rm KEY",
+            "glab -R acme/backend variable delete KEY", "glab variable delete KEY --scope production",
+            # a DELETE through glab api: the method flag before the path, in each spelling
+            "glab api -X DELETE projects/42/protected_branches/main",
+            "glab api --method DELETE projects/42/protected_branches/main",
+            "glab api --method=DELETE projects/42/protected_branches/main", "glab api -XDELETE projects/42/push_rule",
+            "glab api -iX DELETE projects/42/protected_branches/main", "glab api -X delete projects/42/push_rule",
+            "glab api --hostname gitlab.corp -X DELETE projects/42/protected_branches/main",
+            "glab api -X DELETE -H 'Accept: application/json' projects/42/protected_branches/main",
+            # the method after the path, and every protected path
+            "glab api projects/42/protected_branches/main -X DELETE",
+            "glab api projects/42/variables/DEPLOY_KEY --method DELETE",
+            "glab api -X DELETE projects/42/protected_tags/v1.0", "glab api -X DELETE projects/42/variables/DEPLOY_KEY",
+            "glab api -X DELETE groups/7/variables/DEPLOY_KEY", "glab api -X DELETE projects/42/push_rule",
+            "glab api -X DELETE projects/42/variables/KEY?filter[environment_scope]=production",
+            # a project id URL-encoded, a branch name URL-encoded, a leading slash and /api/v4/
+            "glab api -X DELETE projects/acme%2Fbackend/protected_branches/release%2F1",
+            "glab api -X DELETE projects/acme%2Fbackend/variables/KEY",
+            "glab api -X DELETE /projects/42/protected_branches/main",
+            "glab api -X DELETE /api/v4/projects/42/protected_branches/main",
+            # curl, with a scheme, without one, in capitals and with the method after the URL
+            "curl -X DELETE https://gitlab.com/api/v4/projects/42/protected_branches/main -H 'PRIVATE-TOKEN: x'",
+            'curl --request DELETE --header "PRIVATE-TOKEN: $T" https://gitlab.example.com/api/v4/projects/acme%2Fbackend/variables/KEY',
+            "curl -XDELETE gitlab.example.com/api/v4/groups/7/variables/KEY",
+            "curl -X DELETE HTTPS://gitlab.example.com/api/v4/projects/42/push_rule",
+            "curl https://gitlab.com/api/v4/projects/42/push_rule -X DELETE",
+            "curl -s -H 'PRIVATE-TOKEN: x' https://gitlab.com/api/v4/projects/42/protected_tags/v1.0 --request DELETE"]
+        routine = [
+            # reading, listing and setting
+            "glab variable list", "glab variable get KEY", "glab variable set KEY value", "glab variable update KEY value",
+            "glab api projects/42/protected_branches/main", "glab api -X GET projects/42/protected_branches/main",
+            "glab api projects/42/variables", "glab api groups/7/variables/KEY", "glab api projects/42/push_rule",
+            "curl https://gitlab.com/api/v4/projects/42/protected_branches/main -H 'PRIVATE-TOKEN: x'",
+            "curl -X GET https://gitlab.com/api/v4/projects/42/variables/KEY",
+            # a POST adding protection, and deleting other things
+            "glab api -X POST projects/42/protected_branches -f name=main",
+            "glab api -X DELETE projects/42/issues/7/notes/1", "glab api -X DELETE projects/42/pipelines/9",
+            "glab api -X DELETE projects/42/merge_requests/3/notes/1", "glab api -X DELETE projects/42/repository/branches/feature",
+            "curl -X DELETE https://gitlab.com/api/v4/projects/42/merge_requests/3/notes/1 -H 'PRIVATE-TOKEN: x'",
+            "glab mr list", "glab repo view",
+            # the words in an argument, not a command
+            "echo glab variable delete KEY", "git commit -m 'glab variable delete after review'",
+            "echo glab api -X DELETE projects/42/protected_branches/main"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A087" in d["rule_ids"], cmd in held, d)
+                        # GitHub's rule doesn't claim a GitLab call
+                        self.assertNotIn("TK-A047", d["rule_ids"], d)
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_moving_money_through_stripe_paypal_or_square_asks_in_every_pack(self):
         """Stripe holds money calls for a person only for agent-tagged keys: a coding agent with a developer's own key
         refunded, paid out or charged and every pack only flagged the network command. Local test tooling, reads and
