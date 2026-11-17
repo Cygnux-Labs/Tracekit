@@ -25,9 +25,10 @@ tracekit init --dev --v2 --agent interpreter  # ~/.openinterpreter/hooks.json ($
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
 
-The [Tracekit plugin](https://github.com/Cygnux-Labs/tracekit-claude-plugin) carries the same hooks for Codex,
-Copilot CLI and Cursor. With it installed there, run init with `--no-hooks` (`tracekit init --dev --v2 --agent codex
---no-hooks`): two sets of hooks decide every call twice, and every call you approve is refused.
+The [Tracekit plugin](https://github.com/Cygnux-Labs/tracekit-plugin) carries the same hooks for Codex, Copilot CLI
+and Cursor. With it installed there, run init with `--no-hooks` (`tracekit init --dev --v2 --agent codex
+--no-hooks`): two sets of hooks decide every call twice, and every call you approve is refused. On native Windows the
+plugin's hooks can't run (they are a POSIX shell script): there, turn them off and run init with its hooks.
 
 These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook replaces a v1 one. System mode's init
 runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks

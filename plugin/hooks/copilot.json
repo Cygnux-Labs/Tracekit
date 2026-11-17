@@ -4,21 +4,21 @@
     "preToolUse": [
       {
         "type": "command",
-        "bash": "\"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" preToolUse copilot",
+        "bash": "/bin/sh \"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" preToolUse copilot",
         "timeoutSec": 600
       }
     ],
     "postToolUse": [
       {
         "type": "command",
-        "bash": "\"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUse copilot",
+        "bash": "/bin/sh \"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUse copilot",
         "timeoutSec": 30
       }
     ],
     "postToolUseFailure": [
       {
         "type": "command",
-        "bash": "\"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUseFailure copilot",
+        "bash": "/bin/sh \"${COPILOT_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUseFailure copilot",
         "timeoutSec": 30
       }
     ]

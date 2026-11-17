@@ -13,11 +13,13 @@
 # exits 1 too, except under Copilot CLI and Cursor, which block a pre-tool call on any exit but 0 (Cursor: failClosed).
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
-# Otherwise the hook runs in the first of TRACEKIT_PYTHON, python3, python and the python beside the `tracekit`
-# command on PATH, its links followed (`uv tool install`, pipx) that imports tracekit (user site-packages added back
-# for `pip install --user`). A tracekit before 1.2, or one whose hook won't import, blocks the call. With none, the call is
-# blocked once Tracekit is set up for this user (the dev signer's data dir exists, which `tracekit init --dev --v2`
-# creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is set); before that every event says so and proceeds, unrecorded.
+# Otherwise the hook runs in the first of TRACEKIT_PYTHON, the python of the venv the `tracekit` command on PATH is
+# in (its links followed: `uv tool install`, pipx), python3, python and the python beside a `tracekit` that is in no
+# venv, that imports tracekit (user site-packages added back for `pip install --user`). A tracekit before 1.2, or one
+# whose hook won't import, blocks the call. With none, the call is blocked once Tracekit is set up for this user (the
+# dev signer's data dir exists, which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is
+# set); before that every event says so and proceeds, unrecorded. hooks/*.json run this with /bin/sh, so it runs
+# without its exec bit (TK-F015 holds a mode change of it, chmod 000 too).
 SYSTEM_CONFIG=/etc/tracekit/client.json
 SYSTEM_PYTHON=/opt/tracekit/bin/python
 EV=${1:-}
@@ -79,15 +81,17 @@ if why:
     raise SystemExit(2 if pre else 1)
 raise SystemExit(entry(*args))'
 # a `tracekit` command installed on its own (uv tool, pipx, a venv) is a link to, or is, its venv's bin/tracekit,
-# beside that venv's python
+# beside that venv's python. That python goes before python3 when it is a venv's (pyvenv.cfg above bin/): it is the
+# tracekit the person runs, so a tracekit in python3's user site-packages can't stand in for it; else it goes last
 tk=$(command -v tracekit 2>/dev/null) n=0
 while [ $n -lt 40 ] && [ -L "$tk" ] && l=$(readlink "$tk"); do
   case $l in /*) tk=$l ;; *) tk=${tk%/*}/$l ;; esac
   n=$((n + 1))
 done
-tool=
+venv= tool=
 case $tk in /*) tool=${tk%/*}/python ;; esac
-for py in "${TRACEKIT_PYTHON:-}" python3 python "$tool"; do
+[ -n "$tool" ] && [ -f "${tk%/*}/../pyvenv.cfg" ] && venv=$tool tool=
+for py in "${TRACEKIT_PYTHON:-}" "$venv" python3 python "$tool"; do
   [ -n "$py" ] || continue
   if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import tracekit" >/dev/null 2>&1; then
     "$py" -I -c "$RUN" "$@"

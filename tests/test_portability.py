@@ -138,7 +138,8 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ' + ev)   # v2: names its event
+            # v2: names its event; run by /bin/sh, so the script runs without its exec bit
+            self.assertEqual(h["command"], '/bin/sh "${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ' + ev)
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 
@@ -168,7 +169,7 @@ class PluginPackage(unittest.TestCase):
                 for ev, h in plugin.items():
                     # Copilot: `bash` (no PowerShell twin, which can't run the script) and its own name for the timeout
                     self.assertEqual(h.pop("bash", None) or h.pop("command"),
-                                     f'"${{{var}}}/scripts/tracekit-hook" {ev} {harness}')
+                                     f'/bin/sh "${{{var}}}/scripts/tracekit-hook" {ev} {harness}')
                     if "timeoutSec" in h:
                         h["timeout"] = h.pop("timeoutSec")
                     want = {k: v for k, v in init[ev].items() if k != "command" and v not in (None, False)}
@@ -217,6 +218,36 @@ class PluginPackage(unittest.TestCase):
                                env={"PATH": "/nonexistent", "HOME": home, "TRACEKIT_PYTHON": ""})
         self.assertEqual(r.returncode, 1)   # a non-blocking error Claude Code shows; exit 0's stderr is never seen
         self.assertIn("NOT recorded", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "the plugin wrapper is POSIX shell")
+    def test_every_harness_runs_the_script_without_its_exec_bit(self):
+        """`chmod -x` on the script made each hooks file's command fail to start (126), and Claude Code and Codex then
+        run the call unrecorded. Each command runs it with /bin/sh, so it still decides: here, set up with no tracekit
+        to run, it blocks the pre-tool call (2)."""
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            plugin = os.path.join(d, "plugin")
+            shutil.copytree(os.path.join(ROOT, "plugin"), plugin)
+            os.chmod(os.path.join(plugin, "scripts", "tracekit-hook"), 0o644)
+            data = os.path.join(d, "home", "Library", "Application Support", "tracekit", "data")
+            os.makedirs(data)   # set up (macOS's place, and XDG_DATA_HOME's below for the others)
+            for harness, var, pre in (("claude", "CLAUDE_PLUGIN_ROOT", "PreToolUse"),
+                                      ("codex", "PLUGIN_ROOT", "PreToolUse"),
+                                      ("copilot", "COPILOT_PLUGIN_ROOT", "preToolUse"),
+                                      ("cursor", "CURSOR_PLUGIN_ROOT", "preToolUse")):
+                with open(os.path.join(plugin, "hooks", harness + ".json")) as f:
+                    entry = json.load(f)["hooks"][pre][0]
+                cmd = entry["hooks"][0]["command"] if "hooks" in entry else entry.get("bash") or entry["command"]
+                with self.subTest(harness=harness):
+                    r = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True,
+                                       env={"PATH": "/usr/bin:/bin", "HOME": os.path.join(d, "home"),
+                                            "XDG_DATA_HOME": os.path.join(d, "home", "Library", "Application Support"),
+                                            "TRACEKIT_PYTHON": "", var: plugin})
+                    self.assertEqual(r.returncode, 2, r.stderr)
+                    self.assertIn("tracekit plugin:", r.stderr)
 
 
 if __name__ == "__main__":

@@ -4205,6 +4205,62 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_installed_plugins_their_modes_and_tracekits_own_command_are_held_or_denied_on_every_harness(self):
+        """The plugin review (agent/plugin-everywhere): Cursor's installed plugins (~/.cursor/plugins/local/ and its
+        marketplaces') were unprotected, so the agent could rewrite Tracekit's hook there; a mode change (chmod -x,
+        chmod 000, chown, chflags, setfacl) of a hook script, hooks file or plugin folder was only flagged on every
+        harness, and a hook that can't start lets Claude Code's and Codex's calls run unrecorded; and the tracekit
+        command a uv tool or pipx install puts on PATH, and its venv's python, which the plugin's hook runs, could be
+        relinked or rewritten."""
+        held = []
+        for root in ("/home/u/.claude/plugins/cache/tracekit/tracekit/1.7.0",
+                     "/home/u/.codex/plugins/cache/tracekit/tracekit/1.7.0",
+                     "/home/u/.copilot/installed-plugins/tracekit/tracekit", "/home/u/.cursor/plugins/local/tracekit",
+                     "/home/u/.cursor/plugins/cache/tracekit/tracekit/3f2a"):
+            script, hooks = root + "/scripts/tracekit-hook", root + "/hooks/cursor.json"
+            held += [("Write", {"file_path": script, "content": "#!/bin/sh\nexit 0\n"}, "TK-F009"),
+                     ("Edit", {"file_path": hooks, "old_string": "true", "new_string": "false"}, "TK-F009")]
+            held += [("Bash", {"command": c}, "TK-F015") for c in (
+                f"printf 'exit 0' > {script}", f"sed -i '' 's/2/0/' {script}", f"rm {script}",
+                f"mv {hooks} {hooks}.off",
+                f"chmod -x {script}", f"chmod a-x {script}", f"chmod 644 {script}", f"chmod 000 {script}",
+                f"chmod -R a-x {root}/scripts", f"chmod 000 {hooks}", f"chmod 000 {root}", f"chown root {script}",
+                f"chgrp wheel {hooks}", f"chflags uchg {script}", f"setfacl -m u:me:--- {script}",
+                f"find {root} -name tracekit-hook -exec chmod -x {{}} +")]
+        held += [("Bash", {"command": c}, "TK-F015") for c in (
+            'echo x > "$CODEX_HOME/plugins/cache/tracekit/tracekit/1.7.0/hooks/codex.json"',
+            'chmod -x "${COPILOT_HOME}/installed-plugins/tracekit/tracekit/scripts/tracekit-hook"',
+            "rm -rf ~/.cursor", "chmod 000 ~/.cursor", "mv ~/.cursor/plugins /tmp/p", "chmod 000 ~/.cursor/hooks.json",
+            "chmod 000 ~/.claude/settings.json", "chmod 000 ~/.gemini/settings.json")]
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "ln -sf /tmp/x/tracekit ~/.local/bin/tracekit", "rm /home/u/.local/bin/tracekit",
+            "ln -sf /tmp/x/python /home/u/.local/share/uv/tools/tracekit-ai/bin/python",
+            "ln -sf /tmp/x/python /home/u/.local/pipx/venvs/tracekit-ai/bin/python",
+            "chmod 000 /home/u/.local/share/pipx/venvs/tracekit-ai/bin/python")]
+        denied += [("Write", {"file_path": p, "content": "#!/bin/sh\n"}, "TK-D013") for p in (
+            "/home/u/.local/bin/tracekit", "/home/u/.local/share/uv/tools/tracekit-ai/bin/python",
+            "/home/u/.local/pipx/venvs/tracekit-ai/bin/tracekit",
+            "C:/Users/u/AppData/Roaming/uv/tools/tracekit-ai/Scripts/python.exe")]
+        benign = [("Bash", {"command": c}) for c in (
+            "chmod +x scripts/build.sh", "chmod 600 ~/.ssh/id_ed25519", "chmod -R a-x /tmp/work/out", "chown me build/",
+            "ls -l ~/.cursor/plugins", "cat ~/.cursor/plugins/local/tracekit/hooks/cursor.json",
+            "uv tool install tracekit-ai", "pipx install tracekit-ai", "~/.local/bin/tracekit doctor",
+            "/home/u/.local/share/uv/tools/tracekit-ai/bin/python -m tracekit --version",
+            "cat ~/.local/share/uv/tools/tracekit-ai/bin/tracekit", "ls ~/.local/bin")]
+        benign += [("Write", {"file_path": "/home/u/proj/.cursor/rules/style.mdc", "content": "x"}),
+                   ("Write", {"file_path": "/home/u/proj/plugins/x.js", "content": "x"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in held + denied:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertIn(rid, d["rule_ids"])
+                    if pack == "dev.yaml":   # the laptop's pack: a person answers the held, no one the denied
+                        self.assertEqual(d["verdict"], "deny" if rid.startswith("TK-D") else "ask")
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""

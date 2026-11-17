@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse codex",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse codex",
             "timeout": 600
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUse codex",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUse codex",
             "timeout": 30
           }
         ]
@@ -30,7 +30,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/tracekit-hook\" UserPromptSubmit codex",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/tracekit-hook\" UserPromptSubmit codex",
             "timeout": 30
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/tracekit-hook\" SessionStart codex",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/tracekit-hook\" SessionStart codex",
             "timeout": 30
           }
         ]
@@ -52,7 +52,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${PLUGIN_ROOT}/scripts/tracekit-hook\" SessionEnd codex",
+            "command": "/bin/sh \"${PLUGIN_ROOT}/scripts/tracekit-hook\" SessionEnd codex",
             "timeout": 30
           }
         ]

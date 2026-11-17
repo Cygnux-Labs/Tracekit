@@ -53,7 +53,8 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `mcp-publisher login github --token <token>`, then `mcp-publisher publish` (it reads `server.json`), then delete the
    token. The release workflow doesn't run this step.
 7. If the release changed `plugin/`, copy it to
-   [Cygnux-Labs/tracekit-claude-plugin](https://github.com/Cygnux-Labs/tracekit-claude-plugin), the source of the
+   [Cygnux-Labs/tracekit-plugin](https://github.com/Cygnux-Labs/tracekit-plugin) (named tracekit-claude-plugin until
+   1.7.1; GitHub redirects the old name), the source of the
    Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit) and the marketplace
    Claude Code, Codex, Copilot CLI and Cursor install the plugin from (its dot-folders hold each one's manifest). From
    the tagged checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own

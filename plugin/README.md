@@ -13,14 +13,14 @@ signs each one into a record anyone can verify offline.
 **Claude Code**
 
 ```bash
-claude plugin marketplace add Cygnux-Labs/tracekit-claude-plugin
+claude plugin marketplace add Cygnux-Labs/tracekit-plugin
 claude plugin install tracekit@tracekit
 ```
 
 **Codex**
 
 ```bash
-codex plugin marketplace add Cygnux-Labs/tracekit-claude-plugin
+codex plugin marketplace add Cygnux-Labs/tracekit-plugin
 codex plugin add tracekit@tracekit
 ```
 
@@ -29,14 +29,14 @@ Codex runs a plugin's hooks only once you trust them: start `codex`, type `/hook
 **GitHub Copilot CLI**
 
 ```bash
-copilot plugin marketplace add Cygnux-Labs/tracekit-claude-plugin
+copilot plugin marketplace add Cygnux-Labs/tracekit-plugin
 copilot plugin install tracekit@tracekit
 ```
 
 **Cursor**
 
 Dashboard → Plugins & MCPs → Team Marketplaces → Add Marketplace → Import from Repo, then
-`https://github.com/Cygnux-Labs/tracekit-claude-plugin`. Without a team: copy this folder to
+`https://github.com/Cygnux-Labs/tracekit-plugin`. Without a team: copy this folder to
 `~/.cursor/plugins/local/tracekit` and reload Cursor.
 
 **Other agents:** [Devin](docs/devin.md), [Replit](docs/replit.md), and [Gemini CLI, OpenCode, Kilo Code, goose, Qwen
@@ -48,6 +48,7 @@ the setup skill installs it once you say yes. To do it yourself:
 ```bash
 pip install tracekit-ai==1.7.0      # or: uv tool install tracekit-ai==1.7.0
 tracekit init --dev --v2            # Codex, Copilot CLI, Cursor: add --agent codex|copilot|cursor --no-hooks
+                                    # (on native Windows, without --no-hooks: see Platforms)
 tracekit doctor
 ```
 
@@ -129,7 +130,8 @@ tracekit approvals approve <id>
 ```
 
 In Claude Code you type it in the session with a leading `! `; anywhere else, in your own terminal. Tracekit enforces
-the rule too: its policy blocks an agent's own approval (TK-D012) and any change to Tracekit's files (TK-D007). The
+the rule too: its policy blocks an agent's own approval (TK-D012) and changes to Tracekit's own files (TK-D007,
+TK-D013), and holds changes to the agent's hooks and plugins, this one included, for you (TK-F009, TK-F015). The
 skills never suggest a way around a hold.
 
 ## The plugin or `tracekit init`, not both
@@ -140,7 +142,8 @@ twice, and every call you approve is blocked anyway: one hook uses the approval 
 - **Claude Code:** while the plugin is enabled, `tracekit init --dev --v2` installs no hooks and says so, and `tracekit
   doctor` counts the plugin's hooks (`D-HOOKS-PRESENT`) and warns when both run.
 - **Codex, Copilot CLI, Cursor:** init can't see the plugin yet, so run it with `--no-hooks`: `tracekit init --dev
-  --v2 --agent codex --no-hooks`. Doctor doesn't count these plugins' hooks either.
+  --v2 --agent codex --no-hooks`. Doctor doesn't count these plugins' hooks either. On native Windows the plugin's
+  hooks can't run, so there it's the other way round: init's hooks, and the plugin's turned off (Platforms, below).
 - **System mode:** run init with `--no-hooks`.
 
 ## When a hook can't run
@@ -184,7 +187,11 @@ The hook script is POSIX shell: macOS, Linux and WSL. On native Windows:
   --v2 --agent copilot`.
 - **Cursor** blocks every tool call when the pre-tool hook can't start (`failClosed`): don't install the plugin there,
   and use `tracekit init --dev --v2 --agent cursor`.
-- **Codex** lets a call run when a hook can't start: there, use `tracekit init --dev --v2 --agent codex`.
+- **Codex** lets a call run when a hook can't start: there, use `tracekit init --dev --v2 --agent codex` (without
+  `--no-hooks`), and turn the plugin's hooks off in `/hooks`.
+
+In each case run init without `--no-hooks`, so its own hooks, which run on Windows, do the work. The setup skill does
+this when it finds itself on native Windows.
 
 ## What hasn't been run yet
 

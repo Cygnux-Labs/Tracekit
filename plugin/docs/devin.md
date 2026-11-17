@@ -6,10 +6,10 @@ config.
 1. Add the plugin. In the Devin CLI:
 
    ```bash
-   devin plugins install Cygnux-Labs/tracekit-claude-plugin
+   devin plugins install Cygnux-Labs/tracekit-plugin
    ```
 
-   In the Devin app: Customize → Plugins → Add plugin → From repository, then `Cygnux-Labs/tracekit-claude-plugin`.
+   In the Devin app: Customize → Plugins → Add plugin → From repository, then `Cygnux-Labs/tracekit-plugin`.
    Devin reads the plugin's Claude Code manifest (`.claude-plugin/plugin.json`) and its skills.
 
 2. Ask Devin: "Set up Tracekit." It shows you the past week first, then, after your yes, installs Tracekit and runs

@@ -13,7 +13,8 @@ help does; where the help on this machine says otherwise, follow the help.
 **The fixed rule.** You never approve, reject or change a held call, and never change Tracekit's policy, signer,
 hooks or files. When a call is held, give the person the exact command from the message (`tracekit approvals approve
 <id>`, or `reject`) to run themselves, and wait for their answer. Tracekit enforces this too: its policy blocks an
-agent's own approval (TK-D012) and any change to its files (TK-D007).
+agent's own approval (TK-D012) and changes to Tracekit's own files (TK-D007, TK-D013), and holds changes to the
+agent's hooks and plugins, Tracekit's among them, for a person (TK-F009, TK-F015).
 
 Where the records go is the person's choice, so the person runs every `tracekit connect` command, `--status`
 included. You don't run it, not even with `--help`.

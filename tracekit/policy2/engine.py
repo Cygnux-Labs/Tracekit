@@ -1974,7 +1974,8 @@ def _effects(parsed):
     its -name tests, under each start path), awk's
     print > "file", zip -m's sources, each file a download writes (shell.download_writes: one it can't name holds the
     line as unread), and one of those that git, docker, podman, kubectl or parallel runs from its words
-    (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
+    (git rm). What chmod, chown, chgrp, chflags, chattr and setfacl change is MODE_TARGET:path
+    (_MODE_CHANGERS). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
     parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
     reaches it (_reaches_unread), every word on the line and each herestring and heredoc text is one it may write, as
     MAY_WRITE:word (only TK-D008 reads those); for one the parser can't read, each normalised line too (a name an
@@ -2490,6 +2491,12 @@ def _printf_words(args):
     return out.replace("\\n", "\n").replace("\\t", "\t").split()
 
 
+# what changes a file's mode, owner, flags or ACL (_effects' MODE_TARGET): `chmod -x` or `chmod 000` stops a hook
+# script from starting as surely as a write does, so TK-F015 reads these as it reads writes
+# lean: icacls and attrib (Windows) and xattr aren't read; add one if it can stop a hook there
+_MODE_CHANGERS = frozenset(("chmod", "chown", "chgrp", "chflags", "chattr", "setfacl"))
+
+
 def _command_effects(commands):
     out = []
     # what each pipeline's find, echo or printf prints, for a writer xargs runs there: it writes or deletes each name
@@ -2586,6 +2593,8 @@ def _command_effects(commands):
                 out.extend("MAY_WRITE:" + path for path in written)
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
+        elif exe in _MODE_CHANGERS:   # each word but an option: the mode, owner or ACL with the files (none is a path)
+            out.extend("MODE_TARGET:" + a for a in args if not a.startswith("-"))
         elif (written := _more_writes(exe, args)) is not None:
             out.extend("WRITE_TARGET:" + path for path in written)
         elif exe in ("gzip", "bzip2", "xz", "lzma", "lzip", "compress") and not any(

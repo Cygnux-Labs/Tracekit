@@ -4,7 +4,7 @@
     "preToolUse": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" preToolUse cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" preToolUse cursor",
         "timeout": 600,
         "failClosed": true
       }
@@ -12,49 +12,49 @@
     "postToolUse": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUse cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUse cursor",
         "timeout": 30
       }
     ],
     "postToolUseFailure": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUseFailure cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" postToolUseFailure cursor",
         "timeout": 30
       }
     ],
     "beforeSubmitPrompt": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" beforeSubmitPrompt cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" beforeSubmitPrompt cursor",
         "timeout": 30
       }
     ],
     "sessionStart": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" sessionStart cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" sessionStart cursor",
         "timeout": 30
       }
     ],
     "sessionEnd": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" sessionEnd cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" sessionEnd cursor",
         "timeout": 30
       }
     ],
     "afterAgentThought": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" afterAgentThought cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" afterAgentThought cursor",
         "timeout": 30
       }
     ],
     "afterAgentResponse": [
       {
         "type": "command",
-        "command": "\"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" afterAgentResponse cursor",
+        "command": "/bin/sh \"${CURSOR_PLUGIN_ROOT}/scripts/tracekit-hook\" afterAgentResponse cursor",
         "timeout": 30
       }
     ]
