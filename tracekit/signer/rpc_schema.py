@@ -1,6 +1,7 @@
-"""The signer RPC contract, version 25: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 26: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 25 adds content_get's `type` of each record whose
+Frozen: a change to any schema here is a new RPC_VERSION. Version 26 adds register_run's `continues` (a later run of an
+agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
 what the signer recorded of a call's latest attempt, which the LangChain gate reads to go on with a ToolNode's calls
@@ -45,7 +46,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 25
+RPC_VERSION = 26
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -311,6 +312,9 @@ REQUESTS = {
                          # a gateway registering the run of a client it serves: counted in its open runs for that client
                          caller=IDENTITY,
                          box=BOX,   # a box_daemons identity's box run (version 21)
+                         # a later run of an agent session that had a run before (an idle close, a resume): the
+                         # model may still hold what that run read, so its provenance index starts partial (version 26)
+                         continues={"const": True},
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,

@@ -6,7 +6,9 @@ import contextvars
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -158,6 +160,12 @@ def load(config, secret=lambda name, default=None: os.environ.get(name, default)
 
 class Plugin(unittest.TestCase):
     def setUp(self):
+        # a runtime dir of the test's own: the plugin marks there each session it ran (short: socket paths)
+        run_dir = tempfile.mkdtemp(dir="/tmp" if os.name == "posix" else None)
+        self.addCleanup(shutil.rmtree, run_dir, True)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": run_dir})
+        env.start()
+        self.addCleanup(env.stop)
         ac.RAN.clear()
         self.service = s = SignerService(ac.tmpdir(self), policy=Engine({
             "ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^", "approval": {"executor": "t2"}}],
@@ -458,6 +466,19 @@ class Plugin(unittest.TestCase):
         self.assertEqual(len(self.made), 3)
         self.assertEqual([len([e for e in self.service.log.storage.iter_run("default", r)
                                if e["event"]["type"] == "tool.result"]) for r in self.runs()], [1, 1, 1])
+        # the session's later run: its model may still hold what the closed one read
+        self.assertEqual([self.service.log.runs[("default", r)].get("prov", {}).get("state") for r in self.runs()[1:]],
+                         ["complete", "partial"])
+
+    def test_a_session_an_earlier_hermes_process_ran_continues_it(self):
+        """A resumed session in a new Hermes process: its model may hold what the earlier process's run read."""
+        self.hermes.call("echo", {"text": "a"}, "call-1", session_id="s1")
+        later = load(self.config)   # another Hermes process of the same user
+        self.addCleanup(later.join)
+        self.assertTrue(later.call("echo", {"text": "b"}, "call-2", session_id="s1")[1])
+        self.assertTrue(later.call("echo", {"text": "c"}, "call-3", session_id="s2")[1])
+        self.assertEqual([self.service.log.runs[("default", r)]["prov"]["state"] for r in self.runs()],
+                         ["complete", "partial", "complete"])
 
     def test_two_sessions_calls_under_one_id_are_recorded_apart(self):
         """A provider may number its calls per response: one session's call_0 doesn't complete another's."""
