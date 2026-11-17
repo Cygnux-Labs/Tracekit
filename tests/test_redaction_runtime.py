@@ -103,6 +103,14 @@ class RedactionRuntimeTests(unittest.TestCase):
         self.assertIn("[REDACTED:dotenv]", rec["command"]["value"])
         plain = privacy.tool_input("Bash", {"command": "FOO=bar make test"})
         self.assertEqual(plain["command"]["value"], "FOO=bar make test")
+        # a call's several commands or files (Cline's run_commands) are recorded as one is: in clear, each redacted
+        rec = privacy.tool_input("Bash", {"commands": ["ls", "cat >> .env <<EOF\nDB_HOST=internal.example\nEOF"]})
+        self.assertEqual(rec["commands"]["value"][0], "ls")
+        self.assertNotIn("internal.example", rec["commands"]["value"][1])
+        self.assertIn("[REDACTED:dotenv]", rec["commands"]["value"][1])
+        rec = privacy.tool_input("Read", {"file_path": "a", "paths": ["a", ".env"], "note": "DB_HOST=internal.example"})
+        self.assertEqual(rec["paths"]["value"], ["a", ".env"])
+        self.assertNotIn("value", rec["note"])   # hashed, as any other field
 
     def test_action_fields_mentioning_dotenv_are_recorded_in_full(self):
         rec = privacy.tool_input("Bash", {"command": "API_TOKEN=abcd1234 DEBUG=1 cp .env .env.bak"})

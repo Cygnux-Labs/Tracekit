@@ -2007,7 +2007,7 @@
   "engine_mismatches": [],
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.11.15"
+    "regex@2026.9.29"
   ],
   "excluded_rewrites": [
     {
@@ -2495,6 +2495,16 @@
         "same_rule_rate": 1.0,
         "total": 9
       },
+      "TK-A082": {
+        "contained": 5,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 5,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 5,
+        "same_rule_rate": 1.0,
+        "total": 5
+      },
       "TK-C001": {
         "contained": 30,
         "coverage_rate": 1.0,
@@ -2614,6 +2624,16 @@
         "same_rule": 9,
         "same_rule_rate": 1.0,
         "total": 9
+      },
+      "TK-D015": {
+        "contained": 6,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 6,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 6,
+        "same_rule_rate": 1.0,
+        "total": 6
       },
       "TK-D020": {
         "contained": 1,
@@ -3077,6 +3097,16 @@
         "same_rule_rate": 1.0,
         "total": 9
       },
+      "TK-A082": {
+        "contained": 5,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 5,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 5,
+        "same_rule_rate": 1.0,
+        "total": 5
+      },
       "TK-C001": {
         "contained": 30,
         "coverage_rate": 1.0,
@@ -3196,6 +3226,16 @@
         "same_rule": 9,
         "same_rule_rate": 1.0,
         "total": 9
+      },
+      "TK-D015": {
+        "contained": 7,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 7,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 7,
+        "same_rule_rate": 1.0,
+        "total": 7
       },
       "TK-D020": {
         "contained": 1,
@@ -3618,6 +3658,16 @@
         "same_rule": 6,
         "same_rule_rate": 1.0,
         "total": 6
+      },
+      "TK-A082": {
+        "contained": 2,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 2,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 2,
+        "same_rule_rate": 1.0,
+        "total": 2
       },
       "TK-C001": {
         "contained": 30,
@@ -4151,6 +4201,16 @@
         "same_rule_rate": 1.0,
         "total": 9
       },
+      "TK-A082": {
+        "contained": 5,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 5,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 5,
+        "same_rule_rate": 1.0,
+        "total": 5
+      },
       "TK-C001": {
         "contained": 30,
         "coverage_rate": 1.0,
@@ -4270,6 +4330,16 @@
         "same_rule": 9,
         "same_rule_rate": 1.0,
         "total": 9
+      },
+      "TK-D015": {
+        "contained": 6,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 6,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 6,
+        "same_rule_rate": 1.0,
+        "total": 6
       },
       "TK-D020": {
         "contained": 1,
@@ -4733,6 +4803,16 @@
         "same_rule_rate": 1.0,
         "total": 9
       },
+      "TK-A082": {
+        "contained": 5,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 5,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 5,
+        "same_rule_rate": 1.0,
+        "total": 5
+      },
       "TK-C001": {
         "contained": 30,
         "coverage_rate": 1.0,
@@ -4853,6 +4933,16 @@
         "same_rule_rate": 1.0,
         "total": 9
       },
+      "TK-D015": {
+        "contained": 7,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 7,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 7,
+        "same_rule_rate": 1.0,
+        "total": 7
+      },
       "TK-D020": {
         "contained": 1,
         "coverage_rate": 1.0,
@@ -4945,7 +5035,7 @@
       }
     }
   },
-  "policy_hash": "sha256:7d0ef979fce637aaf22dca9ca0c178c6f018917ffc8fa7e57520bf95e77f04f1",
+  "policy_hash": "sha256:0b8bbb72e873bfcdf98032979b207c0c7cf35c02bf708d84a82efa5805d28c96",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 616,

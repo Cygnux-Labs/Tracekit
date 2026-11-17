@@ -9,7 +9,7 @@
 # pattern (regex searched in the tool's main field, or `field` if given), reason (shown to the
 # agent and recorded), rationale (why the rule exists). Sections: deny, ask, flag.
 
-version: '2026.10-3'
+version: '2026.11-1'
 fail_mode: open            # open | closed   (closed: tool calls are blocked while the signer is down)
 content_capture: hashed    # hashed | full
 reasoning_capture: false   # record model text from the harness transcript (self-reported, lower trust)
@@ -41,41 +41,45 @@ deny:
   - id: TK-D005
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: file_path
-    pattern: '(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|credentials)$|/\.ssh/|/\.aws/'
+    # `\` or `/` between a path's parts: a Windows agent's file tools send C:\Users\u\.env (rules below likewise). A
+    # file name in any case (macOS and Windows open .ENV as .env; the file rules below likewise), and as Windows opens
+    # it: a part's trailing dots and spaces and an NTFS stream are dropped (.env., .env::$DATA)
+    pattern: '(?i)(^|[/\\])(\.env(\.(?!(example|sample|template|dist)[. ]*(:[^/\\]*)?$)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|credentials)[. ]*(:[^/\\]*)?$|[/\\]\.(ssh|aws)[. ]*[/\\]'
     reason: writing to a credentials file
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D010
     tool: Bash
-    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''\"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
+    # (PowerShell, decided as Bash, opens a name as Windows does: TK-D005)
+    pattern: '(?i)(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws[/\\]credentials)[. ]*(:[^\s;&|)''\"]*)?(\s|$|[;&|)''\"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws[/\\]credentials)[. ]*(:[^\s;&|)]*)?\s*($|[;&|)])'
     reason: writing to a credentials file from the shell
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     tool: Bash
-    pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
+    pattern: '(?i)\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh[/\\]|id_rsa|id_ed25519|\.aws[/\\]credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
     reason: sending credential files off the machine
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     tool: Bash
-    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    pattern: '(?i)\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D007
     tool: Bash|Write|Edit|MultiEdit|NotebookEdit
-    pattern: '/var/lib/tracekit|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy)\b|\bpkill\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit'
+    pattern: '(?i)/var/lib/tracekit|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy)\b|\bpkill\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit'
     reason: touching Tracekit's own files or signer
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
   - id: TK-D008
     tool: Bash
     # not Claude Code's memory notes beside its transcripts (a .md file directly in a project's memory/), which the
     # agent writes, unless `ln -f` makes one a link
-    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects(?!/[^/\s]+/memory/[^/\s]+\.md([\s;&|)''"]|$))|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bln\s+-[a-zA-Z]*f[^\n]*\.claude/projects|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    pattern: '(?i)(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude[/\\]projects(?![/\\][^/\\\s]+[/\\]memory[/\\][^/\\\s]+\.md([\s;&|)''"]|$))|\.codex[/\\]sessions|\.gemini[/\\]tmp|\.config[/\\]opencode)|\bln\s+-[a-zA-Z]*f[^\n]*\.claude[/\\]projects|\bfind\s[^\n]*(\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|\.config[/\\]opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
     reason: modifying the agent harness's transcripts
     rationale: Qin et al. (2026, arXiv:2609.30266) show agents delete and rewrite their own session files when instructed or rewarded. Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
   - id: TK-D009
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: file_path
-    # not Claude Code's memory notes (a .md file directly in a project's memory/)
-    pattern: '(\.claude/projects/(?![^/]+/memory/[^/]+\.md$)|\.codex/sessions/|\.gemini/tmp/|\.config/opencode/)'
+    # not Claude Code's memory notes (a .md file directly in a project's memory/); a folder as Windows opens it (TK-D005)
+    pattern: '(?i)(\.claude[. ]*[/\\]projects[. ]*[/\\](?![^/\\]+[/\\]memory[/\\][^/\\]+\.md$)|\.codex[. ]*[/\\]sessions[. ]*[/\\]|\.gemini[. ]*[/\\]tmp[. ]*[/\\]|\.config[. ]*[/\\]opencode[. ]*[/\\])'
     reason: writing to the agent harness's transcripts
     rationale: Same as TK-D008, for the file-editing tools.
 
@@ -116,7 +120,7 @@ flag:
     label: side_effect
   - id: TK-F005
     tool: Read|Bash|Grep
-    pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    pattern: '(?i)\.env\b|id_rsa|\.ssh[/\\]|credentials|\.aws[/\\]|\.netrc'
     label: secrets_access
   - id: TK-F006
     tool: 'mcp__.*'
@@ -133,7 +137,7 @@ flag:
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
-    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    pattern: '(?i:\.claude[/\\]settings(\.local)?\.json|[/\\]\.claude[/\\]|\.codex[/\\]|managed-settings|\.mcp\.json)|ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     tool: Bash
@@ -141,5 +145,5 @@ flag:
     label: shell_shadowing
   - id: TK-F011
     tool: Bash
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(?i:bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
