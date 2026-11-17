@@ -573,11 +573,14 @@ class Packaging(unittest.TestCase):
         with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
             toml_text = f.read()
 
-        match = re.search(r'"(google-re2[^"]+)"', toml_text)
-        self.assertIsNotNone(match, "google-re2 dependency missing from pyproject.toml")
+        requirements = [
+            Requirement(value)
+            for value in re.findall(r'"(google-re2[^"]+)"', toml_text)
+        ]
+        self.assertEqual(len(requirements), 2, "expected google-re2 in dependencies and dev extra")
 
-        requirement = Requirement(match.group(1))
-        marker = requirement.marker
+        marker = requirements[0].marker
+        self.assertEqual(requirements[1].marker, marker, "google-re2 markers must remain identical")
 
         # PyPy has no google-re2 wheel.
         self.assertFalse(marker.evaluate({
@@ -590,6 +593,14 @@ class Packaging(unittest.TestCase):
         # CPython 3.13 Linux x86_64 has a compatible wheel.
         self.assertTrue(marker.evaluate({
             "python_version": "3.13",
+            "platform_python_implementation": "CPython",
+            "sys_platform": "linux",
+            "platform_machine": "x86_64",
+        }))
+
+        # CPython 3.15 is excluded until google-re2 publishes cp315 wheels.
+        self.assertFalse(marker.evaluate({
+            "python_version": "3.15",
             "platform_python_implementation": "CPython",
             "sys_platform": "linux",
             "platform_machine": "x86_64",
