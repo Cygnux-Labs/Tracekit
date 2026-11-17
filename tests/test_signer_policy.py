@@ -3371,6 +3371,10 @@ class CodingPack(unittest.TestCase):
                     "op item get db --fields=password",
                     "op item get db --otp",
                     "op item get db --format json",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-names",
+                    "bw get password db --only-names",
+                    "op read op://v/db/password --only-names",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx",
                     "op document get key.pem",]
 
     def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
@@ -3489,6 +3493,10 @@ class CodingPack(unittest.TestCase):
                 {"cli_command": "op item get db --fields=password"},
                 {"cli_command": "op item get db --otp"},
                 {"cli_command": "op item get db --format json"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-names"},
+                {"cli_command": "bw get password db --only-names"},
+                {"cli_command": "op read op://v/db/password --only-names"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx"},
                 {"cli_command": "op document get key.pem"},]
         routine = [{"cli_command": "aws secretsmanager list-secrets"},
                    {"cli_command": "aws ssm get-parameter --name /p"},
