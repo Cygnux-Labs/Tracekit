@@ -2488,4 +2488,114 @@ entry lists. It is never granted by default. A Box daemon reaches the signer ove
 
 ## Transport and auth
 
-TODO: written last. HTTPS, the four ways to prove who you are, the status header, `Request-Id`, the Unix socket and the dev TCP port.
+A caller reaches the signer in one of three ways: over HTTPS, over a Unix socket on the same machine, or, for a dev
+signer on Windows, over a loopback TCP port. All three carry the same JSON frames, and `hello` is the first frame on
+every connection (see [Versioning](#versioning)). On every one the signer works out who the caller is from the
+connection or the credential, again for every frame, and never from anything the frame says.
+
+| Where the signer runs | How a caller reaches it | Who the signer takes the caller to be |
+|---|---|---|
+| Laptop, dev signer (Linux, macOS) | A Unix socket that the first client starts | `uid:<number>`, the caller's user id |
+| Laptop, dev signer (Windows) | A loopback TCP port | The dev token, `token:dev` |
+| Laptop, system mode | The Unix socket `/run/tracekit-signer/signer.sock` | `uid:<number>` |
+| Container sidecar | A Unix socket in a directory shared with the agent | `uid:<number>` |
+| Central signer, or Compose | HTTPS | `token:`, `k8s_sa:`, `mtls:` or `oidc:` and the name the credential gives |
+
+The agent's code does not change between these. The environment variable `TRACEKIT_SIGNER` tells the client where the
+signer is: a socket path, an `https://` URL, or `http://` on a loopback address. See [Deploying the signer](deploy.md).
+
+**HTTPS.** A central signer listens on the address in the `http` section of its configuration. Each call is one
+`POST /v2/rpc` whose body is one JSON frame, `{"method": ..., ...}`, and the answer is one JSON frame. The body must
+come with exactly one `Content-Length` header (without it the answer is 411) and may be at most 1 MiB (1,048,576 bytes)
+long; a longer one gets 413. The signer refuses a chunked body (`Transfer-Encoding`), two `Content-Length` headers and a
+malformed header line with `invalid_request` (400), and closes the connection. Nothing is remembered between requests:
+every request is authenticated again. A POST to any other path is a 404. `hello` is not an RPC on this page, but over
+HTTPS it needs credentials like any other frame.
+
+```bash
+curl -si https://tracekit.example:8443/v2/rpc -H "Authorization: Bearer $TRACEKIT_API_KEY" \
+  -H 'Tracekit-Errors: http-status' -d '{"method": "status"}'
+```
+
+To reach a signer, the SDKs read `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (a file holding the token,
+read again on every call, so a rotated token is picked up) and `TRACEKIT_SIGNER_CA` (the CA that the signer's
+certificate must chain to). Without a token file they use the token in `TRACEKIT_API_KEY`. See
+[Remote clients](remote-ingest.md#calling-the-signer-over-http).
+
+**Proving who you are over HTTPS.** The `authenticators` list in the `http` section turns on any of four ways to prove
+identity. The signer asks them in the order listed, and the first one that recognises its credential decides. If none
+does, the answer is `unauthenticated`. An authenticator passes on a request that carries no credential of its kind.
+`k8s_sa` takes any token shaped like a JWT and refuses it if it is not its own, so when you use both, list `oidc` before
+`k8s_sa`: `oidc` passes on a token whose issuer it does not know. What the identity may then call is under
+[Who may call what](#who-may-call-what).
+
+| Authenticator | What the caller sends | Identity |
+|---|---|---|
+| `token` | A secret the operator issued, as `Authorization: Bearer <token>`. | A named token (it looks like `tk2_<name>.<secret>`) from the `tokens` file is `token:<name>`. Named tokens expire (30 days unless the operator chose otherwise), can be revoked with no restart, and can carry a tenant. An unknown, expired or revoked one is `unauthenticated`. The one shared secret in `token_file` (at least 32 characters) is `token:http`. |
+| `k8s_sa` | A Kubernetes service-account token (a JWT) as `Authorization: Bearer <token>`, made for the signer's audience. The signer checks it with the cluster's API server (a TokenReview), or against the issuer's published keys. | `k8s_sa:system:serviceaccount:<namespace>:<name>`, so `k8s_sa:system:serviceaccount:acme:*` matches every service account of the `acme` namespace. |
+| `mtls` | A client TLS certificate with exactly one `spiffe://` ID. The ID's trust domain must be a key in `client_ca`, and a CA in that domain's bundle must have issued the certificate directly, with no intermediate CA. | `mtls:` and the SPIFFE ID, for example `mtls:spiffe://acme/investigator`. |
+| `oidc` | An OpenID Connect token (a JWT) as `Authorization: Bearer <token>`, from an issuer the operator configured. | `oidc:<alias>/<sub>`. [Identity](identity.md) has the settings and what else the token gives. |
+
+**Failed attempts are limited.** The signer counts failed authentications per source address and in total. Each address
+may fail 20 times in a quick run and then once more every second. Across all addresses the signer allows a burst of 500
+failures and then 50 a second. A failure past either limit is answered `quota_exceeded` with `retry_after_ms`, which
+over HTTP with the status header is a 429 with `Retry-After`. Past the total limit a valid credential still gets in.
+Past an address's limit the signer looks only at credentials it can check itself (a client certificate or a token),
+never at one that needs another service (a Kubernetes check or an OpenID Connect issuer's keys), so a valid certificate
+or token still gets in, and clients behind one address are not locked out by another's failures. A refusal carries only
+the error: no sequence number, hash or run id. The operator can watch the count in `tracekit_signer_auth_failures_total`
+on the metrics port.
+
+**TLS.** The `http` section needs `cert` and `key`, and the signer accepts TLS 1.2 and later. Plain HTTP is allowed only
+with `insecure_loopback: true` and a listen address that is a loopback IP address, not a name such as `localhost`. The
+signer refuses to start otherwise. The `mtls` authenticator also needs `client_ca`, and a certificate that a client
+presents must verify. A client without a certificate can still connect and use another authenticator.
+
+**Errors and status codes.** A refusal is an error frame (see [Errors](#errors)). By default it comes with HTTP status
+200, so that clients that read errors from the body only keep working. The SDKs do this, so a proxy in front of the
+signer never sees their refusals and never retries or drops the signer. A client that sends the header
+`Tracekit-Errors: http-status`, such as curl, gets the status that the table under [Errors](#errors) gives, with
+`Retry-After` (whole seconds) on a 429 or 503 that has `retry_after_ms`, and `WWW-Authenticate: Bearer` on a 401. A
+`quota_exceeded` without `retry_after_ms` is a size limit and gets 413. A decision, even a deny or an ask, is an answer
+and always gets 200. Problems with the HTTP request itself get an HTTP status whatever the header says: 404 for a wrong
+path, 400 or 411 for a bad or missing `Content-Length`, and 413 for a body over 1 MiB.
+
+**Request-Id.** Every answer carries a `Request-Id` header: `req_` and 24 hex digits, made by the signer for that
+answer. It is not the `request_id` that a call sends. The signer writes one INFO line per answer, on the logger
+`tracekit.transport.http`, with that id, the status, the method, the identity, the error code and the time taken. Quote
+the `Request-Id` when you ask an operator about a call.
+
+**Connections.** HTTPS connections are kept alive. The signer must receive each request, from the TLS handshake (or from
+the end of the previous answer) to the last byte of the body, within 30 seconds. A slower client is cut off with no
+answer. Each single read or write also times out after 30 seconds. Once a request is in, answering it has no deadline,
+so a call such as `approval_wait` can take as long as it needs. The signer serves up to 1024 connections at once, and
+256 from one source address. A connection past the address's limit is closed at once, and one past the overall limit
+waits a second for a free place and is then closed.
+
+**OTLP import.** When the signer's `otlp` setting is on (it needs the `http` listener), `POST /v1/traces` accepts
+OpenTelemetry (OTLP/HTTP) data from the same authenticators. This is not an RPC. The caller is authenticated before its
+body is read: a request with no accepted credential gets 401, too many failed attempts get 429, and an identity without
+the `otlp_import` grant gets 403.
+
+**Unix socket.** On the same machine the caller connects to a Unix socket, and the signer takes the caller's identity
+from the operating system: the effective user id of the process that connected, `uid:<number>`. A connection whose user
+id the operating system cannot report gets `unauthenticated` and is closed. On Linux every frame must also carry that
+user id (the operating system adds it to each frame), so a socket handed to another user's process cannot speak as the
+first user: a frame from another user id gets `unauthenticated` and ends the connection. On macOS the user id is fixed
+when the connection opens and frames are not checked again. Who may connect at all is decided by the permissions of the
+socket's directory, and by the `socket_mode` setting when the operator sets one, which changes the permissions of the
+socket file itself. A frame is one line: one JSON object per line in the request, and one per line in the answer. A line
+that is not a JSON object gets `invalid_request` and the connection stays open. A line over 1 MiB (1,048,576 bytes) gets
+`quota_exceeded` and the connection closes, because the signer cannot tell where the next frame starts. A failed
+authentication (`unauthenticated`) also closes the connection. The signer closes a connection that sends nothing for 30
+seconds. After `channel_open` succeeds, the rest of that connection is handled as the box's identity (see
+[Who may call what](#who-may-call-what)), and each frame is still checked as before.
+
+**Loopback TCP port (dev signer on Windows).** Where Unix sockets are missing, a dev signer listens on `127.0.0.1` on a
+port the operating system picks. It writes the port and a secret token to a file named `endpoint.json` that only the
+user can read. Each connection starts with a handshake in which both sides prove that they hold the token without
+sending it. The client sends a random value, the signer answers with a proof made from the token and its own random
+value, and only after the client has checked that does it send its own proof. A process that squats on the port without
+the token learns nothing it can replay. After the handshake the caller is the dev token (`token:dev`), and frames work
+as they do on a Unix socket. The dev token is valid for one year, after which it gets `unauthenticated`. What it may
+call is under [Who may call what](#who-may-call-what).
