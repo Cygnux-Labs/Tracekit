@@ -5300,7 +5300,65 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git push -o ci.skip origin", "git push --repo origin feature", "git push --for origin feature",
             "git push --bogus origin feature", "git-push origin main", "npm publish", "pnpm -r publish",
             "yarn npm publish", "cargo publish", "twine upload dist/*", "docker push x", "helm upgrade --install a b",
-            "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x")], "ask", "TK-A056")
+            "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x",
+            # #892: a platform CLI's production deploy, each form from the CLI's own docs
+            "vercel --prod", "vercel deploy --prod", "vercel deploy ./dist --prod --yes", "vercel --token t --prod",
+            "vercel deploy --environment=production", "vercel promote https://x.vercel.app", "npx vercel --prod",
+            "netlify deploy --prod", "netlify deploy --dir dist --prod", "netlify deploy --prod-if-unlocked",
+            "fly deploy", "flyctl deploy", "fly deploy --app web", "wrangler deploy", "wrangler publish",
+            "wrangler deploy --env production", "wrangler deploy -e prod", "firebase deploy",
+            "firebase deploy --only hosting", "gcloud run deploy api --source .", "gcloud --project p run deploy api",
+            "gcloud beta run deploy api", "gcloud app deploy", "gcloud functions deploy f", "railway up",
+            "railway up -e production", "sam deploy", "serverless deploy", "sls deploy", "sls deploy --stage prod",
+            "cdk deploy", "aws cloudformation deploy --template-file t.yaml --stack-name s",
+            "aws --region eu-west-1 cloudformation deploy --stack-name s", "gh release create v1.0",
+            "gh release create v1.0 --notes x", "gh release create v1.0 --draft=false",
+            "gh release create v1.0 --notes-file x-d",
+            # -d or --draft right after an option that takes a value is that value: the release publishes
+            "gh release create v1.0 --notes -d", "gh release create v1.0 -n -d", "gh release create v1.0 --title -d",
+            "gh release create v1.0 -t -d", "gh release create v1.0 --target -d", "gh release create v1.0 -F -d",
+            "gh release create v1.0 --notes-file --draft", "gh release create v1.0 -R -d",
+            "gh release create v1.0 --discussion-category -d", "gh release create v1.0 --notes-start-tag -d")],
+                      "ask", "TK-A056")
+
+    def test_a_preview_or_local_deploy_stays_allowed(self):
+        """#892: TK-A056 holds a platform CLI's production deploy only. A preview, a draft, a deploy that sends no
+        traffic, one to a named non-production environment and a local run stay allowed."""
+        for c in ("vercel", "vercel deploy", "vercel --environment=preview", "vercel dev", "netlify deploy",
+                  "netlify deploy --dir dist", "netlify dev", "wrangler dev", "wrangler deploy --env staging",
+                  "wrangler deploy -e dev", "wrangler deploy --env=preview", "firebase hosting:channel:deploy pr-1",
+                  "firebase emulators:start", "firebase serve", "gcloud run deploy api --no-traffic",
+                  "gcloud app deploy --no-promote", "railway up --environment staging", "railway up -e dev",
+                  "serverless deploy --stage dev", "sls deploy -s staging", "gh release create v1.0 --draft",
+                  "gh release create v1.0 -d", "gh release create -d v1.0", "gh release create v1.0 --notes x -d",
+                  "gh release create v1.0 --notes=x -d", "gh release create v1.0 -p -d",
+                  "gh release create v1.0 --latest=false --draft", "gh release create v1.0 --notes -d --draft",
+                  "gh release list", "fly status", "cdk diff", "sam build"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, command=c):
+                    d = e.decide("Bash", {"command": c})
+                    self.assertEqual(d["verdict"], "allow", d)
+                    self.assertNotIn("TK-A056", d["rule_ids"], d)
+
+    def test_a_draft_flag_inside_a_quoted_value_reads_as_a_draft(self):
+        """#908 review, a documented limit (docs/limits.md): TK-A056 reads a command's words joined by spaces, so a -d
+        inside another option's quoted value reads as an option of its own and the release is allowed, though it
+        publishes. A -d that is a whole value stays that option's value and is held."""
+        for c in ("gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, command=c):
+                    d = e.decide("Bash", {"command": c})
+                    self.assertEqual(d["verdict"], "allow", d)
+                    self.assertNotIn("TK-A056", d["rule_ids"], d)
+        self.verdicts([("Bash", {"command": "gh release create v1.0 --notes '-d'"})], "ask", "TK-A056")
+
+    def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
+        """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""
+        server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        for c in ("vercel --prod", "fly deploy", "gh release create v1.0"):
+            with self.subTest(command=c):
+                self.assertNotIn("TK-A056", server.decide("Bash", {"command": c})["rule_ids"])
+        self.assertEqual(server.decide("Bash", {"command": "vercel --prod"})["verdict"], "allow")
 
     def test_force_and_delete_pushes_stay_with_their_own_rules(self):
         self.verdicts([("Bash", {"command": c}) for c in (
