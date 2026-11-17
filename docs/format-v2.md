@@ -152,7 +152,8 @@ by, person, reason?, break_glass?, resumed}`, `incident.response{enabled, by, re
 
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
-`principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
+`principal`, for `purpose` (principal `signer`: the signer read it itself, to rebuild the run's provenance index after a
+restart); `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
 Both are signer records (`source: signer`) in the run `tracekit/signer` of the tenant they concern, never in the run
 itself, whose records stay unchanged. They hold no content. A bundle with either needs `verifier_min_version` 1.1.0.
 

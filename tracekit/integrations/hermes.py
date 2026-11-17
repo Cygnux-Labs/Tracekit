@@ -20,16 +20,20 @@ after Tracekit allowed it; as an error when the arguments it ran with are neithe
 type repair makes of them (another plugin's `modify`, or an edit in place).
 
 Each Hermes session is a run (agent "hermes"), registered at its first tool call and closed when Hermes exits; a run
-the signer closed after it was idle is replaced at the next call.
+the signer closed after it was idle is replaced at the next call, by one registered with `continues` (the model may
+still hold what the earlier run read: its provenance index starts partial), and so is the run of a session an earlier
+Hermes process ran (a resumed session: a marker per session in the runtime dir says so).
 """
 import atexit
 import contextlib
 import copy
+import hashlib
 import os
 import threading
 import time
 import warnings
 
+from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -79,6 +83,20 @@ def hook_timeout_s(config, env=os.environ):
     return min(bounds) if bounds else 0.0
 
 
+def _typed(tool, args, kept=""):
+    """For text process_manage types into a running process (write: as given; submit: with a newline; \\r is Enter, as
+    a terminal reads it): (the reason it is blocked before it is decided, as Codex's write_stdin is
+    (agent_hooks._typed), on its own text or on the line it may complete, else None; that line: `kept`, the unfinished
+    text earlier calls typed into it, then this call's; its own text). (None, None, None) for any other call."""
+    if tool != "process_manage" or not isinstance(args, dict) or args.get("action") not in ("write", "submit") or \
+            not isinstance(args.get("data"), str):
+        return None, None, None
+    from tracekit.agent_hooks import UNKNOWN, _typed as typed
+    text = (args["data"] + "\n" * (args["action"] == "submit")).replace("\r", "\n")
+    line, who = kept + text, "Hermes's process_manage"
+    return typed(who, args["action"], text) or typed(who, args["action"], line.replace(UNKNOWN, "")), line, text
+
+
 def _block(message):
     return {"action": "block", "message": message[:4096]}
 
@@ -89,8 +107,9 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
     `timeout_s()`: how long Hermes lets the hook run (hook_timeout_s); `coerce(tool, args)`: Hermes's repair of a
     call's argument types (tools/arg_coercion.py coerce_tool_args), which a concurrent batch's call runs with after
     its pre_tool_call saw the model's own. The signer is the one tracekit.sdk.client.Client finds."""
-    clients, runs, registering, lock = {}, {}, {}, threading.Lock()
+    clients, runs, registering, lock, had = {}, {}, {}, threading.Lock(), set()   # had: sessions that had a run
     calls, gone = {}, {}   # (session, call id) -> (run, decision, args, tool) let through; calls Hermes gave up on
+    typing = {}   # (session, process) -> the text typed into it that the process hasn't finished reading as a line
 
     def run_of(session_id):
         with lock:
@@ -103,9 +122,15 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
                     return runs[session_id]
                 t = token()
                 client = clients[t] = clients.get(t) or Client(token=t)
-            run = client.run(AGENT)
+            mark = os.path.join(autospawn.runtime_dir(), "hermes-" + hashlib.sha256(
+                session_id.encode("utf-8", "surrogatepass")).hexdigest() + ".seen")
+            # lean: one empty file per session this user's Hermes ran, never pruned; prune by age if they pile up
+            run = client.run(AGENT, **({"continues": True} if session_id in had or os.path.exists(mark) else {}))
+            with open(mark, "a"):   # a later process's run of the session continues it too
+                pass
             with lock:
                 runs[session_id] = run
+                had.add(session_id)
                 registering.pop(session_id, None)
             return run
 
@@ -140,7 +165,22 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         start, key = time.monotonic(), (session_id, tool_call_id)
         if not tool_call_id:   # never made up: the call's result could not be bound to its decision
             return _block("Tool call blocked by Tracekit: Hermes gave the call no tool_call_id to decide it under")
+        into = (session_id, str(args.get("session_id")) if isinstance(args, dict) else "")
+        typed, line, text = _typed(tool_name, args, typing.get(into, ""))
+        if typed:
+            return _block(typed)
         args = copy.deepcopy(args) if isinstance(args, dict) else {}   # as decided, whatever changes Hermes's dict
+        # text typed into a process is decided on its own and as the line a shell there would read it into
+        decided = args if line is None or line == args.get("data") else {**args, "typed_line": line}
+
+        def ran():   # the call goes ahead: what the process hasn't read as a line yet is kept for the next
+            if line is not None:
+                from tracekit.agent_hooks import typed_rest
+                rest = typed_rest(line, text, line[:len(line) - len(text)])
+                with lock:
+                    typing[into] = rest
+                    if not rest:
+                        del typing[into]
         # Hermes gave up on this very call before its hook ran (a /stop while it waited behind another call's hold):
         # tool_call_ids are unique in a session (agent/turn_tool_validation.py)
         # lean: should an id repeat (compaction dropped the call that used it first), that one call is blocked: fail
@@ -152,10 +192,10 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         run, aid = None, None
         try:
             end = start + (timeout_s() or MAX_TIMEOUT_S) - MARGIN_S
-            run, d = decide(session_id, tool_call_id, tool_name, args)
+            run, d = decide(session_id, tool_call_id, tool_name, decided)
             why = refusal(d) or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
-                return None if d["decision"] == "allow" else _block(f"Tool call refused by Tracekit: {d['reason']}")
+                return ran() if d["decision"] == "allow" else _block(f"Tool call refused by Tracekit: {d['reason']}")
             if d["decision"] == "deny":
                 return _block(f"Tool call blocked by Tracekit policy: {why}")
             if d["decision"] == "ask":
@@ -176,12 +216,12 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
                 else:   # withdrawn, answered or not, so no one consumes it
                     run.call("approval_abandon", approval_id=aid, reason=GONE)
                 return _block(f"Tool call blocked by Tracekit: {GONE}")
-            c = run.approval_consume(tool_call_id, tool_name, args, approval_id_hint=aid)
+            c = run.approval_consume(tool_call_id, tool_name, decided, approval_id_hint=aid)
             if not c["ok"]:
                 if d["decision"] != "ask":   # an allowed decision left open would read as a call that ran unrecorded
                     run.complete(tool_call_id, "error", error=f"not run: {c.get('reason') or why}"[:4096])
                 return _block(f"Tool call blocked by Tracekit policy: {c.get('reason') or why}")
-            if "args" in c and c["args"] != args:   # a T2 approval of other arguments: Hermes can't run the signer's copy
+            if "args" in c and c["args"] != decided:   # a T2 approval of other arguments: Hermes can't run its copy
                 run.complete(tool_call_id, "error", error="not run: the arguments the signer approved are not the call's")
                 return _block("Tool call blocked by Tracekit: the arguments the signer approved are not the call's")
         except Exception as e:   # no decision: the call doesn't run
@@ -198,7 +238,7 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         if late:
             run.complete(tool_call_id, "error", error=f"not run: {GONE}")
             return _block(f"Tool call blocked by Tracekit: {GONE}")
-        return None
+        return ran()
 
     def post_tool_call(args=None, result=None, tool_call_id="", session_id="", status="", error_message=None, **_):
         key = (session_id, tool_call_id)

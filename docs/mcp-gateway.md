@@ -87,7 +87,11 @@ answers each request with one JSON response and keeps no session; it serves `ini
   `trusted`, so the signer's [provenance](policy-v2.md) index sees it. Content that can't be recorded isn't answered.
 - **tools/list**, **resources/list** and **prompts/list** pass through, renamed, each upstream's page recorded as an
   untrusted observed input (`mcp:<upstream>/tools`, `/resources`, `/prompts`): the model reads the descriptions the
-  upstream wrote. A tool named `prompt:...` is neither listed nor called: it would be decided as a prompt.
+  upstream wrote. A page is recorded in parts that each fit one observe (512 KiB and 4096 values), so the signer's
+  provenance index reads all of it; a part the run already has (the same listing again) isn't recorded again. A single
+  tool, resource or prompt listed over 512 KiB, and an untrusted resource read or prompt got that size, is recorded as
+  its digest, which makes the run's provenance index `partial`. A tool named `prompt:...` is neither listed nor called:
+  it would be decided as a prompt.
 - An upstream that fails during a tools/call or prompts/get answers an error saying the call may have run, and the
   call completes as an error. One that went away and can't be opened again answers that nothing was sent to it.
 

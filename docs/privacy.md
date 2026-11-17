@@ -4,8 +4,9 @@ Default: **redact, then hash.** Content is replaced by `{"hash": "sha256:…", "
 
 ## Content capture: hashed or full
 
-What the agent did (the command, the file path, the URL) is always recorded in clear. What it read or wrote (file
-contents, command output, prompts, fetched pages) is controlled by `content_capture` in the policy:
+What the agent did (the command, the file path, the URL, and each of them in a call on several) is always recorded in
+clear. What it read or wrote (file contents, command output, prompts, fetched pages) is controlled by
+`content_capture` in the policy:
 
 - `hashed` (default): the content is stored as a SHA-256 hash and its size. You can prove a file or output matches a
   known one, but you cannot read the content back from the log, so the log never becomes a copy of your code or data.
