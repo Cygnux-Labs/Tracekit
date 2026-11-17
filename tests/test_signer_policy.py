@@ -4550,7 +4550,9 @@ class CodingPack(unittest.TestCase):
         # security's global options came before the command unseen; `pass show --all` isn't pass's, `pass grep`
         # decrypts every entry and `pass NAME` shows NAME; gopass's find/search showed the secret on a match
         # until gopass stopped it, so they stay held where pass's aren't; keepassxc-cli show, clip and attachment-export
-        # extract passwords or key files; keepassxc-cli export dumps the whole database
+        # extract passwords or key files; keepassxc-cli export dumps the whole database; `gh auth token` prints the
+        # stored token (for `token`, -h is the host, not help) and `gh auth status` masks it unless -t/--show-token (a
+        # short cluster with t too)
         self.verdicts([("security -q dump-keychain -d", "TK-D020"), ("pass grep .", "TK-D020"), ("ssh-add -L", "TK-A021"),
                        ("keepassxc-cli export passwords.kdbx", "TK-D020"),
                        ("keepassxc-cli export -f csv passwords.kdbx", "TK-D020"),
@@ -4566,12 +4568,18 @@ class CodingPack(unittest.TestCase):
                        ("keepassxc-cli clip passwords.kdbx Github", "TK-A021"),
                        ("keepassxc-cli.exe show passwords.kdbx Github", "TK-A021"),
                        ("keepassxc-cli attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
-                       ("keepassxc-cli.exe attachment-export db.kdbx entry key.pem out.pem", "TK-A021")])
+                       ("keepassxc-cli.exe attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
+                       ("gh auth token", "TK-A021"), ("gh auth token --hostname ghe.corp", "TK-A021"),
+                       ("gh auth token -h ghe.corp", "TK-A021"),
+                       ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
+                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
                         "keepassxc-cli search Github", "keepassxc-cli db-info passwords.kdbx", "keepassxc-cli --help",
-                        "keepassxc-cli -v"):
+                        "keepassxc-cli -v", "gh auth status", "gh auth status -h github.com", "gh auth login",
+                        "gh auth refresh", "gh auth switch", "gh auth token --help", "gh auth status --help",
+                        "gh auth status -t --help"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
