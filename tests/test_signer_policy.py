@@ -3332,6 +3332,7 @@ class CodingPack(unittest.TestCase):
                     "bw get item db",
                     "bw get notes db",
                     "bw get totp db",
+                    "bw get attachment k.pem --itemid x",
                     "bw list items",
 
                     # Doppler
@@ -3339,6 +3340,7 @@ class CodingPack(unittest.TestCase):
                     "doppler secrets download",
                     "doppler secrets",
                     "doppler secrets --json",
+                    "doppler secrets set API_KEY=x",
 
                     # Infisical
                     "infisical secrets get DB_URL",
@@ -3384,6 +3386,19 @@ class CodingPack(unittest.TestCase):
                    "bw list folders",
                    "doppler secrets --only-names",
                    "doppler secrets --only-names --json",
+                   "doppler secrets delete API_KEY",
+                   "doppler secrets upload .env",
+                   "infisical secrets set A=b",
+                   "infisical secrets delete A",
+                   "infisical secrets folders create --name x",
+                   "infisical secrets folders get",
+                   "infisical secrets generate-example-env",
+                   "doppler secrets --help",
+                   "infisical secrets --help",
+                   "doppler --help secrets",
+                   "infisical --help secrets",
+                   "doppler secrets -p proj --only-names",
+                   "doppler secrets -c dev --only-names --json",
                    "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
@@ -3455,6 +3470,7 @@ class CodingPack(unittest.TestCase):
                 {"cmd": "az keyvault secret show --vault-name v --name n"},
                 {"cli_command": "op read op://vault/db/password"},
                 {"cli_command": "bw get password db"},
+                {"cli_command": "bw get attachment k.pem --itemid x"},
                 {"command": "doppler secrets get DB_URL --plain"},
                 {"command": "doppler secrets --json"},
                 {"cmd": "infisical secrets get DB_URL"},
@@ -3481,6 +3497,19 @@ class CodingPack(unittest.TestCase):
                    {"cli_command": "bw list folders"},
                    {"command": "doppler secrets --only-names"},
                    {"command": "doppler secrets --only-names --json"},
+                   {"command": "doppler secrets delete API_KEY"},
+                   {"command": "doppler secrets upload .env"},
+                   {"command": "infisical secrets set A=b"},
+                   {"command": "infisical secrets delete A"},
+                   {"command": "infisical secrets folders create --name x"},
+                   {"command": "infisical secrets folders get"},
+                   {"command": "infisical secrets generate-example-env"},
+                   {"command": "doppler secrets --help"},
+                   {"command": "infisical secrets --help"},
+                   {"command": "doppler --help secrets"},
+                   {"command": "infisical --help secrets"},
+                   {"command": "doppler secrets -p proj --only-names"},
+                   {"command": "doppler secrets -c dev --only-names --json"},
                    {"cmd": "lpass ls"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
