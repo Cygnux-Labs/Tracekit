@@ -24,9 +24,13 @@ TODO: the permission rule in short, and the special cases.
 
 ### `register_run`
 
-TODO: what this RPC is for.
+Starts a run, which is one agent session, and returns its `run_id` and a run token. Every later call for the run
+presents that token. The signer records the start as `run.registered`. A sub-agent sends its parent's run token in
+`parent`, which links the two runs. The fields `tenant`, `source`, `analyzes`, `replay_of` and `box` are for special
+callers: the signer refuses them unless its configuration allows the caller to use them.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `register_run`. A box's agent channel may call it too.
 
 <!-- api-doc:begin register_run -->
 <details>
@@ -75,9 +79,13 @@ TODO: who may call.
 
 ### `delegate_run`
 
-TODO: what this RPC is for.
+Issues a second run token for the same run to another identity (`identity`, written `scheme:subject`), so that identity
+can call the signer for the run instead of the run's owner. What that identity may call is its own `authorize` entry in
+the signer's configuration, and a request for an identity with no entry is refused. It is how a transcript tailer gets
+its token. A second tailer token for the same run is recorded as a `tailer_redelegated` gap.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `delegate_run`.
 
 <!-- api-doc:begin delegate_run -->
 <details>
@@ -102,9 +110,14 @@ TODO: who may call.
 
 ### `decide`
 
-TODO: what this RPC is for.
+Asks whether a tool call may run. The client sends the tool name and its arguments, how it got the arguments
+(`args_source`: `raw`, `parsed` or `coerced`), and its own call id (`tool_call_id`) and attempt number. The signer
+answers `allow`, `deny` or `ask`, with the ids of the rules that matched and a `decision_id`, and signs the decision. An
+`ask` means a person must approve the call first: see the Approvals group. A deny or ask is remembered per call id and
+attempt, so a retry of the same attempt gets the same answer.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `decide`. A box's agent channel may call it too.
 
 <!-- api-doc:begin decide -->
 <details>
@@ -145,9 +158,13 @@ TODO: who may call.
 
 ### `complete`
 
-TODO: what this RPC is for.
+Reports the result of a tool call that was decided. The client sends the `decision_id`, the digest of the arguments it
+actually ran, and the result or error. The signer checks that the digest matches the decision (otherwise
+`args_mismatch`), removes secrets from the result, and records a commitment to it. If the call ran after a deny, or
+after an ask with no consumed approval, the signer also records an `executed_against_policy` gap.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `complete`. A box's agent channel may call it too.
 
 <!-- api-doc:begin complete -->
 <details>
@@ -186,9 +203,12 @@ TODO: who may call.
 
 ### `observe`
 
-TODO: what this RPC is for.
+Records content that entered the run other than as a tool result, such as the task, a mail or a ticket. The signer
+records a commitment to the value, not the value itself, and indexes it so that later calls can be traced back to it.
+`trust` (`trusted` or `untrusted`) is the caller's own claim about content it supplies itself.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `observe`. A box's agent channel may call it too.
 
 <!-- api-doc:begin observe -->
 <details>
@@ -219,9 +239,10 @@ TODO: who may call.
 
 ### `observe_effect`
 
-TODO: what this RPC is for.
+Reports effects seen from outside the agent: network connections from an egress observer, and process starts, exits and
+connections from a kernel sensor. Each call also counts as a heartbeat of the observer's process (`instance`).
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `observe_effect`. It is never granted by default.
 
 <!-- api-doc:begin observe_effect -->
 <details>
@@ -252,9 +273,12 @@ TODO: who may call.
 
 ### `state_write`
 
-TODO: what this RPC is for.
+Records a digest of a piece of the agent's saved state under a `key`, so that tampering with the state can be detected.
+If `prev_digest` says the write started from a state other than the one the agent's own earlier write recorded, the
+signer records a `state_tamper` gap.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `state_write`. A box's agent channel may call it too.
 
 <!-- api-doc:begin state_write -->
 <details>
@@ -284,9 +308,13 @@ TODO: who may call.
 
 ### `model_event`
 
-TODO: what this RPC is for.
+Records a model call: its `phase` (`request` or `response`), the provider and model, token usage, and the tool calls the
+model asked for. A client uses it when no gateway records the model calls for it. An LLM gateway sends it with `caller`,
+naming the client it acts for, and its answer then also carries the signer's fail modes and whether the signer checks
+tool results.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `model_event`. A box's agent channel may call it too.
 
 <!-- api-doc:begin model_event -->
 <details>
@@ -348,9 +376,12 @@ TODO: who may call.
 
 ### `decision_import`
 
-TODO: what this RPC is for.
+Records another system's decision about a tool call as a `policy.external` record: the system's name, its decision
+(`allow`, `deny` or `ask`), and a commitment to that system's own record. If the signer is configured with the system's
+public key, the record must carry a valid signature and the answer says `verified`; otherwise it says `unverified`. The
+signer's own decision stays authoritative, and reconciliation compares the two.
 
-TODO: who may call.
+**Who may call:** only a caller whose `authorize` entry lists `decision_import`. It is never granted by default.
 
 <!-- api-doc:begin decision_import -->
 <details>
@@ -383,9 +414,13 @@ TODO: who may call.
 
 ### `close_run`
 
-TODO: what this RPC is for.
+Ends a run. The signer writes `run.closing`, allows a short grace window for late records, then writes the completeness
+gaps, the reconciliation findings and `run.final`. `last_client_seq` gives the last `client_seq` each of the caller's
+streams sent, and a number the signer never received becomes a `client_counter_gap`. A gateway that sends `caller` ends
+only its own stream for that client.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `close_run`. A box's agent channel may call it too.
 
 <!-- api-doc:begin close_run -->
 <details>
@@ -417,9 +452,12 @@ TODO: who may call.
 
 ### `call_state`
 
-TODO: what this RPC is for.
+Reads what the signer recorded about the latest attempt of a call: its decision, its approval and whether this attempt
+consumed it, and its result. It answers with an empty object for a call that was never decided, and writes nothing.
+Added in version 24. The LangChain adapter uses it to carry on with a call after a run resumes.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `call_state`.
 
 <!-- api-doc:begin call_state -->
 <details>
@@ -458,9 +496,14 @@ TODO: who may call.
 
 ### `call_claim`
 
-TODO: what this RPC is for.
+Claims the one pass that goes on with an approved call after its tool paused the run itself. The first claim for a call,
+attempt and `answers` count gets `ok: true`; any other gets `ok: false` with a `reason`, so two resumes of the same
+thread never run the call twice. A claim is also refused when the attempt consumed no approval, when the call already
+has a result, or when the signer restarted since the approval was used (a person then approves the call again). It
+writes no record. Added in version 24.
 
-TODO: who may call.
+**Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
+lists `call_claim`.
 
 <!-- api-doc:begin call_claim -->
 <details>
