@@ -1445,7 +1445,8 @@ class Codex(unittest.TestCase):
             self.assertEqual(audit.codex_root(), os.path.join(home, ".codex", "sessions"))
         os.environ["CODEX_HOME"] = os.path.join(home, "elsewhere")
         try:
-            self.assertEqual(audit.codex_root(), os.path.join(home, "elsewhere", "sessions"))
+            # codex_root resolves $CODEX_HOME's links: macOS's temp folder is under /var, a link to /private/var
+            self.assertEqual(audit.codex_root(), os.path.join(os.path.realpath(os.path.join(home, "elsewhere")), "sessions"))
         finally:
             del os.environ["CODEX_HOME"]
 
