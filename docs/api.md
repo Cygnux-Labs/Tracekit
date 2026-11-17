@@ -84,7 +84,79 @@ signer remembers a `request_id` only in memory, and a retry after `unavailable` 
 
 ## Who may call what
 
-TODO: the permission rule in short, and the special cases.
+The signer decides what a call may do from who is calling. The caller's identity comes from the transport (see
+[Transport and auth](#transport-and-auth)), never from a field in the request. The line under each RPC says which of the
+rules below applies to it.
+
+Every call goes through these checks in order, and the first one that fails ends it:
+
+1. The method must be an RPC on this page. Otherwise the answer is `invalid_request`.
+2. The caller must be allowed to call it (the rules below). Otherwise the answer is `forbidden`. This check comes before
+   the request itself is looked at, so a caller that is not allowed is never told what is wrong with its request.
+3. The caller's identity must not be suspended (see `suspend`). A suspended identity's calls are all refused, except
+   operator calls made by a break-glass identity.
+4. The request must match the schema. Otherwise the answer is `invalid_request`.
+
+**What a caller may call.** An `authorize` entry in the signer's configuration lists the RPCs an identity may call. An
+entry names an identity as `scheme:subject`, or a prefix ending in `:*` or `/*`. Callers that sign in with OpenID
+Connect can also be named by `person:` and `group:` (see [Identity](identity.md#oidc-issuers)). A caller can match
+several entries, and then it may call everything they list together. If at least one entry matches, the caller may call
+exactly what the matching entries list and nothing else: the default grants below do not apply to it. If no entry
+matches, a local user (scheme `uid`) and the dev token (`token:dev`) get the default grants, and every other caller may
+call nothing, so each of its calls is `forbidden`.
+
+**The default grants** are every RPC on this page except the ones in this table. The table lists the calls that are
+never granted by default. Each one needs an `authorize` entry, or the rule in the right-hand column.
+
+| Call | Who may use it |
+|---|---|
+| `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend` | The operator calls. See **Operator calls** below. |
+| `content_get` | Granted as `content_read`, not under its own name. See **The content vault grant** below. |
+| `content_erase`, `approval_agents`, `decision_import` | Only a caller whose `authorize` entry lists the call. |
+| `approval_review` | Only an agent approver whose `authorize` entry lists it. See **Agent approvers** below. |
+| `approval_decide_on_behalf` | Only a chat bridge (for example Slack) whose `authorize` entry lists it, answering for the people it serves. |
+| `export_run` | Only a caller whose `authorize` entry lists it, and only with the extra rules under **Downloading runs** below. |
+| `observe_effect` | Only the identity of an egress observer or kernel sensor whose `authorize` entry lists it, never an agent's. |
+| `tailer_heartbeat` | Only an identity whose `authorize` entry lists it. Holding the grant is what marks an identity as a transcript tailer, so an agent cannot keep a dead tailer's heartbeats going with its own token. |
+| `channel_open` | Only an identity named in `box_daemons`, whatever `authorize` lists. |
+
+**A default grant is not always enough.** Being on the default list means the signer accepts the call from that caller.
+It does not mean the call will succeed, because these calls are checked again:
+
+- `approval_decide`, `approval_revoke`, `grant_issue`, `grant_list` and `grant_revoke` follow the rules for who may
+  answer a run's approvals: see [Who may answer](approvals.md#who-may-answer) and
+  [Who may issue a grant](intent-grants.md#who-may-issue-a-grant).
+- `pcm_sign`, `pcm_grant`, `pcm_delegate` and `pcm_evidence` work only for the run's own agent.
+- `why_finding` and `review_finding` work only in a findings run: a run registered with `analyzes`, which only an
+  identity listed under `analyzers` may do.
+
+**Agent approvers.** An identity named in `approvals.agents` is an agent approver (see
+[Agent approvers](approvals.md#agent-approvers)). It gets no default grants. It may call only `approval_list`,
+`approval_review`, `approval_decide` and `status`, and only the ones an `authorize` entry lists for it. A call to
+anything else is `forbidden`, even if its entry lists it.
+
+**A box's agent channel.** A Tracekit Box daemon opens a channel with `channel_open` (see
+[Tracekit Box](limits.md#tracekit-box-experimental)). The channel acts as the identity `box:<uid>/<box id>`, and it may
+call only `register_run`, `decide`, `complete`, `observe`, `model_event`, `state_write`, `approval_request`,
+`approval_wait`, `approval_consume`, `approval_get`, `approval_abandon`, `constraint_add`, `close_run`, `tailer_lost`
+and `status`, whatever `authorize` lists. When its daemon is suspended, the channel stops with it.
+
+**Operator calls.** `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`,
+`response_pause`, `response_resume`, `suspend` and `unsuspend` are for people who run containment (see
+[Operators](incidents.md#operators)). An agent's identity cannot operate its own containment. The signer refuses to
+start if one `authorize` entry lists `register_run` together with an operator call. A call is also refused for an
+identity that may `register_run` or owns open runs, so give operators an identity of their own. `incident_resolve` and
+`run_resume` apply a second check to the person who calls: see [Operators](incidents.md#operators).
+
+**Downloading runs.** `export_run` is for an identity that only reads. One `authorize` entry may list it together with
+`status`, `read`, `approval_get`, `approval_list`, `grant_list`, `incident_list` and `incident_show` only, and the
+signer refuses to start otherwise. An identity can match several entries, so every call checks them all together: if
+they grant any call that writes, `export_run` is `forbidden`. The caller also needs a tenant of its own, named in
+`tenants` or carried by its token or OpenID Connect issuer. The default tenant does not count.
+
+**The content vault grant.** The grant for `content_get` is named `content_read`. Write `content_read` in an `authorize`
+entry. The signer refuses to start if an entry lists `content_get`. The dev signer grants `content_read` to your own
+user.
 
 ## Runs and calls
 
