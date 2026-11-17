@@ -3992,6 +3992,8 @@ class Installer(unittest.TestCase):
         # hook is bounded, and one still running then answers a cancel for a tool call (nothing to record otherwise)
         stall = ("import sys, time; from tracekit import agent_hooks as A, hook as H; A.CLINE_BUDGET_S = 1; "
                  "H.main = lambda **k: time.sleep(60); sys.exit(A.entry('cline', sys.argv[1]))")
+        client_home = tempfile.mkdtemp()   # the hook's call pairing (_paired_ids) writes there, never the real home's
+        self.addCleanup(shutil.rmtree, client_home, True)
         for ev, want in (("PreToolUse", True), ("PostToolUse", False)):
             with self.subTest(ev=ev):
                 t = time.monotonic()
@@ -3999,7 +4001,7 @@ class Installer(unittest.TestCase):
                     p = subprocess.run([sys.executable, "-c", stall, ev], capture_output=True, text=True, timeout=20,
                                        input=json.dumps({"taskId": "t-1", "preToolUse": {
                                            "toolName": "read_files", "parameters": {"files": '["a"]'}}}),
-                                       cwd=ROOT, env=dict(os.environ, PYTHONPATH=ROOT))
+                                       cwd=ROOT, env=dict(os.environ, PYTHONPATH=ROOT, TRACEKIT_CLIENT_HOME=client_home))
                 except subprocess.TimeoutExpired:
                     self.fail("the hook was still running after 20 s")
                 self.assertLess(time.monotonic() - t, 15)

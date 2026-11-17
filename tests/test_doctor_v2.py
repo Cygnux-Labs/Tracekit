@@ -683,9 +683,11 @@ class OpenCodePlugin(unittest.TestCase):
 
             def row(version, prod=False, folder="bin"):
                 os.makedirs(os.path.join(d, folder), exist_ok=True)
-                with open(os.path.join(d, folder, "opencode"), "w") as f:   # `opencode --version` as each major prints it
-                    f.write(f"#!/bin/sh\necho '{version}'\n")
-                os.chmod(os.path.join(d, folder, "opencode"), 0o755)
+                # `opencode --version` as each major prints it (npm's opencode.cmd shim on Windows)
+                exe = os.path.join(d, folder, "opencode.cmd" if os.name == "nt" else "opencode")
+                with open(exe, "w") as f:
+                    f.write(f"@echo {version}\n" if os.name == "nt" else f"#!/bin/sh\necho '{version}'\n")
+                os.chmod(exe, 0o755)
                 with mock.patch.dict(os.environ, {"PATH": os.path.join(d, folder) + os.pathsep + os.environ["PATH"]}):
                     return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "production" if prod else "dev",
                                                                  settings=os.path.join(d, "none.json"),

@@ -12,11 +12,8 @@ import json
 import os
 import re
 import shlex
-import shutil
-import socket
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import unittest
@@ -31,7 +28,7 @@ from tracekit.integrations import claude_code, harness_hooks
 from tracekit.policy2.engine import Engine
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, SignerUnavailable
-from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
+from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService, load_policy
 from tracekit.testing import FakeSigner
 
@@ -48,7 +45,12 @@ def cases(harness):
 class HarnessCase(unittest.TestCase):
     def setUp(self):
         d = ac.tmpdir(self)
+        # a home of the test's own on every platform: a dev signer a hook starts keeps its data under LOCALAPPDATA on
+        # Windows and XDG_DATA_HOME on Linux when set, and the client's in USERPROFILE on Windows
         env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": os.path.join(d, "run"), "HOME": os.path.join(d, "home"),
+                                           "USERPROFILE": os.path.join(d, "home"),
+                                           "LOCALAPPDATA": os.path.join(d, "home", "local"),
+                                           "XDG_DATA_HOME": os.path.join(d, "home", "data"),
                                            "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")})
         env.start()
         self.addCleanup(env.stop)
@@ -1227,7 +1229,10 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual(self.hook("codex", dict(call, tool_use_id="l1"))[0], 0)
         first = claude_code._load(claude_code._state("c"))
         self.assertEqual(self.service.log.runs[("default", first["run_id"])]["prov"], {"state": "complete", "index": {}})
-        self.service.close_run({"request_id": "rq-close", "run_id": first["run_id"], "run_token": first["run_token"]})
+        # closed as the hook's caller (the uid on a Unix socket, the dev token over tcp:// on Windows)
+        closer = Client(signer=os.environ["TRACEKIT_SIGNER"])
+        self.addCleanup(closer.close)
+        closer.call("close_run", run_id=first["run_id"], run_token=first["run_token"])
         self.assertEqual(self.hook("codex", dict(call, tool_use_id="l2"))[0], 0)
         later = claude_code._load(claude_code._state("c"))["run_id"]
         self.assertNotEqual(later, first["run_id"])
@@ -2657,26 +2662,10 @@ class SlowSignerStart(HarnessCase):
         """1.7.0 review: a call that connected waited until the hook's deadline (540 s for a Claude Code PreToolUse)
         on a signer that answers hello and then nothing: only connecting may wait for the deadline, each call's answer
         keeps its timeout, and a long poll's timeout_ms stops at the deadline too."""
-        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # (macOS caps socket paths)
-        self.addCleanup(shutil.rmtree, d, True)
-        srv = socket.socket(socket.AF_UNIX)
-        srv.bind(os.path.join(d, "s"))
-        srv.listen(8)
-        self.addCleanup(srv.close)
-        held = []
-
-        def serve():
-            while True:
-                try:
-                    conn, _ = srv.accept()
-                except OSError:
-                    return
-                held.append(conn)
-                conn.makefile("rb").readline()
-                conn.sendall(json.dumps({"proto": [RPC_VERSION] * 2, "version": __version__}).encode() + b"\n")
-        threading.Thread(target=serve, daemon=True).start()
-        self.addCleanup(lambda: [c.close() for c in held])
-        c = claude_code.HookClient(signer=os.path.join(d, "s"), answer_by=time.monotonic() + 6)
+        stalled = threading.Event()   # every request but hello waits until the test ends
+        self.addCleanup(stalled.set)
+        signer = ac._serve(self, lambda identity, frame: stalled.wait(60) and {})   # a Unix socket, or tcp:// on Windows
+        c = claude_code.HookClient(signer=signer, answer_by=time.monotonic() + 6)
         c.timeout = 1
         begun = time.monotonic()
         with self.assertRaises(SignerUnavailable):
@@ -2686,7 +2675,7 @@ class SlowSignerStart(HarnessCase):
         with self.assertRaises(SignerUnavailable):
             c.call("approval_wait", run_id="r", run_token="t", approval_id="apr-x", timeout_ms=30000)
         self.assertLess(time.monotonic() - begun, 6)
-        c = claude_code.HookClient(signer=os.path.join(d, "s"), answer_by=time.monotonic() + 1.5)   # (timeout 30)
+        c = claude_code.HookClient(signer=signer, answer_by=time.monotonic() + 1.5)   # (timeout 30)
         begun = time.monotonic()
         with self.assertRaises(SignerUnavailable):
             c.call("status")
