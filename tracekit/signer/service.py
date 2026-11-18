@@ -335,7 +335,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
-    provenance, public_witness, yamlmini
+    lessons, provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -475,7 +475,7 @@ DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its vi
 # gives a lesson (lessons.verified)
 LESSON_ANSWERS = "tracekit:lessons:person"
 LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
-                 re.compile(r"[0-9a-f]{64}"), re.compile(r"[\w.-]{1,128}:(0|[1-9][0-9]{0,15})", re.ASCII))
+                 re.compile(r"[0-9a-f]{64}"), lessons.SIGNED)
 ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
 ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0

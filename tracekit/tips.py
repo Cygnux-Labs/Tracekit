@@ -1064,7 +1064,7 @@ def _vault(say):
 
 def _signer(client):
     """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
-    the lesson's id and its text's sha256, never the text, plus `because` `{run, seq}` when retiring with `--because`)
+    the lesson's id and its text's sha256, never the text, plus `because` `RUN:SEQ` when retiring with `--because`)
     in one run for this command (agent `tracekit tips`), through `client`, which `sign.close()` closes. -> the
     record's run:run_seq, which the note keeps."""
     run = []

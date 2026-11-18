@@ -435,8 +435,11 @@ per project, the block a session's first prompt gets with an empty prompt and ho
 
 A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its
 `MEMORY.md` index; the folder is a git repo, one commit per action, so every change can be read back and undone.
-`tracekit tips retire ID` stops giving it (a waiting one is never proposed again; pass `--because RUN:SEQ` to record a verified record that disproved it), `restore ID` undoes that, and
-`add TEXT` writes your own. Proposals are worked out from the records each time and never stored. How a session gets
+`tracekit tips retire ID` stops giving it (a waiting one is never proposed again), `restore ID` undoes that, and
+`add TEXT` writes your own. Pass `--because RUN:SEQ` to `retire` to name the record that disproved the lesson: at
+retire time `tracekit tips` checks that the run is in the dev store, verifies, and has a record at SEQ; the signer
+checks only the shape of `RUN:SEQ`. The page's "disproved by" line is read back from the note file, not checked again,
+and that this record disproved the lesson is your word. Proposals are worked out from the records each time and never stored. How a session gets
 them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in
 [privacy](privacy.md).
 

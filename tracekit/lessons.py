@@ -69,7 +69,8 @@ TYPES = ("user", "feedback", "project", "reference")
 HOST = ("status", "superseded_by", "retired_from", "retired_because", "supersedes", "origin", "id", "kind", "key",
         "evidence", "tier", "approved", "before", "signed")
 LESSON_ID = re.compile(r"L-[0-9a-f]{8}")
-SIGNED = re.compile(r"[\w.-]{1,128}:[0-9]{1,12}")   # run:run_seq of the signed record of a person's answer
+# run:run_seq of the signed record of a person's answer; the signer checks a retire's `because` with it too
+SIGNED = re.compile(r"[\w.-]{1,128}:(0|[1-9][0-9]{0,15})", re.ASCII)
 MEASURE = "before and after on the same detector, not a controlled test"
 NOTE_FILE = re.compile(r"(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md")
 PROJECT_NAME = re.compile(r"[A-Za-z0-9-][A-Za-z0-9._-]{0,254}")   # never `.` or `..`: it starts with no dot
@@ -271,9 +272,15 @@ def parse(file, text):
             out.append(f"{m.group(1)} appears twice")
         v = (m.group(2) or "").strip()
         try:
-            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[", "{") else v
+            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[") or (
+                m.group(1) == "retired_because" and v[:1] == "{") else v
         except ValueError:
             out.append(f"{m.group(1)} is not a value")
+    if "retired_because" in fields:
+        try:
+            fields["retired_because"] = parse_because(fields["retired_because"])
+        except Refused:
+            del fields["retired_because"]
     for k in ("name", "description"):
         if not isinstance(fields.get(k), str) or not fields.get(k):
             out.append(f"{k} is missing")
@@ -310,9 +317,9 @@ def index(notes):
 class Folder:
     """The lessons folder, <dev data dir>/lessons: one git repo, projects/<project>/ holding a project's notes and its
     MEMORY.md. `tracekit tips`' actions, run by a person, are its only writer; a folder that holds a link, or anything
-    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256)`: records a person's
-    answer as a signed observe (source PERSON) once every check has passed, before anything is written, and gives the
-    record's `run:run_seq`, which the note keeps (`signed`); a note without one is never given to an agent."""
+    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256, because=None)`: records
+    a person's answer as a signed observe (source PERSON; `because` is the `RUN:SEQ` of the record that disproved a
+    retired lesson) once every check has passed, before anything is written, and gives the record's `run:run_seq`, which the note keeps (`signed`); a note without one is never given to an agent."""
 
     def __init__(self, path, sign=None):
         self.path, self.sign = path, sign
@@ -406,8 +413,9 @@ class Folder:
                                         f"{INDEX_BYTES:,} bytes. Retire one first: refused, never cut")
         for signed in (False, True):   # every check, then the signed record, then every check of what it adds
             if signed and self.sign:
-                changed[0]["signed"] = (self.sign(action, lid, text_sha(changed[0]), because=because)
-                                        if because is not None else self.sign(action, lid, text_sha(changed[0])))
+                args = (action, lid, text_sha(changed[0]))
+                changed[0]["signed"] = (self.sign(*args, because=f"{because['run']}:{because['seq']}")
+                                        if because is not None else self.sign(*args))
             texts = {n["file"]: render(n) for n in changed}
             for f, text in texts.items():
                 bad = problems(text)

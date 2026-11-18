@@ -942,76 +942,25 @@ class RetireBecause(unittest.TestCase):
         finally:
             s.close()
 
-    def test_retire_with_because_writes_note_commit_signed_observe_and_page_output(self):
-        from tracekit import tips
-        d = tmp(self)
-        data_dir = os.path.join(d, "data")
-        run_id, seq = self._make_store(data_dir)
-        recorded = []
+    def test_a_note_keeps_only_a_retired_because_it_can_read_and_only_that_key_is_json(self):
+        head = "name: n\ndescription: d\n"
+        read = lambda extra: lessons.parse("n.md", f"---\n{head}{extra}\n---\nbody\n")   # noqa: E731
+        self.assertEqual(read('retired_because: {"run": "r-1", "seq": 4}')["retired_because"], {"run": "r-1", "seq": 4})
+        for bad in ('{"run": "r-1"}', '{"seq": 4}', '{"run": "r-1", "seq": "4"}', '{"run": "r-1", "seq": 04}',
+                    '{"run": "r-1", "seq": -1}', '{"run": "r-1", "seq": true}', "[1]", "x"):
+            with self.subTest(bad=bad):
+                self.assertNotIn("retired_because", read(f"retired_because: {bad}"))
+        self.assertEqual(read('origin: {"a": 1}')["origin"], '{"a": 1}')   # a bare word, not loaded
 
-        class _FakeRun:
-            def __init__(self):
-                self.run_id = "run-person"
-                self._seq = 0
-
-            def observe(self, payload, source, trust):
-                self._seq += 1
-                recorded.append((source, trust, payload))
-                return {"run_seq": self._seq}
-
-            def close(self):
-                pass
-
-        class _FakeClient:
-            def run(self, agent):
-                return _FakeRun()
-
-        folder = lessons.Folder(os.path.join(data_dir, "lessons"), sign=tips._signer(_FakeClient()))
-        waiting = lookups(Scene()).found()[0][0]
-        folder.approve(waiting)
-        lid = waiting["id"]
-
-        with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
-             mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
-             mock.patch("builtins.print"):
-            code = tips.act(["retire", lid, "--because", f"{run_id}:{seq}"], lambda _m: None)
-        self.assertEqual(code, 0)
-
-        [note] = folder.notes()
-        self.assertEqual(note["status"], "retired")
-        self.assertEqual(note["retired_because"], {"run": run_id, "seq": seq})
-        self.assertEqual(lookups(Scene()).found(folder.notes()), ([], []))   # never proposed again
-
-        # Commit message names the disproving RUN:SEQ
-        log = subprocess.check_output(
-            ["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True,
-        ).strip()
-        self.assertIn(f"{run_id}:{seq}", log)
-
-        # Signed person observe carries {run, seq}
-        retire_obs = [p for src, _tr, p in recorded if src == lessons.PERSON and p["action"] == "retire"]
-        self.assertEqual(len(retire_obs), 1)
-        self.assertEqual(retire_obs[0]["because"], {"run": run_id, "seq": seq})
-
-        # lessons.page and lessons_text render the disproved-by message
-        page = lessons.page(lookups(Scene()).rows(), lookups(Scene()).tr, folder, now=T0 + 7 * DAY, since=T0 - DAY)
-        [earlier] = page["earlier"]
-        self.assertEqual(earlier["retired_because"], {"run": run_id, "seq": seq})
-        rendered = "\n".join(tips.lessons_text(page))
-        self.assertIn(f"Retired: disproved by run {run_id} at seq {seq}", rendered)
-
-        # Viewer UI links retired_because to the run/seq record
-        html_path = os.path.join(os.path.dirname(os.path.dirname(lessons.__file__)), "tracekit", "ui", "terminal.html")
-        with open(html_path, encoding="utf-8") as fh:
-            html = fh.read()
-        self.assertIn("Retired: disproved by run", html)
-        self.assertIn("data-lrec", html)
-
-        # Restore clears retired_because
-        folder.restore(lid)
-        [restored] = folder.notes()
-        self.assertEqual(restored["status"], "active")
-        self.assertIsNone(restored.get("retired_because"))
+    def test_one_grammar_for_the_record_of_an_answer(self):
+        from tracekit.signer import service as svc
+        self.assertIs(svc.LESSON_ANSWER[3], lessons.SIGNED)
+        for ok in ("run-1:0", "a.b_c:12", f"r:{10**15}"):
+            self.assertTrue(lessons.SIGNED.fullmatch(ok), ok)
+        for bad in ("r:01", "r:", ":1", "r:-1", f"r:{10**16}", "r\u0663:1", "r:\u0663", "r:1\n"):
+            self.assertFalse(lessons.SIGNED.fullmatch(bad), bad)
+        with self.assertRaises(lessons.Refused):
+            lessons.parse_because("r:01")
 
     def test_retire_with_missing_or_unverified_because_refuses_and_changes_nothing(self):
         from tracekit import tips

@@ -25,7 +25,7 @@ import test_signer_service as tsvc  # noqa: E402
 from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
 from tracekit import cli, lessons, observe, tips, view  # noqa: E402
-from tracekit.sdk.client import Client  # noqa: E402
+from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
 from tracekit.signer.rpc_schema import RPCError  # noqa: E402
 
@@ -991,6 +991,46 @@ class Lessons(unittest.TestCase):
         self.assertNotIn("Planted", self.tips("--for-agent", "--project", self.CWD)[1])
 
 
+    def test_retire_because_signs_the_record_as_the_signer_takes_it_and_the_page_reads_it_back(self):
+        """`retire --because RUN:SEQ` sent the signer {run, seq}, which it refuses: only the string RUN:SEQ is an answer."""
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        run = Client(self.cfg["socket"]).run(agent="claude-code")
+        seq = run.observe({"ok": False}, "tool.result", "trusted")["run_seq"]
+        run.close()
+        self.assertTrue(wait_for(lambda: (self.st.checkpoint_latest() or (0,))[0] == self.st.tree.size, 20))
+        sent, observe = [], RunHandle.observe
+
+        def spy(handle, value, source, trust="untrusted", **fields):
+            sent.append((source, value))
+            return observe(handle, value, source, trust, **fields)
+
+        with mock.patch.object(RunHandle, "observe", spy):
+            code, out, err = self.tips("retire", fix["id"], "--because", f"{run.run_id}:{seq}")
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"(disproved by {run.run_id}:{seq})", out)
+        [(_, value)] = [x for x in sent if x[0] == lessons.PERSON]
+        self.assertEqual(value["because"], f"{run.run_id}:{seq}")
+        L = json.loads(self.tips("--json")[1])["lessons"]
+        [gone] = [x for x in L["earlier"] if x["id"] == fix["id"]]
+        self.assertEqual(gone["retired_because"], {"run": run.run_id, "seq": seq})
+        self.assertIn(f"Retired: disproved by run {run.run_id} at seq {seq}", self.tips()[1])
+
+    def test_a_retired_note_whose_because_names_no_run_or_seq_is_listed_as_retired(self):
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        self.assertEqual(self.tips("retire", fix["id"])[0], 0)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        path = os.path.join(folder.path, "projects", note["project"], note["file"])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text.replace("\n---\n", '\nretired_because: {"seq": 3}\n---\n', 1))
+        code, out, err = self.tips()
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("disproved by", out)
+
     def test_a_persons_answers_outlive_the_vaults_retention_and_nothing_else_does(self):
         """Past the dev vault's retention, content_get said `erased` for any seq of a run and lessons.verified took that
         on the run alone: a changed text, another id naming a real answer's record, and a made-up seq of an old run were
@@ -1285,6 +1325,21 @@ class Page(unittest.TestCase):
         self.assertNotIn("data-approve", out)   # a command a person runs, never a click
         self.assertIn("NOT PROPOSED 1", out)
         self.assertIn("Seen in 2 sessions on 1 day: a lookup needs 3 sessions on 2 days.", out)
+
+    def test_a_retired_lessons_line_escapes_the_run_and_links_the_record_only_when_it_names_one(self):
+        x = {"id": "L-0badf00d", "name": "n", "status": "retired"}
+        line = lambda rb: page_js(self.LESSONS, f"process.stdout.write(lessonRetired({json.dumps({**x, **rb})}))")  # noqa: E731
+        out = line({"retired_because": {"run": "<\"'>", "seq": 7}})
+        self.assertIn("disproved by run &lt;&quot;&#39;&gt; at seq 7", out)
+        self.assertIn('data-lrec="&lt;&quot;&#39;&gt;" data-lseq="7"', out)
+        self.assertNotIn("<\"'>", out)
+        for rb in ({}, {"retired_because": None}, {"retired_because": "r:1"}, {"retired_because": ["r", 1]},
+                   {"retired_because": {"run": "r"}}, {"retired_because": {"seq": 1}}):
+            with self.subTest(rb=rb):
+                out = line(rb)
+                self.assertIn(" · Retired</span>", out)
+                self.assertNotIn("disproved", out)
+                self.assertNotIn("data-lrec", out)
 
     def test_an_effect_waits_for_five_sessions_and_a_worse_one_is_in_the_warning_colour(self):
         L = self.lessons_page(approve=True)
