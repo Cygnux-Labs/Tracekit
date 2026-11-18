@@ -21,7 +21,7 @@
  */
 import { type Floats, StrictJSONError, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
-  HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
+  ED25519, HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
@@ -33,10 +33,10 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** This verifier's release (the package's). */
-export const VERSION = "1.7.1";
+export const VERSION = "1.7.2";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.7.1";
+export const READS = "1.7.2";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -215,6 +215,12 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
       if (!(e instanceof NoteError)) throw e;
       throw new ValueError(`pinned key ${repr(cut(k, 80))} is not a vkey: ${e.message}`);
     }
+  }
+  for (const k of t.logs) {   // a log key named after another key's fingerprint pins nothing a note could be signed under
+    const p = await parseVkey(k), m = /^tracekit\.local\/k([0-9a-f]{64})(?=\/|$)/.exec(p.name);
+    if (p.type === ED25519 && m && m[1] !== await sha256hex(p.pub))
+      throw new ValueError(`pinned log key ${p.name} is named after another key: a key-derived origin is `
+        + "tracekit.local/k + the SHA-256 of the key it names");
   }
   await checkWitnesses(opt(t, "witnesses").map((w: J) => w.vkey));
   const classes = new Map<string, string>();
