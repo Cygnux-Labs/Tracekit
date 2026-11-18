@@ -483,7 +483,7 @@ class Transports(unittest.TestCase):
         self.assertNotIn(client.UNKNOWN, str(cm.exception))
         # Windows retries a refused loopback connect for about 2 s: the connect times out instead
         with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: (lost the connection|could not "
-                                                r"connect)"):
+                                                r"connect|no answer from the signer within)"):
             self.assertIsNone(RunHandle(c, {"run_id": "r1", "run_token": "t"}).complete("call-1", **DONE))
 
     def test_a_signer_gone_after_the_hello_records_nothing_it_refused(self):
@@ -522,7 +522,7 @@ class Transports(unittest.TestCase):
         self.assertNotIn(client.UNKNOWN, str(cm.exception))
         # Windows retries a refused loopback connect for about 2 s: the connect times out instead
         with self.assertWarnsRegex(UserWarning, r"the result of call-1 was not recorded: (lost the connection|could not "
-                                                r"connect)"):
+                                                r"connect|no answer from the signer within)"):
             self.assertIsNone(RunHandle(c, {"run_id": "r1", "run_token": "t"}).complete("call-1", **DONE))
 
     def test_a_connect_that_times_out_after_the_hello_records_nothing(self):
