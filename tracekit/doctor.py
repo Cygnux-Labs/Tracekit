@@ -1165,7 +1165,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 " (regex fallback: large inputs can exhaust the 1 s budget "
                 "and the call will be denied)"
                 if wheel_expected else
-                " (tracekit-ai doesn't install google-re2 on this Python or platform)"
+                " (no google-re2 wheel is expected for this Python or platform)"
             )
         fix = (
             f"{sys.executable} -m pip install google-re2, then restart the signer "
@@ -1175,11 +1175,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-POLICY-ENGINE", using_re2, detail, fix,
             bad=WARN if wheel_expected else INFO)
     except ImportError as e:
-        add("D-POLICY-ENGINE", False, f"no regex engine: {e}",
-            "pip install tracekit-ai (a --no-deps install leaves the engine out)")
+        add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
-        add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}",
-            f"fix the policy: tracekit policy lint {policy}")
+        add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
 
     mode = cfg.get("durability", ACK_ON_WRITE)
     add("D-DURABILITY", not prod or mode == ACK_ON_FSYNC, f"durability {mode}" + (

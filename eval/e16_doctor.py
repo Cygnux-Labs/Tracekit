@@ -461,9 +461,8 @@ def main():
     clean = run_case(None)
     res = _score(clean, [c for c in CASES if c[0] not in ROOT_ONLY or IS_ROOT], run_case)
     expected = {} if doctor._google_re2_wheel_expected() else {"D-POLICY-ENGINE": "info"}
-    res["clean"]["passed"] = (
-        {r["id"]: r["status"] for r in clean if r["status"] != "ok"} == expected
-    )
+    # a subset: google-re2 installed by hand where no wheel is expected makes the row ok
+    res["clean"]["passed"] = {r["id"]: r["status"] for r in clean if r["status"] != "ok"}.items() <= expected.items()
     res["cases"].update({n: {"expect": w, "skipped": "needs root"} for n, w, _ in CASES if n in ROOT_ONLY and not IS_ROOT})
     res["k8s"] = _score(run_k8s_case(None), K8S_CASES, run_k8s_case)
     admin, cluster = pg_admin()

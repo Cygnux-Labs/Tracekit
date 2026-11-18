@@ -35,10 +35,9 @@ class E16(unittest.TestCase):
         results = e16.run_case(None)
         # Where google-re2 has no wheel, the regex engine is expected: an info row, not a fault.
         expected = {} if doctor._google_re2_wheel_expected() else {"D-POLICY-ENGINE": "info"}
-        self.assertEqual(
-            {r["id"]: r["status"] for r in results if r["status"] != "ok"},
-            expected,
-        )
+        # a subset: google-re2 installed by hand where no wheel is expected makes the row ok
+        self.assertLessEqual({r["id"]: r["status"] for r in results if r["status"] != "ok"}.items(),
+                             expected.items())
         self.assertEqual({r["id"] for r in results}, {want for _, want, _ in e16.CASES})
 
     def test_every_misconfiguration_is_flagged(self):
@@ -856,7 +855,7 @@ class FirstDay(unittest.TestCase):
                 False,
                 "info",
                 "",
-                " (tracekit-ai doesn't install google-re2 on this Python or platform)",
+                " (no google-re2 wheel is expected for this Python or platform)",
             ),
         )
 

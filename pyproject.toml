@@ -32,7 +32,8 @@ requires-python = ">=3.9"
 # signing, JCS for format v2, and the v2 signer's policy engine (which falls back to regex
 # when google-re2 is unavailable); `tracekit verify` needs none of them:
 # `pip install --no-deps tracekit-ai` is the verifier alone
-# Remove the Python 3.15 cap when compatible CPython 3.15 wheels become available.
+# lean: google-re2 is capped below 3.15 because it has no cp315 wheel yet; lift the cap in both markers and in
+# doctor._google_re2_supported() once it has one.
 dependencies = [
     "cryptography>=41",
     "rfc8785>=0.1,<0.2",
