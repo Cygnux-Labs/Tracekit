@@ -1268,6 +1268,44 @@ class Shell(unittest.TestCase):
                 d = e.decide("Bash", {"command": cmd})
                 self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
 
+    def test_ansi_c_hex_braces_match_bash_5(self):
+        """$'\\x{…}' with a non-hex character, no closing brace or empty braces, checked against ansicstr (case 'x') in
+        GNU bash 5.2.37 and 5.3 lib/sh/strtrans.c: hex digits after `\\x{` are consumed, a following `}` is consumed
+        only if immediately after them, zero hex digits emit NUL (truncating the string), and the value is masked to
+        a byte (& 0xFF)."""
+        cases = (
+            ("echo $'\\x{2fq}'", ["echo", "/q}"]),
+            ("echo $'\\x{2f'", ["echo", "/"]),
+            ("echo $'\\x{}'", ["echo", ""]),
+            ("echo $'a\\x{}b'", ["echo", "a"]),
+            ("echo $'a\\x{q}b'", ["echo", "a"]),
+            ("echo $'\\x{73}'", ["echo", "s"]),
+            ("echo $'\\x{173}'", ["echo", "s"]),
+            ("echo $'\\x{100}a'", ["echo", ""]),
+        )
+        for cmd, argv in cases:
+            with self.subTest(cmd=cmd):
+                self.assertEqual(argvs(cmd)[0], argv)
+
+    def test_ansi_c_hex_braces_match_installed_bash_5(self):
+        """Cross-check the $'\\x{…}' cases against an installed bash 5 binary when one is on PATH."""
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("bash is not on PATH")
+        try:
+            ver = subprocess.run([bash, "--version"], capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", timeout=10)
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.skipTest(f"bash --version failed: {exc}")
+        first = (ver.stdout.splitlines() or ["unknown"])[0]
+        m = re.search(r"GNU bash\b.*?(\d+)\.", first)
+        if ver.returncode != 0 or not m or int(m.group(1)) < 5:
+            self.skipTest(f"need GNU bash 5+, found: {first}")
+        for expr in (r"\x{2fq}", r"\x{2f", r"\x{}", r"a\x{}b", r"a\x{q}b", r"\x{73}", r"\x{173}", r"\x{100}a"):
+            with self.subTest(expr=expr):
+                out = subprocess.check_output([bash, "-c", f"printf '%s' $'{expr}'"], timeout=10)
+                self.assertEqual(argvs(f"echo $'{expr}'")[0], ["echo", out.decode("latin1")])
+
     def test_glob_detection(self):
         self.assertEqual([c["glob"] for c in shell.parse("rm *.pyc; ls 'x*'; [ -f a ]; ls a[0-9]")],
                          [True, True, False, False, True, True] + [True] * 10)   # again without it (nullglob), and
