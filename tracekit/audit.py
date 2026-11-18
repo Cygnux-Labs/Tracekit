@@ -738,7 +738,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 if "TK-SHELL-PARSE" in rec["rule_ids"]:
                     unread_causes[decision["unread"]] += 1
             if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
-                rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
+                rec["text"] = call_text(tool, _shown(tool, scrub(args), _dotenv(args)))
             calls_out.append(rec)
         mine = calls_out[start:]
         if name in agents:   # an agent's second default folder: its counts add to the first's

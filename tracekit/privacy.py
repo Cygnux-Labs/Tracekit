@@ -4,10 +4,10 @@ Order is always: redact -> classify (value or hash reference) -> sign.
 The same functions are used for the local ledger and for exported bundles, so a bundle can
 never contain more than the ledger does.
 """
-import bisect
 import collections
 import functools
 import importlib
+import json
 import re
 
 from .core import content_ref, content_value, scrub
@@ -36,10 +36,11 @@ SECRET_PATTERNS = [
 # dotenv-style lines: every value is treated as secret when the content comes from a .env file
 DOTENV_LINE = re.compile(r"(?m)^([ \t]*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=\s*)([\"']?)([^\n\"']+)")
 DOTENV_PATH = re.compile(r"(^|[/\s'\"=@<])\.env(\.[A-Za-z0-9_-]+)?\b")
-# KEY=value / key: value assignments whose key looks secret (.env files, configs, commands)
+# KEY=value / key: value assignments whose key looks secret (.env files, configs, commands), the value in quotes too
+# (a shell's $'...' as well)
 ASSIGNMENT = re.compile(
     r"(?im)\b([A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*)"
-    r"(\s*[=:]\s*)([\"']?)([^\s\"'#]{4,})")
+    r"(\s*[=:]\s*)((?:\$'|[\"'])?)([^\s\"'#]{4,})")
 
 
 # cheap literal pre-checks (lower-cased) so a pattern only runs when its text could be present
@@ -166,7 +167,7 @@ def _redact_jwts(run, s):
     return _marked(s, _jwts(run, s), "jwt")
 
 
-_AFTER = re.compile(r"(\s*[=:]\s*)([\"']?)([^\s\"'#]{4,})")
+_AFTER = re.compile(r"(\s*[=:]\s*)((?:\$'|[\"'])?)([^\s\"'#]{4,})")
 _IDCH = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
 
 
@@ -236,39 +237,45 @@ MAX_DEPTH = 64
 NESTED = "[truncated: nesting too deep]"   # what redact() leaves in place of what is nested deeper than MAX_DEPTH
 
 
-def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _shell=False, unclean=None):
+def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _shell=False, unclean=None, own=True):
     """Recursively redact every string (and every key). Returns (obj, was_redacted).
     Nesting beyond MAX_DEPTH is replaced by a marker instead of recursing without bound. `counts`: as for
     redact_text, and one under `nesting` per marker. `commands`: the (lower-case) names of arguments whose strings, at
     any depth, are shell lines (redact_command, not counted), but a list of strings under one other than `commands`
     is an argv: each word as a word (its program's place, a shell's script as a line: _argv_hows). `noted`: a string
     redaction may have hid more than values in starts with a line saying so (hidden), so a person reading it knows (an
-    approver's copy). `unclean`: as for redact_command, for every command string."""
+    approver's copy). `unclean`: as for redact_command, for every command string; and it gets True when redaction
+    takes a character that makes code out of any other string or any key (_coded: a sql query, a program's code).
+    `own`: as for redact_command."""
     if _depth > MAX_DEPTH:
         if counts is not None:
             counts["nesting"] += 1
         return NESTED, True
     if isinstance(obj, str):
         if _shell:
-            out, hit = redact_command(obj, dotenv, how="line" if _shell in (True, "lines") else _shell, unclean=unclean)
+            out, hit = redact_command(obj, dotenv, own, "line" if _shell in (True, "lines") else _shell, unclean)
         else:
             out, hit = redact_text(obj, counts)
             if dotenv:
                 out, hit2 = redact_dotenv(out, counts)
                 hit = hit or hit2
+            if hit and unclean is not None and _coded(obj, out):
+                unclean.append(True)
         return (hidden(obj, out) if noted else "") + out, hit
     if isinstance(obj, list):
         hows = _argv_hows(obj) if _shell is True and all(isinstance(x, str) for x in obj) else {}
-        res = [redact(x, dotenv, _depth + 1, counts, commands, noted, hows.get(k, _shell), unclean)
+        res = [redact(x, dotenv, _depth + 1, counts, commands, noted, hows.get(k, _shell), unclean, own)
                for k, x in enumerate(obj)]
         return [r[0] for r in res], any(r[1] for r in res)
     if isinstance(obj, dict):
         out, hit = {}, False
         for k, v in obj.items():
             rk, hk = redact_text(k, counts) if isinstance(k, str) else (k, False)
+            if hk and unclean is not None and _coded(k, rk):
+                unclean.append(True)
             name = k.lower() if isinstance(k, str) else None
             rv, hv = redact(v, dotenv, _depth + 1, counts, commands, noted,
-                            _shell or name in commands and ("lines" if name == "commands" else True), unclean)
+                            _shell or name in commands and ("lines" if name == "commands" else True), unclean, own)
             out[rk] = rv
             hit = hit or hk or hv
         return out, hit
@@ -276,44 +283,88 @@ def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _
 
 
 def _argv_hows(words):
-    """{index: how} for redact_command of each word of argv `words`: "line" for a shell's script (_code_words),
-    "program" in a program's place (_programs), "code" where the reader can't follow it, else "word"."""
-    code, programs = _code_words(_argv(words)), _programs(_argv(words))
-    return {k: {"shell": "line", "code": "code"}.get(code.get(k), "program" if k in programs else "word")
-            for k in range(len(words))}
+    """{index: how} for redact_command of each word of argv `words`, as the policy's parser reads the argv (_Facts):
+    "line" for a script a shell runs (sh -c's, watch's), "interp" for an interpreter's program, "program" for a
+    program's name, else "word"; every word "code" when the parser can't read the argv, or reads code in it that is no
+    one word nor in a script read as a line (ssh's words joined)."""
+    facts = _Facts(argv=words)
+    lines = [w for w in words if facts.code.get(w) == "shell"]
+    if not facts.sure or any(t not in facts.words and not any(t in w for w in lines) for t in facts.code):
+        return dict.fromkeys(range(len(words)), "code")
+    return {k: {"shell": "line", "interp": "interp"}.get(facts.code.get(w)) or (
+        "program" if w in facts.programs else "word") for k, w in enumerate(words)}
+
+
+# the arguments a call's command is in, at any depth and in any case (the engine's, TK-S010's), and the one a typed
+# call's line is in (typed_lines): each read as the shell line or the argv it is, by the engine and by an approver's copy
+COMMAND_KEYS = frozenset(("command", "commands", "cmd", "cmds", "script", "shell_command"))
+TYPED_LINE = "typed_line"
+
+
+def typed_lines(tool, args):
+    """The arguments of a call besides COMMAND_KEYS that the signer decides as a shell line (signer.service.evaluate),
+    which its approver's copy and v1's record read as one too: `typed_line` (the line typed keys put text into), and
+    process_manage's `data` (what a write or a submit types into a running process)."""
+    if not isinstance(args, dict):
+        return []
+    return [TYPED_LINE] * isinstance(args.get(TYPED_LINE), str) + ["data"] * (
+        tool == "process_manage" and args.get("action") in ("write", "submit") and isinstance(args.get("data"), str))
 
 
 # the rule that denies a held call whose approver's copy would hide more than clean values (approver_copy), its reason
-# and what to do: v2's signer and v1's hook give the same
+# and what to do: v2's signer and v1's hook give the same; v1 also denies a hold whose summary would be cut
 HIDDEN_CODE = "TK-HIDDEN-CODE"
 HIDDEN_CODE_REASON = ("this command puts code behind text that looks like a secret, so a person can't see what "
                       "they'd approve")
 HIDDEN_CODE_REMEDY = "Rewrite it without inline secrets (read them from the environment or a file the command names)."
-HIDDEN_CODE_MESSAGE = (f"Blocked by Tracekit: {HIDDEN_CODE_REASON}; {HIDDEN_CODE_REMEDY[0].lower()}"
-                       f"{HIDDEN_CODE_REMEDY[1:-1]} ({HIDDEN_CODE})")   # what v1 tells the agent
+SUMMARY_CHARS = 400   # what v1's approval summary holds (approval_summary): a hold whose summary is longer is denied
+LONG_REASON = f"this call is too long for its approval request ({SUMMARY_CHARS} characters), so a person can't see " \
+              "what they'd approve"
+LONG_REMEDY = "Split it into shorter calls."
 
 
-def screened(decision, ti, recorded, unclean):
-    """v1's `decision` on a call with tool input `ti`, recorded as `recorded` (tool_input's, with `unclean`): a hold
-    whose record, which its approver reads, would hide more than clean values in its command is denied
-    (HIDDEN_CODE); a hold that hides values says how much (`note`, the summary's first line)."""
+def hidden_message(decision):
+    """What v1 tells the agent of a hold `decision` screened denies (HIDDEN_CODE): its reason and what to do."""
+    reason, _, remedy = decision["reasons"][-1].partition(". Instead: ")
+    return f"Blocked by Tracekit: {reason}; {remedy[:1].lower()}{remedy[1:].rstrip('.')} ({HIDDEN_CODE})"
+
+
+def approval_summary(name, recorded, note=""):
+    """What v1's approval request shows the person who answers it: the tool's `name`, the `note` (hidden), and the
+    call's command, file or URL as `recorded` (tool_input's), or each of several, when it names several."""
+    shown = ""
+    for one, many in (("command", "commands"), ("file_path", "paths"), ("url", "urls")):
+        each = (recorded.get(many) or {}).get("value")   # a call on several, each decided: the approver sees all
+        v = each if isinstance(each, list) and len(each) > 1 else (recorded.get(one) or {}).get("value")
+        if v:
+            shown = f"{len(v)} {many}={json.dumps(v)}" if isinstance(v, list) else f"{one}={v}"
+            break
+    return f"{name} {note}{shown}"
+
+
+def screened(decision, name, ti, recorded, unclean):
+    """v1's `decision` on a call of tool `name` with tool input `ti`, recorded as `recorded` (tool_input's, with
+    `unclean`): a hold whose record, which its approver reads, would hide more than clean values (unclean), or whose
+    approval summary would be cut (longer than SUMMARY_CHARS), is denied (HIDDEN_CODE); a hold that hides values says
+    how much (`note`, the summary's first line)."""
     if decision["decision"] != "ask":
         return decision
-    if unclean:
-        return {**decision, "decision": "deny", "rule_ids": decision["rule_ids"] + [HIDDEN_CODE],
-                "reasons": decision["reasons"] + [f"{HIDDEN_CODE_REASON}. Instead: {HIDDEN_CODE_REMEDY}"]}
     shown = (recorded.get("command") or {}).get("value") if isinstance(recorded.get("command"), dict) else None
-    return {**decision, "note": hidden(ti["command"], shown)} if isinstance(ti.get("command"), str) and \
-        isinstance(shown, str) else decision
+    note = hidden(ti["command"], shown) if isinstance(ti.get("command"), str) and isinstance(shown, str) else ""
+    if unclean or len(approval_summary(name, recorded, note)) > SUMMARY_CHARS:
+        reason, remedy = (HIDDEN_CODE_REASON, HIDDEN_CODE_REMEDY) if unclean else (LONG_REASON, LONG_REMEDY)
+        return {**decision, "decision": "deny", "rule_ids": decision["rule_ids"] + [HIDDEN_CODE],
+                "reasons": decision["reasons"] + [f"{reason}. Instead: {remedy}"]}
+    return {**decision, "note": note}
 
 
-def approver_copy(args, dotenv, commands):
-    """(the approver's copy of a held call's parsed `args`: redact with each string under an argument named in
-    `commands` read as a shell line or an argv, and noted; whether it hides more than clean values in a command, one
-    word of plain text no shell reads as more each, which no person can approve the call by: redact_command's
-    `unclean`)."""
+def approver_copy(args, dotenv, tool="", noted=True):
+    """(the approver's copy of a held call of `tool` with parsed `args`: redact with each string under COMMAND_KEYS or
+    typed_lines read as a shell line or an argv, and, `noted`, noted; whether it hides more than clean values, which
+    no person can approve the call by: redact's `unclean`)."""
     unclean = []
-    return redact(args, dotenv, commands=commands, noted=True, unclean=unclean)[0], bool(unclean)
+    return redact(args, dotenv, commands=COMMAND_KEYS | set(typed_lines(tool, args)), noted=noted,
+                  unclean=unclean)[0], bool(unclean)
 
 
 NOTE_CHARS = 256   # what redaction hides, past which a person is told how much: more than a few secrets' worth
@@ -322,6 +373,24 @@ NOTE = "# [{} characters hidden by redaction]\n"
 NOTE_CODE = "# [{} characters hidden by redaction, among them {}, which a shell can read as code]\n"
 _SHELL_READS = re.compile(r"[\s;&|<>()`$\\'\"]")
 _CODE_READS = "\n;&|<>()$`"   # of those, the ones that make code
+# the & that starts a URL query's next parameter (?api_key=…&limit=10): no command follows it, only an assignment
+_QUERY = re.compile(r"&(?=[A-Za-z0-9_.~%-]+=)")
+
+
+def _took(before, after, query=False):
+    """(how many characters redaction took out of string `before` to give `after`, marks aside; a Counter of the
+    _SHELL_READS characters among them, with `query` a URL query's & aside: _QUERY)."""
+    b, a = MARK.sub("", before), MARK.sub("", after)
+    n = len(b) - len(a)
+    if query:
+        b, a = _QUERY.sub("", b), _QUERY.sub("", a)
+    return n, collections.Counter(_SHELL_READS.findall(b)) - collections.Counter(_SHELL_READS.findall(a))
+
+
+def _coded(before, after):
+    """Whether redaction took one of _CODE_READS out of `before` to give `after` (a held call's copy can't hide it),
+    a URL query's & aside."""
+    return any(c in _CODE_READS for c in _took(before, after, True)[1])
 
 
 def hidden(before, after):
@@ -329,9 +398,7 @@ def hidden(before, after):
     it (marks aside), when they should be told, else "": when it took more than NOTE_CHARS, or a blank, a line end, a
     quote, a backslash or another character the shell reads, so it may be more than one value (words, lines, code);
     naming each of _CODE_READS it took (NOTE_CODE)."""
-    b, a = MARK.sub("", before), MARK.sub("", after)
-    took = collections.Counter(_SHELL_READS.findall(b)) - collections.Counter(_SHELL_READS.findall(a))
-    n = len(b) - len(a)
+    n, took = _took(before, after)
     if not (n > NOTE_CHARS or n > 0 and took):
         return ""
     code = ["a line break" if c == "\n" else c for c in _CODE_READS if c in took]
@@ -364,7 +431,7 @@ _CASE = re.compile(r"case(?=[ \t\n;&|<>()]|\Z)")
 _NAME_EQ = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=")   # a word's KEY=, named as DOTENV_LINE names it
 _ARRAY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")   # what an array's (…) follows: x=(1 2), x+=(3)
 _LEAD = re.compile(r"[ \t]*(?:export\s+)?")   # what DOTENV_LINE reads before a KEY
-_SEP = re.compile(r"\s*[=:]\s*[\"']?")   # what ASSIGNMENT reads between a name and its value
+_SEP = re.compile(r"\s*[=:]\s*(?:\$'|[\"'])?")   # what ASSIGNMENT reads between a name and its value
 # what on a line may give a program's name another meaning (a function, an alias, PATH) or send what a program prints
 # to one that runs it (>(…), a coprocess, a named pipe): no heredoc on it is data
 _UNSURE = re.compile(r"\b(?:alias|enable|hash|function|coproc|mkfifo|mknod)\b|\(\s*\)|>\(|\b(?:BASH_ENV|ENV|PATH)\+?=")
@@ -372,12 +439,19 @@ _DEPTH = 8   # code read as a shell line of its own inside another this deep: de
 # $( <( >( open at once, past which the reader doesn't follow the line: each holds the line's state, which made a
 # line of 256 KiB of "$( take 0.6 s with the garbage collector on
 _FRAMES = 64
-_EVERY = ("eval", "ssh")   # each word after one is code a shell reads as a line: eval's, ssh's remote command
-# what a hidden value may not hold in a held call's copy: a blank or a character the shell reads (a separator, a
-# quote, an expansion, a pattern)
-_CODE_LIKE = re.compile(r"[\s|&;()<>'\"\\$`{}*?\[\]]")
-_MADE = re.compile(r"\$(?!\{?IFS\b)|`")   # an expansion that makes text (IFS only splits it)
 _REFERENCE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")   # a variable's name, no value
+# where each character of a shell line sits (_Reading.ctx): in code; in '...', "..." or $'...'; in a heredoc body bash
+# keeps as written, or a comment; in a body it expands
+CODE, SQ, DQ, ANSI, LITERAL, EXPANDED = range(6)
+_CODE_LIKE = re.compile(r"[\s|&;()<>'\"\\$`{}*?\[\]]")
+# what a value hidden in a held call's copy may not hold where it sits (_clean): in code, a blank or any character the
+# shell reads; elsewhere, what separates commands or words in a shell or most languages (a blank, ; & | ( ) < > ` and
+# $, as in ${IFS}), since a program may read a quoted word or a body as code the policy's parser doesn't (docker exec c
+# sh -c, Rscript -e) or write it to a script that runs later (>> ~/.bashrc), and what bash still reads there: a quote
+# that ends it, and in "...", $'...' and a body it expands, a backslash
+_SEEN = {CODE: _CODE_LIKE, SQ: re.compile(r"[\s|&;()<>$`']"), DQ: re.compile(r'[\s|&;()<>$`"\\]'),
+         ANSI: re.compile(r"[\s|&;()<>$`'\\]"), LITERAL: re.compile(r"[\s|&;()<>$`]"),
+         EXPANDED: re.compile(r"[\s|&;()<>$`\\]")}
 
 
 def _past(s, k, close, open_="", depth=1, end=None):
@@ -436,148 +510,110 @@ def _policy(name):
     return importlib.import_module("tracekit.policy2." + name)
 
 
-class _At(str):
-    """A command's word as bash gives it, knowing its place among the command's words (`at`), which shell's readers of
-    a command return as they were given it."""
-
-
-def _argv(words):
-    """`words`, each an _At knowing its place."""
-    out = [_At(w) for w in words]
-    for k, w in enumerate(out):
-        w.at = k
-    return out
-
-
 def _words(s, spans):
     """The words at `spans` of shell line `s` as bash gives them, near enough to name a program and its options:
-    without their quotes and backslashes (_argv)."""
-    return _argv(s[a:b].translate(_policy("shell")._UNQUOTED) for a, b in spans)
+    without their quotes and backslashes."""
+    return [s[a:b].translate(_policy("shell")._UNQUOTED) for a, b in spans]
 
 
-def _code_words(words):
-    """{index: how} of each of a command's `words` (_words) that is code: a shell's -c script, su's or script's -c and
-    each word after eval or ssh, which a shell reads as a line of its own ("shell"); an interpreter's -c or -e program
-    ("interp"); another shell's -c, and every word after more such programs than are read one by one ("code");
-    wherever in the command their program is named (sudo sh -c, docker exec c sh -c, xargs python3 -c)."""
-    shell = _policy("shell")
-    found, runs = {}, 0
-    for j, w in enumerate(words):
-        name = shell.base_name(w)
-        kind = shell._kind(name)
-        if not (kind or name in _EVERY or name in shell.SHELLS or name in shell.DASH_C or name in shell.FOREIGN_SHELLS):
-            continue
-        rest, runs = words[j + 1:j + 65], runs + 1
-        if name in _EVERY or len(words) > j + 65 or runs > 16:
-            found.update(dict.fromkeys(range(j + 1, len(words)), "shell" if name in _EVERY else "code"))
-            break
-        if name in shell.SHELLS:
-            mode, script = shell._shell_mode(rest, name)
-            got = [script] if mode == "c" else []
-        elif kind:
-            got = shell._code_arg(kind, rest)
-            got = got if isinstance(got, list) else [got]
-        else:
-            got = [shell._dash_c(rest)]
-        how = "shell" if name in shell.SHELLS or name in shell.DASH_C else "interp" if kind else "code"
-        for g in got:   # the word itself, or the option word it is part of (-c'…')
-            k = g.at if isinstance(g, _At) else next(
-                (k for k in range(j + 1, len(words)) if g and words[k][:1] == "-" and words[k].endswith(g)), None)
-            if k is not None:
-                found[k] = how if found.get(k, how) == how else "code"
-    return found
+class _Facts:
+    """What the policy's own shell parser (policy2.shell.analyse, analyse_argv) reads in a shell `line` or an `argv`,
+    which decides for a held call's copy what is code: `programs`, each program a command it finds runs, at any depth
+    (through a wrapper, a runner, a function, a reserved word, a variable, sh -c, eval, ssh, watch, trap, an alias, git
+    -c, env -S, GIT_SSH_COMMAND, a script the line writes), as written and as its name, and the script file each
+    shell, source or interpreter runs (`bash x.sh`, `. ./env.sh`, `python3 x.py`); `code`, {text: "shell" or
+    "interp"} of each text it reads again as code; `sure`, False when it can't read the line (ParseError, over
+    engine.MAX_SUBJECT, its loop values' readings cut) or a command runs what it can't read (opaque: `echo x | sh`,
+    `$X` it can't follow, sed's `e`). `named`: the programs and scripts as written (an expansion's, as it gives
+    them). `words`: the argv's, a set."""
+
+    def __init__(self, line=None, argv=None):
+        self.programs, self.named, self.code, self.sure, self.words = set(), set(), {}, False, set(argv or ())
+        shell, engine = _policy("shell"), _policy("engine")
+        if (len(line) if line is not None else sum(map(len, argv))) > engine.MAX_SUBJECT:
+            return
+        try:
+            cmds, *_, learned = shell.analyse(line) if line is not None else shell.analyse_argv(argv)
+        except (shell.ParseError, RecursionError):
+            return
+        for c in cmds:
+            name, args = c["argv"][0], c["argv"][1:]
+            self.named.add(c["word"])
+            self.programs.add(name)
+            kind, script = shell._kind(name), None
+            if name in shell.SHELLS:
+                mode, script = shell._shell_mode(args, name)
+                script = script if mode is None else None
+            elif name in ("source", "."):
+                script = args[0] if args else None
+            elif kind not in (None, "awk", "sed") and shell._code_arg(kind, args) is None:
+                script = next((a for a in args if a[:1] != "-"), None)
+            if script:
+                self.named.add(script)
+        self.programs |= self.named
+        self.code = learned["code"]
+        self.sure = not learned["pieces_cut"] and not any(c.get("opaque") for c in cmds)
 
 
-def _programs(words):
-    """The indexes of a command's `words` (_words) in a program's place: its first that isn't an assignment, the one
-    each wrapper or runner there runs (sudo, env, xargs, uv run: shell._unwrap) and the one after find's -exec, in
-    turn."""
-    shell = _policy("shell")
-    out, todo = set(), [0]
-    while todo:
-        i = todo.pop()
-        while i < len(words) and shell._ASSIGN.match(words[i]):
-            i += 1
-        if i >= len(words) or i in out:
-            continue
-        out.add(i)
-        name, args = shell.base_name(words[i]), words[i + 1:i + 65]
-        runner = name.partition("@")[0]
-        wrapper = name if name in shell.WRAPPERS else runner if runner in shell.RUNNERS and \
-            shell.runner_at(runner, args) else None
-        todo += [i + 1 + len(args) - len(inner) for inner in shell._unwrap(wrapper, args) if inner] if wrapper else []
-        todo += [i + 2 + k for k, a in enumerate(args)
-                 if name == "find" and a in ("-exec", "-execdir", "-ok", "-okdir")]
-    return out
-
-
-def _stdin(stages, nested):
-    """How the heredoc or herestring each of pipeline `stages` (each a command's _words) reads is read: "data" when a
+def _data_stdin(stages, nested):
+    """For each of pipeline `stages` (each a command's _words): whether the heredoc or herestring it reads is data: a
     program that reads only data (shell.DATA_ONLY: cat, tee; awk's or sed's program aside) reads it, and so does each
-    stage after it, outside a substitution, a subshell or a block, on a line _UNSURE finds nothing on (not `nested`);
-    "shell" when a shell, at or batch reads its script from stdin there or after it and no interpreter does; "interp"
-    when an interpreter does and no shell; else "code"."""
+    stage after it, outside a substitution, a subshell or a block, on a line _UNSURE finds nothing on (not
+    `nested`)."""
     shell = _policy("shell")
-    out, data, sh, other = [], True, False, False
+    out, data = [], True
     for words in reversed(stages):
-        names = [shell.base_name(w) for w in words]
         k = next((k for k, w in enumerate(words) if not shell._ASSIGN.match(w)), len(words))
-        kind = k < len(words) and shell._kind(names[k])
-        data = data and k < len(words) and names[k] in shell.DATA_ONLY and not (
-            kind and shell._reads_stdin(kind, words[k + 1:]))
-        sh = sh or any(x in ("at", "batch") or x in shell.SHELLS and shell._shell_mode(words[j + 1:j + 65], x)[0] ==
-                       "stdin" for j, x in enumerate(names))
-        other = other or any(shell._kind(x) not in (None, "awk", "sed") for x in names)
-        out.append("data" if data and not nested else "shell" if sh and not other else "interp" if other and not sh
-                   else "code")
+        name = shell.base_name(words[k]) if k < len(words) else ""
+        kind = shell._kind(name)
+        data = data and name in shell.DATA_ONLY and not (kind and shell._reads_stdin(kind, words[k + 1:]))
+        out.append(data and not nested)
     return out[::-1]
 
 
 def _command():
     """A simple command as _read_shell reads it: its words' and herestrings' spans; whether it reads a heredoc, and
-    has a quote or a backslash in a word (so a word may be code the line itself doesn't read); how its stdin is read."""
-    return {"words": [], "here": [], "docs": False, "quoted": False, "how": None}
+    has a quote or a backslash in a word (so a word may be code the line itself doesn't read); whether its stdin is
+    data (_data_stdin)."""
+    return {"words": [], "here": [], "docs": False, "quoted": False, "data": None}
 
 
 class _Reading:
-    """Shell line `s` as _read_shell reads it. `cut`, `body`, `unsure`, `quote` and `inq`: bytearrays one longer than
-    `s`. `cut`: 1 at each place a hidden value ends at the latest, which is the first character of each blank run,
-    control operator and redirection outside quotes, each line end, each start of code ($( <( >( ` ${), the end of a
-    heredoc's body and of a script read on its own, and the end; text, what a program reads as data or as an
-    interpreter's program (a comment, a heredoc body cat or python3 reads, python3 -c's code, a word of an argv), has
-    none, so a value there is hidden as far as its rule reads, as in content. `body`: 1 in each heredoc body. `unsure`:
-    1 in what the reader can't read as bash does (_read_shell). `quote`: 1 at each quote that opens or closes a part
-    ($'…''s at its $); `inq`: 1 in each part after its opening quote, to its closing one. `starts`: where each word
-    outside quotes may start. `pipes`: each pipeline's commands' word spans, of all the code read as a shell line.
-    `subst`: whether one has a process substitution."""
+    """Shell line `s` as _read_shell reads it. `cut`, `ctx`, `body`, `unsure`, `interp`, `quote` and `inq`:
+    bytearrays one longer than `s`. `cut`: 1 at each place a hidden value ends at the latest, which is the first
+    character of each blank run, control operator and redirection outside quotes, each line end, each start of code
+    ($( <( >( ` ${), the end of a heredoc's body and of a script read on its own, and the end; text a program reads as
+    data (a comment, a heredoc body cat reads) has none, so a value there is hidden as far as its rule reads, as in
+    content. `ctx`: where each character sits (CODE, SQ, DQ, ANSI, LITERAL, EXPANDED). `body`: 1 in each heredoc body.
+    `unsure`: 1 in what the reader can't read as bash does (_read_shell); `interp`: 1 in an interpreter's program.
+    `quote`: 1 at each quote that opens or closes a part ($'…''s at its $); `inq`: 1 in each part after its opening
+    quote, to its closing one. `starts`: where each word outside quotes may start. `pipes`: each pipeline's commands'
+    word spans, of all the code read as a shell line. `code`: the texts read again as code, of _Facts.code."""
 
     def __init__(self, s):
         n = len(s)
-        self.s, self.starts, self.pipes, self.subst = s, [], [], False
-        self.cut, self.body, self.unsure, self.quote, self.inq = (bytearray(n + 1) for _ in range(5))
+        self.s, self.starts, self.pipes, self.code = s, [], [], set()
+        self.cut, self.ctx, self.body, self.unsure, self.interp, self.quote, self.inq = (
+            bytearray(n + 1) for _ in range(7))
         self.cut[n] = 1
 
 
-def _mark(a, start, end):
-    a[start:end] = b"\1" * (end - start)
+def _mark(a, start, end, value=1):
+    a[start:end] = bytes([value]) * (end - start)
 
 
-def _read_shell(s, how="line"):
-    """Shell line `s` as bash reads it (or, `how` "word", one word of data): a _Reading. Code in a word or a heredoc
-    is read again as code (_code_words, _stdin): a heredoc, herestring or word a shell reads as a line of its own (sh
-    -c's script, eval's words), as such a line; an interpreter's program, as text. Unsure: what the reader can't read
-    exactly as bash does: what follows a heredoc's end word with an expansion or a line continuation in it ($'EOF'), a
-    "..." script with a backslash, $ or ` (which the shell running the line reads first), what another program reads as
-    code (ssh's stdin, fish -c's script), backquotes, ${...}, arithmetic, an array's (...), the rest of a $(...) once a
-    `case` starts in it, a script nested more than _DEPTH deep.
-    lean: a command other than those _code_words and _programs name that runs a word as code (watch, trap, git's
-    aliases) has it read as a word; a value there is hidden as far as its quotes and its rule read, and a held call's
-    copy hides none with a blank or a shell character in it (approver_copy)."""
+def _read_shell(s, facts=None):
+    """Shell line `s` as bash reads it: a _Reading. With `facts` (_Facts: the policy parser's reading), what it reads
+    again as code is read as code: a word or herestring of one '…' (or "…" with no \\ $ or `) whose text it reads as
+    a shell line, and a heredoc whose body it does, as such a line; an interpreter's program, as interp. A heredoc
+    body is data when _data_stdin says so; else unsure. Unsure too: what the reader can't read exactly as bash does:
+    what follows a heredoc's end word with an expansion or a line continuation in it ($'EOF'), backquotes, ${...},
+    arithmetic, an array's (...), the rest of a $(...) once a `case` starts in it, more than _FRAMES substitutions open
+    at once, a script nested more than _DEPTH deep."""
     r = _Reading(s)
-    cut, body, unsure, quote, inq, starts = r.cut, r.body, r.unsure, r.quote, r.inq, r.starts
+    cut, ctx, body, unsure, quote, inq, starts = r.cut, r.ctx, r.body, r.unsure, r.quote, r.inq, r.starts
     plain = not _UNSURE.search(s)
-    if how != "line":
-        return r
+    code = facts.code if facts else {}
 
     def unread(a, b):   # code the reader doesn't follow: a value ends where it starts
         cut[a] = 1
@@ -585,37 +621,42 @@ def _read_shell(s, how="line"):
         return b
 
     def read_code(a, b, how, depth):
-        """[a, b) is code: read as a shell line of its own (`how` "shell"), text (an interpreter's), or unsure."""
+        """[a, b) is code (_Facts.code's `how`): read as a shell line of its own, or an interpreter's program."""
         cut[b] = 1
         if how == "shell" and depth < _DEPTH:
-            inq[a:b + 1] = bytes(b + 1 - a)
+            r.code.add(s[a:b])
+            for x in (ctx, inq, quote):
+                x[a:b + 1] = bytes(b + 1 - a)
             read(a, b, depth + 1)
-        elif how != "interp":
+        elif how == "interp":
+            r.code.add(s[a:b])
+            _mark(r.interp, a, b)
+        else:
             _mark(unsure, a, b)
 
-    def word_code(a, b, how, depth):
-        """The word at [a, b) is code: what one '…', or "…" with no \\ $ or `, holds read as `how` says; else the
-        word read as text (an interpreter's) or unsure."""
-        if how == "shell" and b - a > 1 and s[a] in "'\"" and quote.find(1, a + 1, b) == b - 1 and (
-                s[a] == "'" or not _SPECIAL_DQ.search(s, a + 1, b - 1)):
-            read_code(a + 1, b - 1, how, depth)
-        elif how != "interp":
-            _mark(unsure, a, b)
+    def word_code(a, b, depth):
+        """Whether the word at [a, b) ends in one '…', or "…" with no \\ $ or `, whose text the parser reads as code
+        (sh -c '…', alias x='…', GIT_SSH_COMMAND='…'); if so, that text is read as that code."""
+        q = quote.find(1, a, b)
+        if q >= 0 and s[q] in "'\"" and b - q > 1 and quote.find(1, q + 1, b) == b - 1 and (
+                s[q] == "'" or not _SPECIAL_DQ.search(s, q + 1, b - 1)) and (how := code.get(s[q + 1:b - 1])):
+            read_code(q + 1, b - 1, how, depth)
+            return True
+        return False
 
     def finish(pipe, nested, depth):
-        """Pipeline `pipe` is read: what reads each heredoc and herestring of its commands, and which words are code."""
+        """Pipeline `pipe` is read: whether each command's heredoc and herestring are data, and which words are code."""
         r.pipes.append([c["words"] for c in pipe])
         if not any(c["quoted"] or c["here"] or c["docs"] for c in pipe):
             return
-        words = [_words(s, c["words"]) for c in pipe]
-        for c, how in zip(pipe, _stdin(words, nested)):
-            c["how"] = how
-        for c, ws in zip(pipe, words):
-            for k, how in _code_words(ws).items():
-                word_code(*c["words"][k], how, depth)
+        for c, data in zip(pipe, _data_stdin([_words(s, c["words"]) for c in pipe], nested)):
+            c["data"] = data
+        for c in pipe:
+            for a, b in c["words"] if code else ():
+                word_code(a, b, depth)
             for a, b in c["here"]:
-                if c["how"] != "data":
-                    word_code(a, b, c["how"], depth)
+                if not word_code(a, b, depth) and not c["data"]:
+                    _mark(unsure, a, b)
 
     def read(a, z, depth):
         cmd, frames, pending = _command(), [], []   # frames: the line's state around each $( <( >(, to go on with
@@ -658,6 +699,7 @@ def _read_shell(s, how="line"):
             j = m.start() if m else z
             if dq:
                 _mark(inq, i, j)
+                _mark(ctx, i, j, DQ)
             elif j > i and not word:
                 if frames and _CASE.match(s, i):
                     _mark(unsure, i, z)
@@ -670,7 +712,7 @@ def _read_shell(s, how="line"):
                 break
             c = s[i]
             if not dq and c in "<>" and s.startswith("(", i + 1):   # a process substitution: a word, or part of one
-                cut[i], r.subst = 1, True
+                cut[i] = 1
                 i = frame(i)
                 continue
             if not dq and c == "(" and word and _ARRAY.fullmatch(s, ws, i):   # an array's values: one word to bash
@@ -704,22 +746,29 @@ def _read_shell(s, how="line"):
                         end_command(ops in ("|", "|&"))
                     i = e
                     continue
-                if c == "#":   # a comment, to its line's end: text
+                if c == "#":   # a comment, to its line's end: text no shell runs
                     e = s.find("\n", i, z)
-                    i = z if e < 0 else e
+                    e = z if e < 0 else e
+                    _mark(ctx, i, e, LITERAL)
+                    i = e
                     continue
                 if c == "\n":   # the bodies of the heredocs this line opened follow it, each to its end line
                     end_command(False)   # (a pipeline the line ends in | goes on after them: its last stage reads none)
                     i += 1
                     for end, tabs, kept, owner in pending:
                         b, e = _end_line(s, i, end, tabs, z)
-                        how = owner["how"] or "code"   # (one a $(...) opened that a line end in another ends: unsure)
+                        # (a body a shell reads; a file's, which keeps its last line end, that the line runs)
+                        k = b - 1 if b > i and s[i:b - 1] in code else b
+                        how = code.get(s[i:k]) if b > i else None
                         _mark(body, i, b)
-                        if how == "data":
+                        if how:
+                            read_code(i, k, how, depth)
+                        elif owner["data"]:
+                            _mark(ctx, i, b, LITERAL if kept else EXPANDED)
                             while not kept and (x := _EXPANDS.search(s, i, b)):   # its $(...) and `...` run now
                                 i = unread(x.start(), min(_past(s, x.end(), *_CLOSES[x.group()], end=b), b))
                         else:
-                            read_code(i, b, how, depth)
+                            _mark(unsure, i, b)
                         cut[b] = cut[e] = 1   # its end line stays in view
                         i = min(e + 1, z)
                     pending = []
@@ -743,6 +792,7 @@ def _read_shell(s, how="line"):
                 ws, word = i, True
             if dq:   # what bash reads in "...": in its part, as its closing quote is
                 _mark(inq, i, i + 1 + (c == "\\"))
+                _mark(ctx, i, i + 1 + (c == "\\"), DQ)
             if c == "\\":
                 cmd["quoted"] = True
                 i += 2
@@ -753,6 +803,7 @@ def _read_shell(s, how="line"):
                 if e < z:
                     quote[e] = 1
                 _mark(inq, i + 1, e + 1)
+                _mark(ctx, i + 1, e + 1, SQ)
                 i = e + 1
             elif c == '"':
                 cmd["quoted"], quote[i] = True, 1
@@ -774,6 +825,7 @@ def _read_shell(s, how="line"):
                 if closed:
                     quote[e - 1] = 1
                 _mark(inq, i + 1, e + (not closed))
+                _mark(ctx, i + 1, e + (not closed), ANSI)
                 i = e
             else:   # a $ alone, or a parameter: in the value it is in ($IFS: the value hides it, so a held call denies)
                 i += 1
@@ -788,57 +840,19 @@ def _read_shell(s, how="line"):
     return r
 
 
-def _feeds(r, marks):
-    """(program, fed) of _Reading `r` with `marks` (sorted spans), for a held call's copy: `program`, 1 in each word in
-    a program's place (_programs) of a command a mark is in, of code read as a shell line; `fed`, whether the line hands
-    text to code the reader doesn't follow: a program, a shell's script or eval's word made by an expansion, a source
-    or . with one (`$X`, `eval "$x"`, `sh -c "$c"`; $IFS only splits), a stage after the first that may run what it
-    reads (`| sh`, `| xargs rm`: engine._may_run_input), or a process substitution on a line where a shell or an
-    interpreter runs."""
-    shell, s = _policy("shell"), r.s
-    program, fed, starts = bytearray(len(s) + 1), False, [v for v, _, _ in marks]
-    for pipe in r.pipes:
-        for k, spans in enumerate(pipe):
-            if not spans:
-                continue
-            lo, hi = spans[0][0], spans[-1][1]
-            j = bisect.bisect_left(starts, lo)
-            marked = j > 0 and marks[j - 1][1] > lo or j < len(starts) and starts[j] < hi
-            made = bool(_MADE.search(s, lo, hi))
-            if not (marked or made or k or r.subst):
-                continue
-            words = _words(s, spans)
-            for i in _programs(words):
-                _mark(program, *spans[i])
-                name, raw = shell.base_name(words[i]), s[spans[i][0]:spans[i][1]]
-                fed = fed or bool(_MADE.search(raw)) or r.subst and (
-                    name in shell.SHELLS or name in ("source", ".") or shell._kind(name) not in (None, "awk", "sed")) \
-                    or made and name in ("source", ".") \
-                    or k > 0 and _policy("engine")._may_run_input([name] + words[i + 1:])
-            fed = fed or made and any(how == "shell" and _MADE.search(s, *spans[i])
-                                      for i, how in _code_words(words).items())
-    return program, fed
-
-
 def _rank(kind, first=("private_key", "dotenv", "assignment")):
     """Which of two marks one mark that covers both is named for: the first of `first` among them, else the earlier."""
     return first.index(kind) if kind in first else len(first)
 
 
-def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
-    """(shell line `cmd` as an approver's copy shows it, whether it changed): what each SECRET_PATTERNS rule hides, the
-    value of each secret-looking KEY=value (ASSIGNMENT's) and, with `dotenv`, of every KEY=value; in code read as a
-    shell line, each only up to where the shell ends its word (_Reading.cut) and never past a quote it didn't open, so
-    what runs after it stays in view; in text (a body cat or python3 reads, a comment) and where the reader is unsure,
-    as far as its rule reads, as in content (with `dotenv`, each KEY=value line's to its line's end);
-    a private key whole. `own` False: with `dotenv`, only a heredoc body's KEY=value lines, the line's own values kept
-    (as v1 records a command). `how`: "line", or `cmd` is an argv's word: "word" (data), "program" (in a program's
-    place) or "code" (the reader can't follow it). `unclean`, a list: gets True when a mark hides more than a clean
-    value, one word of plain text no shell reads as more (approver_copy): what it hides holds a blank or a shell
-    character, is in a program's place or where the reader is unsure, or the line runs code the reader doesn't follow
-    (_feeds)."""
-    r = _read_shell(cmd, "word" if how != "line" else how)
-    cut, quote, inq = r.cut, r.quote, r.inq
+def _marks(cmd, r, dotenv, own, expands):
+    """([(start, end, kind)] of what redact_command hides in shell line `cmd` as _Reading `r` reads it, sorted; the
+    starts of those a value's name ends in the word before: `KEY: x`, `KEY = x`). `expands`: bash expands `cmd`'s
+    $NAME, so one where it does ($TOKEN, "$TOKEN", a body with an unquoted end word) is no value."""
+    cut, quote, inq, ctx = r.cut, r.quote, r.inq, r.ctx
+    crossed = set()
+    k = cmd.find("<<")
+    after = cmd.find("\n", k) if k >= 0 else -1   # v1 hides a .env value of its line only after its first heredoc line
 
     def bounded(v, e):
         """[v, e) cut where the shell ends the word at v, or None when nothing is left of it."""
@@ -852,10 +866,12 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
 
     def value(b, v, e):
         """bounded(v, e) for a value after a name ending at `b`, or None when the shell ends the line, or the name's
-        `=`, before it: `A= cmd` runs cmd."""
+        `=`, before it (`A= cmd` runs cmd); one the shell starts a word for (`KEY: x`) is hidden and `crossed`."""
         gap = cmd[b:v]
-        if ("\n" in gap or gap[:1] == "=") and any(c in " \t\n" and cut[k] for k, c in enumerate(gap, b)):
-            return None
+        if any(c in " \t\n" and cut[k] for k, c in enumerate(gap, b)):
+            if "\n" in gap or gap[:1] == "=":
+                return None
+            crossed.add(v)
         return bounded(v, e)
 
     def stop(b):   # where ASSIGNMENT's value after a name ending at `b` ends at the latest: its word's end
@@ -868,7 +884,7 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
             found.append((v, e, name))
     if dotenv:
         for p in r.starts:   # a word KEY=value: its value is the rest of the word, or what its quotes hold
-            if (own or r.body[p]) and (m := _NAME_EQ.match(cmd, p)):
+            if (own or 0 <= after < p) and (m := _NAME_EQ.match(cmd, p)):
                 v, e = m.end(), cut.find(1, m.end())
                 e -= 2 if cmd.startswith("\\\n", e - 2) else 0
                 q = v + 1 + cmd.startswith("$'", v)
@@ -879,19 +895,89 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
         words = set(r.starts)
         for m in DOTENV_LINE.finditer(cmd):   # a line KEY=value in a body, in quotes, or in text
             k = _LEAD.match(cmd, m.start(1)).end()
-            if (own or r.body[m.start(3)]) and k not in words and (e := value(_NAME.match(cmd, k).end(), m.start(3),
-                                                                                m.end(3))):
+            if (own or 0 <= after < m.start(3)) and k not in words and (
+                    e := value(_NAME.match(cmd, k).end(), m.start(3), m.end(3))):
                 found.append((m.start(3), e, "dotenv"))
     marks = []
-    for v, e, kind in sorted(x for x in found if not _REFERENCE.fullmatch(cmd, x[0], x[1])):   # ($TOKEN: no secret)
+    for v, e, kind in sorted(found):
+        if expands and ctx[v] in (CODE, DQ, EXPANDED) and not (r.unsure[v] or r.interp[v]) and \
+                _REFERENCE.fullmatch(cmd, v, e):
+            continue   # a variable's name where bash expands it: no secret, and what the remedy asks for
         if marks and v < marks[-1][1]:   # inside the value before it, or overlapping it: one mark
             p = marks.pop()
             v, e, kind = p[0], max(e, p[1]), min(p[2], kind, key=_rank)
         marks.append((v, e, kind))
+    return marks, crossed
+
+
+def _clean(s, r, marks, crossed, facts):
+    """Whether each of `marks` (in shell line `s` as _Reading `r` reads it with the policy parser's _Facts `facts`)
+    hides only a clean value, which an approver may see a copy without: on a line the parser reads whole (_Facts.sure)
+    whose code it reads again (a script, a program) this reading read as that code too, or found as written where it
+    read code (eval's words) or was unsure, and whose programs and scripts are words it read, or text it was unsure of
+    (not named by an expansion: $X); not starting a word of its own (`crossed`); in one place (_Reading.ctx) and
+    holding nothing _SEEN there; not in an interpreter's program, nor where the reader is unsure; not in a word that
+    names a program or a script the line runs."""
+    if not facts.sure:
+        return False
+    for text, how in facts.code.items():   # else code this reading took for data (a script the line writes and runs)
+        if text in r.code or text == s:
+            continue
+        k, n = s.find(text), len(text)
+        if k < 0 or not (r.unsure.count(1, k, k + n) == n or how == "shell" and r.ctx.count(CODE, k, k + n) == n and
+                         r.unsure.find(1, k, k + n) < 0):
+            return False
+    shell, engine, programs = _policy("shell"), _policy("engine"), facts.programs
+    program = bytearray(len(s) + 1)   # each word in a program's place, and each one an interpreter it can't read reads
+    seen = set()
+    for pipe in r.pipes:
+        for spans in pipe:
+            words = _words(s, spans)
+            seen.update(words)
+            for (a, b), w in zip(spans, words):
+                if w in programs:
+                    _mark(program, a, b)
+            k = next((k for k, w in enumerate(words) if not shell._ASSIGN.match(w)), None)
+            if k is not None and engine._INTERPRETER.fullmatch(shell.base_name(words[k])) and \
+                    not shell._kind(shell.base_name(words[k])):
+                for a, b in spans[k + 1:]:
+                    _mark(r.interp, a, b)
+    for text in facts.named - seen:   # a program or a script an expansion names ($X, . "$F"): a mark may hide it
+        k, n = s.find(text), len(text)
+        if k < 0 or r.unsure.count(1, k, k + n) < n:
+            return False
+    for v, e, _ in marks:   # (one that leaves its quotes, body or comment holds what ends them, which _SEEN finds)
+        c = r.ctx[v]
+        if v in crossed or r.unsure.find(1, v, e) >= 0 or r.interp.find(1, v, e) >= 0 or \
+                program.find(1, v, e) >= 0 or _SEEN[c].search(s[v:e] if c == CODE else _QUERY.sub("", s[v:e])):
+            return False
+    return True
+
+
+def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
+    """(shell line `cmd` as an approver's copy shows it, whether it changed): what each SECRET_PATTERNS rule hides, the
+    value of each secret-looking KEY=value (ASSIGNMENT's) and, with `dotenv`, of every KEY=value; in code read as a
+    shell line, each only up to where the shell ends its word (_Reading.cut) and never past a quote it didn't open, so
+    what runs after it stays in view; in text (a body cat reads, a comment), in an interpreter's program and where the
+    reader is unsure, as far as its rule reads, as in content (with `dotenv`, each KEY=value line's to its line's end);
+    a private key whole; a variable's name where bash expands it, never. `own` False: with `dotenv`, the line's own
+    values kept but after its first heredoc line (as v1 records a command). `how`: "line", or `cmd` is a word of an
+    argv: "word", "program" (a program's name), "interp" (an interpreter's program) or "code" (the parser can't read
+    the argv). `unclean`, a list: gets True when a mark hides more than a clean value (_clean; for an argv's word, any
+    mark in a program's name, an interpreter's program or an argv the parser can't read, and any holding a blank or a
+    character the shell reads)."""
+    r = _read_shell(cmd) if how == "line" else _Reading(cmd)
+    marks, crossed = _marks(cmd, r, dotenv, own, how == "line")
     if unclean is not None and marks:
-        program, fed = (bytearray(len(cmd) + 1), False) if how != "line" else _feeds(r, marks)
-        if fed or how in ("program", "code") or any(_CODE_LIKE.search(cmd, v, e) or r.unsure.find(1, v, e) >= 0 or
-                                       program.find(1, v, e) >= 0 for v, e, _ in marks):
+        if how != "line":
+            dirty = how != "word" or any(_CODE_LIKE.search(cmd, v, e) for v, e, _ in marks)
+        else:
+            facts = _Facts(cmd)
+            if facts.sure and facts.code:   # what the parser reads as code, read as such: sh -c's value ends at its `;`
+                r = _read_shell(cmd, facts)
+                marks, crossed = _marks(cmd, r, dotenv, own, True)
+            dirty = bool(marks) and not _clean(cmd, r, marks, crossed, facts)
+        if dirty:
             unclean.append(True)
     out, last = [], 0
     for v, e, kind in marks:
@@ -902,18 +988,18 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None):
 
 
 def tool_input(tool, ti, content_capture="hashed", unclean=None):
-    """Map a raw tool_input dict to {field: content} per docs/privacy.md. `unclean`: as for redact_command, for each
-    command."""
+    """Map a raw tool_input dict to {field: content} per docs/privacy.md. Each shell line or argv under COMMAND_KEYS
+    or typed_lines is redacted as the shell reads it (redact_command, `unclean` for each), with a .env file named, a
+    command's own KEY=value values kept but after its first heredoc line."""
     out, ti = {}, scrub(ti or {})
     dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS),
                              *(x for k in ACTION_LISTS if isinstance(ti.get(k), list) for x in ti[k]))
+    lines = COMMAND_KEYS | set(typed_lines(tool, ti))
     for k, v in ti.items():
         rk = redact_text(k)[0] if isinstance(k, str) else k
-        if k in ("command", "commands"):   # a shell line, or several: a value hidden to where the shell ends it, and
-            # with a .env file named, a heredoc body's KEY=value lines, the line's own values kept (redact_command)
-            done = [redact_command(c, dotenv, own=False, unclean=unclean) if isinstance(c, str) else redact(c)
-                    for c in (v if isinstance(v, list) else [v])]
-            rv, red = [c for c, _ in done] if isinstance(v, list) else done[0][0], any(h for _, h in done)
+        if isinstance(k, str) and k.lower() in lines:
+            rv, red = redact(v, dotenv, commands=lines, _shell="lines" if k.lower() == "commands" else True,
+                             unclean=unclean, own=k not in ("command", "commands"))
         else:
             rv, red = redact(v, dotenv and k not in ACTION_FIELDS and k not in ACTION_LISTS)
         if content_capture == "full" or k in ALWAYS_CLEAR:

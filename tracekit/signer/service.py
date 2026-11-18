@@ -555,17 +555,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # NUL (agent_hooks.UNKNOWN), unread, and is decided without it too, so a deny the text makes stands. Text typed
         # into a running process (Hermes Agent's process_manage write or submit) is also decided as the shell line it
         # is, where that process is a shell, counting only where a deny or ask rule of the pack matches it: a line a
-        # shell can't read (a REPL's) isn't held for that
-        typed = args.get("typed_line")
-        for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
+        # shell can't read (a REPL's) isn't held for that. Both are privacy.typed_lines, which an approver's copy reads
+        # as shell lines too
+        lines = privacy.typed_lines(tool, args)
+        typed = args[privacy.TYPED_LINE] if privacy.TYPED_LINE in lines else None
+        for text in [typed, typed.replace("\x00", "")] if typed is not None else []:
             b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
             if b["verdict"] in ("ask", "deny"):
                 d = _stricter(d, b)
         flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
-        data = args.get("data")
-        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
-                isinstance(data, str):
-            b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
+        if "data" in lines and cls == "unknown":
+            b = policy.decide("Bash", {"command": args["data"]}, untrusted=untrusted)
             if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
                 d = _stricter(d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
@@ -683,14 +683,14 @@ def _digested(v):
     return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
-def _shown(args, dotenv, unclean=None):
-    """The approver's copy of parsed `args`: privacy.approver_copy, each shell line or argv under an argument the engine
-    reads as a command (engine._COMMAND_KEYS) redacted as the shell reads it, so a value hides nothing that runs after
-    it, and a string redaction may have hid more than values in starting with how much it hid (privacy.NOTE); and each
-    digest under `typed_secrets` (a secret the Browser Use adapter typed) hidden, since an approver could test guesses of
-    a weak secret against it. `unclean`, a list: gets True when it hides more than clean values in a command, so a
-    held call is denied (TK-HIDDEN-CODE)."""
-    shown, hides = privacy.approver_copy(args, dotenv, engine._COMMAND_KEYS)
+def _shown(tool, args, dotenv, unclean=None, noted=True):
+    """The approver's copy of a call of `tool` with parsed `args`: privacy.approver_copy, each shell line or argv
+    under an argument the engine reads as a command (privacy.COMMAND_KEYS, typed_lines) redacted as the shell reads
+    it, so a value hides nothing that runs after it, and, `noted`, a string redaction may have hid more than values in
+    starting with how much it hid (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use
+    adapter typed) hidden, since an approver could test guesses of a weak secret against it. `unclean`, a list: gets
+    True when it hides more than clean values, so a held call is denied (TK-HIDDEN-CODE)."""
+    shown, hides = privacy.approver_copy(args, dotenv, tool, noted)
     if hides and unclean is not None:
         unclean.append(True)
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
@@ -3075,7 +3075,7 @@ class SignerService:
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
         unclean = []   # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE)
-        shown = _shown(args, _dotenv(args), unclean) if digest else None
+        shown = _shown(tool, args, _dotenv(args), unclean, noted=False) if digest else None
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
@@ -3233,8 +3233,8 @@ class SignerService:
                 out["send_result"] = True
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
-        if written and written[-1][1]:
-            self._retain(key, *written[-1], shown)
+        if written and written[-1][1]:   # what a held call's approver read, with its note; else the copy alone
+            self._retain(key, *written[-1], _shown(tool, args, _dotenv(args)) if out.get("decision") == "ask" else shown)
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
@@ -3677,7 +3677,7 @@ class SignerService:
                     reask = reason.startswith("reask_after_reject")
             if agent:
                 data["agent"] = agent
-            shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
+            shown = _shown(call["tool"], args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}

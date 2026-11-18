@@ -82,14 +82,18 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   signer commits to them; when the call's `command`, `file_path`, `path` or `pattern` mentions a `.env` file, every
   `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
   redacted the same way and shows `[REDACTED:<kind>]` markers, but in a shell line (a `command`, `cmd` or `script`
-  argument and the like) a value is hidden only up to where the shell ends its word, as above, in the code it runs
-  too. What runs after it stays in view; a comment and a heredoc body a program reads as data are text, redacted as
-  content. A held call whose copy would hide more than clean values in a command is denied instead
-  (`TK-HIDDEN-CODE`). When redaction may have hidden more than values in an argument (more than 256 characters, or text with a
+  argument and the like, a typed call's `typed_line`, `process_manage` text) a value is hidden only up to where the
+  shell ends its word, as above, in the code it runs too, which the policy's own shell parser finds (a script `sh -c`,
+  `eval`, `ssh`, `watch` or `trap` runs, one the line writes and then runs). What runs after it stays in view; a
+  comment and a heredoc body a program reads as data are text, redacted as content. A variable's name (`$TOKEN`) is
+  no value where bash expands it; in `'...'`, `$'...'`, after a backslash or in a body kept as written it is text, and
+  hidden. A held call whose copy would hide more than clean values is denied instead (`TK-HIDDEN-CODE`). When
+  redaction may have hidden more than values in an argument (more than 256 characters, or text with a
   blank, a line end, a quote or another character the shell reads), the copy's argument starts with a line saying how
   many characters it hid, `# [N characters hidden by redaction]`, and which characters of shell code were among them
   (`, among them ; and a line break, which a shell can read as code]`): a shell comment, so what reads the copy as a
-  command (`tracekit analyze --v2`, `tracekit why`) reads the rest as before. The policy decides on the unredacted arguments:
+  command (`tracekit analyze --v2`, `tracekit why`) reads the rest as before. The copy the signer keeps of a call it
+  doesn't hold has no such line. The policy decides on the unredacted arguments:
   the signer saw them, the record never holds them.
 - **The manifest.** A `tool.result` record carries `redaction: {rules, count, client_claimed}`: the rules that fired
   and how often, never the values. A client may send content it already redacted (`redacted: true` and its own

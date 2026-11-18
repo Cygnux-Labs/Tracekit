@@ -220,27 +220,21 @@ def wait_for_approval(ev_call, decision, pol):
     """Hold a tool call until a human approves it from outside the agent's session.
     Returns (approved: bool, message)."""
     d = ev_call["data"]
-    shown = ""
-    for one, many in (("command", "commands"), ("file_path", "paths"), ("url", "urls")):
-        each = (d["input"].get(many) or {}).get("value")   # a call on several, each decided: the approver sees all
-        v = each if isinstance(each, list) and len(each) > 1 else (d["input"].get(one) or {}).get("value")
-        if v:
-            shown = f"{len(v)} {many}={json.dumps(v)}" if isinstance(v, list) else f"{one}={v}"
-            break
     timeout = float(pol.get("approval_timeout_s", 120))
     if APPROVAL_CAP_S is not None:
         timeout = min(timeout, APPROVAL_CAP_S)
     try:
         r = client.rpc({"op": "approval_request", "run_id": ev_call["run_id"], "agent_id": ev_call["agent_id"],
                         "tool_use_id": d["tool_use_id"],
-                        "summary": f"{d['name']} {decision.get('note', '')}{shown}"[:400],   # the note first
+                        # the note first; whole: privacy.screened denies a hold whose summary is longer
+                        "summary": privacy.approval_summary(d["name"], d["input"], decision.get("note", "")),
                         "rule_ids": decision["rule_ids"], "timeout_s": timeout})
     except client.SignerUnavailable as e:
         return False, f"approval needed but the signer is unavailable ({e}); rejected"
     if not r.get("ok"):
         return False, f"approval request failed: {r.get('error')}"
     aid = r["approval_id"]
-    print(f"[tracekit] waiting for approval {aid}: {d['name']} {shown[:200]} "
+    print(f"[tracekit] waiting for approval {aid}: {privacy.approval_summary(d['name'], d['input'])[:200]} "
           f"({'; '.join(decision['reasons'])}). From another terminal: tracekit approve {aid}  |  tracekit reject {aid}",
           file=sys.stderr, flush=True)
     end = time.time() + timeout + (5 if APPROVAL_CAP_S is None else 0)
@@ -290,7 +284,7 @@ def build_events(p, pol, reasoning=True):
         d = policy_mod.evaluate(pol, tool, ti, cwd)
         unclean = []   # the record, which an approver sees, would hide more than clean values in the command
         rec = privacy.tool_input(tool, ti, cc, unclean)
-        d = privacy.screened(d, ti, rec, unclean)
+        d = privacy.screened(d, tool, ti, rec, unclean)
         evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": rec}})
         dec = {**b, "type": "policy.decision", "data": {"tool_use_id": tid, "decision": d["decision"],
                                                         "rule_ids": d["rule_ids"], "reasons": d["reasons"] + d["flags"],
@@ -384,7 +378,7 @@ def main(harness_reasoning=True, raw=None):
         print(f"[tracekit] {msg}", file=sys.stderr)
         return 0
     if deny and privacy.HIDDEN_CODE in deny["rule_ids"]:   # one reason the agent can act on
-        print(privacy.HIDDEN_CODE_MESSAGE, file=sys.stderr)
+        print(privacy.hidden_message(deny), file=sys.stderr)
         return 2
     if deny:
         print("Blocked by tracekit policy: " + "; ".join(f"{i} {r}" for i, r in zip(deny["rule_ids"], deny["reasons"])),

@@ -38,7 +38,7 @@ class _ToolCall:
         policy_hash = policy.policy_hash(current_policy)
         unclean = []
         recorded = privacy.tool_input(self.name, self.args, current_policy.get("content_capture", "hashed"), unclean)
-        decision = privacy.screened(decision, self.args, recorded, unclean)
+        decision = privacy.screened(decision, self.name, self.args, recorded, unclean)
         tool_event = self.tracer._event("tool.call", {
             "tool_use_id": self.tool_use_id,
             "name": self.name,
@@ -64,7 +64,7 @@ class _ToolCall:
         self.tracer._policy_hash = policy_hash
 
         if privacy.HIDDEN_CODE in decision["rule_ids"]:
-            raise PermissionError(privacy.HIDDEN_CODE_MESSAGE)
+            raise PermissionError(privacy.hidden_message(decision))
         if decision["decision"] == "deny":
             raise PermissionError("Blocked by Tracekit policy: " + "; ".join(decision["reasons"]))
         if decision["decision"] == "ask" and client.is_remote():

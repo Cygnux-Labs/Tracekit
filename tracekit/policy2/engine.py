@@ -16,6 +16,7 @@ import time
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
+from .. import privacy
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
@@ -1895,8 +1896,9 @@ def _kubectl_takes(word):
     return False
 
 
-# what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
-_COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
+# what a tool no pack maps is given to run (_runs): TK-S010's command arguments (the ones an approver's copy reads as
+# shell lines too) and the SQL ones, in any case
+_COMMAND_KEYS = privacy.COMMAND_KEYS
 _SQL_KEYS = {"sql", "query", "statement"}
 _BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,

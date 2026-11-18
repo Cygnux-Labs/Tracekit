@@ -1001,7 +1001,8 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
            "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
-           "readings": readings, "nested": set(), "aliases": {k: list(v) for k, v in (aliases or {}).items()},
+           "readings": readings, "nested": set(), "code": {},
+           "aliases": {k: list(v) for k, v in (aliases or {}).items()},
            "subscripts": [], "arith": False, "files": {}, "runs": [], "alias_used": set(), "namerefs": {},
            "arith_names": set(), "unread_values": set(), "code_names": [], "made_files": set(),
            "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
@@ -1634,12 +1635,14 @@ def _learned(ctx):
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
-    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`)."""
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); `code`, each
+    text it read again as code: {text: "shell" (a line a shell runs: sh -c's script, eval's words, a heredoc a shell
+    reads) or "interp" (an interpreter's program)}."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
             "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
-            "appended": list(ctx.get("appended", ()))}
+            "appended": list(ctx.get("appended", ())), "code": ctx["code"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1650,7 +1653,8 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
            "downloads": downloads or any(_DOWNLOADS.search(a) for a in argv), "decoded": set(),
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
-           "readings": readings, "nested": set(), "aliases": {}, "subscripts": [], "arith": False, "files": {},
+           "readings": readings, "nested": set(), "code": {}, "aliases": {}, "subscripts": [], "arith": False,
+           "files": {},
            "runs": [], "alias_used": set(), "namerefs": {}, "arith_names": set(), "unread_values": set(),
            "code_names": [], "made_files": set(), "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
            "stdin_moved": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
@@ -3093,6 +3097,7 @@ class _Parser:
             c.setdefault("reaches", []).append((pid, stage))
 
     def nested(self, text, via, args=(), zero=()):
+        self.ctx["code"][text] = "shell"   # (what the line runs as code, for _learned)
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
         # literal `args` has them as $1 to $9 and "$@", as call() gives a function's, and sh -c's literal `zero` (the word
         # after its script) as $0. Code a shell of another grammar
@@ -4808,6 +4813,7 @@ class _Parser:
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
         `cmd` opaque."""
+        self.ctx["code"].setdefault(code, "interp")
         if kind == "sed":
             for m in _SED_E.finditer(code):
                 if m.group(1).strip():
