@@ -460,8 +460,9 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
         got = {r["id"]: r for r in doctor.pg_checks(section, True)}
         self.assertEqual(got["D-PG-SIGNER-ROLE"]["status"], "ok")
         self.assertEqual(got["D-PG-VAULT-GRANTS"]["status"], "fail")
-        self.assertIn("tracekit_content: INSERT", got["D-PG-VAULT-GRANTS"]["detail"])
-        self.assertIn("tracekit_content_keys: SELECT", got["D-PG-VAULT-GRANTS"]["detail"])
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["detail"], f"{SIGNER} lacks " + ", ".join(
+            f"{t}: {p}" for t in ("tracekit_content", "tracekit_content_keys")
+            for p in ("DELETE", "INSERT", "SELECT", "UPDATE")))
         self.assertEqual(got["D-PG-VAULT-GRANTS"]["fix"], "GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots, "
                          f"tracekit_content_keys, tracekit_content TO {SIGNER};")
         sql(admin, postgres.GRANTS.format(schema=sql(admin, "SELECT current_schema()")[0][0], role=SIGNER))
@@ -471,8 +472,9 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
         sql(admin, "DROP TABLE tracekit_content, tracekit_content_keys")   # a version 1 store: migrate first
         sql(admin, "DELETE FROM tracekit_schema")
         sql(admin, "INSERT INTO tracekit_schema VALUES (1)")
-        fix = {r["id"]: r for r in doctor.pg_checks(section, True)}["D-PG-VAULT-GRANTS"]["fix"]
-        self.assertTrue(fix.startswith("run `tracekit signer migrate`, then GRANT "), fix)
+        got = {r["id"]: r for r in doctor.pg_checks(section, True)}["D-PG-VAULT-GRANTS"]
+        self.assertEqual(got["detail"], "the content vault's tables are missing (schema version 1)")
+        self.assertTrue(got["fix"].startswith("run `tracekit signer migrate`, then GRANT "), got["fix"])
 
     def test_doctor_reads_role_and_table_names_as_text_on_a_sql_ascii_database(self):
         from tracekit import doctor

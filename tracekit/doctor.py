@@ -1721,7 +1721,7 @@ def pg_checks(section, vault=False):
             writers = c.execute(PG_WRITERS, (LOG_TABLES,)).fetchall()
             lacks = c.execute("SELECT t || ': ' || p, to_regclass(t) IS NULL FROM unnest(%s::text[]) t, unnest(array["
                               "'SELECT', 'INSERT', 'UPDATE', 'DELETE']) p WHERE CASE WHEN to_regclass(t) IS NULL THEN "
-                              "true ELSE NOT has_table_privilege(t, p) END ORDER BY 1",
+                              "true ELSE NOT has_table_privilege(t, p) END ORDER BY (t || ': ' || p) COLLATE \"C\"",
                               (VAULT_TABLES,)).fetchall() if vault else []
     except (OSError, psycopg.Error) as e:
         return [result("D-PG-SIGNER-ROLE", WARN, f"not checked: {str(e)[:256]}",
@@ -1733,8 +1733,10 @@ def pg_checks(section, vault=False):
             result("D-PG-READER-ROLES", FAIL if writers else OK, "; ".join(f"{r} can write {t}" for r, t in writers)
                    or f"no role but {role} and the tables' owner can write the logs",
                    "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")] + ([
-            result("D-PG-VAULT-GRANTS", FAIL if lacks else OK, f"{role} lacks " + ", ".join(t for t, _ in lacks)
-                   if lacks else f"{role} may keep and erase the content vault's items",
+            result("D-PG-VAULT-GRANTS", FAIL if lacks else OK,
+                   "the content vault's tables are missing (schema version 1)" if any(m for _, m in lacks)
+                   else f"{role} lacks " + ", ".join(t for t, _ in lacks) if lacks
+                   else f"{role} may keep and erase the content vault's items",
                    ("run `tracekit signer migrate`, then " if any(m for _, m in lacks) else "")   # a v1 store
                    + postgres.VAULT_GRANTS.format(role=role))] if vault else [])
 
