@@ -217,7 +217,7 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
     }
   }
   for (const k of t.logs) {   // a log key named after another key's fingerprint pins nothing a note could be signed under
-    const p = await parseVkey(k), m = /^tracekit\.local\/k([0-9a-f]{64})$/.exec(p.name);
+    const p = await parseVkey(k), m = /^tracekit\.local\/k([0-9a-f]{64})(?=\/|$)/.exec(p.name);
     if (p.type === ED25519 && m && m[1] !== await sha256hex(p.pub))
       throw new ValueError(`pinned log key ${p.name} is named after another key: a key-derived origin is `
         + "tracekit.local/k + the SHA-256 of the key it names");

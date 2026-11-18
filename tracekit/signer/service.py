@@ -742,21 +742,39 @@ def _secret(path, make, size=32):
 
 def _log_origin(storage, configured, public):
     """The log's checkpoint origin, decided before RecordLog writes its startup records and kept with the store
-    (meta "origin"), so a start never renames a live log: signer.yaml's `origin` (a change of it warned about); else the
-    kept one; else, for a log an older Tracekit started (records, no kept origin), the origin its latest note carries,
-    or None for the caller's tracekit.local/<log id>, the name it always had; else, a new log, its key-derived one
-    (checkpoint.key_origin). Kept here when known, before the first record."""
-    kept = storage.meta("origin")
+    (meta "origin"), so a start never renames a live log. In order: signer.yaml's `origin`, checked (a change from the
+    name the log last had is warned about); else the kept one, unless it names another key and no note was signed
+    under it (the log key changed before the first note), and warned about when the latest note carries another (an
+    older Tracekit ran the log under that name since); else, for a log an older Tracekit started, the origin its
+    latest note carries, or None for the caller's tracekit.local/<log id>, the name it always had; else, a new log, its
+    key-derived one (checkpoint.key_origin). Kept here when known."""
+    kept, latest = storage.meta("origin"), storage.checkpoint_latest()
+    noted = latest and latest[1].split("\n", 1)[0]   # another key's note is refused by the start's key check
+    warn = logging.getLogger(__name__).warning
     if configured:
-        if kept and kept != configured:
-            logging.getLogger(__name__).warning("tracekit signer: this log's origin changes from %s to %s (signer.yaml): "
-                                                "its witnesses see a new log", kept, configured)
+        try:
+            checkpoint.vkey(configured, checkpoint.ED25519, public)
+        except checkpoint.NoteError as e:
+            raise ValueError(f"signer.yaml's origin is not a log name ({e}): use a name like host/path") from None
+        if checkpoint.names_other_key(configured, public):
+            raise ValueError(f"signer.yaml's origin {configured} is named after another log key: remove it, and the "
+                             "log is named after its own key")
+        if (kept or noted) not in (None, configured):
+            warn("tracekit signer: this log's origin changes from %s to %s (signer.yaml): its witnesses see a new log",
+                 kept or noted, configured)
         name = configured
+    elif kept and not latest and checkpoint.names_other_key(kept, public):
+        name = checkpoint.key_origin(public)
+        warn("tracekit signer: this log's origin %s is named after another log key and no note was signed under it: "
+             "it is now %s, named after the log key", kept, name)
     elif kept:
+        if noted and noted != kept:
+            warn("tracekit signer: this log's latest note is under %s, but its origin is %s (an older Tracekit ran it "
+                 "since?): its next note is under %s; to keep %s, set it as origin in signer.yaml", noted, kept, kept,
+                 noted)
         name = kept
     elif storage.tail_state()["tree_size"]:
-        latest = storage.checkpoint_latest()
-        name = latest and latest[1].split("\n", 1)[0]
+        name = noted or None
     else:
         name = checkpoint.key_origin(public)
     if name and name != kept:
@@ -1330,7 +1348,8 @@ class SignerService:
         self._tamper("rollback", "records", {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})},
                        {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}, acknowledged,
                        f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint ({size}): "
-                       "rolled back")
+                       "rolled back, or a new store under an old log key, whose default origin is the old log's (a "
+                       "new log needs a new data_dir)")
 
     # --- dispatch ---
 
@@ -6090,7 +6109,7 @@ def main(argv=None):
         # lean: run by hand while v1 hooks still sign with the v1 key; run the bridge on first v2 start once the hook
         # speaks the RPC (M1a-14)
         try:
-            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"))))
+            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"), cfg.get("origin"))))
         except (OSError, ValueError, StorageUnavailable, format_bridge.BridgeError) as e:
             print(f"tracekit signer bridge: {e}", file=sys.stderr)
             return 1
@@ -6123,9 +6142,6 @@ def main(argv=None):
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
                   f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
-        named = public_witness.named_origin(cfg)
-        if named:
-            print(f"tracekit: warning: {named}", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:
@@ -6146,9 +6162,12 @@ def main(argv=None):
         return 0
     if service.log.head["closed"]:
         service.close()
-        print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
-              file=sys.stderr)
+        print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new "
+              "data_dir (a new log, named after a new log key)", file=sys.stderr)
         return 1
+    named = public_witness.named_origin(cfg, service.origin)   # the log's origin: kept once set, in signer.yaml or not
+    if named:
+        print(f"tracekit: warning: {named}", file=sys.stderr)
     stop = []   # not an Event, as in serve_dev
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     try:

@@ -737,7 +737,7 @@ class Agreement(SignerBundles):
         with open(trust, "w") as f:
             json.dump({"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}, f)
         stolen = checkpoint.key_origin(crypto.public_from_secret(hashlib.sha256(b"a").digest()))
-        with open(mispinned, "w") as f:   # 1.7.2: a log key named after another key's fingerprint, refused by both
+        with open(mispinned, "w") as f:   # 1.7.3: a log key named after another key's fingerprint, refused by both
             json.dump({"logs": [checkpoint.vkey(stolen, checkpoint.ED25519,
                                                 crypto.public_from_secret(hashlib.sha256(b"b").digest()))],
                        "algs": ["ed25519"]}, f)
@@ -1420,6 +1420,22 @@ class Agreement(SignerBundles):
         with open(trust, "w") as f:
             json.dump({**t, "logs": t["logs"] + [checkpoint.vkey(checkpoint.parse_vkey(t["logs"][0])[0], *slh[2:])]}, f)
         self.assertEqual(self.agree(os.path.join(golden, "closed.tkb"), trust)[0], 1)
+
+    def test_a_hybrid_key_under_a_key_derived_origin_is_pinned_in_both(self):
+        """1.7.3: a default-origin log's SLH-DSA vkey carries the name derived from its Ed25519 key. Only an Ed25519
+        log key named after another key is refused, so both read this trust file and fail the note's missing line."""
+        with open(os.path.join(TESTS, "vectors", "slh_dsa_note.json"), encoding="utf-8") as f:
+            slh = checkpoint.parse_vkey(json.load(f)["slh_vkey"])
+        with open(self.trusts["witnessed"], encoding="utf-8") as f:
+            t = json.load(f)
+        name = checkpoint.parse_vkey(t["logs"][0])[0]
+        self.assertRegex(name, r"^tracekit\.local/k[0-9a-f]{64}$")   # this class's signer has the default origin
+        trust = os.path.join(self.d, f"trust-hybrid-{uuid.uuid4().hex}.json")
+        with open(trust, "w") as f:
+            json.dump({**t, "logs": t["logs"] + [checkpoint.vkey(name, *slh[2:])]}, f)
+        code, rep = self.agree(self.bundles["closed"], trust)
+        self.assertEqual(code, 1)
+        self.assertNotIn("trust config", rep.failures)
 
 
 try:   # the findings case builds on the replay tests, whose helpers need pytest (absent when the TypeScript suite runs this)

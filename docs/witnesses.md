@@ -172,10 +172,10 @@ Cygnux whose log it is.
   log register separately. Failures are retried like any witness failure. One key per origin, the first registered:
   a log with a new log key needs a new `origin` in signer.yaml.
 - **Origin squatting.** Registration is open and the first registration of an origin wins, so anyone can register an
-  origin before its log does, and that log is then refused (`409`). The default origin since 1.7.2,
+  origin before its log does, and that log is then refused (`409`). The default origin since 1.7.3,
   `tracekit.local/k<SHA-256 of the log key>`, is named after the log key: the witness refuses it to any other key
   (`403`), so it cannot be taken first, though it is no secret (the key is in every trust file). A log started before
-  1.7.2 keeps `tracekit.local/<log id>`, unguessable only until a bundle or trust file shows it. A custom `origin`
+  1.7.3 keeps `tracekit.local/<log id>`, unguessable only until a bundle or trust file shows it. A custom `origin`
   (such as `example.com/log`) can be taken first: register early or use your own witness. One key, one default origin:
   a new log needs a new log key (`tracekit init` makes one).
 - **Expiry.** An origin that registered but was never cosigned within 24 hours, or not cosigned for 90 days, is

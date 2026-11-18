@@ -17,7 +17,7 @@ from test_signer_service import ME, tmpdir
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
-from tracekit.signer import service as svc
+from tracekit.signer import logkey, service as svc
 from tracekit.storage import file as file_storage
 from tracekit.storage.file import FileReader, FileStorage
 from tracekit.verify import v2
@@ -96,22 +96,26 @@ class Notes(unittest.TestCase):
 
 
 class Origins(unittest.TestCase):
-    """1.7.2: a new log's origin is named after its log key and kept with its store, so a start never renames a log."""
+    """1.7.3: a new log's origin is named after its log key and kept with its store, so a start never renames a log.
+    Also run with the store on Postgres (test_storage_postgres)."""
+    storage = None   # the signer's `storage` section: the file store
 
     def setUp(self):
         self.dir = tmpdir(self)
 
     def open(self, **kw):
-        s = svc.SignerService(self.dir, grace_s=0, **kw)
+        s = svc.SignerService(self.dir, grace_s=0, storage_config=self.storage, **kw)
         self.addCleanup(s.close)
         return s
 
     def as_older_tracekit_left_it(self, note=True):
-        """The store as Tracekit 1.7.1 or older left it: no kept origin (and, with note=False, no note yet)."""
-        store = os.path.join(self.dir, "store")
-        os.remove(os.path.join(store, file_storage.META))
+        """The store as Tracekit 1.7.2 or older left it: no kept origin (and, with note=False, no note yet)."""
+        os.remove(os.path.join(self.dir, "store", file_storage.META))
         if not note:
-            os.remove(os.path.join(store, file_storage.NOTE))
+            self.drop_notes()
+
+    def drop_notes(self):
+        os.remove(os.path.join(self.dir, "store", file_storage.NOTE))
 
     def test_a_new_log_is_named_after_its_key_and_keeps_that_name(self):
         s = self.open()
@@ -151,6 +155,45 @@ class Origins(unittest.TestCase):
         self.assertIn(f"changes from {derived} to tracekit.example.org/log/1", logs.output[0])
         moved.close()
         self.assertEqual(self.open().origin, "tracekit.example.org/log/1")   # kept once chosen, config or not
+
+    def test_signer_yaml_origin_must_be_a_log_name_and_not_another_keys(self):
+        s = self.open()
+        s.close()
+        other = checkpoint.key_origin(b"\1" * 32)
+        for origin, why in (("my log", "not a log name"), (other, "named after another log key"),
+                            (f"{other}/registry/x", "named after another log key")):
+            with self.assertRaisesRegex(ValueError, why):
+                self.open(origin=origin)
+        self.assertEqual(self.open().origin, s.origin)   # a refused start keeps nothing
+
+    def test_a_log_key_changed_before_the_first_note_names_the_log_after_the_new_key(self):
+        s = self.open()
+        s.close()
+        self.drop_notes()   # its first start stopped before its first checkpoint
+        key = logkey.FileKey(crypto.generate()[0])
+        with self.assertLogs("tracekit.signer.service", "WARNING") as logs:
+            again = self.open(log_key=key)
+        self.assertEqual(again.origin, checkpoint.key_origin(key.public))
+        self.assertEqual(checkpoint.parse_vkey(again.vkey)[0], again.origin)
+        self.assertIn(f"{s.origin} is named after another log key", logs.output[0])
+
+    def test_a_kept_origin_other_than_its_latest_notes_is_warned_about(self):
+        """Tracekit 1.7.2 or older ran the log after a newer one, renaming it (it never kept an origin): the kept name
+        comes back, whose witnesses saw the log grow under it, and the start says so and how to keep the other."""
+        s = self.open()
+        s.close()
+        older = f"tracekit.local/{'0123456789abcdef' * 2}"
+        with self.assertLogs("tracekit.signer.service", "WARNING"):
+            renamed = self.open(origin=older)
+        renamed.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        self.assertTrue(renamed.checkpoint())
+        renamed.log.storage.meta_put("origin", s.origin)   # as the older Tracekit leaves it
+        renamed.close()
+        with self.assertLogs("tracekit.signer.service", "WARNING") as logs:
+            again = self.open()
+        self.assertEqual(again.origin, s.origin)
+        self.assertIn(f"latest note is under {older}, but its origin is {s.origin}", logs.output[0])
+        self.assertIn(f"to keep {older}, set it as origin in signer.yaml", logs.output[0])
 
 
 class Reader(unittest.TestCase):

@@ -132,6 +132,13 @@ class Bridge(unittest.TestCase):
             f.write(b"".join(lines[:seq1] + lines[seq1 + 1:]))
         self.assert_bridge_fails(self.bundle(), "does not continue the chain")
 
+    def test_the_bridged_log_takes_signer_yaml_origin(self):
+        """1.7.3: a log keeps the origin it started under, so the bridge starts it under signer.yaml's."""
+        format_bridge.bridge(self.home, self.data, origin="tracekit.example.org/log/1")
+        store = FileStorage(os.path.join(self.data, "store"))
+        self.addCleanup(store.close)
+        self.assertEqual(store.meta("origin"), "tracekit.example.org/log/1")
+
     def test_second_run_is_a_no_op(self):
         b = format_bridge.bridge(self.home, self.data)
         before = (self.ledger_bytes(), records(self.data))

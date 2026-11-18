@@ -26,8 +26,9 @@ SLH_DSA = b"tracekit/slh-dsa-sha2-128s"
 MAX_NOTE = 1 << 20
 MAX_SIGNATURES = 64
 DASH = "— "
-# a log origin named after its Ed25519 key (key_origin): only this exact form, lower-case hex, all 64 digits
-KEY_ORIGIN = re.compile(r"tracekit\.local/k([0-9a-f]{64})")
+# a log origin named after its Ed25519 key (key_origin): only this exact form, lower-case hex, all 64 digits; with a
+# /suffix, a log the same key signs (a tenant registry, <origin>/registry/<id>)
+KEY_ORIGIN = re.compile(r"tracekit\.local/k([0-9a-f]{64})(?=/|$)")
 
 
 class NoteError(ValueError):
@@ -68,7 +69,7 @@ def key_origin(public):
 
 def names_other_key(name, public):
     """Whether `name` is a key-derived origin of another key than `public` (a self-contradictory pin)."""
-    m = KEY_ORIGIN.fullmatch(name)
+    m = KEY_ORIGIN.match(name)
     return bool(m) and m.group(1) != hashlib.sha256(public).hexdigest()
 
 

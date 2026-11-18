@@ -13,7 +13,7 @@ A signer sends it two kinds of request, over HTTPS.
 
 **Registration**, once per log, the first time the witness doesn't know it. The body is JSON with three fields:
 
-- `origin`: the log's name. By default `tracekit.local/k<SHA-256 of the log key>` (a log started before 1.7.2 keeps
+- `origin`: the log's name. By default `tracekit.local/k<SHA-256 of the log key>` (a log started before 1.7.3 keeps
   `tracekit.local/<log id>`, its random log id). It names the key, which is public anyway, and nothing else.
 - `vkey`: the log's public key, named after the origin. It is a public key; the private key never leaves the signer.
 - `checkpoint`: a checkpoint of the log, signed with that key, as proof the signer holds the key.

@@ -205,7 +205,7 @@ class StorageContract:
         self.assertEqual(self.reopen(s).witness_queue(), {"w": {"records": {"size": 3}}})
 
     def test_meta_round_trip(self):
-        """1.7.2: the signer keeps its log's origin with the store (meta "origin"), read back on every start."""
+        """1.7.3: the signer keeps its log's origin with the store (meta "origin"), read back on every start."""
         s = self.store()
         self.assertIsNone(s.meta("origin"))
         s.meta_put("origin", "tracekit.local/k" + "0f" * 32)

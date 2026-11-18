@@ -7,8 +7,9 @@
     registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
                          the same size is that note cosigned, and replaces it); indexed by line, read on demand
     witness-queue.json   the witness publisher's state, replaced whole
-    meta.json            {key: value} the signer keeps with its store (the log's checkpoint origin), replaced whole
-    anchors.jsonl       {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
+    meta.json            {key: value} the signer keeps with its store (the log's checkpoint origin and vkey), replaced
+                         whole
+    anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
                          line of the same size is that note cosigned, and replaces it)
     snapshots/<size>.json  the indexes at a record tree size, the logs' line offsets, and the signer's state; the
                          newest two are kept
@@ -621,11 +622,15 @@ class FileStorage(_Records, Storage):
     def _meta(self):
         try:
             with open(os.path.join(self.root, META), "rb") as f:
-                return json.loads(f.read())
+                meta = json.loads(f.read())
         except FileNotFoundError:
             return {}
-        except ValueError as e:
-            raise StorageCorrupt(f"{META}: {e}") from None
+        except ValueError:
+            meta = None
+        if not isinstance(meta, dict):
+            raise StorageCorrupt(f"{META} is damaged: restore it from a backup, or remove it and the log takes the "
+                                 "origin of its latest note")
+        return meta
 
     def meta(self, key):
         return self._meta().get(key)

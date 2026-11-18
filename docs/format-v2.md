@@ -397,7 +397,7 @@ A checkpoint is a [C2SP signed note](https://c2sp.org/signed-note) in the
 <origin>\n<tree size>\n<base64 root hash>\n\n— <key name> <base64(key id ‖ signature)>\n...
 ```
 
-- The **log key** (`keys/log.key`, Ed25519, stable, signs notes only) is named after the origin (default, from 1.7.2,
+- The **log key** (`keys/log.key`, Ed25519, stable, signs notes only) is named after the origin (default, from 1.7.3,
   `tracekit.local/k<SHA-256 of its public key>`; a log started before keeps `tracekit.local/<log_id>`). Its line is type 0x01: Ed25519 over the note text (everything up to and including the
   newline after the root).
 - A **witness** cosigns with type 0x04: `8-byte big-endian timestamp ‖ Ed25519("cosignature/v1\ntime <t>\n" + text)`.
@@ -658,7 +658,10 @@ signed findings you take as independent: your operator's `tracekit analyze --v2`
 other key is allowed. A witness is one key under one name, with one class: a cosignature signs no key name and a
 witness cosigns with one key (C2SP tlog-cosignature), so each witness counts once, and a trust config that pins one
 cosignature key under two names, two cosignature keys under one name, or one witness vkey with two classes is
-refused. The same entry listed twice is one witness. `witnesses_required` above the number of pinned witnesses is no
+refused. An Ed25519 log key pinned under a key-derived origin (`tracekit.local/k<64 lower-case hex>`, alone or
+followed by `/`) whose hex isn't the SHA-256 of that key is refused too: it names another key, so no note it could
+verify was signed under it (the SLH-DSA key of a hybrid log carries its Ed25519 key's name and is not checked). The
+same entry listed twice is one witness. `witnesses_required` above the number of pinned witnesses is no
 trust config error: the checkpoint fails `witness quorum` (exit 1). `tracekit signer trust -o trust.json` writes one
 for a signer; an auditor should build theirs from independent sources ([auditor guide](auditor-guide.md)).
 

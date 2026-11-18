@@ -99,17 +99,20 @@ class Server(unittest.TestCase):
         self.assertEqual(self.register(), (200, "registered\n"))   # the same key again: idempotent
 
     def test_a_key_derived_origin_is_taken_only_by_its_own_key(self):
-        """1.7.2: a default origin is tracekit.local/k + the SHA-256 of the log key, so a squatter who saw it can't
-        register it first with another key."""
+        """1.7.3: a default origin is tracekit.local/k + the SHA-256 of the log key, so a squatter who saw it can't
+        register it, or a tenant registry log under it (<origin>/registry/<id>), first with another key."""
         mine = checkpoint.key_origin(crypto.public_from_secret(self.secret))
+        registry = f"{mine}/registry/{'0f' * 16}"
         squatter = hashlib.sha256(b"squatter").digest()
-        status, text = self.register(origin=mine, secret=squatter)
-        self.assertEqual(status, 403)
-        self.assertIn("derived from another key", text)
-        self.assertNotIn(mine, self.origins())
-        for other in (mine.upper().replace("TRACEKIT.LOCAL/K", "tracekit.local/k"), mine[:-1]):   # other names: not k-shaped
+        for origin in (mine, registry):
+            status, text = self.register(origin=origin, secret=squatter)
+            self.assertEqual(status, 403, origin)
+            self.assertIn("derived from another key", text)
+            self.assertNotIn(origin, self.origins())
+        for other in (mine.upper().replace("TRACEKIT.LOCAL/K", "tracekit.local/k"), mine[:-1], mine + "0"):   # not k-shaped
             self.assertNotEqual(self.register(origin=other, secret=squatter)[0], 403, other)
         self.assertEqual(self.register(origin=mine), (200, "registered\n"))
+        self.assertEqual(self.register(origin=registry), (200, "registered\n"))
 
     def test_a_second_key_for_a_taken_origin_is_refused(self):
         self.add(3, 0)
@@ -495,14 +498,15 @@ class OptIn(unittest.TestCase):
 
     def test_a_chosen_origin_sent_to_the_public_witness_is_warned_about(self):
         cfg = svc.load_config(self.cfg)   # origin: tracekit.example.org/log/public
-        self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(cfg))
+        for chosen in (cfg, {**cfg, "origin": None}):   # a log keeps its origin once chosen, in signer.yaml or not
+            self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(chosen, ORIGIN))
         own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
                "class": "customer"}
-        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16},
-                      {**cfg, "origin": "tracekit.local/k" + "0f" * 32}, {**cfg, "witnesses": [own]}):
-            self.assertIsNone(public_witness.named_origin(quiet))
+        for origin in ("tracekit.local/" + "0f" * 16, "tracekit.local/k" + "0f" * 32):
+            self.assertIsNone(public_witness.named_origin(cfg, origin))
+        self.assertIsNone(public_witness.named_origin({**cfg, "witnesses": [own]}, ORIGIN))
         with mock.patch.object(public_witness, "URL", ""):
-            self.assertIsNone(public_witness.named_origin(cfg))
+            self.assertIsNone(public_witness.named_origin(cfg, ORIGIN))
 
     def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
         for argv in (["init", "--no-witness"], ["init", "--public-witness"],

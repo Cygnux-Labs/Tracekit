@@ -11,7 +11,7 @@ URL = ""    # https://<the deployment's domain>
 VKEY = ""   # its cosignature vkey, as `tracekit public-witness init` prints it
 ORIGIN = re.compile(r"[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?(/[A-Za-z0-9._~-]+)+")   # a log origin it takes: host/path
 ORIGIN_FORMAT = "host/path: a lower-case host and at least one path segment, such as tracekit.example.com/log"
-# a signer's default origin: named after its log key (1.7.2), or its random log id (a log started before)
+# a signer's default origin: named after its log key (1.7.3), or its random log id (a log started before)
 DEFAULT_ORIGIN = re.compile(r"tracekit\.local/(?:k[0-9a-f]{64}|[0-9a-f]{32})")
 NOT_CONFIGURED = "not anchored: the public witness isn't deployed yet, so no witness cosigns this log"
 LOST = ("not anchored: --no-witness is on, so whoever holds the signing key can rewrite the log unseen (an init with "
@@ -30,11 +30,11 @@ def entry():
     return {"url": URL, "vkey": VKEY, "class": "public"}
 
 
-def named_origin(cfg):
-    """The warning for a loaded signer.yaml `cfg` whose chosen origin (not a default one) goes to the public witness
-    with every checkpoint, or None: an origin like acme.com/agents tells the witness's operator whose log it is."""
-    origin = cfg.get("origin")
-    if not (configured() and origin and not DEFAULT_ORIGIN.fullmatch(origin)
+def named_origin(cfg, origin):
+    """The warning when a log's chosen `origin` (not a default one) goes to the public witness of a loaded signer.yaml
+    `cfg` with every checkpoint, or None: an origin like acme.com/agents tells the witness's operator whose log it is.
+    A log keeps its origin once chosen, so removing it from signer.yaml doesn't stop it."""
+    if not (configured() and not DEFAULT_ORIGIN.fullmatch(origin)
             and any(w["vkey"] == VKEY for w in cfg.get("witnesses") or ())):
         return None
     return (f"origin {origin} goes to the public witness with every checkpoint, so its operator can tell whose log "

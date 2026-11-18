@@ -518,7 +518,7 @@ class TestVerifyV2(Case):
         before), its line naming the problem in plain words, with no exception's name."""
         _, out = self.honest()
         missing = os.path.join(self.d, "missing.json")
-        # 1.7.2: a log key pinned under the key-derived origin of another key names nothing it could have signed
+        # 1.7.3: a log key pinned under the key-derived origin of another key names nothing it could have signed
         stolen = checkpoint.key_origin(crypto.public_from_secret(hashlib.sha256(b"a").digest()))
         mispinned = checkpoint.vkey(stolen, ED25519, crypto.public_from_secret(hashlib.sha256(b"b").digest()))
         for text, said in ((None, f"{missing}: {os.strerror(errno.ENOENT)}"), ("{", "not valid JSON (syntax: "),
