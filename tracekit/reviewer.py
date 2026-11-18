@@ -30,10 +30,9 @@ uid's tenant; the tcp:// dev transport is refused (a process of the agent's own 
 For each approval `approval_list {state: requested, for: agent}` lists, the reviewer reads `approval_review` and, when
 every condition in it passed, asks the model with no memory of other approvals and a fixed system prompt that treats
 the view as data; for an approval held by the policy's approval_agent rules (the view's `ai`) it adds the project's
-own rules
-(project_rules). The model's answer is {decision: approve|reject|escalate, reason, project_rule}; an error, a
-timeout, a refusal or a malformed answer escalates. A yes needs two answers that agree (two keys: the second model, or the one
-asked again); a no needs one. A rule the model quotes rejects the call only when it is word for word in the project's
+own committed rules (project_rules). The model's answer is {decision: approve|reject|escalate, reason, project_rule};
+an error, a timeout, a refusal or a malformed answer escalates. A yes needs two answers that agree (two keys: the
+second model, or the one asked again); a no needs one. A rule the model quotes rejects the call only when it is word for word in the project's
 files. It sends `asserted: {model, version, prompt_hash}` and `ai: {answers, project_rule?, project?}` (`project`:
 the commit the project's rules were read from and their digests, or why none were).
 The signer checks every answer again.

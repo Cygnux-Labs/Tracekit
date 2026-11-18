@@ -213,12 +213,12 @@ def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
 
 def approver_state(set_, log, run, e, a, pop):
     """Follow record `e` of `run` (`a`: the approval it names) in the AI approver's state (docs/approvals.md#the-ai-
-    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, rules, decision, at, run,
+    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, key, rules, decision, at, run,
     reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
-    PRECEDENT_S; `key`, its precedent key as shown), `demoted` (tenant\0rule -> why the circuit breaker dropped the rule to shadow), `pairs` (tenant\0rule
-    -> the last AGREEMENT_PAIRS agreements of an AI suggestion with the person's answer), `pins` (tenant\0rule -> the
-    model, version, prompt hash and playbook digest of the AI's last answer: pinned) and `playbook` (tenant ->
-    {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it (precedent.revoked), an
+    PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
+    circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
+    the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it (precedent.revoked), an
     incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI
     approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more,
     or an answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled

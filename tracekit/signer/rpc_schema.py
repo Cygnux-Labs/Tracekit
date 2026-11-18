@@ -3,10 +3,10 @@
 Frozen: a change to any schema here is a new RPC_VERSION. Version 28 adds the AI approver (docs/approvals.md#the-ai-
 approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
 `ai` (an agent approver's answers, the project rule it quotes, and the commit it read the project's rules from),
-approval_review's
-`ai` (the precedent key, run labels, precedents, playbook, project and recent calls of an approval held by the
-policy's approval_agent rules) and `approver` (people: the circuit breaker's state and the playbook, accept or retire
-a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 26 adds register_run's `continues` (a later run of an
+approval_review's `ai` (the precedent key, run labels, precedents, playbook, project and recent calls of an approval
+held by the policy's approval_agent rules) and `approver` (people: the circuit breaker's state and the playbook,
+accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 26 adds
+register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
