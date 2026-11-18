@@ -2621,47 +2621,245 @@ def _loaded(kind, args):
             yield "held", nxt
 
 
-_INLINE_CODE_EXEC = {
-    "python": re.compile(
-        r"\b(?:exec|eval|compile|__import__|importlib|runpy|system|popen|subprocess|asyncio|"
-        r"cProfile|timeit|pdb|pickle|torch|pydoc|posix|__dict__|getattr|vars|modules|_sys|"
-        r"breakpoint|__class__|__base__|__subclasses__|functools)\b|subprocess|file\s*="
-    ),
-    "node": re.compile(r"\b(?:eval|Function|child_process)\b|(?:\bimport\s*\()|\brequire\s*\(\s*(?!['\"](?:node:)?(?:fs|path|buffer|stream|util|zlib|url|events|string_decoder|querystring|assert|os|crypto|readline)['\"])"),
-    "ruby": re.compile(r"\b(?:eval|instance_eval|class_eval|module_eval|system|exec|spawn|fork)\b|`"),
-    "perl": re.compile(r"\b(?:eval|system|exec|do)\b|`"),
-    "php": re.compile(r"\b(?:eval|exec|system|passthru|shell_exec|popen|proc_open)\b|`"),
-    "lua": re.compile(r"\b(?:load|loadstring|loadfile|dofile)\b"),
+_SAFE_DATA_MODULES = {"json", "csv", "sys"}
+
+_SAFE_PURE_BUILTINS = {
+    "len", "int", "float", "str", "bool", "list", "dict",
+    "tuple", "set", "range", "enumerate", "min", "max",
+    "sum", "sorted", "any", "all", "zip", "repr",
 }
+
+_SAFE_DATA_CALLS = {
+    "json.load", "json.loads", "json.dumps", "json.dump",
+    "csv.reader", "csv.DictReader",
+    "sys.stdin.read", "sys.stdin.readline", "sys.stdin.readlines",
+    "print",
+} | _SAFE_PURE_BUILTINS
+
+_ALLOWED_SYS_ATTRS = {"stdin", "argv", "stdout", "stderr"}
+_ALLOWED_STDIN_ATTRS = {"read", "readline", "readlines"}
+_ALLOWED_JSON_ATTRS = {"load", "loads", "dumps", "dump"}
+_ALLOWED_CSV_ATTRS = {"reader", "DictReader"}
+
+_SAFE_AST_NODE_TYPES = (
+    ast.Module,
+    ast.Interactive,
+    ast.Expression,
+    ast.Import,
+    ast.ImportFrom,
+    ast.Assign,
+    ast.AugAssign,
+    ast.AnnAssign,
+    ast.Expr,
+    ast.For,
+    ast.While,
+    ast.If,
+    ast.With,
+    ast.withitem,
+    ast.Pass,
+    ast.Break,
+    ast.Continue,
+    ast.Try,
+    ast.ExceptHandler,
+    ast.Call,
+    ast.Attribute,
+    ast.Name,
+    ast.Constant,
+    ast.Subscript,
+    ast.Slice,
+    ast.List,
+    ast.Tuple,
+    ast.Dict,
+    ast.Set,
+    ast.ListComp,
+    ast.DictComp,
+    ast.SetComp,
+    ast.GeneratorExp,
+    ast.comprehension,
+    ast.UnaryOp,
+    ast.UAdd,
+    ast.USub,
+    ast.Not,
+    ast.Invert,
+    ast.BinOp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.LShift,
+    ast.RShift,
+    ast.BitOr,
+    ast.BitXor,
+    ast.BitAnd,
+    ast.BoolOp,
+    ast.And,
+    ast.Or,
+    ast.Compare,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.Is,
+    ast.IsNot,
+    ast.In,
+    ast.NotIn,
+    ast.IfExp,
+    ast.FormattedValue,
+    ast.JoinedStr,
+    ast.Load,
+    ast.Store,
+    ast.Del,
+    ast.alias,
+    ast.arg,
+    ast.arguments,
+) + tuple(getattr(ast, _n) for _n in ("Index", "ExtSlice") if hasattr(ast, _n))
+
+
+def _resolve_call_name(func, import_map):
+    """The qualified or aliased name an expression calls, if resolvable."""
+    if isinstance(func, ast.Name):
+        return import_map.get(func.id, func.id)
+    if isinstance(func, ast.Attribute):
+        base = _resolve_call_name(func.value, import_map)
+        if base is not None:
+            return f"{base}.{func.attr}"
+    return None
+
+
+def _is_safe_open_call(node, import_map):
+    """Whether an open() call only reads a literal path or sys.argv with mode 'r' or 'rb'."""
+    if not node.args and not node.keywords:
+        return False
+    path_arg = node.args[0] if node.args else None
+    mode_arg = node.args[1] if len(node.args) > 1 else None
+    for kw in node.keywords:
+        if kw.arg in ("file", "path"):
+            path_arg = kw.value
+        elif kw.arg == "mode":
+            mode_arg = kw.value
+        elif kw.arg == "encoding":
+            if not (isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str)):
+                return False
+        else:
+            return False
+
+    if path_arg is None:
+        return False
+
+    is_literal_str = isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str)
+    is_sys_argv = False
+    if isinstance(path_arg, ast.Subscript):
+        val_name = _resolve_call_name(path_arg.value, import_map)
+        if val_name in ("sys.argv", "argv"):
+            is_sys_argv = True
+
+    if not (is_literal_str or is_sys_argv):
+        return False
+
+    if mode_arg is not None:
+        if not (isinstance(mode_arg, ast.Constant) and mode_arg.value in ("r", "rb")):
+            return False
+
+    return len(node.args) <= 2
+
+
+def _is_safe_python_data_eval(code_str: str) -> bool:
+    """Whether python -c code only parses/loads data using a strict AST allowlist."""
+    if not isinstance(code_str, str) or not code_str.strip():
+        return False
+    try:
+        tree = ast.parse(code_str)
+    except Exception:
+        return False
+
+    if not tree.body:
+        return False
+
+    import_map = {}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_AST_NODE_TYPES):
+            return False
+
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            return False
+
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            return False
+
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _SAFE_DATA_MODULES:
+                    return False
+                target = alias.asname or alias.name
+                import_map[target] = alias.name
+
+        elif isinstance(node, ast.ImportFrom):
+            if node.level != 0 or node.module not in _SAFE_DATA_MODULES:
+                return False
+            for alias in node.names:
+                if alias.name == "*":
+                    return False
+                target = alias.asname or alias.name
+                import_map[target] = f"{node.module}.{alias.name}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            base_name = _resolve_call_name(node.value, import_map)
+            if base_name == "sys" and node.attr not in _ALLOWED_SYS_ATTRS:
+                return False
+            elif base_name == "sys.stdin" and node.attr not in _ALLOWED_STDIN_ATTRS:
+                return False
+            elif base_name == "json" and node.attr not in _ALLOWED_JSON_ATTRS:
+                return False
+            elif base_name == "csv" and node.attr not in _ALLOWED_CSV_ATTRS:
+                return False
+
+        if isinstance(node, ast.Call):
+            call_name = _resolve_call_name(node.func, import_map)
+            if call_name == "open":
+                if not _is_safe_open_call(node, import_map):
+                    return False
+            elif call_name not in _SAFE_DATA_CALLS:
+                return False
+
+    return True
 
 
 def evaluates_code(kind, code):
     """Whether an inline program text evaluates or imports what it reads, or runs subprocesses."""
-    rx = _INLINE_CODE_EXEC.get(kind)
-    return bool(rx and rx.search(code))
+    if kind == "python":
+        return not _is_safe_python_data_eval(code)
+    return True
 
 
 def _is_data_interpreter(c):
-    """Whether an interpreter command only reads and processes data with an inline program (-c, -e)."""
+    """Whether an interpreter command only reads and processes data with an inline program (-c)."""
+    if c.get("opaque") or c.get("via"):
+        return False
     kind = _kind(c["argv"][0])
-    if kind not in _INLINE_CODE_EXEC:
+    if kind != "python":
         return False
     args = c["argv"][1:]
     if any(_loaded(kind, args)):
         return False
-    if kind == "python":
-        flags = []
-        for a in args:
-            if a == "-c" or a.startswith("-c"):
-                break
-            flags.append(a)
-        for f in flags:
-            if not re.fullmatch(r"-[IBusEqO]+", f):
-                return False
+    flags = []
+    for a in args:
+        if a == "-c" or a.startswith("-c"):
+            break
+        flags.append(a)
+    for f in flags:
+        if not re.fullmatch(r"-[IBusEqO]+", f):
+            return False
     code = _code_arg(kind, args)
     if code is None:
         return False
-    return not evaluates_code(kind, code)
+    return _is_safe_python_data_eval(code)
 
 
 def _data_url(url):
