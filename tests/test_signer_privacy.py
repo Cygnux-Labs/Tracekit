@@ -33,7 +33,10 @@ NOT_CONTENT = {"/properties/prev_hash", "/properties/run_prev_hash", "/$defs/run
                # policy text, and an agent approver's own word for its prompt
                "/$defs/approval_request/properties/agent/properties/conditions_hash",
                "/$defs/approval/properties/asserted/properties/prompt_hash",
-               "/$defs/approval_suggested/properties/asserted/properties/prompt_hash"}
+               "/$defs/approval_suggested/properties/asserted/properties/prompt_hash",
+               # the AI approver's: the policy an answer was bounded by, and the playbook the signed records hold
+               "/$defs/approver_answer/properties/policy_hash",
+               "/$defs/approver_answer/properties/playbook/properties/digest"}
 
 
 class SignerPrivacy(Harness, unittest.TestCase):

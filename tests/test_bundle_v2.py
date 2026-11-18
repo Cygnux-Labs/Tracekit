@@ -1410,7 +1410,7 @@ EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "
 UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
 MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
 AI_ASKED = {"key": {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
-                    "project": "api (17978b62)"}, "digest": H, "labels": [], "clean": True,
+                    "project": "api (17978b62)"}, "digest": "hmac-sha256:" + "0" * 64, "labels": [], "clean": True,
             "precedents": {"approve": ["apr-0"], "reject": []}}
 RELIED_ON = {"precedents": {"approve": ["apr-0"], "reject": []}, "playbook": {"version": 0, "digest": H},
              "policy_hash": H, "labels": [], "mode": "enforce",

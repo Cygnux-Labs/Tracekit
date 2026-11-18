@@ -34,7 +34,7 @@ own committed rules (project_rules). The model's answer is {decision: approve|re
 an error, a timeout, a refusal or a malformed answer escalates. A yes needs two answers that agree (two keys: the
 second model, or the one asked again); a no needs one. A rule the model quotes rejects the call only when it is word for word in the project's
 files. It sends `asserted: {model, version, prompt_hash}` and `ai: {answers, project_rule?, project?}` (`project`:
-the commit the project's rules were read from and their digests, or why none were).
+the commit the project's rules were read from and the files read, or why none were).
 The signer checks every answer again.
 """
 import argparse
@@ -198,7 +198,7 @@ def judge(ask, tenant, view, eligible, models=(DEFAULT_MODEL, DEFAULT_MODEL), ru
 
 def project_rules(view):
     """([(file, text)], project): the project's own rules for an approval held by approval_agent's rules, and what the
-    answer records of where they came from: `project` {commit, files: [{file, sha256}]}, or {unread: why}; None when
+    answer records of where they came from: `project` {commit, files: [the names read]}, or {unread: why}; None when
     the agent's client named no project. Read only from the committed HEAD of the git repository at the folder the
     client named (`ai.project`), never from its working tree, which the agent can write: RULE_FILES and the names of
     the CI workflows, out of git's object store. Only when the requester is a local user (`ai.owner_uid`) who owns the
@@ -258,8 +258,7 @@ def project_rules(view):
         return [], {"unread": "git could not read the repository"}
     finally:
         os.close(fd)
-    return out, {"commit": head, "files": [{"file": f, "sha256": "sha256:" + hashlib.sha256(t.encode()).hexdigest()}
-                                           for f, t in out]}
+    return out, {"commit": head, "files": [f for f, _ in out]}   # the commit pins what each file held
 
 
 def body(api, model, view):

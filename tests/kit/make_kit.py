@@ -425,7 +425,7 @@ def vectors():
             kw["policy_dir"] = pdir
         key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
                "project": "api (17978b62)"}
-        ai = {"key": key, "digest": "sha256:" + "5" * 64, "labels": [], "clean": True,
+        ai = {"key": key, "digest": "hmac-sha256:" + "5" * 64, "labels": [], "clean": True,
               "precedents": {"approve": [], "reject": []}}
         asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"], "policy_hash": ph,
                   "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash",
@@ -435,7 +435,7 @@ def vectors():
             name,
             ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
                                  "policy_hash": ph}, {"tool_call_id": "t0"}),
-            ("approval.request", {**asked[0], "ai": dict(ai, digest="sha256:" + "6" * 64) if other_kind else ai},
+            ("approval.request", {**asked[0], "ai": dict(ai, digest="hmac-sha256:" + "6" * 64) if other_kind else ai},
              {"tool_call_id": "t0"}),
             ("approval", {"tool_use_id": "t0", "approval_id": "a0", "decision": "approve", "approver": "uid:502",
                           "channel": "rpc"}, {"tool_call_id": "t0"}),

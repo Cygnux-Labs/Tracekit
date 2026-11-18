@@ -3,7 +3,6 @@ identities as system mode has them): approval_agent's lint and its allowlist, th
 bound, precedents from people only, two keys, the circuit breaker, the playbook, replay, and the records both verifiers
 read; and the reviewer: project rules from the committed HEAD only, your own key, two keys, and the friction harness."""
 import contextlib
-import hashlib
 import io
 import itertools
 import json
@@ -692,14 +691,14 @@ class TestEvidence(Case):
             runs.setdefault(run, []).append({"event": {"type": typ, "data": data, "seq": next(seqs), "tenant": tenant,
                                                        "run_id": run}})
         key = {"rules": ["TK-A025"], "tool": "Bash", "target": {}, "project": None}
-        ai = {"key": key, "digest": "sha256:" + "a" * 64, "labels": [], "clean": True,
+        ai = {"key": key, "digest": "hmac-sha256:" + "a" * 64, "labels": [], "clean": True,
               "precedents": {"approve": [], "reject": []}}
         relied = {"precedents": {"approve": ["p1"], "reject": []}, "playbook": {"version": 0, "digest": "sha256:" + "0" * 64},
                   "policy_hash": "sha256:" + "0" * 64, "labels": [], "mode": "enforce", "answers": TWO["answers"]}
         cases = {"no two keys": ({}, {"answers": TWO["answers"][:1]}, "without two answers that approve"),
                  "no precedent named": ({}, {"precedents": {"approve": [], "reject": []}}, "without a person's"),
                  "a rejection named": ({}, {"precedents": {"approve": ["p1"], "reject": ["p1"]}}, "rejection"),
-                 "another kind": ({"digest": "sha256:" + "b" * 64}, {}, "is of another kind of call"),
+                 "another kind": ({"digest": "hmac-sha256:" + "b" * 64}, {}, "is of another kind of call"),
                  "not clean": ({"clean": False}, {}, "wasn't clean"),
                  "self-approved": ({}, {}, "was self-approved"),
                  "after": ({}, {}, "came after the answer"),
@@ -842,10 +841,7 @@ class TestProjectRules(unittest.TestCase):
         rules, project = self.read()
         self.assertEqual(rules, [("AGENTS.md", "Never push to main.\n"), ("CODEOWNERS", "* @owner\n"),
                                  (".github/workflows", "ci.yml")])
-        self.assertEqual(project["commit"], self.head)
-        self.assertEqual([f["file"] for f in project["files"]], ["AGENTS.md", "CODEOWNERS", ".github/workflows"])
-        self.assertEqual(project["files"][0]["sha256"],
-                         "sha256:" + hashlib.sha256(b"Never push to main.\n").hexdigest())
+        self.assertEqual(project, {"commit": self.head, "files": ["AGENTS.md", "CODEOWNERS", ".github/workflows"]})
 
     def test_nothing_is_read_outside_a_repository_its_user_owns(self):
         plain = os.path.join(self.root, "plain")

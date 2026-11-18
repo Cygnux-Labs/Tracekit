@@ -4975,7 +4975,8 @@
           "$ref": "#/$defs/approver_key"
         },
         "digest": {
-          "$ref": "#/$defs/hash"
+          "$ref": "#/$defs/commitment",
+          "description": "the precedent key's digest over what each rule read in full, committed under the tenant's own salt: equal keys match, and what redaction or the cut left out can't be confirmed by a guess"
         },
         "labels": {
           "type": "array",
@@ -5140,7 +5141,7 @@
           "maxLength": 1024
         },
         "project": {
-          "description": "the commit of the project's repository the reviewer read the project's rules from, with each file's digest, or why it read none (no git repository: a working tree's files are the agent's to write)",
+          "description": "the commit of the project's repository the reviewer read the project's rules from, which pins what each file held, and the files read; or why it read none (no git repository: a working tree's files are the agent's to write)",
           "oneOf": [
             {
               "type": "object",
@@ -5159,22 +5160,9 @@
                   "type": "array",
                   "maxItems": 16,
                   "items": {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "file",
-                      "sha256"
-                    ],
-                    "properties": {
-                      "file": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 256
-                      },
-                      "sha256": {
-                        "$ref": "#/$defs/hash"
-                      }
-                    }
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
                   }
                 }
               }

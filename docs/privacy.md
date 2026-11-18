@@ -238,6 +238,10 @@ being given but keeps it, and its text stays in the git history until the folder
   As [the AI approver](approvals.md#the-ai-approver) on a laptop it sends the endpoint you name (`url`, with your own
   key) the same view plus the run's last calls (tool, decision, rules), people's reasons on earlier answers, the
   playbook and the project's own committed rules (`AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`, CI workflow names).
+- With the AI approver on, an `approval.request` of a rule `approval_agent` lists records its precedent key in the
+  clear: the rules, the tool, what each rule read of the call (the package index; for `TK-A062` and `TK-SHELL-PARSE`
+  the command itself), redacted and cut to 256 characters, and the project folder's name. Its digest over the full key
+  is a commitment, so what redaction or the cut left out can't be confirmed by a guess.
 - `tracekit analyze --v2 --review` (off unless you pass it) sends the model at `--review-url` (default: the reviewer
   it picks of those configured, `TRACEKIT_REVIEW_URL`'s, else the Anthropic or OpenAI API whose key is set, preferring
   another model family than the agent's; [findings](findings.md#the-reviewer-model-tk-x210)) one JSON copy of the run it analyses, cut to about 48,000 characters: what the person asked, what the model

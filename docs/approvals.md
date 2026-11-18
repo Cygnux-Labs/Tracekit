@@ -546,8 +546,8 @@ folder at a time without following a link, through git's object store with no ho
 isn't a git repository isn't read. A rule the model quotes word for word rejects the call; a quote that isn't there
 escalates it. A project rule never approves.
 
-**The record.** The `approval.request` carries `ai`: the key, its digest, the run's labels, whether the run was clean,
-and the precedents that counted. Each AI answer (`approval`, `approval.suggested`, `approval.escalated`) carries
+**The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
+own salt), the run's labels, whether the run was clean, and the precedents that counted. Each AI answer (`approval`, `approval.suggested`, `approval.escalated`) carries
 `relied_on`: the precedents, the playbook's version and digest, the policy hash, the run's labels, whether it decided
 (`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer, the rule it quoted,
 and the commit the project's rules came from (or why none were read). The verifiers' `AI approvals` line checks each

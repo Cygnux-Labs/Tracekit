@@ -239,13 +239,12 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
 CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
 # an agent approver's answers to an approval_agent approval (approval_decide `ai`): each answer's model and
 # decision (one, or two independent ones: a yes needs two that agree), the project rule it quotes, verbatim, and the
-# commit of the project's repository it read the project's rules from with their digests, or why it read none
+# commit of the project's repository it read the project's rules from with the files it read, or why it read none
 APPROVER_ANSWER = _obj(["answers"], answers={"type": "array", "minItems": 1, "maxItems": 2, "items": _obj(
     ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]})},
     project_rule=_str(1024, minLength=1), project={"oneOf": [
         _obj(["commit", "files"], commit=_str(64, pattern=r"^([0-9a-f]{40}|[0-9a-f]{64})" + _END),
-             files={"type": "array", "maxItems": 16, "items": _obj(["file", "sha256"], file=_str(256, minLength=1),
-                                                                    sha256=DIGEST)}),
+             files={"type": "array", "maxItems": 16, "items": _str(256, minLength=1)}),
         _obj(["unread"], unread=_str(256, minLength=1))]})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],

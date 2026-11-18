@@ -2354,10 +2354,13 @@ class SignerService:
 
     def _approver_request(self, run, tool, target, untrusted, requester, project):
         """(the `ai` of an approval.request held only by approval_agent's rules, why an AI answer can't decide it or
-        None): its precedent key (precedent_key), the run's labels, `clean` (the run carried no label of the run bound,
+        None): its precedent key as shown and its digest's commitment (precedent_key), the run's labels, `clean` (the run carried no label of the run bound,
         and no argument a value only untrusted content brought: a person's answer to it is a precedent only then), the
         precedents that count now, and `asserted: [project]` when the agent's client named the project."""
-        key, digest = precedent_key(tool, target, project)
+        key, plain = precedent_key(tool, target, project)
+        # a commitment under the tenant's own salt: equal keys match, and what redaction or the cut left out of the
+        # shown key can't be confirmed by guessing it
+        digest = self._commit(f"precedent:{run['tenant']}", plain)
         unclean, prec = self._unclean(run), self._precedents(run["tenant"], requester, digest)
         ext = {"key": {**key, "tool": tool[:256], "target": {r: [privacy.redact_text(k)[0][:256] for k in v[:16]]
                                                              for r, v in target.items()}},
