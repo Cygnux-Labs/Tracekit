@@ -168,7 +168,7 @@ def degrade(tx, prov, state, reason):
 
 def new_agent():
     """The agent-approval state (agent_state), empty."""
-    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}}
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -216,11 +216,13 @@ def approver_state(set_, log, run, e, a, pop):
     approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, rules, decision, at, run,
     reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
     PRECEDENT_S; `key`, its precedent key as shown), `demoted` (tenant\0rule -> why the circuit breaker dropped the rule to shadow), `pairs` (tenant\0rule
-    -> the last AGREEMENT_PAIRS agreements of an AI suggestion with the person's answer) and `playbook` (tenant ->
+    -> the last AGREEMENT_PAIRS agreements of an AI suggestion with the person's answer), `pins` (tenant\0rule -> the
+    model, version, prompt hash and playbook digest of the AI's last answer: pinned) and `playbook` (tenant ->
     {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it (precedent.revoked), an
     incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI
-    approval of it, a precedent of it goes bad, or agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or
-    more; a person's approver.enabled restores it."""
+    approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more,
+    or an answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled
+    restores it (the pin stays the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):
@@ -235,6 +237,13 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
+    if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
+        for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
+            k, now = f"{tenant}\0{r}", pinned(d)
+            if ag["pins"].get(k, now) != now:
+                demote([r], "the reviewer's model, version, prompt or playbook changed since its last answer")
+            if ag["pins"].get(k) != now:
+                set_(ag["pins"], k, now)
     if typ == "run.registered" and d.get("analyzes"):   # a findings run: its why findings are about that run
         set_(run, "analyzes", d["analyzes"])
     elif typ == "approval.suggested" and ap and d["decision"] in ("approve", "reject"):
@@ -276,6 +285,13 @@ def approver_state(set_, log, run, e, a, pop):
         if d["action"] == "accept":
             entries[d["id"]] = {"text": d["text"], "key": d["key"]}
         set_(ag["playbook"], tenant, {"version": book["version"] + 1, "entries": entries})
+
+
+def pinned(d):
+    """[model, version, prompt hash, playbook digest] of an AI answer's record: what its circuit breaker pins."""
+    asserted = d.get("asserted") or {}
+    return [asserted.get("model"), asserted.get("version"), asserted.get("prompt_hash"),
+            d["relied_on"]["playbook"]["digest"]]
 
 
 def new_contain():

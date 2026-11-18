@@ -216,9 +216,7 @@ class Engine:
                     kind = [command]
                 else:
                     parsed, _ = self._parse(args, command, [0], fallback=False)
-                    if parsed is None:
-                        return None
-                    kind = sorted({_source(v) for v in _package_indexes(parsed[0], parsed[2])})
+                    kind = sorted({_source(v) for v in _package_indexes(parsed[0], parsed[2])}) if parsed else []
             if not kind:
                 return None
             out[rid] = kind

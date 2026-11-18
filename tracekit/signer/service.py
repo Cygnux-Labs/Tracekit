@@ -354,7 +354,7 @@ from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webh
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog, approval,
                                       constraint_state, cooldown_key, degrade, epoch, final_run, owner,
-                                      person_only_keys, ran, salt_label, skipped, subject, writer)
+                                      person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -4007,8 +4007,13 @@ class SignerService:
             ap, demoted, ext, basis = a.get("ai"), self._demoted(a), {}, None
             if ap:   # what the answer relied on, in its record (relied_on): the signer's own reading of each
                 prec = self._precedents(run["tenant"], a["requester"], ap["digest"])
+                book = _playbook_ref(self.log.agent["playbook"].get(run["tenant"]))
+                pin = pinned({**data, "relied_on": {"playbook": book}})
+                demoted = demoted or next((
+                    "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
+                    ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
                 ext = {"relied_on": {
-                    "precedents": prec, "playbook": _playbook_ref(self.log.agent["playbook"].get(run["tenant"])),
+                    "precedents": prec, "playbook": book,
                     "policy_hash": a["policy_hash"], "labels": self._run_labels(run),
                     "mode": "shadow" if shadow or demoted else "enforce", **({"demoted": demoted} if demoted else {}),
                     **given}}

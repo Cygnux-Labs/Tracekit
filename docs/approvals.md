@@ -518,15 +518,17 @@ project and the same requesting identity, asked in a clean run in the last 30 da
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
 answer it. Only people's answers count: never an agent's, nor a self-approval. A precedent stops counting when a person
 revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in its run, or when a `why`
-finding is written about its run. The project is the folder the agent's client names: the agent's own word, so it only
-narrows a match, and the record says so (`asserted: [project]`).
+finding is written about its run. The project is the folder the agent's client names (the hook sends the nearest folder
+above the session's that holds a `.git`): the agent's own word, so it only narrows a match, and the record says so
+(`asserted: [project]`).
 
 **Two keys.** A yes needs two answers that approve, from two models or one asked twice; a no needs one. The signer
 escalates a yes that doesn't carry two.
 
 **Circuit breaker.** A rule drops to shadow in its tenant when a person revokes an AI approval of it, when a precedent of
-it goes bad, or when the AI agreed with people on fewer than 9 in 10 of the last calls both answered (at least 10, in
-shadow mode). Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
+it goes bad, when the AI agreed with people on fewer than 9 in 10 of the last calls both answered (at least 10, in
+shadow mode), or when an answer comes from another model, version, prompt or playbook than the rule's last one (each
+answer's `asserted` and playbook digest are pinned): a change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
 back on: `tracekit reviewer enable TK-A025`.
 
 **Playbook.** `tracekit reviewer status` lists the rules dropped to shadow, the playbook in force, and entries proposed

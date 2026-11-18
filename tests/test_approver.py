@@ -285,6 +285,22 @@ class TestPrecedent(Case):
         self.assertEqual(self.ai(aid, "reject", ai={"answers": [{"model": "m", "decision": "reject"}]})["state"],
                          "rejected")
 
+    def test_what_counts_when_the_ai_answers_not_when_it_was_asked(self):
+        p = self.precedent()
+        gone, _ = self.ask()   # eligible now; its precedent is revoked, and the rule enabled again, before the answer
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "revoke", "id": p})
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        out = self.ai(gone)
+        self.assertEqual((out["state"], out.get("escalated")), ("requested", True))
+        self.precedent()
+        rejected, _ = self.ask()   # eligible now; a person rejects a call like it before the answer
+        self.precedent(decision="reject")
+        out = self.ai(rejected)
+        self.assertEqual((out["state"], out.get("escalated")), ("requested", True))
+        reasons = [e["data"]["reason"] for e in self.events() if e["type"] == "approval.escalated"]
+        self.assertEqual([r[:40] for r in reasons], ["no person's answer to a call like this o",
+                                                     "a person rejected a call like this one: "])
+
     def test_people_who_answered_both_ways_answer_it(self):
         self.precedent()
         self.precedent(decision="reject")
@@ -321,7 +337,7 @@ class TestRunBound(Case):
         aid, a = self.ask()
         self.assertEqual(a["agent"]["reason"], "the run carries secrets_access: people answer it")
         _, a = self.ask(run=self.register(continues=True))   # an earlier run of the session: its calls unseen
-        self.assertFalse(a["agent"]["eligible"])
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
 
     def test_a_label_taken_after_the_ai_approved_withdraws_it_before_it_runs(self):
         self.precedent()
@@ -432,6 +448,31 @@ class TestBreaker(Case):
         [sug] = [e["data"] for e in es if e["type"] == "approval.suggested"]
         self.assertEqual((sug["relied_on"]["mode"], sug["relied_on"]["demoted"][:5]), ("shadow", "uid:9"))
         self.assertEqual([e["data"]["rules"] for e in es if e["type"] == "approver.enabled"], [["TK-A025"]])
+
+    def test_another_model_prompt_or_playbook_answers_in_shadow_until_a_person_enables_it(self):
+        self.precedent()
+        aid, _ = self.ask()
+        self.assertEqual(self.ai(aid)["state"], "approved")   # pins m-a, version 1, no prompt, playbook v0
+        for asserted in ({"model": "m-z", "version": "1"}, {"model": "m-a", "version": "2"},
+                         {"model": "m-a", "version": "1", "prompt_hash": "sha256:" + "e" * 64}):
+            with self.subTest(asserted):
+                aid, _ = self.ask()
+                out = self.ai(aid, asserted=asserted)
+                self.assertEqual((out["state"], out.get("suggested")), ("requested", True))
+                self.assertIn("model, version, prompt or playbook changed",
+                              self.s.log.agent["demoted"]["default\0TK-A025"])
+                self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+                aid, _ = self.ask()
+                self.assertEqual(self.ai(aid, asserted=asserted)["state"], "approved")   # the new one, enabled
+                self.ai_pin = asserted
+        for _ in range(svc.PLAYBOOK_MIN - 1):
+            self.precedent()
+        prop = self.s.call(ALICE, "approver", {"action": "status"})["proposals"][0]
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": prop["id"]})
+        aid, _ = self.ask()
+        self.assertTrue(self.ai(aid, asserted=self.ai_pin).get("suggested"))   # a new playbook: shadow first
+        self.restart()   # the pins and what they dropped come back from the records
+        self.assertIn("default\0TK-A025", self.s.log.agent["demoted"])
 
     def test_an_unconsumed_ai_approval_of_a_dropped_rule_never_runs(self):
         self.precedent()
@@ -656,6 +697,8 @@ class TestEvidence(Case):
         relied = {"precedents": {"approve": ["p1"], "reject": []}, "playbook": {"version": 0, "digest": "sha256:" + "0" * 64},
                   "policy_hash": "sha256:" + "0" * 64, "labels": [], "mode": "enforce", "answers": TWO["answers"]}
         cases = {"no two keys": ({}, {"answers": TWO["answers"][:1]}, "without two answers that approve"),
+                 "no precedent named": ({}, {"precedents": {"approve": [], "reject": []}}, "without a person's"),
+                 "a rejection named": ({}, {"precedents": {"approve": ["p1"], "reject": ["p1"]}}, "rejection"),
                  "another kind": ({"digest": "sha256:" + "b" * 64}, {}, "is of another kind of call"),
                  "not clean": ({"clean": False}, {}, "wasn't clean"),
                  "self-approved": ({}, {}, "was self-approved"),
@@ -681,6 +724,34 @@ class TestEvidence(Case):
                 [(n, ok, problems)] = rep.checks
                 self.assertEqual(ok, why is None, problems)
                 self.assertTrue(why is None or why in problems[0], problems)
+
+
+class TestHookProject(unittest.TestCase):
+    def test_the_hook_names_the_repository_its_session_works_in(self):
+        from tracekit.integrations import claude_code
+        root = os.path.realpath(ts.tmpdir(self))
+        os.makedirs(os.path.join(root, "api", ".git"))
+        os.makedirs(os.path.join(root, "api", "src", "deep"))
+        os.makedirs(os.path.join(root, "plain"))
+        for cwd, want in ((os.path.join(root, "api", "src", "deep"), os.path.join(root, "api")),
+                          (os.path.join(root, "plain"), os.path.join(root, "plain")), (None, None), ("api/src", None),
+                          ("/" + "x" * 1024, None)):
+            with self.subTest(cwd=str(cwd)[:40]):
+                sent, run = [], mock.Mock(run_id="r1")
+
+                def call(method, **fields):
+                    sent.append((method, fields))
+                    return {"approval_id": "apr-1", "state": "requested", "expires_at": "2026-11-18T12:00:00Z"}
+                run.call = call
+                decided = (run, {"decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1", "reason": "index"})
+                with mock.patch.object(claude_code, "_run", lambda *a, **kw: decided), \
+                        mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "0"}), \
+                        contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                    claude_code._pre(mock.Mock(timeout=30.0, signer=None), {
+                        "tool_name": "Bash", "tool_input": {"command": INDEX.format("x")},
+                        **({"cwd": cwd} if cwd else {})}, "s1", "t1")
+                [fields] = [f for m, f in sent if m == "approval_request"]
+                self.assertEqual(fields.get("project"), want)
 
 
 class FakeModel:
@@ -731,7 +802,8 @@ class TestJudge(unittest.TestCase):
     def test_openai_chat_answers_and_refusals(self):
         chat = {"choices": [{"message": {"content": json.dumps(said("approve", "fine"))}}]}
         self.assertEqual(reviewer.answer(chat), ("approve", "fine", None))
-        for bad in ({"choices": [{"message": {"refusal": "no", "content": None}}]}, {"choices": []},
+        for bad in ({"choices": [{"message": {"refusal": "no", "content": json.dumps(said("approve"))}}]},
+                    {"choices": [{"message": {"refusal": "no", "content": None}}]}, {"choices": []},
                     {"choices": [{"message": {"content": json.dumps({"decision": "approve"})}}]}):
             with self.subTest(bad), self.assertRaises(ValueError):
                 reviewer.answer(bad)
