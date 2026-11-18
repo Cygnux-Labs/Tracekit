@@ -59,7 +59,7 @@ gives a regular expression in which `(?![\s\S])` means the end of the text.
 
 ## Versioning
 
-The contract has one version number, and this page describes version 25. A released version never changes: any change to
+The contract has one version number, and this page describes version 26. A released version never changes: any change to
 a request or an answer is a new version.
 
 A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
@@ -89,6 +89,7 @@ A call or field that this page does not list below was already in version 15. Th
 | 23 | `export_run` |
 | 24 | `call_state`, `call_claim` |
 | 25 | `content_get`'s `type` and `source` |
+| 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
 
 ## Errors
 
@@ -251,6 +252,7 @@ lists `register_run`. A box's agent channel may call it too.
 | `box.image_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `box.channel` | always `agent` | no |  |
 | `box.allow` | list of texts | yes | up to 256 items |
+| `continues` | always `true` | no |  |
 | `agent` | object | yes |  |
 | `agent.name` | text | yes | 1 to 128 characters |
 | `agent.version` | text | no | up to 64 characters |
@@ -1235,7 +1237,7 @@ lists `status`. A box's agent channel may call it too.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `rpc_version` | always `25` | yes |  |
+| `rpc_version` | always `26` | yes |  |
 | `signer` | object | yes |  |
 | `signer.name` | text | yes | up to 128 characters |
 | `signer.version` | text | yes | up to 64 characters |
