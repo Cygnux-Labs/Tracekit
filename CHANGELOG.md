@@ -2,6 +2,25 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.7.2 (2026-11-18) — 1.7.1, published, with three fixes from contributors
+
+1.7.1 was tagged but never published: the release's check of the built wheel ran two version tests that read
+`README.md` and the Hermes plugin's `plugin.yaml`, which that job didn't copy. 1.7.2 is 1.7.1's code with the job
+copying them, plus three pull requests merged since. Everything in 1.7.1's notes below ships here; upgrade the signer
+first, as for 1.7.1.
+
+### Added
+- Autotrace records model calls made through AWS Bedrock Runtime with boto3 (`Converse`, `ConverseStream`,
+  `InvokeModel`), with tool use and token counts; other AWS calls pass through untouched (#916, by @TheVicky1).
+
+### Fixed
+- The viewer says when a call the policy denied, or a hold nobody answered, ran anyway: "BLOCKED · RAN ANYWAY" and
+  "NOT ANSWERED · RAN ANYWAY" on the tape and PERMISSIONS, and the run review counts it so (#691, by @Saisinare).
+- The hook reads the transcript mark under the run's lock, just before it sends, and the signer orders marks by when
+  they were read, so parallel hooks of one session no longer report a false `trace.tamper/truncated` (#758, by
+  @fcy222fcy).
+- The release's wheel check copies the files its version tests read.
+
 ## 1.7.1 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
 
 1.7.0 was tagged but never published: its release job timed out. 1.7.1 is the same code with a longer release timeout.
