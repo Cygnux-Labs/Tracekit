@@ -3654,7 +3654,11 @@ class CodingPack(unittest.TestCase):
                    {"command": "gcloud secrets list"},
                    {"cli_command": "op item list"},
                    {"cli_command": "bw list folders"},
-                   {"cmd": "lpass ls"},]
+                   {"cmd": "lpass ls"},
+                   # the scan stops at the end of the JSON value, so a command split across two arguments
+                   # (`aws` in command, its `secretsmanager` in params) isn't read as one
+                   {"command": "aws --profile",
+                    "params": "prod secretsmanager get-secret-value --secret-id x"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
                 for args in held + routine:
@@ -4598,7 +4602,9 @@ class CodingPack(unittest.TestCase):
                         "keepassxc-cli search Github", "keepassxc-cli db-info passwords.kdbx", "keepassxc-cli --help",
                         "keepassxc-cli -v", "gh auth status", "gh auth status -h github.com", "gh auth login",
                         "gh auth refresh", "gh auth switch", "gh auth token --help", "gh auth status --help",
-                        "gh auth status -t --help"):
+                        "gh auth status -t --help", "git credential approve", "git credential reject",
+                        "git credential-store store", "git credential-store erase", "git credential",
+                        "git config credential.helper", "git credentials fill"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
