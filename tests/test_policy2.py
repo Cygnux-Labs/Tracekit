@@ -847,6 +847,21 @@ class Speed(unittest.TestCase):
                 self.assertIn("TK-A061", decision["rule_ids"], decision)
                 self.assertLess(time.perf_counter() - start, self.BUDGET_S * machine_scale())
 
+    def test_model_weights_formats_in_a_model_folder_search_in_linear_time(self):
+        """TK-A058, TK-A059 (#999's review): a file name after models/ full of dots or weights extensions, 64 KiB of it
+        on the fallback engine, as a file tool's path and as a file a command writes or deletes. A greedy last name
+        backtracked over every dot: 2 to 3 s at 64 KiB, quadratic; a lazy one, tens of ms."""
+        n, budget = MAX_SUBJECT - 64, self.BUDGET_S * machine_scale()
+        for rid, prefixes in (("TK-A058", ("/w/models/", "models/")),
+                              ("TK-A059", ("WRITE_TARGET:models/", "DELETE_TARGET:/w/models/"))):
+            [pattern] = [p for r, key, p in pack_patterns() if r == rid and key == "pattern"]
+            rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
+            for prefix in prefixes:
+                for unit in ("a.", ".onnx"):
+                    s = prefix + unit * (n // len(unit)) + "x"
+                    with self.subTest(rule=rid, prefix=prefix, unit=unit):
+                        self.assertLess(min(self.search(rx, s, budget) for _ in range(3)), budget)
+
     def test_ci_upload_reads_each_command_start_in_linear_time(self):
         """TK-A061 (PR #781 review): a command may start after any `|`, `&`, `;` or newline, behind wrappers, keywords,
         `(` or `$(`, and a JSON body reads `\\"` as one pair or splices quotes: 64 KiB of each on the fallback engine."""

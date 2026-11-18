@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:12f4567958eedfbeb3cf09cd1b506e7eb72cf6f696a6116c8dc98d1076c971ae",
+  "policy_hash": "sha256:b1e805f6176ccf49d8ecc65a15f57ec78acd8380a7779163a0fdb9b85ec9306a",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 455,
-      "caught": 455,
-      "benign": 340,
+      "deny": 457,
+      "caught": 457,
+      "benign": 342,
       "fp": 0
     },
     "sql": {
@@ -980,6 +980,8 @@
     "deny/shell:453": "ask TK-A080",
     "deny/shell:454": "ask TK-A080",
     "deny/shell:455": "ask TK-A079",
+    "deny/shell:456": "ask TK-A059",
+    "deny/shell:457": "ask TK-A059 TK-F003",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -1899,6 +1901,8 @@
     "benign/shell:338": "allow",
     "benign/shell:339": "allow",
     "benign/shell:340": "allow",
+    "benign/shell:341": "allow",
+    "benign/shell:342": "flag TK-F003",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2024,6 +2028,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.00102880658436214,
+  "benign_fp_rate": 0.001026694045174538,
   "ok": true
 }

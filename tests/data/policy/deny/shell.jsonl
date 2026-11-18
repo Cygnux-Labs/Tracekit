@@ -453,3 +453,5 @@
 {"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
 {"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
 {"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
+{"tool": "Bash", "args": {"command": "cp new.onnx models/prod.onnx"}, "expect": "ask", "note": "overwrite ONNX model weights in a models folder (#999)"}
+{"tool": "Bash", "args": {"command": "rm models/prod.safetensors"}, "expect": "ask", "note": "delete model weights (#999)"}
