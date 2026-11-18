@@ -257,6 +257,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
     for e in (run.start.get("meta") or {}).get("evidence_alerts") or []:  # e.g. Tracekit capture gaps
         out.append({"severity": "high", "title": e.get("title", "Evidence problem"), "detail": e.get("detail", ""),
                     "node": None})
+    from . import influence
     from .import_v2 import content_checks
     for c in content_checks(run):
         if c["verdict"] == "mismatched":
@@ -277,6 +278,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
             if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert
         base = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"],
                 "target": suggest_target(run, ev, prov), "sensitive": sens}
+        drift = influence.drift(influence.graded(g, nid)["edges"]) if influence.consequential(run, ev) else None
         if ev.get("status") == "blocked":
             pass  # reported below, once
         elif sens and bad:
@@ -284,6 +286,12 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "title": f"{ev['tool']} used a value that only untrusted content supplied",
                         "detail": f"'{bad[0]['value']}' appears only in " +
                                   ", ".join(s["label"] for s in bad[0]["sources"]) + "."})
+        elif drift:
+            out.append({**base, "severity": "review", "title": f"{ev['tool']} serves no step of the task",
+                        "detail": (f"Its `{drift['field']}` came only from {drift['label']} (untrusted), by the signer's "
+                                   "provenance." if drift["grade"] == "exact" else
+                                   f"A replay without {drift['label']} (untrusted) changed it (effect "
+                                   f"{drift['effect']:+.2f}).") + " See INFLUENCE for its chain to the task."})
         elif sens and untrusted_up:
             out.append({**base, "severity": "review",
                         "title": f"Sensitive action {ev['tool']} is downstream of untrusted input",
@@ -441,6 +449,8 @@ def investigation(run: Run) -> Dict[str, Any]:
 # --------------------------------------------------------------------------- workspace / influence graph
 
 SEEN_KEPT = 5   # a source's occurrences listed (run, time, record); `runs` counts them all
+CALLS_KEPT = 50   # risky calls INFLUENCE answers for, worst first; `calls_total` counts them all
+ENDED = (None, "flagged", "held", "blocked")   # how a call ended, worst last
 
 
 def _ended(ev: Dict[str, Any]) -> Optional[str]:
@@ -462,11 +472,14 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     in how many runs a call of each tool they reached ended blocked or held (`stopped_runs`). A source's `seen`: where
     it was read (its run's signed run id and agent, the time, the record's seq, its event's position in the why log),
     the first SEEN_KEPT."""
+    from .influence import influences
     sources: Dict[str, Dict[str, Any]] = {}
     groups: Dict[Tuple[str, Any], Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
     edges: Dict[str, Dict[str, Any]] = {}
+    calls: List[Dict[str, Any]] = []
     for run, g in runs:
+        calls += [{**c, "run": run.run_id} for c in influences(run, g, risky=True)]
         for nid, n in g.nodes.items():
             if n["type"] != "input" or n.get("kind") == "task":
                 continue
@@ -524,8 +537,12 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
         s["max_effect"] = max([e["max_effect"] for e in es if e["max_effect"] is not None], default=None)
         s["confirmed_tools"] = sorted({e["tool"] for e in es if e["confirmed"]})
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))
+    # the calls to answer for first: those that serve no step of the task, then the worst ended, then the rest with an
+    # exact or measured edge; otherwise in the order of the runs and their logs
+    calls.sort(key=lambda c: (c["serves"] != "drift", -ENDED.index(c["ended"]),
+                              not any(e["grade"] != "seen" for e in c["edges"])))
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
-            "edges": list(edges.values()),
+            "edges": list(edges.values()), "calls": calls[:CALLS_KEPT], "calls_total": len(calls),
             "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()},
                         "ended": {t: {how: len(c) for how, c in e.items()} for t, e in g["ended"].items()},
                         "stopped_runs": {t: n for t, e in g["ended"].items()

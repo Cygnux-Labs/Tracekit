@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional
 
 from .. import privacy
 from ..format.canon import event_hash as jcs_hash
+from ..policy2.engine import Engine
 from .core import COMMITTED, GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
 from .evals import list_runs
 
@@ -275,6 +276,16 @@ class _Writer:
 
 # --------------------------------------------------------------------------- one v2 run
 
+def _result_trust(decision: Dict[str, Any], reasons, engines: Dict[str, Any]) -> str:
+    """A call's result's trust under the policy its decision records (its `untrusted` list); a policy `reasons` doesn't
+    have reads untrusted, so nothing unknown is shown as trusted."""
+    h = decision.get("policy_hash")
+    if h not in engines:
+        pol = getattr(reasons, "policies", {}).get(h)
+        engines[h] = pol and Engine(pol)
+    return "trusted" if engines[h] and not engines[h].untrusted_results(decision["tool"]) else "untrusted"
+
+
 def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, Dict[str, str]]]) -> str:
     first = recs[0]["event"]
     w = _Writer(out_dir, first["run_id"], first["tenant"])
@@ -293,6 +304,8 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
     final = recs[-1]["event"]["type"] == "run.final"   # an open run's newest calls may still be running
     seen: List[Dict[str, Any]] = []        # what the run had observed so far: a model exchange's context
     decision_of: Dict[str, str] = {}       # tool_use id -> the decision event of the exchange that asked for it
+    results: Dict[str, Dict[str, Any]] = {}   # tool_use id -> the context entry of the call's result
+    engines: Dict[str, Any] = {}           # policy hash -> its Engine (None: a policy `reasons` doesn't have)
     for r in recs:
         e, d, t = r["event"], r["event"]["data"], r["event"]["type"]
         ev = None
@@ -310,8 +323,13 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                 any(x["event"]["data"].get("phase") != "request" for x in exchanges[d["exchange_id"]]):
             ex = [x["event"]["data"] for x in exchanges[d["exchange_id"]]]
             uses = [u for x in ex for u in x.get("tool_uses") or []]
+            # the results the LLM gateway (T2) recorded this exchange sending the model: in its context by the gateway's
+            # own record, where the rest of the context is reconstructed
+            sent = {i: results[i] for x in exchanges[d["exchange_id"]] if x["event"].get("source") == "gateway"
+                    for i in x["event"]["data"].get("tool_results_sent") or () if i in results}
             ev = w.emit(agent, "decision", e["ts"], r, model=d["model"], purpose="", params={}, seed=None,
-                        context=list(seen), ablated=[], output=w.blob({"content": COMMITTED, "tool_uses": uses}),
+                        context=list(seen) + list(sent.values()), ablated=[],
+                        output=w.blob({"content": COMMITTED, "tool_uses": uses}),
                         usage=next((x["usage"] for x in ex if x.get("usage")), {}),
                         status="error" if any(x.get("error") for x in ex) else "ok", duration_ms=None,
                         context_mode="reconstructed")
@@ -339,6 +357,10 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         mode="live" if ran else "blocked" if refused else "unrecorded",
                         sensitive=dd["decision"] in ("deny", "ask") or bool(dd.get("provenance")), duration_ms=None,
                         policy=pol, provenance=_provenance(call, lambda _, seq: by_seq.get(seq)), **extra)
+            if ran:
+                results[d["tool_use_id"]] = {"ref": ev["result_ref"], "kind": "result", "source": "tool:" + dd["tool"],
+                                             "trust": _result_trust(dd, reasons, engines), "from_event": ev["id"],
+                                             "seen": "gateway"}
         elif t == "run.final":
             w.emit("run", "run.end", e["ts"], r, outcome=None)
         if ev is not None:

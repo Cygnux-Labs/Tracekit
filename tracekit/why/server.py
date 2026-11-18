@@ -293,7 +293,8 @@ class Store:
     def workspace(self) -> Dict[str, Any]:
         """workspace() of every run, plus `alerts` (every run's, with its run id) and `calls`: "<signed run id>|<run_seq>"
         -> [why run id, node id] of each tool call whose why event cites a signed record of the same tool (the citation
-        is the why log's own claim, so a signed record of another tool, or none, joins nothing)."""
+        is the why log's own claim, so a signed record of another tool, or none, joins nothing). An exact edge of an
+        influence call is `signed` only when its call joins."""
         paths = self.paths()
         items = [self.analysed(p) for p in paths]
         out = workspace(paths, items)
@@ -316,6 +317,13 @@ class Store:
                 key = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
                 if key and signed.get(key) == ev["tool"]:
                     out["calls"][key] = [run.run_id, "ev:" + ev["id"]]
+        # an exact edge is the signer's word only on a call whose signed record this viewer verified (the join above)
+        for c in out["influence"]["calls"]:
+            tk = c.get("tracekit") or {}
+            ok = out["calls"].get(f"{tk.get('run_id')}|{tk.get('run_seq')}") == [c["run"], c["node"]]
+            for e in c["edges"]:
+                if e["grade"] == "exact":
+                    e["signed"] = ok
         return out
 
     def detail(self, run_id: str) -> Dict[str, Any]:
