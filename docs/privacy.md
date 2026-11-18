@@ -83,11 +83,13 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
   redacted the same way and shows `[REDACTED:<kind>]` markers, but in a shell line (a `command`, `cmd` or `script`
   argument and the like, a typed call's `typed_line`, `process_manage` text) a value is hidden only up to where the
-  shell ends its word, as above, in the code it runs too, which the policy's own shell parser finds (a script `sh -c`,
-  `eval`, `ssh`, `watch` or `trap` runs, one the line writes and then runs). What runs after it stays in view; a
-  comment and a heredoc body a program reads as data are text, redacted as content. A variable's name (`$TOKEN`) is
-  no value where bash expands it; in `'...'`, `$'...'`, after a backslash or in a body kept as written it is text, and
-  hidden. A held call whose copy would hide more than clean values is denied instead (`TK-HIDDEN-CODE`). When
+  shell ends its word, as above, in the code it runs too, which the policy's own shell parser finds where the line holds
+  it (a script `sh -c`, `eval`, `ssh`, `watch` or `trap` runs, a heredoc a shell reads). What runs after it stays in
+  view; a comment and a heredoc body a program reads as data are text, redacted as content. A variable's name
+  (`$TOKEN`) is no value where bash expands it; in `'...'`, `$'...'`, after a backslash or in a body kept as written it
+  is text, and hidden. A code runner's arguments TK-S012 holds (`code`, `source`, `input` …; `args`, `argv`) are read
+  as its program and as an argv. A held call whose copy would hide more than clean values is denied instead
+  (`TK-HIDDEN-CODE`, [limits](limits.md)). When
   redaction may have hidden more than values in an argument (more than 256 characters, or text with a
   blank, a line end, a quote or another character the shell reads), the copy's argument starts with a line saying how
   many characters it hid, `# [N characters hidden by redaction]`, and which characters of shell code were among them

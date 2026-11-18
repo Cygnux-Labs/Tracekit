@@ -3,6 +3,8 @@ of lines that each run one payload program behind a secret-looking value, is the
 what each copy hides, against the shapes the approver's copy hid before shell lines were read as bash reads them; and
 the lines that showed a copy hiding code or a value."""
 import collections
+import contextlib
+import io
 import os
 import random
 import shutil
@@ -18,7 +20,8 @@ from tracekit.policy2 import shell
 PAYLOADS = ["zzpayload", "sk-ant-api03zzpayloadQQQQQQQQ", "ghp_" + "z" * 36, "AKIAZZPAYLOADZZZZZZZ"]
 # harmless programs the lines may run; each payload is a program of its own on PATH that leaves a mark when it runs
 SAFE = ["echo", "true", "printf", "cat", "env", "sh", "bash", "perl", "ruby", "nohup", "xargs", "sleep", "tee", "head",
-        "grep", "sed", "awk", "find", "dirname", "basename", "date", "chmod"]
+        "grep", "sed", "awk", "find", "dirname", "basename", "date", "chmod", "test", "[", "zsh", "ksh", "python3", "make",
+        "sqlite3", "osascript", "expect", "tclsh", "git", "wc", "tr", "cut"]
 
 
 def slot(rng, p):
@@ -26,6 +29,7 @@ def slot(rng, p):
     if p == "zzpayload":
         return rng.choice([
             "A=TOKEN: zzpayload", "A=api_key: zzpayload", "A=password:\tzzpayload", "echo password = x; zzpayload",
+            "X=secret:  zzpayload", "env A=TOKEN: zzpayload", "A=TOKEN: command zzpayload",
             "perl -e '$token=qx/zzpayload/'", "perl -e 'token:qx/zzpayload/'", "ruby -e 'token=%x/zzpayload/'",
             "ruby -e \"token=%x!zzpayload!\"", "perl -e \"\\$token=qx/zzpayload/\"",
             "TOKEN=zzpayload; $TOKEN", "TOKEN=zzpayload eval '$TOKEN'", "export TOKEN=zzpayload; trap $TOKEN EXIT",
@@ -34,6 +38,18 @@ def slot(rng, p):
         ])
     return rng.choice([p, "A=1 " + p, "command " + p, "nohup " + p + " >/dev/null", "env " + p, "time " + p,
                        "bash " + p, ". " + p, "F=" + p + "; . \"$F\""])
+
+
+def runner(rng, inner):
+    """`inner` (no ' and no line end in it) given, quoted, to a program that runs it as shell code."""
+    return rng.choice([
+        f"sh -c '{inner}'", f"bash -c '{inner}'", f"zsh -c '{inner}'", f"eval '{inner}'", f"bash <<< '{inner}'",
+        f"env -S '{inner}'" if inner.startswith("A=") else f"sh -c '{inner}'", f"sqlite3 :memory: '.shell {inner}'",
+        f"osascript -e 'do shell script \"{inner}\"'" if '"' not in inner else f"sh -c '{inner}'",
+        f"expect -c 'exec sh -c {{{inner}}}'" if "{" not in inner and "}" not in inner else f"sh -c '{inner}'",
+        f"printf '%s\\n' '{inner}' > s.sh && sh s.sh", f"echo '{inner}' | sh", f"git -c alias.x='!{inner}' x",
+        f"find . -maxdepth 0 -exec sh -c '{inner}' \\;",
+    ])
 
 
 def line(rng, depth, p):
@@ -64,13 +80,27 @@ def line(rng, depth, p):
         lambda: f"cat > x.sh <<'E'\n{a(p)}\nE\nbash x.sh", lambda: f"cat > x.sh <<E\n{a(p)}\nE\n. ./x.sh",
         lambda: quoted("printf '%s\\n' '{}' > x.sh; sh x.sh", "'"), lambda: quoted("echo '{}' > x.sh; bash x.sh", "'"),
         lambda: quoted('x="$(echo \'{}\')"; eval "$x"', "'"), lambda: f"{a(p)} # .env",
+        # line continuations and comments
+        lambda: f"echo x \\\n#don't\n{a(p)}\necho 'y'", lambda: f"{a(one)} \\\n&& {a(two)}",
+        lambda: f"# it's\n{a(p)}", lambda: f"echo a#b'c\n{a(p)}\necho d'",
+        # heredocs of every kind, with a quote in the body
+        lambda: f"cat <<EOF >/dev/null\nx\\\nEOF\ndon't\nEOF\n{a(p)}\necho 'x'",
+        lambda: f"cat <<-EOF >/dev/null\n\tit's\n\tEOF\n{a(p)}", lambda: f"cat <<'EOF' >/dev/null\n'\nEOF\n{a(p)}",
+        lambda: f"cat <<E\"O\"F >/dev/null\n'\nEOF\n{a(p)}", lambda: f"cat <<\\EOF >/dev/null\n'\nEOF\n{a(p)}",
+        lambda: f"cat <<EOF >/dev/null; {a(p)}\n'\nEOF", lambda: f"x=$(cat <<'E'\nit's\nE\n); {a(p)}",
+        # quotes of every kind before the payload
+        lambda: f"echo $'it\\'s'; {a(p)}", lambda: f"echo \"it's\"; {a(p)}", lambda: f"echo $\"a'b\"; {a(p)}",
+        lambda: f"echo 'a\\'; {a(p)}",
+        # runners of quoted text, and code in backquotes
+        lambda: runner(rng, s) if "'" not in (s := a(p)) and "\n" not in s else s, lambda: f"echo `echo x`; {a(p)}",
     ]
     return rng.choice(forms)()
 
 
 class Oracle(unittest.TestCase):
     """Bash runs each line whose copy is asked about and hides its payload's name, in a directory of its own with a
-    PATH of harmless programs and the payloads: none may run its payload."""
+    PATH of harmless programs and the payloads: none may run its payload. Most lines start with a visible decoy of the
+    payload's name (`echo zzpayload;`), which never runs it."""
     SEED, LINES = 20261118, 6000
 
     @unittest.skipUnless(shutil.which("bash") and os.name == "posix", "needs bash")
@@ -88,13 +118,14 @@ class Oracle(unittest.TestCase):
             os.chmod(os.path.join(path, p), stat.S_IRWXU)
         rng, stats, ran = random.Random(self.SEED), collections.Counter(), []
         for _ in range(self.LINES):
-            p = rng.choice(PAYLOADS)
-            cmd = line(rng, rng.randint(1, 3), p)
-            if sum(cmd.count(x) for x in PAYLOADS) != 1:
+            p, decoy = rng.choice(PAYLOADS), rng.random() < 0.6
+            cmd = ("echo %s; " % p if decoy else "") + line(rng, rng.randint(1, 3), p)
+            if sum(cmd.count(x) for x in PAYLOADS) != 1 + decoy:
                 continue
             copy, unclean = privacy.approver_copy({"command": cmd}, privacy.mentions_dotenv(cmd), "Bash")
-            stats["denied" if unclean else "shown" if p in copy["command"] else "hidden"] += 1
-            if unclean or p in copy["command"]:
+            shown = copy["command"].count(p) == cmd.count(p)
+            stats["denied" if unclean else "shown" if shown else "hidden"] += 1
+            if unclean or shown:
                 continue
             if os.path.exists(marker):
                 os.remove(marker)
@@ -103,7 +134,7 @@ class Oracle(unittest.TestCase):
             os.mkdir(cwd)
             try:
                 subprocess.run(["bash", "-c", cmd], cwd=cwd, env={"PATH": path, "HOME": work, "LANG": "C"},
-                               capture_output=True, timeout=5, executable=shutil.which("bash"))
+                               capture_output=True, timeout=5, executable=shutil.which("bash"), stdin=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 continue
             if os.path.exists(marker):
@@ -236,6 +267,10 @@ class Lines(unittest.TestCase):
                 self.assertTrue(held(args)[1])
         self.assertEqual(held({"command": ["ssh", "host", "TOKEN=abcd ./run"]}),
                          ({"command": ["ssh", "host", "TOKEN=[REDACTED:assignment] ./run"]}, False))
+        # an argv's word is data where a data reader gets it (sudo passes it on), else what its program may run
+        self.assertEqual(held({"command": ["sudo", "curl", "-d", "token=abcd1234", "https://x"]}),
+                         ({"command": ["sudo", "curl", "-d", "token=[REDACTED:assignment]", "https://x"]}, False))
+        self.assertTrue(held({"command": ["sqlite3", "db", ".system TOKEN=abcd"]})[1])
         # a reading the parser's budget cut short (its loop values' readings) is no whole reading either
         real = shell.analyse
 
@@ -247,16 +282,28 @@ class Lines(unittest.TestCase):
         self.assertFalse(held({"command": "TOKEN=abcd ./run"})[1])
 
     def test_a_script_its_runner_reads_as_a_line_is_read_as_one(self):
-        """eval, ssh, watch, trap, an alias, git -c, GIT_SSH_COMMAND, a script a line writes then runs: the policy's
-        parser reads each, so the copy reads it too, its values hidden to where that shell ends them."""
+        """eval, ssh, watch, trap, a heredoc a shell reads: the policy's parser reads each where the line holds it, so
+        the copy reads it there too, its values hidden to where that shell ends them. Code the parser reads where the
+        line doesn't hold it as written (an alias's value, GIT_SSH_COMMAND's, a git alias's, a script the line writes
+        and then runs, a variable's value) can't be placed: any value hidden on the line, or in its span, denies."""
         run = "aws s3 cp db s3://x"
         for command, shown in (
                 (f"eval TOKEN=abcd {run}", f"eval TOKEN=[REDACTED:assignment] {run}"),
                 (f"watch 'TOKEN=abcd;{run}'", f"watch 'TOKEN=[REDACTED:assignment];{run}'"),
-                (f"alias x='TOKEN=abcd;{run}'; x", f"alias x='TOKEN=[REDACTED:assignment];{run}'; x"),
-                (f"GIT_SSH_COMMAND='TOKEN=abcd;{run}' git fetch", f"GIT_SSH_COMMAND='TOKEN=[REDACTED:assignment];{run}' git fetch"),
-                (f"cat > r.sh <<'E'\nTOKEN=abcd;{run}\nE\nbash r.sh", f"cat > r.sh <<'E'\nTOKEN=[REDACTED:assignment];{run}\nE\nbash r.sh"),
-                (f"TOKEN=abcd {run} `date`", f"TOKEN=[REDACTED:assignment] {run} `date`"),   # code it's unsure of
+                (f"ssh host 'TOKEN=abcd;{run}'", f"ssh host 'TOKEN=[REDACTED:assignment];{run}'"),
+                (f"bash <<'E'\nTOKEN=abcd;{run}\nE", f"bash <<'E'\nTOKEN=[REDACTED:assignment];{run}\nE"),
+                (f"alias x='TOKEN=abcd;{run}'; x", None), (f"GIT_SSH_COMMAND='TOKEN=abcd;{run}' git fetch", None),
+                (f"cat > r.sh <<'E'\nTOKEN=abcd;{run}\nE\nbash r.sh", None),
+                (f"X='{run}'; TOKEN=abcd eval \"$X\"", None), ("TOKEN=reboot; bash <<EOF\n$TOKEN\nEOF", None),
+                (f"TOKEN=abcd {run} `date`", f"TOKEN=[REDACTED:assignment] {run} `date`"),   # code read in place
+                # a command's words as written in each reading the parser makes (an expansion empty), a function's
+                # body where it is defined, a program an interpreter's code runs within its own span, a herestring
+                # a data reader reads
+                (f'echo "$(date)" && TOKEN=abcd {run}', f'echo "$(date)" && TOKEN=[REDACTED:assignment] {run}'),
+                (f"f() {{ TOKEN=abcd {run}; }}; f", f"f() {{ TOKEN=[REDACTED:assignment] {run}; }}; f"),
+                (f"TOKEN=abcd {run} && python3 -c 'import os; os.system(\"ls\")'",
+                 f"TOKEN=[REDACTED:assignment] {run} && python3 -c 'import os; os.system(\"ls\")'"),
+                ("cat <<< 'TOKEN=abcd1234'", "cat <<< 'TOKEN=[REDACTED:assignment]'"),
                 (f"eval TOKEN=abcd\\;{run}", None), (f"eval 'TOKEN=abcd'\\;{run}", None),
                 (f"git -c alias.x='!TOKEN=abcd;{run}' x", None), (f"env -S 'TOKEN=abcd;{run}'", None),
                 # a quoted value a program the parser doesn't read may run: no blank or shell separator in it
@@ -266,6 +313,86 @@ class Lines(unittest.TestCase):
                 copy, denied = held({"command": command})
                 self.assertEqual(None if denied else copy["command"], shown)
 
+    def test_a_decoy_of_the_code_text_places_nothing(self):
+        """The copy joins the policy parser's reading by where each program and each code text stands, never by its
+        text: a visible decoy of the same text (`echo ./payload`) doesn't place the code a git alias runs, nor make a
+        line the reader read otherwise (a backslash-newline, a heredoc's) read right."""
+        for command in ("gh pr merge 912 --squash; echo ./payload; git -c alias.token=!./payload token",
+                        "aws s3 cp ./a s3://team-bucket/; echo reboot; git -c alias.api_key=!reboot api_key",
+                        "gh pr merge 912 --squash; echo ./payload; echo x \\\n#don't\nA=TOKEN: ./payload\necho 'y'\n",
+                        "gh pr merge 912 --squash\necho ./payload\ncat <<EOF\nx\\\nEOF\ndon't\nEOF\nA=TOKEN: ./payload\n"
+                        "echo 'x'\n", "echo AKIAZZPAYLOADZZZZZZZ; echo x \\\n#don't\nAKIAZZPAYLOADZZZZZZZ\necho 'y'"):
+            with self.subTest(command=command):
+                self.assertTrue(held({"command": command})[1])
+
+    def test_a_backslash_newline_is_read_as_bash_deletes_it(self):
+        """Outside quotes bash deletes a backslash-newline before it reads the line, so a # after one starts a comment;
+        in an unquoted end word's heredoc it joins two lines before one can end the body: the copy reads both so."""
+        run = "./run"
+        for command, shown in (
+                (f"echo x \\\n#don't\nTOKEN=abcd {run}\necho 'y'", f"echo x \\\n#don't\nTOKEN=[REDACTED:assignment] {run}\n"
+                 "echo 'y'"),
+                (f"cat <<EOF >/dev/null\nx\\\nEOF\ndon't\nEOF\nTOKEN=abcd {run}\necho 'x'",
+                 f"cat <<EOF >/dev/null\nx\\\nEOF\ndon't\nEOF\nTOKEN=[REDACTED:assignment] {run}\necho 'x'"),
+                (f"cat <<EOF >/dev/null\nE\\\nOF\nTOKEN=abcd {run}", f"cat <<EOF >/dev/null\nE\\\nOF\nTOKEN=[REDACTED:assignment] "
+                 f"{run}")):
+            with self.subTest(command=command):
+                copy, denied = held({"command": command})
+                self.assertEqual(None if denied else copy["command"], shown)
+
+    def test_quoted_text_a_program_may_run_hides_no_value(self):
+        """A quoted word goes to a program the policy's parser doesn't read: one of DATA_READERS reads it as data, any
+        other may run it (sqlite3's .system, osascript, expect, vim -c, tar --to-command, a git hook a printf writes,
+        make SHELL=, docker run, kubectl exec): a value hidden in it denies the hold, and so does one that starts a word
+        of its own inside quotes (`A=TOKEN: x`)."""
+        for command in ("sqlite3 :memory: '.system A=TOKEN: ./payload'", "sqlite3 :memory: '.system TOKEN=abcd'",
+                        "osascript -e 'do shell script \"A=TOKEN: ./payload\"'",
+                        "expect -c 'exec sh -c {A=TOKEN: ./payload}'", "vim -es -c '!A=TOKEN: ./payload' -c 'q!'",
+                        "printf '%s\\n' 'A=TOKEN: ./payload' > .git/hooks/pre-commit; git commit -m x",
+                        "tar -xf a.tar --to-command='TOKEN=abcd'", "LD_PRELOAD='./sk-ant-api03zzpayloadQQQQQQQQ.so' ls",
+                        "make SHELL='/bin/sh -c A=TOKEN:./payload' all", "docker run --entrypoint sh img -c 'TOKEN=abcd'",
+                        "kubectl exec pod -- sh -c 'TOKEN=abcd'", "echo \"$(osascript -e 'x TOKEN=abcd')\"",
+                        "echo 'token: abcd1234'", "curl -H 'X-Token: abcd1234' https://x"):
+            with self.subTest(command=command):
+                self.assertTrue(held({"command": command})[1])
+        for command, shown in (("curl -H 'X-Token=abcd1234' https://x", "curl -H 'X-Token=[REDACTED:assignment]' https://x"),
+                               ("sudo curl -d 'token=abcd1234' https://x", "sudo curl -d 'token=[REDACTED:assignment]' https://x"),
+                               ("K='TOKEN=abcd ef'", "K='TOKEN=[REDACTED:assignment] ef'"),
+                               ("export K='token=abcd1234'", "export K='token=[REDACTED:assignment]'")):
+            with self.subTest(command=command):
+                self.assertEqual(held({"command": command}), ({"command": shown}, False))
+
+    def test_tk_s012s_code_and_argv_arguments_are_read_as_code(self):
+        """A code runner's, a notebook's or a process's arguments TK-S012 holds: code (any value hidden there denies)
+        and an argv (run by the program beside it: sh -c's script read as a line), in the copy and in v1's record."""
+        for tool, args, shown in (
+                ("mcp__e2b__run_code", {"language": "ruby", "code": "token=%x/reboot/"}, None),
+                ("mcp__nb__cell", {"cell_source": "token = 'abcd1234'"}, None),
+                ("mcp__sandbox__exec", {"program": "sh", "args": ["-c", "A=TOKEN: reboot"]}, None),
+                ("mcp__sandbox__exec", {"program": "sh", "args": ["-c", "TOKEN=abcd;reboot"]},
+                 {"program": "sh", "args": ["-c", "TOKEN=[REDACTED:assignment];reboot"]}),
+                ("mcp__shell__run", {"bash": "A=TOKEN: reboot"}, None)):   # (any string: a word of its own)
+            with self.subTest(args=args):
+                copy, hides = privacy.approver_copy(args, False, tool)
+                self.assertEqual(None if hides else copy, shown)
+                unclean = []
+                privacy.tool_input(tool, args, "hashed", unclean)
+                self.assertEqual(bool(unclean), shown is None)
+
+    def test_a_call_of_many_strings_is_read_in_one_budget(self):
+        """Each string's parse spends one budget for the whole call (privacy.Budget): thousands of strings with a
+        value hidden in each are read in bounded time and, past it, denied; the same text read again costs nothing."""
+        import time
+        many = {"commands": [f"TOKEN=ab{i:06d};x{i}" for i in range(3000)]}
+        t = time.perf_counter()
+        _, hides = privacy.approver_copy(many, False, "Bash")
+        self.assertTrue(hides)
+        self.assertLess(time.perf_counter() - t, 30)
+        same = {"commands": ["TOKEN=abcd;x"] * 3000}
+        with mock.patch.object(shell, "analyse", wraps=shell.analyse) as parse:
+            copy, hides = privacy.approver_copy(same, False, "Bash")
+        self.assertEqual((parse.call_count, hides, copy["commands"][0]), (1, False, "TOKEN=[REDACTED:assignment];x"))
+
     def test_code_an_interpreter_reads_hides_no_value(self):
         """A value hidden in an interpreter's program may be its code: perl's qx//, ruby's %x(), a heredoc python3
         reads, an argv's program, an interpreter the parser doesn't read (deno)."""
@@ -274,7 +401,10 @@ class Lines(unittest.TestCase):
                      {"command": "python3 -c 'k=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},
                      {"cmd": ["python3", "-c", "k='sk-ant-api03zzpayloadQQQQQQQQ'"]},
                      {"command": "deno eval 'const TOKEN=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},
-                     {"command": "awk 'BEGIN{token=\"sk-ant-api03zzpayloadQQQQQQQQ\"}'"}):
+                     {"command": "awk 'BEGIN{token=\"sk-ant-api03zzpayloadQQQQQQQQ\"}'"},
+                     {"command": "python3 -c k=sk-ant-api03zzpayloadQQQQQQQQ"},   # (unquoted: interp all the same)
+                     {"command": "deno eval k=sk-ant-api03zzpayloadQQQQQQQQ"},
+                     {"command": "X='token=\"abcd1234\"'; python3 -c \"$X\""}):   # (a variable's value: the program)
             with self.subTest(args=args):
                 self.assertTrue(held(args)[1])
 
@@ -305,6 +435,35 @@ class Lines(unittest.TestCase):
                          ["typed_line", "data"])
         from tracekit.policy2 import engine
         self.assertIs(engine._COMMAND_KEYS, privacy.COMMAND_KEYS)
+
+    def test_v1_shows_every_argument_and_prints_it_escaped(self):
+        """v1's approval summary holds every argument as its record keeps it in clear (run_code's code, not only a
+        command, a file or a URL), and `tracekit pending` and `tracekit approve` print it, and the rule ids, escaped:
+        an agent's \\r or terminal escape can't redraw the approver's line."""
+        args = {"language": "python", "code": "print(1)"}
+        d = privacy.screened({"decision": "ask", "rule_ids": ["R"], "reasons": ["r"]}, "run_code", args,
+                             privacy.tool_input("run_code", args), [])
+        self.assertEqual((d["decision"], d["summary"]), ("ask", "run_code language=python code=print(1)"))
+        from tracekit import hook
+        seen, call = [], {"run_id": "r", "agent_id": "a", "data": {"name": "run_code", "tool_use_id": "t",
+                                                                   "input": privacy.tool_input("run_code", args)}}
+        with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else {"decision": "timeout"})), \
+                mock.patch.object(hook, "APPROVAL_CAP_S", 1), contextlib.redirect_stderr(io.StringIO()):
+            hook.wait_for_approval(call, d, {"approval_timeout_s": 1})
+        self.assertEqual(next(r["summary"] for r in seen if r["op"] == "approval_request"), d["summary"])
+        from tracekit import cli, client
+        pend = [{"id": "a1", "run_id": "r", "summary": "Bash command=ls\r\x1b[2Kcommand=pwd", "rule_ids": ["R\x1b[2K"],
+                 "expires_in_s": 5}]
+        for argv, replies in ((["pending"], [{"pending": pend}]),
+                              (["approve"], [{"pending": pend}, {"ok": True, "decision": "approve"}])):
+            out = io.StringIO()
+            with self.subTest(argv=argv), mock.patch.object(client, "socket_path", return_value="/x/s.sock"), \
+                    mock.patch.object(client, "rpc", side_effect=replies), contextlib.redirect_stdout(out):
+                cli.main(argv)
+                self.assertNotIn("\r", out.getvalue())
+                self.assertNotIn("\x1b", out.getvalue())
+                self.assertIn('"Bash command=ls\\r\\u001b[2Kcommand=pwd"', out.getvalue())
 
     def test_v1_reads_the_same_lines(self):
         """v1's record (what its hook asks an approver about) reads every command argument (privacy.COMMAND_KEYS) and
@@ -339,6 +498,18 @@ class Lines(unittest.TestCase):
             "terraform apply -var 'db_password=Pa$$w0rd!'",
             "TF_VAR_db_password='p@ss;w0rd' terraform apply",
             "PGPASSWORD='Tr0ub4dor&3' psql -h db -U app -c 'select 1' && aws s3 cp ./dump.sql s3://team-backups/",
+            # a quoted value given to a program not known to read it as data (DATA_READERS), or one that starts a word
+            # of its own inside quotes
+            "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",
+            'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',
+            'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',
+            "kubectl create secret generic db --from-literal=password='S3cr3t!pass'",
+            "kubectl create secret generic db --from-literal=password='S3cr3t pass' && kubectl rollout restart deploy/web",
+            'helm upgrade app ./chart --set "secrets.apiToken=abc,def"',
+            'DATABASE_URL="postgres://app:hunter2@db/app?sslmode=require" npm run migrate',
+            "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout restart "
+            "deploy/web",
+            'echo "token: abcd1234efgh" > ~/.config/tool.yml',
         }
         for command in sorted(denied) + [
                 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com/v1/me',

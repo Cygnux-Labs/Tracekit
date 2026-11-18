@@ -83,6 +83,33 @@ class _Spliced(_Expanded):
     the parser reads there."""
 
 
+class _At(str):
+    """Text the line gives at `at` (its span there as written, quotes and all; in an argv, its words' indexes) and
+    stands in verbatim at `inner` (None: quotes, escapes or joining make it differ): what lets a reader of the line join
+    this parse to its own by position (analyse's `placed` and `programs`). `lit`: no expansion made its text (a
+    variable's value the line gives elsewhere: `X=reboot; $X`). An expansion's word (_Expanded) has `at`, the source
+    its text is made from, not where it is."""
+    at = inner = None
+    lit = False
+
+
+def _placed(text, at, inner, lit=True):
+    t = _At(text)
+    t.at, t.inner, t.lit = at, inner, lit
+    return t
+
+
+def _place(text):
+    """(at, inner) of code `text` in the line (_At's), or (None, None) where its text isn't the line's there: an
+    expansion made it (a value a variable the line gives elsewhere holds), or the parser did."""
+    return (text.at, text.inner) if getattr(text, "lit", False) else (None, None)
+
+
+def _literal(raw):
+    """Whether a word written `raw` holds no expansion outside '...' (\\$ and '$' are text)."""
+    return not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
+
+
 MAX_DEPTH = 32
 # the texts a word may make as its expansions take each of their values (_Parser.ways), and the ways the words of a
 # command that make more than its uniform readings combine (simple): past it the word or command is unread
@@ -1001,7 +1028,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
            "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
-           "readings": readings, "nested": set(), "code": {},
+           "readings": readings, "nested": set(), "line": command, "placed": [], "programs": [],
            "aliases": {k: list(v) for k, v in (aliases or {}).items()},
            "subscripts": [], "arith": False, "files": {}, "runs": [], "alias_used": set(), "namerefs": {},
            "arith_names": set(), "unread_values": set(), "code_names": [], "made_files": set(),
@@ -1047,7 +1074,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                 text = literal.group(2) if hasattr(literal, "re") else literal[2]
                 if _subscript_substitution(text):
                     _substitutions(text, ctx, ["arithmetic subscript"])
-    top = _Parser(command, ctx, [])
+    top = _Parser(command, ctx, [], base=0)
     try:
         top.script()
         if _POSIX_MODE.search(command) and _BASH_ONLY.search(command):
@@ -1065,7 +1092,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                  and name not in ctx["alias_used"] for value in values]
         for name, body in held:
             first = len(ctx["cmds"])
-            p = _Parser(body, ctx, [f"{'' if name.startswith('alias ') else 'function '}{name} (defined)"])
+            p = top.parser(body, [f"{'' if name.startswith('alias ') else 'function '}{name} (defined)"])
             p.known = {}
             p.script()
             for c in ctx["cmds"][first:first + 1]:
@@ -1635,14 +1662,17 @@ def _learned(ctx):
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
-    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); `code`, each
-    text it read again as code: {text: "shell" (a line a shell runs: sh -c's script, eval's words, a heredoc a shell
-    reads) or "interp" (an interpreter's program)}."""
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); `placed`,
+    each text it read again as code: (how, at, inner, within), `how` "shell" (a line a shell runs: sh -c's script,
+    eval's words, a heredoc a shell reads) or "interp" (an interpreter's program), `at` and `inner` its _At (None, None
+    when the line doesn't hold it where the parser can name: a git alias's value, a script the line writes), `within`
+    the span of the code it was read from (None: the line); `programs`, each command's (cmd, where its program's word
+    is, within): None when the word isn't the program's text as written there (an expansion's, an alias's)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
             "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
-            "appended": list(ctx.get("appended", ())), "code": ctx["code"]}
+            "appended": list(ctx.get("appended", ())), "placed": ctx["placed"], "programs": ctx["programs"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1653,15 +1683,15 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
            "downloads": downloads or any(_DOWNLOADS.search(a) for a in argv), "decoded": set(),
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
-           "readings": readings, "nested": set(), "code": {}, "aliases": {}, "subscripts": [], "arith": False,
-           "files": {},
+           "readings": readings, "nested": set(), "line": None, "placed": [], "programs": [], "aliases": {},
+           "subscripts": [], "arith": False, "files": {},
            "runs": [], "alias_used": set(), "namerefs": {}, "arith_names": set(), "unread_values": set(),
            "code_names": [], "made_files": set(), "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
            "stdin_moved": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
            "split_values": [],
            "exports": set(), "globopts": ()}
-    words = list(argv)
-    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
+    words = [_placed(w, (k, k + 1), (k, k + 1)) for k, w in enumerate(argv)]   # each placed by its index
+    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(words), 1, [])))
     _made_text(ctx)
     if ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
         again = analyse_argv(argv, readings, ctx["work"], downloads=True)
@@ -2517,11 +2547,12 @@ def _npm_call(args):
     return None
 
 
-def _ssh_command(args):
+def _ssh_words(args):
+    """The words ssh joins into the command its remote shell runs."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
         i += 2 if args[i] in SSH_OPTS else 1
-    return " ".join(args[i + 1:])
+    return args[i + 1:]
 
 
 _SSH_COMMAND_OPTION = re.compile(r"(?is)\s*(?:proxy|local|knownhosts|remote)command\s*[=\s]\s*(.*)")
@@ -2834,9 +2865,12 @@ _PIP = re.compile(r"pip[0-9.]*")
 
 
 class _Parser:
-    def __init__(self, src, ctx, via, cost=None):
-        """`cost`: what reading `src` spends of the budget (charge), its length unless given."""
+    def __init__(self, src, ctx, via, cost=None, base=None, within=None):
+        """`cost`: what reading `src` spends of the budget (charge), its length unless given. `base`: where `src` starts
+        in the line, which holds it verbatim (None: it doesn't, or the parse is an argv's); `within`: the span of the
+        line `src` was read from (None: the line itself), where what this parser can't place belongs (_learned)."""
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.base, self.within = base, within
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
@@ -2867,6 +2901,36 @@ class _Parser:
 
     def charge(self, n):
         charge(self.ctx["work"], n)
+
+    def parser(self, text, via, cost=None):
+        """A parser of `text`, placed where the line holds it verbatim (_At's `inner`), and within its span."""
+        at, inner = _place(text)
+        return _Parser(text, self.ctx, via, cost, inner[0] if inner and self.ctx["line"] is not None else None,
+                       at or self.within)
+
+    def where(self, text, start, end):
+        """`text`, read from [start, end) of this parser's source, with its place in the line (_At) when the parser
+        knows it; an expansion's word gets only `at`, the source its text is made from."""
+        if self.base is None:
+            return text
+        raw, base = self.s[start:end], self.base
+        if not isinstance(text, _Expanded):
+            lit = _literal(raw)
+            inner = None if not lit else (start, end) if raw == text else (start + 1, end - 1) if len(raw) > 1 and \
+                raw[0] == raw[-1] and raw[0] in "'\"" and raw[1:-1] == text else None
+            return _placed(text, (base + start, base + end), inner and (base + inner[0], base + inner[1]), lit)
+        text.at = (base + start, base + end)
+        return text
+
+    def join_words(self, words):
+        """`words` joined as eval or ssh joins them, placed (_At) when each is a word of the line as written: `inner`
+        when the line holds the joined text as it is."""
+        text = " ".join(words)
+        if not words or not all(getattr(w, "lit", False) for w in words):   # (an expansion's text: not the line's)
+            return text
+        line, at = self.ctx["line"], (words[0].at[0], words[-1].at[1])
+        return _placed(text, at, words[0].inner if len(words) == 1 else at if line is not None and
+                       line[at[0]:at[1]] == text else None)
 
     def reading_pieces(self):
         """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
@@ -3097,7 +3161,7 @@ class _Parser:
             c.setdefault("reaches", []).append((pid, stage))
 
     def nested(self, text, via, args=(), zero=()):
-        self.ctx["code"][text] = "shell"   # (what the line runs as code, for _learned)
+        self.ctx["placed"].append(("shell", *_place(text), self.within))
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
         # literal `args` has them as $1 to $9 and "$@", as call() gives a function's, and sh -c's literal `zero` (the word
         # after its script) as $0. Code a shell of another grammar
@@ -3117,7 +3181,7 @@ class _Parser:
             return
         self.ctx["nested"].add(key)
         self.charge(NESTED_COST)
-        p = _Parser(text, self.ctx, via)
+        p = self.parser(text, via)
         p.known = known
         p.script()
 
@@ -3131,7 +3195,7 @@ class _Parser:
                getattr(w, "glob", False) and self.ctx["files"] for w in words):   # (a pattern may name a file it made)
             cmd["opaque"] = True
         self.ctx["code_names"].append((cmd, {n for w in words if isinstance(w, _Expanded) for n in w.names}))
-        return " ".join(words)
+        return self.join_words(words)
 
     def script(self):
         self.list(None)
@@ -3291,7 +3355,7 @@ class _Parser:
         dry = _Parser(self.s, {**self.ctx, "cmds": [], "lines": [], "refs": [], "written": [], "kept": [],
                                "kept_batches": [], "always_cut": [], "cut": [], "steps": [], "nested": set(),
                                "redefined": set(self.ctx["redefined"]), "functions": dict(self.ctx["functions"]),
-                               "uncalled": {}, "calling": []}, self.via, cost=0)
+                               "uncalled": {}, "calling": [], "placed": [], "programs": []}, self.via, cost=0)
         dry.i, dry.known = start, {}
         while True:
             dry.pipeline()
@@ -3306,8 +3370,9 @@ class _Parser:
             raise ParseError("a heredoc that starts on a function body's last line is not supported")
         self.i = dry.i
         self.charge(self.i - start)
-        self.ctx["functions"].setdefault(name, []).append(self.s[start:self.i])
-        self.ctx["uncalled"].setdefault(name, []).append(self.s[start:self.i])
+        body = self.where(self.s[start:self.i], start, self.i)
+        self.ctx["functions"].setdefault(name, []).append(body)
+        self.ctx["uncalled"].setdefault(name, []).append(body)
         self.ctx["redefined"].add(name)
 
     def stable(self):
@@ -3346,7 +3411,7 @@ class _Parser:
                 key = ("function", body, tuple(via), tuple(sorted((k, tuple(v)) for k, v in known.items())))
                 if key not in self.ctx["nested"]:
                     self.ctx["nested"].add(key)
-                    p = _Parser(body, self.ctx, via + ["function " + name])
+                    p = self.parser(body, via + ["function " + name])
                     p.known = dict(known)
                     p.script()
         finally:
@@ -3431,7 +3496,7 @@ class _Parser:
                 escaped = set()
                 while m:
                     raw = m.group(1)
-                    text = _ESCAPE.sub(_ESCAPED, raw) if "\\" in raw else raw
+                    text = self.where(_ESCAPE.sub(_ESCAPED, raw) if "\\" in raw else raw, m.start(1), m.end(1))
                     if raw != text:
                         escaped.add(text)
                     self.out.append(text)
@@ -3489,7 +3554,7 @@ class _Parser:
                                  "via": self.via, "cmds": [], "data": False, "step": None, "known": dict(self.known)})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
-                    strings.append(target[0])
+                    strings.append(self.where(target[0], start, self.i))
                     if self.ifs:   # bash doesn't split it: IFS's own characters are its text (`sh<<<"I="${IFS}rm …`)
                         strings.append(re.sub(r"\$\{IFS\}|\$IFS(?!\w)", " \t\n", target[0]))
                     spliced |= self.spliced
@@ -3711,6 +3776,8 @@ class _Parser:
                 elif self.spliced or self.expanded or self.unknown or g:
                     text = (_Spliced if self.spliced else _Expanded)(text)
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
+                if pieces is None and not located:
+                    text = self.where(text, start, self.i)
                 words.append(text)
                 raws.append(raw)
                 dynamic |= "$" in raw or "`" in raw
@@ -3781,7 +3848,7 @@ class _Parser:
             texts = [None if v and not t or k > 5 and p else t   # None: gone
                      for t, v, p in zip(columns[k % 6], vanish, patterns)]
             kept = [i for i, t in enumerate(texts) if t is not None]
-            alt = [texts[i] for i in kept]
+            alt = [words[i] if texts[i] == words[i] else texts[i] for i in kept]   # (a word as written: placed)
             read[key] = [(idx[i], t) for i, t in enumerate(texts) if t != words[i]]
             self.ctx["more"] |= bool(read[key])
             self.gone[k].update(read[key])   # and the line (flush)
@@ -3842,6 +3909,7 @@ class _Parser:
                 alt = [f for t in texts if t is not None for f in ((t,) if isinstance(t, str) else t)]
             else:
                 kept, alt = range(len(texts)), texts
+            alt = [words[i] if f == words[i] else f for f, i in zip(alt, kept)]   # (a word as written: placed)
             # past the 4th, a literal's or a pattern's reading is the line of its values alone (flush's pieces), so a
             # loop over hundreds of words doesn't read its whole script again for each
             read = {idx[i]: " ".join(t) if isinstance(t, tuple) else t for i, t in enumerate(texts) if t != words[i]}
@@ -4331,7 +4399,7 @@ class _Parser:
         a $), or a character past ASCII, which a locale that can't show it writes as \\uXXXX, an escape again."""
         if escapes and ("\\" in value or not value.isascii()):
             raise ParseError("a prompt with a \\ escape is not supported")
-        p = _Parser(value, self.ctx, via)
+        p = self.parser(value, via)
         p.known = {}
         p.dquote(None)
 
@@ -4425,6 +4493,9 @@ class _Parser:
             cmd = {"argv": [name] + args, "word": argv[0], "via": via, "pipeline": pid, "glob": glob,
                    "opaque": unreadable[0] or tainted, "stdin": [], "moved": self.inherit or bool(self.blocks)}
             self.ctx["cmds"].append(cmd)
+            # (the word as written there: a variable's value or an escaped name is not where its word is)
+            self.ctx["programs"].append((cmd, getattr(argv[0], "at", None) if getattr(argv[0], "inner", None) else None,
+                                         self.within))
             cmds.append(cmd)
             self.charge(COMMAND_COST)
             if "\\" in argv[0] and not unreadable[0]:   # and as Windows runs a path with \ (C:\x\bash is C:/x/bash)
@@ -4759,7 +4830,7 @@ class _Parser:
                     self.nested(self.code(cmd, [value]), via + [name + " -o"])
                 if name == "ssh":
                     self.code(cmd, args)
-                    self.nested(_ssh_command(args), via + ["ssh"])
+                    self.nested(self.join_words(_ssh_words(args)), via + ["ssh"])
             elif name == "rsync":
                 for value in _rsync_shells(args):
                     self.nested(self.code(cmd, [value]), via + ["rsync -e"])
@@ -4812,8 +4883,16 @@ class _Parser:
 
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
-        `cmd` opaque."""
-        self.ctx["code"].setdefault(code, "interp")
+        `cmd` opaque. What it runs belongs to the program's span (_learned's `within`)."""
+        at, inner = _place(code)
+        self.ctx["placed"].append(("interp", at, inner, self.within))
+        outer, self.within = self.within, at or self.within
+        try:
+            self.read_program(kind, code, pid, via, cmd)
+        finally:
+            self.within = outer
+
+    def read_program(self, kind, code, pid, via, cmd):
         if kind == "sed":
             for m in _SED_E.finditer(code):
                 if m.group(1).strip():
@@ -4932,6 +5011,11 @@ class _Parser:
                     break
                 lines.append(line)
             body = "\n".join(lines)
+            end = max(start, at - 1)   # (before the end line's own line end)
+            if self.base is not None and s[start:end] == body:   # the line holds it as written: its expansions run
+                lit = not (d["expand"] and re.search(r"[$`\\]", body))
+                body = _placed(body, (self.base + start, self.base + end), (self.base + start, self.base + end)
+                               if lit else None, lit)
             for c in d["cmds"]:
                 c["stdin"].append(body)
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
@@ -4948,9 +5032,12 @@ class _Parser:
             # later, outside the call (engine._SCHEDULED): only text the line makes is
             text = empty = body
             if d["expand"]:
-                p, parts, first = _Parser(body, self.ctx, d["via"] + ["<<"]), [], len(self.ctx["cmds"])
+                p, parts, first = self.parser(body, d["via"] + ["<<"]), [], len(self.ctx["cmds"])
                 p.known = d["known"]   # what the line knew at its command
                 text = p.dquote(None, buf=parts)
+                # as written, placed; else what its expansions make, which may be a variable's the line gives
+                # elsewhere: not placed
+                text = body if text == body else text
                 made, code = _prints(self.ctx["cmds"][first:], self.ctx), not shell or shell["argv"][0] in SHELLS
                 d["unknown"] = any(isinstance(x, _Expansion) and p.unsafe(x, made, code) for x in parts)
                 if shell and d["unknown"]:
@@ -4958,6 +5045,7 @@ class _Parser:
                 # and with each expansion as what it is when its variable is empty, as words are read again: a
                 # shell reading `$'\163${X}\165\144\157'` runs sudo
                 empty = "".join(x.empty if isinstance(x, _Expansion) else x for x in parts)
+                empty = body if empty == body else empty
             d["text"] = text   # what a file it is copied into holds (run_file)
             if shell:
                 for code in dict.fromkeys((text, empty)):
@@ -5489,7 +5577,11 @@ class _Parser:
         start, self.i = self.i, m.end()
         self.ctx["exp"] += 1
         # bash takes \`, \\ and \$ for the character, and deletes a backslash-newline, before it reads the text
-        self.nested(re.sub(r"\\([`\\$])|\\\n", r"\1", m.group(1)), self.via + ["``"])
+        text = re.sub(r"\\([`\\$])|\\\n", r"\1", m.group(1))
+        if self.base is not None:
+            text = _placed(text, (self.base + start, self.base + self.i), (self.base + m.start(1), self.base + m.end(1))
+                           if text == m.group(1) else None)
+        self.nested(text, self.via + ["``"])
         return _Expansion(self.s[start:self.i])
 
 

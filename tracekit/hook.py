@@ -226,8 +226,10 @@ def wait_for_approval(ev_call, decision, pol):
     try:
         r = client.rpc({"op": "approval_request", "run_id": ev_call["run_id"], "agent_id": ev_call["agent_id"],
                         "tool_use_id": d["tool_use_id"],
-                        # the note first; whole: privacy.screened denies a hold whose summary is longer
-                        "summary": privacy.approval_summary(d["name"], d["input"], decision.get("note", "")),
+                        # every argument, the note first; whole: privacy.screened denies a hold whose summary is
+                        # longer
+                        "summary": decision.get("summary") or privacy.approval_summary(d["name"], d["input"],
+                                                                                     decision.get("note", "")),
                         "rule_ids": decision["rule_ids"], "timeout_s": timeout})
     except client.SignerUnavailable as e:
         return False, f"approval needed but the signer is unavailable ({e}); rejected"

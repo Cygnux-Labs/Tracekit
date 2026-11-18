@@ -978,7 +978,9 @@ def _run(a):
                 if not pend:
                     print("no tool calls waiting for approval")
                 for x in pend:
-                    print(f"{x['id']}  run={x['run_id']}  {x['summary']}  rules={','.join(x['rule_ids'])}  expires in {x['expires_in_s']}s")
+                    # (escaped: an agent's text can't redraw the approver's line with \r or a terminal escape)
+                    print(f"{x['id']}  run={x['run_id']}  {json.dumps(x['summary'])}  "
+                          f"rules={','.join(json.dumps(r)[1:-1] for r in x['rule_ids'])}  expires in {x['expires_in_s']}s")
                 return 0
             aid = a.approval_id
             if not aid:
@@ -986,7 +988,7 @@ def _run(a):
                     print(f"{len(pend)} pending; name one: tracekit {a.cmd} <id>", file=sys.stderr)
                     return 2
                 aid = pend[0]["id"]
-                print(f"{a.cmd}: {pend[0]['summary']}")
+                print(f"{a.cmd}: {json.dumps(pend[0]['summary'])}")
             else:
                 hits = _match_pending(pend, aid)
                 if len(hits) > 1:

@@ -683,14 +683,15 @@ def _digested(v):
     return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
-def _shown(tool, args, dotenv, unclean=None, noted=True):
+def _shown(tool, args, dotenv, unclean=None, noted=True, budget=None):
     """The approver's copy of a call of `tool` with parsed `args`: privacy.approver_copy, each shell line or argv
     under an argument the engine reads as a command (privacy.COMMAND_KEYS, typed_lines) redacted as the shell reads
     it, so a value hides nothing that runs after it, and, `noted`, a string redaction may have hid more than values in
     starting with how much it hid (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use
     adapter typed) hidden, since an approver could test guesses of a weak secret against it. `unclean`, a list: gets
-    True when it hides more than clean values, so a held call is denied (TK-HIDDEN-CODE)."""
-    shown, hides = privacy.approver_copy(args, dotenv, tool, noted)
+    True when it hides more than clean values, so a held call is denied (TK-HIDDEN-CODE). `budget`: the call's
+    privacy.Budget, which another copy of the same call reuses."""
+    shown, hides = privacy.approver_copy(args, dotenv, tool, noted, budget)
     if hides and unclean is not None:
         unclean.append(True)
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
@@ -3074,8 +3075,15 @@ class SignerService:
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
-        unclean = []   # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE)
-        shown = _shown(tool, args, _dotenv(args), unclean, noted=False) if digest else None
+        # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE). One budget for the
+        # call's copies: the copy kept of a call it doesn't hold, and its noted one (an approver's) when it holds it
+        unclean, budget, copies = [], privacy.Budget(), {}
+        shown = _shown(tool, args, _dotenv(args), unclean, noted=False, budget=budget) if digest else None
+
+        def noted():   # the approver's copy: once, for the approval request and the content vault
+            if "noted" not in copies:
+                copies["noted"] = _shown(tool, args, _dotenv(args), budget=budget)
+            return copies["noted"]
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
@@ -3187,7 +3195,8 @@ class SignerService:
                         "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
                         "policy_hash": self.policy.policy_hash}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
-                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
+                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"],
+                                       "shown": noted() if digest else None}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
                         call["agent"] = agent
                 tx.set(run["calls"], tcid, call)
@@ -3234,7 +3243,7 @@ class SignerService:
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
         if written and written[-1][1]:   # what a held call's approver read, with its note; else the copy alone
-            self._retain(key, *written[-1], _shown(tool, args, _dotenv(args)) if out.get("decision") == "ask" else shown)
+            self._retain(key, *written[-1], noted() if out.get("decision") == "ask" else shown)
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
@@ -3677,7 +3686,8 @@ class SignerService:
                     reask = reason.startswith("reask_after_reject")
             if agent:
                 data["agent"] = agent
-            shown = _shown(call["tool"], args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
+            # the copy decide made (of the parsed args, so a raw copy stays valid JSON)
+            shown = p.get("shown") or _shown(call["tool"], args, call["dotenv"])
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}
