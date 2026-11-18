@@ -895,6 +895,68 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_a_gitlab_projects_protections_and_variables_ask_in_every_pack(self):
+        """TK-A087 reads GitLab as TK-A047 reads GitHub (#897): deleting a project's protected branches or tags, its
+        push rule or its CI/CD variables, or a group's variables, through glab or GitLab's API is held for a person;
+        reading them, setting a variable and deleting other things are not."""
+        held = [
+            # glab variable delete, in its project and group forms, with options before each word
+            "glab variable delete DB_PASSWORD", "glab variable delete DEPLOY_KEY --group acme",
+            "glab variable delete DEPLOY_KEY -g acme", "glab variable remove KEY", "glab variable rm KEY",
+            "glab -R acme/backend variable delete KEY", "glab variable delete KEY --scope production",
+            # a DELETE through glab api: the method flag before the path, in each spelling
+            "glab api -X DELETE projects/42/protected_branches/main",
+            "glab api --method DELETE projects/42/protected_branches/main",
+            "glab api --method=DELETE projects/42/protected_branches/main", "glab api -XDELETE projects/42/push_rule",
+            "glab api -iX DELETE projects/42/protected_branches/main", "glab api -X delete projects/42/push_rule",
+            "glab api --hostname gitlab.corp -X DELETE projects/42/protected_branches/main",
+            "glab api -X DELETE -H 'Accept: application/json' projects/42/protected_branches/main",
+            # the method after the path, and every protected path
+            "glab api projects/42/protected_branches/main -X DELETE",
+            "glab api projects/42/variables/DEPLOY_KEY --method DELETE",
+            "glab api -X DELETE projects/42/protected_tags/v1.0", "glab api -X DELETE projects/42/variables/DEPLOY_KEY",
+            "glab api -X DELETE groups/7/variables/DEPLOY_KEY", "glab api -X DELETE projects/42/push_rule",
+            "glab api -X DELETE projects/42/variables/KEY?filter[environment_scope]=production",
+            # a project id URL-encoded, a branch name URL-encoded, a leading slash and /api/v4/
+            "glab api -X DELETE projects/acme%2Fbackend/protected_branches/release%2F1",
+            "glab api -X DELETE projects/acme%2Fbackend/variables/KEY",
+            "glab api -X DELETE /projects/42/protected_branches/main",
+            "glab api -X DELETE /api/v4/projects/42/protected_branches/main",
+            # curl, with a scheme, without one, in capitals and with the method after the URL
+            "curl -X DELETE https://gitlab.com/api/v4/projects/42/protected_branches/main -H 'PRIVATE-TOKEN: x'",
+            'curl --request DELETE --header "PRIVATE-TOKEN: $T" https://gitlab.example.com/api/v4/projects/acme%2Fbackend/variables/KEY',
+            "curl -XDELETE gitlab.example.com/api/v4/groups/7/variables/KEY",
+            "curl -X DELETE HTTPS://gitlab.example.com/api/v4/projects/42/push_rule",
+            "curl https://gitlab.com/api/v4/projects/42/push_rule -X DELETE",
+            "curl -s -H 'PRIVATE-TOKEN: x' https://gitlab.com/api/v4/projects/42/protected_tags/v1.0 --request DELETE"]
+        routine = [
+            # reading, listing and setting
+            "glab variable list", "glab variable get KEY", "glab variable set KEY value", "glab variable update KEY value",
+            "glab api projects/42/protected_branches/main", "glab api -X GET projects/42/protected_branches/main",
+            "glab api projects/42/variables", "glab api groups/7/variables/KEY", "glab api projects/42/push_rule",
+            "curl https://gitlab.com/api/v4/projects/42/protected_branches/main -H 'PRIVATE-TOKEN: x'",
+            "curl -X GET https://gitlab.com/api/v4/projects/42/variables/KEY",
+            # a POST adding protection, and deleting other things
+            "glab api -X POST projects/42/protected_branches -f name=main",
+            "glab api -X DELETE projects/42/issues/7/notes/1", "glab api -X DELETE projects/42/pipelines/9",
+            "glab api -X DELETE projects/42/merge_requests/3/notes/1", "glab api -X DELETE projects/42/repository/branches/feature",
+            "curl -X DELETE https://gitlab.com/api/v4/projects/42/merge_requests/3/notes/1 -H 'PRIVATE-TOKEN: x'",
+            "glab mr list", "glab repo view",
+            # the words in an argument, not a command
+            "echo glab variable delete KEY", "git commit -m 'glab variable delete after review'",
+            "echo glab api -X DELETE projects/42/protected_branches/main"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A087" in d["rule_ids"], cmd in held, d)
+                        # GitHub's rule doesn't claim a GitLab call
+                        self.assertNotIn("TK-A047", d["rule_ids"], d)
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_moving_money_through_stripe_paypal_or_square_asks_in_every_pack(self):
         """Stripe holds money calls for a person only for agent-tagged keys: a coding agent with a developer's own key
         refunded, paid out or charged and every pack only flagged the network command. Local test tooling, reads and
@@ -1285,7 +1347,9 @@ class CodingPack(unittest.TestCase):
             "dotnet ef migrations add Init", "dotnet ef database update", "dotnet ef migrations list", "dotnet build",
             # asking for help runs nothing
             "prisma migrate reset --help", "prisma migrate reset -h", "rails db:drop --help", "supabase db reset --help",
-            "php artisan db:wipe --help",
+            "php artisan db:wipe --help", "django-admin flush --help", "django-admin flush -h",
+            # #918 let a hyphen into the program's name, so other hyphenated tools' help is exempt too
+            "sequelize-cli db:drop --help", "dotnet-ef database drop -h",
             "echo rails db:drop", "grep -rn 'db:reset' config", "git commit -m 'npx prisma migrate reset in CI'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
@@ -3386,16 +3450,103 @@ class CodingPack(unittest.TestCase):
                     "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
                     "gcloud secrets --project p versions access latest --secret=db",
                     "gcloud beta --project p secrets versions access latest --secret=db",
-                    "az keyvault --subscription s secret show --name n --vault-name v"]
+                    "az keyvault --subscription s secret show --name n --vault-name v",
+                    # 1Password
+                    "op read op://vault/db/password",
+                    "op item get db --reveal",
+                    "op item get db --fields password",
+                    "op inject -i config.tpl",
 
-    def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
+                    # Bitwarden
+                    "bw get password db",
+                    "bw get item db",
+                    "bw get notes db",
+                    "bw get totp db",
+                    "bw get attachment k.pem --itemid x",
+                    "bw list items",
+
+                    # Doppler
+                    "doppler secrets get DB_URL --plain",
+                    "doppler secrets download",
+                    "doppler secrets",
+                    "doppler secrets --json",
+                    "doppler secrets set API_KEY=x",
+
+                    # Infisical
+                    "infisical secrets get DB_URL",
+                    "infisical export",
+
+                    # LastPass
+                    "lpass show db",
+                    # Whole-vault exports
+                    "bw export",
+                    "bw export --format json",
+                    "lpass export",
+
+                     # Doppler default value output
+                    "doppler secrets -p proj -c dev",
+                    "doppler secrets --project proj",
+                    "doppler secrets --raw",
+
+                    # Infisical default value output
+                    "infisical secrets",
+                    "infisical secrets --env prod",
+
+                    # Global options before subcommands
+                    "op --account my read op://v/db/password",
+                    "bw --session S get password db",
+                    "doppler --token T secrets get DB_URL",
+
+                    # Additional 1Password value reads
+                    "op item get db --fields=password",
+                    "op item get db --otp",
+                    "op item get db --format json",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-names",
+                    "bw get password db --only-names",
+                    "op read op://v/db/password --only-names",
+                    "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx",
+                    "op document get key.pem",
+                    # train 3 review: `--help` or `--only-names` inside a value isn't the flag, and delete and
+                    # upload print every value afterwards
+                    "aws secretsmanager get-secret-value --secret-id prod/db --output text --query \"[SecretString,'--help ']\"",
+                    "op read op://v/i/password --out-file --help",
+                    "doppler secrets --scope \"/home/me/p --only-names\"",
+                    "doppler secrets get DB --plain --only-names",
+                    "doppler secrets delete API_KEY",
+                    "doppler secrets upload .env",
+                    # a quoted last word ending in --help reads as help after a word: a file to write, an item the
+                    # agent could rename first, an argument the CLI ignores
+                    "doppler secrets download \"f --help\"", "bw list items \"x --help\"",
+                    "op document get \"k --help\"", "lpass show \"x --help\"", "bw get password \"x --help\"",]
+
+    def test_reading_a_secrets_value_from_a_secret_store_cli_asks_in_every_pack(self):
         held = self.SECRET_READS
         routine = ["aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
                    "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
                    "aws ssm get-parameters-by-path --path /p", "aws ssm get-parameter --name x --wait",
                    "gcloud secrets list", "gcloud secrets versions list db", "az keyvault secret list --vault-name v",
                    "az keyvault secret list-versions --vault-name v --name n", "echo aws secretsmanager get-secret-value",
-                   "git commit -m 'aws secretsmanager get-secret-value'"]
+                   "git commit -m 'aws secretsmanager get-secret-value'",
+                   "op item list",
+                   "op vault list",
+                   "bw list folders",
+                   "doppler secrets --only-names",
+                   "doppler secrets --only-names --json",
+                   "infisical secrets set A=b",
+                   "infisical secrets delete A",
+                   "infisical secrets folders create --name x",
+                   "infisical secrets folders get",
+                   "infisical secrets generate-example-env",
+                   "doppler secrets --help",
+                   "infisical secrets --help",
+                   "doppler --help secrets",
+                   "infisical --help secrets",
+                   "doppler secrets -p proj --only-names",
+                   "doppler secrets -c dev --only-names --json",
+                   "aws secretsmanager get-secret-value --help", "gcloud secrets versions access --help",
+                   "op read --help", "op item get --help", "bw get password --help", "bw list items --help",
+                   "doppler secrets get --help", "doppler secrets download --help", "lpass show --help",
+                   "lpass ls",]
         for pack, engine, e in self.every_pack():
             for cmd in held + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
@@ -3463,9 +3614,47 @@ class CodingPack(unittest.TestCase):
                 {"cliCommand": "aws secretsmanager get-secret-value --secret-id x"},
                 {"cli_command": " aws secretsmanager get-secret-value --secret-id x"},
                 {"command": "gcloud secrets versions access latest --secret=db"},
-                {"cmd": "az keyvault secret show --vault-name v --name n"}]
-        routine = [{"cli_command": "aws secretsmanager list-secrets"}, {"cli_command": "aws ssm get-parameter --name /p"},
-                   {"command": "gcloud secrets list"}]
+                {"cmd": "az keyvault secret show --vault-name v --name n"},
+                {"cli_command": "op read op://vault/db/password"},
+                {"cli_command": "bw get password db"},
+                {"cli_command": "bw get attachment k.pem --itemid x"},
+                {"command": "doppler secrets get DB_URL --plain"},
+                {"command": "doppler secrets --json"},
+                {"cmd": "infisical secrets get DB_URL"},
+                {"cli_command": "lpass show db"},
+                {"command": "bw export"},
+                {"command": "bw export --format json"},
+                {"command": "lpass export"},
+                {"command": "doppler secrets -p proj -c dev"},
+                {"command": "doppler secrets --project proj"},
+                {"command": "doppler secrets --raw"},
+                {"command": "infisical secrets"},
+                {"command": "infisical secrets --env prod"},
+                {"cli_command": "op --account my read op://v/db/password"},
+                {"cli_command": "bw --session S get password db"},
+                {"command": "doppler --token T secrets get DB_URL"},
+                {"cli_command": "op item get db --fields=password"},
+                {"cli_command": "op item get db --otp"},
+                {"cli_command": "op item get db --format json"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-names"},
+                {"cli_command": "bw get password db --only-names"},
+                {"cli_command": "op read op://v/db/password --only-names"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod/db --only-namesx"},
+                {"cli_command": "op document get key.pem"},
+                # train 3 review: the call is one subject, so TK-A036 exempts nothing: an exemption could come from
+                # a decoy argument beside the read, and the help and names-only forms are held through MCP too
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod", "cmd": "--help"},
+                {"cli_command": "aws secretsmanager get-secret-value --secret-id prod", "cmd": "doppler secrets --only-names"},
+                {"command": "doppler secrets --only-names"},
+                {"command": "doppler secrets delete API_KEY"},
+                {"command": "infisical secrets set A=b"},
+                {"command": "doppler secrets --help"}]
+        routine = [{"cli_command": "aws secretsmanager list-secrets"},
+                   {"cli_command": "aws ssm get-parameter --name /p"},
+                   {"command": "gcloud secrets list"},
+                   {"cli_command": "op item list"},
+                   {"cli_command": "bw list folders"},
+                   {"cmd": "lpass ls"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
                 for args in held + routine:
@@ -3480,9 +3669,13 @@ class CodingPack(unittest.TestCase):
     def test_every_command_tk_a035_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
         """TK-A036 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
         newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
-        cmds = [c for c in self.SECRET_READS if c.split()[0] in ("aws", "gcloud", "az")]
+        cmds = [c for c in self.SECRET_READS
+                if c.split()[0] in ("aws", "gcloud", "az", "op", "bw", "doppler", "infisical", "lpass")]
         routine = ["aws  secretsmanager  list-secrets", "aws\tssm\tget-parameter --name /p", "gcloud  secrets list",
-                   'aws --query "SecretString" secretsmanager list-secrets']
+                   'aws --query "SecretString" secretsmanager list-secrets',
+                   "op  item  list",
+                   "bw\tlist\tfolders",
+                   "lpass  ls"]
         for pack, engine, e in self.every_pack():
             for cmd in cmds:
                 for sep in (" ", "  ", "\t", "\n", " \t "):
@@ -3784,6 +3977,7 @@ class CodingPack(unittest.TestCase):
             "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
             "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
+            "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows",
             "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
             "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
             'bash -c "chown -R me:me /lib"')])
@@ -3791,6 +3985,7 @@ class CodingPack(unittest.TestCase):
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
             "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
+            "rm -rf /mnt/c/Users/build", "rm -rf /cygdrive/c/Users/build",
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
             'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
 
@@ -3803,12 +3998,13 @@ class CodingPack(unittest.TestCase):
             "rm a b c d e f g h i j k l m n o p q -rf /var", "rm -rf /./etc", "rm -rf /usr/../etc",
             "rm -rf //tmp//..//./var/", "chmod -R 000 /./usr", "find /./opt -delete", "rm -rf /system",
             "rm -rf /LIBRARY", "rm -rf /ETC", "rm -rf /Private/Var", "rm -rf 'C:\\WINDOWS'", "rm -rf /c/WINDOWS",
+            "rm -rf /mnt/c/WINDOWS", "rm -rf /cygdrive/c/WINDOWS",
             "chown -R me /USR/*")])
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var", "chmod -R u+w build/", "rm -rf /var/lib/apt/lists/*", "rm -rf /Applications/Foo.app",
             "chown -R www-data /var/www", "find /var/log -name '*.log' -delete", "rm -rf /.etc", "rm -rf /tmp/../tmp/x",
             "rm -rf /usr/../tmp/etc", "rm -rf a b c d e f g h i j k l m n o p q ./etc", "rm -rf /ETC/nginx",
-            "rm -rf 'C:\\WINDOWS\\Temp\\x'"))
+            "rm -rf 'C:\\WINDOWS\\Temp\\x'", "rm -rf /mnt/c/WINDOWS/Temp/x", "rm -rf /cygdrive/c/WINDOWS/Temp/x"))
 
     def test_pip_reads_an_abbreviated_index_option(self):
         """pip's option parser takes a long option's unique prefix (`--index-u URL` sets the index); the 1.5.2 sweep
@@ -3924,6 +4120,30 @@ class CodingPack(unittest.TestCase):
             ("Read", {"file_path": r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"}, "ask", "TK-A020"),
             ("Read", {"file_path": r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Login Data"}, "ask", "TK-A020"),
             ("Read", {"file_path": r"C:\Users\u\AppData\Local\Microsoft\Edge\User Data\Profile 1\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/vivaldi/Default/Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/vivaldi/Profile 1/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/Vivaldi/Default/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Vivaldi\User Data\Default\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/Arc/User Data/Default/Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/Arc/User Data/Profile 1/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Arc\User Data\Default\Web Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Packages\TheBrowserCompany.Arc_ttt1ap7aakyb4\LocalCache\Local\Arc\User Data\Default\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/opera/Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/opera/Default/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/com.operasoftware.Opera/Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/com.operasoftware.Opera/Default/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Default\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Network\Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/com.operasoftware.OperaGX/Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera GX Stable\Network\Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/vivaldi/Default/Preferences"}, "allow", ""),
+            ("Read", {"file_path": "/home/app/.config/vivaldi/Default/Cache/Cache_Data/data_0"}, "allow", ""),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/Arc/User Data/Default/Preferences"}, "allow", ""),
+            ("Read", {"file_path": "/home/app/.config/opera/Preferences"}, "allow", ""),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera Stable\Default\Preferences"}, "allow", ""),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Roaming\Opera Software\Opera GX Stable\Preferences"}, "allow", ""),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/com.operasoftware.OperaGX/Preferences"}, "allow", ""),
             ("Grep", {"path": "/home/app/.password-store", "pattern": "secret"}, "ask", "TK-A020"),
             ("Bash", {"command": "security find-generic-password -s example"}, "ask", "TK-A021"),
             ("Bash", {"command": "cat ~/.config/google-chrome/Default/Cookies"}, "ask", "TK-A021"),
@@ -3933,6 +4153,22 @@ class CodingPack(unittest.TestCase):
             ("Bash", {"command": "cat ~/.config/microsoft-edge/Default/Network/Cookies"}, "ask", "TK-A021"),
             ("Bash", {"command": "cat 'C:/Users/u/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies'"}, "ask", "TK-A021"),
             ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Local/Microsoft/Edge/User Data/Default/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/vivaldi/Default/Login Data"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/Library/Application Support/Vivaldi/Default/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Local/Vivaldi/User Data/Default/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/Library/Application Support/Arc/User Data/Default/Login Data"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat 'C:/Users/u/AppData/Local/Arc/User Data/Default/Cookies'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat 'C:/Users/u/AppData/Local/Packages/TheBrowserCompany.Arc_ttt1ap7aakyb4/LocalCache/Local/Arc/User Data/Default/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/opera/Login Data"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/opera/Default/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/Library/Application Support/com.operasoftware.Opera/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Roaming/Opera Software/Opera Stable/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat 'C:/Users/u/AppData/Roaming/Opera Software/Opera Stable/Default/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/Library/Application Support/com.operasoftware.OperaGX/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Roaming/Opera Software/Opera GX Stable/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/vivaldi/Default/Preferences"}, "allow", ""),
+            ("Bash", {"command": "cat ~/.config/opera/Preferences"}, "allow", ""),
+            ("Bash", {"command": "cat ~/Library/Application Support/com.operasoftware.OperaGX/Preferences"}, "allow", ""),
             ("Bash", {"command": "security dump-keychain"}, "deny", "TK-D020"),
             ("Bash", {"command": "pip install https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
             ("Bash", {"command": "uv pip install --no-deps https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
@@ -4327,17 +4563,38 @@ class CodingPack(unittest.TestCase):
     def test_credential_store_commands_as_their_tools_read_them(self):
         # security's global options came before the command unseen; `pass show --all` isn't pass's, `pass grep`
         # decrypts every entry and `pass NAME` shows NAME; gopass's find/search showed the secret on a match
-        # until gopass stopped it, so they stay held where pass's aren't
+        # until gopass stopped it, so they stay held where pass's aren't; keepassxc-cli show, clip and attachment-export
+        # extract passwords or key files; keepassxc-cli export dumps the whole database; `gh auth token` prints the
+        # stored token (for `token`, -h is the host, not help) and `gh auth status` masks it unless -t/--show-token (a
+        # short cluster with t too)
         self.verdicts([("security -q dump-keychain -d", "TK-D020"), ("pass grep .", "TK-D020"), ("ssh-add -L", "TK-A021"),
+                       ("keepassxc-cli export passwords.kdbx", "TK-D020"),
+                       ("keepassxc-cli export -f csv passwords.kdbx", "TK-D020"),
+                       ("keepassxc-cli.exe export passwords.kdbx", "TK-D020"),
                        ("security -q find-generic-password -s x -w", "TK-A021"),
                        ("security -v -p go find-internet-password -s x", "TK-A021"), ("pass example/site", "TK-A021"),
                        ("pass show -c example/site", "TK-A021"), ("pass -c example/site", "TK-A021"),
                        ("gopass show email/github", "TK-A021"), ("gopass email/github", "TK-A021"),
                        ("gopass cat secrets/prod", "TK-A021"), ("gopass otp accounts/github", "TK-A021"),
-                       ("gopass find email", "TK-A021"), ("gopass search infra", "TK-A021")])
+                       ("gopass find email", "TK-A021"), ("gopass search infra", "TK-A021"),
+                       ("keepassxc-cli show passwords.kdbx Github", "TK-A021"),
+                       ("keepassxc-cli show -s -a password passwords.kdbx Github", "TK-A021"),
+                       ("keepassxc-cli clip passwords.kdbx Github", "TK-A021"),
+                       ("keepassxc-cli.exe show passwords.kdbx Github", "TK-A021"),
+                       ("keepassxc-cli attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
+                       ("keepassxc-cli.exe attachment-export db.kdbx entry key.pem out.pem", "TK-A021"),
+                       ("gh auth token", "TK-A021"), ("gh auth token --hostname ghe.corp", "TK-A021"),
+                       ("gh auth token -h ghe.corp", "TK-A021"), ("gh auth token; echo --help", "TK-A021"),
+                       ("gh auth token && echo --help", "TK-A021"), ("gh auth token | tee x --help", "TK-A021"),
+                       ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
+                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
-                        "gopass mounts", "gopass config"):
+                        "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
+                        "keepassxc-cli search Github", "keepassxc-cli db-info passwords.kdbx", "keepassxc-cli --help",
+                        "keepassxc-cli -v", "gh auth status", "gh auth status -h github.com", "gh auth login",
+                        "gh auth refresh", "gh auth switch", "gh auth token --help", "gh auth status --help",
+                        "gh auth status -t --help"):
             with self.subTest(command=command):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
@@ -5190,7 +5447,65 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git push -o ci.skip origin", "git push --repo origin feature", "git push --for origin feature",
             "git push --bogus origin feature", "git-push origin main", "npm publish", "pnpm -r publish",
             "yarn npm publish", "cargo publish", "twine upload dist/*", "docker push x", "helm upgrade --install a b",
-            "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x")], "ask", "TK-A056")
+            "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x",
+            # #892: a platform CLI's production deploy, each form from the CLI's own docs
+            "vercel --prod", "vercel deploy --prod", "vercel deploy ./dist --prod --yes", "vercel --token t --prod",
+            "vercel deploy --environment=production", "vercel promote https://x.vercel.app", "npx vercel --prod",
+            "netlify deploy --prod", "netlify deploy --dir dist --prod", "netlify deploy --prod-if-unlocked",
+            "fly deploy", "flyctl deploy", "fly deploy --app web", "wrangler deploy", "wrangler publish",
+            "wrangler deploy --env production", "wrangler deploy -e prod", "firebase deploy",
+            "firebase deploy --only hosting", "gcloud run deploy api --source .", "gcloud --project p run deploy api",
+            "gcloud beta run deploy api", "gcloud app deploy", "gcloud functions deploy f", "railway up",
+            "railway up -e production", "sam deploy", "serverless deploy", "sls deploy", "sls deploy --stage prod",
+            "cdk deploy", "aws cloudformation deploy --template-file t.yaml --stack-name s",
+            "aws --region eu-west-1 cloudformation deploy --stack-name s", "gh release create v1.0",
+            "gh release create v1.0 --notes x", "gh release create v1.0 --draft=false",
+            "gh release create v1.0 --notes-file x-d",
+            # -d or --draft right after an option that takes a value is that value: the release publishes
+            "gh release create v1.0 --notes -d", "gh release create v1.0 -n -d", "gh release create v1.0 --title -d",
+            "gh release create v1.0 -t -d", "gh release create v1.0 --target -d", "gh release create v1.0 -F -d",
+            "gh release create v1.0 --notes-file --draft", "gh release create v1.0 -R -d",
+            "gh release create v1.0 --discussion-category -d", "gh release create v1.0 --notes-start-tag -d")],
+                      "ask", "TK-A056")
+
+    def test_a_preview_or_local_deploy_stays_allowed(self):
+        """#892: TK-A056 holds a platform CLI's production deploy only. A preview, a draft, a deploy that sends no
+        traffic, one to a named non-production environment and a local run stay allowed."""
+        for c in ("vercel", "vercel deploy", "vercel --environment=preview", "vercel dev", "netlify deploy",
+                  "netlify deploy --dir dist", "netlify dev", "wrangler dev", "wrangler deploy --env staging",
+                  "wrangler deploy -e dev", "wrangler deploy --env=preview", "firebase hosting:channel:deploy pr-1",
+                  "firebase emulators:start", "firebase serve", "gcloud run deploy api --no-traffic",
+                  "gcloud app deploy --no-promote", "railway up --environment staging", "railway up -e dev",
+                  "serverless deploy --stage dev", "sls deploy -s staging", "gh release create v1.0 --draft",
+                  "gh release create v1.0 -d", "gh release create -d v1.0", "gh release create v1.0 --notes x -d",
+                  "gh release create v1.0 --notes=x -d", "gh release create v1.0 -p -d",
+                  "gh release create v1.0 --latest=false --draft", "gh release create v1.0 --notes -d --draft",
+                  "gh release list", "fly status", "cdk diff", "sam build"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, command=c):
+                    d = e.decide("Bash", {"command": c})
+                    self.assertEqual(d["verdict"], "allow", d)
+                    self.assertNotIn("TK-A056", d["rule_ids"], d)
+
+    def test_a_draft_flag_inside_a_quoted_value_reads_as_a_draft(self):
+        """#908 review, a documented limit (docs/limits.md): TK-A056 reads a command's words joined by spaces, so a -d
+        inside another option's quoted value reads as an option of its own and the release is allowed, though it
+        publishes. A -d that is a whole value stays that option's value and is held."""
+        for c in ("gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, command=c):
+                    d = e.decide("Bash", {"command": c})
+                    self.assertEqual(d["verdict"], "allow", d)
+                    self.assertNotIn("TK-A056", d["rule_ids"], d)
+        self.verdicts([("Bash", {"command": "gh release create v1.0 --notes '-d'"})], "ask", "TK-A056")
+
+    def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
+        """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""
+        server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        for c in ("vercel --prod", "fly deploy", "gh release create v1.0"):
+            with self.subTest(command=c):
+                self.assertNotIn("TK-A056", server.decide("Bash", {"command": c})["rule_ids"])
+        self.assertEqual(server.decide("Bash", {"command": "vercel --prod"})["verdict"], "allow")
 
     def test_force_and_delete_pushes_stay_with_their_own_rules(self):
         self.verdicts([("Bash", {"command": c}) for c in (
@@ -5352,7 +5667,7 @@ class GuardrailsAndPushes(unittest.TestCase):
         `--` ended by CR, MySQL's `#`, an alias in UPDATE, INSERT IGNORE, DELETE alias FROM, DROP TEMPORARY, ALTER
         TABLE … DROP, and an unterminated GRANT, ALTER USER, CREATE USER or COPY TO PROGRAM are each read as the
         statement they are. A bare SELECT, and English shaped otherwise, stay flagged."""
-        held = ["DROP\fTABLE users", "\fDROP TABLE users", "DROP\x0bTABLE users", "DROP TABLE users",
+        held = ["DROP\fTABLE users", "\fDROP TABLE users", "DROP\x0bTABLE users", "DROP\u2028TABLE users",
                 "/* a*b */ DROP TABLE users", "/* " + "x" * 300 + " */ DROP TABLE users", "-- x\rDROP TABLE users",
                 "# x\nDROP TABLE users", "DROP -- x\nTABLE users", "COPY (SELECT '') TO PROGRAM 'id'",
                 "COPY users TO '/tmp/users.csv'", "GRANT ALL PRIVILEGES ON DATABASE prod TO agent", "GRANT admin TO bob",
