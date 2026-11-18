@@ -35,6 +35,8 @@ from tracekit.sdk.client import Incompatible, SignerUnavailable, _default_signer
 from tracekit.signer.rpc_schema import RPC_VERSION
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
+TIMEOUT_S = 10   # how long ensure() waits for a dev signer to answer
+START_WAIT_S = 130   # the most ensure() waits in all for a dev signer that says it is starting (a hook waits less)
 # -P (3.11+) keeps the working directory off sys.path; before 3.11 it is there, and spawn() makes it the private runtime
 # dir. Not -I, which also drops the PYTHONPATH a checkout without an install needs.
 PYTHON = [sys.executable, *(["-P"] if sys.version_info >= (3, 11) else [])]
@@ -244,20 +246,23 @@ def spawn(d):
     return p
 
 
-def ensure(wait=True, timeout=10):
+def ensure(wait=True, timeout=TIMEOUT_S, start_wait=START_WAIT_S):
     """A connection (socket, rfile, hello) to a compatible dev signer of this HOME's data dir, starting one if none
-    runs. With wait=False, None once a new signer has been started. Raises Incompatible, Hung or SignerUnavailable."""
+    runs. With wait=False, None once a new signer has been started. Raises Incompatible, Hung or SignerUnavailable.
+    `timeout`: how long it waits for a signer to answer; `start_wait`: how long in all, while the signer says it is
+    starting (_starting), and never past it."""
+    timeout = min(timeout, start_wait)
     if os.environ.get("TRACEKIT_SIGNER") or os.path.exists(SYSTEM_CONFIG):
         raise SignerUnavailable("dev auto-spawn is off when TRACEKIT_SIGNER is set or in system mode")
     d = signer_dir()
     try:
-        return _ensure(d, wait, timeout)
+        return _ensure(d, wait, timeout, start_wait)
     except _Theirs:   # another HOME's signer took the runtime dir meanwhile
-        return _ensure(_private(_side(d), True), wait, timeout)
+        return _ensure(_private(_side(d), True), wait, timeout, start_wait)
 
 
-def _ensure(d, wait, timeout):
-    lock = os.path.join(d, LOCK)
+def _ensure(d, wait, timeout, start_wait=START_WAIT_S):
+    lock, begun = os.path.join(d, LOCK), time.monotonic()
     try:
         conn = _try(d)
     except Incompatible as e:
@@ -296,7 +301,8 @@ def _ensure(d, wait, timeout):
             if conn:
                 return conn
             exited = p is not None and p.poll() is not None
-            if time.monotonic() > deadline or (exited and not _held(lock)):
+            now = time.monotonic()
+            if now > deadline and (now > begun + start_wait or not _starting(d)) or (exited and not _held(lock)):
                 break
             time.sleep(0.02)
 
@@ -307,6 +313,14 @@ def _ensure(d, wait, timeout):
         raise Hung(f"a dev signer (pid {_pid(d)}) holds {lock} but does not answer; see {log}")
     raise SignerUnavailable(f"the dev signer did not start ({_last_line(os.path.join(d, LOG))}); see "
                             f"{os.path.join(d, LOG)}")
+
+
+def _starting(d):
+    """Whether the dev signer of runtime dir `d` is still starting (reading its store and rebuilding run state, which
+    takes seconds for long runs): it holds signer.lock and its log's last start line is STARTING, not SERVING
+    (serve_dev)."""
+    tail = _tail(os.path.join(d, LOG)) or ""
+    return _held(os.path.join(d, LOCK)) and tail.rfind("STARTING pid ") > tail.rfind("SERVING pid ")
 
 
 def _tail(path, size=4096):

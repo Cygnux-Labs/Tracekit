@@ -17,7 +17,7 @@ Claude set Tracekit up for you, asking before each step.
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai==1.6.0
+pip install tracekit-ai==1.7.1
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux), in a root-owned clone of the release:
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks

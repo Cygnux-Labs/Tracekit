@@ -2,11 +2,13 @@
 # `tools` (class sql reads the statement from `sql`, `query` or `statement`).
 #
 # The rules match `code`: the statement with comments blanked and every literal and quoted identifier ('...', E'...',
-# $tag$...$tag$, "...", `...`, [...]) replaced by '' or "", once per SQL dialect's reading of it, so a keyword only
-# matches outside a literal or comment in every dialect (SELECT 'DROP TABLE x' is allowed). A statement no dialect can
-# read (an unclosed literal or comment) asks (TK-SQL-PARSE). Keywords are matched in any case.
+# $tag$...$tag$, "...", `...`, [...]) replaced by '' or "", once per SQL dialect's reading of it (PostgreSQL's with
+# standard_conforming_strings off and MySQL's with NO_BACKSLASH_ESCAPES among them), so a keyword only matches outside
+# a literal or comment in every dialect (SELECT 'DROP TABLE x' is allowed). A dialect that can't close a literal or
+# comment is read up to its last `;` before it: a database that runs a statement at a time runs those. A statement no
+# dialect can read (an unclosed literal or comment) asks (TK-SQL-PARSE). Keywords are matched in any case.
 
-version: '2026.10-server-data-4'
+version: '2026.11-server-data-5'
 description: server-hosted agents, SQL tools
 unknown_tools: ask
 

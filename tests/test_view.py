@@ -1336,6 +1336,29 @@ class View(unittest.TestCase):
         self.assertEqual(err.getvalue().count("tracekit last: run r1 (a) just closed; waiting up to 0.6 s while the "
                                               "signer finalises it\n"), 1)
 
+    def test_last_waits_for_a_closed_run_that_late_records_follow(self):
+        """1.7.0 QA: right after a Claude Code session ended, `tracekit last` showed the run before it, 3 of 3. It
+        waited only while a run's newest record was run.closing, and the tailer's model events come after close_run:
+        a run is waited for while it is closed and not final yet."""
+        older = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r0"), v2rec(1, "run.final", {}, "r0")]
+        newer = [v2rec(2, "run.registered", {"agent": {"name": "claude-code"}}, "r1"), v2rec(3, "run.closing", {}, "r1"),
+                 v2rec(4, "model.exchange", {}, "r1")]
+        reads = []
+
+        def read(cfg):   # the signer finalises the newer run by the third read
+            reads.append(1)
+            done = newer + [v2rec(5, "run.final", {}, "r1")] * (len(reads) > 2)
+            runs = {("default", "r0"): {"seqs": [0, 1]}, ("default", "r1"): {"seqs": [r["event"]["seq"] for r in done]}}
+            return mock.Mock(runs=runs, iter_run=lambda *key: iter(done if key[1] == "r1" else older))
+        exported = []
+        with mock.patch.object(svc, "reader", side_effect=read), \
+                mock.patch.object(svc, "signer_config", return_value={"data_dir": self.d}), \
+                mock.patch.object(cli, "_export_v2", side_effect=lambda ns, show: exported.append(ns.run) or 1), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertEqual(exported, ["r1"], err.getvalue())
+        self.assertIn("tracekit last: run r1 (claude-code) just closed; waiting up to", err.getvalue())
+
     @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()

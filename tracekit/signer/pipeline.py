@@ -46,8 +46,8 @@ _MISSING = object()
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks; `registered`, its run.registered's time (none in a
-    snapshot before 1.4). `prov`: the provenance index of a run registered
-    since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
+    snapshot before 1.4). `prov`: the run's provenance index (SignerService._index), memory only; None after a restart
+    until SignerService._rebuild rebuilds it (unavailable: no content vault to rebuild it from). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
     and snapshot only. `results`: tool_call_id -> [[decision_id, output hash, comparable, redacted, the form digest it
     matched or None], ...] of its tool.results (the newest RESULTS_PER_CALL: an id may be reused), which a gateway's
@@ -66,7 +66,7 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
 # `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended")
+             "detect_ids", "via", "caller", "refused", "ended", "policy_hash")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
@@ -512,6 +512,7 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
+        unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
         agent, contain = {"off": False, "uses": {}}, new_contain()
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
@@ -539,12 +540,14 @@ class RecordLog:
                     r.setdefault("tails", {})
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                     r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
-                    calls = [c for c in (*r["calls"].values(), *r["decisions"].values()) if c and "tool" not in c]
-                    if calls:   # before 1.7 a call had no tool: its decision's record names it
-                        tools = {x["event"]["data"].get("decision_id"): x["event"]["data"].get("tool")
+                    calls = [c for c in (*r["calls"].values(), *r["decisions"].values())
+                             if c and not {"tool", "policy_hash"} <= c.keys()]
+                    if calls:   # before 1.7 a call had no tool or policy_hash: its decision's record names them
+                        named = {x["event"]["data"].get("decision_id"): x["event"]["data"]
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
-                            c["tool"] = tools.get(c["decision_id"])
+                            d = named.get(c["decision_id"]) or {}
+                            c["tool"], c["policy_hash"] = d.get("tool"), d.get("policy_hash")
                     if any("ended" not in c for c in r["calls"].values()):   # before call_state (RPC 24)
                         for x in s.iter_run(r["tenant"], r["run_id"]):
                             outcome(r["calls"], x["event"])
@@ -561,6 +564,7 @@ class RecordLog:
             run = runs.get((e["tenant"], e["run_id"]))
             if run is None:
                 run = runs[(e["tenant"], e["run_id"])] = new_run(e["tenant"], e["run_id"])
+                unsnapped.add((e["tenant"], e["run_id"]))
             if (e["prev_hash"], e["run_seq"], e["run_prev_hash"]) != (prev, run["run_seq"], run["head"]):
                 raise StorageCorrupt(f"seq {e['seq']} breaks the chain; run `tracekit signer fsck`")
             if e["type"] == "signer.epoch":
@@ -625,7 +629,7 @@ class RecordLog:
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
-                        "detect_ids": d.get("detect", {}).get("rule_ids")}
+                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -635,7 +639,12 @@ class RecordLog:
                 run["constraints"] = [*(run.get("constraints") or ()), constraint_state(e)]
             elif e["type"] == "capture.gap" and e["data"].get("kind") == "constraint_refused":
                 run["constraints_full"] = True   # SignerService._constraint_add: every write is held
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "executed_against_policy" \
+                    and (run.get("ran_under") or (None,))[0] == e.get("tool_call_id"):
+                del run["ran_under"]   # the result ran without the approval: the decision that consumed it stays open
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
+                if run.get("ran_under"):   # the result before this one had no executed_against_policy gap
+                    run["decisions"].pop(run.pop("ran_under")[1], None)
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):
                     # lean: an ok result that also carried `error` counts as comparable after a restart (no shipped
@@ -643,12 +652,17 @@ class RecordLog:
                     run["results"][e["tool_call_id"]] = run["results"].get(e["tool_call_id"], [])[1 - RESULTS_PER_CALL:] + [
                         [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
                          out.get("redacted") is True, None]]
-                run["decisions"].pop(e["data"]["decision_id"], None)
+                call = run["decisions"].pop(e["data"]["decision_id"], None)
                 used = (e["tool_call_id"], e.get("attempt", 0))
                 a = approvals.get(index.get((e["tenant"], e["run_id"], *used)))
-                if a and a["state"] == "consumed" and ran(a)[:2] == used:   # it ran under it (Service._complete)
-                    # lean: by call and attempt; the writer also checks the arguments against the approval's
-                    run["decisions"].pop(ran(a)[2], None)
+                if a and a["state"] == "consumed" and ran(a)[:2] == used and (call or {}).get("decision") == "ask":
+                    # Service._complete also ends the decision that consumed the approval when this result ran under
+                    # it, which only its arguments say: an ask's did unless its executed_against_policy gap follows.
+                    # lean: an allow, flag or deny of a call whose approval was consumed (a grant, a hold or a policy
+                    # change since) keeps that decision open on replay, so the run ends with a decided_not_completed
+                    # gap the writer may not have written; record in tool.result the approval it ran under if one
+                    # such run appears
+                    run["ran_under"] = (used[0], ran(a)[2])
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -673,6 +687,9 @@ class RecordLog:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
+        for run in runs.values():   # a run's last result had no executed_against_policy gap after it
+            if run.get("ran_under"):
+                run["decisions"].pop(run.pop("ran_under")[1], None)
         self.log_id = self.log_id or secrets.token_hex(16)
         self.agent, self.contain = agent, contain
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
@@ -681,6 +698,7 @@ class RecordLog:
             if self.detector and not r["final"] and r["owner"] and k not in det["runs"]:
                 det["runs"][k] = detect.run_entry(r.get("session", run_id), r["owner"], r["people"][1])
         self.det = det
+        self.unsnapped = unsnapped   # SignerService._rebuilt: memory state of theirs a crash may have lost
         # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits
@@ -911,18 +929,26 @@ class RecordLog:
             self.storage.close()
         except Exception:
             pass
-        # the provenance indexes and the claims (SignerService._call_claim) live in memory only: the replay can't
-        # rebuild them, and nothing in them was lost
-        kept = {k: {f: r[f] for f in ("prov", "claims") if r.get(f) is not None} for k, r in self.runs.items()}
+        # the provenance indexes and the claims (SignerService._call_claim) live in memory only, so they are kept over
+        # the replay: each index holds what its run's records up to the head it saw carried. A write the storage
+        # reported failed may still have reached it: records past that head, which the replay brings back, were never
+        # indexed
+        kept = {k: ({f: r[f] for f in ("prov", "claims") if r.get(f) is not None}, r["run_seq"])
+                for k, r in self.runs.items()}
         try:
             self.storage = self.open_storage()
             self._replay()
         except Exception:
             return False
         finally:   # a replay that failed partway may have rebuilt the runs already: the next attempt starts from them
-            for k, fields in kept.items():
-                if k in self.runs and not self.runs[k]["final"]:
-                    self.runs[k].update(fields)
+            for k, (fields, seen) in kept.items():
+                run = self.runs.get(k)
+                if run and not run["final"]:
+                    run.update(fields)
+                    if "prov" in fields and run["run_seq"] > seen:
+                        degrade(types.SimpleNamespace(set=dict.__setitem__), fields["prov"], "partial",
+                                f"run_seq {seen}..{run['run_seq'] - 1} reached the store in a write it reported "
+                                "failed, so the index never read them")
         since, err = self.down
         self.down = None
         fut = Future()
