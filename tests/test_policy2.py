@@ -26,7 +26,7 @@ sys.path.insert(0, ROOT)
 from factories import SLOWER, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
-from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
+from tracekit.policy2 import classes, compile as pc, engine, shell, source  # noqa: E402
 from tracekit.policy2.engine import MAX_SUBJECT, Engine  # noqa: E402
 
 HAVE_RE2 = importlib.util.find_spec("re2") is not None
@@ -5307,6 +5307,239 @@ class QuietFlags(unittest.TestCase):
                            ("TK-F006", ("mcp__github__get_issue", {"owner": "a"})),
                            ("TK-F012", ("WebFetch", {"url": "http://127.0.0.1:8000/", "prompt": "p"}))):
             self.check(rule, [], [call], pack="strict")
+
+
+class SourceReader(unittest.TestCase):
+    """A Browser Use 1.x python cell or finish_from_repl delivery is read with ast.parse only: each literal helper or
+    shell call becomes the action it stands for; a source the reader cannot follow is held, never run."""
+
+    def test_helpers_become_the_actions_they_stand_for(self):
+        for code, calls in [
+                ('goto_url("https://example.com")',
+                 [("browser_use:navigate", {"url": "https://example.com", "page_url": ""})]),
+                ('helpers.new_tab()', [("browser_use:new_tab", {"url": "about:blank", "page_url": ""})]),
+                ('js("document.title")', [("browser_use:evaluate", {"code": "document.title", "page_url": ""})]),
+                ('upload_file("#f", "/tmp/cv.pdf")',
+                 [("browser_use:upload_file", {"path": "/tmp/cv.pdf", "page_url": ""})]),
+                ('type_text("hello")', [("browser_use:input", {"text": "hello", "page_url": ""})]),
+                ('fill_input("#q", "hello")', [("browser_use:input", {"text": "hello", "page_url": ""})]),
+                ('type_secret("token")', [("browser_use:input", {"text": "<secret>token</secret>", "page_url": ""})]),
+                ('press_key("Enter")', [("browser_use:send_keys", {"key": "Enter", "page_url": ""})]),
+                ('click_at_xy(3, 4)', [("browser_use:click", {"page_url": ""})]),
+                ('http_get("https://example.com/")', [("http_get", {"url": "https://example.com/"})])]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, None))
+
+    def test_a_literal_name_an_alias_and_a_literal_getattr_are_read(self):
+        r = source.read('from browser_harness.helpers import js as run_js\n'
+                        'url = "file:///etc/passwd"\n'
+                        'run_js("document.title")\n'
+                        'goto_url(url)\n'
+                        'getattr(helpers, "js")("location")\n'
+                        'f = js\nf("x")\n')
+        self.assertIsNone(r.held)
+        self.assertEqual([t for t, _ in r.calls],
+                         ["browser_use:evaluate", "browser_use:navigate", "browser_use:evaluate", "browser_use:evaluate"])
+        self.assertEqual(r.calls[1][1], {"url": "file:///etc/passwd", "page_url": ""})
+
+    def test_ordinary_python_and_a_function_defined_in_the_cell_are_left_unread(self):
+        # docs/limits.md: the policy reads the calls a source names literally, not one a function it defines makes
+        for code in ('open("/tmp/x", "w").write("x")', 'requests.get("https://example.com/")',
+                     'def f():\n    goto_url("file:///etc/passwd")\nf()'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], None))
+
+    def test_a_class_body_runs_when_defined_and_is_read(self):
+        r = source.read('class C:\n    goto_url("file:///etc/passwd")\n    exec("goto_url(\'file:///x\')")')
+        self.assertIsNone(r.held)
+        self.assertEqual([c[1]["url"] for c in r.calls], ["file:///etc/passwd", "file:///x"])
+        r = source.read('class C:\n    url = "file:///x"\ngoto_url(url)')
+        self.assertEqual((r.calls, r.held), ([], "arg"))
+
+    def test_a_builtin_spelled_through_the_builtins_module_is_read(self):
+        for code, calls, held in [
+                ('import builtins\nbuiltins.exec("goto_url(\'file:///x\')")',
+                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
+                ('import builtins as b\nb.eval("goto_url(\'file:///x\')")',
+                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
+                ('from builtins import __import__ as imp\nimp("os")', [], "__import__"),
+                ('__builtins__.exec("goto_url(\'file:///x\')")',
+                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
+                ('__builtins__ = {}\n__builtins__.exec("goto_url(\'file:///x\')")', [], "call"),
+                ('builtins = "x"\nbuiltins.exec("goto_url(\'file:///x\')")', [], None)]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, held))
+
+    def test_a_literal_join_is_read_not_held(self):
+        r = source.read('goto_url("".join(["file://", "/etc/passwd"]))')
+        self.assertEqual((r.calls, r.held),
+                         ([("browser_use:navigate", {"url": "file:///etc/passwd", "page_url": ""})], None))
+
+    def test_a_starred_target_is_forgotten(self):
+        r = source.read('r = "https://docs.python.org/"\na, *r = f()\ngoto_url(r)')
+        self.assertEqual((r.calls, r.held), ([], "arg"))
+
+    def test_a_helper_module_name_the_cell_shadowed_is_not_read(self):
+        r = source.read('helpers = "x"\nhelpers.js("document.title")')
+        self.assertEqual((r.calls, r.held), ([], None))
+
+    def test_what_it_cannot_follow_is_held(self):
+        for code, cause in [
+                ('url = input()\ngoto_url(url)', "arg"),
+                ('goto_url(prefix + "x")', "arg"),
+                ('globals()["goto_url"]("x")', "call"),
+                ('getattr(helpers, name)("x")', "getattr"),
+                ('__import__("os").system("id")', "__import__"),
+                ('importlib.import_module("os").system("id")', "importlib.import_module"),
+                ('exec(1)', "exec"),
+                ('subprocess.run(["ls"])', "argv"),
+                ('subprocess.run("ls")', "program"),
+                ('subprocess.run(cmd, shell=True)', "command")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], cause))
+
+    def test_a_shell_line_is_read_only_as_a_shell_line(self):
+        for code, calls, held in [
+                ('os.system("id")', [("shell", {"command": "id"})], None),
+                ('from subprocess import getoutput\ngetoutput("id")', [("shell", {"command": "id"})], None),
+                ('subprocess.run("id", shell=True)', [("shell", {"command": "id"})], None),
+                ('asyncio.create_subprocess_shell("id")', [("shell", {"command": "id"})], None),
+                ('subprocess.run("id")', [], "program"),
+                ('subprocess.run("id", shell=False)', [], "program"),
+                ('subprocess.run(["id"])', [], "argv"),
+                ('asyncio.create_subprocess_exec("id")', [], "argv"),
+                ('subprocess.run("id", shell=flag)', [], "arg")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, held))
+
+    def test_the_caps_hold_a_large_or_deep_source(self):
+        r = source.read("\n".join('goto_url("https://a")' for _ in range(257)))
+        self.assertEqual((len(r.calls), r.held), (256, "calls"))
+        r = source.read("# " + "x" * (64 * 1024))
+        self.assertEqual((r.calls, r.held), ([], "size"))
+        code = 'goto_url("https://a")'
+        for _ in range(4):
+            code = f"exec({code!r})"
+        r = source.read(code)
+        self.assertEqual((r.calls, r.held), ([], "depth"))
+
+    def test_it_never_runs_the_source(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "ran")
+        r = source.read(f'open({path!r}, "w").write("x")')
+        self.assertEqual((r.calls, r.held), ([], None))
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual((source.read("raise SystemExit(1)").calls, source.read("raise SystemExit(1)").held), ([], None))
+
+
+class CellSource(unittest.TestCase):
+    """The engine decides a 1.x cell or delivery by the literal calls its source names: one decision per cell, at the
+    strictest of the calls, with the pack's own rules; an unreadable source waits for on_parse_error."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.browser = Engine(pc.build(os.path.join(PACKS, "browser.yaml"))[0])
+        cls.server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        cls.strict = Engine(pc.build(os.path.join(PACKS, "strict.yaml"))[0])
+
+    @staticmethod
+    def cell(e, code, tool="browser_use:python"):
+        key = "code" if tool.endswith("python") else "expression"
+        return e.decide(tool, {key: code, "page_url": ""})
+
+    def test_a_cell_takes_the_verdict_of_the_calls_it_names(self):
+        for code, verdict, rule in [
+                ('goto_url("https://docs.python.org/3/")', "allow", None),
+                ('goto_url("file:///etc/passwd")', "deny", "TK-B001"),
+                ('new_tab("javascript:alert(1)")', "deny", "TK-B001"),
+                ('js("document.forms[0].submit()")', "ask", "TK-B012"),
+                ('type_text("hello")', "ask", "TK-B011"),
+                ('type_secret("token")', "ask", "TK-B011"),
+                ('upload_file("#f", "/tmp/cv.pdf")', "ask", "TK-B010"),
+                ('click_at_xy(3, 4)', "allow", None),
+                ('press_key("Enter")', "allow", None)]:
+            with self.subTest(code=code):
+                d = self.cell(self.browser, code)
+                self.assertEqual(d["verdict"], verdict)
+                if rule is not None:
+                    self.assertIn(rule, d["rule_ids"])
+
+    def test_the_server_pack_reads_every_mapping_row(self):
+        for code, verdict, rule in [
+                ('goto_url("https://docs.python.org/3/")', ("allow", "flag"), None),
+                ('new_tab("https://docs.python.org/3/")', ("allow", "flag"), None),
+                ('js("x")', ("ask",), "TK-B012"),
+                ('upload_file("#f", "/tmp/cv.pdf")', ("ask",), "TK-B010"),
+                ('type_text("hello")', ("ask",), "TK-B011"),
+                ('type_secret("token")', ("ask",), "TK-B011"),
+                ('fill_input("#q", "hello")', ("ask",), "TK-B011"),
+                ('press_key("Enter")', ("allow",), None),
+                ('click_at_xy(3, 4)', ("allow",), None),
+                ('http_get("https://docs.python.org/3/")', ("allow", "flag"), None),
+                ('os.system("id")', ("allow",), None)]:
+            with self.subTest(code=code):
+                d = self.cell(self.server, code)
+                self.assertIn(d["verdict"], verdict)
+                if rule is not None:
+                    self.assertIn(rule, d["rule_ids"])
+
+    def test_a_delivery_is_read_too(self):
+        d = self.cell(self.browser, 'js("document.title")', "browser_use:finish_from_repl")
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-B012"]))
+        d = self.cell(self.server, 'upload_file("#f", "/tmp/cv.pdf")', "browser_use:finish_from_repl")
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-B010"]))
+        d = self.cell(self.browser, "answer", "browser_use:finish_from_repl")
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("allow", []))
+
+    def test_a_source_it_cannot_read_waits_for_on_parse_error(self):
+        for code in ('url = input()\ngoto_url(url)', 'globals()["goto_url"]("https://x")', 'def f(:\n pass'):
+            with self.subTest(code=code):
+                d = self.cell(self.browser, code)
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SOURCE-PARSE"]))
+                d = self.cell(self.strict, code)
+                self.assertEqual(d["verdict"], "deny")
+                self.assertIn("TK-SOURCE-PARSE", d["rule_ids"])
+
+    def test_a_deny_outranks_a_source_it_cannot_read(self):
+        d = self.cell(self.browser, 'goto_url("file:///etc/passwd")\nurl = input()\ngoto_url(url)')
+        self.assertEqual(d["verdict"], "deny")
+        self.assertIn("TK-B001", d["rule_ids"])
+        self.assertIn("TK-SOURCE-PARSE", d["rule_ids"])
+
+    def test_a_sub_call_is_decided_on_the_packs_own_rules(self):
+        d = self.cell(self.server, 'subprocess.run("rm -rf /", shell=True)')
+        self.assertEqual(d["verdict"], "deny")
+        self.assertIn("TK-D004", d["rule_ids"])
+        d = self.cell(self.server, 'http_get("http://169.254.169.254/latest/meta-data/")')
+        self.assertEqual(d["verdict"], "deny")
+        self.assertIn("TK-N001", d["rule_ids"])
+        d = self.cell(self.browser, 'http_get("http://169.254.169.254/")')
+        self.assertEqual(d["verdict"], "ask")
+        self.assertIn("TK-UNKNOWN-TOOL", d["rule_ids"])
+
+    def test_a_program_call_is_held_rather_than_read_as_a_shell_line(self):
+        d = self.cell(self.server, 'subprocess.run("ls")')
+        self.assertEqual(d["verdict"], "ask")
+        self.assertEqual(d["rule_ids"], ["TK-SOURCE-PARSE"])
+
+    def test_a_cell_with_no_calls_is_allowed(self):
+        self.assertEqual(self.cell(self.browser, "")["verdict"], "allow")
+
+    def test_a_class_body_a_builtin_spelling_and_a_join_are_decided(self):
+        for code in ('class C:\n    goto_url("file:///etc/passwd")',
+                     'import builtins\nbuiltins.exec("goto_url(\'file:///etc/passwd\')")',
+                     '__builtins__.exec("goto_url(\'file:///etc/passwd\')")',
+                     'goto_url("".join(["file://", "/etc/passwd"]))'):
+            with self.subTest(code=code):
+                d = self.cell(self.browser, code)
+                self.assertEqual(d["verdict"], "deny")
+                self.assertIn("TK-B001", d["rule_ids"])
 
 
 if __name__ == "__main__":

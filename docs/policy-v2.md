@@ -41,6 +41,7 @@ Rule ids the signer adds itself:
 | `TK-ENGINE-ERROR` | deny | the policy engine itself failed on the call's arguments (a bug): the call is denied and recorded, the decision's `reasons` (and the `decide` response's `reason`) name the error's type and the signer logs its traceback. Arguments nested too deeply to check are refused (`invalid_request`), not decided |
 | `TK-SHELL-PARSE` | `on_parse_error` (ask) | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
+| `TK-SOURCE-PARSE` | `on_parse_error` (ask) | a Browser Use 1.x `python` cell or `finish_from_repl` delivery names a call the reader can't follow: a callee or required argument that isn't literal text, a computed `getattr`, `globals`/`locals`/`vars`, `__import__`, a program or argv invocation, nested code past three levels, over 256 calls, or over 64 KiB |
 | `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
 These, and the ids of holds, quarantines, live constraints and approvals (`TK-HOLD`, `TK-QUARANTINE`,
@@ -58,9 +59,9 @@ version: '2026.10-v2-1'
 description: what this policy is for
 extends: coding.yaml            # optional: a relative path, or a list of them; the compiled policy names parents by hash
 unknown_tools: ask              # allow (default), flag, ask or deny
-on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's verdict, a shell command the parser can't read
-oversize: ask                   # deny (default) or ask: TK-OVERSIZE's verdict where a deny rule can't read a call
-                                # over 64 KiB (dev.yaml asks; a policy that extends it sets deny to deny again)
+on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's and TK-SOURCE-PARSE's verdict; a shell command
+                                # or a 1.x cell source the reader can't read
+oversize: ask                   # ask holds a call over 64 KiB for a person; deny (or left out) keeps the rule's section
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp

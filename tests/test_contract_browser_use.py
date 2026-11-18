@@ -957,6 +957,62 @@ class OnRealTools1x(unittest.TestCase):
                 tool_def=types.SimpleNamespace(kind="function"), args={"code": "print(1)"}, handler=handler))
 
 
+@unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
+class SourceReaderOnRealSigner(unittest.TestCase):
+    """The browser pack on a real signer, a 1.0 worker standing in for the process: a cell or delivery is decided by
+    the calls its source names before the worker runs it."""
+
+    def setUp(self):
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        self.addCleanup(setattr, BrowserLoop, "wrap_tool_execute", BrowserLoop.wrap_tool_execute)
+        self.addCleanup(setattr, Repl, "call", Repl.call)
+        self.ran = []
+
+        async def worker(repl, op, code, timeout):
+            self.ran.append((op, code))
+            return {"value": None, "output": "", "images": [], "error": None}
+        real = Repl.call
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        self.s = svc.SignerService(ac.tmpdir(self), policy=svc.load_policy(PACK))
+        self.addCleanup(self.s.close)
+        run = self.s.register_run({"request_id": "r-src", "agent": {"name": "bu-src"}})
+        trace_tools(_Tools(), self.s, run, approval_wait_s=0)
+        self.repl = types.SimpleNamespace(secrets=[])
+
+    def test_a_cell_that_navigates_to_a_local_file_is_refused_before_it_runs(self):
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        with self.assertRaises(Refused) as caught:
+            asyncio.run(Repl.call(self.repl, "exec", 'goto_url("file:///etc/passwd")', 5))
+        self.assertIn("TK-B001", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
+    def test_a_cell_whose_calls_are_allowed_runs(self):
+        from browser_use.repl.session import Repl
+        code = 'goto_url("https://docs.python.org/3/")'
+        result = asyncio.run(Repl.call(self.repl, "exec", code, 5))
+        self.assertIsNone(result["error"])
+        self.assertEqual(self.ran, [("exec", code)])
+
+    def test_a_delivery_that_evaluates_javascript_waits_for_a_person(self):
+        from browser_use.repl.session import Repl
+        from pydantic_ai import ModelRetry
+        with self.assertRaises(ModelRetry) as caught:
+            asyncio.run(Repl.call(self.repl, "eval", 'js("document.title")', 5))
+        self.assertIn("TK-B012", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
+    def test_a_cell_it_cannot_read_waits_for_a_person(self):
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        with self.assertRaises(Refused) as caught:
+            asyncio.run(Repl.call(self.repl, "exec", "url = input()\ngoto_url(url)", 5))
+        self.assertIn("TK-SOURCE-PARSE", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
+
 class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "browser_use", "1.0.2"
     message = "Browser Use 0.0.1 is wired but untested; Tracekit is tested with browser-use>=0.13.11,<1.1"

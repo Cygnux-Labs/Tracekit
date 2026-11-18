@@ -16,7 +16,7 @@ import time
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
-from . import classes, shell
+from . import classes, shell, source as source_reader
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
@@ -159,6 +159,7 @@ class Engine:
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
+        self._sections = {r["id"]: sec for sec, r, *_ in self.rules}
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
         self._names = {} if self.engine.startswith("re2@") else None
@@ -287,6 +288,43 @@ class Engine:
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
         cause, pieces_read = None, False
         work, deadline = _budget or ([0], [REGEX_TIMEOUT_S])   # (shell.charge; _backend)
+        nondeterministic = False
+        if cls == "browser" and isinstance(tool, str) and tool in source_reader.CELLS:
+            # a 1.x cell or delivery runs code no tool call names: decide each literal helper and command call it
+            # makes on this decision's budget, at the strictest; a source the reader cannot follow waits for
+            # on_parse_error (TK-SOURCE-PARSE)
+            key, mode = source_reader.CELLS[tool]
+            text = args.get(key)
+            reading = source_reader.read(text, mode) if isinstance(text, str) else None
+            held = "text" if reading is None else reading.held
+            for sub_tool, sub_args in (() if reading is None else reading.calls):
+                work[0] += DECISION_COST
+                if work[0] > shell.MAX_WORK:
+                    held = held or "budget"
+                    break
+                try:
+                    inner = self.decide(sub_tool, sub_args, untrusted=untrusted, _budget=(work, deadline))
+                except TimeoutError:
+                    nondeterministic, held = True, held or "budget"
+                    break
+                nondeterministic |= bool(inner.get("nondeterministic"))
+                if inner.get("oversize"):
+                    oversize.extend(inner["oversize"])
+                if cause is None and inner.get("unread"):
+                    cause = inner["unread"]   # a sub shell's cause says why it is held, as on a shell call
+                for rid in inner.get("rule_ids", ()):
+                    sec = self._sections.get(rid)
+                    if sec is None:
+                        sec = on_parse_error if rid in ("TK-SOURCE-PARSE", "TK-SHELL-PARSE", "TK-SQL-PARSE") \
+                            else "deny" if rid == "TK-A2A-NAME" else inner["verdict"]
+                    elif inner.get("nondeterministic") and rid not in self._deny_ids:
+                        sec = "deny"   # its match ran out of the decision's time; decide() denies that call
+                    if sec in SECTIONS and rid not in hits[sec]:
+                        hits[sec].append(rid)
+            if held is not None:
+                if "TK-SOURCE-PARSE" not in hits[on_parse_error]:
+                    hits[on_parse_error].append("TK-SOURCE-PARSE")
+                cause = cause or held
         if cls == "http" and isinstance(args.get("urls"), list) and len(args["urls"]) > MAX_URLS:
             hits["deny"].append("TK-OVERSIZE")
             oversize.append(f"the urls list (more than {MAX_URLS})")
@@ -322,7 +360,6 @@ class Engine:
                     cause = "typed"
         # the fallback's 1 s covers its regex matches alone (_backend): reading the call (the parse, the subjects) isn't
         # charged to it, and is bounded by the input size limits, as on RE2
-        nondeterministic = False
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
@@ -444,7 +481,7 @@ class Engine:
                         break
                 if nondeterministic or work[0] > shell.MAX_WORK:
                     break
-        if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
+        if cls == "shell" and (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
         # a call over MAX_SUBJECT (its arguments as JSON), which the policy can't read, waits for a person (the dev pack),
