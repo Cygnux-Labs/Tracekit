@@ -2410,18 +2410,21 @@ class PlainPages(unittest.TestCase):
         self.assertEqual((scroll_room, fit_height), ("504px", None))   # ACTUAL SIZE: the room below the bars scrolls
 
     INFLUENCE = ["dict", "esc", "plural", "pct", "fmtT", "fmtD", "fit", "put", "INFL", "KIND", "kindName", "many", "ENDS", "stopped",
-                 "tone", "endWords", "said", "chip", "order", "chips", "inflTools", "INFLSAY", "inflAnswer", "INFLTOOLS", "inflFlow",
-                 "idLen", "influenceView"]
+                 "tone", "endWords", "said", "chip", "order", "chips", "inflTools", "BASIS", "inflChain", "inflCall",
+                 "inflCalls", "INFLTOOLS", "inflFlow", "idLen", "influenceView"]
 
-    def influence(self, sources, edges, groups, opened=(), more=(), width=900, mark=None, runs=2):
-        """INFLUENCE's HTML, its summary, and the content and tools its data-* indices name (IFL.keys, IFL.tools)."""
+    def influence(self, sources, edges, groups, opened=(), more=(), width=900, mark=None, runs=2, calls=None, hint=False):
+        """INFLUENCE's HTML, its summary, and the content and tools its data-* indices name (IFL.keys, IFL.tools).
+        `calls`: the workspace's influence `calls` and `calls_total` (none by default)."""
+        calls = calls or {"calls": [], "calls_total": 0}
         return json.loads(page_js(self.INFLUENCE, f"""
             const WHY = {{ runs: Array.from({{ length: {runs} }}, () => ({{}})), influence: {{ sources: {json.dumps(sources)}, outcomes: [{{ id: "Bash", runs: 1 }}],
-                          edges: {json.dumps(edges)}, groups: {json.dumps(groups)} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
+                          edges: {json.dumps(edges)}, groups: {json.dumps(groups)}, calls: {json.dumps(calls["calls"])},
+                          calls_total: {calls["calls_total"]} }} }}, got = {{}}, $ = id => got[id] ??= {{}};
             const RUNS = new Map([["r1", {{}}]]), TZ = "UTC";
             for (const k of {json.dumps(list(opened))}) INFL.add(k);
             for (const k of {json.dumps(list(more))}) INFLMORE.add(k);
-            IFL.mark = {json.dumps(mark)};
+            IFL.mark = {json.dumps(mark)}; IFL.hint = {json.dumps(hint)};
             const el = got.whyv = {{ clientWidth: {width} }}; influenceView(el);
             process.stdout.write(JSON.stringify([el.innerHTML, got.wvsum.textContent, IFL.keys, IFL.tools]));"""))
 
@@ -2560,36 +2563,56 @@ class PlainPages(unittest.TestCase):
             r'<g class="(ln[^"]*)" data-ifk="(\d+)" data-ift="([^"]+)"><path class="hit" d="[^"]*"/><path class="v" d="[^"]*" stroke-width="([\d.]+)"/>', svg)}
         return kinds, tls, lines
 
-    def test_influence_answers_first_in_plain_words_what_untrusted_content_came_before_stopped_calls(self):
-        """The page answers a supervisor's question, "did something my agent read push it into a risky call?", before
-        any chart: the untrusted content that came before calls blocked or held, the worst first, each opening its row.
-        It says "came before"; only a replay's confirmation says "caused"."""
+    def test_influence_answers_first_for_each_risky_call_in_words_then_its_chain_drawn_by_grade(self):
+        """INFLUENCE led with "untrusted content came before a blocked call" and text overlap: neither is a cause. It
+        answers per risky call, in words first, those that serve no step of the task first, each link drawn by how it
+        is known (solid exact, double measured, thin seen); a hint shows only when asked for, never as an influence; a
+        call nothing links says "no influence found"."""
         needs_node(self)
+        from test_why_influence import EXACT, desk
+        from tracekit.why import build_graph
+        from tracekit.why.analysis import workspace
+        pushed = desk(EXACT)[0]
+        deployed = desk(args={"branch": "fix-login"}, tool="deploy_site")[0]
+        deployed.add_test({"intervention": "input:github:issue-12", "target": "tool=deploy_site", "effect": 0.7,
+                           "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
+        held = desk()[0]
+        held.of_type("action")[-1].update(status="blocked", policy={"decision": "ask"})
+        lone = desk(decide=False, args={"branch": "fix-login"})[0]
+        lone.of_type("action")[-1].update(status="blocked", policy={"decision": "deny"})
+        calls = workspace([], [{"run": r, "graph": build_graph(r, infer=False), "summary": {"started": ""}}
+                               for r in (pushed, deployed, held, lone)])["influence"]
         S = self.STORE
-        page, _, keys, tools = self.influence(S["sources"], S["edges"], S["groups"])
-        self.assertTrue(page.startswith('<div class="inans"><div class="q">DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL?</div>'))
-        lines = re.findall(r'<div class="ans" role="button" tabindex="0" data-ifk="(\d+)" data-ift="(\d+)">(.*?)</div>', page)
-        self.assertEqual([html.unescape(text(x)) for *_, x in lines], [
-            "Messages from another session (untrusted) came before 4,812 blocked Bash calls in 3 runs; a replay confirmed one "
-            "of these caused Bash calls (effect +0.62)",
-            "Messages from another session (untrusted) came before 15 held Deploy calls in 1 run"])
-        # each opens its own row and marks its tool, as its line in the flow does; the person's own prompts are not in it
-        self.assertEqual([(keys[int(k)], tools[int(t)]) for k, t, _ in lines],
-                         [("session-message|untrusted", "Bash"), ("session-message|untrusted", "Deploy")])
-        self.assertNotIn("Nothing untrusted", page)
-        self.assertIn("for 247,045 decisions", page)   # the owner's store: one kind in front of a quarter million
-        # nothing untrusted before a stopped call says exactly that; a replay's confirmation is still said, as "caused"
-        groups = [{"kind": "UserPromptSubmit", "trust": "trusted", "runs": 2, "reach": {"Bash": 2}, "ended": {"Bash": {"blocked": 5}}},
-                  {"kind": "task-notification", "trust": "untrusted", "runs": 1, "reach": {"Read": 1}}]
-        sources = [{"id": "s4", "labels": ["a:task-notification"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "task-notification",
-                    "preview": "x", "confirmed_tools": ["Read"], "seen": []}]
-        page = self.influence(sources, [{"source": "s4", "tool": "Read", "reach_runs": 1, "confirmed": True, "max_effect": 0.4}], groups)[0]
-        answer = page[:page.index("</div></div>") + 6]
-        self.assertEqual(re.findall(r'<div class="(?:ans|none)"[^>]*>(.*?)</div>', answer)[0], "Nothing untrusted came before a blocked or held call.")
-        self.assertIn("Background tasks&#39; notices</b> <span class=\"bad\">(untrusted)</span>: a replay confirmed one of these caused Read calls", answer)
-        page = self.influence(sources[:0] + [dict(sources[0], confirmed_tools=[])], [], groups)[0]
-        self.assertEqual(html.unescape(text(page[:page.index("</div></div>") + 12])),
-                         "DID SOMETHING YOUR AGENTS READ COME BEFORE A BLOCKED OR HELD CALL? Nothing untrusted came before a blocked or held call.")
+        page = self.influence(S["sources"], S["edges"], S["groups"], calls=calls)[0]
+        self.assertTrue(page.startswith('<div class="inans"><div class="q">WHAT LED TO EACH RISKY CALL?</div>'))
+        said = re.findall(r'<div class="icall[^"]*"><div class="w">(.*?) <button type="button" class="cp" data-wwhy="([^"]+)" data-wr="([^"]+)">WHY</button>', page)
+        self.assertEqual([html.unescape(w) for w, *_ in said], [
+            "git_push (dev) serves no step of the task: its `branch` came only from github:issue-12 (untrusted; exact). "
+            "Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided (m; 3 in context, 1 untrusted) → this call.",
+            "deploy_site (dev) serves no step of the task: a replay without github:issue-12 (untrusted) changed it "
+            "(measured: effect +0.70). Chain: read github:issue-12 (untrusted; measured: effect +0.70) → dev decided (m; 3 "
+            "in context, 1 untrusted) → this call.",
+            "git_push (dev, blocked): no influence found. Nothing exact, measured or seen links it to what the agents read.",
+            f"git_push (dev, held) came from: task 'Fix the login bug in issue 12' → dev decided (m; 3 in context, 1 "
+            "untrusted) → this call."])
+        self.assertEqual([(r, n) for _, n, r in said], [(c["run"], c["node"]) for c in calls["calls"]])   # WHY opens it
+        self.assertEqual(page.count('class="icall drift"'), 2)
+        # solid from the step the signer traced an argument to, double from the step a replay tied to the call; thin hops
+        arcs = lambda page, c: len(re.findall(f'<path class="{c}" d="M[^"]* C', page))  # noqa: E731  (not the key's swatches)
+        self.assertEqual([arcs(page, c) for c in ("g-exact", "g-measured", "g-gap", "g-hint")], [1, 1, 1, 0])
+        self.assertIn("exact: its `branch` came only from github:issue-12 (untrusted)</div>", html.unescape(page))
+        self.assertIn("seen: 3 sources in the context of the model call that asked for it (the agent&#39;s runtime recorded its context)", page)
+        # the held push's branch is in the issue's text: a hint, shown only when asked for
+        self.assertNotIn("hint, not an influence", page)
+        self.assertIn('<button type="button" class="cp" data-inhint="">show hints</button>', page)
+        hinted = self.influence(S["sources"], S["edges"], S["groups"], calls=calls, hint=True)[0]
+        self.assertIn("hint, not an influence: the value hotfix-from-issue-12 is in github:issue-12", hinted)
+        self.assertEqual(arcs(hinted, "g-hint"), 1)
+        self.assertIn('data-inhint="">hide hints</button>', hinted)
+        # no risky call says so; nothing read and no risky call is the empty page, as before
+        none = self.influence(S["sources"], S["edges"], S["groups"])[0]
+        self.assertIn('<div class="none">No risky call: nothing was stopped or flagged, and no argument came from what the agents read.</div>', none)
+        self.assertTrue(self.influence([], [], [], calls=calls)[0].startswith('<div class="inans">'))
 
     def test_influence_says_one_call_one_run_and_names_pasted_text(self):
         """The owner's preview read "Across all 1 run", "came before 1 blocked Bash calls", and "paste" where every other
@@ -2599,8 +2622,8 @@ class PlainPages(unittest.TestCase):
         sources = [{"id": "s1", "labels": ["a:paste"], "trust": "untrusted", "runs": 1, "cited_by": 1, "kind": "paste",
                     "preview": "x", "confirmed_tools": [], "seen": []}]
         page = self.influence(sources, [{"source": "s1", "tool": "Bash", "reach_runs": 1}], groups, runs=1)[0]
-        self.assertIn('Text pasted into the prompt</b> <span class="bad">(untrusted)</span> came before <b class="blk">1 blocked'
-                      '</b> Bash call<', page)
+        self.assertIn("<b>text pasted into the prompt</b> <span class=\"dim\">(paste)</span>", page)
+        self.assertIn('<span class="tag blk" title="came before Bash calls in 1 run · of those calls, 1 blocked">Bash 1 blocked</span>', page)
         self.assertIn("In this run: what the agents read", page)
 
     def test_influence_draws_each_kind_to_the_tools_after_it_only_the_lines_that_matter_coloured_as_their_chips(self):
@@ -2696,7 +2719,7 @@ class PlainPages(unittest.TestCase):
             const click = ds => {{ onClick({{ target: {{ closest: () => ({{ dataset: ds }}) }}, preventDefault() {{}} }}); influenceView(el); }};
             const out = [];
             influenceView(el);
-            click({{ ifk: "0", ift: "1" }});   // the held Deploy line of messages from another session, or its answer
+            click({{ ifk: "0", ift: "1" }});   // the held Deploy line of messages from another session
             out.push([IFL.mark, [...INFL], scrolled.splice(0), el.innerHTML]);
             click({{ ift: "0" }});   // the Bash node: marked in every row, no row opened or scrolled to
             out.push([IFL.mark, [...INFL], scrolled.splice(0), el.innerHTML]);
