@@ -106,10 +106,12 @@ the CLI loads when your app has none of its own (Claude Code 2.1.294; your app's
 or one whose name starts with it (`tracekit-executor__x`); the hooks gate their tools like any other. `tracekit.instrument()`
 hands each `ClaudeAgentOptions`' own `mcp_servers` to the hooks it adds. In TypeScript the hooks take the same
 `mcpServers` and the actions, and skip only when the server under `tracekit-executor` is an in-process one
-(`createSdkMcpServer`). The SDK's `tool()` takes only a zod shape, so `claudeAgentSdkTool` converts each action's JSON
-Schema with the `z` you pass: an object whose properties are strings, numbers, integers, booleans, string enums or
-arrays of those. Any other property (a nested object, a union, a number enum) throws when the tool is built, naming it;
-write that action's `tool()` yourself, with a handler that returns `action.call(args)`.
+(`createSdkMcpServer`). The SDK's `tool()` takes only zod, so `claudeAgentSdkTool` converts each action's JSON Schema
+with the `z` you pass: an object whose properties are strings, numbers, integers, booleans, string enums or arrays of
+those. Arguments the schema doesn't declare reach the executor unless it sets `additionalProperties: false`. Any other
+property (a nested object, a union, a number enum), or a `required` argument not in `properties`, throws when the tool
+is built, naming it; write that action's `tool()` yourself, with a handler that returns `action.call(args)`. The
+handler passes the executor the model's tool-use id (`tool_call_id`), which the CLI sends with each call.
 
 ## What is recorded
 

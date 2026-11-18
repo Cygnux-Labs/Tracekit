@@ -91,25 +91,33 @@ const SCALARS = new Map<unknown, (z: any) => any>([["string", (z) => z.string()]
   ["integer", (z) => z.number().int()], ["boolean", (z) => z.boolean()]]);
 
 /** A Claude Agent SDK tool for the in-process MCP server under SERVER; `tool` is the SDK's, `z` is zod. The SDK's
- * `tool()` takes a zod shape only, so the action's JSON Schema is converted: an object whose properties are strings,
- * numbers, integers, booleans, string enums or arrays of those; anything else throws, naming the property. */
-export function claudeAgentSdkTool<T>(tool: (name: string, description: string, shape: any, handler: (args: any) => Promise<any>) => T,
+ * `tool()` takes zod only, so the action's JSON Schema is converted: an object whose properties are strings, numbers,
+ * integers, booleans, string enums or arrays of those, and which requires only properties it declares; anything else
+ * throws, naming the property. Arguments it doesn't declare reach the executor, which checks them, unless it is closed
+ * (`additionalProperties: false`). The handler passes the executor the model's tool-use id, which the CLI sends. */
+export function claudeAgentSdkTool<T>(tool: (name: string, description: string, schema: any, handler: (args: any, extra?: any) => Promise<any>) => T,
   z: any, a: Action): T {
   if (a.args?.type !== "object") throw new Error(`${a.name}: the arguments' schema must be an object`);
+  const props: Frame = a.args.properties ?? {};
   const required: unknown[] = Array.isArray(a.args.required) ? a.args.required : [];
+  for (const k of required) {
+    if (!Object.hasOwn(props, String(k))) throw new Error(`${a.name}: argument ${JSON.stringify(k)}: required but not in properties`);
+  }
   // lean: string enums only; a number or mixed enum throws until an action needs one
   const one = (s: Frame) => s?.enum === undefined ? SCALARS.get(s?.type)?.(z)
     : Array.isArray(s.enum) && s.enum.length && s.enum.every((v: unknown) => typeof v === "string") ? z.enum(s.enum) : undefined;
-  const shape = Object.fromEntries(Object.entries<Frame>(a.args.properties ?? {}).map(([k, s]) => {
+  const shape = Object.fromEntries(Object.entries<Frame>(props).map(([k, s]) => {
     const item = s?.type === "array" ? one(s.items) : undefined;
     const t = s?.type === "array" ? item && z.array(item) : one(s);
     if (!t) throw new Error(`${a.name}: argument ${JSON.stringify(k)}: unsupported schema ${JSON.stringify(s)?.slice(0, 200)}`);
     const d = typeof s.description === "string" ? t.describe(s.description) : t;
     return [k, required.includes(k) ? d : d.optional()];
   }));
-  return tool(a.name, a.description, shape, async (args) => {
+  // zod strips undeclared keys by default: keep them for the executor, or refuse them as it would
+  const schema = a.args.additionalProperties === false ? z.object(shape).strict() : z.object(shape).passthrough();
+  return tool(a.name, a.description, schema, async (args, extra) => {
     try {
-      return { content: [{ type: "text", text: JSON.stringify(await a.call(args)) }] };
+      return { content: [{ type: "text", text: JSON.stringify(await a.call(args, extra?._meta?.["claudecode/toolUseId"])) }] };
     } catch (e) {
       if (e instanceof ExecutorRefused) return { content: [{ type: "text", text: e.message }], isError: true };
       throw e;
