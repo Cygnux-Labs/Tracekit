@@ -359,8 +359,11 @@ ask:
     # curl or wget where a command starts (the line's start or after a separator, as TK-A040 reads its client; after
     # up to four keywords, assignments or wrappers such as then, time -p, env, nice -n 5, timeout 5, sudo; by a path
     # too), piped, through up to four more stages (base64 -d, tee), into an interpreter (a path, sudo, env and a
-    # versioned python too) whose own words give it inline code (-c, -e) or a script: a word that is no option.
-    # `python3 -m json.tool` only pretty-prints, so json.tool is no script (the alternatives spell every other word)
+    # versioned python, php or lua too, luajit) whose own words give it inline code or a script: a word that is no
+    # option. Inline code is -c, -e, node's -r, php's -r, -R, -B, -E, --run and --process-begin, -code and -end, and
+    # their code attached (python3 -c'…', php -r'…', lua -e'…'). What a wrapper or runner runs (uvx, uv run, poetry
+    # run, pipx run …) is read as its own line, without their words (shell._lines). `python3 -m json.tool` only
+    # pretty-prints, so json.tool is no script (the alternatives spell every other word)
     pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node|php[0-9.]*|lua(jit|[0-9.]*))(\s[^\s;&|]*)*?\s((-[cerRBE]|--eval|--execute|--run|--process-begin|--process-code|--process-end)(=|\s|$)|-[cerRBE][^\s;&|]|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
     reason: downloaded data passed to an interpreter
     remedy: Have a person check what the interpreter does with the downloaded input before approving it.
