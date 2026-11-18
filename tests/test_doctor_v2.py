@@ -296,6 +296,38 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertIn(user, later()[2])
 
+    def test_a_claude_code_hook_copied_into_open_interpreters_hooks_is_named(self):
+        """#940: Open Interpreter's /import copies Claude Code's hooks into its hooks.json, so Tracekit's Claude Code
+        hook there decides each call a second time, recorded as claude-code: doctor names the file and the hook."""
+        path = os.path.join(self.d, "oi", "hooks.json")
+        claude = os.path.join(self.d, "claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("interpreter", path=path, v2=True)
+            install.install_hooks(claude, module=install.V2_HOOK)
+
+        def rows():
+            got = []
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.append((rid, ok, detail, fix)),
+                                        {"interpreter": path}, False, self.d)
+            return [r for r in got if r[0] == "D-HOOKS-EVENT" and not r[1]]
+
+        self.assertEqual(rows(), [])
+        with open(path) as f, open(claude) as c:
+            config, copied = json.load(f), json.load(c)
+        ours = copy.deepcopy(config)
+        for events in (set(copied["hooks"]), {"Stop"}):   # every copied event, or one that decides no call
+            config = copy.deepcopy(ours)
+            for ev in events:
+                config["hooks"].setdefault(ev, []).extend(copied["hooks"][ev])
+            with open(path, "w") as f:
+                json.dump(config, f)
+            with self.subTest(events=sorted(events)):
+                ((rid, ok, detail, fix),) = rows()
+                self.assertEqual((rid, ok), ("D-HOOKS-EVENT", False))
+                self.assertIn(path, detail)
+                self.assertIn("Claude Code hook", detail)
+                self.assertIn(f"remove Tracekit's Claude Code hook from {path}", fix)
+
     def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
         """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
         gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""

@@ -867,12 +867,18 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
             hooks = _harness_hooks(harness, _config(harness, path))
-            cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
-                    for h in (g.get("hooks") or () if "hooks" in g else [g])
-                    if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+            every = [(ev, h) for ev, groups in hooks.items() for g in groups
+                     for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
+            cmds = [(ev, h) for ev, h in every if agent_hooks._version(h.get("command")) == "v2"]
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
+        if harness == "interpreter":   # /import copies Claude Code's hooks into this file (#940)
+            copied = sorted({ev for ev, h in every if install._cmd_version(h.get("command")) is not None})
+            add("D-HOOKS-EVENT", not copied,
+                f"{path} holds Tracekit's Claude Code hook ({', '.join(copied)})" if copied else
+                f"{path} holds no Tracekit Claude Code hook",
+                f"remove Tracekit's Claude Code hook from {path}", bad=WARN)
         if harness in agent_hooks.TRUSTING:
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
