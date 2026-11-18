@@ -4605,9 +4605,10 @@ class CodingPack(unittest.TestCase):
                         "gh auth status -t --help", "git credential approve", "git credential reject",
                         "git credential-store store", "git credential-store erase", "git credential",
                         "git config credential.helper", "git credentials fill"):
-            with self.subTest(command=command):
-                d = self.e.decide("Bash", {"command": command})
-                self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
 
     def every_pack_verdicts(self, cases):
         for pack, engine, e in self.every_pack():
