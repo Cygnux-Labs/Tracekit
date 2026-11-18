@@ -171,6 +171,8 @@ class TestLint(unittest.TestCase):
                 self.assertTrue(e.endswith("people answer it"), e)
         [e] = self.errors(dict(laptop(rules=["TK-SHELL-PARSE"]), on_parse_error="deny"))
         self.assertIn("on_parse_error denies it", e)
+        [e] = self.errors(dict(laptop(rules=["TK-A025"]), ask=[r for r in DEV_POLICY["ask"] if r["id"] != "TK-A025"]))
+        self.assertIn("TK-A025: not an ask rule of this policy", e)
         for bad, words in (({"mode": "on"}, "mode must be"), ({"run": {"clean": []}}, "run must be"),
                            ({"run": {"clean": ["web"]}}, "run must be"), ({"run": {}}, "run must be"),
                            ({"rules": []}, "rules must list"), ({"veto_s": 0}, "veto_s"), ({"budget": 1}, "takes")):
@@ -208,6 +210,9 @@ class TestTargets(unittest.TestCase):
         self.assertEqual(self.e.target(["TK-SHELL-PARSE"], "Bash", {"command": "$PY -m pytest"}),
                          {"TK-SHELL-PARSE": ["$PY -m pytest"]})
         self.assertIsNone(self.e.target(["TK-SHELL-PARSE"], "Bash", {"command": ["not", "text"]}))
+        self.assertIsNone(self.e.target(["TK-A025"], "Bash", {"command": "ls"}))   # no index read
+        self.assertIsNone(self.e.target(["TK-SHELL-PARSE", "TK-A025"], "Bash", {   # a line it can't parse
+            "command": INDEX.format("'x")}))
         for rule in pc.APPROVER_RULES:   # the reviewed list is exactly the rules a target is read for
             with self.subTest(rule):
                 self.assertIn(rule, self.e.target([rule], "run_tool" if rule == "TK-A062" else "Bash", {
@@ -326,8 +331,36 @@ class TestRunBound(Case):
         out = self.consume(aid)
         self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-REJECTED"]))
         self.assertIn("the run carries secrets_access now", out["reason"])
+        self.assertEqual(self.s.log.agent["demoted"], {})   # the signer's own withdrawal trips no breaker
         [rev] = [e for e in self.events() if e["type"] == "approval.revoked"]
         self.assertEqual((rev["data"]["approval_id"], rev["data"]["by"]), (aid, "signer"))
+
+    def test_a_label_taken_before_the_ai_answers_sends_it_to_people(self):
+        self.precedent()
+        aid, a = self.ask()
+        self.assertTrue(a["agent"]["eligible"])
+        self.ask("cat ~/.aws/credentials")
+        msg = self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), "approval_id": aid,
+                                                                      "decision": "approve", "ai": TWO})
+        self.assertIn("the run carries secrets_access now", msg)
+        self.assertEqual(self.s.call(REVIEWER, "approval_list", {"for": "agent"})["approvals"], [])
+
+    def test_a_call_whose_target_cant_be_read_is_peoples(self):
+        self.precedent(INDEX.format("'x"))
+        _, a = self.ask(INDEX.format("'x"))
+        self.assertIn("what the call acts on can't be read", a["agent"]["reason"])
+        self.assertIsNone(a["ai"])
+
+    def test_a_value_only_untrusted_content_brought_sends_it_to_people(self):
+        self.precedent()
+        cmd = INDEX.format("from-the-page")
+        self.s.call(AGENT, "observe", {"request_id": rid(), **self.run, "stream": "s", "client_seq": next(self.seq),
+                                       "source": "web:1", "trust": "untrusted", "value": cmd})
+        aid, a = self.ask(cmd, tcid="from-the-page")
+        self.assertIn("only untrusted content brought", a["agent"]["reason"])
+        self.assertFalse(a["ai"]["clean"])
+        self.person(aid)
+        self.assertNotIn(aid, self.s.log.agent["precedents"])   # nor is a person's answer to it a precedent
 
 
 class TestUntrustedUnread(Case):
@@ -340,6 +373,19 @@ class TestUntrustedUnread(Case):
         self.assertIn("names untrusted_content, which this signer doesn't read yet", a["agent"]["reason"])
         self.assertEqual((a["ai"]["labels"], a["ai"]["clean"]), ([], False))   # no label claimed, no precedent
         self.assertEqual(self.s.log.agent["precedents"], {})
+
+
+class TestVeto(Case):
+    policy = {"veto_s": 60}
+
+    def test_an_ai_approval_waits_out_the_veto_and_the_signer_checks_it_fits_the_ttl(self):
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        out = self.consume(aid)
+        self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-VETO"]))
+        with self.assertRaisesRegex(ValueError, "veto_s of 3600 s is not under approvals.ttl_s"):
+            svc.SignerService(ts.tmpdir(self), policy=engine(veto_s=3600), approvals=self.approvals)
 
 
 class TestTwoKeys(Case):
@@ -549,6 +595,54 @@ class TestEvidence(Case):
             out = tv.ts_verify(path, trust)
             self.assertEqual([(c["check"], c["status"], c["detail"]) for c in out["checks"]],
                              [(c["check"], c["status"], c["detail"]) for c in rep.checks])
+
+    def test_both_verifiers_read_an_unmapped_tools_flag_as_a_flag(self):
+        import test_ts_verifier as tv
+        self.precedent("make test", tool="run_tool")   # in another run: the same call in this one reuses the yes
+        aid2, a = self.ask("make test", tool="run_tool")
+        self.assertEqual(a["rule_ids"], ["TK-A062", "TK-UNKNOWN-TOOL"])
+        self.assertEqual(self.ai(aid2)["state"], "approved")
+        path, trust = self.bundle()
+        rep, code = v2.verify(path, trust)
+        got = {c["check"]: c for c in rep.checks}
+        self.assertEqual((code, got["approvals by agents"]["status"], got["AI approvals"]["status"]), (0, "pass", "pass"))
+        if not tv.SKIP:
+            self.assertEqual([(c["check"], c["status"]) for c in tv.ts_verify(path, trust)["checks"]],
+                             [(c["check"], c["status"]) for c in rep.checks])
+
+    def test_a_rule_permits_an_ai_only_when_approval_agent_lists_it_and_the_request_has_its_ai(self):
+        def problems(pol, req_ai=True, rules=("TK-A025",)):
+            snap = json.dumps(pol).encode()
+            policies = {"sha256:" + "d" * 64: snap}
+            ev = [{"seq": 0, "type": "run.registered", "data": {"identity": {"scheme": "uid", "subject": "501"}}},
+                  {"seq": 1, "type": "policy.decision", "data": {"decision_id": "d1", "rule_ids": list(rules),
+                                                                 "policy_hash": "sha256:" + "d" * 64}},
+                  {"seq": 2, "type": "approval.request", "data": {"approval_id": "a1", "decision_id": "d1",
+                                                                  "requester": "uid:501", "agent": {"eligible": True},
+                                                                  **({"ai": {}} if req_ai else {})}},
+                  {"seq": 3, "type": "approval", "data": {"approval_id": "a1", "decision": "approve",
+                                                          "approver": "uid:299", "approver_kind": "agent",
+                                                          "approver_identity": {"scheme": "uid", "subject": "299"}}}]
+            rep = mock.Mock(checks=[])
+            rep.check = lambda n, ok, detail, problems=(), warn=False: rep.checks.append((n, ok, list(problems)))
+            v2._approvals(rep, {"r": [{"event": e} for e in ev]}, policies)
+            return {n: p for n, ok, p in rep.checks}["approvals by agents"]
+        listed = {"ask": [{"id": "TK-A025"}, {"id": "TK-A062"}], "approval_agent": {"rules": ["TK-A025", "TK-A062"]},
+                  "unknown_tools": "flag"}
+        self.assertEqual(problems(listed), [])
+        self.assertEqual(problems(listed, rules=("TK-A062", "TK-UNKNOWN-TOOL")), [])
+        for what, pol, req_ai, rules in (
+                ("not listed", {**listed, "approval_agent": {"rules": ["TK-A062"]}}, True, ("TK-A025",)),
+                ("no ai on the request", listed, False, ("TK-A025",)),
+                ("off the reviewed list", {**listed, "ask": [{"id": "MY"}], "approval_agent": {"rules": ["MY"]}},
+                 True, ("MY",)),
+                ("an unmapped tool's flag that holds", {**listed, "unknown_tools": "ask"}, True,
+                 ("TK-A062", "TK-UNKNOWN-TOOL")),
+                ("TK-SHELL-PARSE where it denies", {**listed, "on_parse_error": "deny",
+                                                    "approval_agent": {"rules": ["TK-SHELL-PARSE"]}}, True,
+                 ("TK-SHELL-PARSE",))):
+            with self.subTest(what):
+                self.assertTrue(any("does not permit agents" in p for p in problems(pol, req_ai, rules)), what)
 
     def test_the_line_fails_an_ai_yes_on_a_precedent_that_doesnt_hold(self):
         runs, seqs = {}, itertools.count()
