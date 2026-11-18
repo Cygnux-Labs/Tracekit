@@ -34,6 +34,7 @@ from factories import rewrite_bundle  # noqa: E402
 from tracekit import crypto  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.format import checkpoint, registry  # noqa: E402
+from tracekit.policy2 import compile as pc  # noqa: E402
 from tracekit.storage.base import registry_tree  # noqa: E402
 
 TSALT = registry.tenant_salt(b"\x01" * 32, "acme")
@@ -409,24 +410,37 @@ def vectors():
          {"tool_call_id": "t1"})), t, 0, "VERIFIED", "witnessed", addon="agent approvals",
          decided_by="§11 step 9 (approvals by agents: without the policy snapshot, a warning)")
     # the AI approver (format 1.8.0): a person's answer, then an AI yes that names it as its precedent
-    def ai_run(name, answers=2, other_kind=False):
+    def ai_run(name, answers=2, other_kind=False, listed=None):
+        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot)."""
+        pol = {"tools": {"Bash": "shell"}, "ask": [{"id": "TK-A025", "class": "shell", "field": "package_index",
+                                                   "pattern": "^"}],
+               "approval_agent": {"mode": "enforce", "rules": listed or [], "run": {"clean": ["secrets_access"]}}}
+        ph = H if listed is None else pc.policy_hash(pol)
+        kw = {}
+        if listed is not None:
+            pdir = os.path.join(VECTORS, ".stores", "policies-" + name)
+            os.makedirs(pdir)
+            with open(os.path.join(pdir, ph.removeprefix("sha256:") + ".json"), "w", encoding="utf-8") as f:
+                f.write(pc.canonical(pol))
+            kw["policy_dir"] = pdir
         key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
                "project": "api (17978b62)"}
         ai = {"key": key, "digest": "sha256:" + "5" * 64, "labels": [], "clean": True,
               "precedents": {"approve": [], "reject": []}}
-        asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"],
-                  "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash"}}
+        asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"], "policy_hash": ph,
+                  "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash",
+                              "policy_hash": ph}}
                  for aid, did, tc in (("a0", "d0", "t0"), ("a1", "d1", "t1"))]
         return closed(
             name,
             ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
-                                 "policy_hash": H}, {"tool_call_id": "t0"}),
+                                 "policy_hash": ph}, {"tool_call_id": "t0"}),
             ("approval.request", {**asked[0], "ai": dict(ai, digest="sha256:" + "6" * 64) if other_kind else ai},
              {"tool_call_id": "t0"}),
             ("approval", {"tool_use_id": "t0", "approval_id": "a0", "decision": "approve", "approver": "uid:502",
                           "channel": "rpc"}, {"tool_call_id": "t0"}),
             ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1",
-                                 "policy_hash": H}, {"tool_call_id": "t1"}),
+                                 "policy_hash": ph}, {"tool_call_id": "t1"}),
             ("approval.request", {**asked[1], "agent": {"eligible": True, "reason": "x", "rules": ["TK-A025"],
                                                         "conditions_hash": H, "args_key": "hmac-sha256:" + "2" * 64},
                                   "ai": dict(ai, precedents={"approve": ["a0"], "reject": []})},
@@ -435,9 +449,9 @@ def vectors():
                           "channel": "rpc", "approver_kind": "agent",
                           "approver_identity": {"scheme": "uid", "subject": "299", "attested": True},
                           "relied_on": {"precedents": {"approve": ["a0"], "reject": []},
-                                        "playbook": {"version": 0, "digest": H}, "policy_hash": H, "labels": [],
+                                        "playbook": {"version": 0, "digest": H}, "policy_hash": ph, "labels": [],
                                         "mode": "enforce", "answers": [{"model": "m", "decision": "approve"}] * answers}},
-             {"tool_call_id": "t1"}))
+             {"tool_call_id": "t1"}), **kw)
     case("an AI approver's yes on a person's precedent in the run", ai_run("ai-approval"), t, 0, "VERIFIED",
          "witnessed", addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)")
@@ -448,6 +462,14 @@ def vectors():
                                                                               other_kind=True), t, 1, "FAILED",
          failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: a precedent is a person's approval of a request with the same digest)")
+    case("an AI approver's yes, its rule listed in the policy snapshot", ai_run("ai-approval-listed",
+                                                                               listed=["TK-A025"]), t, 0, "VERIFIED",
+         "witnessed", addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0), §11 step 9 (a rule the snapshot's approval_agent lists permits agents)")
+    case("an AI approver's yes, its rule not listed in the policy snapshot", ai_run("ai-approval-unlisted",
+                                                                                   listed=["TK-A062"]), t, 1, "FAILED",
+         failed_check=["approvals by agents"], addon="AI approvals", needs="1.8.0",
+         decided_by="§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)")
     case("a signed finding outside a findings run", closed("review-outside-findings-run", (
         "review", {"reviewer": "x", "verdict": {"kind": "finding", "rule": "TK-X200", "severity": "info"},
                    "cites": [{"run_seq": 0, "hash": "sha256:" + "0" * 64}]}, {})), t, 1, "FAILED",
