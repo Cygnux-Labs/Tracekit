@@ -64,7 +64,7 @@ must also carry a proof of possession: the requested key's signature over `cert.
 ttl_s)`. Any failed check is answered `forbidden` (`invalid_request` for a malformed request).
 
 A new signer's `log_id` is random and stays unknown until the log's first record is written. Start such a signer under
-`log_ids: ["*"]`, read its `log_id` from its first record or its default origin `tracekit.local/<log_id>`, then
+`log_ids: ["*"]`, read its `log_id` from its first record (a default origin names the log key since 1.7.2, not the log id), then
 narrow the scope.
 
 Keep the CA key where the signer's credentials can't reach it. In AWS, grant `kms:Sign` on the CA key to the issuer's

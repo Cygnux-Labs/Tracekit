@@ -397,8 +397,8 @@ A checkpoint is a [C2SP signed note](https://c2sp.org/signed-note) in the
 <origin>\n<tree size>\n<base64 root hash>\n\n— <key name> <base64(key id ‖ signature)>\n...
 ```
 
-- The **log key** (`keys/log.key`, Ed25519, stable, signs notes only) is named after the origin (default
-  `tracekit.local/<log_id>`). Its line is type 0x01: Ed25519 over the note text (everything up to and including the
+- The **log key** (`keys/log.key`, Ed25519, stable, signs notes only) is named after the origin (default, from 1.7.2,
+  `tracekit.local/k<SHA-256 of its public key>`; a log started before keeps `tracekit.local/<log_id>`). Its line is type 0x01: Ed25519 over the note text (everything up to and including the
   newline after the root).
 - A **witness** cosigns with type 0x04: `8-byte big-endian timestamp ‖ Ed25519("cosignature/v1\ntime <t>\n" + text)`.
 - **Key id** = first 4 bytes of `SHA-256(name ‖ 0x0A ‖ type ‖ public key)`. Keys are pinned as **vkeys**:

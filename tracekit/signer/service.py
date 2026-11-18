@@ -77,7 +77,7 @@ signer.yaml:
     idle_s: 3600                             # a run without calls for this long is closed
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
-    origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
+    origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/k<SHA-256 of the log key>
     route: tracekit-central-0                # one replica of a central signer (docs/deploy-kubernetes.md): its run and
                                              # approval ids start with `<route>.`, which clients route by; a client's
                                              # own run_id must start with it too
@@ -740,6 +740,30 @@ def _secret(path, make, size=32):
     return data
 
 
+def _log_origin(storage, configured, public):
+    """The log's checkpoint origin, decided before RecordLog writes its startup records and kept with the store
+    (meta "origin"), so a start never renames a live log: signer.yaml's `origin` (a change of it warned about); else the
+    kept one; else, for a log an older Tracekit started (records, no kept origin), the origin its latest note carries,
+    or None for the caller's tracekit.local/<log id>, the name it always had; else, a new log, its key-derived one
+    (checkpoint.key_origin). Kept here when known, before the first record."""
+    kept = storage.meta("origin")
+    if configured:
+        if kept and kept != configured:
+            logging.getLogger(__name__).warning("tracekit signer: this log's origin changes from %s to %s (signer.yaml): "
+                                                "its witnesses see a new log", kept, configured)
+        name = configured
+    elif kept:
+        name = kept
+    elif storage.tail_state()["tree_size"]:
+        latest = storage.checkpoint_latest()
+        name = latest and latest[1].split("\n", 1)[0]
+    else:
+        name = checkpoint.key_origin(public)
+    if name and name != kept:
+        storage.meta_put("origin", name)
+    return name
+
+
 PREFIX_ENDS = (":*", "/*")
 
 
@@ -1059,6 +1083,7 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
+            name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
                                  detect.Detector.of(policy))
         except BaseException:
@@ -1134,7 +1159,9 @@ class SignerService:
         self._exports, self._exports_lock, self._building = collections.OrderedDict(), threading.Lock(), {}
         self._export_quotas = tuple(Quotas(r) for r in EXPORT_RATES)
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
-        self.origin = origin or f"tracekit.local/{self.log.log_id}"
+        self.origin = name or f"tracekit.local/{self.log.log_id}"
+        if not name:   # a log an older Tracekit started that had no note yet: kept under the name it always had
+            storage.meta_put("origin", self.origin)
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
         self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
         self._anchor = next(((a.pop("size"), a) for a in storage.anchors()[-1:]), None)   # (size, the latest anchor)

@@ -15,6 +15,7 @@ origin needs both the Ed25519 line and a valid hybrid line. Witnesses never get 
 import base64
 import binascii
 import hashlib
+import re
 import struct
 
 from tracekit import crypto
@@ -25,6 +26,8 @@ SLH_DSA = b"tracekit/slh-dsa-sha2-128s"
 MAX_NOTE = 1 << 20
 MAX_SIGNATURES = 64
 DASH = "— "
+# a log origin named after its Ed25519 key (key_origin): only this exact form, lower-case hex, all 64 digits
+KEY_ORIGIN = re.compile(r"tracekit\.local/k([0-9a-f]{64})")
 
 
 class NoteError(ValueError):
@@ -54,6 +57,19 @@ def _check_name(name):
 
 def key_id(name, type_, public):
     return hashlib.sha256(name.encode("utf-8") + b"\n" + bytes([type_]) + public).digest()[:4]
+
+
+def key_origin(public):
+    """A new log's default origin: tracekit.local/k + the SHA-256 of its raw Ed25519 public key, the fingerprint
+    `tracekit init --v2` and `tracekit verify` print. Only the key's holder can sign a note under it, so a witness can
+    refuse another key without first-come state."""
+    return "tracekit.local/k" + hashlib.sha256(public).hexdigest()
+
+
+def names_other_key(name, public):
+    """Whether `name` is a key-derived origin of another key than `public` (a self-contradictory pin)."""
+    m = KEY_ORIGIN.fullmatch(name)
+    return bool(m) and m.group(1) != hashlib.sha256(public).hexdigest()
 
 
 def vkey(name, type_, public):

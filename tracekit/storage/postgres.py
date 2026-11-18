@@ -411,6 +411,11 @@ class PostgresStorage(_Reads, Storage):
             conn.execute("INSERT INTO tracekit_meta VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = "
                          "excluded.value", (key, value))
 
+    def meta(self, key):
+        with self._db() as conn:
+            row = conn.execute("SELECT value FROM tracekit_meta WHERE key = %s", (key,)).fetchone()
+        return row and row[0]
+
     def content_key(self, log_id, tenant, run_id):
         with self._db() as conn:
             row = conn.execute("SELECT wrapped FROM tracekit_content_keys WHERE log_id = %s AND tenant = %s AND "

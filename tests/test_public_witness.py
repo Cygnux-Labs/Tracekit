@@ -98,6 +98,19 @@ class Server(unittest.TestCase):
         self.assertEqual(self.register(), (200, "registered\n"))
         self.assertEqual(self.register(), (200, "registered\n"))   # the same key again: idempotent
 
+    def test_a_key_derived_origin_is_taken_only_by_its_own_key(self):
+        """1.7.2: a default origin is tracekit.local/k + the SHA-256 of the log key, so a squatter who saw it can't
+        register it first with another key."""
+        mine = checkpoint.key_origin(crypto.public_from_secret(self.secret))
+        squatter = hashlib.sha256(b"squatter").digest()
+        status, text = self.register(origin=mine, secret=squatter)
+        self.assertEqual(status, 403)
+        self.assertIn("derived from another key", text)
+        self.assertNotIn(mine, self.origins())
+        for other in (mine.upper().replace("TRACEKIT.LOCAL/K", "tracekit.local/k"), mine[:-1]):   # other names: not k-shaped
+            self.assertNotEqual(self.register(origin=other, secret=squatter)[0], 403, other)
+        self.assertEqual(self.register(origin=mine), (200, "registered\n"))
+
     def test_a_second_key_for_a_taken_origin_is_refused(self):
         self.add(3, 0)
         other = hashlib.sha256(b"other").digest()
@@ -485,7 +498,8 @@ class OptIn(unittest.TestCase):
         self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(cfg))
         own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
                "class": "customer"}
-        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16}, {**cfg, "witnesses": [own]}):
+        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16},
+                      {**cfg, "origin": "tracekit.local/k" + "0f" * 32}, {**cfg, "witnesses": [own]}):
             self.assertIsNone(public_witness.named_origin(quiet))
         with mock.patch.object(public_witness, "URL", ""):
             self.assertIsNone(public_witness.named_origin(cfg))

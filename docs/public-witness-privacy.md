@@ -13,7 +13,8 @@ A signer sends it two kinds of request, over HTTPS.
 
 **Registration**, once per log, the first time the witness doesn't know it. The body is JSON with three fields:
 
-- `origin`: the log's name. By default `tracekit.local/<log id>`, where the log id is 32 random hex digits.
+- `origin`: the log's name. By default `tracekit.local/k<SHA-256 of the log key>` (a log started before 1.7.2 keeps
+  `tracekit.local/<log id>`, its random log id). It names the key, which is public anyway, and nothing else.
 - `vkey`: the log's public key, named after the origin. It is a public key; the private key never leaves the signer.
 - `checkpoint`: a checkpoint of the log, signed with that key, as proof the signer holds the key.
 
@@ -80,7 +81,7 @@ From what it receives, Cygnux can see:
   records they write. A registry log shows how many runs start and end.
 - **Which logs belong together.** A signer's logs share one public key, and they come from one IP address.
 - **Your name, if the origin carries it.** An origin such as `acme.com/agents` says whose log it is. The signer warns at
-  start when it sends a chosen origin to the public witness. Leave `origin` unset on a new log: the default is random.
+  start when it sends a chosen origin to the public witness. Leave `origin` unset on a new log: the default names only the log key.
 
 The hosting company's network sits in front of the witness. It sees your IP address and the timing and size of each
 request, and it may keep its own network logs. Tracekit doesn't control them. To hide your address, give the signer an

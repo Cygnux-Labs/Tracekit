@@ -78,6 +78,7 @@ class Notes(unittest.TestCase):
             self.assertEqual(os.stat(os.path.join(self.dir, "log.vkey")).st_mode & 0o777, 0o644)
         self.assertEqual(svc.read_vkeys(self.dir), [vkey])
 
+    @pytest.mark.unverified_bundles   # a note forged under the log's name; the pin of its key names another key
     def test_note_signed_by_another_key_fails(self):
         self.s.checkpoint()
         size, note = self.latest()
@@ -92,6 +93,64 @@ class Notes(unittest.TestCase):
         rep, code = v2.verify(out, trust)
         self.assertEqual(rep.integrity, "FAILED")
         self.assertIn("checkpoint", [c["check"] for c in rep.checks if c["status"] == "fail"])
+
+
+class Origins(unittest.TestCase):
+    """1.7.2: a new log's origin is named after its log key and kept with its store, so a start never renames a log."""
+
+    def setUp(self):
+        self.dir = tmpdir(self)
+
+    def open(self, **kw):
+        s = svc.SignerService(self.dir, grace_s=0, **kw)
+        self.addCleanup(s.close)
+        return s
+
+    def as_older_tracekit_left_it(self, note=True):
+        """The store as Tracekit 1.7.1 or older left it: no kept origin (and, with note=False, no note yet)."""
+        store = os.path.join(self.dir, "store")
+        os.remove(os.path.join(store, file_storage.META))
+        if not note:
+            os.remove(os.path.join(store, file_storage.NOTE))
+
+    def test_a_new_log_is_named_after_its_key_and_keeps_that_name(self):
+        s = self.open()
+        public = checkpoint.parse_vkey(s.vkey)[3]
+        self.assertEqual(s.origin, checkpoint.key_origin(public))
+        self.assertRegex(s.origin, r"^tracekit\.local/k[0-9a-f]{64}$")
+        self.assertEqual(s.log.storage.meta("origin"), s.origin)
+        s.close()
+        again = self.open()
+        self.assertEqual((again.origin, again.vkey), (s.origin, s.vkey))
+        self.assertEqual(again.log.storage.checkpoint_latest()[1].split("\n", 1)[0], s.origin)
+
+    def test_a_log_an_older_tracekit_started_keeps_the_name_its_notes_carry(self):
+        older = f"tracekit.local/{'0123456789abcdef' * 2}"   # the shape 1.7.1's random default had
+        self.open(origin=older).close()
+        self.as_older_tracekit_left_it()
+        s = self.open()   # no origin in signer.yaml: a start never renames a live log
+        self.assertEqual(s.origin, older)
+        self.assertEqual(s.log.storage.meta("origin"), older)
+
+    def test_a_log_an_older_tracekit_started_with_no_note_yet_keeps_its_log_id_name(self):
+        s = self.open()
+        log_id = s.log.log_id
+        s.close()
+        self.as_older_tracekit_left_it(note=False)
+        again = self.open()
+        self.assertEqual(again.origin, f"tracekit.local/{log_id}")
+        self.assertEqual(again.log.storage.meta("origin"), again.origin)
+
+    def test_signer_yaml_origin_wins_and_a_change_of_it_is_warned_about(self):
+        s = self.open()
+        derived = s.origin
+        s.close()
+        with self.assertLogs("tracekit.signer.service", "WARNING") as logs:
+            moved = self.open(origin="tracekit.example.org/log/1")
+        self.assertEqual(moved.origin, "tracekit.example.org/log/1")
+        self.assertIn(f"changes from {derived} to tracekit.example.org/log/1", logs.output[0])
+        moved.close()
+        self.assertEqual(self.open().origin, "tracekit.example.org/log/1")   # kept once chosen, config or not
 
 
 class Reader(unittest.TestCase):
