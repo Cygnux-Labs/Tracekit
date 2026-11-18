@@ -12,6 +12,7 @@ import json
 import math
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 import time
@@ -586,6 +587,86 @@ def _qwen_calls(entry: dict):
                 yield (c["id"] if isinstance(c.get("id"), str) else None), c
 
 
+def opencode_root():
+    """OpenCode's data folder: opencode in $XDG_DATA_HOME when set, else ~/.local/share (also on Windows)."""
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"),
+                        "opencode")
+
+
+def _opencode_db(real: str) -> str:
+    """The database a ROOT names: OpenCode's data folder, or the .db file itself; else a ValueError naming what to
+    give (a folder that holds OpenCode's folder, or one without a database, is not read as a clean zero)."""
+    if os.path.isfile(real):
+        return real
+    names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db")) \
+        if os.path.isdir(real) else []
+    if "opencode.db" in names:
+        return os.path.join(real, "opencode.db")
+    if names:   # another channel's (opencode-<channel>.db), when it is the only one
+        if len(names) == 1:
+            return os.path.join(real, names[0])
+        raise ValueError(f"{real} holds {len(names)} OpenCode databases ({', '.join(names)}): give the one to read")
+    raise ValueError(f"{real} is not OpenCode's data folder: give the folder that holds opencode.db "
+                     f"(~/.local/share/opencode) or the database itself")
+
+
+def _opencode(root: str, since_ts: float, unreadable: list):
+    """OpenCode's reader: (time, session, tool, args) for each tool call in the `part` table of its database
+    (ROOT: its data folder, or opencode.db). A call counts under its session's root (a subagent's session has a
+    parent_id), at the time it started; a part still pending is not a call yet, and a call repeated (same call id,
+    tool and arguments) counts once. None for a part that isn't a tool call's shape."""
+    db = _opencode_db(os.path.realpath(root))
+    err = _not_regular(db)
+    if err:
+        unreadable.append({"path": db, "error": f"cannot read: {err}"})
+        return
+    try:   # read only: OpenCode may be running, and its -wal file is read with the database
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        try:
+            parent = dict(con.execute("SELECT id, parent_id FROM session"))
+            rows = con.execute("SELECT session_id, time_created, data FROM part "
+                               "WHERE data LIKE '%\"type\":\"tool\"%' ORDER BY time_created, id").fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        raise ValueError(f"{db} is not an OpenCode database ({e})") from None
+    seen: set[bytes] = set()
+    for session, created, data in rows:
+        try:
+            part = json.loads(data)
+        except (TypeError, ValueError, RecursionError):
+            part = None
+        state = part.get("state") if isinstance(part, dict) else None
+        if (not isinstance(part, dict) or part.get("type") != "tool" or not isinstance(part.get("tool"), str)
+                or not isinstance(state, dict) or not isinstance(state.get("input"), dict)
+                or not isinstance(session, str)):
+            yield None
+            continue
+        if state.get("status") == "pending":
+            continue
+        start = (state.get("time") or {}).get("start") if isinstance(state.get("time"), dict) else None
+        ms = start if isinstance(start, (int, float)) and not isinstance(start, bool) else created
+        try:
+            at = datetime.fromtimestamp(ms / 1000, timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError):
+            at = None
+        if at is not None and at.timestamp() < since_ts:
+            continue
+        top, hops = session, 0
+        while parent.get(top) and hops < 100:   # the session at the top of the chain
+            top, hops = parent[top], hops + 1
+        try:
+            key = hashlib.sha256(json.dumps([top, part.get("callID"), part["tool"], state["input"]],
+                                            sort_keys=True, default=str).encode()).digest()
+        except (RecursionError, ValueError):
+            key = None
+        if key in seen:
+            continue
+        if key:
+            seen.add(key)
+        yield at, top, part["tool"], state["input"]
+
+
 # one entry per agent: its name, its default folder or folders (read when audit runs, so the env var that moves one
 # counts), where they are as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
@@ -597,6 +678,8 @@ READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set,
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
                      "in VS Code's global storage", _cline),
            "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini),
+           "opencode": (opencode_root, "$XDG_DATA_HOME/opencode when it is set, else ~/.local/share/opencode "
+                        "(opencode.db)", _opencode),
            "qwen": (qwen_root, "$QWEN_RUNTIME_DIR/projects when it is set, else $QWEN_HOME/projects, else "
                     "~/.qwen/projects", _qwen)}
 
