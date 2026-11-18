@@ -63,8 +63,9 @@ class Case(unittest.TestCase):
         self.run = self.register(A)
         self.trust = {"logs": [self.s.vkey], "algs": ["ed25519"]}
 
-    def open(self):
-        s = svc.SignerService(self.dir, policy=Engine(self.policy), approvals=self.approvals, authorize=AUTHORIZE)
+    def open(self, **kw):
+        s = svc.SignerService(self.dir, policy=Engine(self.policy), approvals=self.approvals, authorize=AUTHORIZE,
+                              **kw)
         self.addCleanup(s.close)
         return s
 

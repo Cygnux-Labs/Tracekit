@@ -175,7 +175,8 @@ def _hold_rules(tr, rules, records, waits, outcomes):
                 "examples": [], "approved": 0, "rejected_or_expired": 0})
             g["count"] += 1
             g["approved"] += bool(w.get("approved")) and w["by"] != "agent"
-            g["rejected_or_expired"] += not w.get("approved") and outcome in ("rejected", "expired")
+            g["rejected_or_expired"] += not w.get("approved") and \
+                outcome.removesuffix(" · ran anyway") in ("rejected", "expired")
 
 
 def _tally(key, records, tr, rules, unread):

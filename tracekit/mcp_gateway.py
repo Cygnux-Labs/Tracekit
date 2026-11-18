@@ -36,9 +36,11 @@ is an error response). Resources (resources/list, read) and prompts (prompts/lis
 pass through; each resource read and prompt got is recorded as an observed input (`observe`, source
 `mcp:<upstream>/resource` or `/prompt`): a prompt untrusted (a template echoes its arguments), a resource untrusted
 unless its upstream is in `trusted`. Each listing (tools, prompts, resources), whose descriptions the model reads, is
-recorded as an untrusted input of each upstream (`mcp:<upstream>/tools`, ...). The upstreams' credentials never reach
-the agent or the signer: each `env` and `headers` value (executor.secret_values) is cut from the decoded string values of
-everything the gateway answers or records. Relative paths are from the config file.
+recorded as an untrusted input of each upstream (`mcp:<upstream>/tools`, ...), in parts the signer indexes whole
+(sdk.client.parts; one item over half a signer frame as its digest, which makes the run's provenance index partial),
+each part once per run. The upstreams' credentials never reach the agent or the signer: each `env` and `headers` value
+(executor.secret_values) is cut from the decoded string values of everything the gateway answers or records. Relative
+paths are from the config file.
 """
 import asyncio
 import collections
@@ -54,7 +56,7 @@ from tracekit.client import remote_url_error
 from tracekit.executor import (APPROVAL_WAIT_S, HEADER_NAME, HEADER_VALUE, MAX_BODY, Custody, cut, main as _main,
                                read_secret, secret_values)
 from tracekit.gateway import _Handler
-from tracekit.sdk.client import Client, SignerUnavailable, result_field
+from tracekit.sdk.client import Client, SignerUnavailable, parts, result_field
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import http as transport
 
@@ -66,6 +68,7 @@ PROTOCOL = "2025-06-18"   # answered to an initialize that names no protocol ver
 UPSTREAM_TIMEOUT_S = 600
 BLOCKED = "Tool call blocked by policy: "
 MAX_RESOURCES = 10000   # resource URI -> its upstream, as listed: the most recently listed or read
+MAX_RECORDED = 10000    # listing parts recorded, by run: the oldest forgotten first (then recorded again)
 MAX_LIST_PAGES = 100    # cursor pages fetched from one upstream per tools/list, resources/list or prompts/list
 PROMPT = "prompt:"   # prompts are decided as mcp:<upstream>/prompt:<name>, so no tool name may start with it
 LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts", "prompts"),
@@ -252,10 +255,19 @@ class _McpGateway(_Handler):
                 if kind == "resources":
                     for r in all_items:
                         _remember(gw, str(r.uri), up)
-                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name)
-                        for i in all_items]
-                # the model reads what the upstream wrote in them: an untrusted input
-                listed += self._observe(gw, key, up, kind, page, trusted=False)
+                page = gw["cut"]([_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name)
+                                  for i in all_items])
+                # the model reads what the upstream wrote in them: an untrusted input, in parts the signer indexes
+                # whole, each recorded once in a run (the index keeps what a run's earlier listing brought)
+                for part in parts(page):
+                    once = (key[0], f"mcp:{up}/{kind}", result_field(False, part))
+                    if once not in gw["recorded"]:
+                        self._observe(gw, key, up, kind, part, trusted=False)
+                        with gw["lock"]:
+                            gw["recorded"][once] = True
+                            if len(gw["recorded"]) > MAX_RECORDED:
+                                gw["recorded"].popitem(last=False)
+                listed += page
             return {kind: listed}
         if method == "tools/call":
             up, tool = _split(ups, params.get("name"))
@@ -411,7 +423,7 @@ def serve(cfg, client=None, targets=None):
         srv.mcp = {"upstreams": upstreams, "trusted": set(cfg.get("trusted", [])),
                    "cut": lambda x: cut(x, values),
                    "max_body": cfg.get("max_body", MAX_BODY), "resources": collections.OrderedDict(),
-                   "lock": threading.Lock(),
+                   "recorded": collections.OrderedDict(), "lock": threading.Lock(),
                    "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
     except BaseException:
         srv.server_close()
