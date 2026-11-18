@@ -21,7 +21,7 @@
  */
 import { type Floats, StrictJSONError, canonicalize, repr as quoted, strictParseBytes } from "./jcs.js";
 import {
-  HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
+  ED25519, HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, checkWitnesses, equal, keyAlg, leafHash, openNote, parseLeaf,
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
@@ -215,6 +215,12 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
       if (!(e instanceof NoteError)) throw e;
       throw new ValueError(`pinned key ${repr(cut(k, 80))} is not a vkey: ${e.message}`);
     }
+  }
+  for (const k of t.logs) {   // a log key named after another key's fingerprint pins nothing a note could be signed under
+    const p = await parseVkey(k), m = /^tracekit\.local\/k([0-9a-f]{64})(?=\/|$)/.exec(p.name);
+    if (p.type === ED25519 && m && m[1] !== await sha256hex(p.pub))
+      throw new ValueError(`pinned log key ${p.name} is named after another key: a key-derived origin is `
+        + "tracekit.local/k + the SHA-256 of the key it names");
   }
   await checkWitnesses(opt(t, "witnesses").map((w: J) => w.vkey));
   const classes = new Map<string, string>();

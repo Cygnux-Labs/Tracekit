@@ -153,7 +153,7 @@ $ tracekit verify f4c2f422a5d8119a172a840478b433ae.tkb --trust trust.json --deta
 [PASS] intent grants — 1 grant(s) (1 self-approved: issued by the run's own user, which the agent can be); 2 call(s) released within them (0 at T2, decided and run by an executor or gateway; 2 at T1, on the arguments the harness reported), each re-checked against its grant and its running totals
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/75ed00f44376df026f900962eb38fc42); no witness cosignature; approvals: self; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/k75ed00f44376df026f900962eb38fc420a1b2c3d4e5f60718293a4b5c6d7e8f9); no witness cosignature; approvals: self; key retirements not proven complete.
 ```
 
 Keep the `.tkb` file and `trust.json`: they are your receipt. Anyone with both can check it later, with no network

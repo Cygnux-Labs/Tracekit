@@ -541,10 +541,15 @@ class TestVerifyV2(Case):
         before), its line naming the problem in plain words, with no exception's name."""
         _, out = self.honest()
         missing = os.path.join(self.d, "missing.json")
+        # 1.7.3: a log key pinned under the key-derived origin of another key names nothing it could have signed
+        stolen = checkpoint.key_origin(b"\1" * 32)   # public keys only: no secret is needed to name or pin one
+        mispinned = checkpoint.vkey(stolen, ED25519, b"\2" * 32)
         for text, said in ((None, f"{missing}: {os.strerror(errno.ENOENT)}"), ("{", "not valid JSON (syntax: "),
                            ("{}", f"{missing}: not a v2 trust config (logs, witnesses, algs, "),
                            ('{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
-                            "pinned key 'x+00000000+AA==' is not a vkey: not an Ed25519 log, cosignature or SLH-DSA")):
+                            "pinned key 'x+00000000+AA==' is not a vkey: not an Ed25519 log, cosignature or SLH-DSA"),
+                           (json.dumps({"logs": [mispinned], "algs": ["ed25519"]}),
+                            f"pinned log key {stolen} is named after another key: a key-derived origin is ")):
             with self.subTest(text):
                 if text is not None:
                     with open(missing, "w") as f:
