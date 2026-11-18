@@ -4,7 +4,9 @@
 Two sets, offline, no model API:
 
 (a) AgentDojo's published traces (github.com/ethz-spylab/agentdojo, MIT: runs/<model>/<suite>/<user task>/<attack>/
-    <injection task>.json) of one model, replayed through tracekit why's signer-backed runtime against an in-process
+    <injection task>.json) of one model, kept in eval/e28_agentdojo/ (the runs whose attack succeeded and the clean
+    runs, the fields read, the injection tasks' ground truth, the upstream commit and license; `--vendor CHECKOUT`
+    writes them anew from a checkout), replayed through tracekit why's signer-backed runtime against an in-process
     dev signer with no rules (its provenance index decides exact; nothing is held): the user's request is the task,
     each model turn a model call whose context is the conversation so far (the whole history, as the agent sends it),
     each tool call run from the trace with its output observed as untrusted. The runs are imported with their signed
@@ -35,8 +37,9 @@ Reported: precision and recall per grade (hint, which is never an influence, for
 claims whose value is in the record they name, which record the attacker's value is traced to, the calls `untrusted`
 names (an argument from outside content) on attack calls and on clean runs, and (c)'s drift finding.
 
-Usage: e28_influence.py [AGENTDOJO_CHECKOUT] [--model gpt-4o-2024-05-13] [--attack important_instructions] [--seeds 30]
-       [--out eval/results/e28_influence.json]. Without a checkout only (b) and (c) run.
+Usage: e28_influence.py [--seeds 30] [--out eval/results/e28_influence.json]; exit 1 when a promise the docs make
+       breaks (broken()). e28_influence.py --vendor CHECKOUT [--model gpt-4o-2024-05-13] [--attack important_instructions]
+       writes eval/e28_agentdojo/ from an AgentDojo checkout and stops.
 """
 import argparse
 import ast
@@ -52,6 +55,7 @@ import sys
 import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA = os.path.join(ROOT, "eval", "e28_agentdojo")   # the AgentDojo runs E28 reads (--vendor writes it)
 sys.path.insert(0, ROOT)
 from tracekit.demo_server import _serve  # noqa: E402
 from tracekit.sdk.client import Client  # noqa: E402
@@ -224,26 +228,63 @@ def replay(trace, signer, d):
     return run, [(tc, "ev:" + act, "ev:" + inp) for tc, act, inp in calls]
 
 
-def agentdojo(checkout, model, attack, signer, tmp):
-    gt = ground_truth(checkout)
+def slim(m):
+    """The fields of a trace's message E28 reads."""
+    out = {k: m[k] for k in ("role", "content", "tool_call_id", "error") if k in m}
+    if m.get("tool_calls"):
+        out["tool_calls"] = [{k: tc.get(k) for k in ("function", "args", "id")} for tc in m["tool_calls"]]
+    return out
+
+
+def vendor(checkout, model, attack):
+    """DATA from an AgentDojo checkout: the runs E28 reads (each run of `model` whose `attack` succeeded, and each clean
+    run), only the fields it reads of them, the ground truth of their injection tasks, the count of attacked runs and
+    the upstream commit (the upstream license file is kept beside them: eval/e28_agentdojo/README.md). Returns the
+    number of runs kept."""
+    gt, traces, tasks, attacked = ground_truth(checkout), [], {}, 0
+    files = sorted(glob.glob(os.path.join(checkout, "runs", model, "*", "user_task_*", attack, "*.json")))
+    files += sorted(glob.glob(os.path.join(checkout, "runs", model, "*", "user_task_*", "none", "none.json")))
+    for path in files:
+        with open(path, encoding="utf-8") as f:
+            t = json.load(f)
+        if t["attack_type"] not in (None, "none"):
+            attacked += 1
+            if not t.get("security"):
+                continue
+            fns, strs = gt.get((t["suite_name"], t["injection_task_id"]), (set(), set()))
+            tasks[t["suite_name"] + "/" + t["injection_task_id"]] = {"functions": sorted(fns), "strings": sorted(strs)}
+        traces.append({"file": os.path.relpath(path, checkout),
+                       "messages": [slim(m) for m in t["messages"] if m["role"] != "system"],
+                       **{k: t.get(k) for k in ("suite_name", "user_task_id", "injection_task_id", "attack_type",
+                                                "injections", "security")}})
+    commit = subprocess.run(["git", "-C", checkout, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    os.makedirs(DATA, exist_ok=True)
+    with open(os.path.join(DATA, "traces.jsonl"), "w", encoding="utf-8") as f:
+        for t in traces:
+            f.write(json.dumps(t, sort_keys=True, ensure_ascii=False) + "\n")
+    with open(os.path.join(DATA, "ground_truth.json"), "w", encoding="utf-8") as f:
+        json.dump({"source": {"repo": "github.com/ethz-spylab/agentdojo", "commit": commit, "model": model,
+                              "attack": attack, "attacked": attacked}, "tasks": tasks}, f, indent=1, sort_keys=True)
+        f.write("\n")
+    return len(traces)
+
+
+def agentdojo(signer, tmp):
+    with open(os.path.join(DATA, "ground_truth.json"), encoding="utf-8") as f:
+        src = json.load(f)
+    gt = {tuple(k.split("/", 1)): (set(v["functions"]), set(v["strings"])) for k, v in src["tasks"].items()}
     score, claims = Score(("exact", "seen", "hint")), {}   # no replay of a published trace: no measured edges
-    runs = {"attacked": 0, "succeeded": 0, "scored": 0, "unscored": {}, "clean": 0}
+    runs = {"attacked": src["source"]["attacked"], "succeeded": 0, "scored": 0, "unscored": {}, "clean": 0}
     attribution = {"calls_traced": 0, "edges": 0, "to_the_injection": 0}
     # the signal `untrusted` names (an argument from outside content, exact): on attack calls, and on clean runs, whose
     # every call the task asked for. It is why it is never called drift on its own
     named = {"attack_calls": 0, "attack_calls_named": 0, "clean_calls": 0, "clean_calls_named": 0,
              "clean_runs_named": 0, "clean_named_tools": {}}
-    files = sorted(glob.glob(os.path.join(checkout, "runs", model, "*", "user_task_*", attack, "*.json")))
-    files += sorted(glob.glob(os.path.join(checkout, "runs", model, "*", "user_task_*", "none", "none.json")))
-    for i, path in enumerate(files):
-        with open(path, encoding="utf-8") as f:
-            trace = json.load(f)
+    with open(os.path.join(DATA, "traces.jsonl"), encoding="utf-8") as f:
+        traces = [json.loads(line) for line in f]
+    for i, trace in enumerate(traces):
         clean = trace["attack_type"] in (None, "none")
-        if not clean:
-            runs["attacked"] += 1
-            if not trace.get("security"):
-                continue
-            runs["succeeded"] += 1
+        runs["succeeded"] += not clean   # only the attacks that succeeded are kept
         d = os.path.join(tmp, f"a{i}")
         os.makedirs(d)
         run, calls = replay(trace, signer, d)
@@ -273,9 +314,8 @@ def agentdojo(checkout, model, attack, signer, tmp):
         attribution["to_the_injection"] += sum(traced)
         named["attack_calls"] += 1
         named["attack_calls_named"] += bool(untrusted(graded(g, act)["edges"]))
-    commit = subprocess.run(["git", "-C", checkout, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-    return {"agentdojo_commit": commit or None, "model": model, "attack": attack, "runs": runs, "grades": score.out(),
-            "exact_claims": claims,
+    return {"agentdojo_commit": src["source"]["commit"], "model": src["source"]["model"],
+            "attack": src["source"]["attack"], "runs": runs, "grades": score.out(), "exact_claims": claims,
             "attack_value_attribution": attribution, "untrusted": named}
 
 
@@ -398,18 +438,20 @@ def task_tests(seeds, tmp):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("checkout", nargs="?", help="an AgentDojo checkout (runs/ and src/agentdojo/default_suites)")
-    ap.add_argument("--model", default="gpt-4o-2024-05-13")
-    ap.add_argument("--attack", default="important_instructions")
+    ap.add_argument("--vendor", metavar="CHECKOUT", help="write eval/e28_agentdojo/ from an AgentDojo checkout and stop")
+    ap.add_argument("--model", default="gpt-4o-2024-05-13", help="with --vendor: the model whose runs are kept")
+    ap.add_argument("--attack", default="important_instructions", help="with --vendor: the attack whose runs are kept")
     ap.add_argument("--seeds", type=int, default=30)
     ap.add_argument("--out", default=os.path.join(ROOT, "eval", "results", "e28_influence.json"))
     a = ap.parse_args(argv)
+    if a.vendor:
+        print(f"{vendor(a.vendor, a.model, a.attack)} runs written to {DATA}")
+        return 0
     tmp = tempfile.mkdtemp(prefix="tk-e28-", dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
     signer = Signer(tmp)
     try:
-        result = {"desk": desk(a.seeds, signer, tmp), "without_task": task_tests(a.seeds, tmp)}
-        if a.checkout:
-            result["agentdojo"] = agentdojo(a.checkout, a.model, a.attack, signer, tmp)
+        result = {"desk": desk(a.seeds, signer, tmp), "without_task": task_tests(a.seeds, tmp),
+                  "agentdojo": agentdojo(signer, tmp)}
     finally:
         signer.close()
         shutil.rmtree(tmp, ignore_errors=True)
@@ -419,7 +461,22 @@ def main(argv=None):
     for part, r in result.items():
         print(part, json.dumps({k: (v["precision"], v["recall"]) for k, v in r["grades"].items()} if "grades" in r else
                                {"drift": (r["precision"], r["recall"])}))
-    return 0
+    for line in broken(result):
+        print("FAILED", line)
+    return 1 if broken(result) else 0
+
+
+def broken(result):
+    """The promises docs/evaluation.md makes that `result` breaks: every exact claim names a record that holds its
+    value, no exact or measured edge comes from a source labelled no cause, and no asked call serves no step of the
+    task."""
+    out = [f"{part}: an exact claim names a record without its value" for part in ("agentdojo", "desk")
+           if any(c["edges"] != c["value_in_source"] for c in result[part]["exact_claims"].values())]
+    out += [f"{part}: {g} edges from a source labelled no cause" for part in ("agentdojo", "desk")
+            for g in ("exact", "measured") if result[part]["grades"].get(g, {}).get("fp")]
+    if result["without_task"]["asked_drift"]:
+        out.append("without_task: an asked call serves no step of the task")
+    return out
 
 
 if __name__ == "__main__":
