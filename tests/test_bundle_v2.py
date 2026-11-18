@@ -519,8 +519,8 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         missing = os.path.join(self.d, "missing.json")
         # 1.7.3: a log key pinned under the key-derived origin of another key names nothing it could have signed
-        stolen = checkpoint.key_origin(crypto.public_from_secret(hashlib.sha256(b"a").digest()))
-        mispinned = checkpoint.vkey(stolen, ED25519, crypto.public_from_secret(hashlib.sha256(b"b").digest()))
+        stolen = checkpoint.key_origin(b"\1" * 32)   # public keys only: no secret is needed to name or pin one
+        mispinned = checkpoint.vkey(stolen, ED25519, b"\2" * 32)
         for text, said in ((None, f"{missing}: {os.strerror(errno.ENOENT)}"), ("{", "not valid JSON (syntax: "),
                            ("{}", f"{missing}: not a v2 trust config (logs, witnesses, algs, "),
                            ('{"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}',
