@@ -80,7 +80,7 @@ class Examples(unittest.TestCase):
                    cwd=self.dir)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         for said in ("90 of 120 USD left", "call-3: (pretend) paid 25.00 USD to acct-print-shop",
-                     "call-4: Tool call rejected in Tracekit", "20 of 120 USD left", "[PASS] intent grants — 1 grant(s)",
+                     "call-4: [tracekit] HELD, nothing ran", "20 of 120 USD left", "[PASS] intent grants — 1 grant(s)",
                      "Integrity: VERIFIED.", "100 of 120 USD used; this call needs 40 USD"):
             self.assertIn(said, p.stdout)
 

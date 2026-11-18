@@ -17,6 +17,7 @@ from factories import VersionCheckCases
 from tracekit import findings_v2
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.service import CONTENT_READ, DEFAULT_GRANTS, SignerService
 from tracekit.why.signed import vault_content
@@ -304,6 +305,64 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider",
                                                "args_source": "parsed", "args_commitment": self.service._commit(
                                                    f"model.exchange:{first['salt_id']}", digest)}])
+
+
+def _output(result):
+    """The tool output the model got in a run's result."""
+    [out] = [i.output for i in result.new_items if i.type == "tool_call_output_item"]
+    return out
+
+
+@unittest.skipUnless(HAVE_OA, "openai-agents not installed")
+class TestHeldReason(unittest.TestCase):
+    """A held call gives the app the signer's reason, and a rejected one tells the model it was held and why (#832)."""
+    REASON = "100 of 120 USD used; this call needs 40 USD"
+
+    def setUp(self):
+        policy = Engine({"ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^", "reason": self.REASON}]})
+        service = SignerService(ac.tmpdir(self), policy=policy)
+        self.addCleanup(service.close)
+        self.client = Client(ac._serve(self, service.handle_frame))
+        self.addCleanup(self.client.close)
+        r = self.client.register_run({"agent": {"name": "held"}})
+        self.run_ = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        self.ran = []
+
+    def held(self, tk):
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        pay = ShellTool(name="pay", executor=lambda req: self.ran.append(req.data.action.commands) or "paid")
+        a = Agent(name="held", model=StubModel(call), tools=[tk.tool(pay)])
+        return a, Runner.run_sync(a, "go", context={}, hooks=tk)
+
+    def test_the_app_gets_the_reason_and_the_model_why_it_was_held(self):
+        tk = TracekitAgents(self.client, self.run_)
+        a, res = self.held(tk)
+        self.assertEqual(res.context_wrapper.context["tracekit"]["reasons"], {"sh-1": self.REASON})
+        aid = res.context_wrapper.context["tracekit"]["approvals"]["sh-1"]
+        self.client.approval_decide({"approval_id": aid, "decision": "reject"})
+        for resumed in (tk, TracekitAgents(self.client, self.run_)):   # this process, or another (from the signer)
+            with self.subTest(same_process=resumed is tk):
+                state = res.to_state()
+                self.assertEqual(asyncio.run(resumed.apply_decisions(state)), [])
+                told = _output(Runner.run_sync(a, state, hooks=resumed))
+                self.assertIn("HELD, nothing ran (R-PAY): not approved: rejected.", told)
+                self.assertIn(f"Why: {self.REASON}", told)
+                self.assertNotIn("approvals", told)   # the approval commands are the person's
+        self.assertEqual(self.ran, [])
+
+    def test_a_tool_that_cannot_wait_tells_the_model_why_it_was_held(self):
+        class Editor:
+            def create_file(_, op):
+                self.ran.append(op.path)
+        call = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                          operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
+        tk = TracekitAgents(self.client, self.run_)
+        a = Agent(name="held", model=StubModel(call), tools=[tk.tool(ApplyPatchTool(name="pay", editor=Editor()))])
+        told = _output(Runner.run_sync(a, "go", context={}, hooks=tk))
+        self.assertIn("HELD, nothing ran (R-PAY): approval required, and this tool cannot wait for one.", told)
+        self.assertIn(f"Why: {self.REASON}", told)
+        self.assertEqual(self.ran, [])
 
 
 @unittest.skipUnless(HAVE_OA, "openai-agents not installed")
