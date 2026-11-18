@@ -4261,6 +4261,49 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_plugin_removal_patterned_targets_and_trust_root_reads_on_every_harness(self):
+        """The plugin's second review: removing the plugin through Codex's or Copilot CLI's own CLI, or the tracekit
+        marketplace through any of the three, wasn't held as Claude Code's plugin uninstall is (TK-A054); a pattern in a
+        folder's name (`~/.cur?or/…`, `~/.cursor/plug?ns/…`, `~/.cop?lot/…`, `hooks.js?n`, `~/.*/…`) wrote a plugin's
+        hook unheld, since the reader read a pattern only as a few folders under ~ (engine._protected_forms); TK-D007
+        denied reading a trust root (`readlink`, `file`, `du` of it), matching the line's words, not its targets; and
+        TK-F009 held a project's `my.cursor/plugins/`."""
+        held = [("Bash", {"command": c}, "TK-A054") for c in (
+            "codex plugin remove tracekit", "codex plugin remove tracekit@tracekit", "codex plugin uninstall tracekit",
+            "codex plugin disable tracekit", "codex plugin marketplace remove tracekit",
+            "copilot plugin uninstall tracekit", "copilot plugin uninstall tracekit@tracekit",
+            "copilot plugin disable tracekit", "copilot plugin marketplace remove tracekit",
+            "claude plugin marketplace remove tracekit")]
+        held += [("Bash", {"command": c}, "TK-F015") for c in (
+            "cp /tmp/evil ~/.cur?or/plugins/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/.curs*r/plugins/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/.cursor/plug?ns/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/.cop?lot/installed-plugins/tracekit/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/.cursor/hooks.js?n", "cp /tmp/evil ~/.*/plugins/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil /home/u/.c[u]rsor/plugins/x", "chmod 000 ~/.cur*/plugins/*/tracekit/scripts/*",
+            "rm -rf ~/.cur?or", "cp x .gith?b/hooks/pre.json", "cp x ~/.conf?g/opencode/plugin/x.js")]
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "ln -sf /tmp/x ~/.local/bin/trace?it", "ln -sf /tmp/p ~/.local/share/uv/too?s/tracekit-ai/bin/python")]
+        benign = [("Bash", {"command": c}) for c in (
+            "cp /tmp/x ~/*/plugins/x",   # `*` matches no dot folder (no dotglob)
+            "rm *.json", "rm -rf ~/.cache/*", "rm -f .*.swp", "cp x ./build/*/", "rm -rf node_modules/.cache/*",
+            "readlink ~/.local/bin/tracekit", "file ~/.local/bin/tracekit", "du -sh ~/.local/share/uv/tools/tracekit-ai",
+            "~/.local/bin/tracekit", "codex plugin list", "copilot plugin install tracekit@tracekit",
+            "claude plugin marketplace add Cygnux-Labs/tracekit-plugin")]
+        benign += [("Write", {"file_path": p, "content": "x"}) for p in (
+            "/home/u/proj/my.cursor/plugins/x.json", "/home/u/proj/my.cursor/hooks.json")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in held + denied:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertIn(rid, d["rule_ids"])
+                    if pack == "dev.yaml":
+                        self.assertEqual(d["verdict"], "deny" if rid.startswith("TK-D") else "ask")
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""

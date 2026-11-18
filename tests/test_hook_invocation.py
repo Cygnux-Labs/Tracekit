@@ -250,7 +250,7 @@ class PluginShim(unittest.TestCase):
             version = json.load(f)["version"]
         for name in ("scripts/tracekit-hook", "README.md"):
             with open(os.path.join(ROOT, "plugin", name), encoding="utf-8") as f:
-                pins = re.findall(r"tracekit-ai([^\s)'\"]*)", f.read())
+                pins = re.findall(r"tracekit-ai(?!/)([^\s)'\"]*)", f.read())   # (not a venv's folder: uv/tools/…)
             with self.subTest(file=name):
                 self.assertTrue(pins)
                 self.assertEqual(set(pins), {"==" + version})
@@ -403,27 +403,41 @@ class PluginShim(unittest.TestCase):
                           "--no-hooks", err)
             self.assertNotIn("Traceback", err)
 
-    def test_the_venv_of_the_tracekit_command_comes_before_python3(self):
+    def link_tracekit(self, venv, cfg=False):
+        """A `tracekit` command on PATH linking into `venv`/bin, beside a python that logs its calls (pyvenv.cfg above
+        it with `cfg`). -> that python."""
+        os.makedirs(os.path.join(venv, "bin"))
+        if cfg:
+            open(os.path.join(venv, "pyvenv.cfg"), "w").close()
+        tool_python = self.fake_python(os.path.join(venv, "bin", "python"))
+        with open(os.path.join(venv, "bin", "tracekit"), "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(os.path.join(venv, "bin", "tracekit"), 0o755)
+        link = os.path.join(self.bin, "tracekit")
+        if os.path.lexists(link):
+            os.unlink(link)
+        os.symlink(os.path.join(venv, "bin", "tracekit"), link)
+        return tool_python
+
+    def test_a_uv_tool_or_pipx_install_comes_before_python3(self):
         """The plugin review: with the real tracekit a uv tool on PATH, a tracekit planted in python3's user
-        site-packages ran the hook in its place and let every call through. The python of the venv the `tracekit`
-        command is in now comes first; a `tracekit` in no venv keeps the old order (python3 first)."""
+        site-packages ran the hook in its place and let every call through. The python of the uv tool or pipx install
+        the `tracekit` command is now comes first."""
         self.install_tracekit("def _entry(event=None):\n    return 0\n")   # python3's: the planted one
-        for in_venv in (True, False):
-            with self.subTest(in_venv=in_venv):
-                venv = os.path.join(self.d, f"venv-{in_venv}")
-                os.makedirs(os.path.join(venv, "bin"))
-                if in_venv:
-                    open(os.path.join(venv, "pyvenv.cfg"), "w").close()
-                tool_python = self.fake_python(os.path.join(venv, "bin", "python"))
-                with open(os.path.join(venv, "bin", "tracekit"), "w", encoding="utf-8") as f:
-                    f.write("#!/bin/sh\n")
-                os.chmod(os.path.join(venv, "bin", "tracekit"), 0o755)
-                link = os.path.join(self.bin, "tracekit")
-                if os.path.lexists(link):
-                    os.unlink(link)
-                os.symlink(os.path.join(venv, "bin", "tracekit"), link)
+        for venv in ("uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"):
+            with self.subTest(venv=venv):
+                tool_python = self.link_tracekit(os.path.join(self.d, venv), cfg=True)
                 self.assertEqual(self.hook("PreToolUse")[0], 0)
-                self.assertEqual(f"{tool_python} -I -c" in self.calls(), in_venv)
+                self.assertIn(f"{tool_python} -I -c", self.calls())
+
+    def test_a_tracekit_link_the_agent_made_elsewhere_loses_to_python3(self):
+        """The second review: any `tracekit` link whose folder had a pyvenv.cfg came before python3, so an agent could
+        link one into ~/bin to a folder of its own whose python allows everything. Only a uv tool or pipx install's
+        does; any other comes after python3 and python, as before."""
+        self.install_tracekit("def _entry(event=None):\n    return 0\n")   # python3's: here, the real one
+        tool_python = self.link_tracekit(os.path.join(self.d, "e"), cfg=True)
+        self.assertEqual(self.hook("PreToolUse")[0], 0)
+        self.assertNotIn(f"{tool_python} -I -c", self.calls())
 
     def test_a_tracekit_without_the_harness_hook_blocks_tool_calls_and_says_to_upgrade(self):
         """1.6.0 has no Copilot CLI hook: its harness_hooks printed a usage line, and the call was blocked unexplained."""

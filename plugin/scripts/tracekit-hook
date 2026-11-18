@@ -13,9 +13,10 @@
 # exits 1 too, except under Copilot CLI and Cursor, which block a pre-tool call on any exit but 0 (Cursor: failClosed).
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
-# Otherwise the hook runs in the first of TRACEKIT_PYTHON, the python of the venv the `tracekit` command on PATH is
-# in (its links followed: `uv tool install`, pipx), python3, python and the python beside a `tracekit` that is in no
-# venv, that imports tracekit (user site-packages added back for `pip install --user`). A tracekit before 1.2, or one
+# Otherwise the hook runs in the first of TRACEKIT_PYTHON, the python of the uv tool or pipx install the `tracekit`
+# command on PATH is (its links followed into */uv/tools/tracekit-ai/bin/ or */pipx/venvs/tracekit-ai/bin/, folders
+# TK-D007 and TK-D013 keep the agent from writing), python3, python and the python beside any other `tracekit`, that
+# imports tracekit (user site-packages added back for `pip install --user`). A tracekit before 1.2, or one
 # whose hook won't import, blocks the call. With none, the call is blocked once Tracekit is set up for this user (the
 # dev signer's data dir exists, which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is
 # set); before that every event says so and proceeds, unrecorded. hooks/*.json run this with /bin/sh, so it runs
@@ -81,16 +82,19 @@ if why:
     raise SystemExit(2 if pre else 1)
 raise SystemExit(entry(*args))'
 # a `tracekit` command installed on its own (uv tool, pipx, a venv) is a link to, or is, its venv's bin/tracekit,
-# beside that venv's python. That python goes before python3 when it is a venv's (pyvenv.cfg above bin/): it is the
-# tracekit the person runs, so a tracekit in python3's user site-packages can't stand in for it; else it goes last
+# beside that venv's python. A uv tool or pipx install's python goes before python3: it is the tracekit the person
+# runs, so a tracekit in python3's user site-packages can't stand in for it. Any other goes last, since the agent
+# can make one anywhere (a link in ~/bin to a folder of its own): only those two folders are kept from it
 tk=$(command -v tracekit 2>/dev/null) n=0
 while [ $n -lt 40 ] && [ -L "$tk" ] && l=$(readlink "$tk"); do
   case $l in /*) tk=$l ;; *) tk=${tk%/*}/$l ;; esac
   n=$((n + 1))
 done
 venv= tool=
-case $tk in /*) tool=${tk%/*}/python ;; esac
-[ -n "$tool" ] && [ -f "${tk%/*}/../pyvenv.cfg" ] && venv=$tool tool=
+case $tk in
+  */uv/tools/tracekit-ai/bin/tracekit|*/pipx/venvs/tracekit-ai/bin/tracekit) venv=${tk%/*}/python ;;
+  /*) tool=${tk%/*}/python ;;
+esac
 for py in "${TRACEKIT_PYTHON:-}" "$venv" python3 python "$tool"; do
   [ -n "$py" ] || continue
   if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import tracekit" >/dev/null 2>&1; then

@@ -2039,10 +2039,55 @@ def _write_effects(parsed):
             tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
-    # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude)
+    # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
+    # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
     tags += [k + ":" + f for k, _, path in (t.partition(":") for t in tags)
-             if k != "MAY_WRITE" and shell._GLOB.search(path) for f in _pattern_forms(path)]
+             if k != "MAY_WRITE" and shell._GLOB.search(path) for f in _pattern_forms(path) + _protected_forms(path)]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+# the paths, by their components, whose files an agent's harness runs or reads as settings, hooks and plugins (as
+# TK-F009 and TK-F015 name them) and the Python the Tracekit plugin's hook runs (TK-D007, TK-D013): a pattern in a
+# write, delete or mode target may make one of these
+# lean: a path the rules name only through a variable or a file name alone (opencode.json, crush.json), PowerShell's
+# profiles and Documents/Cline/Hooks aren't listed; add a path here when a rule protects it
+_PROTECTED_PATHS = tuple(tuple(p.split("/")) for p in (
+    ".claude", ".codex", ".gemini", ".opencode", ".kilo", ".kilocode", ".qwen", ".factory", ".devin", ".cline",
+    ".hermes", ".openhands", ".copilot", ".jcode", ".kiro", ".openinterpreter", ".codebuddy", ".claude.json", ".mcp.json",
+    ".cursor", ".agents", ".clinerules", ".github", ".goose", ".config",   # (a whole one deleted; or as the paths below)
+    ".cursor/plugins", ".cursor/hooks.json", ".cursor/mcp.json", ".clinerules/hooks", "cline/hooks", ".github/hooks",
+    ".github/copilot/settings.json", ".github/copilot/settings.local.json", "etc/github-copilot", ".agents/hooks.json",
+    ".agents/plugins", ".agents/recipes", ".agents/agents", ".agents/skills", ".goose/recipes", ".goose/agents",
+    ".config/opencode", ".config/kilo", ".config/goose", ".config/crush", ".config/devin", ".config/gptme",
+    ".local/bin/tracekit", "uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"))
+_LONGEST = max(map(len, _PROTECTED_PATHS))
+_PATTERNED_MAX = 32   # the patterned components of one path read: a bound that keeps the reading linear
+
+
+def _protected_forms(path):
+    """`path` with each run of its components that matches one of _PROTECTED_PATHS, a pattern among them, written as
+    that path: as bash matches a pattern (shell._glob_fits), a leading dot only by a dot (`.cur?or/plug?ns` is
+    .cursor/plugins, `.*/plugins` is too, `*/plugins` isn't). Read around its first _PATTERNED_MAX patterned
+    components.
+    lean: a line that sets dotglob isn't read for a `*` that would then match a dot folder; read it if one is used"""
+    parts, out, tokens = path.split("/"), [], {}
+
+    def fits(p, n):
+        if p == n:
+            return True
+        if not shell._GLOB.search(p) or p[:1] != "." and n[:1] == ".":
+            return False
+        if p not in tokens:
+            tokens[p] = shell._glob_tokens(p)
+        return shell._glob_fits(tokens[p], n)
+    patterned = [i for i, p in enumerate(parts) if shell._GLOB.search(p)][:_PATTERNED_MAX]
+    starts = sorted({i - j for i in patterned for j in range(_LONGEST) if i - j >= 0})
+    for i in starts:
+        for names in _PROTECTED_PATHS:
+            run = parts[i:i + len(names)]
+            if len(run) == len(names) and any(map(shell._GLOB.search, run)) and all(map(fits, run, names)):
+                out.append("/".join(parts[:i] + list(names) + parts[i + len(names):]))
+    return out
 
 
 def _env_chdir(argv):
@@ -3045,7 +3090,9 @@ def _tracekit(parsed, finds, work):
     its commands (DEEP where every command only reads or lists, else ACT), a relative word also as read from each
     folder a cd on the line enters (_bases), and a kill of what finds the signer as acting on it (_kills_signer).
     SIGNER_MODULE: an ACT text whose code reaches more of Tracekit's signer than it may read (_runs_signer), or its
-    data or lifecycle through the SDK (_reaches_sdk). Each also normalised and casefolded as a path is (_path_forms).
+    data or lifecycle through the SDK (_reaches_sdk). TARGET: each file the line writes, links, deletes or changes the
+    mode of (_effects), also among ACT: a rule that must not read a command's own words (`readlink PATH`) reads these.
+    Each also normalised and casefolded as a path is (_path_forms).
     `work`: the decision's budget, which this reading spends (shell.charge)."""
     commands, refs, written = parsed[0], parsed[2], set(parsed[3])
     learned = parsed[5] if len(parsed) > 5 else None
@@ -3102,13 +3149,15 @@ def _tracekit(parsed, finds, work):
     for r in refs:
         (listed if r not in written and r in private else read if r not in written and r in reads else act).extend(
             at([r]))
-    act += at([t.partition(":")[2] for t in _effects(parsed)])
+    targets = at([t.partition(":")[2] for t in _effects(parsed)])
+    act += targets
 
     def tag(name, texts):
         return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
     joined = "\n".join(act)
-    return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
+    return tag("ACT:", act) + tag("TARGET:", targets) + tag("LIST:", listed) + tag("READ:", read) + \
+        tag("DEEP:", deep) + \
         (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or
           _SDK.search(s) and _reaches_sdk(s, work)] if _SIGNER_MODULE.search(joined) or _SDK.search(joined) else [])
 
