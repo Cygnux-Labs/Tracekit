@@ -2049,23 +2049,24 @@ def _write_effects(parsed):
 # the paths, by their components, whose files an agent's harness runs or reads as settings, hooks and plugins (as
 # TK-F009 and TK-F015 name them) and the Python the Tracekit plugin's hook runs (TK-D007, TK-D013): a pattern in a
 # write, delete or mode target may make one of these
-# lean: a path the rules name only through a variable or a file name alone (opencode.json, crush.json), PowerShell's
-# profiles and Documents/Cline/Hooks aren't listed; add a path here when a rule protects it
+# lean: a path the rules name only through a variable or a file name alone (opencode.json, crush.json) and PowerShell's
+# profiles aren't listed; add a path here when a rule protects it
 _PROTECTED_PATHS = tuple(tuple(p.split("/")) for p in (
     ".claude", ".codex", ".gemini", ".opencode", ".kilo", ".kilocode", ".qwen", ".factory", ".devin", ".cline",
     ".hermes", ".openhands", ".copilot", ".jcode", ".kiro", ".openinterpreter", ".codebuddy", ".claude.json", ".mcp.json",
     ".cursor", ".agents", ".clinerules", ".github", ".goose", ".config",   # (a whole one deleted; or as the paths below)
-    ".cursor/plugins", ".cursor/hooks.json", ".cursor/mcp.json", ".clinerules/hooks", "cline/hooks", ".github/hooks",
+    ".cursor/plugins", ".cursor/hooks.json", ".cursor/mcp.json", ".clinerules/hooks", "Documents/Cline/Hooks",
+    ".github/hooks",
     ".github/copilot/settings.json", ".github/copilot/settings.local.json", "etc/github-copilot", ".agents/hooks.json",
     ".agents/plugins", ".agents/recipes", ".agents/agents", ".agents/skills", ".goose/recipes", ".goose/agents",
     ".config/opencode", ".config/kilo", ".config/goose", ".config/crush", ".config/devin", ".config/gptme",
     ".local/bin/tracekit", "uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"))
 _LONGEST = max(map(len, _PROTECTED_PATHS))
-_BY_FIRST = {}   # each path of _PROTECTED_PATHS under its first component: a literal one is a lookup
+_BY_FIRST = {}   # each path of _PROTECTED_PATHS under its first component, casefolded: a literal one is a lookup
 for _path in _PROTECTED_PATHS:
-    _BY_FIRST.setdefault(_path[0], []).append(_path)
-# the first components a pattern may make: one that starts with a dot only dot names, any other only the rest
-_FIRSTS = {True: [n for n in _BY_FIRST if n[:1] == "."], False: [n for n in _BY_FIRST if n[:1] != "."]}
+    _BY_FIRST.setdefault(_path[0].casefold(), []).append(_path)
+# the first components a pattern may make, as written: one that starts with a dot only dot names, any other the rest
+_FIRSTS = {dot: list(dict.fromkeys(p[0] for p in _PROTECTED_PATHS if (p[0][:1] == ".") == dot)) for dot in (True, False)}
 _PATTERNED_MAX = 32   # the patterned components of one path read: a bound that keeps the reading linear
 
 
@@ -2078,23 +2079,24 @@ def _protected_forms(path):
     parts, out = path.split("/"), []
     patterned = [i for i, p in enumerate(parts) if shell._GLOB.search(p)][:_PATTERNED_MAX]
     tokens = {i: shell._glob_tokens(parts[i]) for i in patterned}   # (a component past them reads as written)
-    # each pattern's own characters, which a name it makes holds in order: a quick no before _glob_fits (none read
-    # for one with a backslash, which escapes them)
-    pieces = {i: None if "\\" in parts[i] else [c for c in shell._GLOB.split(parts[i]) if c] for i in patterned}
+    # each pattern's runs of plain characters, which a name it makes holds: a quick no before _glob_fits, read from its
+    # tokens (a bracket holding `[` ends where bash ends it); none read for one with a backslash, which escapes them
+    pieces = {i: None if "\\" in parts[i] else "".join(t if isinstance(t, str) else "\0" for t in tokens[i]).split("\0")
+              for i in patterned}
     dot = {i: tokens[i][:1] == ["."] for i in patterned}   # a literal leading dot, escaped too: it may make a dot name
     # `*`, `.*`: any name (any dot name), the dot rule aside
     anything = {i for i in patterned if set(parts[i][1:] if parts[i][:1] == "." else parts[i]) == {"*"}}
 
     def fits(i, n):
-        if parts[i] == n:
+        if parts[i].casefold() == n.casefold():   # a folder written out: the file system may ignore its case (macOS)
             return True
         if i not in tokens or not dot[i] and n[:1] == "." or pieces[i] and not all(c in n for c in pieces[i]):
             return False
-        return i in anything or shell._glob_fits(tokens[i], n)
+        return i in anything or shell._glob_fits(tokens[i], n)   # a pattern: bash matches it in the name's case
     for i in sorted({i - j for i in patterned for j in range(_LONGEST) if i - j >= 0}):
-        firsts = [parts[i]] if parts[i] in _BY_FIRST else [n for n in _FIRSTS[dot[i]] if fits(i, n)] \
+        firsts = [parts[i]] if parts[i].casefold() in _BY_FIRST else [n for n in _FIRSTS[dot[i]] if fits(i, n)] \
             if i in tokens else []
-        for names in (names for n in firsts for names in _BY_FIRST[n]):
+        for names in (names for n in firsts for names in _BY_FIRST[n.casefold()]):
             span = range(i, i + len(names))
             if span[-1] < len(parts) and any(k in tokens for k in span) and all(map(fits, span[1:], names[1:])):
                 out.append("/".join(parts[:i] + list(names) + parts[i + len(names):]))

@@ -284,7 +284,7 @@ class PluginShim(unittest.TestCase):
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
-            self.assertIn(f"Ask the person to set it up: pip install tracekit-ai=={__version__} && tracekit init --dev --v2 "
+            self.assertIn(f"Ask the person to set it up: uv tool install tracekit-ai=={__version__} && tracekit init --dev --v2 "
                           "--no-hooks", err)
 
     def set_up_tracekit(self):
@@ -399,7 +399,7 @@ class PluginShim(unittest.TestCase):
             self.assertEqual(code, want, (event, err))
             self.assertIn("tracekit 1.0.0", err.splitlines()[0])
             self.assertIn("is older than 1.2", err)
-            self.assertIn(f"Ask the person to run: pip install tracekit-ai=={__version__} && tracekit init --dev --v2 "
+            self.assertIn(f"Ask the person to run: uv tool install tracekit-ai=={__version__} && tracekit init --dev --v2 "
                           "--no-hooks", err)
             self.assertNotIn("Traceback", err)
 
@@ -439,6 +439,28 @@ class PluginShim(unittest.TestCase):
         self.assertEqual(self.hook("PreToolUse")[0], 0)
         self.assertNotIn(f"{tool_python} -I -c", self.calls())
 
+    def test_an_agents_tracekit_early_on_path_does_not_hide_a_uv_or_pipx_install(self):
+        """The third review: for a uv tool user python3 has no tracekit, so an agent's `tracekit` put earlier on PATH
+        than ~/.local/bin made the hook run that tracekit's python, which let every call through. A uv tool or pipx
+        install where they put it by default is found whatever PATH says, and with one nothing else runs the hook."""
+        agents = self.link_tracekit(os.path.join(self.d, "e"), cfg=True)
+        for venv in ("uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"):
+            with self.subTest(venv=venv):
+                os.makedirs(os.path.join(self.data, venv, "bin"))
+                installed = self.fake_python(os.path.join(self.data, venv, "bin", "python"))
+                self.assertEqual(self.hook("PreToolUse")[0], 0)
+                self.assertIn(f"{installed} -I -c", self.calls())
+                self.assertNotIn(f"{agents} -I -c", self.calls())
+                shutil.rmtree(os.path.join(self.data, venv.split("/")[0]))
+
+    def test_a_pth_file_in_the_user_site_packages_does_not_run(self):
+        """The third review: the user site-packages was added with site.addsitedir, which runs each .pth file's import
+        lines, so a .pth the agent planted ran before tracekit and could end the hook with 0."""
+        package = self.install_tracekit("def _entry(event=None):\n    return 2\n")   # the real one blocks this call
+        with open(os.path.join(os.path.dirname(package), "zz.pth"), "w", encoding="utf-8") as f:
+            f.write("import os; os._exit(0)\n")
+        self.assertEqual(self.hook("PreToolUse")[0], 2)
+
     def test_a_tracekit_without_the_harness_hook_blocks_tool_calls_and_says_to_upgrade(self):
         """1.6.0 has no Copilot CLI hook: its harness_hooks printed a usage line, and the call was blocked unexplained."""
         package = self.install_tracekit("def _entry(event=None):\n    return 0\n")
@@ -450,7 +472,7 @@ class PluginShim(unittest.TestCase):
         code, err = self.hook("preToolUse", "copilot")
         self.assertEqual(code, 2, err)
         self.assertIn("has no copilot hook (it is older than this plugin)", err)
-        self.assertIn(f"pip install tracekit-ai=={__version__}", err)
+        self.assertIn(f"uv tool install tracekit-ai=={__version__}", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):
         self.install_tracekit("import a_dependency_that_is_missing\n")

@@ -4304,6 +4304,36 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_plugin_review_3_brackets_holding_a_bracket_case_and_other_plugins(self):
+        """The plugin's third review: the reader's quick check split a pattern with a regex that reads a bracket
+        holding `[` (a POSIX class, an equivalence class, `[[x]`) unlike bash, so those made a protected path unread;
+        a folder written out in another case next to a pattern wasn't read as the folder (macOS ignores case);
+        `cline/hooks` made every `src/*/hooks` Cline's; and TK-A054 lost the space before a plugin's name, so
+        uninstalling any plugin with `-…a…` in its name, or ending in `tracekit`, was held."""
+        held = [("Bash", {"command": c}, "TK-F015") for c in (
+            "cp /tmp/evil ~/.cursor/plug[[:alpha:]]ns/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/.[[:lower:]]ursor/hooks.json", "cp /tmp/evil ~/.cur[[s]or/hooks.json",
+            "cp /tmp/evil ~/.CURSOR/plug?ns/local/tracekit/scripts/tracekit-hook",
+            "cp /tmp/evil ~/Documents/Cl?ne/Hooks/x.sh")]
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "ln -sf /tmp/e/python ~/.local/share/uv/tools/tracekit-a[[i]/bin/python",
+            "ln -sf /tmp/e/tracekit ~/.local/bin/trace[[=k=]]it",
+            "ln -sf /tmp/e/python ~/.local/share/UV/tools/tracekit-a?/bin/python",
+            "ln -sf /tmp/e/tracekit ~/.LOCAL/bin/trace?it")]
+        benign = [("Bash", {"command": c}) for c in (
+            "sed -i 's/useFoo/useBar/g' src/*/hooks/*.ts", "rm src/*/hooks/*.test.ts", "cp x packages/*/hooks/",
+            "claude plugin uninstall code-review@claude-plugins-official", "claude plugin disable security-guidance",
+            "claude plugin marketplace remove claude-plugins-official", "codex plugin remove mytracekit",
+            "cp x ~/.CUR?OR/hooks.json")]   # bash matches a pattern in the name's case: no folder is made
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in held + denied:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertIn(rid, e.decide(tool, args)["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""
