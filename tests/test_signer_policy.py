@@ -4587,7 +4587,11 @@ class CodingPack(unittest.TestCase):
                        ("gh auth token -h ghe.corp", "TK-A021"), ("gh auth token; echo --help", "TK-A021"),
                        ("gh auth token && echo --help", "TK-A021"), ("gh auth token | tee x --help", "TK-A021"),
                        ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
-                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
+                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021"),
+                       ("git credential fill", "TK-A021"), ("git credential-store get", "TK-A021"),
+                       ("git credential-manager get", "TK-A021"), ("git -C repo credential fill", "TK-A021"),
+                       ("git credential-store --file f get", "TK-A021"), ("git-credential fill", "TK-A021"),
+                       ("git-credential-libsecret get", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
