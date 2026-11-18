@@ -2606,6 +2606,12 @@ class PlainPages(unittest.TestCase):
         arcs = lambda page, c: len(re.findall(f'<path class="{c}" d="M[^"]* C', page))  # noqa: E731  (not the key's swatches)
         self.assertEqual([arcs(page, c) for c in ("g-exact", "g-measured", "g-gap", "g-hint")], [1, 1, 1, 0])
         self.assertIn("exact: its `branch` came only from github:issue-12 (untrusted)</div>", html.unescape(page))
+        # an argument the signer traced as two kinds of value is one line
+        twice = json.loads(json.dumps(calls))
+        pushed_call = next(c for c in twice["calls"] if c["run"] == pushed.run_id)
+        pushed_call["edges"].append({**pushed_call["edges"][0], "kind": "email"})
+        self.assertEqual(html.unescape(self.influence(S["sources"], S["edges"], S["groups"], calls=twice)[0])
+                         .count("exact: its `branch` came only from"), 1)
         self.assertIn("seen: 3 sources in the context of the model call that asked for it (the agent&#39;s runtime recorded its context)", page)
         # the held push's branch is in the issue's text: a hint, shown only when asked for
         self.assertNotIn("hint, not an influence", page)

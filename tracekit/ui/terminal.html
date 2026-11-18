@@ -7082,24 +7082,26 @@
     const BASIS = { recorded: "the agent's runtime recorded its context", gateway: "the LLM gateway recorded the request sending it",
                     reconstructed: "observed earlier in the run: the import reconstructs the context" };
     function inflChain(c, W) {
-      // asked for, the hints off the chain are rows of their own below the call, each a dashed line up to it
+      // asked for, the hints off the chain are rows of their own below the call, each a dashed line up to it. A step's
+      // line to the call curves left of the dots, beside the steps it joins, each a little wider than the one below it
       const on = new Set(c.chain.map(x => x.node)), more = (IFL.hint ? c.hints : []).filter(h => !on.has(h.src) && on.add(h.src));
       const st = [...c.chain, ...more.map(h => ({ node: h.src, text: "read " + h.label, trust: h.trust, hint: true }))];
-      const RH = 24, last = c.chain.length - 1, xr = W - 60, f = x => x.toFixed(1), y = i => i * RH + RH / 2;
+      const RH = 24, DX = 40, last = c.chain.length - 1, f = x => x.toFixed(1), y = i => i * RH + RH / 2;
       const hinted = new Set(IFL.hint ? c.hints.map(h => h.src) : []);
       let s = `<svg class="ichain" width="${esc(W)}" height="${esc(st.length * RH)}" viewBox="${esc(`0 0 ${W} ${st.length * RH}`)}">`;
-      for (let i = 0; i < last; i++) s += `<path class="hop" d="${esc(`M8,${f(y(i) + 6)}V${f(y(i + 1) - 6)}`)}"/>`;
+      for (let i = 0; i < last; i++) s += `<path class="hop" d="${esc(`M${DX},${f(y(i) + 6)}V${f(y(i + 1) - 6)}`)}"/>`;
       st.forEach((x, i) => {
-        const arc = `M${xr},${f(y(i))} C${xr + 44},${f(y(i))} ${xr + 44},${f(y(last))} ${xr},${f(y(last))}`;
+        const bend = f(Math.max(2, DX - 10 - 3 * Math.abs(i - last))), arc = `M${DX - 5},${f(y(i))} C${bend},${f(y(i))} ${bend},${f(y(last))} ${DX - 5},${f(y(last))}`;
         if (i !== last && x.grade === "exact") s += `<path class="g-exact" d="${esc(arc)}"/>`;
         else if (i !== last && x.grade === "measured") s += `<path class="g-measured" d="${esc(arc)}"/><path class="g-gap" d="${esc(arc)}"/>`;
         else if (i !== last && hinted.has(x.node)) s += `<path class="g-hint" d="${esc(arc)}"/>`;
-        s += `<circle class="${esc(x.trust === "untrusted" ? "dot bad" : "dot")}" cx="8" cy="${esc(f(y(i)))}" r="3.5"/>`
-          + `<text${x.hint ? ` class="dim"` : ""} x="20" y="${esc(f(y(i) + 4))}">${esc(fit(x.text + (x.how ? ` (${x.how})` : "") + (x.hint ? " (hint)" : ""), Math.floor((xr - 26) / 6.6)))}</text>`;
+        s += `<circle class="${esc(x.trust === "untrusted" ? "dot bad" : "dot")}" cx="${esc(DX)}" cy="${esc(f(y(i)))}" r="3.5"/>`
+          + `<text${x.hint ? ` class="dim"` : ""} x="${esc(DX + 12)}" y="${esc(f(y(i) + 4))}">${esc(fit(x.text + (x.how ? ` (${x.how})` : "") + (x.hint ? " (hint)" : ""), Math.floor((W - DX - 16) / 6.6)))}</text>`;
       });
       return s + `</svg>`;
     }
     function inflCall(c, W) {
+      // an argument the signer traced twice (as an address and as a string, say) is one line
       const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
       const lines = [
         ...by("exact").map(e => `exact: its \`${e.field}\` came only from ${e.label} (untrusted${e.signed ? "; the viewer verified the call's signed record" : ""})`),
@@ -7108,7 +7110,7 @@
         c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
         ...(IFL.hint ? c.hints.map(h => `hint, not an influence: ${h.basis === "value" ? `the value ${h.value} is in` : "its text overlaps"} ${h.label}`) : [])];
       return `<div class="${esc(c.serves === "drift" ? "icall drift" : "icall")}"><div class="w">${esc(c.words)} <button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">WHY</button></div>`
-        + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "") + lines.filter(Boolean).map(l => `<div class="dim">${esc(l)}</div>`).join("") + `</div>`;
+        + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "") + [...new Set(lines.filter(Boolean))].map(l => `<div class="dim">${esc(l)}</div>`).join("") + `</div>`;
     }
     function inflCalls(I, W) {
       const calls = I.calls || [], sw = cls => `<svg class="ichain" width="22" height="8"><path class="${esc(cls)}" d="M0,4H22"/>${cls === "g-measured" ? `<path class="g-gap" d="M0,4H22"/>` : ""}</svg>`;
