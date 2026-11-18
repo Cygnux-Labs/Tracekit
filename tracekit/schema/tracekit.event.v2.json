@@ -144,6 +144,9 @@
         "identity.suspension",
         "effect.observed",
         "constraint.added",
+        "playbook.entry",
+        "precedent.revoked",
+        "approver.enabled",
         "ext"
       ]
     },
@@ -1203,6 +1206,54 @@
       "if": {
         "properties": {
           "type": {
+            "const": "playbook.entry"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/playbook_entry"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "precedent.revoked"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/precedent_revoked"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approver.enabled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approver_enabled"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
             "const": "ext"
           }
         }
@@ -1984,6 +2035,9 @@
         "incident_id": {
           "$ref": "#/$defs/id",
           "description": "format 1.2: the answer to a call held by this incident, by the person `person`"
+        },
+        "relied_on": {
+          "$ref": "#/$defs/approver_answer"
         }
       }
     },
@@ -3023,6 +3077,9 @@
         "passkey": {
           "const": true,
           "description": "the approval needs a passkey (approval: {passkey: required})"
+        },
+        "ai": {
+          "$ref": "#/$defs/approver_request"
         }
       }
     },
@@ -3190,6 +3247,9 @@
             }
           },
           "description": "the approver as the signer's transport established it"
+        },
+        "relied_on": {
+          "$ref": "#/$defs/approver_answer"
         }
       },
       "description": "format 1.2: only people answer this approval from now on: an agent approver handed it over, or the signer did (no agent answered within agent_timeout_s, a budget ran out)"
@@ -3308,6 +3368,9 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
+        },
+        "relied_on": {
+          "$ref": "#/$defs/approver_answer"
         }
       },
       "description": "format 1.2: a shadow-mode agent approver's answer, recorded only: it changes nothing"
@@ -4847,6 +4910,382 @@
         }
       },
       "description": "A non-critical record (format 1.4): its name and any other strict JSON fields, checked as the ext field is."
+    },
+    "approver_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rules",
+        "tool",
+        "target",
+        "project"
+      ],
+      "description": "format 1.8: an AI approver's precedent key as shown: the rules, the tool, what each rule read of the call (redacted, each value cut to 256 characters, 16 values at most) and the project",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "tool": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "target": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "additionalProperties": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "project": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        }
+      }
+    },
+    "approver_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "digest",
+        "labels",
+        "clean",
+        "precedents"
+      ],
+      "description": "format 1.8: a call held only by the policy's approval_agent rules: its precedent key (the rules, the tool, what each rule read of the call, redacted and cut, and the project the client named), the key's digest over what was read in full (a precedent matches by digest, tenant and requester), the run's labels, whether the run met the run bound (a person's answer counts as a precedent only then) and the precedents that counted",
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/approver_key"
+        },
+        "digest": {
+          "$ref": "#/$defs/hash"
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "enum": [
+              "untrusted_content",
+              "secrets_access"
+            ]
+          },
+          "description": "the run's labels the signer read for approval_agent's run bound"
+        },
+        "clean": {
+          "type": "boolean"
+        },
+        "precedents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approve",
+            "reject"
+          ],
+          "properties": {
+            "approve": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            },
+            "reject": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "description": "the approval ids of people's answers to calls like this one that counted as precedents then, by decision, newest first"
+        },
+        "asserted": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "enum": [
+              "project"
+            ]
+          },
+          "description": "the parts of the key the agent's own process supplied, not the signer: they only narrow a precedent match"
+        }
+      }
+    },
+    "approver_answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "precedents",
+        "playbook",
+        "policy_hash",
+        "labels",
+        "mode"
+      ],
+      "description": "format 1.8: what an AI answer to an approval_agent approval relied on, as the signer read it when it answered (precedents, the playbook in force, the policy, the run's labels, whether its answer decided or was a suggestion and why: the circuit breaker), and the reviewer's own word (answers: each model's decision; a project rule it quoted; the project files it read)",
+      "properties": {
+        "precedents": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "approve",
+            "reject"
+          ],
+          "properties": {
+            "approve": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            },
+            "reject": {
+              "type": "array",
+              "maxItems": 8,
+              "items": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          },
+          "description": "the approval ids of people's answers to calls like this one that counted as precedents then, by decision, newest first"
+        },
+        "playbook": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "version": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "digest": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        },
+        "policy_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "labels": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {
+            "enum": [
+              "untrusted_content",
+              "secrets_access"
+            ]
+          },
+          "description": "the run's labels the signer read for approval_agent's run bound"
+        },
+        "mode": {
+          "enum": [
+            "shadow",
+            "enforce"
+          ]
+        },
+        "demoted": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "answers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "decision"
+            ],
+            "properties": {
+              "model": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "decision": {
+                "enum": [
+                  "approve",
+                  "reject",
+                  "escalate"
+                ]
+              }
+            }
+          }
+        },
+        "project_rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "project": {
+          "description": "the commit of the project's repository the reviewer read the project's rules from, with each file's digest, or why it read none (no git repository: a working tree's files are the agent's to write)",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "commit",
+                "files"
+              ],
+              "properties": {
+                "commit": {
+                  "type": "string",
+                  "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+                  "maxLength": 64
+                },
+                "files": {
+                  "type": "array",
+                  "maxItems": 16,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "file",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "file": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256
+                      },
+                      "sha256": {
+                        "$ref": "#/$defs/hash"
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "unread"
+              ],
+              "properties": {
+                "unread": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "playbook_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "id",
+        "text",
+        "key",
+        "by"
+      ],
+      "description": "format 1.8: a person accepted a playbook entry the AI approver's precedents proposed, or retired one (in the tenant's signer run): its id (P- and 8 hex digits of the text's sha256), text and precedent key",
+      "properties": {
+        "action": {
+          "enum": [
+            "accept",
+            "retire"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^P-[0-9a-f]{8}$",
+          "maxLength": 10
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 2048
+        },
+        "key": {
+          "$ref": "#/$defs/approver_key"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "precedent_revoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "by"
+      ],
+      "description": "format 1.8: a person's answer no longer counts as a precedent for the AI approver (a revert, a mistake), by a person (in the tenant's signer run)",
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "approver_enabled": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rules",
+        "by"
+      ],
+      "description": "format 1.8: a person turned rules the AI approver's circuit breaker dropped to shadow back on (in the tenant's signer run)",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
     }
   }
 }

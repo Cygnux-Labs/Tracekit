@@ -84,6 +84,11 @@ VERSIONS = {
     # assurance dev, which a verifier before 1.6.0 can't see
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
+    # the AI approver (docs/approvals.md#the-ai-approver): what an approval request held by approval_agent's rules
+    # was to it (`ai`), what an AI answer relied on (`relied_on`), and its playbook, precedent and circuit-breaker records
+    "1.8.0": {"types": ["playbook.entry", "precedent.revoked", "approver.enabled"],
+              "fields": {"approval.request": ["ai"], "approval": ["relied_on"], "approval.suggested": ["relied_on"],
+                         "approval.escalated": ["relied_on"]}, "values": {}},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain

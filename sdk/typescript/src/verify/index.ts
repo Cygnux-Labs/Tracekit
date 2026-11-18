@@ -36,7 +36,7 @@ export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./
 export const VERSION = "1.7.2";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.7.2";
+export const READS = "1.8.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -673,6 +673,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
       + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
+  aiApprovals(rep, runs);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
@@ -1232,18 +1233,25 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
           + "bundles the policies its records cite");
         continue;
       }
-      let asks: Map<J, J>, flags: Set<J>;
+      let asks: Map<J, J>, flags: Set<J>, listed: Set<J>, parseAsks: boolean;
       try {
         const pol = strictParseBytes(snap, floats);
         asks = new Map(list(get(pol, "ask", [])).map((r: J) => [at(r, "id"), r]));
         flags = new Set(list(get(pol, "flag", [])).map((r: J) => at(r, "id")));
+        if (get(pol, "unknown_tools") === "flag") flags.add("TK-UNKNOWN-TOOL");
+        listed = new Set(list(get(get(pol, "approval_agent") ?? {}, "rules") ?? []).filter((r: J) =>
+          APPROVER_RULES.includes(r)));
+        parseAsks = get(pol, "on_parse_error", "ask") === "ask";
       } catch {
         problems.push(`${where}: the policy snapshot is not a policy`);
         continue;
       }
       for (const rid of get(dec, "rule_ids") ?? []) {
         const approval = get(asks.get(rid) ?? {}, "approval") ?? {};
-        if (!flags.has(rid) && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
+        // an AI approver's rule: one the policy's approval_agent lists (from the reviewed list), held as an ask there,
+        // or TK-SHELL-PARSE where on_parse_error asks
+        const ai = listed.has(rid) && (asks.has(rid) || rid === "TK-SHELL-PARSE" && parseAsks) && has(req, "ai");
+        if (!flags.has(rid) && !ai && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
           problems.push(`${where}: rule ${cut(str(rid), 64)} does not permit agents`);
       }
     }
@@ -1254,6 +1262,68 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
       + "by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with "
       + "`tracekit signer reveal`" + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
     `${agents} approval(s) answered by agents`), (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
+}
+
+/** The rules an operator's approval_agent may list (tracekit/policy2/compile.py APPROVER_RULES). */
+export const APPROVER_RULES: J[] = ["TK-SHELL-PARSE", "TK-A062", "TK-A025"];
+
+/**
+ * The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
+ * `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-breaker
+ * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on` with
+ * mode enforce, two answers that approve and a person's precedent, and no person's rejection of a call like it. Each
+ * precedent it names that the bundle holds is checked: a person's approval, not self-approved, of a request with the
+ * same precedent key (its digest), tenant and requester, made in a clean run, before the answer and not revoked as a
+ * precedent (precedent.revoked) before it; one the bundle doesn't hold (a precedent is often another run's) is counted,
+ * not checked.
+ */
+function aiApprovals(rep: Report, runs: Map<string, J[]>) {
+  const events: J[] = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)).sort((a, b) => a.seq - b.seq);
+  const asked = new Map<string, J>(), answered = new Map<string, J>(), gone = new Map<string, number>(), broken: string[] = [];
+  let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0;
+  const key = (tenant: J, id: J) => JSON.stringify([tenant ?? null, id ?? null]);
+  for (const e of events) {
+    const d = e.data, k = key(get(e, "tenant"), get(d, "approval_id"));
+    if (e.type === "approval.request" && has(d, "ai")) asked.set(k, e);
+    else if (e.type === "approval" && get(d, "approver_kind") !== "agent") answered.set(k, e);
+    else if (["playbook.entry", "precedent.revoked", "approver.enabled"].includes(e.type)) {
+      changes++;
+      if (e.type === "precedent.revoked" && !gone.has(k)) gone.set(k, e.seq);
+    }
+  }
+  for (const e of events) {
+    const d = e.data;
+    if (e.type === "approval.suggested" && has(d, "relied_on")) shadow++;
+    if (!(e.type === "approval" && get(d, "approver_kind") === "agent" && get(d, "decision") === "approve")) continue;
+    const mine = asked.get(key(get(e, "tenant"), get(d, "approval_id")));
+    if (mine === undefined) continue;   // an agent approver bounded by argument fields, or a request outside the bundle
+    yes++;
+    const where = `seq ${e.seq}`, x = get(d, "relied_on");
+    if (x === undefined || x.mode !== "enforce"
+      || JSON.stringify((x.answers ?? []).map((a: J) => a.decision)) !== JSON.stringify(["approve", "approve"])) {
+      broken.push(`${where}: an AI yes that decided without two answers that approve`);
+      continue;
+    }
+    if (!x.precedents.approve.length || x.precedents.reject.length)
+      broken.push(`${where}: an AI yes without a person's precedent, or with a person's rejection of a call like it`);
+    for (const pid of x.precedents.approve) {
+      const k = key(get(e, "tenant"), pid), p = answered.get(k), pa = asked.get(k);
+      if (p === undefined || pa === undefined) { outside++; continue; }
+      checked++;
+      const why = p.data.decision !== "approve" ? "is no person's approval"
+        : p.data.self_approved ? "was self-approved"
+        : pa.data.ai.digest !== mine.data.ai.digest ? "is of another kind of call"
+        : pa.data.requester !== mine.data.requester ? "is another requester's"
+        : !pa.data.ai.clean ? "was made in a run that wasn't clean"
+        : p.seq > e.seq ? "came after the answer"
+        : (gone.get(k) ?? e.seq) < e.seq ? "was revoked as a precedent before the answer" : null;
+      if (why) broken.push(`${where}: precedent ${cut(str(pid), 64)} ${why}`);
+    }
+  }
+  if (!asked.size && !shadow && !changes) return;   // a bundle without the AI approver keeps the report it always had
+  rep.check("AI approvals", !broken.length, `${yes} AI approval(s) that decided, each with two answers that agree and a `
+    + `person's precedent (${checked} precedent(s) checked in this bundle, ${outside} in runs it doesn't hold); ${shadow} `
+    + `shadow suggestion(s); ${changes} playbook, precedent and circuit-breaker record(s)`, broken.slice(0, 20));
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];

@@ -17,7 +17,8 @@ import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from . import classes, shell
-from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
+from .compile import APPROVER_RULES, BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, \
+    translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -193,6 +194,34 @@ class Engine:
             if ok and isinstance(v, list) and "max" in b:   # a list of amounts is bounded by its total, not each
                 ok = sum(v) <= b["max"]
             out.append((f"{name}: {canonical(b)}", ok))
+        return out
+
+    def target(self, rule_ids, tool, args):
+        """{rule id: the kind of target a call of `tool` with `args` acts on, as that rule reads it}, for each rule of
+        `rule_ids` the AI approver may answer (compile.APPROVER_RULES): what its precedents are matched by
+        (docs/approvals.md#precedent). TK-A025: the package sources the line selects, each as scheme://host[:port]/path
+        without a user or password (a value that isn't a URL as written), sorted; TK-A062: each command or SQL
+        statement the tool is given to run (_runs), exactly; TK-SHELL-PARSE: the shell command, exactly. None when a
+        target can't be read."""
+        args = args if isinstance(args, dict) else {"value": args}
+        out = {}
+        for rid in sorted(set(rule_ids) & set(APPROVER_RULES)):
+            if rid == "TK-A062":
+                kind = sorted(_runs(args, tool))
+            else:
+                command = classes.extract("shell", tool, args, MAX_SUBJECT).get("command")
+                if not isinstance(command, str):
+                    return None
+                if rid == "TK-SHELL-PARSE":
+                    kind = [command]
+                else:
+                    parsed, _ = self._parse(args, command, [0], fallback=False)
+                    if parsed is None:
+                        return None
+                    kind = sorted({_source(v) for v in _package_indexes(parsed[0], parsed[2])})
+            if not kind:
+                return None
+            out[rid] = kind
         return out
 
     def _within(self, rid, name, b, v, deadline):
@@ -1259,6 +1288,19 @@ def _package_indexes(commands, refs=()):
             if value is None or _non_default_source(value, default):
                 out.append(value or "<missing>")
     return out
+
+
+def _source(value):
+    """A package source as the AI approver's precedent names it (Engine.target): scheme://host[:port]/path of a URL,
+    without its user, password, query or fragment; any other value as written."""
+    try:
+        u = urlsplit(value)
+        port = u.port
+    except ValueError:
+        return value
+    if not (u.scheme and u.hostname):
+        return value
+    return f"{u.scheme.lower()}://{u.hostname.lower()}{f':{port}' if port else ''}{u.path}"
 
 
 def _python_module(args):

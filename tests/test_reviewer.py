@@ -46,10 +46,11 @@ def message(decision="approve", reason="routine", **kw):
 
 class Model:
     def __init__(self, *answers):
-        self.answers, self.views = list(answers), []
+        self.answers, self.views, self.models = list(answers), [], []
 
-    def __call__(self, tenant, view):
+    def __call__(self, tenant, view, model):
         self.views.append((tenant, view))
+        self.models.append(model)
         a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
         if isinstance(a, Exception):
             raise a
@@ -65,13 +66,15 @@ class Case(aa.Case):
 
 
 class TestReviewer(Case):
-    def test_an_always_approve_model_approves_within_the_bounds_one_call_each(self):
+    def test_an_always_approve_model_approves_within_the_bounds_two_calls_each(self):
         a1, _ = self.ask(tcid="tc-1")
         a2, _ = self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
         model = Model(message())
         self.reviewer(model).poll()
         self.assertEqual([self.state(a)["state"] for a in (a1, a2)], ["approved", "approved"])
-        self.assertEqual([v["approval_id"] for _, v in model.views], [a1, a2])   # one isolated call per approval
+        # two isolated calls per approval, the two keys of a yes: the one model asked twice
+        self.assertEqual([v["approval_id"] for _, v in model.views], [a1, a1, a2, a2])
+        self.assertEqual(model.models, ["m-test"] * 4)
         self.assertTrue(all(self.run["run_id"] not in json.dumps(v) for _, v in model.views))
         [rec, _] = [e["data"] for e in self.events() if e["type"] == "approval"]
         self.assertEqual(rec["asserted"], {"model": "m-test", "version": reviewer.__version__,
@@ -87,7 +90,8 @@ class TestReviewer(Case):
                     self.reviewer(Model(answer)).poll()
                 self.assertEqual((self.state(aid)["state"], self.state(aid)["escalated"]), ("requested", True))
                 self.assertIn(aid, logs.output[0])
-                self.assertIn("check the gateway URL, run token and model", logs.output[0])
+                self.assertIn("check the gateway URL or endpoint, the run token or key file, and the model",
+                              logs.output[0])
 
     def test_a_transient_signer_error_is_tried_again_next_poll(self):
         class Busy(As):   # the signer answers `method` once with `code`
@@ -146,9 +150,12 @@ class TestReviewer(Case):
                    "tenants: {acme: {token_file: a.token, run_token_file: r.token}}\n")
         self.assertEqual((cfg["signer"], cfg["tenants"]["acme"]["token_file"]),
                          (["https://signer:8443"], os.path.join(d, "a.token")))
-        for signer in ("/run/tracekit/signer.sock", "tcp://127.0.0.1:7000"):   # the uid and dev transports
-            with self.subTest(signer), self.assertRaisesRegex(ValueError, "never a uid"):
-                load(f"signer: {signer}\ngateway: https://gw\ntenants: {{acme: {{token_file: a, run_token_file: r}}}}\n")
+        with self.assertRaisesRegex(ValueError, "dev transport is refused"):   # the agent's own user could answer
+            load("signer: tcp://127.0.0.1:7000\ngateway: https://gw\ntenants: {acme: {token_file: a, run_token_file: "
+                 "r}}\n")
+        with self.assertRaisesRegex(ValueError, "no tenants, and a url"):   # a uid has no run identity for the gateway
+            load("signer: /run/tracekit/signer.sock\ngateway: https://gw\ntenants: {acme: {token_file: a, "
+                 "run_token_file: r}}\n")
         with self.assertRaisesRegex(ValueError, "tenants"):
             load("signer: https://s\ngateway: https://gw\n")
         tenants = "tenants: {acme: {token_file: a, run_token_file: r}}\n"
@@ -203,14 +210,16 @@ class TestGateway(Case):
             f.write("run-identity-token\n")
         aid, _ = self.ask()
         ask = reviewer.Gateway(f"http://127.0.0.1:{srv.server_address[1]}", {"acme": (As(self, ts.ME), token)})
-        self.reviewer(ask).poll()
+        reviewer.Reviewer([("acme", As(self, aa.AGENT))], ask).poll()
         self.assertEqual(self.state(aid)["state"], "approved")
-        [(path, headers, body)] = srv.seen
+        [(path, headers, body), again] = srv.seen   # the two keys of a yes: the model asked twice
+        self.assertEqual(again[2], body)
         self.assertEqual((path, headers["Authorization"], body["model"], body["system"]),
                          ("/v1/messages", "Bearer run-identity-token", reviewer.DEFAULT_MODEL, reviewer.PROMPT))
         self.assertEqual(body["output_config"]["format"]["schema"], reviewer.ANSWER)
         self.assertEqual(json.loads(body["messages"][0]["content"])["approval_id"], aid)
         run_id = headers["X-Tracekit-Run"].split(".")[0]
+        self.assertNotEqual(again[1]["X-Tracekit-Run"].split(".")[0], run_id)   # each call a run of its own
         mine = [e for e in self.events() if e["run_id"] == run_id]
         self.assertEqual(mine[0]["data"]["agent"]["name"], "tracekit-reviewer")
         [linked] = [e for e in mine if e["type"] == "input.observed"]

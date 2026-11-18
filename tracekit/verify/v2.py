@@ -167,6 +167,7 @@ from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.format.records import RecordError, record_digest, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
+from tracekit.policy2 import compile as policy_compile
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.signer import rpc_schema
@@ -1155,6 +1156,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                                 anchors, monitored, reg_cosigs)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     _approvals(rep, runs, policies)
+    _ai_approvals(rep, runs)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -1240,14 +1242,20 @@ def _approvals(rep, runs, policies):
             try:
                 pol = loads_strict(snap)
                 asks = {r["id"]: r for r in pol.get("ask", [])}
-                flags = {r["id"] for r in pol.get("flag", [])}
+                flags = {r["id"] for r in pol.get("flag", [])} | (
+                    {"TK-UNKNOWN-TOOL"} if pol.get("unknown_tools") == "flag" else set())
+                listed = set((pol.get("approval_agent") or {}).get("rules") or ()) & set(policy_compile.APPROVER_RULES)
             except (ValueError, TypeError, KeyError, AttributeError):
                 problems.append(f"{where}: the policy snapshot is not a policy")
                 continue
             for rid in dec.get("rule_ids") or []:
                 approval = (asks.get(rid) or {}).get("approval") or {}
-                if rid not in flags and (not isinstance(approval, dict) or "agent" not in approval
-                                         or approval.get("passkey") == "required"):
+                # an AI approver's rule: one the policy's approval_agent lists (from the reviewed list), held as an ask
+                # there, or TK-SHELL-PARSE where on_parse_error asks
+                ai = rid in listed and (rid in asks or rid == "TK-SHELL-PARSE"
+                                        and pol.get("on_parse_error", "ask") == "ask") and req.get("ai") is not None
+                if rid not in flags and not ai and (not isinstance(approval, dict) or "agent" not in approval
+                                                    or approval.get("passkey") == "required"):
                     problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
     if agents:   # a bundle without agent approvals keeps the report it always had
         rep.check("approvals by people", True, f"{people} approval(s) answered by people")
@@ -1256,6 +1264,66 @@ def _approvals(rep, runs, policies):
                       "offline (salted commitments): audit one with `tracekit signer reveal`"
                       + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
             f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
+
+
+def _ai_approvals(rep, runs):
+    """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any:
+    the `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and
+    circuit-breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`)
+    carries `relied_on` with mode enforce, two answers that approve and a person's precedent, and no person's
+    rejection of a call like it. Each precedent it names that the bundle holds is checked: a person's approval, not
+    self-approved, of a request with the same precedent key (its digest), tenant and requester, made in a clean run,
+    before the answer and not revoked as a precedent (precedent.revoked) before it; one the bundle doesn't hold (a
+    precedent is often another run's) is counted, not checked."""
+    events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
+    asked, answered, gone, broken = {}, {}, {}, []
+    yes = shadow = checked = outside = changes = 0
+    for e in events:
+        d, key = e["data"], (e.get("tenant"), e["data"].get("approval_id"))
+        if e.get("type") == "approval.request" and "ai" in d:
+            asked[key] = e
+        elif e.get("type") == "approval" and d.get("approver_kind") != "agent":
+            answered[key] = e
+        elif e.get("type") in ("playbook.entry", "precedent.revoked", "approver.enabled"):
+            changes += 1
+            if e["type"] == "precedent.revoked":
+                gone.setdefault((e.get("tenant"), d["approval_id"]), e["seq"])
+    for e in events:
+        d = e["data"]
+        if e.get("type") == "approval.suggested" and "relied_on" in d:
+            shadow += 1
+        if not (e.get("type") == "approval" and d.get("approver_kind") == "agent" and d.get("decision") == "approve"):
+            continue
+        mine = asked.get((e.get("tenant"), d.get("approval_id")))
+        if mine is None:   # an agent approver bounded by argument fields, or a request outside the bundle
+            continue
+        yes, at, x = yes + 1, f"seq {e['seq']}", d.get("relied_on")
+        if x is None or x["mode"] != "enforce" or [a["decision"] for a in x.get("answers", ())] != ["approve"] * 2:
+            broken.append(f"{at}: an AI yes that decided without two answers that approve")
+            continue
+        if not x["precedents"]["approve"] or x["precedents"]["reject"]:
+            broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
+        for pid in x["precedents"]["approve"]:
+            p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
+            if p is None or pa is None:
+                outside += 1
+                continue
+            checked += 1
+            why = ("is no person's approval" if p["data"]["decision"] != "approve" else
+                   "was self-approved" if p["data"].get("self_approved") else
+                   "is of another kind of call" if pa["data"]["ai"]["digest"] != mine["data"]["ai"]["digest"] else
+                   "is another requester's" if pa["data"]["requester"] != mine["data"]["requester"] else
+                   "was made in a run that wasn't clean" if not pa["data"]["ai"]["clean"] else
+                   "came after the answer" if p["seq"] > e["seq"] else
+                   "was revoked as a precedent before the answer" if gone.get((e.get("tenant"), pid), e["seq"]) < e["seq"]
+                   else None)
+            if why:
+                broken.append(f"{at}: precedent {pid[:64]} {why}")
+    if asked or shadow or changes:   # a bundle without the AI approver keeps the report it always had
+        rep.check("AI approvals", not broken,
+                  f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "
+                  f"({checked} precedent(s) checked in this bundle, {outside} in runs it doesn't hold); {shadow} "
+                  f"shadow suggestion(s); {changes} playbook, precedent and circuit-breaker record(s)", broken[:20])
 
 
 def _coverage(matrices, k):

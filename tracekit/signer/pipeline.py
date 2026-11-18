@@ -69,6 +69,10 @@ CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "
              "detect_ids", "via", "caller", "refused", "ended", "policy_hash")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
+# the AI approver (approver_state): how long a person's answer counts as a precedent; the circuit breaker's agreement of
+# AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
+PRECEDENT_S = 30 * 86400
+AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
 
@@ -89,7 +93,8 @@ def since(ts):
 
 def approval(tenant, run_id, data, ts):
     """The signer's state for the approval an `approval.request` record (`data`, written at `ts`) opened. `agent`: the
-    record's agent eligibility; `via`: the gateway whose call it is; `escalated`: only people answer it now
+    record's agent eligibility; `ai`: its `ai`, when the policy's approval_agent lists every rule it was held by (its
+    precedent key); `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
@@ -103,7 +108,7 @@ def approval(tenant, run_id, data, ts):
             "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
             "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data}),
             "agent": data.get("agent"), "escalated": False, "requested_at": ts, "incident_id": data.get("incident_id"),
-            "via": data.get("via")}
+            "via": data.get("via"), "ai": data.get("ai")}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
@@ -161,13 +166,20 @@ def degrade(tx, prov, state, reason):
         tx.set(prov, "reason", reason[:256])
 
 
-def agent_state(set_, log, run, e):
+def new_agent():
+    """The agent-approval state (agent_state), empty."""
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}}
+
+
+def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
     """Follow record `e` of `run` in the agent-approval state that budgets, review caps and the person-only set are
     counted from: `log.agent` {off: the kill switch, uses: approval id -> {requested, tenant, requester, rules,
-    approved, spent}} and the run's `person_only` and `agent_reviews`. `set_(d, k, v)`: the writer's undoable set, or a
-    plain one on replay. Called after the record's own state change."""
+    approved, spent}} and the run's `person_only` and `agent_reviews`; and the AI approver's (approver_state). `set_(d,
+    k, v)`: the writer's undoable set, or a plain one on replay; `pop(d, k)`: its pop of a key `d` has. Called after the
+    record's own state change."""
     typ, d = e["type"], e["data"]
     a = log.approvals.get(d.get("approval_id"))
+    approver_state(set_, log, run, e, a, pop)
     if typ == "approval.agents":
         set_(log.agent, "off", not d["enabled"])
     elif typ == "approval.request" and (d.get("agent") or {}).get("eligible"):
@@ -197,6 +209,73 @@ def agent_state(set_, log, run, e):
     if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
         # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
+
+
+def approver_state(set_, log, run, e, a, pop):
+    """Follow record `e` of `run` (`a`: the approval it names) in the AI approver's state (docs/approvals.md#the-ai-
+    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, rules, decision, at, run,
+    reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
+    PRECEDENT_S; `key`, its precedent key as shown), `demoted` (tenant\0rule -> why the circuit breaker dropped the rule to shadow), `pairs` (tenant\0rule
+    -> the last AGREEMENT_PAIRS agreements of an AI suggestion with the person's answer) and `playbook` (tenant ->
+    {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it (precedent.revoked), an
+    incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI
+    approval of it, a precedent of it goes bad, or agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or
+    more; a person's approver.enabled restores it."""
+    typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
+
+    def demote(rules, why):
+        for r in rules:
+            if f"{tenant}\0{r}" not in ag["demoted"]:
+                set_(ag["demoted"], f"{tenant}\0{r}", why[:1024])
+
+    def spoil(found, why):   # precedents gone bad, and their rules demoted
+        for aid in found:
+            p = ag["precedents"][aid]
+            if not p.get("bad"):
+                set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
+                demote(p["rules"], f"precedent {aid} went bad: {why}")
+    ap = (a or {}).get("ai")
+    if typ == "run.registered" and d.get("analyzes"):   # a findings run: its why findings are about that run
+        set_(run, "analyzes", d["analyzes"])
+    elif typ == "approval.suggested" and ap and d["decision"] in ("approve", "reject"):
+        set_(a, "suggested", d["decision"])
+    elif typ == "approval" and ap and d.get("approver_kind") != "agent" and d["decision"] in ("approve", "reject"):
+        if ap["clean"] and not d.get("self_approved"):
+            for old in [k for k, p in ag["precedents"].items() if p["at"] < epoch(e["ts"]) - PRECEDENT_S]:
+                pop(ag["precedents"], old)
+            set_(ag["precedents"], d["approval_id"], {
+                "tenant": tenant, "requester": a["requester"], "digest": ap["digest"], "key": ap["key"],
+                "rules": ap["key"]["rules"],
+                "decision": d["decision"], "at": epoch(e["ts"]), "run": f"{tenant}\0{e['run_id']}",
+                **({"reason": d["reason"]} if d.get("reason") else {})})
+        if a.get("suggested"):   # the person's answer to a call the AI answered in shadow mode
+            for r in ap["key"]["rules"]:
+                k = f"{tenant}\0{r}"
+                pairs = [*ag["pairs"].get(k, ()), a["suggested"] == d["decision"]][-AGREEMENT_PAIRS:]
+                set_(ag["pairs"], k, pairs)
+                if len(pairs) >= AGREEMENT_MIN and sum(pairs) < AGREEMENT_BAR * len(pairs):
+                    demote([r], f"the AI agreed with people on {sum(pairs)} of the last {len(pairs)} calls")
+    elif typ == "approval.revoked" and ap and a.get("kind") == "agent" and d["by"] != "signer":
+        demote(ap["key"]["rules"], f"{d['by']} revoked AI approval {d['approval_id']}")
+    elif typ == "incident.opened":
+        spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{e['run_id']}"],
+              f"incident {d['incident_id']} opened in its run")
+    elif typ == "why.finding" and run.get("analyzes"):
+        spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{run['analyzes']}"],
+              "a why finding was written about its run")
+    elif typ == "precedent.revoked" and d["approval_id"] in ag["precedents"]:
+        spoil([d["approval_id"]], f"{d['by']} revoked it" + (f": {d['reason']}" if d.get("reason") else ""))
+    elif typ == "approver.enabled":
+        for r in d["rules"]:
+            for table in ("demoted", "pairs"):
+                if f"{tenant}\0{r}" in ag[table]:
+                    pop(ag[table], f"{tenant}\0{r}")
+    elif typ == "playbook.entry":
+        book = ag["playbook"].get(tenant) or {"version": 0, "entries": {}}
+        entries = {k: v for k, v in book["entries"].items() if k != d["id"]}
+        if d["action"] == "accept":
+            entries[d["id"]] = {"text": d["text"], "key": d["key"]}
+        set_(ag["playbook"], tenant, {"version": book["version"] + 1, "entries": entries})
 
 
 def new_contain():
@@ -360,7 +439,7 @@ class Tx:
         if typ == "run.registered":
             self.set(run, "registered", e["ts"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
-        agent_state(self.set, log, run, e)
+        agent_state(self.set, log, run, e, self.pop)
         contain_state(self.set, log, run, e, self.pop)
         grant_state(self.set, run, e)
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
@@ -513,7 +592,7 @@ class RecordLog:
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
         unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
-        agent, contain = {"off": False, "uses": {}}, new_contain()
+        agent, contain = new_agent(), new_contain()
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
 
@@ -553,7 +632,7 @@ class RecordLog:
                             outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
-            agent, contain = st.get("agent", agent), st.get("contain", contain)
+            agent, contain = {**agent, **st.get("agent", {})}, st.get("contain", contain)   # (1.8 added keys)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
