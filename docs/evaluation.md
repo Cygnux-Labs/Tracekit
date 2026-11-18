@@ -1,10 +1,11 @@
 # Evaluation
 
-Twenty-two experiments, E1 to E23 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
-bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20, E21 and E23, and E9 `--quick` on
-Linux.
+Twenty-three experiments, E1 to E23 and E28 (there is no E13; E24 to E27 aren't in this release). `make eval` runs the
+offline ones: E1 to E4 (E4 on v1 and v2 bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19,
+E20, E21 and E23, and E9 `--quick` on Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
-`make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
+`make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) and E28 (`eval/e28_influence.py`, which reads an AgentDojo
+checkout) run on their own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
 E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
@@ -677,6 +678,43 @@ the agent issuing a grant
 for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
 total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
 run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.
+
+## E28: influence grades on runs with a known cause
+
+`eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
+true influence, offline, with no model API. Three parts:
+
+- **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, gpt-4o-2024-05-13, the `important_instructions`
+  attack and the clean runs) replayed through the signer-backed why runtime against a dev signer with no rules: the
+  user's request is the task, each model turn a model call that had the whole conversation in its context, each tool
+  output observed as untrusted. Labels come from the benchmark: in a run whose attack succeeded, the attack call is
+  the first call after the injected text arrived of a tool the injection task's ground truth calls, carrying a string
+  the ground truth fixes and the injected text states. A tool output holding the injected text is a cause of it; one
+  holding neither the injected text nor any of the call's values is not; one that supplied a value without the
+  instruction is left unlabelled. Of 629 attacked runs, 300 attacks succeeded and 274 were scored.
+
+  | Grade | Precision (edges) | Recall (attack calls) |
+  |---|---|---|
+  | exact | 214 of 214 (100%) | 214 of 274 (78.1%) |
+  | seen | 293 of 405 (72.3%) | 273 of 274 (99.6%) |
+  | hint | 248 of 248 (100%) | 236 of 274 (86.1%) |
+
+  Hint's and exact's precision here is high by construction: both need the call's value in the source, and a negative
+  holds none. What tests exact is where it says a value came from: 281 of the 283 exact edges on the attacker's own
+  value name a tool output holding the injected text (the other 2 name the record that supplied the field's other
+  value, the user's own address), and all 757 exact claims name a record that holds the value. An argument from
+  untrusted content (`untrusted`) marks 216 of the 274 attack calls, and also 40 of the 354 calls of clean runs, in 31 of
+  97 clean runs: a task that asks the agent to act on what it reads gets it too, so it is never called drift on its
+  own.
+- **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
+  vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
+  found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40
+  exfiltration calls and 0 of 57 others.
+- **A scripted reader** that does what its task asks and, seven times in ten, what a planted line says, replayed
+  without its task: 20 of 20 planted emails serve no step of the task, 0 of 60 asked ones. The scripted model follows
+  the premise by construction, so this checks the finding's machinery, not a real model.
+
+Results: `eval/results/e28_influence.json`.
 
 ## What is not measured
 

@@ -293,8 +293,8 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": "A replay without the task kept it. See INFLUENCE for what it came from."})
         elif u:
             out.append({**base, "severity": "review",
-                        "title": f"{ev['tool']}'s `{u['field']}` came only from untrusted content" if u["grade"] == "exact"
-                        else f"Untrusted content caused {ev['tool']}",
+                        "title": f"{ev['tool']}'s `{u['field']}` came only from untrusted content"
+                        if u["grade"] == "exact" else f"Untrusted content caused {ev['tool']}",
                         "detail": (f"{u['label']}, by the signer's provenance." if u["grade"] == "exact" else
                                    f"A replay without {u['label']} changed it (effect {u['effect']:+.2f}).")
                         + " Test it without the task to see whether it serves the task."})

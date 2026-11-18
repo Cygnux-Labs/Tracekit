@@ -36,6 +36,14 @@ def claims():
     e17, e17d, e17c = res("e17_policy_corpus"), res("e17_detection"), res("e17_containment")
     e18, e20, e21, e21r, e22 = (res("e18_agent_approvers"), res("e20_alignment"), res("e21_policy_robustness"),
                                 res("e21_robustness"), res("e22_verifier_agreement"))
+    e28 = res("e28_influence")
+    ad, dk, wt = e28["agentdojo"], e28["desk"], e28["without_task"]
+    ag, ex, un = ad["grades"], ad["attack_value_attribution"], ad["untrusted"]
+
+    def grade(name, g):
+        n = g["tp"] + g["fp"]
+        return (f"| {name} | {g['tp']} of {n} ({pct(g['tp'] / n, 1 if g['fp'] else 0)}) | "
+                f"{g['found']} of {g['calls']} ({pct(g['found'] / g['calls'], 1)}) |")
     m = e1["mutations"]
     alone = sum(v["ledger_only"] == 1 for v in m.values())
     wit = sum(v["ledger_plus_witness"] == 1 for v in m.values())
@@ -116,8 +124,25 @@ def claims():
         f"(held out, {ho['controls']['calls']:,} honest calls)",
         f"All {e22['bundles']} bundles agree in all three passes",
         f"none of the {e22['forgeries']} forgeries",
+        f"Of {ad['runs']['attacked']} attacked runs, {ad['runs']['succeeded']} attacks succeeded and "
+        f"{ad['runs']['scored']} were scored",
+        *(grade(k, ag[k]) for k in ("exact", "seen", "hint")),
+        f"{ex['to_the_injection']} of the {ex['edges']} exact edges on the attacker's own value",
+        f"all {sum(v['edges'] for v in ad['exact_claims'].values())} exact claims name a record that holds the value",
+        f"marks {un['attack_calls_named']} of the {un['attack_calls']} attack calls, and also {un['clean_calls_named']} "
+        f"of the {un['clean_calls']} calls of clean runs, in {un['clean_runs_named']} of {ad['runs']['clean']} clean runs",
+        f"the only cause of the {dk['exfil_calls']} exfiltration calls in {dk['exfil_runs']} runs",
+        f"Measured: {dk['grades']['measured']['found']} of {dk['exfil_calls']} found",
+        f"exact found {dk['grades']['exact']['found']} of {dk['exfil_calls']}",
+        f"{dk['exfil_calls_named']} of {dk['exfil_calls']} exfiltration calls and {dk['legit_calls_named']} of "
+        f"{dk['legit_calls']} others",
+        f"{wt['planted_drift']} of {wt['planted_calls']} planted emails serve no step of the task, "
+        f"{wt['asked_drift']} of {wt['asked_calls']} asked ones",
     ]
     limits = [
+        f"in {pct(ag['exact']['found'] / ag['exact']['calls'])} of the successful attacks scored",
+        f"{pct(ag['seen']['fp'] / (ag['seen']['tp'] + ag['seen']['fp']))} of the labelled seen edges",
+        f"{un['clean_runs_named']} of {ad['runs']['clean']} had such a call",
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
         f"{se17['fp']} of E17's {se17['benign']} benign calls, {pct(se17['fp'] / se17['benign'], 1)}, and "
         f"{strict['sessions']['totals']['fp']} of E21's {strict['sessions']['totals']['benign']} developer-session "

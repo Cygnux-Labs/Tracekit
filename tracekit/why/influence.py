@@ -15,12 +15,12 @@ influence on the call (else the goal, when it was in that context, else another 
 observed content to the call it repeats.
 
 It serves no step of the task (drift) when a replay without the goal kept it (run tests removing the task, or each of
-the person's prompts, verdict ruled out: the call didn't need the task); it `serves` the task when such a replay changed it, or when the chain reaches
-the goal or a model call on it had the goal in its context. An argument set by untrusted content from outside the run's
-agents (exact) or a replay tying the call to untrusted content (measured) is named (`untrusted`), never called drift on
-its own: a task that asks the agent to act on what it reads ("pay the bill in bill.txt") gets those too (E28: 31 of 97
-clean AgentDojo runs). An exact value from another agent's message is not named: the signer's index is per run, so it
-can't say where that agent got the value.
+the person's prompts, verdict ruled out: the call didn't need the task); it `serves` the task when such a replay changed
+it, or when the chain reaches the goal or a model call on it had the goal in its context. An argument set by untrusted
+content from outside the run's agents (exact) or a replay tying the call to untrusted content (measured) is named
+(`untrusted`), never called drift on its own: a task that asks the agent to act on what it reads ("pay the bill in
+bill.txt") gets those too (E28: 31 of 97 clean AgentDojo runs). An exact value from another agent's message is not
+named: the signer's index is per run, so it can't say where that agent got the value.
 """
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from .core import Run
 from .graph import Graph
 
 MAX_CHAIN = 12      # steps of a chain kept; a longer one starts with "…"
-SHOWN = 8           # seen edges and hints listed per call (untrusted first, then the latest); `seen` and `hinted` count all
+SHOWN = 8           # seen edges and hints listed per call (untrusted first, then the latest); `seen`, `hinted`: all
 
 
 def goals(run: Run, g: Graph) -> List[str]:

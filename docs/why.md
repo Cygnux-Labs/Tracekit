@@ -243,12 +243,42 @@ Every edge in the graph says how it was established.
 Tracing (`tracekit why taint`, "blast radius") follows observed edges and answers what an input could have influenced.
 Only tested edges answer what it did influence.
 
+## Influence: what moved a call
+
+For each consequential call (stopped, flagged, sensitive, or with provenance), the edges into it are graded by how
+they are known (`tracekit/why/influence.py`):
+
+| Grade | It says | Comes from | Drawn |
+|---|---|---|---|
+| **exact** | an argument's value came only from this record | the signer's provenance index: the record that brought the value into the run | solid |
+| **measured** | removing this source changed whether the call happened | a replay test (`tracekit why test`, FIND THE CAUSE): verdict causal | double |
+| **seen** | the source was in the context of the model call that asked for the call | the agent's runtime's record of its context; for a signed run, the LLM gateway's record of the results a request sent (the rest of an imported run's context is everything the run observed before the model call) | thin |
+| **hint** | the call's argument text is in the source | why's search for each value in what came before, and word overlap | dashed, only when asked for |
+
+A hint is never called an influence and never drives a finding. In the viewer an exact edge reads signed only on a
+call whose signed record the viewer verified.
+
+The run's goal is its task: the task input, else the prompts the person typed. Each call gets its chain back to it:
+the call, the model call that asked for it, the source in that model call's context that carries an exact or measured
+influence on the call (else the goal, when it was there, else another agent's message), and so on to the start. In
+words: "git_push (dev) came from: read github:issue-12 (untrusted; exact: `branch`) → dev decided (plan; 3 in context,
+1 untrusted) → this call".
+
+- **Serves the task**: the chain reaches the goal, or a model call on it had the goal in its context, or a replay
+  without the task changed the call.
+- **Serves no step of the task**: a replay without the task kept the call. Test it by removing the task's content:
+  `tracekit why test RUN --remove ref:<the task's hash prefix> --target 'tool=…'` (with only prompts, remove each).
+- **Untrusted**: an argument came only from content outside the run's agents (exact), or a replay tied the call to
+  untrusted content (measured). This alone is not drift: a task that asks the agent to act on what it reads ("pay the
+  bill in bill.txt") gets it too. [E28](evaluation.md#e28-influence-grades-on-runs-with-a-known-cause) measures each
+  grade on AgentDojo's published runs.
+
 ## Alerts
 
 | Severity | When |
 |---|---|
 | **high** | a sensitive tool used an argument value that appears only in untrusted content, or the log fails verification |
-| **review** | a sensitive tool is downstream of untrusted input (reach only), or a tool or model call failed |
+| **review** | a call serves no step of the task (a replay without the task kept it); an argument came only from untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
 | **info** | a tool call was stubbed during replay |
 
 Sensitive tools are the ones a run declares. If it declares none, tool names such as send, pay, delete or export are
@@ -486,7 +516,7 @@ tracekit view --why runs --allow-program myapp.agents:SYSTEM
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | the viewer's page |
-| GET | `/api/why/workspace` | run summaries, the influence graph, every run's alerts and the signed calls each why event cites |
+| GET | `/api/why/workspace` | run summaries, the influence graph with each risky call's graded influence (`influence.calls`), every run's alerts and the signed calls each why event cites |
 | GET | `/api/why/runs/<id>` | one run's investigation data, and whether this server may replay it |
 | GET | `/api/stream` | the viewer's server-sent events: each run's events as tape rows, and `why` records (a run changed, with its new alerts; a test finished) |
 | POST | `/api/why/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}`: a replay test |

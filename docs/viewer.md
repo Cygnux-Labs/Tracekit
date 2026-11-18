@@ -29,7 +29,7 @@ The header holds the pages, the command box, and on a run's page that run's view
 | **APPROVALS** | each held call nobody has answered yet, in every run (approving one lets the agent's retry of the same call run, once): what it binds (the signer's copy of the arguments, when the viewer has it), its rule in words and the `tracekit approvals approve` / `reject` commands to copy; then each held call answered or ended, once, with what came of it (approved, rejected, expired, abandoned, ...: PERMISSIONS' outcome, which `tracekit report` counts too) and the call (its tool and the visible part of its arguments, or "arguments not kept"). The count on the button (`TO ANSWER`) is the number not answered yet. The page answers nothing: the approvals page (with OIDC login, a passkey) or the signer's command does |
 | **PERMISSIONS** | every decision that was not a plain allow, and what came of it: blocked, ran flagged, approved, rejected, expired or not answered, who answered and when |
 | **HORIZON** | where the agents went, around a black hole: the project, this machine and the outside world ([below](#horizon)) |
-| **INFLUENCE** | with why logs: what content reached which tools across every run ([below](#influence)) |
+| **INFLUENCE** | with why logs: what led to each risky call, and what content reached which tools across every run ([below](#influence)) |
 | **TIPS** | what each step of your coding agents cost and how to cut it: three tips, each with its evidence, saving and fix ([below](#tips)) |
 
 ![RUNS: each run with its state, calls, blocked, held, flagged, gaps and verdict, newest first; below, the why log the viewer built for each](viewer/1.5/runs.png)
@@ -327,16 +327,20 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
-Across every why run, INFLUENCE answers one question: did something your agents read come before a blocked or held
-call? It says "came before": the content was in front of the agent when it decided on the call. Only a replay that
-confirmed it says "caused".
+Across every why run, INFLUENCE answers first, per risky call, what led to it, graded by how each link is known
+([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance traced an argument to the record),
+measured (a replay without the source changed the call), seen (the source was in the model's context when it decided)
+and hint (text overlap, never an influence).
 
-- **The answer, first.** In words, the untrusted content that came before the most blocked or held calls (for
-  example "Sub-agents' messages (untrusted) came before 48 blocked Bash calls in 3 runs"), the three worst. A
-  replay-confirmed cause comes first, with its effect. Click a line for its row below. When nothing untrusted came
-  before a blocked or held call, it says exactly that.
-- **The flow.** Each kind of content on the left (its trust, untrusted framed red, and its sources) and the tools
-  called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
+- **The answer, first.** The risky calls (stopped, flagged, with an exact or measured link, or serving no step of the
+  task), worst first: those a replay without the task kept, then those whose argument or cause was untrusted content,
+  then the stopped ones. Each says in words where it came from, for example "git_push (dev) came from: read
+  github:issue-12 (untrusted; exact: `branch`) → dev decided (plan; 3 in context, 1 untrusted) → this call", and a call
+  nothing links says "no influence found". Below the words, its chain top to bottom: a thin line per step, a solid line
+  from a step the signer traced an argument to, a double line from one a replay tied to the call. **show hints** adds
+  the text-overlap hints, dashed. **WHY** opens the call in its run.
+- **The flow.** What the agents had in front of them when they decided, across runs: each kind of content on the left
+  (its trust, untrusted framed red, and its sources) and the tools called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
   were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a
   replay ruled the link out. A line is thicker the more runs it came before (log scale). The plain lines (calls that
   ran with no flag) are hidden; a note says how many. Point at content or a tool to see all its lines and dim the
@@ -728,8 +732,9 @@ that citation joins the two.
 - **Views** (a run's page, keys `1` to `7`; the tape's **WHY LOG EVENTS**; the **INFLUENCE** page): **OVERVIEW**,
   **WHY** and the why log's **TIMELINE** (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
-  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: whether untrusted
-  content came before blocked or held calls, each kind of content and the tools called after it, with tested effects). **DESK** shows every panel at once.
+  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: what led to each
+  risky call, graded exact, measured or seen, then each kind of content and the tools called after it, with tested
+  effects). **DESK** shows every panel at once.
 - **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
   untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
 

@@ -2,8 +2,8 @@
 analysis the page shows and the allow-listed replays. observe.make_handler serves them (`why=`, a Store), on the
 viewer's own session and security conventions:
 
-GET  /api/why/workspace            run summaries, the cross-run influence graph, every run's alerts and the signed calls
-                                   each why event cites
+GET  /api/why/workspace            run summaries, the cross-run influence graph with each risky call's graded influence,
+                                   every run's alerts and the signed calls each why event cites
 GET  /api/why/runs/<id>            everything the page's WHY, GRAPH and AGENTS views show of one run
 POST /api/why/runs/<id>/tests      {"intervention","target","n"} -> counterfactual replay (allow-listed programs only)
 POST /api/why/runs/<id>/attribute  {"target","n","n_max"} -> group test, then narrow down to the causes
