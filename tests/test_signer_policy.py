@@ -4621,12 +4621,17 @@ class CodingPack(unittest.TestCase):
         # the 1.5.3 sweep: uninstalling Tracekit, stopping it or editing its installed engine, signer or hooks was
         # allowed (only its packs were protected), and a help request through python -m was denied
         removals = ("tracekit uninstall --agent claude", "tracekit down", "python3 -m tracekit down",
-                    "pip uninstall -y tracekit-ai", "uv tool uninstall tracekit-ai", "pipx uninstall tracekit-ai",
+                    "pip uninstall -y tracekit-ai", "pip uninstall -y tracekit--ai",
+                    "uv tool uninstall tracekit-ai", "pipx uninstall tracekit-ai",
                     "claude plugin uninstall tracekit", "claude plugin disable tracekit@cygnux",
+                    "claude plugin marketplace remove tracekit", "claude plugin marketplace rm tracekit",
                     "systemctl --user stop tracekit",
                     # the last review: any number of options before the subcommand (a bound let 17 through)
-                    "pip " + "-v " * 17 + "uninstall -y tracekit-ai", "python3 -m pip " + "-q " * 17 + "uninstall tracekit-ai",
-                    "claude " + "-d " * 17 + "plugin uninstall tracekit", "systemctl " + "--user " * 17 + "stop tracekit")
+                    "pip " + "-v " * 17 + "uninstall -y tracekit-ai", "pip " + "-v " * 17 + "uninstall -y tracekit--ai",
+                    "python3 -m pip " + "-q " * 17 + "uninstall tracekit-ai",
+                    "claude " + "-d " * 17 + "plugin uninstall tracekit",
+                    "claude " + "-d " * 17 + "plugin marketplace remove tracekit",
+                    "systemctl " + "--user " * 17 + "stop tracekit")
         installed = ("sed -i s/deny/allow/ .venv/lib/python3.11/site-packages/tracekit/policy2/engine.py",
                      "cp evil.py /usr/lib/python3/dist-packages/tracekit/hook.py")
         for pack, engine, e in self.every_pack():
@@ -4643,6 +4648,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, path=path):
                     self.assertIn("TK-D013", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
             for command in ("tracekit up", "pip uninstall -y requests", "claude plugin uninstall other",
+                            "claude plugin marketplace list", "claude plugin marketplace remove other",
                             "python3 -m tracekit.signer --help", "systemctl --user stop other"):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
