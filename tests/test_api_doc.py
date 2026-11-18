@@ -78,7 +78,7 @@ class Tables(unittest.TestCase):
 
     def test_every_keyword_of_the_contract_is_rendered_or_named(self):
         """A schema keyword the generator does not render fails here until it renders it or the page says it is not shown."""
-        shown = {"type", "properties", "required", "const", "enum", "items", "oneOf", "anyOf", "if", "then", "pattern",
+        shown = {"type", "properties", "required", "const", "enum", "items", "oneOf", "if", "then", "pattern",
                  "minLength", "maxLength", "minItems", "maxItems", "minimum", "maximum", "additionalProperties"}
         seen = set()
 
@@ -97,6 +97,47 @@ class Tables(unittest.TestCase):
         for table in (self.api_doc.rpc_schema.REQUESTS, self.api_doc.rpc_schema.RESPONSES):
             walk(list(table.values()))
         self.assertEqual(seen - shown, set())
+
+    def test_an_if_the_page_cannot_show_fails_naming_the_rpc_and_field(self):
+        """An if on an enum, or without a then, or with an else, is an error, not a KeyError or a dropped limit."""
+        api_doc = self.api_doc
+        for bad in ({"if": {"properties": {"kind": {"enum": ["a"]}}}, "then": {"properties": {}}},
+                    {"if": {"properties": {"kind": {"const": "a"}}}},
+                    {"if": {"properties": {"kind": {"const": "a"}}}, "then": {"properties": {}}, "else": {}}):
+            with self.assertRaises(ValueError):
+                api_doc.conditions(bad)
+        saved = api_doc.rpc_schema.REQUESTS["decide"]
+        api_doc.rpc_schema.REQUESTS["decide"] = dict(saved, **{"if": {"properties": {"args_source": {"enum": ["raw"]}}}})
+        try:
+            with self.assertRaisesRegex(ValueError, "decide: .*args_source"):
+                api_doc.block("decide")
+        finally:
+            api_doc.rpc_schema.REQUESTS["decide"] = saved
+
+    def test_every_if_of_the_contract_is_one_the_page_can_show(self):
+        def walk(s):
+            if isinstance(s, dict):
+                if "if" in s:
+                    self.assertTrue(all("const" in v for v in s["if"]["properties"].values()))
+                    self.assertIn("then", s)
+                    self.assertNotIn("else", s)
+                for k, v in s.items():
+                    walk(v)
+            elif isinstance(s, list):
+                for x in s:
+                    walk(x)
+        walk(list(self.api_doc.rpc_schema.REQUESTS.values()) + list(self.api_doc.rpc_schema.RESPONSES.values()))
+
+    def test_a_field_every_shape_requires_is_required(self):
+        schema = {"type": "object", "required": ["a"], "properties": {"a": {}, "b": {}, "c": {}},
+                  "oneOf": [{"required": ["b", "c"]}, {"required": ["b"]}]}
+        self.assertEqual({r[0]: r[2] for r in self.api_doc.rows(schema)}, {"a": "yes", "b": "yes", "c": "depends"})
+
+    def test_a_map_of_objects_lists_the_fields_of_its_values(self):
+        schema = {"type": "object", "properties": {"m": {"type": "object", "additionalProperties": {
+            "type": "object", "required": ["x"], "properties": {"x": {"type": "string"}, "y": {"type": "integer"}}}}}}
+        self.assertEqual([(r[0], r[2]) for r in self.api_doc.rows(schema)],
+                         [("m", "no"), ("m.*.x", "yes"), ("m.*.y", "no")])
 
     def test_a_constant_is_written_as_json(self):
         self.assertEqual(self.api_doc.kind({"const": True}), "always `true`")

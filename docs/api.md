@@ -36,7 +36,8 @@ JSON null, so "text or nothing" is a text or null. "One of" lists the only value
 value means that is the only value it may have. The notes give limits: lengths are in characters, a whole number is at
 most 9007199254740991 (2^53 - 1, the largest whole number JSON holds exactly) unless its note says less, and `matches`
 gives a regular expression in which `(?![\s\S])` means the end of the text. "Each item" gives the limits on every
-item of a list, and "each value" on every value of an object whose keys are free. A field whose Required is "depends" is
+item of a list, and "each value" on every value of an object whose keys are free (`*` in a name, as in `a.*.b`, is a
+field of each such value). A field whose Required is "depends" is
 required by some shapes of its object and not others: the note on the object's own row lists the shapes, each with the
 value that selects it, and "when `args_source` is `"raw"`" in a note means the limit applies only then. A request
 field that a table does not list is refused, as Versioning says; the notes do not repeat that.

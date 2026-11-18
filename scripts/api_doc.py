@@ -134,16 +134,25 @@ def conditions(schema):
     """The limits an `if`/`then` pair puts on a field, by field name: the then-part applies when the if-part's values match."""
     if "if" not in schema:
         return {}
-    when = " and ".join("`%s` is `%s`" % (k, json.dumps(v["const"])) for k, v in schema["if"]["properties"].items())
-    return {k: "when %s: %s" % (when, "; ".join([kind(v)] + notes_list(v))) for k, v in schema["then"]["properties"].items()}
+    cond, then = schema["if"].get("properties", {}), schema.get("then", {}).get("properties")
+    bad = [k for k, v in cond.items() if "const" not in v]
+    if not cond or then is None or "else" in schema or bad:
+        raise ValueError("an if/then the page cannot show (it needs const conditions, a then with properties and no else)"
+                         + (": field %s" % ", ".join(bad) if bad else ""))
+    when = " and ".join("`%s` is `%s`" % (k, json.dumps(v["const"])) for k, v in cond.items())
+    return {k: "when %s: %s" % (when, "; ".join([kind(v)] + notes_list(v))) for k, v in then.items()}
 
 
 def rows(schema, prefix=""):
     """One (name, type, required, notes) row per field, nested fields included."""
     result = []
     required = set(schema.get("required", []))
-    # a field some shapes of the object require and others don't
-    sometimes = {r for b in schema.get("oneOf", ()) if is_shape(b) for r in b.get("required", ())} - required
+    shapes = [b for b in schema.get("oneOf", ()) if is_shape(b)]
+    # a field some shapes of the object require and others don't; one every shape requires is required
+    sometimes = {r for b in shapes for r in b.get("required", ())} - required
+    if shapes and len(shapes) == len(schema["oneOf"]):
+        required |= set.intersection(*(set(b.get("required", ())) for b in shapes))
+        sometimes -= required
     when = conditions(schema)
     for name, sub in schema.get("properties", {}).items():
         path = prefix + name
@@ -153,6 +162,9 @@ def rows(schema, prefix=""):
         base = path + "[]" if inner is not sub else path
         if inner.get("type") == "object":
             result += rows(inner, base + ".")
+            values = inner.get("additionalProperties")
+            if isinstance(values, dict) and values.get("type") == "object":   # a map of objects: their fields
+                result += rows(values, base + ".*.")
         branches = [b for b in inner.get("oneOf", ()) if b.get("type") == "object"]
         for i, branch in enumerate(branches, 1):   # one row per branch, then its fields: they differ by `kind`
             const = branch["properties"].get("kind", {}).get("const")
@@ -171,10 +183,14 @@ def table(schema):
 
 def block(name):
     """What goes between one RPC's markers: its two tables, folded away so the page reads as prose first."""
+    try:
+        tables = table(rpc_schema.REQUESTS[name]), table(rpc_schema.RESPONSES[name])
+    except ValueError as e:
+        raise ValueError("%s: %s" % (name, e))
     return "\n".join([
         "<details>", "<summary>Request and answer fields</summary>", "",
-        "**Request**", "", table(rpc_schema.REQUESTS[name]), "",
-        "**Answer**", "", table(rpc_schema.RESPONSES[name]), "",
+        "**Request**", "", tables[0], "",
+        "**Answer**", "", tables[1], "",
         "</details>", ""])
 
 
@@ -196,7 +212,11 @@ def main():
         if a.show not in rpc_schema.REQUESTS:
             print("no RPC named %r; the RPCs are: %s" % (a.show, ", ".join(rpc_schema.REQUESTS)))
             return 1
-        print(block(a.show))
+        try:
+            print(block(a.show))
+        except ValueError as e:
+            print(e)
+            return 1
         return 0
     with open(PAGE, encoding="utf-8") as f:
         old = f.read()
