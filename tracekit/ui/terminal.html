@@ -4305,11 +4305,10 @@
         + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + lessonCmd(x.retire + " --because RUN:SEQ") + `</section>`;
     }
     function lessonRetired(x) {
-      const rb = x.retired_because;
-      const why = rb && rb.run != null && rb.seq != null
+      const rb = x.retired_because, named = rb && rb.run != null && rb.seq != null;
+      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${named
         ? `Retired: disproved by run ${esc(rb.run)} at seq ${esc(rb.seq)} <a href="#" data-lrec="${esc(rb.run)}" data-lseq="${esc(rb.seq)}" title="${esc(`run ${rb.run} record ${rb.seq}`)}">OPEN</a>`
-        : "Retired";
-      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${why}</span></div>`;
+        : "Retired"}</span></div>`;
     }
     function renderLessons(L, days) {
       const head = `<div class="tsrc">LESSONS · what your coding agents keep relearning, from signed records · a person approves each one</div>`;
