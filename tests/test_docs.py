@@ -182,7 +182,7 @@ class PluginSkills(unittest.TestCase):
         """A harness loads each skill on its own, so each says it: the agent never answers a hold or changes Tracekit,
         and gives the person the approve command to run. Each is named as its folder, as Agent Skills requires."""
         skills = glob.glob(os.path.join(ROOT, "plugin", "skills", "*", "SKILL.md"))
-        self.assertGreaterEqual(len(skills), 5)
+        self.assertGreaterEqual(len(skills), 4)
         for path in skills:
             text = read(path)
             words = " ".join(text.split())

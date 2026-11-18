@@ -11,4 +11,4 @@ you use `tracekit graph`). Bring a bundle and its trust file from a machine wher
 tracekit verify run.tkb --trust run.trust.json
 ```
 
-Skip tracekit-setup and tracekit-connect in Replit: with no hooks there is nothing to set up.
+Skip tracekit-setup in Replit: with no hooks there is nothing to set up.

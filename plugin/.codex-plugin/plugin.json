@@ -13,7 +13,7 @@
   "interface": {
     "displayName": "Tracekit",
     "shortDescription": "Every tool call checked, held for you when risky, and signed",
-    "longDescription": "Tracekit's hooks check each tool call before it runs: allowed, held until you approve it, or blocked. Every call and decision is signed into a record anyone can verify offline. Skills set it up, connect it to Tracekit Cloud and explain what it did.",
+    "longDescription": "Tracekit's hooks check each tool call before it runs: allowed, held until you approve it, or blocked. Every call and decision is signed into a record anyone can verify offline. Skills set it up and explain what it did.",
     "developerName": "Cygnux Labs",
     "category": "Coding",
     "websiteURL": "https://github.com/Cygnux-Labs/Tracekit",

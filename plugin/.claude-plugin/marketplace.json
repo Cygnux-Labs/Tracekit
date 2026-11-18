@@ -8,7 +8,7 @@
     {
       "name": "tracekit",
       "source": "./",
-      "description": "Checks every tool call before it runs, holds risky ones for you, and signs each into a tamper-evident record; skills to set it up, connect to Tracekit Cloud and explain what it did"
+      "description": "Checks every tool call before it runs, holds risky ones for you, and signs each into a tamper-evident record; skills to set it up and explain what it did"
     }
   ]
 }

@@ -98,14 +98,6 @@ The setup skill runs the right `tracekit init` for the agent it is in, after you
 > (the transcript reader stopped). Anyone can check it offline: `tracekit verify last.tkb --trust last.trust.json`.
 > In dev mode the signing key belongs to your user, so this catches mistakes, not a determined agent.
 
-**Connect your team to Tracekit Cloud** (Tracekit 1.7.1 and later).
-
-> **You:** Connect us to Tracekit Cloud.
->
-> **Agent:** Run `tracekit connect <your team's address>` in your terminal. It prints a link and a code: sign in,
-> check that the page shows the same fingerprint, and approve. From then on each finished run's signed records go to
-> your team's space. Prompts, code and keys stay here.
-
 ## What stays on your machine
 
 - The signer, its keys and the records live on your machine, under your own user (dev mode).
@@ -114,8 +106,7 @@ The setup skill runs the right `tracekit init` for the agent it is in, after you
 - In dev mode the signer also keeps each call's redacted arguments and result, encrypted, for 7 days, so `tracekit
   view` can show them. `TRACEKIT_DEV_CONTENT=0`, set before the signer starts, keeps none.
 - An exported bundle holds hashes, not content.
-- The plugin sends nothing off the machine. Tracekit Cloud, if you connect it, gets signed records only, and only
-  after you approve it in your browser.
+- The plugin sends nothing off the machine.
 
 Field by field: [privacy](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy).
 
