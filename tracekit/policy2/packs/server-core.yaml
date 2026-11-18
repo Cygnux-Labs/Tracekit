@@ -8,7 +8,7 @@
 # tool's query). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: coding.yaml
-version: '2026.11-server-core-1'
+version: '2026.11-server-core-2'
 description: the server pack's rules for every tool (secrets, credentials files, metadata, commands through other tools)
 
 tools:
@@ -47,6 +47,22 @@ deny:
     reason: reading or touching a credentials file
     remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S004 in their policy.
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
+  - id: TK-S007
+    class: shell
+    field: line
+    # TK-S004 for PowerShell's words: any command naming one of TK-S004's credentials files in the home through
+    # $env:USERPROFILE, ${env:USERPROFILE} or cmd's %USERPROFILE% with `\` or `/`, or through $HOME, ${HOME} or ~ with a
+    # `\` after the home or inside the path (~/.aws\credentials), in any case, read off the line as typed (bash drops an
+    # unquoted `\`, so the target TK-S004 reads has none; its `/` forms are TK-S004's). Denied, as TK-S004 denies `cat
+    # ~/.aws/credentials` and `cp ~/.aws/credentials x`: the same file read or copied in PowerShell's words is the same
+    # act, and a hold would let a person approve what the bash form never runs.
+    # lean: the line holds what TK-S004's target leaves out, the text a command only carries: a commit message or an echo
+    # naming $env:USERPROFILE\.aws\credentials is denied too (`git commit -m "…"`), and a home named another way
+    # (C:\Users\u) isn't read; read the target's words if that denies real work
+    pattern: '(?:(?:\$(?:[Ee][Nn][Vv]:[Uu][Ss][Ee][Rr][Pp][Rr][Oo][Ff][Ii][Ll][Ee]|\{[Ee][Nn][Vv]:[Uu][Ss][Ee][Rr][Pp][Rr][Oo][Ff][Ii][Ll][Ee]\})|%[Uu][Ss][Ee][Rr][Pp][Rr][Oo][Ff][Ii][Ll][Ee]%)[/\\]+|(?:\$[Hh][Oo][Mm][Ee]|\$\{[Hh][Oo][Mm][Ee]\}|~)/*\\[/\\]*)(?:(?:\.[Aa][Ww][Ss][/\\]+[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\b|\.[Kk][Uu][Bb][Ee][/\\]+[Cc][Oo][Nn][Ff][Ii][Gg]\b|\.[Dd][Oo][Cc][Kk][Ee][Rr][/\\]+[Cc][Oo][Nn][Ff][Ii][Gg]\.[Jj][Ss][Oo][Nn]|\.[Cc][Oo][Nn][Ff][Ii][Gg][/\\]+[Gg][Cc][Ll][Oo][Uu][Dd][/\\]+(?:[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]_[Dd][Ee][Ff][Aa][Uu][Ll][Tt]_[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\.[Jj][Ss][Oo][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\.[Dd][Bb]|[Aa][Cc][Cc][Ee][Ss][Ss]_[Tt][Oo][Kk][Ee][Nn][Ss]\.[Dd][Bb]|[Ll][Ee][Gg][Aa][Cc][Yy]_[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss])|\.[Aa][Zz][Uu][Rr][Ee][/\\]+(?:[Aa][Cc][Cc][Ee][Ss][Ss][Tt][Oo][Kk][Ee][Nn][Ss]\.[Jj][Ss][Oo][Nn]|[Mm][Ss][Aa][Ll]_[Tt][Oo][Kk][Ee][Nn]_[Cc][Aa][Cc][Hh][Ee])|\.[Ss][Ss][Hh][/\\]+[Ii][Dd]_[A-Za-z0-9_-]*[A-Za-z0-9_](?:$|[^.A-Za-z0-9_-]))|(?:\.[Pp][Gg][Pp][Aa][Ss][Ss]\b|\.[Nn][Ee][Tt][Rr][Cc]\b|\.[Gg][Ii][Tt]-[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\b|\.[Vv][Aa][Uu][Ll][Tt]-[Tt][Oo][Kk][Ee][Nn]\b))|(?:\$[Hh][Oo][Mm][Ee]|\$\{[Hh][Oo][Mm][Ee]\}|~)/+(?:\.[Aa][Ww][Ss]/*\\[/\\]*[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\b|\.[Kk][Uu][Bb][Ee]/*\\[/\\]*[Cc][Oo][Nn][Ff][Ii][Gg]\b|\.[Dd][Oo][Cc][Kk][Ee][Rr]/*\\[/\\]*[Cc][Oo][Nn][Ff][Ii][Gg]\.[Jj][Ss][Oo][Nn]|\.[Cc][Oo][Nn][Ff][Ii][Gg](?:[/\\]+[Gg][Cc][Ll][Oo][Uu][Dd]/*\\[/\\]*|/*\\[/\\]*[Gg][Cc][Ll][Oo][Uu][Dd][/\\]+)(?:[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]_[Dd][Ee][Ff][Aa][Uu][Ll][Tt]_[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\.[Jj][Ss][Oo][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss]\.[Dd][Bb]|[Aa][Cc][Cc][Ee][Ss][Ss]_[Tt][Oo][Kk][Ee][Nn][Ss]\.[Dd][Bb]|[Ll][Ee][Gg][Aa][Cc][Yy]_[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll][Ss])|\.[Aa][Zz][Uu][Rr][Ee]/*\\[/\\]*(?:[Aa][Cc][Cc][Ee][Ss][Ss][Tt][Oo][Kk][Ee][Nn][Ss]\.[Jj][Ss][Oo][Nn]|[Mm][Ss][Aa][Ll]_[Tt][Oo][Kk][Ee][Nn]_[Cc][Aa][Cc][Hh][Ee])|\.[Ss][Ss][Hh]/*\\[/\\]*[Ii][Dd]_[A-Za-z0-9_-]*[A-Za-z0-9_](?:$|[^.A-Za-z0-9_-]))'
+    reason: reading or touching a credentials file
+    remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S007 in their policy.
+    rationale: TK-S004 for PowerShell's words.
   - id: TK-S006
     class: shell
     # options that make a non-shell command run another command (tar's long options also as a unique prefix, as GNU
