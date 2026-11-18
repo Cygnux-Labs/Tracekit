@@ -87,9 +87,9 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-A081", "TK-DEMO-ASK")], server["ask"])
+                                                                   "TK-A081", "TK-Q001", "TK-DEMO-ASK")], server["ask"])
         # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
-        # the laptop has no detection, and the coding pack's narrower ones
+        # the laptop counts no sequence (its TK-Q001 is a run condition), and has the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
         self.assertEqual([r["id"] for r in server["flag"][-4:]], list(wide))
@@ -102,7 +102,11 @@ class Packs(unittest.TestCase):
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
                          ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
-        self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
+        # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
+        self.assertNotIn("sequences", dev)
+        self.assertEqual(dev["limits"], [x for x in server["limits"] if x["id"] == "TK-L001"])
+        self.assertEqual({r["trigger"]: (r["mode"], r["action"]) for r in dev["respond"]},
+                         {"TK-L001": ("shadow", "notify"), "executed_against_policy": ("shadow", "notify")})
         e = Engine(dev)
         for tool, args, rule in (
                 ("Read", {"file_path": "/home/u/.ssh/id_rsa"}, "TK-S004"),

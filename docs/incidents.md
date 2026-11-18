@@ -58,6 +58,7 @@ tracekit signer incidents resolve inc-… [--reason "case 812"]   # resumes the 
 tracekit signer incidents hold RUN | quarantine RUN | resume RUN
 tracekit signer incidents pause | unpause      # the response engine of each replica named; detection keeps recording
 tracekit signer incidents suspend uid:1001 | unsuspend uid:1001
+tracekit signer incidents clear-label RUN --label secrets_access [--reason "..."]   # ends a run label (a person)
 ```
 
 | Call (RPC) | Record |
@@ -66,10 +67,11 @@ tracekit signer incidents suspend uid:1001 | unsuspend uid:1001
 | `incident_resolve` | `run.resumed` in each run it still holds, then `incident.resolved` in the tenant's signer run |
 | `run_hold`, `run_quarantine` | `incident.opened{trigger: operator}` and `run.held` / `run.quarantined` in the run |
 | `run_resume` | `run.resumed` for each incident holding the run (the incidents stay open) |
+| `run_label_clear` | `run.label{action: clear, by: person}` in the run ([run conditions](policy-v2.md#run-conditions)) |
 | `response_pause`, `response_resume` | `incident.response{enabled}` in the tenant's signer run |
 | `suspend`, `unsuspend` | `identity.suspension{state: suspended \| lifted}` in the tenant's signer run |
 
-**Who resolves.** Resolving an incident or resuming a run needs a person (an identity `approvals.persons` maps, or an
+**Who resolves.** Resolving an incident, resuming a run or clearing a run label needs a person (an identity `approvals.persons` maps, or an
 OIDC person) who is an approver, or break-glass with a `--reason`; never the owner, principal or requester of a run it
 concerns. Resolving is not undoing: it ends holds, never a quarantine, and records who did it. Notes (`--reason`) are
 redacted and never leave in a webhook.

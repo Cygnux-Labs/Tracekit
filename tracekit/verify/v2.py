@@ -69,8 +69,15 @@ held, only deny while quarantined, a held call approved only by a person (never 
 the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
 under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
 or, held, one consumed with such an approval.
+Run labels (format 1.8, docs/policy-v2.md#run-conditions): a run whose decisions name one policy the bundle carries is
+replayed under it (tracekit.signer.labels): each label a record sets (a call that ran: its decision allowed or flagged
+it, its approval was consumed, or it ran against its decision; an input observed as untrusted) is added by a
+run.label before the run's next decision or consume, and each add cites a record that sets it and wasn't carried; a
+clear is of a carried label and not by the run's owner; a decision's run_labels were carried or set by its own rules,
+and cover each run condition rule it names. Fails `run labels`; without the snapshot they are signer-asserted (a
+`label policies` warning). A run with no label record is replayed only when its bundle carries its policy.
 Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others are the
-one set of snapshots, by policy_hash, that both the incidents and the agent-approval checks read.
+one set of snapshots, by policy_hash, that the incidents, run labels and agent-approval checks read.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls and unexplained effects make it a warning, so `--strict` exits 3
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
@@ -1094,6 +1101,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     _reviews(rep, runs, trust["analyzers"])
     _constraints(rep, runs)
     _incidents(rep, runs, policies)
+    _labels(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -1347,6 +1355,91 @@ def _incidents(rep, runs, policies):
         rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
                   "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
                   "policies its records cite)", sorted(unbundled)[:20], warn=True)
+
+
+def _labels(rep, runs, policies):
+    """The `run labels` line (module docstring): each run's labels replayed from its records under the compiled policy
+    the bundle carries for the run's one policy_hash; signer-asserted without it, a `label policies` warning."""
+    from tracekit.signer import detect, labels
+    problems, checked, asserted, unbundled = [], 0, 0, set()
+    for rs in runs.values():
+        events = [r["event"] for r in rs if isinstance(r["event"].get("data"), dict)]
+        marked = any(e.get("type") == "run.label" or e.get("type") == "policy.decision" and "run_labels" in e["data"]
+                     for e in events)
+        hashes = {str(e["data"].get("policy_hash")) for e in events if e.get("type") == "policy.decision"}
+        snap = policies.get(next(iter(hashes))) if len(hashes) == 1 else None
+        if snap is None:
+            asserted += marked
+            if marked and len(hashes) == 1:
+                unbundled.add(next(iter(hashes))[:80])
+            continue
+        src = labels.Sources(detect.Rules(loads_strict(snap)))
+        if marked or src.tracked:
+            checked += 1
+            problems += _run_labels(events, src)
+    if checked or asserted:
+        rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policy, "
+                                                               f"{asserted} signer-asserted (under several policies, "
+                                                               "or a policy not in the bundle)", "run labels"),
+                  problems[:20])
+    if unbundled:
+        rep.check("label policies", False, f"{len(unbundled)} policy(ies) not in the bundle: their runs' labels are "
+                  "signer-asserted, not replayed (export the run with the signer's config, which bundles the policies "
+                  "its records cite)", sorted(unbundled)[:20], warn=True)
+
+
+def _run_labels(events, src):
+    """The problems of one run's labels under labels.Sources `src`: a label a record sets that no run.label adds before
+    the run's next decision or consume (or its end); an add the record it cites doesn't set, or of a label carried; a
+    clear of a label not carried, or by the run's owner; a decision whose run_labels the run didn't carry (nor its own
+    rules set) or that don't cover each run condition rule it names."""
+    problems, carried, owed, asked, decided, owner, seqs = [], set(), {}, {}, {}, None, {}
+    key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
+    for e in events:
+        t, d, where = e.get("type"), e["data"], f"seq {e.get('seq')}"
+        if not isinstance(e.get("run_seq"), int):   # schema-invalid: its schema check fails it
+            continue
+        seqs[e["run_seq"]] = e.get("seq")
+        if t == "run.registered" and isinstance(d.get("identity"), dict):
+            owner = f"{d['identity'].get('scheme')}:{d['identity'].get('subject')}"
+        if t == "run.label":
+            x = key(d.get("label"))
+            if d.get("action") == "add":
+                if x is not None and x in carried:
+                    problems.append(f"{where}: adds {x[:32]}, which the run carries already")
+                elif x is None or x not in owed or owed[x] != d.get("source"):
+                    problems.append(f"{where}: adds {str(x)[:32]} citing run_seq {str(d.get('source'))[:20]}, which "
+                                    "doesn't set it under the run's policy")
+                if x is not None:
+                    owed.pop(x, None)
+                    carried.add(x)
+            elif x not in carried:
+                problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
+            elif d.get("identity") == owner:
+                problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
+            else:
+                carried.discard(x)
+            continue
+        if owed and t in ("policy.decision", "approval.consumed"):
+            problems += [f"seq {seqs.get(s)}: sets {x}, which no run.label adds before {where}" for x, s in owed.items()]
+            carried |= owed.keys()
+            owed = {}
+        ids = [i for i in d.get("rule_ids") if isinstance(i, str)] if isinstance(d.get("rule_ids"), list) else []
+        if t == "policy.decision":
+            have = carried | {src.label[i] for i in ids if i in src.label}
+            used = {x for x in d.get("run_labels") if isinstance(x, str)} if isinstance(d.get("run_labels"), list) \
+                else set()
+            problems += [f"{where}: run_labels names {x[:32]}, which the run didn't carry" for x in sorted(used - have)]
+            problems += [f"{where}: {i} applied without run_labels naming {', '.join(sorted(src.when[i]))}"
+                         for i in ids if i in src.when and not src.when[i] <= used]
+            decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}
+        elif t == "approval.request" and isinstance(d.get("binding"), dict):
+            asked[key(d.get("approval_id"))] = {"tool": d["binding"].get("tool"), "rule_ids": ids}
+        call = {**d, "rule_ids": ids} if t == "policy.decision" else d
+        for x in sorted(src.sets({**e, "data": call}, lambda a: asked.get(key(a)), lambda c: decided.get(key(c)))
+                        - carried - owed.keys()):
+            owed[x] = e["run_seq"]
+    return problems + [f"seq {seqs.get(s)}: sets {x}, which no run.label adds" for x, s in owed.items()]
 
 
 def _honoured(events, pointers):

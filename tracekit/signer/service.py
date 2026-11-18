@@ -350,7 +350,7 @@ from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
-from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
+from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
                                       cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
@@ -449,7 +449,8 @@ DEFAULT_GRANTS = frozenset({
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
     "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
-                      "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
+                      "response_pause", "response_resume", "suspend", "unsuspend",
+                      "run_label_clear"})   # containment's operator calls, and clearing a run label
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
 # heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
 # channel_open: a box_daemons identity's alone, whatever `authorize` lists; export_run: any run of the caller's tenant
@@ -527,6 +528,10 @@ def _stricter(a, b):
         d["oversize"] = list(dict.fromkeys(a.get("oversize", []) + b.get("oversize", [])))
     if a.get("unread") or b.get("unread"):
         d["unread"] = a.get("unread") or b.get("unread")
+    if a.get("when") or b.get("when"):   # each reading's run condition rules still waiting (Engine.condition)
+        d["when"] = {**a.get("when", {}), **b.get("when", {})}
+    if a.get("run_labels") or b.get("run_labels"):
+        d["run_labels"] = sorted({*a.get("run_labels", ()), *b.get("run_labels", ())})
     return d
 
 
@@ -601,6 +606,7 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             for name in [bare] + policy.listed(bare):
                 d = _stricter(d, policy.decide(
                     name, args, None if policy.tool_class(name) != "unknown" else of, untrusted))
+        d = policy.condition(d)   # a run condition rule one reading matched, whose label another reading's rule sets
         if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
@@ -1103,7 +1109,7 @@ class SignerService:
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
-                                 detect.Detector.of(policy))
+                                 detect.Detector.of(policy), labels.Sources.of(policy))
         except BaseException:
             storage.close()
             raise
@@ -2891,6 +2897,25 @@ class SignerService:
             return {"run_id": run["run_id"], "incident_id": held[0], "state": "resumed"}
         return self.log.submit(identity, "run_resume", req, fn, (tenant, req["run_id"]), late=True)
 
+    def _run_label_clear(self, identity, req):
+        """A person ends one of a run's labels (docs/policy-v2.md#run-conditions), recorded as theirs: who may is who may
+        resume a run (_resolver), never its owner, principal or requester. A later record that sets it sets it again."""
+        tenant = self._operator(identity)
+        reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
+        who, glass = self._resolver(identity, tenant, [req["run_id"]], reason)
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            if req["label"] not in (run.get("labels") or {}):
+                raise RPCError("invalid_request", f"run {run['run_id'][:128]} doesn't carry {req['label']}")
+            seq = tx.emit(run, "run.label", {"label": req["label"], "action": "clear", "by": "person",
+                                             "identity": subject(identity)[:256], "person": who[:256],
+                                             **({"reason": reason} if reason else {}),
+                                             **({"break_glass": True} if glass else {})},
+                          source="signer", request_id=req["request_id"])
+            return {"run_id": run["run_id"], "label": req["label"], "run_seq": seq}
+        return self.log.submit(identity, "run_label_clear", req, fn, (tenant, req["run_id"]))
+
     def _response_pause(self, identity, req):
         return self._response(identity, req, False)
 
@@ -3168,9 +3193,16 @@ class SignerService:
                     data["detect"] = {"rule_ids": memo["detect_ids"]}
                 if memo.get("nondeterministic"):
                     data["nondeterministic"] = True
+                if memo.get("run_labels"):
+                    data["run_labels"] = memo["run_labels"]
             else:
+                # run conditions under the labels the run carries now, on the writer: one a call just before set counts
                 d, mismatch, both = ruled
+                d = self.policy.condition(d, run.get("labels") or ())
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
+                both = list(dict.fromkeys(both + rule_ids))
+                if d.get("run_labels"):
+                    data["run_labels"] = d["run_labels"]
                 if counts and both != rule_ids:
                     data["detect"] = {"rule_ids": both}
                 if d.get("nondeterministic"):
@@ -3223,7 +3255,7 @@ class SignerService:
                         "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                         "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
                         "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
-                        "policy_hash": self.policy.policy_hash}
+                        "policy_hash": self.policy.policy_hash, "run_labels": data.get("run_labels")}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
@@ -5942,7 +5974,8 @@ def _token_cmd(a, cfg):
 
 INCIDENT_CMDS = {"list": "incident_list", "show": "incident_show", "resolve": "incident_resolve", "hold": "run_hold",
                  "quarantine": "run_quarantine", "resume": "run_resume", "pause": "response_pause",
-                 "unpause": "response_resume", "suspend": "suspend", "unsuspend": "unsuspend"}
+                 "unpause": "response_resume", "suspend": "suspend", "unsuspend": "unsuspend",
+                 "clear-label": "run_label_clear"}
 
 
 def _incidents_cmd(a):
@@ -5952,11 +5985,13 @@ def _incidents_cmd(a):
     from tracekit.sdk.client import Client
     method = INCIDENT_CMDS[a.action]
     key = {"show": "incident_id", "resolve": "incident_id", "hold": "run_id", "quarantine": "run_id",
-           "resume": "run_id", "suspend": "identity", "unsuspend": "identity"}.get(a.action)
+           "resume": "run_id", "clear-label": "run_id", "suspend": "identity", "unsuspend": "identity"}.get(a.action)
     if key and not a.target:
         raise ValueError(f"tracekit signer incidents {a.action} needs the {key.replace('_', ' ')}")
+    if (a.action == "clear-label") != bool(a.label):
+        raise ValueError("--label goes with clear-label, which needs it")
     req = {**({key: a.target} if key else {}), **({"reason": a.reason} if a.reason else {}),
-           **({"state": a.state} if a.action == "list" and a.state else {})}
+           **({"state": a.state} if a.action == "list" and a.state else {}), **({"label": a.label} if a.label else {})}
     out, last = [], None
     for url in a.signer or [None]:
         c = Client(url)
@@ -6036,12 +6071,14 @@ def main(argv=None):
                                         "the dev signer)")
     q = sub.add_parser("incidents", help=f"containment's operator calls on the running signer ({wiki_url('docs/incidents.md')})")
     q.add_argument("action", choices=sorted(INCIDENT_CMDS))
-    q.add_argument("target", nargs="?", help="the incident (show, resolve), run (hold, quarantine, resume) or "
-                                              "identity (suspend, unsuspend)")
+    q.add_argument("target", nargs="?", help="the incident (show, resolve), run (hold, quarantine, resume, clear-label) "
+                                              "or identity (suspend, unsuspend)")
     q.add_argument("--signer", action="append", help="a replica to reach, repeatable (default: $TRACEKIT_SIGNER, else "
                                                      "the dev signer)")
     q.add_argument("--reason", help="recorded with the call (redacted); a break-glass resolve or resume needs one")
     q.add_argument("--state", choices=("open", "resolved"), help="list: only incidents in this state")
+    q.add_argument("--label", choices=policy_compile.RUN_LABELS, help="clear-label: the run label a person ends "
+                                                                      f"({wiki_url('docs/policy-v2.md', 'run-conditions')})")
     p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
     p.add_argument("--v1-home", required=True)
     g = p.add_mutually_exclusive_group(required=True)

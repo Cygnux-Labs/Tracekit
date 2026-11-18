@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:12f4567958eedfbeb3cf09cd1b506e7eb72cf6f696a6116c8dc98d1076c971ae",
+  "policy_hash": "sha256:cfa271a77793498d6652c07bd24e78769c920c07a84db08bee49d088419954e9",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -1399,7 +1399,7 @@
     "benign/http:71": "flag TK-F002",
     "benign/http:72": "flag TK-F002 TK-F012",
     "benign/http:73": "flag TK-F002 TK-F012",
-    "benign/http:74": "flag TK-F002 TK-F012",
+    "benign/http:74": "flag TK-F002 TK-F028 TK-F012",
     "benign/http:75": "flag TK-F002 TK-F012",
     "benign/http:76": "flag TK-F002 TK-F012",
     "benign/http:77": "flag TK-F002 TK-F012",

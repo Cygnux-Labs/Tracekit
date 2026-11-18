@@ -4,7 +4,10 @@
 # and money moved are held or denied here too (#604); plus a visible demo deny and ask, so both are easy to see. They
 # also match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 #
-# Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
+# Three things differ from the server pack. Its detection is lighter here: data sent off the machine after the run
+# read a secret is held as a run condition (TK-Q001, below), where the server pack records the pair as a sequence, and
+# a runaway loop (TK-L001) and a call that ran against its decision are recorded as shadow incidents. A tool no pack
+# maps is flagged, not
 # held: a laptop runs tools and MCP servers no list names; one given a command line or a SQL statement to run is held
 # (TK-A062). And a coding agent's messages to its own agents are class `harness`: Claude Code's Agent and Task
 # prompts, SendMessage, a subagent's SubagentHandback report, its TodoWrite list and a Workflow's script (its agents'
@@ -21,7 +24,7 @@
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-9'
+version: '2026.11-dev-10'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -172,6 +175,17 @@ ask:
     reason: a cloud routine that runs where Tracekit doesn't decide its calls
     remedy: Have a person approve the held call, or run the task in this session, where each of its calls is decided.
     rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
+  - id: TK-Q001
+    # a run condition (docs/policy-v2.md#run-conditions): a call labelled egress (TK-F012 a URL, TK-F013 a network
+    # command, TK-F024 an upload) once the run carries secrets_access (TK-F005: a call that acted on a secrets file's
+    # name ran in it, this call included: a command that reads a secret and sends it). The server pack records the
+    # same pair as its TK-Q001 sequence. A run that read no secret sends as before
+    field: labels
+    pattern: '^egress$'
+    when: {run_has: [secrets_access]}
+    reason: data sent off the machine after the run read a secret
+    remedy: Have a person approve the held call, or send it from a new session that has read no secret.
+    rationale: A secret the agent read can leave in any request it sends afterwards; a person confirms each send in such a run.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'
@@ -208,3 +222,19 @@ flag:
     # every Browser Use action, kept on the record as a browser MCP tool's call is (TK-F006)
     pattern: '^'
     label: browser_action
+
+# Detection (signer/detect.py), recorded only: a shadow incident is kept with the run (tracekit view shows it) and
+# holds nothing. Notify in enforce mode needs a webhook, which a laptop's signer has none of.
+limits:
+  - id: TK-L001
+    # a runaway loop: more calls in one minute of a session than an agent makes working (the server pack's)
+    match: '*'
+    count: true
+    max: 300
+    window: 60
+    scope: session
+
+respond:
+  - {trigger: TK-L001, mode: shadow, action: notify}
+  # a call that ran after a deny or an unapproved ask: a harness that ran it anyway
+  - {trigger: executed_against_policy, mode: shadow, action: notify}

@@ -21,7 +21,12 @@ DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/de
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
             "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
-             "remedy"}
+             "remedy", "when"}
+# the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
+# runs matches a rule whose `label` it is (secrets_access: TK-F005), and untrusted_content also when a tool the
+# policy's `untrusted` list names runs or an input is observed as untrusted; a person may clear one
+RUN_LABELS = ("secrets_access", "untrusted_content")
+LABELS_FIELD = "labels"   # a run condition rule's field: the labels of the rules the call matched
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
@@ -422,8 +427,13 @@ def _lint(pol, path):
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
-            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
+            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval", "when"})
                        if not isinstance(r[k], str)]
+            if "when" in r:
+                errors += [f"{where}: {e}" for e in _lint_when(r, sec, pol)]
+            elif r.get("field") == LABELS_FIELD:
+                errors.append(f"{where}: field labels is for a rule with `when`: a call's labels are its other rules' "
+                              "own, which decide it already")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):
@@ -455,7 +465,7 @@ def _lint(pol, path):
             cls, field = r.get("class"), r.get("field")
             if cls is not None and cls not in CLASSES:
                 errors.append(f"{where}: unknown class {cls!r}")
-            elif cls is not None and field is not None and field not in CLASSES[cls]:
+            elif cls is not None and field not in (None, LABELS_FIELD) and field not in CLASSES[cls]:
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
@@ -467,6 +477,24 @@ def _lint(pol, path):
                    "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
                    if _loose_host(h)]
     return errors + _lint_detect(pol, path)
+
+
+def _lint_when(rule, sec, pol):
+    """The errors of a rule's run condition, `when: {run_has: [label, ...]}`: on an ask or flag rule, labels of
+    RUN_LABELS, each once, each one a source in the policy can set; a rule with one carries no run label itself."""
+    w, errors = rule["when"], []
+    if sec == "deny":
+        errors.append("when is for ask and flag rules: a deny rule applies always")
+    if not (isinstance(w, dict) and set(w) == {"run_has"} and isinstance(w["run_has"], list) and w["run_has"]
+            and all(isinstance(x, str) and x in RUN_LABELS for x in w["run_has"])
+            and len(set(w["run_has"])) == len(w["run_has"])):
+        return errors + [f"when must be {{run_has: [label, ...]}}, each label once, of {', '.join(RUN_LABELS)}"]
+    live = {r.get("label") for s in ("ask", "flag") for r in pol.get(s, []) if isinstance(r, dict)}
+    errors += [f"when: {x} can never be set: no ask or flag rule has `label: {x}`" for x in w["run_has"]
+               if x != "untrusted_content" and x not in live]
+    if rule.get("label") in RUN_LABELS:
+        errors.append(f"a rule with when can't have label {rule['label']}: it would set what it reads")
+    return errors
 
 
 def _lint_remedy(text, sec):

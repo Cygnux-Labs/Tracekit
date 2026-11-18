@@ -1393,8 +1393,7 @@ class Agreement(SignerBundles):
         import run_kit as kit
         cases = kit.load()
         reports = ts_verify_many([[os.path.join(TESTS, c[k]) for k in ("input", "trust")] for c in cases])
-        with open(os.path.join(TS, "package.json")) as f:
-            version = json.load(f)["version"].split("-")[0]
+        version = v2.READS   # the newest format version it reads (test_the_verifier_is_the_package_version)
         for c, out in zip(cases, reports):
             with self.subTest(c["name"]):
                 ok, how = kit.score(c, {"exit": out["exit_code"], "verdict": kit.verdict(out["integrity"]),

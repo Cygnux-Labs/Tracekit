@@ -255,6 +255,18 @@ class Translate(unittest.TestCase):
                          ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
+    def test_run_labels_are_rows_in_words(self):
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "source": 0}),
+                         v2rec(2, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:7", "person": "alice", "reason": "test values"}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL · secrets_access"),
+                          ("HOLD", "info", "RUN LABEL CLEARED · secrets_access")])
+        self.assertEqual([r["text"] for r in rows], [
+            "set by this run's record 0: a later call a run condition names for it waits for a person",
+            'by alice · "test values"'])
+
     def test_live_constraints_are_rows_and_head_the_run_review(self):
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),

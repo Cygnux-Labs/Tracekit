@@ -213,6 +213,19 @@ dropped unrecorded, and the signer raises every later call of the run that write
 directory's commitment is to its name and a slash (`legacy/`), and a call breaks it with a write under it. A bundle with `constraint.added` or `constraint_refused` needs
 `verifier_min_version` 1.4.0.
 
+Run labels (format 1.8, [policy](policy-v2.md#run-conditions)): what a run has done that a run condition rule reads,
+of a closed set: `secrets_access` and `untrusted_content`. A run carries only the labels its policy's run conditions
+name. `run.label{label, action: add, by: signer, source}` (`source: signer`): the signer adds a label right after the
+record that sets it (`source`, that record's `run_seq`), before the run's next decision. A record sets the labels of a
+call it lets run (a `policy.decision` of `allow` or `flag`; the `approval.consumed` of its approval, for the tool and
+`rule_ids` its `approval.request` names; its `capture.gap{executed_against_policy}`, for its latest decision): the
+`label` of each of its rules that is a run label, and `untrusted_content` when the policy's `untrusted` list names the
+tool (as the provenance index reads it). An `input.observed` with `trust: untrusted` sets `untrusted_content`.
+`run.label{label, action: clear, by: person, identity, person, reason?, break_glass?}`: a person ended the label
+(`run_label_clear`), never the run's owner, principal or requester; a later record that sets it sets it again. A
+`policy.decision` whose run conditions applied names the labels that made them apply (`run_labels`): each one the run
+carried, or one a rule of the call itself sets. A bundle with either needs `verifier_min_version` 1.8.0.
+
 Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
 and then never heard about. All are `capture.gap` records with `source: signer`.
 
@@ -581,6 +594,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
 | 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
+| 1.8.0 | `run.label` | `policy.decision`: `run_labels` | — | — |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -729,7 +743,8 @@ line and verdict is in [verdicts](verdicts.md).
    check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
    (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
    one the `policy.decision` an agent's approval answered cites (`approvals by agents` checks its rules permit agents;
-   without it, a warning) and the one policy a run with an `incident.opened` was decided under. No other is bundled.
+   without it, a warning) and the one policy a run with an `incident.opened`, or whose policy has run conditions,
+   was decided under. No other is bundled.
    **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
    and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
    records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an
@@ -740,6 +755,12 @@ line and verdict is in [verdicts](verdicts.md).
    self-approved) with the incident id; no consume under a hold but of such an approval, none under a quarantine; no
    `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
    (`incidents`).
+   **Run labels**: a run decided under one policy the bundle carries is replayed under it (§3): each label a record
+   sets is added by a `run.label` before the run's next `policy.decision` or `approval.consumed` (or its end); each add
+   cites a record that sets that label and that the run didn't carry; a clear is of a label the run carries and its
+   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`); a decision's `run_labels` were
+   carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold (`run
+   labels`). With labels but without the policy, they are signer-asserted, with a `label policies` warning.
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
     name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
     records that carry it, for the first 20 such names; one more `not interpreted` warning counts the others. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show

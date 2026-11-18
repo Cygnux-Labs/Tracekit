@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-98'
+version: '2026.11-v2-99'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -1524,3 +1524,12 @@ flag:
     # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
     pattern: '^'
     label: skill_run
+  - id: TK-F028
+    # a file in a download folder (~/Downloads/x, C:\Users\me\Downloads\x, Downloads/x, in any case) that a call acts
+    # on: content from outside that reached the machine through no tool the policy reads, as a web page's does, so
+    # it labels the run untrusted_content where a run condition reads that label (docs/policy-v2.md#run-conditions).
+    # Writes included. lean: only a folder named Downloads; another download folder (a browser's own setting, a
+    # localized name such as Téléchargements) isn't read: label it in a rule of your own
+    field: target
+    pattern: '(?:^|[/\\\s"''=:@])[Dd][Oo][Ww][Nn][Ll][Oo][Aa][Dd][Ss][/\\]'
+    label: untrusted_content

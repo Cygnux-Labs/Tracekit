@@ -144,6 +144,7 @@
         "identity.suspension",
         "effect.observed",
         "constraint.added",
+        "run.label",
         "ext"
       ]
     },
@@ -1203,6 +1204,22 @@
       "if": {
         "properties": {
           "type": {
+            "const": "run.label"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_label"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
             "const": "ext"
           }
         }
@@ -1777,6 +1794,18 @@
         "incident_id": {
           "$ref": "#/$defs/id",
           "description": "format 1.2: the incident whose hold (ask, TK-HOLD) or quarantine (deny, TK-QUARANTINE) decided the call"
+        },
+        "run_labels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "items": {
+            "enum": [
+              "secrets_access",
+              "untrusted_content"
+            ]
+          },
+          "description": "format 1.8: the run labels that made a run condition rule (`when`) of rule_ids apply: each one the run carried, or one a rule of this call sets"
         }
       }
     },
@@ -4829,6 +4858,81 @@
           "description": "the signer's salt id for this record's commitment (salt label <type>:<salt_id>)"
         }
       }
+    },
+    "run_label": {
+      "description": "format 1.8: a change of the run's labels (docs/policy-v2.md#run-conditions), which run condition rules read. add: by the signer alone, right after the record that set it (source: that record's run_seq): a call that ran and matched a rule whose label it is, a tool whose results the policy's untrusted list names, an input observed as untrusted. clear: by a person (run_label_clear), never the run's owner, principal or requester",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "action",
+            "by",
+            "source"
+          ],
+          "properties": {
+            "label": {
+              "enum": [
+                "secrets_access",
+                "untrusted_content"
+              ]
+            },
+            "action": {
+              "const": "add"
+            },
+            "by": {
+              "const": "signer"
+            },
+            "source": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "the run_seq of the record that set the label"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "action",
+            "by",
+            "identity",
+            "person"
+          ],
+          "properties": {
+            "label": {
+              "enum": [
+                "secrets_access",
+                "untrusted_content"
+              ]
+            },
+            "action": {
+              "const": "clear"
+            },
+            "by": {
+              "const": "person"
+            },
+            "identity": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "the identity that cleared it (scheme:subject)"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "break_glass": {
+              "const": true
+            }
+          }
+        }
+      ]
     },
     "ext_name": {
       "type": "string",

@@ -1508,6 +1508,10 @@ ENTRIES = {
                                                           "checks": {}}, "cites": []}, "run-f")],
     # a grant the run's own user issued: a self-approval, which a verifier before 1.6.0 can't see (assurance dev)
     "ext.self_approved=True": [registered(), ("ext", {"name": "intent.grant", "self_approved": True}, "run-a")],
+    # run labels (docs/policy-v2.md#run-conditions): without the run's policy in the bundle, signer-asserted
+    "run.label": [registered(), ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                               "source": 0}, "run-a")],
+    "policy.decision.run_labels": [registered(), decision(run_labels=["secrets_access"])],
 }
 
 

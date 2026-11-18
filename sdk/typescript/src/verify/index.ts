@@ -25,6 +25,7 @@ import {
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
+import { Sources, runLabels } from "./labels.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 import VERSIONS_JSON from "./versions.json" with { type: "json" };
@@ -36,7 +37,7 @@ export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./
 export const VERSION = "1.7.2";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.7.2";
+export const READS = "1.8.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -609,6 +610,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   checkReviews(rep, runs, trust.analyzers);
   checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
+  checkLabels(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
     rep.check("content vault", true, `${accessed} access(es), ${erased} erasure(s) of retained content, each signed by the signer`);
@@ -1464,6 +1466,38 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
       + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
+}
+
+/** The `run labels` line, as verify/v2.py's _labels: each run's labels replayed under the bundled compiled policy of
+ * its one policy_hash; signer-asserted without it, a `label policies` warning. */
+function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  const problems: string[] = [], unbundled = new Set<string>();
+  let checked = 0, asserted = 0;
+  for (const rs of runs.values()) {
+    const events = rs.map((r) => r.event).filter((e) => isObj(e) && isObj(e.data));
+    const marked = events.some((e) => e.type === "run.label" || e.type === "policy.decision"
+      && Object.hasOwn(e.data, "run_labels"));
+    const hashes = new Set(events.filter((e) => e.type === "policy.decision").map((e) => str(get(e.data, "policy_hash"))));
+    const data = hashes.size === 1 ? policies.get([...hashes][0]) : undefined;
+    if (!data) {
+      if (marked) asserted++;
+      if (marked && hashes.size === 1) unbundled.add(cut([...hashes][0], 80));
+      continue;
+    }
+    const src = new Sources(strictParseBytes(data, floats));
+    if (marked || src.tracked.size) {
+      checked++;
+      extend(problems, runLabels(events, src));
+    }
+  }
+  if (checked || asserted)
+    rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policy, `
+      + `${asserted} signer-asserted (under several policies, or a policy not in the bundle)`, "run labels"),
+    problems.slice(0, 20));
+  if (unbundled.size)
+    rep.check("label policies", false, `${unbundled.size} policy(ies) not in the bundle: their runs' labels are `
+      + "signer-asserted, not replayed (export the run with the signer's config, which bundles the policies its records "
+      + "cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */

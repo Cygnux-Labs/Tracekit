@@ -84,6 +84,9 @@ VERSIONS = {
     # assurance dev, which a verifier before 1.6.0 can't see
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
+    # run labels (docs/policy-v2.md#run-conditions): a run.label record, and the labels a decision's run conditions
+    # applied under
+    "1.8.0": {"types": ["run.label"], "fields": {"policy.decision": ["run_labels"]}, "values": {}},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
@@ -215,10 +218,12 @@ def about(storage, tenant, run_id):
     return out
 
 
-def cited_policies(events):
+def cited_policies(events, conditioned=lambda h: False):
     """The policy_hashes whose snapshot a verifier checks the records against: the policy.decision's of each approval an
-    agent gave (its rules must permit agents), and the one policy each run with an incident.opened was decided under
-    (its incidents are recomputed under it; a run decided under several has them signer-asserted)."""
+    agent gave (its rules must permit agents), and the one policy each run with an incident.opened was decided under,
+    or that has run conditions (`conditioned(policy_hash)`: its labels are replayed under it, so one a record should
+    have set and no run.label adds shows) (its incidents and labels are recomputed under it; a run decided under
+    several has them signer-asserted)."""
     agent = {e["data"].get("approval_id") for e in events if e["type"] == "approval"
              and e["data"].get("approver_kind") == "agent" and e["data"].get("decision") == "approve"}
     asked = {e["data"].get("decision_id") for e in events if e["type"] == "approval.request"
@@ -230,7 +235,8 @@ def cited_policies(events):
     incidents = {e.get("run_id") for e in events if e["type"] == "incident.opened"}
     return ({e["data"]["policy_hash"] for e in events if e["type"] == "policy.decision"
              and e["data"].get("decision_id") in asked and "policy_hash" in e["data"]}
-            | {next(iter(hs)) for r, hs in ran.items() if r in incidents and len(hs) == 1}) - {None}
+            | {next(iter(hs)) for r, hs in ran.items() if len(hs) == 1 and (r in incidents or conditioned(*hs))}) \
+        - {None}
 
 
 def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None):
@@ -344,10 +350,20 @@ def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_r
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
     # every record the verifier reads (its schema, ext names), the key records too (with `kept`, those read now)
     events = [r["event"] for r in [*keys, *pointed, *(r for rs in runs.values() for r in rs)]]
-    for h in sorted(cited_policies(events) if policy_dir else ()):
+
+    def snapshot(h):
+        with open(os.path.join(policy_dir, str(h).removeprefix("sha256:") + ".json"), "rb") as f:
+            return f.read()
+
+    def conditioned(h):   # whether policy h has a run condition (a rule with `when`)
         try:
-            with open(os.path.join(policy_dir, h.removeprefix("sha256:") + ".json"), "rb") as f:
-                files[f"policies/{h.removeprefix('sha256:')}.json"] = f.read()
+            pol = json.loads(snapshot(h))
+        except (FileNotFoundError, ValueError):
+            return False
+        return any("when" in r for sec in ("deny", "ask", "flag") for r in pol.get(sec, []))
+    for h in sorted(cited_policies(events, conditioned) if policy_dir else ()):
+        try:
+            files[f"policies/{h.removeprefix('sha256:')}.json"] = snapshot(h)
         except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
             pass
     layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []

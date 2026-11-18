@@ -94,6 +94,9 @@
   "kit/vectors/retire-self-signed.tkb": "c33f9ed5549c282c2f5fddb0ac8177497e44b4621890371a1f1e735a77db89f5",
   "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
   "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
+  "kit/vectors/run-label-omitted.tkb": "6e63468fe0e914dc74d3cb08f9cd1e6d79bc24c3c81485927f35a351c50153cb",
+  "kit/vectors/run-label-unset.tkb": "11d54d5657363f0ceeca81c431628d8492841525e4120a98ac42c2024f060e1a",
+  "kit/vectors/run-label.tkb": "08f894d98aeed6f51be007d303e2d734cfd07c656f2f688d7688a059d82d4160",
   "kit/vectors/run-seq-written-0.tkb": "85a6cacbf2346cc88fb4154e20a1d6dbc5fd171f01f559b9550d73d3bb5eba9f",
   "kit/vectors/run-set-open-only.tkb": "e61809464ed089a0f749735c5fd7db4343e28ccf9f5652b1695b6a30f8a0e6ad",
   "kit/vectors/signature-s-plus-l.tkb": "9be85507ea5c6b888dee292c426eda0509a3d519b0be3d84e976918265ac7464",
@@ -1085,6 +1088,46 @@
    "failed_check": null,
    "decided_by": "§3 (containment), §11 step 9",
    "addon": "containment"
+  },
+  {
+   "name": "a run label, its policy not in the bundle",
+   "input": "kit/vectors/run-label.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a run label its cited record doesn't set",
+   "input": "kit/vectors/run-label-unset.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: a record sets the labels of a call it lets run), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its record sets, no run.label adds",
+   "input": "kit/vectors/run-label-omitted.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: added before the run's next decision), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
   },
   {
    "name": "an agent's approval",

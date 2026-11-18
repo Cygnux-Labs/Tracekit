@@ -696,6 +696,13 @@ class Translator(observe.Translator):
                          "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
                          + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
                          constraint=d.get("kind"))
+        if t == "run.label":   # a run label (docs/policy-v2.md#run-conditions): what the run's conditions read
+            if d.get("action") == "clear":
+                return alert("info", f"RUN LABEL CLEARED · {d.get('label')}",
+                             f"by {d.get('person') or d.get('identity')}"
+                             + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
+            return alert("med", f"RUN LABEL · {d.get('label')}", f"set by this run's record {d.get('source')}: a later "
+                         "call a run condition names for it waits for a person", "HOLD")
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
