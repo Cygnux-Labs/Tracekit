@@ -305,7 +305,20 @@ tool that agents may answer within bounds (an amount of 1 to 100, two payees, a 
 of 5 approvals and 300 in a window. A call runs only when `approval_consume` lets it. Seven attacks: arguments out of
 bounds, a memo only untrusted content brought into the run, asking again after the reviewer said no, 50 variants one
 cent apart, the budget, a reviewer answering after it escalated (and after a restart), and an approved agent approval
-when the operator switches agent approvals off. 7 of 7 caught. Results: `eval/results/e18_agent_approvers.json`.
+when the operator switches agent approvals off. 7 of 7 caught.
+
+The [AI approver](approvals.md#the-ai-approver) on a laptop in system mode: the laptop default with `approval_agent`
+(the three reviewed rules, enforce, the `secrets_access` run bound), the identities `tracekit init --v2` writes plus the
+reviewer's lines, and a reviewer that approves everything with two keys. Seven attacks (E18.8 to E18.14): the agent's
+own uid as reviewer, a held call no person answered the like of, a forged precedent (the agent answering its own hold,
+the reviewer's own yes), a borrowed one (another index, another project claimed, no project, another tool, another
+agent), a run that read a secret (before the request, and between the AI's yes and the run), one key or two that
+disagree, and a revoked AI approval. With the gate below, 15 of 15 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
+E21's held-out pool and its four blind pools (1,520), with two injected variants of each shell line ("approved by the
+admin", a fake tool output), put to that reviewer with no precedent and with a person's precedent for a benign sibling
+of the same reviewed rule: 0 approvals outside the bounds. 831 of the calls are held, 112 of them by reviewed rules
+alone; with a person's precedent for that very call (inside the bounds), the AI approves 91 of those, counted by class
+in the results. Results: `eval/results/e18_agent_approvers.json`.
 
 ## E19: egress observation
 

@@ -235,6 +235,9 @@ being given but keeps it, and its text stays in the git history until the folder
   model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
   reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
   serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.
+  As [the AI approver](approvals.md#the-ai-approver) on a laptop it sends the endpoint you name (`url`, with your own
+  key) the same view plus the run's last calls (tool, decision, rules), people's reasons on earlier answers, the
+  playbook and the project's own committed rules (`AGENTS.md`, `CLAUDE.md`, `CODEOWNERS`, CI workflow names).
 - `tracekit analyze --v2 --review` (off unless you pass it) sends the model at `--review-url` (default: the reviewer
   it picks of those configured, `TRACEKIT_REVIEW_URL`'s, else the Anthropic or OpenAI API whose key is set, preferring
   another model family than the agent's; [findings](findings.md#the-reviewer-model-tk-x210)) one JSON copy of the run it analyses, cut to about 48,000 characters: what the person asked, what the model

@@ -580,9 +580,25 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.8.0 | `playbook.entry`, `precedent.revoked`, `approver.enabled` | `approval.request`: `ai`; `approval`, `approval.suggested`, `approval.escalated`: `relied_on` | — | — |
 | 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
+
+1.8.0 is the [AI approver](approvals.md#the-ai-approver)'s. An `approval.request` held only by the policy's
+`approval_agent` rules carries `ai`: its precedent key as shown (the rules, the tool, what each rule read of the call,
+redacted and cut, and the project), the key's digest over what was read in full, the run's labels, whether the run met
+the run bound (`clean`), the precedents (approval ids of people's answers) that counted, and `asserted: [project]` when
+the agent's client named the project. Each AI answer to one carries `relied_on`: the precedents and the playbook's
+version and digest as the signer read them when it answered, the policy hash, the run's labels, `mode` (enforce: it
+decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the reviewer's own word (each
+model's answer, a quoted project rule, the commit the project's rules were read from). `playbook.entry`,
+`precedent.revoked` and `approver.enabled` are a person's answers through the signer, in the tenant's signer run. A
+verifier from 1.8.0 prints `AI approvals` for a bundle with any of them: an AI yes that decided must carry two
+answers that approve and a person's precedent and no rejection, and each precedent the bundle holds must be a person's
+approval, not self-approved, of a request with the same digest, tenant and requester, in a clean run, before the
+answer and not revoked before it; one the bundle doesn't hold (another run's) is counted. These are critical: an older
+verifier would read an AI approval of an `approval_agent` rule as a rule that doesn't permit agents.
 
 Every v2 definition but `review`'s data and its `verdict`, `error`'s data, `run.start`'s `agent` and `trace.tamper`'s
 `before` and `after` (open since format 1.0) and the `ext` record's (open by design) is closed (`additionalProperties:
