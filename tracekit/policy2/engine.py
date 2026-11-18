@@ -377,7 +377,14 @@ class Engine:
                     subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
-                memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
+                memo[key], memo[key + ("read",)] = _prepare(subjects, _TAGGED.get(key[0], 0)), subjects
+            if unless is not None and cls == "shell":   # an exemption holds only where it holds on the _quoted reading
+                if (q := key + ("quoted",)) not in memo:
+                    if "spaced" not in memo:
+                        memo["spaced"] = _spaced(parsed[0])
+                    quoted = _quoted(memo[key + ("read",)], memo["spaced"])
+                    memo[q] = _prepare(memo[key + ("read",)] + quoted, _TAGGED.get(key[0], 0)) if quoted else memo[key]
+                key = q
             texts, lows, joined, big = memo[key]
             if lits is None or holds(lits, ids, joined):
                 for subject, low in zip(texts, lows):
@@ -407,7 +414,7 @@ class Engine:
                 self._of[cls, bool(_hidden), low_name] = rules
         for entry in rules:
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
-            # is over MAX_SUBJECT) gives nothing: hit() would match nothing
+            # is over MAX_SUBJECT) gives nothing: hit() would match nothing (_quoted, they hold no more of them)
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
                     not m[0] or entry[5] is not None and not holds(entry[5], entry[9], m[2])):
                 continue
@@ -569,8 +576,9 @@ class Engine:
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised (each also with `\\` as `/`: _slashes), a shell `code` those without the
         text a command only writes into a file
-        (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, and each entry of a
-        `paths` list (every file of a Codex patch) is a path too, and an http field is read for each URL of a `urls`
+        (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, each of the
+        `file_path`, `notebook_path` and `path` arguments a call has and each entry of a `paths` list (every file of a
+        Codex patch) is a path too, and an http field is read for each URL of a `urls`
         list too (every URL a Gemini CLI web_fetch prompt names). `target` (every class) is what the call
         acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
         (_effects); sql `code` is one subject per dialect reading. With
@@ -633,13 +641,14 @@ class Engine:
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
-            raws = [classes.first(args, *classes.PATH_KEYS)] + args["paths"]
+            raws = [args.get(k) for k in classes.PATH_KEYS] + args["paths"]
             return list(dict.fromkeys(f for r in raws for f in classes.fs_forms(r)))
         value = fields.get(field) if field in CLASSES.get(cls, ()) else args.get(field)
         if value is None:
             return []
-        if cls == "fs" and field == "path" and isinstance(value, str):
-            return classes.fs_forms(classes.first(args, *classes.PATH_KEYS))
+        if cls == "fs" and field == "path" and isinstance(value, str):   # each path argument: a decoy under one of
+            # them can't stand for the file the tool opens (the hostile twins)
+            return list(dict.fromkeys(f for k in classes.PATH_KEYS for f in classes.fs_forms(args.get(k))))
         if split and isinstance(value, list):
             return [v if isinstance(v, str) else canonical(v) for v in _flat(value)]
         return [value if isinstance(value, str) else canonical(value)]
@@ -699,6 +708,28 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _spaced(commands):
+    """Every argv word of a shell call's commands that holds a space (a quoted word: `'x --help'`, `--notes 'see -d'`),
+    also as a path is read (casefolded, `\\` as `/`), longest first, for _quoted."""
+    return sorted({f for c in commands for w in c["argv"] if " " in w
+                   for f in (w, w.casefold(), w.replace("\\", "/"), w.replace("\\", "/").casefold())},
+                  key=len, reverse=True)
+
+
+def _quoted(subjects, words):
+    """Each subject of a shell call again with each of its _spaced `words` spelled with WORD_SPACE for its spaces,
+    where it differs: a rule's `unless` exempts a call only when it holds on this reading too, so text quoted into one
+    word never reads as words of its own (the hostile twins, tests/test_hostile_twins.py)."""
+    out = []
+    for s in subjects if words else ():
+        v = s
+        for w in words:
+            v = v.replace(w, w.replace(" ", WORD_SPACE))
+        if v != s:
+            out.append(v)
+    return out
 
 
 def _alternatives(pattern):

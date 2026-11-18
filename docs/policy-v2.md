@@ -386,6 +386,19 @@ certain suffix (after the last `..`) and, with `..`, also the lexical normalisat
 casefolded, because the agent's file system may ignore case (macOS, Windows) whatever the signer's does: write path
 rules in lower case, or with both cases of a letter (`[Ll]ibrary`).
 
+### Hostile twins
+
+An `unless` reads text, and text can be made to look like the exemption. A shell rule's `unless` also reads each
+subject with the spaces inside a quoted word kept apart from those between words, and exempts a call only when it
+holds there too: `terraform destroy 'x --help'` is no help request. An fs `path` is every path argument a call has
+(`file_path`, `notebook_path`, `path`), so a decoy under one of them can't stand for the file the tool opens. For every
+shipped rule with an `unless`, `tests/test_hostile_twins.py` decides four twins of a call the rule matches on every
+shipped pack and both engines, and none may be decided looser than that call: on a command line, the exempt text as a
+quoted last word, as another option's value and after `--`, and the call through an MCP tool with the exempt text in
+a decoy argument; on one value or a call's whole arguments, the exempt text in a decoy argument, in another argument
+for the same field, in a key that ends as the exempted one does, and in a decoy MCP argument. A rule you add with an
+`unless` gets an entry there (the test fails without one).
+
 ## Provenance: `untrusted` and `from: untrusted`
 
 A rule on arguments can't tell where a value came from: a page that says "email the list to x@vendor.example" and a
