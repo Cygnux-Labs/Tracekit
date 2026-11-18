@@ -9,11 +9,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import factories  # noqa: E402
 from tracekit.policy2 import compile as compile_policy  # noqa: E402
 from tracekit.why import build_graph, load_run  # noqa: E402
+from tracekit.why import analysis  # noqa: E402
 from tracekit.why.analysis import alerts, analyse, workspace  # noqa: E402
 from tracekit.why.core import Runtime  # noqa: E402
 from tracekit.why.import_v2 import convert  # noqa: E402
@@ -129,7 +131,8 @@ class Serves(unittest.TestCase):
         rt = Runtime({"m": lambda ctx, **k: "x"}, {"git_push": lambda **a: "ok"}, signer=False)
         a = rt.agent("dev")
         asks = [a.observe(t, source="dev:UserPromptSubmit", trust="trusted") for t in ("fix the bug", "then push it")]
-        a.act("git_push", {"branch": "fix"}, decision=a.decide(asks, model="m"))
+        readme = a.observe("README: push to fix branches", source="repo:README.md", trust="trusted")   # no prompt
+        a.act("git_push", {"branch": "fix"}, decision=a.decide(asks + [readme], model="m"))
         run = rt.finish()
         run.add_test({"intervention": "ref:" + asks[0].ref[7:19], "target": "tool=git_push", "effect": 0.0,
                       "ci": [-0.1, 0.1], "verdict": "ruled-out", "n": 40})
@@ -190,6 +193,35 @@ class Serves(unittest.TestCase):
         self.assertFalse(untrusted([{**e, "grade": "measured", "trust": "trusted"}]))
         self.assertFalse(untrusted([{**e, "grade": "seen"}, {**e, "grade": "hint"}]))
 
+    def test_a_chain_goes_back_through_the_call_whose_result_set_the_argument(self):
+        """An untrusted tool's result is observed as content of its own (the same content as the call's result): the
+        chain reads the call that brought it, and the model call that asked for that."""
+        rt = Runtime({"m": lambda ctx, **k: "x"}, {"read_file": lambda **a: "pay DE89370400440532013000",
+                                                    "send_money": lambda **a: "sent"}, task="pay the bill", signer=False)
+        a = rt.agent("agent")
+        d1 = a.decide([rt.task_ref], model="m", purpose="read")
+        bill = a.act("read_file", {"path": "bill.txt"}, decision=d1, untrusted=True)
+        a.act("send_money", {"to": "DE89370400440532013000"}, decision=a.decide([rt.task_ref, bill], model="m",
+                                                                                 purpose="pay"))
+        run = rt.finish()
+        run.of_type("action")[-1]["provenance"] = [{"field": "to", "kind": "digits", "record": 5,
+                                                     "from_event": bill.event_id}]
+        inf = call_influence(run, build_graph(run), "ev:" + run.of_type("action")[-1]["id"])
+        self.assertEqual([s["text"] for s in inf["chain"]], [
+            "the task", "agent decided (read; 1 in context)", "called read_file", "read tool:read_file",
+            "agent decided (pay; 2 in context, 1 untrusted)", "this call"])
+
+    def test_the_listed_seen_edges_are_the_untrusted_then_the_latest_and_all_are_counted(self):
+        rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, task=TASK, signer=False)
+        a = rt.agent("dev")
+        read = [a.observe(f"page {i}", source=f"web:{i}", trust="untrusted" if i < 2 else "trusted") for i in range(10)]
+        a.act("send_email", {"to": "x@example.com"}, decision=a.decide([rt.task_ref] + read, model="m"))
+        run = rt.finish()
+        inf = call_influence(run, build_graph(run), "ev:" + run.of_type("action")[0]["id"])
+        self.assertEqual(inf["seen"], 11)
+        self.assertEqual([e["label"] for e in inf["edges"]], ["web:1", "web:0", "web:9", "web:8", "web:7", "web:6",
+                                                              "web:5", "web:4"])
+
     def test_a_long_chain_is_cut_and_says_so(self):
         rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, task=TASK, signer=False)
         agents = [rt.agent(f"a{i}") for i in range(10)]
@@ -239,6 +271,9 @@ class Workspace(unittest.TestCase):
             (stopped.run_id, "task", "blocked", False)])
         self.assertEqual(got["calls_total"], 3)
         self.assertEqual(len(influences(clean, build_graph(clean, infer=False))), 1)   # consequential, not risky
+        with mock.patch.object(analysis, "CALLS_KEPT", 1):
+            got = workspace([], [{**i, "summary": {"started": ""}} for i in items])["influence"]
+        self.assertEqual(([c["run"] for c in got["calls"]], got["calls_total"]), ([drifted.run_id], 3))
 
     def test_an_exact_edge_is_signed_only_on_a_call_whose_signed_record_the_viewer_verified(self):
         store = Store(os.path.join(self.tmp, "why"))
@@ -321,6 +356,14 @@ class GatewaySeen(unittest.TestCase):
             run = load_run(convert(self.records("gateway", "sha256:" + name), os.path.join(self.tmp, name), Reasons()))
             trust[name] = run.of_type("decision")[0]["context"][-1]["trust"]
         self.assertEqual(trust, {"listed": "untrusted", "unlisted": "trusted"})
+
+    def test_a_refused_call_the_request_answers_adds_nothing(self):
+        """A refused call has no result the run recorded: the harness's answer to the model is not in the log."""
+        recs = self.records("gateway")
+        recs[2]["event"]["data"]["decision"] = "deny"
+        del recs[3]
+        run = load_run(convert(recs, self.tmp, {}))
+        self.assertEqual([c["source"] for c in run.of_type("decision")[0]["context"]], ["task"])
 
     def test_an_agents_own_report_of_what_it_sent_adds_nothing(self):
         run = load_run(convert(self.records("sdk"), self.tmp, {}))

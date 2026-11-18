@@ -2579,7 +2579,7 @@ class PlainPages(unittest.TestCase):
         deployed = desk(args={"branch": "fix-login"}, tool="deploy_site")[0]
         deployed.add_test({"intervention": "input:github:issue-12", "target": "tool=deploy_site", "effect": 0.7,
                            "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
-        held = desk()[0]
+        held = desk(args={"branch": "hotfix-from-issue-12", "title": "Fix the login bug"})[0]   # hints: the issue, the task
         held.of_type("action")[-1].update(status="blocked", policy={"decision": "ask"})
         lone = desk(decide=False, args={"branch": "fix-login"})[0]
         lone.of_type("action")[-1].update(status="blocked", policy={"decision": "deny"})
@@ -2618,7 +2618,10 @@ class PlainPages(unittest.TestCase):
         self.assertIn('<button type="button" class="cp" data-inhint="">show hints</button>', page)
         hinted = self.influence(S["sources"], S["edges"], S["groups"], calls=calls, hint=True)[0]
         self.assertIn("hint, not an influence: the value hotfix-from-issue-12 is in github:issue-12", hinted)
-        self.assertEqual(arcs(hinted, "g-hint"), 1)
+        # a dashed line from the task, a step of the chain, and from the issue, a row of its own below the call
+        self.assertEqual(arcs(hinted, "g-hint"), 2)
+        self.assertIn('<text class="dim" x="52" y="', hinted)
+        self.assertIn(">read github:issue-12 (hint)</text>", hinted)
         self.assertIn('data-inhint="">hide hints</button>', hinted)
         # no risky call says so; nothing read and no risky call is the empty page, as before
         none = self.influence(S["sources"], S["edges"], S["groups"])[0]
@@ -2738,8 +2741,10 @@ class PlainPages(unittest.TestCase):
             out.push([IFL.mark, [...INFLMORE], scrolled.splice(0)]);
             click({{ ifl: "" }});   // empty space
             out.push([IFL.mark, /class="[^"]* (on|lit)"/.test(el.innerHTML)]);
+            click({{ inhint: "" }}); out.push(IFL.hint); click({{ inhint: "" }}); out.push(IFL.hint);   // show hints, hide them
             process.stdout.write(JSON.stringify(out));"""))
-        (mark, opened, scrolled, page), (mark2, opened2, scrolled2, page2), more, cleared = out
+        (mark, opened, scrolled, page), (mark2, opened2, scrolled2, page2), more, cleared, *hint = out
+        self.assertEqual(hint, [True, False])
         self.assertEqual((mark, opened, scrolled), ({"key": "session-message|untrusted", "tool": "Deploy"}, ["session-message|untrusted"],
                                                      [[0, "start"]]))
         self.assertIn('<tr class="row ingrp on" data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', page)
