@@ -1664,18 +1664,20 @@ class TestAudit(unittest.TestCase):
                      [{"type": "assistant", "timestamp": "2026-11-10T14:02:11Z", "message": {"content": [
                          {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
         folder.chmod(0)
-        self.addCleanup(folder.chmod, 0o755)
-        with mock.patch.dict(os.environ, _home(home)):
-            os.environ.pop("XDG_DATA_HOME", None)
-            os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            code, out, err = _run("--json")
-            self.assertEqual(code, 0, err)
-            report = json.loads(out)
-            self.assertEqual(report["agents"]["claude"]["calls"], 1)
-            self.assertIn("cannot list", report["unreadable"][0]["error"])
-            code, _, err = _run(str(folder), "--agent", "opencode")
-            self.assertEqual(code, 2)
-            self.assertIn("cannot list", err)
+        try:
+            with mock.patch.dict(os.environ, _home(home)):
+                os.environ.pop("XDG_DATA_HOME", None)
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                code, out, err = _run("--json")
+                self.assertEqual(code, 0, err)
+                report = json.loads(out)
+                self.assertEqual(report["agents"]["claude"]["calls"], 1)
+                self.assertIn("cannot list", report["unreadable"][0]["error"])
+                code, _, err = _run(str(folder), "--agent", "opencode")
+                self.assertEqual(code, 2)
+                self.assertIn("cannot list", err)
+        finally:
+            folder.chmod(0o755)
 
     def test_opencode_parent_cycle_ends_and_counts_each_call_once(self):
         db = self._opencode_db(extra=[("prt_c", "ses_a", 1, self._oc_part("bash", {"command": "echo c"}, "c"))])
