@@ -111,11 +111,10 @@ def untrusted(edges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
 
 
 def drifted(got: Dict[str, Any], goal: List[str]) -> bool:
-    """Whether a call serves no step of the task, from its graded() edges: a replay without each part of the goal kept
-    it (with several prompts, a test of one alone proves nothing) and none without it changed it."""
+    """Whether a call serves no step of the task, from its graded() edges: the strongest replay without each part of
+    the goal kept it (with several prompts, a test of one alone proves nothing)."""
     gs = set(goal)
-    return bool(gs) and gs <= set(got["ruled"]) and not any(e["grade"] == "measured" and e["src"] in gs
-                                                            for e in got["edges"])
+    return bool(gs) and gs <= set(got["ruled"])
 
 
 def _context(g: Graph, dec: str) -> List[str]:

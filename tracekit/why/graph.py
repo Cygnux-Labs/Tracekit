@@ -295,7 +295,9 @@ def nodes_matching(g: Graph, spec: str) -> List[str]:
 
 
 def _attach_tests(g: Graph, run: Run) -> None:
-    for t in run.tests:
+    """A tested edge per test of one item; of several tests of the same item and call, the graph keeps one edge: the
+    strongest test's (the most replays, then the largest effect), as candidates() reads them."""
+    for t in sorted(run.tests, key=lambda t: (-t["n"], -abs(t["effect"]))):
         if t.get("group"):
             continue  # removing several items at once says nothing about any one of them
         if t.get("scope") == "decision":

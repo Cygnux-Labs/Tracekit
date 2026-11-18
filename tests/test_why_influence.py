@@ -119,6 +119,16 @@ class Serves(unittest.TestCase):
                                        "Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided (m; 3 in "
                                        "context, 1 untrusted) → this call.")
 
+    def test_of_two_replays_without_the_task_the_stronger_decides(self):
+        """Two tests without the task disagree: the one with more replays (then the larger effect) decides, as the
+        candidate causes read them, whichever was recorded first."""
+        run, call, _ = desk(EXACT)
+        without_task(run, "ruled-out", 0.0)
+        without_task(run, "causal", 0.8, target="tool=git_push,arg~hotfix")   # as many replays, a larger effect
+        self.assertEqual(call_influence(run, build_graph(run), call)["serves"], "task")
+        run.add_test({**run.tests[0], "n": 160})   # the ruled-out one again, with four times the replays
+        self.assertEqual(call_influence(run, build_graph(run), call)["serves"], "drift")
+
     def test_a_call_a_replay_without_the_task_changed_serves_it(self):
         run, call, _ = desk(decide=False)   # no chain recorded: the replay alone says it needs the task
         without_task(run, "causal", 0.9)
