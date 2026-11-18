@@ -1889,11 +1889,20 @@ class FolderTrust(unittest.TestCase):
                 got = self.sandbox(trust, user)
             # only the left-out project turns the sandbox on: said so, as info
             self.assertEqual(got["status"], "info", (trust, env))
+            # worded from what made it untrusted: an environment variable, which no trust rule overrides, or the file
+            why, cure = ((f"{''.join(f'{k}={v}' for k, v in env.items())} in the environment makes Gemini skip the "
+                          "project's settings", f"unset {''.join(env)}") if env else
+                         ("folder trust is on and ", "trust the folder (/permissions)"))
             self.assertTrue(got["detail"].startswith(f"{project} turns Gemini's sandbox on, but Gemini doesn't load "
-                                                     "it"), got["detail"])
+                                                     f"it: {why}"), got["detail"])
+            self.assertTrue(got["fix"].startswith(f"to sandbox Gemini there, {cure} or"), got["fix"])
         got = self.sandbox({}, {"security": {"folderTrust": {"enabled": True}, "toolSandboxing": True}})
         self.assertEqual(got["status"], "ok")
         self.assertIn(f"({project} left out: folder trust is on", got["detail"])
+        with mock.patch.dict(os.environ, {"GEMINI_CLI_TRUST_WORKSPACE": "false"}):
+            got = self.sandbox({}, {"security": {"folderTrust": {"enabled": False}, "toolSandboxing": True}})
+        self.assertIn(f"({project} left out: GEMINI_CLI_TRUST_WORKSPACE=false in the environment makes Gemini skip "
+                      "the project's settings)", got["detail"])
 
     def test_a_trusted_project_or_trust_off_reads_the_project_as_before(self):
         moved = os.path.join(self.d, "trust.json")
