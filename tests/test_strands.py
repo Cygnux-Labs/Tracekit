@@ -628,6 +628,10 @@ class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "strands", "1.61.1"
     message = "Strands Agents 0.0.1 is wired but untested; Tracekit is tested with strands-agents>=1.61,<1.66"
 
+    def test_the_tested_range_ends_after_1_65(self):
+        self.assertEqual(self.warnings_for("1.65.4"), [])
+        self.assertEqual(len(self.warnings_for("1.66.0")), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
