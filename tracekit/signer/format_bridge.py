@@ -36,9 +36,9 @@ def _gap(data):
             "agent_id": "tracekitd", "parent_id": None, "source": "signer", "type": "capture.gap", "data": data}
 
 
-def bridge(v1_home, data_dir, storage_config=None):
+def bridge(v1_home, data_dir, storage_config=None, origin=None):
     """Bridge the v1 ledger of `v1_home` into the v2 store of `data_dir` (or of `storage_config`, the signer config's
-    storage section); returns the signer.epoch `bridge`."""
+    storage section), under the signer config's `origin` (else the log's default); returns the signer.epoch `bridge`."""
     from tracekit.signer.service import SignerService   # here: the verifier imports this module for retire_data
     if hasattr(os, "geteuid") and os.stat(v1_home).st_uid != os.geteuid():
         raise BridgeError(f"run the bridge as the owner of {v1_home}")
@@ -78,7 +78,8 @@ def bridge(v1_home, data_dir, storage_config=None):
             retire = ledger.append(_gap(retire_data(ledger.keys.kid, ledger.seq + 1)))
         out = {"v1_kid": retire["kid"], "v1_last_seq": retire["event"]["seq"], "v1_head": retire["hash"]}
         try:
-            SignerService(data_dir, durability=ACK_ON_FSYNC, bridge=out, storage_config=storage_config).close()
+            SignerService(data_dir, durability=ACK_ON_FSYNC, bridge=out, storage_config=storage_config,
+                          origin=origin).close()
         except ValueError as e:
             raise BridgeError(str(e)) from None
         if os.path.exists(sk):

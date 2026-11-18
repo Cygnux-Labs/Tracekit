@@ -123,9 +123,11 @@ class Witness:
         if not (len(origin) <= 255 and ORIGIN.fullmatch(origin)):
             return 400, f"this witness takes origins shaped {ORIGIN_FORMAT}: set `origin` in signer.yaml\n"
         try:
-            name, _, type_, _ = checkpoint.parse_vkey(req["vkey"])
+            name, _, type_, public = checkpoint.parse_vkey(req["vkey"])
             if type_ != checkpoint.ED25519 or name != origin:
                 return 400, "the vkey is the log's Ed25519 key, named after the origin\n"
+            if checkpoint.names_other_key(origin, public):   # a key-derived origin: only its own key may take it
+                return 403, "this origin is derived from another key (tracekit.local/k<SHA-256 of the key>)\n"
             if checkpoint.open_note(req["checkpoint"], [req["vkey"]])[0] != origin:
                 return 400, "the checkpoint is of another origin\n"
         except checkpoint.NoteError as e:
