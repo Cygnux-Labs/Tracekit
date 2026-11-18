@@ -159,7 +159,7 @@ time, not by its session: a forked session copies every part of its parent, and 
 holds it. A part without a call id is always counted. Each call is decided as OpenCode's Tracekit hook decides it, so
 `bash` is decided as `Bash`. A part with `"type":"tool"` that isn't a tool call's shape counts as one malformed entry;
 other parts are not read. A file that isn't an OpenCode database is refused, and so is OpenCode 2.x's (it keeps its
-sessions in `session_v2`, `session_message` and `session_part`, even in a database upgraded from 1.x): use `--calls`.
+sessions in `session_v2` and `session_part`, even in a database upgraded from 1.x): use `--calls`.
 With no ROOT, an OpenCode folder that holds no database yet (OpenCode creates the folder before its first session) is
 listed as unreadable and the other agents' folders are still read.
 

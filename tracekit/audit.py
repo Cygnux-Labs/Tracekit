@@ -597,7 +597,10 @@ def opencode_root():
 def _opencode_db(real: str) -> str:
     """The database in the folder a ROOT names, OpenCode's data folder; else a ValueError naming what to give (a
     folder that holds OpenCode's folder, or one without a database, is not read as a clean zero)."""
-    names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db"))
+    try:
+        names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db"))
+    except OSError as e:   # a folder that can't be listed (mode 000): an unreadable default, an error as a ROOT
+        raise ValueError(f"cannot list {real}: {e.strerror or e}") from None
     if "opencode.db" in names:
         return os.path.join(real, "opencode.db")
     if names:   # another channel's (opencode-<channel>.db), when it is the only one
@@ -637,7 +640,7 @@ def _opencode(root: str, since_ts: float, unreadable: list):
     seen: set[bytes] = set()
     try:
         kinds = dict(con.execute("SELECT name, type FROM sqlite_master"))
-        if {"session_v2", "session_message", "session_part"} & set(kinds):
+        if {"session_v2", "session_part"} <= set(kinds):
             raise ValueError(f"{db} is OpenCode 2.x's database, which isn't read yet: turn its sessions into a "
                              f"calls file and use --calls FILE --agent opencode")
         if kinds.get("session") != "table" or kinds.get("part") != "table":   # a view can make the read run forever

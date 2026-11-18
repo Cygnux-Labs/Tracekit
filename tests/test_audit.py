@@ -1402,6 +1402,8 @@ class TestAudit(unittest.TestCase):
         con = sqlite3.connect(folder / name)
         con.execute("CREATE TABLE session (id text PRIMARY KEY, parent_id text, directory text NOT NULL, path text, "
                     "version text NOT NULL, agent text, time_created integer NOT NULL, time_updated integer NOT NULL)")
+        con.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, "   # 1.19.5 has it too
+                    "time_created integer NOT NULL, data text)")
         con.execute("CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, "
                     "time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)")
         for r in rows["session"]:
@@ -1530,9 +1532,12 @@ class TestAudit(unittest.TestCase):
 
 
     def test_opencode_2x_database_is_refused_plainly_even_when_it_still_holds_1x_calls(self):
-        db = self._opencode_db()
+        db = self._opencode_db()   # with session_message, which 1.19.5 has: a 1.x database reads its 5 calls
+        code, out, err = _run(str(db.parent), "--agent", "opencode", "--json")
+        self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
         con = sqlite3.connect(db)
         con.execute("CREATE TABLE session_v2 (id text PRIMARY KEY)")
+        con.execute("CREATE TABLE session_part (id text PRIMARY KEY)")
         con.commit()
         con.close()
         code, _, err = _run(str(db.parent), "--agent", "opencode")
@@ -1630,6 +1635,16 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run(str(only_part), "--agent", "opencode")
         self.assertEqual(code, 2)
         self.assertIn("not an OpenCode database", err)
+        part_view = self.root / "part-view"
+        part_view.mkdir()
+        con = sqlite3.connect(part_view / "opencode.db")
+        con.execute("CREATE TABLE session (id text, parent_id text)")
+        con.execute("CREATE VIEW part AS SELECT 'p' AS id, 's' AS session_id, 1 AS time_created, '{}' AS data")
+        con.commit()
+        con.close()
+        code, _, err = _run(str(part_view), "--agent", "opencode")   # refused before any row is read
+        self.assertEqual(code, 2)
+        self.assertIn("not an OpenCode database", err)
         no_table = self.root / "no-table"
         no_table.mkdir()
         con = sqlite3.connect(no_table / "opencode.db")
@@ -1639,6 +1654,28 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run(str(no_table), "--agent", "opencode")
         self.assertEqual(code, 2)
         self.assertIn("not an OpenCode database", err)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "mode 000 needs a non-root POSIX user")
+    def test_opencode_folder_that_cant_be_listed_is_unreadable_by_default_and_an_error_as_a_root(self):
+        home = self.root / "home"
+        folder = home / ".local" / "share" / "opencode"
+        folder.mkdir(parents=True)
+        _write_jsonl(home / ".claude" / "projects" / "p" / "s1.jsonl",
+                     [{"type": "assistant", "timestamp": "2026-11-10T14:02:11Z", "message": {"content": [
+                         {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
+        folder.chmod(0)
+        self.addCleanup(folder.chmod, 0o755)
+        with mock.patch.dict(os.environ, _home(home)):
+            os.environ.pop("XDG_DATA_HOME", None)
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, err = _run("--json")
+            self.assertEqual(code, 0, err)
+            report = json.loads(out)
+            self.assertEqual(report["agents"]["claude"]["calls"], 1)
+            self.assertIn("cannot list", report["unreadable"][0]["error"])
+            code, _, err = _run(str(folder), "--agent", "opencode")
+            self.assertEqual(code, 2)
+            self.assertIn("cannot list", err)
 
     def test_opencode_parent_cycle_ends_and_counts_each_call_once(self):
         db = self._opencode_db(extra=[("prt_c", "ses_a", 1, self._oc_part("bash", {"command": "echo c"}, "c"))])
