@@ -845,7 +845,7 @@ class TestAudit(unittest.TestCase):
 
     def test_agent_denies_what_its_hook_denies_before_mapping(self):
         """#730 review: Kilo's notebook_execute, Crush's sub-agents and a Devin call missing its argument are denied in
-        the hook before mapping."""
+        the hook before mapping; #929: so are OpenCode's and Kilo's batch."""
         _write_jsonl(self.root / "calls.jsonl", [_line("notebook_execute", {"cell": "print(1)"})])
         report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")
         self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
