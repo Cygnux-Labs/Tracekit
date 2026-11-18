@@ -30,14 +30,15 @@ def entry():
     return {"url": URL, "vkey": VKEY, "class": "public"}
 
 
-def named_origin(cfg, origin):
+def named_origin(cfg, origin, own):
     """The warning when a log's chosen `origin` (not a default one) goes to the public witness of a loaded signer.yaml
     `cfg` with every checkpoint, or None: an origin like acme.com/agents tells the witness's operator whose log it is.
-    A log keeps its origin once chosen, so removing it from signer.yaml doesn't stop it."""
+    A log keeps its origin once chosen, so removing it from signer.yaml doesn't stop it; `own` is the name its log key
+    gives it (checkpoint.key_origin), the one to set instead."""
     if not (configured() and not DEFAULT_ORIGIN.fullmatch(origin)
             and any(w["vkey"] == VKEY for w in cfg.get("witnesses") or ())):
         return None
     return (f"origin {origin} goes to the public witness with every checkpoint, so its operator can tell whose log "
             "this is. A log keeps its origin even once it is removed from signer.yaml: to stop sending it, set origin "
-            "to tracekit.local/k<fingerprint> (named after the log key; its witnesses then see a new log), or use your "
-            f"own witness. A new log with origin unset has that name ({wiki_url('docs/public-witness-privacy.md')})")
+            f"to {own} (named after the log key; its witnesses then see a new log), or use your own witness. A new "
+            f"log with origin unset has that name ({wiki_url('docs/public-witness-privacy.md')})")

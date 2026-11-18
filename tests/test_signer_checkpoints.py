@@ -175,6 +175,15 @@ class Origins(unittest.TestCase):
             self.open(origin="acme.example.com/agents", log_key=logkey.FileKey(crypto.generate()[0]))
         self.assertEqual(self.open().origin, s.origin)
 
+    def test_a_new_log_whose_first_start_stops_keeps_its_key_derived_name(self):
+        """Review 3: a new log's first start with an origin configured, stopped before it passed its checks, came back
+        without it as tracekit.local/<log id>, the name a log of an older Tracekit has."""
+        with mock.patch.object(svc.SignerService, "_check_witnesses", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            self.open(origin="acme.example.com/agents")
+        s = self.open()
+        self.assertEqual(s.origin, checkpoint.key_origin(checkpoint.parse_vkey(s.vkey)[3]))
+
     def test_a_log_key_changed_before_the_first_note_names_the_log_after_the_new_key(self):
         s = self.open()
         s.close()

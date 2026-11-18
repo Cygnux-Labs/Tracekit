@@ -139,6 +139,12 @@ class Bridge(unittest.TestCase):
         self.addCleanup(store.close)
         self.assertEqual(store.meta("origin"), "tracekit.example.org/log/1")
 
+    def test_the_bridge_command_gives_signer_yaml_origin(self):
+        with mock.patch.object(svc, "load_config", return_value={"data_dir": self.data, "origin": "tracekit.example.org/log/1"}), \
+                mock.patch.object(format_bridge, "bridge", return_value={}) as bridge, mock.patch("builtins.print"):
+            self.assertEqual(svc.main(["bridge", "--v1-home", self.home, "--config", "signer.yaml"]), 0)
+        self.assertEqual(bridge.call_args.args[3], "tracekit.example.org/log/1")
+
     def test_second_run_is_a_no_op(self):
         b = format_bridge.bridge(self.home, self.data)
         before = (self.ledger_bytes(), records(self.data))

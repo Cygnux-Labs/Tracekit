@@ -498,26 +498,32 @@ class OptIn(unittest.TestCase):
 
     def test_a_chosen_origin_sent_to_the_public_witness_is_warned_about(self):
         cfg = svc.load_config(self.cfg)   # origin: tracekit.example.org/log/public
+        derived = checkpoint.key_origin(b"\2" * 32)
         for chosen in (cfg, {**cfg, "origin": None}):   # a log keeps its origin once chosen, in signer.yaml or not
-            self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(chosen, ORIGIN))
+            said = public_witness.named_origin(chosen, ORIGIN, derived)
+            self.assertIn(f"origin {ORIGIN} goes to the public witness", said)
+            self.assertIn(f"set origin to {derived} (named after the log key", said)
         own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
                "class": "customer"}
-        for origin in ("tracekit.local/" + "0f" * 16, "tracekit.local/k" + "0f" * 32):
-            self.assertIsNone(public_witness.named_origin(cfg, origin))
-        self.assertIsNone(public_witness.named_origin({**cfg, "witnesses": [own]}, ORIGIN))
+        for origin in ("tracekit.local/" + "0f" * 16, derived):
+            self.assertIsNone(public_witness.named_origin(cfg, origin, derived))
+        self.assertIsNone(public_witness.named_origin({**cfg, "witnesses": [own]}, ORIGIN, derived))
         with mock.patch.object(public_witness, "URL", ""):
-            self.assertIsNone(public_witness.named_origin(cfg, ORIGIN))
+            self.assertIsNone(public_witness.named_origin(cfg, ORIGIN, derived))
 
     def test_serve_warns_with_the_logs_own_origin_once_signer_yaml_drops_it(self):
         cfg = {**svc.load_config(self.cfg), "origin": None}   # removed from signer.yaml; the log kept it
-        service = mock.Mock(origin=ORIGIN, log=mock.Mock(head={"closed": False}))
+        public = crypto.public_from_secret(hashlib.sha256(b"log").digest())
+        service = mock.Mock(origin=ORIGIN, vkey=checkpoint.vkey(ORIGIN, checkpoint.ED25519, public),
+                            log=mock.Mock(head={"closed": False}))
         err = io.StringIO()
         with contextlib.redirect_stderr(err), mock.patch.object(svc, "load_config", return_value=cfg), \
                 mock.patch.object(svc.logkey, "harden"), mock.patch.object(svc, "open_service", return_value=service), \
                 mock.patch.object(svc, "serve", side_effect=OSError("stopped here")):
             self.assertEqual(svc.main(["serve", "--config", "signer.yaml"]), 1)
         self.assertIn(f"origin {ORIGIN} goes to the public witness", err.getvalue())
-        self.assertIn("keeps its origin even once it is removed from signer.yaml", err.getvalue())
+        self.assertIn("keeps its origin even once it is removed from signer.yaml: to stop sending it, set origin to "
+                      f"{checkpoint.key_origin(public)} ", err.getvalue())
 
     def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
         for argv in (["init", "--no-witness"], ["init", "--public-witness"],
