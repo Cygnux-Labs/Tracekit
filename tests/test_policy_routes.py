@@ -1329,6 +1329,16 @@ class WindowsPrograms(unittest.TestCase):
                     got = svc.evaluate(e, "run_task", {"command": command})[0]
                     self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
 
+    def test_an_unmapped_tools_sql_behind_explain_analyze_or_a_paren_is_held(self):
+        # #975, through the signer's own reading: EXPLAIN ANALYZE runs the statement, and sql_query and stmt name SQL
+        for backend in BACKENDS:
+            e = self.engines[("dev", backend)]
+            for args in ({"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"}, {"stmt": "DROP TABLE users;"},
+                         {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"}):
+                with self.subTest(engine=backend, args=args):
+                    got = svc.evaluate(e, "acme_runner", args)[0]
+                    self.assertEqual((got["verdict"], "TK-A062" in got["rule_ids"]), ("ask", True), got)
+
     def test_base_name(self):
         for word, name in (("C:\\Git\\bin\\Bash.EXE", "bash"), ("/usr/bin/git", "git"), (".\\x.sh", "x.sh"),
                            ("sudo.exe", "sudo"), (".exe", ".exe"), ("a\\", ""), ("C:/x/AWS", "aws")):

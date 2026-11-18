@@ -5694,6 +5694,27 @@ class GuardrailsAndPushes(unittest.TestCase):
                     self.assertEqual(d["verdict"], "ask", d)
                     self.assertIn(rule, d["rule_ids"], d)
 
+    def test_sql_behind_explain_analyze_or_a_paren_or_under_sql_query_or_stmt_is_held(self):
+        """#975: EXPLAIN with ANALYZE runs the statement on PostgreSQL, as coding.yaml's database-client rule reads it,
+        a statement may open with `(`, and `sql_query` and `stmt` name SQL arguments too. Plain EXPLAIN, an
+        unterminated SELECT and a search tool's `q` stay flagged."""
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN ANALYZE DELETE FROM users;"},
+            {"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"},
+            {"statement": "explain (analyse, buffers) delete from users"},
+            {"statement": "EXPLAIN ANALYZE VERBOSE DROP TABLE users"},
+            {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"},
+            {"statement": "( ( DROP TABLE users"},
+            {"sql_query": "DROP TABLE users;"},
+            {"stmt": "DROP TABLE users;"},
+            {"Stmt": {"text": "TRUNCATE users"}})], "ask", "TK-A062")
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN SELECT 1;"},
+            {"statement": "EXPLAIN DELETE FROM users"},
+            {"statement": "(SELECT 1)"},
+            {"sql_query": "SELECT 1"},
+            {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
+
     def test_a_harness_or_mcp_tool_is_not_read_as_an_unmapped_one(self):
         """Review of #605, through the signer's own reading (evaluate): TK-A062 held Claude Code's ToolSearch, Skill
         and SlashCommand, Anthropic's text-editor and memory tools (a `command` of `view` or `create`), a Gemini CLI or
