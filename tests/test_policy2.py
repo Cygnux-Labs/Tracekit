@@ -2029,11 +2029,16 @@ class TimedAndBraced(unittest.TestCase):
             header = " ".join("'%s'" % v.replace("'", "'\\''") for v in values)
             return "for tkv in %s; do %s; done" % (header, " ".join(words[:at] + ['"$tkv"'] + words[at + 1:]))
 
+        STEP = 2   # every Nth corpus row, as #722 asks when both engines are over ~20 s: 791 rows on two
+        # engines measured 23.6 s here (re2 9.5 s, regex 14.2 s, Python 3.12, Windows). Step 1 keeps every row.
+
         def corpus():
             """(note, its words, the index of its last word, two values that word may take) for every shell corpus
-            command. The second value swaps two pairs of the digits a rule reads, each pair both ways (0 with 9, 6
-            with 1; an 8 is left as it is, since it cannot pair with two of them), so a reduction that folds on the
-            wrong classes is caught: `169.254.43518` and `610.254.43568` are one such pair."""
+            command, every `STEP`th one. The second value swaps two pairs of the digits a rule reads, each pair both
+            ways (0 with 9, 6 with 1; an 8 is left as it is, since it cannot pair with two of them), so a reduction
+            that folds on the wrong classes is caught: `169.254.43518` and `610.254.43568` are one such pair. The
+            row order is the files' own, so the sample is the same on every run and every engine."""
+            taken = 0
             for kind in ("deny", "benign"):
                 with open(os.path.join(CORPUS, kind, "shell.jsonl"), encoding="utf-8") as f:
                     for row in map(json.loads, f):
@@ -2047,7 +2052,9 @@ class TimedAndBraced(unittest.TestCase):
                         swapped = words[at].translate(str.maketrans("0961", "9016"))
                         if swapped == words[at]:   # no digit to swap: a trailing dot stands in
                             swapped = words[at] + "."
-                        yield row.get("note"), words, at, (words[at], swapped)
+                        if taken % STEP == 0:
+                            yield row.get("note"), words, at, (words[at], swapped)
+                        taken += 1
 
         def verdict(e, line):
             d = e.decide("Bash", {"command": line})
@@ -2088,7 +2095,7 @@ class TimedAndBraced(unittest.TestCase):
                         d = e.decide("Bash", {"command": line})
                         self.assertIn("TK-S001", d["rule_ids"], (backend, pack, line, d["verdict"]))
                         self.assertEqual(d["verdict"], "deny", (backend, pack, line))
-        self.assertGreater(checked, 500, "the corpus walk stopped early")
+        self.assertGreater(checked, 500 // STEP, "the corpus walk stopped early")
 
     def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
         for line, words in (
