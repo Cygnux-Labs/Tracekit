@@ -247,6 +247,13 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
       + "lacks the policy they were held under.",
     fail: "An agent approved a call the rules for agent approvals don't let it approve.",
   },
+  "AI approvals": {
+    pass: "Held calls an AI approver answered, each yes with two model answers that agree and a person's earlier yes "
+      + "to a call like it, checked where the bundle holds that yes.",
+    fail: "An AI approver's yes decided a call without two answers that agree, without a person's earlier yes to a "
+      + "call like it, or on one that doesn't hold: another kind of call, a self-approval, a run that wasn't clean, "
+      + "given after it, or revoked before it.",
+  },
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
     + "record." },
