@@ -3982,10 +3982,13 @@ class Installer(unittest.TestCase):
     def test_a_v1_approver_sees_what_a_held_command_runs_after_a_value(self):
         """The v1 hook asks its approver about the call as its record keeps it (privacy.tool_input), which hid a
         secret-looking name's value to its next blank, across `;`, and the lines after a heredoc's first as .env
-        content: `TOKEN=abcd;rm ...` was asked about as `Bash command=TOKEN=[REDACTED:assignment]`."""
+        content: `TOKEN=abcd;rm ...` was asked about as `Bash command=TOKEN=[REDACTED:assignment]`; a connection string
+        to its next blank, and a value in a heredoc a shell runs to its line's end."""
         from tracekit import hook, privacy
         for command, runs in (("TOKEN=abcd;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
-                              ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=1; rm -rf ~/w")):
+                              ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=1; rm -rf ~/w"),
+                              ("psql postgres://u:abcd@h/db;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("bash -s <<EOF\nTOKEN=abcd;rm -rf ~/w\nEOF", ";rm -rf ~/w\nEOF")):
             with self.subTest(command=command):
                 seen = []
                 call = {"run_id": "r", "agent_id": "a",
