@@ -699,6 +699,36 @@ def refusal(out, approval_id=None):
     return ": ".join(x for x in (head.strip(), out.get("reason")) if x)
 
 
+def stopped(head, reason=None, person=None, agent=None):
+    """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way:
+    claude_code._block for Claude Code, agent_hooks._reply for the others): `head` (with stop_rules), the signer's
+    `reason` (Why) and, after its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and
+    what the agent does (`agent`, else: with `person`, ask them approve or skip and not reword the call around the
+    hold, but take an Instead step that is the agent's own, first since agent_hooks._reply may cut the end, and, once
+    approved, make the identical call again; without, tell the person). An Instead step may be the person's (check the
+    payee before approving): the agent takes only its own."""
+    why, _, instead = (reason or "").partition(rpc_schema.INSTEAD)
+    own = " If the Instead line is a step you can take yourself, you may take it and say so." if instead else ""
+    if agent is None and person:   # the Instead step is in the rule itself, inside _reply's 500 characters (#816 review)
+        agent = ("ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's "
+                 "yours and say so; otherwise wait for their answer." if instead else
+                 "ask the person: approve this call or skip it? Don't reword the call to get past the hold; wait for "
+                 "their answer.") + (" Pass on the Person line and say what the call was for; a subagent puts both in "
+                                     "its final report. Once it is approved, make the identical call again.")
+    else:
+        agent = (agent or "tell the person what you were doing and why it was blocked.") + own
+    return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
+                      *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
+                      f"Agent: {agent} Never hide what a call runs to get past the policy: every call is signed and "
+                      "kept."])
+
+
+def stop_rules(rule_ids):
+    """The rule ids a stop names (named_rules), in brackets after a space, or nothing."""
+    rules = named_rules(rule_ids)
+    return f" ({rules})" if rules else ""
+
+
 def result_field(send, out):
     """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
     untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else
