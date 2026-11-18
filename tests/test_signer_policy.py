@@ -3730,6 +3730,7 @@ class CodingPack(unittest.TestCase):
             # #810 item 6: policy decisions by command, with matching benign twins below.
             "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
             "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var", "chattr -R =a /etc",
+            "chattr -R +Ai /etc", "find /etc -exec chattr -R =Aa {} +",
             "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak", "mv -- /etc /tmp/etc.bak",
             "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/", "rsync -a empty/ /etc/ --delete",
             # #810 item 4: WSL and Cygwin Windows-system mounts, including casefolding.
@@ -3768,6 +3769,9 @@ class CodingPack(unittest.TestCase):
             "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /mnt/c/Windows/Temp",
             "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
             "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x", "chattr -R =a ./etc",
+            "chattr -R +A /etc", "chattr -R =A /etc", "chattr -R +I /etc", "chattr -R =I /etc",
+            "find /etc -exec chattr -R +A {} +", "find /etc -exec chattr -R =A {} +",
+            "find /etc -exec chattr -R +I {} +", "find /etc -exec chattr -R =I {} +",
             "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak", "mv -- ./etc /tmp/etc.bak",
             "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/", "rsync -a empty/ ./etc/ --delete",
             r"find ./usr \( -type d -o -type f \) -delete",
