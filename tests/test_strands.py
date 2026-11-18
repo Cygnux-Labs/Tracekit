@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 import unittest
 import warnings
 from unittest import mock
@@ -27,6 +28,7 @@ if HAVE:
     from strands.multiagent import GraphBuilder, Swarm
     from strands.tools.executors import SequentialToolExecutor
     from strands.tools.mcp import MCPAgentTool
+    from strands.vended_tools.shell import make_shell
 
     from tracekit.integrations.strands import Tracekit
 
@@ -629,12 +631,13 @@ class Provenance(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "strands not installed")
 class ShellLists(unittest.TestCase):
-    """On a real signer, each shipped pack and both engines: a `shell` call whose `command` Strands' shell runs as
+    """On a real signer, each shipped pack and both engines: a call to strands_tools' shell whose `command` it runs as
     several commands, each in a shell of its own, is decided on each of them, where the signer read one argv (a deny
     there was held at most, `["echo", "$(sudo id)"]` allowed); a here-document in one doesn't hide the next, as one
-    line joined would. Codex's argv under the same name reads as before."""
+    line joined would, and a string that is a JSON array is read as written too, as its 0.1 and 0.2 run it. Codex's argv
+    under the same name reads as before."""
     SUDO = [["ls", "sudo id"], '["ls", "sudo id"]', [{"command": "ls"}, {"command": "sudo id"}], ["echo", "$(sudo id)"],
-            ["cat <<EOF", "sudo id", "EOF"]]
+            ["cat <<EOF", "sudo id", "EOF"], """["'$(sudo id)'"]"""]
 
     def test_each_command_of_the_list_is_decided_on_every_pack(self):
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
@@ -650,15 +653,15 @@ class ShellLists(unittest.TestCase):
         self.addCleanup(s.close)
         client, ran = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame))), []
 
-        @tool
         def shell(command: str | list | dict) -> str:
             """Run shell commands."""
             ran.append(command)
             return "ran"
+        shell.__module__ = "strands_tools.shell"   # strands_tools' shell, as the hook knows it, running nothing
         # a call held instead of denied waits a second for a person, not five minutes
         with client.run(agent="strands-shell") as r, mock.patch.object(gate, "WAIT_MS", 1000):
             a = Agent(model=Scripted([(f"s{i}", "shell", {"command": c}) for i, c in enumerate(commands)]),
-                      tools=[shell], hooks=[Tracekit(r)], callback_handler=None)
+                      tools=[tool(shell)], hooks=[Tracekit(r)], callback_handler=None)
             if hook:
                 a.add_hook(hook, BeforeToolCallEvent, order=math.inf)
             a("x")
@@ -690,6 +693,38 @@ class ShellLists(unittest.TestCase):
         self.assertEqual([(e["type"], e["data"].get("kind")) for e in events if e["type"] in (
             "policy.decision", "tool.result", "capture.gap")],
             [("policy.decision", None), ("tool.result", None), ("capture.gap", "executed_against_policy")])
+
+
+@unittest.skipUnless(HAVE, "strands not installed")
+class VendedShell(unittest.TestCase):
+    """Strands' own vended shell (make_shell) is named `shell` too, takes `command` as a string and runs it as one sh
+    line: on a real signer its calls are decided on their input as it is, a string that looks like a JSON array as the
+    line it is (read as entries, `["'$(sudo id)'"]` was a quoted literal, allowed, while sh runs the $(…)), and a list
+    as the signer reads one (the tool runs none)."""
+    CALLS = ["""["'$(sudo id)'"]""", """["'$(rm -rf ~)'"]""", """["# $(sudo id)"]""", ["ls", "sudo id"]]
+
+    def test_its_command_is_decided_as_it_is_and_runs_nothing_held(self):
+        class Box:   # a sandbox that records each command it is asked to run, and runs none
+            async def execute(self, command, timeout=None, **_):
+                ran.append(command)
+                return types.SimpleNamespace(stdout="", stderr="", exit_code=0)
+        policy, ran = svc.load_policy(), []
+        s = SignerService(ac.tmpdir(self), policy=policy, grace_s=0)
+        self.addCleanup(s.close)
+        client = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        with client.run(agent="strands-vended") as r, mock.patch.object(gate, "WAIT_MS", 1000):
+            Agent(model=Scripted([(f"v{i}", "shell", {"command": c}) for i, c in enumerate(self.CALLS)]),
+                  tools=[make_shell(sandbox=Box())], hooks=[Tracekit(r)], callback_handler=None)("x")
+            rid = r.run_id
+        got = {e["event"]["tool_call_id"]: e["event"] for e in s.log.storage.iter_run("default", rid)
+               if e["event"]["type"] == "policy.decision"}
+        for i, c in enumerate(self.CALLS):
+            want = svc.evaluate(policy, "shell", {"command": c})[0]
+            d = got[f"v{i}"]
+            self.assertEqual((d["data"]["decision"], d["data"]["rule_ids"], d["args_source"]),
+                             (want["verdict"], want["rule_ids"], "parsed"), c)
+        self.assertEqual([got[f"v{i}"]["data"]["decision"] for i in range(3)], ["deny"] * 3)
+        self.assertEqual(ran, [])
 
 
 @unittest.skipUnless(HAVE, "strands not installed")

@@ -5,8 +5,8 @@ call before it runs (an `ask` waits for a person) and records the outcome after.
     agent = Agent(model=..., tools=[...], hooks=[Tracekit(run)])
 
 The signer decides the model's own call (its toolUseId and input) in a BeforeToolCallEvent callback that runs before
-every other hook; a `shell` call whose `command` Strands' shell runs as several commands is decided as those commands
-(_as_run). A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
+every other hook; a call to strands_tools' shell whose `command` it runs as several commands is decided as those
+commands (_as_run). A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
 the run goes on. A second callback, after every other hook, keeps that refusal if a hook cleared it, and refuses an
 allowed call whose input or tool a hook changed after the decision. The AfterToolCallEvent callback, after every other
 hook, records the result the model reads; a call a hook changed after Tracekit's last look is recorded as an error, and
@@ -66,16 +66,17 @@ class Tracekit(HookProvider):
         with self._lock:   # a sync tool's sub-agent, or agents in other threads, may share this provider
             attempt = self._attempts.get(call_id, 0)
             self._attempts[call_id] = attempt + 1
-        args, source = _as_run(use["name"], use.get("input") or {})
+        seen = copy.deepcopy(use)   # the call as decided: a later hook may change the event's
+        args, source = _as_run(event.selected_tool, seen.get("input") or {})
         d, why = await gate_call(self.run, call_id, attempt, use["name"], args, cancelled=event.agent.cancel_signal,
                                  **source)
-        self._decided[id(event)] = d, attempt, why, copy.deepcopy(use) if d else None, event.selected_tool
+        self._decided[id(event)] = d, attempt, why, seen if d else None, event.selected_tool, args
         if why is not None:
             event.cancel_tool = why
 
     def _hold(self, event):
         call = self._decided.pop(id(event))
-        d, _, why, use, tool = call
+        d, _, why, use, tool, _ = call
         if why is not None:
             event.cancel_tool = why   # a hook before this one doesn't undo Tracekit's refusal
         elif d is not None and not event.cancel_tool and (event.tool_use != use or event.selected_tool is not tool):
@@ -86,7 +87,7 @@ class Tracekit(HookProvider):
         call = self._running.pop(event.tool_use["toolUseId"], None)
         if call is None:   # nothing decided: run unrecorded, the signer unreachable and the run failing open
             return
-        d, _, why, use, tool = call
+        d, _, why, use, tool, _ = call
         r, e = event.result, event.exception
         if event.cancel_message is not None:   # not run
             if why is None:   # refused after the decision, by another hook or by Tracekit's own check
@@ -101,13 +102,11 @@ class Tracekit(HookProvider):
             await self._complete(call, "error", error=out[:4096])
 
     async def _complete(self, call, status, **fields):
-        d, attempt, why, use, _ = call
+        d, attempt, why, use, _, args = call
         try:
             if why is not None:   # refused, and run all the same (a hook cleared the refusal): RunHandle keeps no
                 # denied decision to name, so name it, and the signer signs the run as executed against policy
-                fields.update(decision_id=d["decision_id"],
-                              args_digest=event_hash({"tool": use["name"],
-                                                      "args": _as_run(use["name"], use.get("input") or {})[0]}))
+                fields.update(decision_id=d["decision_id"], args_digest=event_hash({"tool": use["name"], "args": args}))
             await asyncio.to_thread(self.run.complete, use["toolUseId"], status, attempt=attempt, **fields)
         except Exception as e:   # the call is over: what the model reads is unchanged
             warnings.warn(f"tracekit: the outcome of {use['toolUseId']} was not recorded: {type(e).__name__}: {e}",
@@ -129,23 +128,26 @@ def _said(content):
 
 
 def _as_run(tool, args):
-    """(the arguments the signer decides a call by, decide's args_source for them). A `shell` call whose `command`
-    Strands' shell runs as several commands, each in a shell of its own (strands_tools' shell: a list of strings or
-    {"command": ...}, one {"command": ...}, or a string that is a JSON array), is decided as `commands`, which the
-    policy reads each on its own and joined (Engine._parse), not as one argv, so no command of the list hides from a
-    rule; labelled coerced (reconcile doesn't hold them to the model's tool use). An entry the shell can't run is left
-    out. The name is Codex's and OpenAI Agents' too, whose list is an argv: only this hook knows it is Strands'. Any
-    other call as it is."""
-    command = args.get("command") if tool == "shell" and isinstance(args, dict) else None
+    """(the arguments the signer decides a call by, decide's args_source for them), for the selected tool `tool`.
+    strands_tools' shell (0.1 to 0.8: its function's module, the name `shell` being Strands' vended shell's, Codex's
+    and OpenAI Agents' too) runs a `command` list, or one {"command": ...}, as several commands, each in a shell of its
+    own; a string that is a JSON array too, from 0.3 (0.1 and 0.2 run it as one line). Its call is decided as
+    `commands`, which the policy reads each on its own and joined (Engine._parse), not as one argv: such a string as
+    written among them, so no command hides from a rule whichever version runs it; labelled coerced (reconcile doesn't
+    hold them to the model's tool use). An entry the shell can't run is left out. Any other call as it is: the vended
+    shell runs its `command` string as one sh line."""
+    command = args.get("command") if isinstance(args, dict) and \
+        getattr(getattr(tool, "_tool_func", None), "__module__", None) == "strands_tools.shell" else None
+    written = []
     if isinstance(command, str) and command.strip().startswith("[") and command.strip().endswith("]"):
         try:   # as strands_tools' shell reads it
-            command = json.loads(command)
+            command, written = json.loads(command), [command]
         except (ValueError, RecursionError):
             pass
     if not isinstance(command, (list, dict)):
         return args, {}
-    lines = [c if isinstance(c, str) else c.get("command") if isinstance(c, dict) else None
-             for c in (command if isinstance(command, list) else [command])]
+    lines = written + [c if isinstance(c, str) else c.get("command") if isinstance(c, dict) else None
+                       for c in (command if isinstance(command, list) else [command])]
     return ({**{k: v for k, v in args.items() if k != "command"}, "commands": [c for c in lines if isinstance(c, str)]},
             {"args_source": "coerced"})
 

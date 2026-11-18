@@ -44,12 +44,14 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   the call's `toolUseId`, tool name and `input`: the arguments as Strands parsed them from the model, missing or empty
   ones as `{}`. An approval is bound to those arguments and used once. Under the [executor](../executor.md) (T2), a
   call whose approved arguments are not the model's is refused, not run with either.
-- **Decides each command of a shell list.** A `shell` call whose `command` Strands' shell runs as several commands,
-  each in a shell of its own (a list, a `{"command": ...}`, a string that is a JSON array: `strands_tools`' shell
-  before 0.9), is decided as a `commands` list: each command read on its own, as its shell runs it, and all of them
-  joined, so an open quote or a here-document in one can't hide the next. Its arguments are labelled
-  `args_source: coerced`: they are the commands that run, not the model's `command` as written. Codex and OpenAI
-  Agents send a `shell` list as one argv; only this hook knows the call is Strands'.
+- **Decides each command of a shell list.** A call to `strands_tools`' shell (0.1 to 0.8, told by its function's
+  module) whose `command` it runs as several commands, each in a shell of its own (a list, a `{"command": ...}`, and
+  from 0.3 a string that is a JSON array), is decided as a `commands` list: each command read on its own, as its shell
+  runs it, and all of them joined, so an open quote or a here-document in one can't hide the next; such a string is
+  read as written too, as 0.1 and 0.2 run it. Its arguments are labelled `args_source: coerced`: they are the commands
+  that run, not the model's `command` as written. Every other `shell` is decided on its input as it is: Strands'
+  vended shell (`strands.vended_tools`) runs its `command` string as one line, and Codex and OpenAI Agents send a
+  list as one argv.
 - **Never runs a refused call.** A deny, a rejected or unanswered approval, a refused consume, a signer refusal, an
   outage under a closed fail mode and any error of Tracekit's own all set `cancel_tool`: the model reads Tracekit's
   reason as an error tool result and the run goes on. Under an open fail mode a call runs unrecorded during an outage,
