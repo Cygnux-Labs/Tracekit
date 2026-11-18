@@ -66,6 +66,23 @@ def records(data_dir):
         return [json.loads(line) for line in f.read().splitlines()]
 
 
+def drop_call_keys(data_dir, *keys):
+    """Rewrite the latest snapshot of the closed signer at `data_dir` as one written before its calls kept `keys`."""
+    snaps = os.path.join(data_dir, "store", "snapshots")
+    path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
+    with open(path, "rb") as f:
+        snap = json.loads(f.read().partition(b"\n")[2])
+    for r in snap["state"]["runs"]:
+        for c in [*r.get("calls", {}).values(), *filter(None, r.get("decisions", {}).values())]:
+            for k in keys:
+                c.pop(k, None)
+    body = json.dumps(snap, separators=(",", ":")).encode()
+    with open(os.path.join(data_dir, "keys", "snapshot.key"), "rb") as f:
+        mac = file_storage._mac(f.read(), body)
+    with open(path, "wb") as f:
+        f.write(mac + b"\n" + body)
+
+
 class TestServiceContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         self.dir = tmpdir(self)
@@ -293,19 +310,7 @@ class TestService(unittest.TestCase):
         """A snapshot written before call_state (RPC 24) keeps no call's refusal or result: the start reads them from
         the records, so a pay that ran isn't taken for one consumed and never ended."""
         states, before = self.call_states()
-        snaps = os.path.join(self.dir, "store", "snapshots")
-        path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
-        with open(path, "rb") as f:
-            snap = json.loads(f.read().partition(b"\n")[2])
-        for r in snap["state"]["runs"]:   # as a snapshot written before 1.7.0's call_state holds them
-            for c in [*r.get("calls", {}).values(), *filter(None, r.get("decisions", {}).values())]:
-                c.pop("ended", None)
-                c.pop("refused", None)
-        body = json.dumps(snap, separators=(",", ":")).encode()
-        with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
-            mac = file_storage._mac(f.read(), body)
-        with open(path, "wb") as f:
-            f.write(mac + b"\n" + body)
+        drop_call_keys(self.dir, "ended", "refused")   # as a snapshot written before 1.7.0's call_state holds them
         s = self.snapshotting()
         self.assertIsNotNone(s.log.storage.snapshot)   # it started from the edited snapshot
         self.assertEqual(states(s), before)

@@ -38,6 +38,7 @@ try:
     from tracekit.format.canon import event_hash
     from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
     from tracekit.integrations.langchain import TracekitMiddleware, tracekit_tool_node
+    from tracekit.policy2.engine import Engine
     from tracekit.signer import service as svc
 except ImportError:   # optional: the dev extra installs them
     HAVE_LC = False
@@ -1236,6 +1237,35 @@ class AnotherProcess(unittest.TestCase):
                 agent.s = svc.SignerService(d, policy=PAY_ASKS, grace_s=0, fsck_every_s=0)
                 self.addCleanup(agent.s.close)
                 self.assertEqual((PAID, read(go(Command(resume="yes")))["p0"]), ([120] if crash else [], restarted))
+
+    def test_a_denied_call_keeps_its_reason_across_a_policy_reload(self):
+        """[pay (asks), drop (denied)]: while the person answers, the signer restarts with the deny rule's reason
+        changed, then another process resumes. The node runs again, and the model reads drop refused with the reason
+        it was denied with (call_state), not the policy's new one."""
+        @tool
+        def drop(table: str) -> str:
+            """Drop a table."""
+            return "dropped"
+
+        def policy(why):
+            return Engine({"ask": [{"id": "TEST-PAY", "tool": "pay", "pattern": "^"}],
+                           "deny": [{"id": "TEST-DROP", "tool": "drop", "pattern": "^", "reason": why}]})
+        calls = [{"name": "pay", "args": {"to": "b", "cents": 120}, "id": "p0"},
+                 {"name": "drop", "args": {"table": "users"}, "id": "d"}]
+        d = ac.tmpdir(self)
+        s = svc.SignerService(d, policy=policy("dropping a table loses its rows"), grace_s=0, fsck_every_s=0)
+        agent, saver = Agent(s, ME), InMemorySaver()
+        run = agent.register_run({"request_id": "reg", "agent": {"name": "p"}})
+
+        def go(value):   # each a process of its own: a new gate on the same checkpointer
+            return tool_graph(tracekit_tool_node([counted_pay, drop], agent, run), saver).invoke(value, THREAD)
+        shown = go(message(calls))["__interrupt__"][0].value["tracekit"]
+        self.approve(s, shown["approval_id"])
+        s.close()
+        agent.s = svc.SignerService(d, policy=policy("the policy says so now"), grace_s=0, fsck_every_s=0)
+        self.addCleanup(agent.s.close)
+        seen = read(go(Command(resume={"approval_id": shown["approval_id"]})))["d"]
+        self.assertTrue(seen.endswith("TEST-DROP: dropping a table loses its rows"), seen)
 
     def test_two_resumes_that_consume_at_once_never_pay_twice(self):
         """Two resumes of one thread that reach approval_consume at once, in one process or two: the signer consumes
