@@ -5,9 +5,11 @@ import asyncio
 import importlib.util
 import json
 import math
+import os
 import subprocess
 import sys
 import threading
+import time
 import unittest
 import warnings
 from unittest import mock
@@ -63,8 +65,10 @@ if HAVE:
 
 from tracekit.format.canon import event_hash
 from tracekit.gateway import result_forms
+from tracekit.integrations import gate
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
+from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService
 from factories import VersionCheckCases
@@ -621,6 +625,71 @@ class Provenance(unittest.TestCase):
         d = next(e["event"]["data"] for e in s.log.storage.iter_run("default", rid)
                  if e["event"]["type"] == "policy.decision" and e["event"].get("tool_call_id") == "w-2")
         self.assertEqual([p["source"]["tool"] for p in d["provenance"]], ["WebFetch"])
+
+
+@unittest.skipUnless(HAVE, "strands not installed")
+class ShellLists(unittest.TestCase):
+    """On a real signer, each shipped pack and both engines: a `shell` call whose `command` Strands' shell runs as
+    several commands, each in a shell of its own, is decided on each of them, where the signer read one argv (a deny
+    there was held at most, `["echo", "$(sudo id)"]` allowed); a here-document in one doesn't hide the next, as one
+    line joined would. Codex's argv under the same name reads as before."""
+    SUDO = [["ls", "sudo id"], '["ls", "sudo id"]', [{"command": "ls"}, {"command": "sudo id"}], ["echo", "$(sudo id)"],
+            ["cat <<EOF", "sudo id", "EOF"]]
+
+    def test_each_command_of_the_list_is_decided_on_every_pack(self):
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex"):
+                with self.subTest(pack=pack, engine=engine):
+                    self.check(svc.load_policy(os.path.join(os.path.dirname(svc.__file__), "..", "policy2", "packs",
+                                                            pack), engine))
+
+    def go(self, policy, commands, hook=None):
+        """(the commands the tool ran, the run's records once final) when the model calls `shell` with each of
+        `commands` at once, ids s0, s1, ...; `hook` runs after Tracekit's last check"""
+        s = SignerService(ac.tmpdir(self), policy=policy, grace_s=0)
+        self.addCleanup(s.close)
+        client, ran = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame))), []
+
+        @tool
+        def shell(command: str | list | dict) -> str:
+            """Run shell commands."""
+            ran.append(command)
+            return "ran"
+        # a call held instead of denied waits a second for a person, not five minutes
+        with client.run(agent="strands-shell") as r, mock.patch.object(gate, "WAIT_MS", 1000):
+            a = Agent(model=Scripted([(f"s{i}", "shell", {"command": c}) for i, c in enumerate(commands)]),
+                      tools=[shell], hooks=[Tracekit(r)], callback_handler=None)
+            if hook:
+                a.add_hook(hook, BeforeToolCallEvent, order=math.inf)
+            a("x")
+            rid = r.run_id
+        s.sweep(time.monotonic() + 5)
+        return ran, [e["event"] for e in s.log.storage.iter_run("default", rid)]
+
+    def check(self, policy):
+        ran, events = self.go(policy, [*self.SUDO, ["ls", "pwd"], "ls"])
+        got = {e["tool_call_id"]: e for e in events if e["type"] == "policy.decision"}
+        sudo = svc.evaluate(policy, "shell", {"command": "sudo id"})[0]
+        for i in range(len(self.SUDO)):   # each as `sudo id` alone is, never looser
+            d = got[f"s{i}"]
+            self.assertEqual((d["data"]["decision"], d["args_source"]), (sudo["verdict"], "coerced"), self.SUDO[i])
+            self.assertLessEqual(set(sudo["rule_ids"]), set(d["data"]["rule_ids"]), self.SUDO[i])
+        n = len(self.SUDO)
+        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in (n, n + 1)],
+                         [("allow", "coerced"), ("allow", "parsed")])
+        self.assertEqual(sorted(map(str, ran)), ["['ls', 'pwd']", "ls"])
+        self.assertNotIn("reconcile.args_mismatch", [e["type"] for e in events])   # coerced: not the model's bytes
+        for argv, verdict in ((["git", "commit", "-m", "sudo id"], "allow"), (["bash", "-lc", "sudo id"], "deny")):
+            self.assertEqual(svc.evaluate(policy, "shell", {"command": argv})[0]["verdict"], verdict, argv)
+
+    def test_a_refused_list_a_later_hook_runs_is_signed_as_executed_against_policy(self):
+        def undo(event):
+            event.cancel_tool = False
+        ran, events = self.go(svc.load_policy(), [["ls", "sudo id"]], undo)
+        self.assertEqual(ran, [["ls", "sudo id"]])
+        self.assertEqual([(e["type"], e["data"].get("kind")) for e in events if e["type"] in (
+            "policy.decision", "tool.result", "capture.gap")],
+            [("policy.decision", None), ("tool.result", None), ("capture.gap", "executed_against_policy")])
 
 
 @unittest.skipUnless(HAVE, "strands not installed")
