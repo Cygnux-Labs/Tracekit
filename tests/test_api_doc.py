@@ -22,6 +22,13 @@ class ApiPage(unittest.TestCase):
             page = f.read()
         self.assertEqual(api_doc.render(page), page, "docs/api.md is out of date: run python scripts/api_doc.py")
 
+    def test_every_rpc_has_a_section_on_the_page(self):
+        """An RPC added to the contract without a marker pair on the page would get no tables at all."""
+        api_doc = load_generator()
+        with open(api_doc.PAGE, encoding="utf-8") as f:
+            page = f.read()
+        self.assertEqual({m[1] for m in api_doc.MARKED.findall(page)}, set(api_doc.rpc_schema.REQUESTS))
+
 
 if __name__ == "__main__":
     unittest.main()

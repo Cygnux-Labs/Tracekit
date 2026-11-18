@@ -45,8 +45,10 @@ gives a regular expression in which `(?![\s\S])` means the end of the text.
   being a regular approver. It must give a `reason`, and the record says so. See
   [Who may answer](approvals.md#who-may-answer).
 - **bridge**: a program that acts for a person, such as the Slack bridge or the viewer. It calls with `on_behalf` to
-  answer as that person. The signer applies its rules to the person, not to the bridge, and takes the bridge's word for
-  who the person is.
+  act as that person: the Slack bridge answers approvals with `approval_decide_on_behalf`, and the viewer sends
+  `on_behalf` on `approval_get`, `approval_list`, `approval_decide`, `approval_revoke` and `passkey_register`. Every
+  bridge needs the `approval_decide_on_behalf` grant, for either use. The signer applies its rules to the person, not
+  to the bridge, and takes the bridge's word for who the person is.
 - **commitment**: a digest of some content, made with a salt. A record holds the commitment, not the content, so the log
   can prove what was said without keeping it. With the content and the salt, anyone can work the commitment out again
   and compare.
@@ -80,7 +82,7 @@ A call or field that this page does not list below was already in version 15. Th
 
 | Version | What it added |
 |---|---|
-| 16 (all of Tracekit 1.2) | `register_run`'s `parent`; `close_run`'s `last_client_seq`; `tailer_heartbeat`; `observe_effect`; agent approvers (`approval_review`, `approval_revoke`, `approval_agents`, `approval_decide`'s `escalate` and `asserted`, filters on `approval_list`); the operator calls (`incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend`); `decide`'s `incident_id` |
+| 16 (all of Tracekit 1.2) | `register_run`'s `parent`; `close_run`'s `last_client_seq` and `caller`; args digests on the tool uses a provider ran; `tailer_heartbeat`; `observe_effect`; agent approvers (`approval_review`, `approval_revoke`, `approval_agents`, `approval_decide`'s `escalate` and `asserted`, filters on `approval_list`); the operator calls (`incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend`); `decide`'s `incident_id`; an approval's `run_closing`, `escalated` and `agent` |
 | 17 (Tracekit 1.3) | `model_event`'s `tool_results` and the answer's `refused` |
 | 18 | The kernel sensor's events in `observe_effect` |
 | 19 | `review_finding`; `constraint_add`; `model_event`'s `amended` and `said_only`; `register_run`'s `caller`; `observe_effect`'s `callers` and its OpenShell import |
@@ -106,7 +108,7 @@ code it does not know, because a later version may add one.
 | `forbidden` | The caller may not make this call, or not in this state, for example an approver who is also the requester. | 403 |
 | `run_token_invalid` | The run token is missing, wrong, or belongs to another run. | 403 |
 | `unknown_run` | The run does not exist, as far as the caller can see. | 404 |
-| `unknown_tool_call` | `approval_request` for a tool call that the run never decided. | 404 |
+| `unknown_tool_call` | `approval_request` for a call attempt with no pending `ask`. | 404 |
 | `unknown_decision` | `complete` with a `decision_id` that is not this call's, or that was completed already. | 404 |
 | `unknown_approval` | No approval with that id. | 404 |
 | `unknown_incident` | An operator call names an incident that the caller's tenant does not have. | 404 |
@@ -120,7 +122,7 @@ code it does not know, because a later version may add one.
 | `unavailable` | The signer cannot do it now: a disk error, a storage lock, or, for `export_run`, a run that no checkpoint covers yet because the signer is still writing one. Try later. | 503 |
 
 The HTTP status is sent only to a client that asks for it with the header `Tracekit-Errors: http-status`. Without the
-header the answer is the same error frame with status 200, as the SDKs read it. A 429 or 503 carries `Retry-After`,
+header the answer is the same error frame with status 200, as the SDKs read it. A 429 or 503 that has `retry_after_ms` carries `Retry-After`,
 which is `retry_after_ms` rounded up to whole seconds, and a 401 carries `WWW-Authenticate: Bearer`. More: [calling the
 signer over HTTP](remote-ingest.md#calling-the-signer-over-http).
 
@@ -146,15 +148,17 @@ Every call goes through these checks in order, and the first one that fails ends
 1. The method must be an RPC on this page. Otherwise the answer is `invalid_request`.
 2. The caller must be allowed to call it (the rules below). Otherwise the answer is `forbidden`. This check comes before
    the request itself is looked at, so a caller that is not allowed is never told what is wrong with its request.
-3. The caller's identity must not be suspended (see `suspend`). A suspended identity's calls are all refused, except
+3. The caller's identity must not be suspended (see `suspend`). Otherwise the answer is `forbidden`: a suspended
+   identity's calls are all refused, except
    operator calls made by a break-glass identity.
 4. The request must match the schema. Otherwise the answer is `invalid_request`.
 
 **What a caller may call.** An `authorize` entry in the signer's configuration lists the RPCs an identity may call. An
 entry names an identity as `scheme:subject`, or a prefix ending in `:*` or `/*`. Callers that sign in with OpenID
-Connect can also be named by `person:` and `group:` (see [Identity](identity.md#oidc-issuers)). A caller can match
-several entries, and then it may call everything they list together. If at least one entry matches, the caller may call
-exactly what the matching entries list and nothing else: the default grants below do not apply to it. If no entry
+Connect can also be named by `person:` and `group:` (see [Identity](identity.md#oidc-issuers)). For its own name
+a caller gets one entry: the exact one, else the one with the longest matching prefix. An OpenID Connect caller also
+gets its `person:` and `group:` entries, and may call everything those entries list together. If at least one entry
+matches, the caller may call exactly what the matching entries list and nothing else: the default grants below do not apply to it. If no entry
 matches, a local user (scheme `uid`) and the dev token (`token:dev`) get the default grants, and every other caller may
 call nothing, so each of its calls is `forbidden`.
 
@@ -167,9 +171,9 @@ never granted by default. Each one needs an `authorize` entry, or the rule in th
 | `content_get` | Granted as `content_read`, not under its own name. See **The content vault grant** below. |
 | `content_erase`, `approval_agents`, `decision_import` | Only a caller whose `authorize` entry lists the call. |
 | `approval_review` | Only an agent approver whose `authorize` entry lists it. See **Agent approvers** below. |
-| `approval_decide_on_behalf` | Only a chat bridge (for example Slack) whose `authorize` entry lists it, answering for the people it serves. |
+| `approval_decide_on_behalf` | Only a bridge whose `authorize` entry lists it. A chat bridge (for example Slack) needs it to answer for the people it serves, and any bridge, the viewer too, needs it to send `on_behalf` on `approval_get`, `approval_list`, `approval_decide`, `approval_revoke` and `passkey_register`. |
 | `export_run` | Only a caller whose `authorize` entry lists it, and only with the extra rules under **Downloading runs** below. |
-| `observe_effect` | Only the identity of an egress observer or kernel sensor whose `authorize` entry lists it, never an agent's. |
+| `observe_effect` | Only an identity whose `authorize` entry lists it. Give it to the egress observer's or kernel sensor's own identity, never an agent's (the signer does not check this). |
 | `tailer_heartbeat` | Only an identity whose `authorize` entry lists it. Holding the grant is what marks an identity as a transcript tailer, so an agent cannot keep a dead tailer's heartbeats going with its own token. |
 | `channel_open` | Only an identity named in `box_daemons`, whatever `authorize` lists. |
 
@@ -211,7 +215,7 @@ they grant any call that writes, `export_run` is `forbidden`. The caller also ne
 
 **The content vault grant.** The grant for `content_get` is named `content_read`. Write `content_read` in an `authorize`
 entry. The signer refuses to start if an entry lists `content_get`. The dev signer grants `content_read` to your own
-user.
+user, unless `TRACEKIT_DEV_CONTENT=0`.
 
 ## Runs and calls
 
@@ -222,7 +226,7 @@ presents that token. The signer records the start as `run.registered`. A sub-age
 `parent`, which links the two runs. The fields `tenant`, `source`, `analyzes`, `replay_of` and `box` are for special
 callers: the signer refuses them unless its configuration allows the caller to use them. The answer's `fail_modes` says,
 for each tool class and for `default`, whether a call may run when the client cannot reach the signer: `open` lets it
-run unrecorded, and `closed`, which is also what no entry means, stops it.
+run unrecorded, and `closed` stops it. A tool class with no entry follows `default`; only with no `default` either does it fail closed.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `register_run`. A box's agent channel may call it too.
@@ -310,7 +314,7 @@ Asks whether a tool call may run. The client sends the tool name and its argumen
 (`args_source`: `raw`, `parsed` or `coerced`), and its own call id (`tool_call_id`) and attempt number. The signer
 answers `allow`, `deny` or `ask`, with the ids of the rules that matched and a `decision_id`, and signs the decision. An
 `ask` means a person must approve the call first: see the Approvals group. A deny or ask is remembered per call id and
-attempt, so a retry of the same attempt gets the same answer.
+attempt, so a retry of the same attempt with the same arguments gets the same answer.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `decide`. A box's agent channel may call it too.
@@ -453,6 +457,85 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `request_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `instance` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects` | list of objects | yes | up to 256 items |
+| `effects[] (kind net)` | object | no |  |
+| `effects[] (kind net).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind net).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind net).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind net).kind` | always `net` | yes |  |
+| `effects[] (kind net).host` | text | yes | 1 to 253 characters; matches `^[a-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind net).port` | whole number | yes | at least 1; at most 65535 |
+| `effects[] (kind net).bytes_out` | whole number | yes |  |
+| `effects[] (kind net).bytes_in` | whole number | yes |  |
+| `effects[] (kind net).connections` | whole number | yes |  |
+| `effects[] (kind net).first_ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind net).last_ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind exec)` | object | no |  |
+| `effects[] (kind exec).kind` | always `exec` | yes |  |
+| `effects[] (kind exec).args_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `effects[] (kind exec).parent_exec_id` | text | no | 1 to 256 characters |
+| `effects[] (kind exec).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind exec).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind exec).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind exec).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind exec).pid` | whole number | yes | at least 0; at most 4294967295 |
+| `effects[] (kind exec).binary` | text | yes | 1 to 4096 characters |
+| `effects[] (kind exec).exec_id` | text | no | 1 to 256 characters |
+| `effects[] (kind exec).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind exec).denied` | always `true` | no |  |
+| `effects[] (kind exit)` | object | no |  |
+| `effects[] (kind exit).kind` | always `exit` | yes |  |
+| `effects[] (kind exit).status` | whole number | no | at least 0; at most 4294967295 |
+| `effects[] (kind exit).signal` | text | no | up to 32 characters |
+| `effects[] (kind exit).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind exit).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind exit).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind exit).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind exit).pid` | whole number | yes | at least 0; at most 4294967295 |
+| `effects[] (kind exit).binary` | text | yes | 1 to 4096 characters |
+| `effects[] (kind exit).exec_id` | text | no | 1 to 256 characters |
+| `effects[] (kind exit).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind exit).denied` | always `true` | no |  |
+| `effects[] (kind connect)` | object | no |  |
+| `effects[] (kind connect).kind` | always `connect` | yes |  |
+| `effects[] (kind connect).host` | text | yes | 1 to 253 characters; matches `^[a-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind connect).port` | whole number | yes | at least 0; at most 65535 |
+| `effects[] (kind connect).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind connect).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind connect).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind connect).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind connect).pid` | whole number | yes | at least 0; at most 4294967295 |
+| `effects[] (kind connect).binary` | text | yes | 1 to 4096 characters |
+| `effects[] (kind connect).exec_id` | text | no | 1 to 256 characters |
+| `effects[] (kind connect).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind connect).denied` | always `true` | no |  |
+| `effects[] (kind file)` | object | no |  |
+| `effects[] (kind file).kind` | always `file` | yes |  |
+| `effects[] (kind file).path` | text | yes | 1 to 4096 characters |
+| `effects[] (kind file).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind file).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind file).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind file).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind file).pid` | whole number | yes | at least 0; at most 4294967295 |
+| `effects[] (kind file).binary` | text | yes | 1 to 4096 characters |
+| `effects[] (kind file).exec_id` | text | no | 1 to 256 characters |
+| `effects[] (kind file).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind file).denied` | always `true` | no |  |
+| `effects[] (kind policy)` | object | no |  |
+| `effects[] (kind policy).kind` | always `policy` | yes |  |
+| `effects[] (kind policy).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
+| `effects[] (kind policy).change` | text | yes | 1 to 64 characters; matches `^[a-z0-9_.-]+(?![\s\S])` |
+| `effects[] (kind policy).policy_hash` | text | no | 1 to 128 characters |
+| `effects[] (kind policy).by` | text | no | 1 to 256 characters |
+| `effects[] (kind policy).detail_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `effects[] (kind policy).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind policy).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind policy).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
+| `effects[] (kind lost)` | object | no |  |
+| `effects[] (kind lost).kind` | always `lost` | yes |  |
+| `effects[] (kind lost).reason` | text | yes | 1 to 1024 characters |
+| `effects[] (kind lost).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `effects[] (kind lost).run_token` | text | no | 1 to 1024 characters |
+| `effects[] (kind lost).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `check` | object | no |  |
 | `check.run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `check.run_token` | text | yes | 1 to 1024 characters |
@@ -807,8 +890,9 @@ lists `approval_wait`. A box's agent channel may call it too.
 
 Reads one approval: its state, the tool, the rule ids, the requester, the expiry, the signer's own redacted copy of the
 arguments, and the binding digest. The caller sees only the approvals it may see, which are those of its own runs and
-those it may answer; another tenant's are never shown. A bridge, such as the viewer, sends `on_behalf` to read as the
-person who signed in.
+those it may answer. A break-glass identity sees (and may answer) every tenant's approvals. A bridge granted
+`approval_decide_on_behalf` sees its own tenant's, and sends `on_behalf` to read as the person who signed in; any other
+caller never sees another tenant's.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `approval_get`. A box's agent channel may call it too.
@@ -864,7 +948,7 @@ lists `approval_get`. A box's agent channel may call it too.
 
 Lists the approvals the caller may see, a page at a time, oldest first. Send the previous answer's `next_cursor` as
 `cursor` to get the next page. `state`, `escalated` and `for` narrow the list: `for: agent` gives the approvals an agent
-approver may answer now, and `for: person` gives all the others. An agent approver lists without `run_id`, and the
+approver may answer now, and `for: person` gives all the others, including the approvals an agent reviews in shadow mode. An agent approver lists without `run_id`, and the
 signer refuses the request if it sends one.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
@@ -895,6 +979,37 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `approvals` | list of objects | yes | up to 1000 items |
+| `approvals[] (variant 1)` | object | no |  |
+| `approvals[] (variant 1).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 1).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |
+| `approvals[] (variant 1).run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 1).tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 1).attempt` | whole number | yes |  |
+| `approvals[] (variant 1).tool` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).rule_ids` | list of texts | yes | up to 32 items |
+| `approvals[] (variant 1).policy_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `approvals[] (variant 1).requester` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).expires_at` | text | yes | up to 40 characters |
+| `approvals[] (variant 1).passkey` | always `true` | no |  |
+| `approvals[] (variant 1).escalated` | always `true` | no |  |
+| `approvals[] (variant 1).agent` | always `true` | no |  |
+| `approvals[] (variant 1).answered` | object | no |  |
+| `approvals[] (variant 1).answered.by` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).answered.kind` | one of `person`, `agent` | yes |  |
+| `approvals[] (variant 1).escalation` | object | no |  |
+| `approvals[] (variant 1).escalation.by` | one of `agent`, `signer` | yes |  |
+| `approvals[] (variant 1).escalation.reason` | text | no | up to 1024 characters |
+| `approvals[] (variant 1).run_closing` | always `true` | no |  |
+| `approvals[] (variant 2)` | object | no |  |
+| `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |
+| `approvals[] (variant 2).tool` | text | yes | up to 256 characters |
+| `approvals[] (variant 2).rule_ids` | list of texts | yes | up to 32 items |
+| `approvals[] (variant 2).policy_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `approvals[] (variant 2).expires_at` | text | yes | up to 40 characters |
+| `approvals[] (variant 2).escalated` | always `true` | no |  |
+| `approvals[] (variant 2).agent` | always `true` | no |  |
+| `approvals[] (variant 2).run_closing` | always `true` | no |  |
 | `next_cursor` | text or nothing | yes |  |
 
 </details>
@@ -904,8 +1019,9 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 
 Answers a held call: `approve` or `reject`. `escalate` is an agent approver's answer, and the signer refuses it from a
 person. The signer records who answered as its transport established it, and whether the approver is the call's own
-requester (`self_approved`). The requester, the run's owner and its principal may not answer unless the signer allows
-self-approval, and a break-glass identity must give a `reason`. A call marked as high risk needs a `passkey` assertion
+requester (`self_approved`). The run's principal never answers. The requester and the run's owner may answer only with
+`self_approval: allow` (or on a signer with no `approvals` section), and never for a held call. A break-glass
+identity must give a `reason`. A call marked as high risk needs a `passkey` assertion
 to be approved, and a rejection needs none. A bridge, such as the viewer, sends `on_behalf` to answer as the person who
 signed in. An agent approver in shadow mode gets `suggested: true`, and its answer changes nothing.
 
@@ -1186,7 +1302,8 @@ refused, and only an operator can remove one. The signer takes the bridge's word
 what a high-risk approval requires.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
-lists `passkey_register`. In practice a bridge, such as the viewer, calls it for the person it acts for.
+lists `passkey_register`. `on_behalf` is required, so only a bridge whose `authorize` entry lists both `passkey_register`
+and `approval_decide_on_behalf` can call it, such as the viewer for the person it acts for.
 
 <!-- api-doc:begin passkey_register -->
 <details>
@@ -1331,7 +1448,7 @@ vault must be on, or the call is refused. If the content is too large for one an
 
 **Who may call:** only a caller whose `authorize` entry lists `content_read`, the name of the grant for this call
 (`content_get` itself is not accepted there). It is never granted by default, except that the dev signer grants it to
-your own user.
+your own user, unless `TRACEKIT_DEV_CONTENT=0`.
 
 <!-- api-doc:begin content_get -->
 <details>
@@ -1593,6 +1710,158 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `review.cites[].run_seq` | whole number | yes |  |
 | `review.cites[].hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `review.verdict` | object | yes |  |
+| `review.verdict (kind finding)` | object | no |  |
+| `review.verdict (kind finding).kind` | always `finding` | yes |  |
+| `review.verdict (kind finding).rule` | one of `TK-X201`, `TK-X202`, `TK-X203`, `TK-X204`, `TK-X205`, `TK-X206`, `TK-X207`, `TK-X208`, `TK-X210`, `TK-X101`, `TK-X102`, `TK-X103`, `TK-X104`, `TK-X111`, `TK-X112`, `TK-X113`, `TK-X114`, `TK-X120`, `TK-X211`, `TK-X212` | yes |  |
+| `review.verdict (kind finding).severity` | one of `info`, `low`, `medium`, `high`, `critical` | yes |  |
+| `review.verdict (kind finding).tier` | one of `gateway`, `harness`, `transcript`, `sdk` | no |  |
+| `review.verdict (kind finding).order` | one of `signed_before`, `transcript_order`, `after` | no |  |
+| `review.verdict (kind finding).redacted` | true or false | no |  |
+| `review.verdict (kind finding).lifted` | true or false | no |  |
+| `review.verdict (kind finding).digests` | list of texts | no | up to 32 items |
+| `review.verdict (kind finding).alignment` | one of `ok`, `drift`, `misaligned` | no |  |
+| `review.verdict (kind finding).reason` | one of `none`, `unrequested_action`, `unexplained_action`, `contradicted_reasoning`, `scope_creep`, `workaround`, `false_success`, `followed_tool_output`, `injection`, `other` | no |  |
+| `review.verdict (kind finding).asserted` | object | no |  |
+| `review.verdict (kind finding).asserted.model` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:/@+-]+(?![\s\S])` |
+| `review.verdict (kind finding).asserted.version` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:/@+-]+(?![\s\S])` |
+| `review.verdict (kind finding).asserted.prompt_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `review.verdict (kind finding).families` | object | no |  |
+| `review.verdict (kind finding).families.reviewer` | one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`, `None` | yes |  |
+| `review.verdict (kind finding).families.agent` | list of (one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`) | yes | up to 8 items |
+| `review.verdict (kind finding).window` | object | no |  |
+| `review.verdict (kind finding).window.grace_s` | number | yes | at least 0; at most 86400 |
+| `review.verdict (kind finding).window.skew_s` | number | yes | at least 0; at most 86400 |
+| `review.verdict (kind coverage)` | object | no |  |
+| `review.verdict (kind coverage).kind` | always `coverage` | yes |  |
+| `review.verdict (kind coverage).rule` | always `tk-x200` | yes |  |
+| `review.verdict (kind coverage).severity` | always `info` | yes |  |
+| `review.verdict (kind coverage).checks` | object | yes |  |
+| `review.verdict (kind coverage).checks.TK-X201` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X201.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X201.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X201.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X201.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X201.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X202` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X202.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X202.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X202.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X202.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X202.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X203` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X203.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X203.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X203.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X203.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X203.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X204` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X204.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X204.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X204.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X204.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X204.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X205` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X205.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X205.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X205.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X205.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X205.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X206` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X206.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X206.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X206.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X206.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X206.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X207` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X207.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X207.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X207.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X207.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X207.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X208` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X208.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X208.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X208.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X208.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X208.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X210` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X210.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X210.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X210.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X210.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X210.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X101` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X101.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X101.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X101.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X101.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X101.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X102` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X102.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X102.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X102.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X102.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X102.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X103` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X103.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X103.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X103.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X103.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X103.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X104` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X104.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X104.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X104.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X104.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X104.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X111` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X111.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X111.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X111.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X111.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X111.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X112` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X112.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X112.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X112.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X112.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X112.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X113` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X113.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X113.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X113.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X113.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X113.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X114` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X114.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X114.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X114.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X114.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X114.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X120` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X120.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X120.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X120.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X120.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X120.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X211` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X211.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X211.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X211.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X211.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X211.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X212` | object | no |  |
+| `review.verdict (kind coverage).checks.TK-X212.checked` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X212.found` | whole number | yes |  |
+| `review.verdict (kind coverage).checks.TK-X212.not_checkable` | list of objects | no | up to 16 items |
+| `review.verdict (kind coverage).checks.TK-X212.not_checkable[].reason` | text | yes | 1 to 32 characters; matches `^[a-z][a-z_]*(?![\s\S])` |
+| `review.verdict (kind coverage).checks.TK-X212.not_checkable[].n` | whole number | yes |  |
+| `review.verdict (kind coverage).partial` | true or false | no |  |
+| `review.verdict (kind coverage).reasoning` | object | no |  |
+| `review.verdict (kind coverage).reasoning.full` | whole number | no |  |
+| `review.verdict (kind coverage).reasoning.summary` | whole number | no |  |
+| `review.verdict (kind coverage).reasoning.withheld` | whole number | no |  |
+| `review.verdict (kind coverage).reasoning.none` | whole number | no |  |
 
 **Answer**
 
@@ -2075,6 +2344,12 @@ holding a delegated run token is refused with `forbidden`.
 | `message.grants[].sig.key` | text | yes | 1 to 300 characters |
 | `message.grants[].sig.sig` | text | yes | up to 88 characters |
 | `message.payload` | object | no |  |
+| `message.payload (kind text)` | object | no |  |
+| `message.payload (kind text).kind` | always `text` | yes |  |
+| `message.payload (kind text).text` | text | yes | up to 65536 characters |
+| `message.payload (kind data)` | object | no |  |
+| `message.payload (kind data).kind` | always `data` | yes |  |
+| `message.payload (kind data).data` | any value | yes |  |
 | `message.from` | object | yes |  |
 | `message.from.agent` | text | yes | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `message.from.run` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -2124,6 +2399,12 @@ holding a delegated run token is refused with `forbidden`.
 | `message.grants[].sig.key` | text | yes | 1 to 300 characters |
 | `message.grants[].sig.sig` | text | yes | up to 88 characters |
 | `message.payload` | object | no |  |
+| `message.payload (kind text)` | object | no |  |
+| `message.payload (kind text).kind` | always `text` | yes |  |
+| `message.payload (kind text).text` | text | yes | up to 65536 characters |
+| `message.payload (kind data)` | object | no |  |
+| `message.payload (kind data).kind` | always `data` | yes |  |
+| `message.payload (kind data).data` | any value | yes |  |
 | `message.from` | object | yes |  |
 | `message.from.agent` | text | yes | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `message.from.run` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -2356,8 +2637,9 @@ the signer's ceiling, and with `forbidden` or `run_closed` a run that is held, q
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `grant_issue`. The signer then applies the rules for who may answer the run's approvals. With `approvals`
-configured, the issuer must be an approver of the run's tenant, and never the run's own user or principal unless
-`self_approval: allow`. On the dev signer, any identity of the run's tenant may issue one. An agent approver never may.
+configured, the issuer must be an approver of the run's tenant. The run's attested principal never may issue one, and
+the requester and the run's owner may only with `self_approval: allow`, and never for a held call. On a signer with no
+`approvals` section, any identity of the run's tenant may issue one. An agent approver never may.
 More: [who may issue a grant](intent-grants.md#who-may-issue-a-grant).
 
 <!-- api-doc:begin grant_issue -->
@@ -2427,8 +2709,9 @@ entry gives the `grant_id`, the `run_id`, the signed `grant`, its `tools`, `limi
 can still release a call. The call writes nothing.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
-lists `grant_list`. It lists only the runs the caller may see: the run's own user, a break-glass identity, or, with
-`approvals` configured, an approver of the run's tenant.
+lists `grant_list`. It lists only the runs the caller may see: the run's own user, a break-glass identity, with
+`approvals` configured an approver of the run's tenant, and a bridge granted `approval_decide_on_behalf`. On a signer
+with no `approvals` section, any identity of the run's tenant may list them.
 
 <!-- api-doc:begin grant_list -->
 <details>
@@ -2490,7 +2773,8 @@ the `run_seq`. The signer refuses with `invalid_request` a grant that is not in 
 that is revoked already. Revoking only narrows what the agent may do, so the run's own user may do it too.
 
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
-lists `grant_revoke`. It works only on runs the caller may see, as for `grant_list`.
+lists `grant_revoke`. It works only on runs the caller may see, as for `grant_list`: on a signer with no `approvals` section that is any
+identity of the run's tenant, and a bridge granted `approval_decide_on_behalf` may too.
 
 <!-- api-doc:begin grant_revoke -->
 <details>
@@ -2558,13 +2842,13 @@ paragraphs say what they do.
 |---|---|---|
 | Laptop, dev signer (Linux, macOS) | A Unix socket that the first client starts | `uid:<number>`, the caller's user id |
 | Laptop, dev signer (Windows) | A loopback TCP port | The dev token, `token:dev` |
-| Laptop, system mode | The Unix socket `/run/tracekit-signer/signer.sock` | `uid:<number>` |
+| Laptop, system mode | The Unix socket `/run/tracekit-signer/signer.sock` (Linux; on macOS `/Library/Application Support/tracekit-signer/signer.sock`) | `uid:<number>` |
 | Container sidecar | A Unix socket in a directory shared with the agent | `uid:<number>` |
 | Central signer, or Compose | HTTPS | `token:`, `k8s_sa:`, `mtls:` or `oidc:` and the name the credential gives |
 
 The agent's code does not change between these. The environment variable `TRACEKIT_SIGNER` tells the client where the
 signer is: a socket path, `tcp://host:port` on a loopback address (the Windows dev signer, whose token goes in
-`TRACEKIT_SIGNER_TOKEN`), an `https://` URL, or `http://` on a loopback address. In system mode the client takes the
+`TRACEKIT_SIGNER_TOKEN`), an `https://` URL, or, in the Python SDK only, `http://` on a loopback address. In system mode the client takes the
 signer from the root-owned file `/etc/tracekit/client.json` and refuses a `TRACEKIT_SIGNER` that names another signer,
 so an agent cannot point itself at a signer it runs. See [Deploying the signer](deploy.md).
 
@@ -2586,8 +2870,8 @@ This call succeeds only for a caller that may call `status` (see [Who may call w
 To reach a signer, the SDKs read `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (a file holding the token,
 read again on every call, so a rotated token is picked up), `TRACEKIT_SIGNER_CA` (the CA that the signer's certificate
 must chain to) and, for `mtls`, `TRACEKIT_SIGNER_CERT` and `TRACEKIT_SIGNER_KEY` (the client certificate and, if it is
-in another file, its key). Without a token file they use the token in `TRACEKIT_API_KEY`. An SDK refuses a plain
-`http://` URL whose host is not a loopback address. See [Remote clients](remote-ingest.md#calling-the-signer-over-http).
+in another file, its key). Without a token file they use the token in `TRACEKIT_API_KEY`. The TypeScript SDK takes `https://` only. The Python SDK
+also takes a plain `http://` URL, but refuses one whose host is not a loopback address. See [Remote clients](remote-ingest.md#calling-the-signer-over-http).
 
 **Proving who you are over HTTPS.** The `authenticators` list in the `http` section turns on any of four ways to prove
 identity. The signer asks them in the order listed, and the first one that recognises its credential decides. If none
@@ -2644,8 +2928,10 @@ waits a second for a free place and is then closed.
 OpenTelemetry (OTLP/HTTP) data from the same authenticators. This is not an RPC. The body is OTLP protobuf
 (`Content-Type: application/x-protobuf`) or OTLP JSON (`application/json`), plain or compressed with gzip or deflate
 (`Content-Encoding`). It may be up to 4 MiB as sent, and a longer one gets 413. The unpacked body is limited to 16 MiB,
-and to 32 times the size sent (but not below 1 MiB), and a request may hold up to 10,000 spans. The signer refuses a
-request over these limits, with another content type or encoding, or that cannot be read. The caller is authenticated
+and to 32 times the size sent (but not below 1 MiB). A request may hold up to `otlp.max_spans` spans (512 by default):
+with more, the whole request is rejected in `partialSuccess`. The wire decoder refuses more than 10,000 spans whatever
+that setting says. The signer refuses a
+request over the other limits, with another content type or encoding, or that cannot be read. The caller is authenticated
 before its body is read: a request with no accepted credential gets 401, too many failed attempts get 429, and an
 identity without the `otlp_import` grant gets 403.
 
@@ -2668,8 +2954,9 @@ that can wait a long time, such as `approval_wait`, gives it a connection of its
 **Loopback TCP port (dev signer on Windows).** Where Unix sockets are missing, a dev signer listens on `127.0.0.1` on a
 port the operating system picks. It writes the port and a secret token to a file named `endpoint.json` that only the
 user can read. Each connection starts with a handshake in which both sides prove that they hold the token without
-sending it. The client sends a random value, the signer answers with a proof made from the token and its own random
-value, and only after the client has checked that does it send its own proof. A process that squats on the port without
+sending it. The client sends a random value, the signer answers with a proof over the client's value, made with the token, and a
+random value of its own, and only after the client has checked that does it send its own proof, over the signer's
+value. A process that squats on the port without
 the token learns nothing it can replay. After the handshake the caller is the dev token (`token:dev`), and frames work
 as they do on a Unix socket. The dev token is valid for one year, after which it gets `unauthenticated`. What it may
 call is under [Who may call what](#who-may-call-what).

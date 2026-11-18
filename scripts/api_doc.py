@@ -88,10 +88,16 @@ def rows(schema, prefix=""):
     for name, sub in schema.get("properties", {}).items():
         path = prefix + name
         result.append((path, kind(sub), "yes" if name in required else "no", notes(sub)))
-        if sub.get("type") == "object":
-            result += rows(sub, path + ".")
-        elif sub.get("type") == "array" and sub.get("items", {}).get("type") == "object":
-            result += rows(sub["items"], path + "[].")
+        inner = sub["items"] if sub.get("type") == "array" and "items" in sub else sub
+        base = path + "[]" if inner is not sub else path
+        if inner.get("type") == "object":
+            result += rows(inner, base + ".")
+        branches = [b for b in inner.get("oneOf", ()) if b.get("type") == "object"]
+        for i, branch in enumerate(branches, 1):   # one row per branch, then its fields: they differ by `kind`
+            const = branch["properties"].get("kind", {}).get("const")
+            label = "%s (%s)" % (base, "kind " + const if const else "variant %d" % i)
+            result.append((label, "object", "no", ""))
+            result += rows(branch, label + ".")
     return result
 
 
