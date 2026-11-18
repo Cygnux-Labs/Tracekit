@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -73,6 +74,7 @@ def _write_json(path: Path, doc):
 
 
 QWEN_RECORDED = Path(__file__).parent / "data" / "audit" / "qwen-code-0.27.4"
+OPENCODE_RECORDED = Path(__file__).parent / "data" / "audit" / "opencode-1.19.5" / "rows.json"
 
 
 def _qwen_rec(kind, days_ago=0, session="q1", **extra):
@@ -558,9 +560,9 @@ class TestAudit(unittest.TestCase):
         self.assertEqual((call["agent"], call["tool"], call["verdict"], call["rule_ids"]),
                          ("gemini", "Bash", expected["verdict"], expected["rule_ids"]))
         self.assertEqual(call["verdict"], "deny")
-        code, _, err = _run(str(self.root), "--agent", "opencode")   # no reader of OpenCode's own sessions yet
+        code, _, err = _run(str(self.root), "--agent", "goose")   # no reader of goose's own sessions yet
         self.assertEqual(code, 2)
-        self.assertIn("--calls FILE --agent opencode", err)
+        self.assertIn("--calls FILE --agent goose", err)
 
     def test_with_no_root_every_known_agents_folder_that_exists_is_read(self):
         home = self.root / "home"
@@ -901,8 +903,8 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run("--agent", "claude")
         self.assertEqual(code, 2)
         self.assertIn("--agent claude needs a ROOT or --calls FILE", err)
-        with self.assertRaisesRegex(ValueError, "no reader for opencode's"):   # audit() itself, a ROOT given or not
-            audit.audit(str(self.root), agent="opencode")
+        with self.assertRaisesRegex(ValueError, "no reader for goose's"):   # audit() itself, a ROOT given or not
+            audit.audit(str(self.root), agent="goose")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as e:
             cli.main(["audit", "--calls", "-", "--agent", "no-such-agent"])
         self.assertEqual(e.exception.code, 2)
@@ -1389,6 +1391,310 @@ class TestAudit(unittest.TestCase):
         call = report["calls"][0]
         self.assertEqual((call["agent"], call["session"], call["tool"], call["verdict"]),
                          ("cursor", "c1", "Bash", "deny"))
+
+
+    def _opencode_db(self, folder: Path | None = None, name: str = "opencode.db", extra=()) -> Path:
+        """A database with the columns of OpenCode's session and part tables the reader uses, holding the recorded session's rows
+        (tests/data/audit/opencode-1.19.5), plus `extra` parts (id, session, time, data)."""
+        rows = json.loads(OPENCODE_RECORDED.read_text())
+        folder = folder or self.root / "oc"
+        folder.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(folder / name)
+        con.execute("CREATE TABLE session (id text PRIMARY KEY, parent_id text, directory text NOT NULL, path text, "
+                    "version text NOT NULL, agent text, time_created integer NOT NULL, time_updated integer NOT NULL)")
+        con.execute("CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, "   # 1.19.5 has it too
+                    "time_created integer NOT NULL, data text)")
+        con.execute("CREATE TABLE part (id text PRIMARY KEY, message_id text NOT NULL, session_id text NOT NULL, "
+                    "time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL)")
+        for r in rows["session"]:
+            con.execute("INSERT INTO session VALUES (:id, :parent_id, :directory, :path, :version, :agent, "
+                        ":time_created, :time_updated)", r)
+        for r in rows["part"]:
+            con.execute("INSERT INTO part VALUES (:id, :message_id, :session_id, :time_created, :time_updated, :data)", r)
+        for pid, session, at, data in extra:
+            con.execute("INSERT INTO part VALUES (?, 'msg', ?, ?, ?, ?)", (pid, session, at, at, data))
+        con.commit()
+        con.close()
+        return folder / name
+
+    @staticmethod
+    def _oc_part(tool, args, call="c", status="completed", start=None):
+        state = {"status": status, "input": args}
+        if start is not None:
+            state["time"] = {"start": start, "end": start + 1}
+        return json.dumps({"type": "tool", "tool": tool, "callID": call, "state": state}, separators=(",", ":"))
+
+    def test_opencode_recorded_session_is_read_as_its_hook_maps_it(self):
+        """#885: the five calls of the recorded OpenCode 1.19.5 session, each mapped as its hook maps it."""
+        db = self._opencode_db()
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        folder = "C:\\Users\\user\\Desktop\\oc-test"
+        hello = folder + "\\hello.txt"
+        recorded = [("bash", {"command": f'Get-ChildItem -LiteralPath "{folder}" -Force | Select-Object Name, Mode, Length',
+                              "workdir": folder}),
+                    ("write", {"content": "hi", "filePath": hello}), ("read", {"filePath": hello}),
+                    ("edit", {"filePath": hello, "oldString": "hi", "newString": "hi\nsecond line"}),
+                    ("read", {"filePath": hello})]
+        engine = load_policy(DEFAULT_POLICY)
+        expected = []
+        for name, args in recorded:
+            tool, mapped = agent_hooks.tool("opencode", name, args)
+            expected.append((sid, tool, evaluate(engine, tool, mapped)[0]["verdict"]))
+        code, out, err = _run(str(db.parent), "--agent", "opencode", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual([(c["session"], c["tool"], c["verdict"]) for c in report["calls"]], expected)
+        self.assertEqual(sorted({c["tool"] for c in report["calls"]}), ["Bash", "Edit", "Read", "Write"])
+        self.assertEqual((report["skipped_malformed"], report["unreadable"]), (0, []))
+        self.assertEqual(report["agents"], {"opencode": {"folder": str(db.parent), "calls": 5, "sessions": 1}})
+
+    def test_opencode_shell_call_the_default_policy_denies_is_denied(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        db = self._opencode_db(extra=[("prt_z", sid, 1794965800000, self._oc_part("bash", {"command": "rm -rf /"}, "z"))])
+        report = audit.audit(str(db.parent), agent="opencode")
+        bad = [c for c in report["calls"] if c["verdict"] == "deny"]
+        self.assertEqual([(c["tool"], c["agent"]) for c in bad], [("Bash", "opencode")])
+
+    def test_opencode_repeated_call_counts_once_but_the_same_call_later_with_another_id_twice(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        run = self._oc_part("bash", {"command": "echo 1"}, "k", start=1794965800000)
+        db = self._opencode_db(extra=[("prt_a", sid, 1794965800000, run), ("prt_b", sid, 1794965800001, run),
+                                      ("prt_c", sid, 1794965800002, self._oc_part("bash", {"command": "echo 1"}, "k2"))])
+        report = audit.audit(str(db.parent), agent="opencode")
+        self.assertEqual(sum(1 for c in report["calls"] if c["tool"] == "Bash"), 3)   # 1 recorded + k once + k2
+
+    def test_opencode_pending_part_is_no_call_and_a_malformed_one_is_counted(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        bad = ['{"type":"tool"', '{"type":"tool","tool":5,"state":{"input":{}}}', '{"type":"tool","tool":"bash"}',
+               '{"type":"tool","tool":"bash","state":{"input":[]}}', '[{"type":"tool"}]']
+        extra = [(f"prt_m{i}", sid, 1794965800000 + i, d) for i, d in enumerate(bad)]
+        extra.append(("prt_p", sid, 1794965800100, self._oc_part("bash", {}, "p", status="pending")))
+        db = self._opencode_db(extra=extra)
+        report = audit.audit(str(db.parent), agent="opencode")
+        self.assertEqual((len(report["calls"]), report["skipped_malformed"]), (5, 5))
+
+    def test_opencode_time_is_the_calls_start_else_the_parts_and_since_goes_by_it(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        old = int((datetime.now(timezone.utc) - timedelta(days=10)).timestamp() * 1000)
+        new = int((datetime.now(timezone.utc) - timedelta(days=1)).timestamp() * 1000)
+        db = self._opencode_db(extra=[
+            ("prt_1", sid, new, self._oc_part("bash", {"command": "echo a"}, "a", start=old)),   # started 10 days ago
+            ("prt_2", sid, old, self._oc_part("bash", {"command": "echo b"}, "b")),   # no time of its own: the part's
+            ("prt_3", sid, old, self._oc_part("bash", {"command": "echo c"}, "c", start=new))])
+        report = audit.audit(str(db.parent), agent="opencode", since="3d", show=True)
+        echoes = [c["text"] for c in report["calls"] if "echo" in c["text"]]
+        self.assertEqual(len(echoes), 1)   # a started 10 days ago, b's part is 10 days old
+        self.assertIn("echo c", echoes[0])
+
+    def test_opencode_subagent_session_counts_under_its_root_session(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        db = self._opencode_db(extra=[("prt_s", "ses_child", 1794965800000, self._oc_part("bash", {"command": "ls"}, "s"))])
+        con = sqlite3.connect(db)
+        con.execute("INSERT INTO session VALUES ('ses_child', ?, 'd', 'd', '1', 'general', 1, 1)", (sid,))
+        con.commit()
+        con.close()
+        report = audit.audit(str(db.parent), agent="opencode")
+        self.assertEqual({c["session"] for c in report["calls"]}, {sid})
+
+    def test_opencode_root_that_isnt_its_data_folder_is_refused_never_read_as_a_clean_zero(self):
+        self._opencode_db()
+        for root, text in ((self.root, "is not OpenCode's data folder"), (self.root / "no-such", "no such folder")):
+            code, _, err = _run(str(root), "--agent", "opencode")
+            self.assertEqual(code, 2)
+            self.assertIn(text, err)
+        junk = self.root / "junk"
+        junk.mkdir()
+        (junk / "opencode.db").write_bytes(b"not a database" * 100)
+        code, _, err = _run(str(junk), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("is not an OpenCode database", err)
+        other = self.root / "two"
+        for name in ("opencode-dev.db", "opencode-beta.db"):
+            self._opencode_db(other, name)
+        code, _, err = _run(str(other), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("2 OpenCode databases", err)
+        only = self._opencode_db(self.root / "one", "opencode-dev.db")
+        code, out, err = _run(str(only.parent), "--agent", "opencode", "--json")
+        self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
+
+    def test_opencode_folder_is_xdg_data_home_else_local_share_in_home(self):
+        home = self.root / "home"
+        with mock.patch.dict(os.environ, _home(home)):
+            os.environ.pop("XDG_DATA_HOME", None)
+            self.assertEqual(audit.opencode_root(), os.path.join(str(home), ".local", "share", "opencode"))
+            self._opencode_db(home / ".local" / "share" / "opencode")
+            code, out, err = _run("--json")   # no ROOT: every reader's default folder that exists
+            self.assertEqual(code, 0, err)
+            self.assertEqual(json.loads(out)["agents"]["opencode"]["calls"], 5)
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(self.root / "xdg")}):
+                self.assertEqual(audit.opencode_root(), str(self.root / "xdg" / "opencode"))
+
+
+    def test_opencode_2x_database_is_refused_plainly_even_when_it_still_holds_1x_calls(self):
+        db = self._opencode_db()   # with session_message, which 1.19.5 has: a 1.x database reads its 5 calls
+        code, out, err = _run(str(db.parent), "--agent", "opencode", "--json")
+        self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE session_v2 (id text PRIMARY KEY)")   # 2.0 to 2.2: no session_part yet
+        con.commit()
+        code, _, err = _run(str(db.parent), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("OpenCode 2.x's database, which isn't read yet", err)
+        self.assertIn("--calls FILE --agent opencode", err)
+        con.execute("DROP TABLE session_v2")
+        con.execute("CREATE TABLE session_part (id text PRIMARY KEY)")   # session_part alone is 2.x as well
+        con.commit()
+        code, _, err = _run(str(db.parent), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("OpenCode 2.x's database, which isn't read yet", err)
+        con.close()
+
+    def test_opencode_forked_session_counts_its_copied_calls_once_and_calls_without_an_id_each_time(self):
+        sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
+        a = self._oc_part("bash", {"command": "echo a"}, "k", start=1794965800000)
+        b = self._oc_part("bash", {"command": "echo b"}, "k2", start=1794965800000)   # same id, another start: a call
+        b2 = self._oc_part("bash", {"command": "echo b"}, "k2", start=1794965900000)
+        none = json.dumps({"type": "tool", "tool": "bash", "state": {"status": "completed", "input": {"command": "echo n"}}},
+                          separators=(",", ":"))   # as OpenCode writes its JSON
+        other = json.dumps({"type": "tool", "tool": "bash", "callID": 7, "state": {"input": {"command": "echo i"}}},
+                           separators=(",", ":"))
+        db = self._opencode_db(extra=[("prt_a", sid, 1, a), ("prt_b", sid, 2, b), ("prt_b2", sid, 3, b2),
+                                      ("prt_n1", sid, 4, none), ("prt_n2", sid, 5, none),
+                                      ("prt_i1", sid, 6, other), ("prt_i2", sid, 7, other),
+                                      ("prt_a_fork", "ses_fork", 8, a), ("prt_b_fork", "ses_fork", 9, b)])
+        con = sqlite3.connect(db)   # a fork: its own session, no parent_id, every part copied
+        con.execute("INSERT INTO session VALUES ('ses_fork', NULL, 'd', 'd', '1', 'build', 1, 1)")
+        con.commit()
+        con.close()
+        report = audit.audit(str(db.parent), agent="opencode", show=True)
+        texts = sorted(c["text"] for c in report["calls"] if "echo" in c["text"])
+        self.assertEqual(len(texts), 7)   # a once, b and b2, n twice, i twice
+        self.assertEqual(sum("echo b" in t for t in texts), 2)
+        self.assertEqual(sum("echo a" in t for t in texts), 1)
+        self.assertEqual(sum("echo n" in t for t in texts), 2)
+        self.assertEqual(sum("echo i" in t for t in texts), 2)
+        self.assertEqual({c["session"] for c in report["calls"]}, {sid})   # a, b in the first session that holds them
+
+    def test_opencode_folder_without_a_database_is_unreadable_by_default_and_an_error_as_a_root(self):
+        home = self.root / "home"
+        (home / ".local" / "share" / "opencode" / "log").mkdir(parents=True)   # OpenCode's, before its first session
+        _write_jsonl(home / ".claude" / "projects" / "p" / "s1.jsonl",
+                     [{"type": "assistant", "timestamp": "2026-11-10T14:02:11Z", "message": {"content": [
+                         {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
+        with mock.patch.dict(os.environ, _home(home)):
+            os.environ.pop("XDG_DATA_HOME", None)
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, err = _run("--json")
+            self.assertEqual(code, 0, err)
+            report = json.loads(out)
+            self.assertEqual(report["agents"]["claude"]["calls"], 1)
+            self.assertEqual([u["path"] for u in report["unreadable"]], [str(home / ".local" / "share" / "opencode")])
+            self.assertIn("is not OpenCode's data folder", report["unreadable"][0]["error"])
+            code, _, err = _run(str(home / ".local" / "share" / "opencode"), "--agent", "opencode")
+            self.assertEqual(code, 2)
+
+    @unittest.skipIf(os.name == "nt", "a ? can't be in a Windows folder name")
+    def test_opencode_database_is_opened_read_only_in_a_folder_named_with_hash_question_mark_and_percent(self):
+        folder = self.root / "a#b?c%20d"
+        db = self._opencode_db(folder)
+        before = sorted(os.listdir(self.root))
+        real = sqlite3.connect
+        uris = []
+
+        def spy(target, **kw):
+            uris.append(target)
+            return real(target, **kw)
+        with mock.patch.object(audit.sqlite3, "connect", spy):
+            code, out, err = _run(str(folder), "--agent", "opencode", "--json")
+        self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
+        self.assertEqual(sorted(os.listdir(self.root)), before)   # nothing created beside the folder
+        self.assertEqual(os.listdir(folder), [db.name])
+        self.assertTrue(uris[0].startswith("file:") and uris[0].endswith("?mode=ro") and "#" not in uris[0])
+        con = real(uris[0], uri=True)
+        self.addCleanup(con.close)
+        with self.assertRaisesRegex(sqlite3.OperationalError, "readonly"):
+            con.execute("DELETE FROM part")
+
+    def test_opencode_sqlite_errors_say_what_they_are(self):
+        db = self._opencode_db()
+        code, _, err = _run(str(db.parent), "--agent", "opencode")
+        self.assertEqual(code, 0, err)
+        locker = sqlite3.connect(db, isolation_level=None)
+        self.addCleanup(locker.close)
+        locker.execute("PRAGMA locking_mode=EXCLUSIVE")
+        locker.execute("BEGIN EXCLUSIVE")
+        code, _, err = _run(str(db.parent), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("database is locked; try again", err)
+        self.assertNotIn("not an OpenCode database", err)
+        locker.execute("ROLLBACK")
+        locker.close()
+        only_part = self.root / "only-part"
+        only_part.mkdir()
+        con = sqlite3.connect(only_part / "opencode.db")
+        con.execute("CREATE TABLE part (id text)")
+        con.execute("CREATE VIEW session AS SELECT 1 AS id, NULL AS parent_id")   # a view, not a table
+        con.commit()
+        con.close()
+        code, _, err = _run(str(only_part), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("not an OpenCode database", err)
+        part_view = self.root / "part-view"
+        part_view.mkdir()
+        con = sqlite3.connect(part_view / "opencode.db")
+        con.execute("CREATE TABLE session (id text, parent_id text)")
+        con.execute("CREATE VIEW part AS SELECT 'p' AS id, 's' AS session_id, 1 AS time_created, '{}' AS data")
+        con.commit()
+        con.close()
+        code, _, err = _run(str(part_view), "--agent", "opencode")   # refused before any row is read
+        self.assertEqual(code, 2)
+        self.assertIn("not an OpenCode database", err)
+        no_table = self.root / "no-table"
+        no_table.mkdir()
+        con = sqlite3.connect(no_table / "opencode.db")
+        con.execute("CREATE TABLE other (x)")
+        con.commit()
+        con.close()
+        code, _, err = _run(str(no_table), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("not an OpenCode database", err)
+
+    @unittest.skipIf(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0), "mode 000 needs a non-root POSIX user")
+    def test_opencode_folder_that_cant_be_listed_is_unreadable_by_default_and_an_error_as_a_root(self):
+        home = self.root / "home"
+        folder = home / ".local" / "share" / "opencode"
+        folder.mkdir(parents=True)
+        _write_jsonl(home / ".claude" / "projects" / "p" / "s1.jsonl",
+                     [{"type": "assistant", "timestamp": "2026-11-10T14:02:11Z", "message": {"content": [
+                         {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}}])
+        folder.chmod(0)
+        try:
+            with mock.patch.dict(os.environ, _home(home)):
+                os.environ.pop("XDG_DATA_HOME", None)
+                os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                code, out, err = _run("--json")
+                self.assertEqual(code, 0, err)
+                report = json.loads(out)
+                self.assertEqual(report["agents"]["claude"]["calls"], 1)
+                self.assertIn("cannot list", report["unreadable"][0]["error"])
+                code, _, err = _run(str(folder), "--agent", "opencode")
+                self.assertEqual(code, 2)
+                self.assertIn("cannot list", err)
+        finally:
+            folder.chmod(0o755)
+
+    def test_opencode_parent_cycle_ends_and_counts_each_call_once(self):
+        db = self._opencode_db(extra=[("prt_c", "ses_a", 1, self._oc_part("bash", {"command": "echo c"}, "c"))])
+        con = sqlite3.connect(db)
+        con.execute("INSERT INTO session VALUES ('ses_a', 'ses_b', 'd', 'd', '1', 'x', 1, 1)")
+        con.execute("INSERT INTO session VALUES ('ses_b', 'ses_a', 'd', 'd', '1', 'x', 1, 1)")
+        con.commit()
+        con.close()
+        report = audit.audit(str(db.parent), agent="opencode", show=True)
+        mine = [c for c in report["calls"] if "echo c" in c["text"]]
+        self.assertEqual(len(mine), 1)
+        self.assertIn(mine[0]["session"], {"ses_a", "ses_b"})
 
 
 if __name__ == "__main__":
