@@ -34,7 +34,7 @@ class E16(unittest.TestCase):
     def test_clean_layout_passes_every_check(self):
         results = e16.run_case(None)
         # Where google-re2 has no wheel, the regex engine is expected: an info row, not a fault.
-        expected = {} if doctor._google_re2_supported() else {"D-POLICY-ENGINE": "info"}
+        expected = {} if doctor._google_re2_wheel_expected() else {"D-POLICY-ENGINE": "info"}
         self.assertEqual(
             {r["id"]: r["status"] for r in results if r["status"] != "ok"},
             expected,
@@ -842,24 +842,32 @@ class FirstDay(unittest.TestCase):
 
         cases = (
             ("re2@1.0", True, "ok", "", ""),
-            ("regex@2.0", True, "warn", "pip install google-re2", ""),
+            (
+                "regex@2.0",
+                True,
+                "warn",
+                f"{doctor.sys.executable} -m pip install google-re2, then restart the signer "
+                "(tracekit down in dev)",
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)",
+            ),
             (
                 "regex@2.0",
                 False,
                 "info",
                 "",
-                " (google-re2 has no wheel for this Python or platform)",
+                " (tracekit-ai doesn't install google-re2 on this Python or platform)",
             ),
         )
 
-        for engine_name, supported, expected_status, expected_fix, detail_suffix in cases:
-            with self.subTest(engine=engine_name, supported=supported), \
+        for engine_name, wheel_expected, expected_status, expected_fix, detail_suffix in cases:
+            with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
                     mock.patch.object(
                         service, "load_policy",
                         return_value=types.SimpleNamespace(engine=engine_name)
                     ), \
                     mock.patch.object(
-                        doctor, "_google_re2_supported", return_value=supported
+                        doctor, "_google_re2_wheel_expected", return_value=wheel_expected
                     ):
                 row = self.rows()["D-POLICY-ENGINE"]
                 self.assertEqual(row["status"], expected_status)

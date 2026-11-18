@@ -584,10 +584,18 @@ class Packaging(unittest.TestCase):
         marker = requirements[0].marker
         self.assertEqual(requirements[1].marker, marker, "google-re2 markers must remain identical")
 
-        versions = [f"3.{minor}" for minor in range(9, 16)]
+        versions = [f"3.{minor}" for minor in range(9, 17)]
         implementations = ("CPython", "PyPy")
-        platforms = ("win32", "linux", "darwin", "freebsd")
-        machines = ("x86", "AMD64", "ARM64", "x86_64", "aarch64", "arm64", "unknown")
+
+        marker_text = str(marker)
+        platforms = sorted(
+            set(re.findall(r"""sys_platform == ['"]([^'"]+)['"]""", marker_text))
+            | {"freebsd"}
+        )
+        machines = sorted(
+            set(re.findall(r"""platform_machine == ['"]([^'"]+)['"]""", marker_text))
+            | {"unknown"}
+        )
 
         for version, implementation, sys_platform, machine in itertools.product(
             versions, implementations, platforms, machines
@@ -608,6 +616,44 @@ class Packaging(unittest.TestCase):
             doctor._google_re2_supported(),
             marker.evaluate(),
         )
+
+    def test_google_re2_wheel_expected_platform_constraints(self):
+        from tracekit import doctor
+
+        cases = (
+            # Linux: libc, glibc version, and Python bitness.
+            ("linux", 2**63 - 1, ("glibc", "2.28"), ("", ""), True),
+            ("linux", 2**63 - 1, ("glibc", "2.27"), ("", ""), False),
+            ("linux", 2**63 - 1, ("musl", "1.2.5"), ("", ""), False),
+            ("linux", 2**31 - 1, ("glibc", "2.36"), ("", ""), False),
+            ("linux", 2**63 - 1, ("glibc", ""), ("", ""), False),
+
+            # macOS: wheels require version 13 or newer.
+            ("darwin", 2**63 - 1, ("", ""), ("12.7", ""), False),
+            ("darwin", 2**63 - 1, ("", ""), ("13.0", ""), True),
+
+            # No additional version constraint for other supported platforms.
+            ("win32", 2**63 - 1, ("", ""), ("", ""), True),
+        )
+
+        for platform_name, maxsize, libc, mac_version, expected in cases:
+            with (
+                self.subTest(
+                    platform=platform_name,
+                    libc=libc,
+                    mac=mac_version,
+                    maxsize=maxsize,
+                ),
+                mock.patch.object(doctor, "_google_re2_supported", return_value=True),
+                mock.patch.object(doctor.sys, "platform", platform_name),
+                mock.patch.object(doctor.sys, "maxsize", maxsize),
+                mock.patch.object(doctor.platform, "libc_ver", return_value=libc),
+                mock.patch.object(doctor.platform, "mac_ver", return_value=mac_version),
+            ):
+                self.assertEqual(doctor._google_re2_wheel_expected(), expected)
+
+        with mock.patch.object(doctor, "_google_re2_supported", return_value=False):
+            self.assertFalse(doctor._google_re2_wheel_expected())
 
     def test_python_dash_m_tracekit(self):
         r = subprocess.run([sys.executable, "-m", "tracekit", "--version"], capture_output=True, text=True, cwd=ROOT)

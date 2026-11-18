@@ -86,13 +86,7 @@ def _google_re2_supported(python_version=None, implementation=None, sys_platform
     sys_platform = sys_platform or sys.platform
     machine = machine or platform.machine()
 
-    try:
-        version = tuple(int(part) for part in python_version.split("."))
-    except (AttributeError, ValueError):
-        return False
-
-    if len(version) != 2:
-        return False
+    version = tuple(int(part) for part in python_version.split("."))
 
     if implementation != "CPython" or not ((3, 10) <= version < (3, 15)):
         return False
@@ -105,6 +99,26 @@ def _google_re2_supported(python_version=None, implementation=None, sys_platform
         or (sys_platform == "linux" and machine in ("x86_64", "aarch64"))
         or (sys_platform == "darwin" and machine in ("x86_64", "arm64"))
     )
+
+
+def _google_re2_wheel_expected():
+    """The marker, and what it cannot see: libc and OS version constraints."""
+    if not _google_re2_supported():
+        return False
+
+    if sys.platform == "linux":
+        if sys.maxsize <= 2**32 - 1:
+            return False
+        libc, version = platform.libc_ver()
+        return (
+            libc == "glibc"
+            and tuple(int(p) for p in version.split(".")[:2] if p.isdigit()) >= (2, 28)
+        )
+
+    if sys.platform == "darwin":
+        return int((platform.mac_ver()[0] or "0").split(".")[0]) >= 13
+
+    return True
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
@@ -1144,14 +1158,22 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
         loaded = service.load_policy(policy)
         using_re2 = loaded.engine.startswith("re2@")
-        supported = _google_re2_supported()
-        add("D-POLICY-ENGINE", using_re2,
-            f"{policy} loads on {loaded.engine}" + (
-                "" if using_re2 or supported else
-                " (google-re2 has no wheel for this Python or platform)"
-            ),
-            "pip install google-re2" if supported else "",
-            bad=WARN if supported else INFO)
+        wheel_expected = _google_re2_wheel_expected()
+        detail = f"{policy} loads on {loaded.engine}"
+        if not using_re2:
+            detail += (
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)"
+                if wheel_expected else
+                " (tracekit-ai doesn't install google-re2 on this Python or platform)"
+            )
+        fix = (
+            f"{sys.executable} -m pip install google-re2, then restart the signer "
+            "(tracekit down in dev)"
+            if wheel_expected and not using_re2 else ""
+        )
+        add("D-POLICY-ENGINE", using_re2, detail, fix,
+            bad=WARN if wheel_expected else INFO)
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}",
             "pip install tracekit-ai (a --no-deps install leaves the engine out)")
