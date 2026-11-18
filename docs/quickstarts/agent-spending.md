@@ -66,6 +66,7 @@ command with limits taken from it, for you to edit:
 
 ```text
 call-1 send_payment {"payee": "acct-print-shop", "amount": 3000, "currency": "USD"}: held, apr-37abaca9651b7e8ab87cb0e31016b5d7
+  sending money; moving money
 $ tracekit approvals show apr-37abaca9651b7e8ab87cb0e31016b5d7
 approval    apr-37abaca9651b7e8ab87cb0e31016b5d7 (requested)
 tool        "send_payment"
@@ -131,7 +132,7 @@ The person rejects it, and the model gets the refusal as the tool's output:
 $ tracekit approvals reject apr-aa10b626fabff3dac9561cf943e5512a
 rejected: apr-aa10b626fabff3dac9561cf943e5512a, by you, recorded as self-approved (an answer from the call's own requester): the run's assurance stays dev
 ...
-call-4: [tracekit] HELD, nothing ran (TK-M001, TK-M002, TK-F021): not approved: rejected.
+call-4: [tracekit] NOT APPROVED, nothing ran (TK-M001, TK-M002, TK-F021): rejected.
 Why: grant g-be6e67519621e4e9: 100 of 120 USD used; this call needs 40 USD; sending money; moving money
 Agent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept.
 Paid 100 USD of the bills; the last 40 USD needs your approval.

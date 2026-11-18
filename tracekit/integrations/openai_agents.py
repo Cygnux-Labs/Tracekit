@@ -11,9 +11,10 @@ decided in the signer, `await tk.apply_decisions(state)` approves or rejects the
 `Runner.run(agent, state, hooks=tk)`. The RunState JSON is not authenticated, so a dict run context carries the
 approval id only as a hint in `context["tracekit"]["approvals"]` (any other context carries none: the signer finds the
 approval by the call id): every call that is not denied runs only after the signer's `approval_consume` agrees, and the
-SDK does not call `needs_approval` again on resume. The signer's reason for each hold is in
-`context["tracekit"]["reasons"]`, for the app to show the person; a call rejected or expired tells the model it was held
-and why, without the approval commands, which are the person's.
+SDK does not call `needs_approval` again on resume. The signer's reason for each hold is also a hint, in
+`context["tracekit"]["reasons"]`, for the app to show the person (after a load, only what the saved state says). A call
+rejected or expired tells the model so and why, without the approval commands, which are the person's; after a resume
+in another process, the why is the held rules' reasons only.
 An approval with a T2 executor runs a FunctionTool with the arguments the consume returns.
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
@@ -58,10 +59,11 @@ _FRAMEWORK = version_check.framework("openai-agents")
 MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one call
 
 
-def _held(d, outcome):
-    """What the model reads for a call the signer held: that nothing ran and why, in the coding-agent hooks' stopped()
-    form, without the approval commands, which are for the person."""
-    return stopped(f"HELD, nothing ran{_rules(d['rule_ids'])}: {outcome}.", d.get("reason"))
+def _held(head, d, outcome):
+    """What the model reads for a call the signer asked about that did not run: `head` (the coding-agent hooks' BLOCKED
+    or NOT APPROVED), that nothing ran and why, in their stopped() form, without the approval commands, which are for
+    the person."""
+    return stopped(f"{head}, nothing ran{_rules(d['rule_ids'])}: {outcome}.", d.get("reason"))
 
 
 def _keep(d, k, v):
@@ -140,7 +142,7 @@ class TracekitAgents(RunHooks):
         if d["decision"] == "deny":
             return BLOCKED + (refusal(d) or "deny")
         if d["decision"] == "ask" and not can_wait:
-            return _held(d, "approval required, and this tool cannot wait for one")
+            return _held("BLOCKED", d, "approval required, and this tool cannot wait for one")
         try:
             hint = ctx.context["tracekit"]["approvals"][call_id]
         except (AttributeError, KeyError, TypeError, IndexError):
@@ -275,20 +277,23 @@ class TracekitAgents(RunHooks):
                 state.approve(item)
             elif s in ("rejected", "expired"):
                 d = {"rule_ids": a["rule_ids"], "reason": await self._reason(a["tool_call_id"])}
-                state.reject(item, rejection_message=_held(d, f"not approved: {s}"))
+                state.reject(item, rejection_message=_held("NOT APPROVED", d, s))
             else:
                 waiting.append(item)
         return waiting
 
     async def _reason(self, call_id):
-        """Why the signer held the call: from its decision in this process, else as the signer recorded it (a resume in
-        another process); None when it gave none or can't say."""
+        """Why the signer held the call: its decision's reason when this process asked; after a resume in another
+        process, the held rules' reasons only (call_state), without what decide joins in (a grant's, a constraint's,
+        who said no). None when there is none, or when the signer can't say (a warning)."""
+        # lean: call_state gives the rules' reasons, not the reason the decision recorded; that is a signer change
         d = self._decided.get(call_id)
         if d is not None:
             return d.get("reason")
         try:
             return (await self._call("call_state", {**self.run, "tool_call_id": call_id})).get("reason")
-        except (AttributeError, RPCError, SignerUnavailable):   # a SignerAPI of the app's own may have no call_state
+        except Exception as e:   # e.g. a SignerAPI of the app's own without call_state: the other calls are applied
+            warnings.warn(f"tracekit: why tool call {call_id} was held not read: {e}", stacklevel=2)
             return None
 
     async def on_llm_end(self, context, agent, response):
