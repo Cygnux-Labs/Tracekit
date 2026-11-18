@@ -508,6 +508,17 @@ class OptIn(unittest.TestCase):
         with mock.patch.object(public_witness, "URL", ""):
             self.assertIsNone(public_witness.named_origin(cfg, ORIGIN))
 
+    def test_serve_warns_with_the_logs_own_origin_once_signer_yaml_drops_it(self):
+        cfg = {**svc.load_config(self.cfg), "origin": None}   # removed from signer.yaml; the log kept it
+        service = mock.Mock(origin=ORIGIN, log=mock.Mock(head={"closed": False}))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch.object(svc, "load_config", return_value=cfg), \
+                mock.patch.object(svc.logkey, "harden"), mock.patch.object(svc, "open_service", return_value=service), \
+                mock.patch.object(svc, "serve", side_effect=OSError("stopped here")):
+            self.assertEqual(svc.main(["serve", "--config", "signer.yaml"]), 1)
+        self.assertIn(f"origin {ORIGIN} goes to the public witness", err.getvalue())
+        self.assertIn("keeps its origin even once it is removed from signer.yaml", err.getvalue())
+
     def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
         for argv in (["init", "--no-witness"], ["init", "--public-witness"],
                      ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"],

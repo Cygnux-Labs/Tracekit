@@ -732,15 +732,17 @@ class Agreement(SignerBundles):
         damage_crc(self.bundles["closed"], bad)
         with open(self.bundles["closed"], "rb") as f, open(cut, "wb") as w:
             w.write(f.read()[:-100])
-        trust, missing, mispinned = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.json")
-                                     for n in ("trust", "missing", "mispinned"))
+        trust, missing, mispinned, registry = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.json")
+                                               for n in ("trust", "missing", "mispinned", "registry"))
         with open(trust, "w") as f:
             json.dump({"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}, f)
         stolen = checkpoint.key_origin(crypto.public_from_secret(hashlib.sha256(b"a").digest()))
-        with open(mispinned, "w") as f:   # 1.7.3: a log key named after another key's fingerprint, refused by both
-            json.dump({"logs": [checkpoint.vkey(stolen, checkpoint.ED25519,
-                                                crypto.public_from_secret(hashlib.sha256(b"b").digest()))],
-                       "algs": ["ed25519"]}, f)
+        # 1.7.3: a log key named after another key's fingerprint, or a log under it (a tenant registry), refused by both
+        for path, name in ((mispinned, stolen), (registry, f"{stolen}/registry/{'0f' * 16}")):
+            with open(path, "w") as f:
+                json.dump({"logs": [checkpoint.vkey(name, checkpoint.ED25519,
+                                                    crypto.public_from_secret(hashlib.sha256(b"b").digest()))],
+                           "algs": ["ed25519"]}, f)
         negative = os.path.join(TESTS, "golden", "negative")
         for bundle, t, integrity, said in (
                 (bad, self.trusts["witnessed"], "UNUSABLE BUNDLE", "cannot read bundle: the bundle file is damaged: "
@@ -753,6 +755,8 @@ class Agreement(SignerBundles):
                  "pinned key 'x+00000000+AA==' is not a vkey: "),
                 (self.bundles["closed"], mispinned, "UNVERIFIABLE (the trust file can't be used)",
                  f"pinned log key {stolen} is named after another key: "),
+                (self.bundles["closed"], registry, "UNVERIFIABLE (the trust file can't be used)",
+                 f"pinned log key {stolen}/registry/{'0f' * 16} is named after another key: "),
                 (self.bundles["closed"], missing, "UNVERIFIABLE (the trust file can't be used)",
                  f"{missing}: No such file or directory")):
             with self.subTest(os.path.basename(bundle), trust=os.path.basename(t)):

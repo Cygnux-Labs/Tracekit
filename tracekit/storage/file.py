@@ -629,7 +629,7 @@ class FileStorage(_Records, Storage):
             meta = None
         if not isinstance(meta, dict):
             raise StorageCorrupt(f"{META} is damaged: restore it from a backup, or remove it and the log takes the "
-                                 "origin of its latest note")
+                                 "origin of its latest note (tracekit.local/<log id> if it has none)")
         return meta
 
     def meta(self, key):

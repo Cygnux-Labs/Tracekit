@@ -28,7 +28,7 @@ MAX_SIGNATURES = 64
 DASH = "— "
 # a log origin named after its Ed25519 key (key_origin): only this exact form, lower-case hex, all 64 digits; with a
 # /suffix, a log the same key signs (a tenant registry, <origin>/registry/<id>)
-KEY_ORIGIN = re.compile(r"tracekit\.local/k([0-9a-f]{64})(?=/|$)")
+KEY_ORIGIN = re.compile(r"tracekit\.local/k([0-9a-f]{64})(?=/|\Z)")
 
 
 class NoteError(ValueError):

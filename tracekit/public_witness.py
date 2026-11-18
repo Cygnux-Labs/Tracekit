@@ -38,5 +38,6 @@ def named_origin(cfg, origin):
             and any(w["vkey"] == VKEY for w in cfg.get("witnesses") or ())):
         return None
     return (f"origin {origin} goes to the public witness with every checkpoint, so its operator can tell whose log "
-            "this is. For a new log, leave origin unset (tracekit.local/k<fingerprint>, named after the log key), or "
-            f"use your own witness ({wiki_url('docs/public-witness-privacy.md')})")
+            "this is. A log keeps its origin even once it is removed from signer.yaml: to stop sending it, set origin "
+            "to tracekit.local/k<fingerprint> (named after the log key; its witnesses then see a new log), or use your "
+            f"own witness. A new log with origin unset has that name ({wiki_url('docs/public-witness-privacy.md')})")

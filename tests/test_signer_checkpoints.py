@@ -166,6 +166,15 @@ class Origins(unittest.TestCase):
                 self.open(origin=origin)
         self.assertEqual(self.open().origin, s.origin)   # a refused start keeps nothing
 
+    def test_a_start_refused_after_its_origin_was_decided_keeps_the_logs_origin(self):
+        """Review 2: a configured origin was kept before the start's later checks, so a start refused by one (here
+        the log key check) still renamed the log at the next start without it."""
+        s = self.open()
+        s.close()
+        with self.assertRaisesRegex(ValueError, "did not sign this log's notes"):
+            self.open(origin="acme.example.com/agents", log_key=logkey.FileKey(crypto.generate()[0]))
+        self.assertEqual(self.open().origin, s.origin)
+
     def test_a_log_key_changed_before_the_first_note_names_the_log_after_the_new_key(self):
         s = self.open()
         s.close()
