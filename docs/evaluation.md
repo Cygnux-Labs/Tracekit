@@ -20,8 +20,9 @@ v0.2 as E2, E4 and E5, with different scenarios and numbers.
 The [technical report](../report/tracekit-v2.md) presents E1, E4, E8, E9, E10, E11, E12, E14, E15 and E16 in tables generated
 from `eval/results/` by `report/tables.py`.
 
-Timings depend on the machine. E2's are from Linux x86_64, Python 3.13, with a dev-mode signer on the same host; E9's,
-E14's and E21's from macOS arm64, Python 3.11. Each results file that measures time records its platform.
+Timings depend on the machine. E2's are from Linux x86_64, Python 3.13, with a dev-mode signer on the same host;
+E9's and E14's are from macOS arm64, Python 3.11; E21's are from Linux x86_64, Python 3.12.
+Each results file that measures time records its platform.
 
 ## E1: tamper detection
 
@@ -583,11 +584,11 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 133 / 147 | 349 / 410 | 844 / 1328 | 6.27 / 7.35 |
-| strict, RE2 / regex | 133 / 147 | 324 / 395 | 675 / 1304 | 5.92 / 7.11 |
-| dev, RE2 / regex | 138 / 154 | 363 / 428 | 865 / 1441 | 6.44 / 7.58 |
+| default, RE2 / regex | 324 / 361 | 942 / 1005 | 2064 / 2448 | 8.1 / 9.09 |
+| strict, RE2 / regex | 321 / 361 | 811 / 953 | 1613 / 2416 | 7.6 / 8.66 |
+| dev, RE2 / regex | 330 / 381 | 882 / 1050 | 2018 / 2893 | 8.19 / 9.42 |
 
-Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
+Measured on Linux x86_64, Python 3.12. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 13.0%, 15.4%, 5.5%
 strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 0, 8, 2 and 2 default; 2, 11, 4 and 2 strict); `p99_ref` stays within 25% of its on the same machine (strict's and dev's within 5% of the run of 2026-11-08, whose security reading of shell lines added that cost on purpose, or of the highest of several runs for strict on RE2 and dev on regex, whose runs spread wider; re-measured once before failing; another machine,
