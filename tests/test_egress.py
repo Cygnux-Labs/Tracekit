@@ -387,6 +387,17 @@ class TestExplainsLint(unittest.TestCase):
         self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.pythonhosted.org", "pypi.org", "files?.example.com",
                                                             "*.ibm.de", "*.bbc.co.uk"]}]), [])
 
+    def test_a_host_glob_over_a_public_suffix_is_too_loose_and_names_it(self):
+        for h, suffix in (("*.co.uk", "co.uk"), ("*.github.io", "github.io"), ("*.vercel.app", "vercel.app"),
+                          ("cdn*.CO.UK", "co.uk"), ("*.s3.amazonaws.com", "s3.amazonaws.com")):
+            with self.subTest(h):
+                errors = " ".join(self.lint([{"tool": "x", "hosts": [h]}]))
+                self.assertIn("is too loose", errors)
+                self.assertIn(f"{suffix} is a public suffix", errors)
+        self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.bbc.co.uk", "*.cdn.example.co.uk", "docs.github.io",
+                                                            "*.tracekit.github.io", "*.pythonhosted.org", "*.ibm.de"]}]),
+                         [])
+
 
 def client_hello(name):
     ctx = ssl.create_default_context()
