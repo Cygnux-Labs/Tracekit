@@ -1545,8 +1545,10 @@ class TestAudit(unittest.TestCase):
         a = self._oc_part("bash", {"command": "echo a"}, "k", start=1794965800000)
         b = self._oc_part("bash", {"command": "echo b"}, "k2", start=1794965800000)   # same id, another start: a call
         b2 = self._oc_part("bash", {"command": "echo b"}, "k2", start=1794965900000)
-        none = json.dumps({"type": "tool", "tool": "bash", "state": {"status": "completed", "input": {"command": "echo n"}}})
-        other = json.dumps({"type": "tool", "tool": "bash", "callID": 7, "state": {"input": {"command": "echo i"}}})
+        none = json.dumps({"type": "tool", "tool": "bash", "state": {"status": "completed", "input": {"command": "echo n"}}},
+                          separators=(",", ":"))   # as OpenCode writes its JSON
+        other = json.dumps({"type": "tool", "tool": "bash", "callID": 7, "state": {"input": {"command": "echo i"}}},
+                           separators=(",", ":"))
         db = self._opencode_db(extra=[("prt_a", sid, 1, a), ("prt_b", sid, 2, b), ("prt_b2", sid, 3, b2),
                                       ("prt_n1", sid, 4, none), ("prt_n2", sid, 5, none),
                                       ("prt_i1", sid, 6, other), ("prt_i2", sid, 7, other),
@@ -1590,9 +1592,9 @@ class TestAudit(unittest.TestCase):
         real = sqlite3.connect
         uris = []
 
-        def spy(uri, **kw):
-            uris.append(uri)
-            return real(uri, **kw)
+        def spy(target, **kw):
+            uris.append(target)
+            return real(target, **kw)
         with mock.patch.object(audit.sqlite3, "connect", spy):
             code, out, err = _run(str(folder), "--agent", "opencode", "--json")
         self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
