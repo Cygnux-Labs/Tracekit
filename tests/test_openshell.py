@@ -296,6 +296,26 @@ class Supervisor(Middleware):
             list(c)
         self.respond(preflight("r-y"))   # their threads are free again
 
+    def test_a_sandbox_past_its_share_is_refused_while_another_sandbox_still_streams(self):
+        share = openshell.MAX_STREAMS // 4
+        feeds = [queue.Queue() for _ in range(share)]   # slow downloads: one sandbox's responses that stay open
+        calls = [self.response(iter(q.get, None), timeout=60) for q in feeds]
+        self.addCleanup(lambda: [q.put(None) for q in feeds])
+        for i, (q, call) in enumerate(zip(feeds, calls)):
+            q.put(preflight(f"r-share-{i}"))
+            self.assertEqual(fields(fields(next(call))[1]), {1: b""}, i)   # skipped, and counted for its sandbox
+        with self.assertRaises(self.grpc.RpcError) as e:   # its share taken, not the total: refused at once
+            self.respond(preflight("r-share-x"))
+        self.assertEqual(e.exception.code(), self.grpc.StatusCode.RESOURCE_EXHAUSTED)
+        self.assertIn(SANDBOX, e.exception.details())
+        self.assertIn(str(share), e.exception.details())   # names the share
+        self.assertEqual(fields(self.respond(preflight("r-share-y", sandbox="other-sandbox"))[0][1]), {1: b""})
+        for q in feeds:
+            q.put(None)
+        for c in calls:
+            list(c)
+        self.assertEqual(fields(self.respond(preflight("r-share-z"))[0][1]), {1: b""})   # its share is free again
+
     def test_each_sandbox_has_budgets_of_its_own(self):
         for i in range(101):   # the signer's default open_runs is 100: per sandbox now, not for the middleware
             self.assertEqual(self.evaluate(request("allowed.example", sandbox=f"sb-{i}", method="GET")),

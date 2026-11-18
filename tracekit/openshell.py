@@ -53,7 +53,10 @@ as STREAM_BYTES when OpenShell offers it, each unit passed through unchanged, an
 with {status, headers, body}: the body's text when it is UTF-8 and the result fits a frame (sent itself when the
 decision says send_result), else the result's digest. A response OpenShell offers no body of (compressed, partial,
 bodyless) is skipped and completed at once with the digest; a stream that ends, breaks or is cancelled before its
-last unit, as an error. At most MAX_STREAMS responses stream at once (one more: RESOURCE_EXHAUSTED). A
+last unit, as an error. At most MAX_STREAMS responses stream at once (one more: RESOURCE_EXHAUSTED), and at most a
+quarter of them per sandbox (one more for that sandbox: the same, naming it): a sandbox's slow downloads can't take
+every stream and starve the others. A stream is counted against its sandbox when its token names one, else when its
+preflight does, so a stream that never sends a preflight is bounded by the total alone. A
 response to a request this process didn't allow (it restarted) is skipped, unrecorded: its call ends as a
 held_call_unresolved gap.
 
@@ -507,11 +510,13 @@ class Middleware:
             return "tracekit_denied", named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), None
         return None, None, (tcid, d, h[1])
 
-    def respond(self, events, abort, sandbox=None):
+    def respond(self, events, abort, sandbox=None, bind=None):
         """The HttpResponseEventResult of each HttpResponseEvent in `events`; `abort(why)` raises, ending the
-        stream. `sandbox`: the sandbox the caller's OpenShell token names (gateway_jwt), else None. A stream that ends,
-        breaks or is cancelled before its call's last body unit completes the call as an error."""
-        call, seq, sha, text, size = None, 0, hashlib.sha256(), bytearray(), 0
+        stream. `sandbox`: the sandbox the caller's OpenShell token names (gateway_jwt), else None. `bind`: called
+        once with the sandbox the stream's preflight names, when no token named one, so the caller can count the
+        stream against that sandbox. A stream that ends, breaks or is cancelled before its call's last body unit
+        completes the call as an error."""
+        call, seq, sha, text, size, first = None, 0, hashlib.sha256(), bytearray(), 0, [bind]
         try:
             for raw in events:
                 try:
@@ -525,6 +530,9 @@ class Middleware:
                     ctx = x.get("context", {})
                     if sandbox is not None and ctx.get("sandbox_id") != sandbox:
                         abort(f"a token for sandbox {sandbox[:100]} sent another sandbox's response")
+                    if first[0] is not None:   # no token named the sandbox: its preflight does, once
+                        hook, first[0] = first[0], None
+                        hook(ctx.get("sandbox_id"))
                     with self.lock:
                         found = self.inflight.pop((ctx.get("sandbox_id"), ctx.get("request_id")), None)
                     if found is None:
@@ -753,6 +761,28 @@ def serve(cfg, client=None):
                              "sends)")
     mw = Middleware(client or Client(cfg["signer"], timeout=SIGNER_TIMEOUT_S), ocsf is not None)
     jwt, streams = cfg.get("gateway_jwt"), threading.BoundedSemaphore(MAX_STREAMS)
+    share, active, active_lock = max(1, MAX_STREAMS // 4), {}, threading.Lock()   # sandbox_id -> its open streams
+
+    def count_stream(sandbox_id):
+        """(the reason a stream past `sandbox_id`'s share is refused, or None): count one stream for that sandbox.
+        A stream with no sandbox yet counts against the total only."""
+        if sandbox_id is None:
+            return None
+        with active_lock:
+            if active.get(sandbox_id, 0) >= share:
+                return (f"sandbox {sandbox_id[:100]} already has {share} responses streaming through the middleware "
+                        f"(its quarter of MAX_STREAMS)")
+            active[sandbox_id] = active.get(sandbox_id, 0) + 1
+        return None
+
+    def drop_stream(sandbox_id):
+        """Release the count `count_stream` took for `sandbox_id`."""
+        if sandbox_id is not None:
+            with active_lock:
+                if active.get(sandbox_id, 0) <= 1:
+                    active.pop(sandbox_id, None)
+                else:
+                    active[sandbox_id] -= 1
     if jwt:
         from cryptography.hazmat.primitives.asymmetric import ed25519
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
@@ -816,9 +846,23 @@ def serve(cfg, client=None):
             why = f"{MAX_STREAMS} responses are streaming through the middleware already"
             print(f"tracekit openshell-middleware: a response refused: {why}", file=sys.stderr, flush=True)
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, why)
+        held = [sandbox]   # the sandbox its streams count against, once known
+
+        def bind(sandbox_id):
+            """Count the stream against the sandbox its preflight names, and refuse it past that sandbox's share."""
+            why = count_stream(sandbox_id)
+            if why:
+                print(f"tracekit openshell-middleware: a response refused: {why}", file=sys.stderr, flush=True)
+                context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, why)
+            held[0] = sandbox_id
+
         try:
-            yield from mw.respond(events, lambda why: context.abort(grpc.StatusCode.INVALID_ARGUMENT, why), sandbox)
+            if sandbox is not None:
+                bind(sandbox)   # the token names it: counted before its first event
+            yield from mw.respond(events, lambda why: context.abort(grpc.StatusCode.INVALID_ARGUMENT, why), sandbox,
+                                  None if sandbox is not None else bind)
         finally:
+            drop_stream(held[0])
             streams.release()
 
     def logs(body, context):
