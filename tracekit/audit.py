@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import pathlib
 import shutil
 import sqlite3
 import stat
@@ -607,61 +608,90 @@ def _opencode_db(real: str) -> str:
                      f"(~/.local/share/opencode)")
 
 
+def _opencode_errors(db: str, e: sqlite3.Error) -> ValueError:
+    """What a sqlite3 error means for OpenCode's database: not one (a file that isn't SQLite, or has no session and
+    part tables), or one that can't be read now (locked, no permission), said as it is."""
+    msg = str(e)
+    if "not a database" in msg or "no such table" in msg:
+        return ValueError(f"{db} is not an OpenCode database ({msg})")
+    return ValueError(f"cannot read {db}: {msg}" + ("; try again" if "locked" in msg or "busy" in msg else ""))
+
+
 def _opencode(root: str, since_ts: float, unreadable: list):
     """OpenCode's reader: (time, session, tool, args) for each tool call in the `part` table of its database
-    (ROOT: its data folder). A call counts under its session's root (a subagent's session has a
-    parent_id), at the time it started; a part still pending is not a call yet, and a call repeated (same call id,
-    tool and arguments) counts once. None for a part that isn't a tool call's shape."""
+    (ROOT: its data folder), as OpenCode 1.x writes it. A call counts under its session's root (a subagent's session
+    has a parent_id), at the time it started; a part still pending is not a call yet. A call counts once by its call
+    id, tool, arguments and start time, not by its session (a forked session copies every part of its parent, with
+    the same call id): in the first session that holds it; a part without a call id is always counted. None for a
+    part whose JSON has "type":"tool" and isn't a tool call's shape. OpenCode 2.x's database (session_v2) is
+    refused."""
     db = _opencode_db(os.path.realpath(root))
     err = _not_regular(db)
     if err:
         unreadable.append({"path": db, "error": f"cannot read: {err}"})
         return
     try:   # read only: OpenCode may be running, and its -wal file is read with the database
-        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-        try:
-            parent = dict(con.execute("SELECT id, parent_id FROM session"))
-            rows = con.execute("SELECT session_id, time_created, data FROM part "
-                               "WHERE data LIKE '%\"type\":\"tool\"%' ORDER BY time_created, id").fetchall()
-        finally:
-            con.close()
+        con = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True)   # as_uri escapes # ? and %
     except sqlite3.Error as e:
-        raise ValueError(f"{db} is not an OpenCode database ({e})") from None
+        raise _opencode_errors(db, e) from None
     seen: set[bytes] = set()
-    for session, created, data in rows:
-        try:
-            part = json.loads(data)
-        except (TypeError, ValueError, RecursionError):
-            part = None
-        state = part.get("state") if isinstance(part, dict) else None
-        if (not isinstance(part, dict) or part.get("type") != "tool" or not isinstance(part.get("tool"), str)
-                or not isinstance(state, dict) or not isinstance(state.get("input"), dict)
-                or not isinstance(session, str)):
-            yield None
-            continue
-        if state.get("status") == "pending":
-            continue
-        start = (state.get("time") or {}).get("start") if isinstance(state.get("time"), dict) else None
-        ms = start if isinstance(start, (int, float)) and not isinstance(start, bool) else created
-        try:
-            at = datetime.fromtimestamp(ms / 1000, timezone.utc)
-        except (TypeError, ValueError, OverflowError, OSError):
-            at = None
-        if at is not None and at.timestamp() < since_ts:
-            continue
-        top, hops = session, 0
-        while parent.get(top) and hops < 100:   # the session at the top of the chain
-            top, hops = parent[top], hops + 1
-        try:
-            key = hashlib.sha256(json.dumps([top, part.get("callID"), part["tool"], state["input"]],
-                                            sort_keys=True, default=str).encode()).digest()
-        except (RecursionError, ValueError):
-            key = None
-        if key in seen:
-            continue
-        if key:
-            seen.add(key)
-        yield at, top, part["tool"], state["input"]
+    try:
+        kinds = dict(con.execute("SELECT name, type FROM sqlite_master"))
+        if {"session_v2", "session_message", "session_part"} & set(kinds):
+            raise ValueError(f"{db} is OpenCode 2.x's database, which isn't read yet: turn its sessions into a "
+                             f"calls file and use --calls FILE --agent opencode")
+        if kinds.get("session") != "table" or kinds.get("part") != "table":   # a view can make the read run forever
+            raise ValueError(f"{db} is not an OpenCode database (it has no session and part tables)")
+        parent = dict(con.execute("SELECT id, parent_id FROM session"))
+        for session, created, data in con.execute(
+                "SELECT session_id, time_created, data FROM part WHERE data LIKE '%\"type\":\"tool\"%'"):
+            try:
+                part = json.loads(data)
+            except (TypeError, ValueError, RecursionError):
+                part = None
+            state = part.get("state") if isinstance(part, dict) else None
+            if (not isinstance(part, dict) or part.get("type") != "tool" or not isinstance(part.get("tool"), str)
+                    or not isinstance(state, dict) or not isinstance(state.get("input"), dict)
+                    or not isinstance(session, str)):
+                yield None
+                continue
+            if state.get("status") == "pending":
+                continue
+            start = state["time"].get("start") if isinstance(state.get("time"), dict) else None
+            ms = start if isinstance(start, (int, float)) and not isinstance(start, bool) else created
+            try:
+                at = datetime.fromtimestamp(ms / 1000, timezone.utc)
+            except (TypeError, ValueError, OverflowError, OSError):
+                at = None
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            if isinstance(part.get("callID"), str):
+                try:
+                    key = hashlib.sha256(json.dumps([part["callID"], part["tool"], state["input"], ms],
+                                                    sort_keys=True, default=str).encode()).digest()
+                except (RecursionError, ValueError):
+                    key = None
+                if key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+            top, hops = session, 0
+            while parent.get(top) and hops < 100:   # the session at the top of the chain (a cycle ends at the cap)
+                top, hops = parent[top], hops + 1
+            yield at, top, part["tool"], state["input"]
+    except sqlite3.Error as e:
+        raise _opencode_errors(db, e) from None
+    finally:
+        con.close()
+
+
+def _lenient(read, folder: str, unreadable: list):
+    """A default folder's reader: a folder it refuses (an agent's folder that holds no sessions yet) is unreadable, and
+    the other agents' folders are still read; an explicit ROOT it refuses is an error."""
+    try:
+        yield from read
+    except ValueError as e:
+        unreadable.append({"path": folder, "error": str(e)})
 
 
 # one entry per agent: its name, its default folder or folders (read when audit runs, so the env var that moves one
@@ -763,7 +793,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         name = agent or "claude"
         sources = [(name, root, READERS[name][2](root, since_ts, unreadable))]
     else:
-        sources = [(name, folder, read(folder, since_ts, unreadable))
+        sources = [(name, folder, _lenient(read(folder, since_ts, unreadable), folder, unreadable))
                    for name, (default, _, read) in READERS.items() for folder in _defaults(default)]
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}

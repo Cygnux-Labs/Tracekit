@@ -150,12 +150,18 @@ decides it, so `run_shell_command` is decided as `Bash`. A line that isn't JSON,
 as one malformed entry; a session file with no Qwen Code record in it (an empty file, or one that isn't Qwen Code's)
 is reported unreadable, never read as a session with no calls.
 
-OpenCode's reader reads the `part` table of its SQLite database, `opencode.db`, as OpenCode 1.19.5 writes it (give
-OpenCode's data folder, `~/.local/share/opencode`, as ROOT; any other folder is refused, naming what to give). The database is opened read only, so OpenCode may be running. A call is a `part` of type `tool` whose
+OpenCode's reader reads the `part` table of its SQLite database, `opencode.db`, as OpenCode 1.x writes it (give
+OpenCode's data folder, `~/.local/share/opencode`, as ROOT; any other folder is refused, naming what to give). The
+database is opened read only, so OpenCode may be running. A call is a `part` whose JSON has `"type":"tool"` and whose
 state isn't `pending`, at the time it started (its own `time.start`, else the part's), counted under its session's
-root session (a subagent's session has a `parent_id`). A call repeated with the same call id, tool and arguments counts
-once. Each call is decided as OpenCode's Tracekit hook decides it, so `bash` is decided as `Bash`. A part that isn't a
-tool call's shape counts as one malformed entry; a file that isn't an OpenCode database is refused.
+root session (a subagent's session has a `parent_id`). A call counts once by its call id, tool, arguments and start
+time, not by its session: a forked session copies every part of its parent, and counts under the first session that
+holds it. A part without a call id is always counted. Each call is decided as OpenCode's Tracekit hook decides it, so
+`bash` is decided as `Bash`. A part with `"type":"tool"` that isn't a tool call's shape counts as one malformed entry;
+other parts are not read. A file that isn't an OpenCode database is refused, and so is OpenCode 2.x's (it keeps its
+sessions in `session_v2`, `session_message` and `session_part`, even in a database upgraded from 1.x): use `--calls`.
+With no ROOT, an OpenCode folder that holds no database yet (OpenCode creates the folder before its first session) is
+listed as unreadable and the other agents' folders are still read.
 
 Two kinds of Gemini CLI session aren't in the default folder. When Gemini CLI runs in its macOS Seatbelt sandbox (turned
 on with `-s` or `GEMINI_SANDBOX`, which sets `SANDBOX=sandbox-exec` inside it), its runtime state, sessions included, is
