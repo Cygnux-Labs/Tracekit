@@ -626,7 +626,7 @@ class Provenance(unittest.TestCase):
 @unittest.skipUnless(HAVE, "strands not installed")
 class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "strands", "1.61.1"
-    message = "Strands Agents 0.0.1 is wired but untested; Tracekit is tested with strands-agents>=1.61,<1.62"
+    message = "Strands Agents 0.0.1 is wired but untested; Tracekit is tested with strands-agents>=1.61,<1.66"
 
 
 if __name__ == "__main__":
