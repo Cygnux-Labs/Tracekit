@@ -242,10 +242,12 @@ class Serves(unittest.TestCase):
             read = [a.observe(f"page {i}", source=f"web:{i}") for i in range(n)]
             a.act("send_email", {"to": "x@example.com"}, decision=a.decide(read, model="m"))
             run = rt.finish()
+            for c in run.of_type("decision")[0]["context"]:   # every entry the gateway's: each looked up
+                c["seen"] = "gateway"
             g, call, best = build_graph(run, infer=False), "ev:" + run.of_type("action")[0]["id"], float("inf")
             for _ in range(2):
                 start = time.perf_counter()
-                self.assertEqual(len(graded(g, call)["edges"]), n)
+                self.assertEqual({e["basis"] for e in graded(g, call)["edges"]}, {"gateway"})
                 best = min(best, time.perf_counter() - start)
             return best
         self.assertLess(took(2000), 8 * took(500))   # 4x the context: about 4x the time; 16x before

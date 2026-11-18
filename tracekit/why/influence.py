@@ -243,6 +243,6 @@ def influences(run: Run, g: Graph, texts=None, risky: bool = False) -> List[Dict
 
     def shown(nid: str, ev: Dict[str, Any]) -> bool:
         got = graded(g, nid, seen=False)
-        return bool(_ended(ev)) or any(e["grade"] != "seen" for e in got["edges"]) or drifted(got, goal)
+        return bool(_ended(ev)) or bool(got["edges"]) or drifted(got, goal)
     return [call_influence(run, g, nid, goal, texts) for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"])
             if n["type"] == "action" and (shown(nid, n["event"]) if risky else consequential(run, n["event"]))]
