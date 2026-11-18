@@ -37,6 +37,7 @@ from .analysis import analyse, workspace
 from .core import GENESIS, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs, ts_seconds
 from .evals import list_runs
 from .guard import Webhook
+from .import_v2 import _target
 from .replay import attribute, counterfactual, load_system
 from .view import run_detail
 
@@ -88,6 +89,32 @@ def _stat(path: str) -> Optional[Tuple]:
     except OSError:
         tests = None
     return (st.st_size, st.st_mtime_ns, tests)
+
+
+def _last_line(path: str) -> bytes:
+    """The last line of the file at `path`, read back from its end."""
+    with open(path, "rb") as f:
+        end = f.seek(0, os.SEEK_END)
+        tail = b""
+        while end and tail.rstrip(b"\n").count(b"\n") == 0:
+            step = min(1 << 16, end)
+            end -= step
+            f.seek(end)
+            tail = f.read(step) + tail
+    return tail.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+
+
+def _covers(imp: Optional[str], log: str) -> bool:
+    """Whether run folder `imp` covers why log `log`: it is where the log's merged import goes (import_v2.merge writes
+    it to _target(root, the log's run id), every event of the log, ids kept) and ends with the log's last event. A log
+    that grew after it was imported is not covered, and shows beside its import. Both are why logs, plain files."""
+    if imp is None:
+        return False
+    try:
+        last = [json.loads(_last_line(os.path.join(p, "events.jsonl"))).get("id") for p in (imp, log)]
+    except (OSError, ValueError, AttributeError):
+        return False
+    return last[0] == last[1] is not None
 
 
 class Feed:
@@ -282,7 +309,11 @@ class Store:
             self._watcher.join(wait)
 
     def paths(self) -> List[str]:
-        return list_runs(self.root) if os.path.isdir(self.root) and os.listdir(self.root) else []
+        """Every run under the root, less a why log a merged import of it covers (_covers): the page shows that run
+        once, as the import, which holds the log's events with their signed records."""
+        paths = list_runs(self.root) if os.path.isdir(self.root) and os.listdir(self.root) else []
+        named = {os.path.basename(p): p for p in paths}
+        return [p for p in paths if not _covers(named.get(os.path.basename(_target(self.root, os.path.basename(p)))), p)]
 
     def run_path(self, run_id: str) -> str:
         if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):

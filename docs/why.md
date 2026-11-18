@@ -397,7 +397,8 @@ folder; the readable run id and tenant are in its `run.start` meta):
 
 Every event cites its record (`tracekit`: log_id, seq, run_id, run_seq, the record hash and its commitment). When a why
 log under `--out` cites the imported runs (the runtime wrote it), the two are merged into `tk-<why run id>`: content
-from the why log, citations, verdicts and provenance from the signed records. An executed call cites its result and,
+from the why log, citations, verdicts and provenance from the signed records. The viewer then shows the run once, as
+the merged import; a why log that grew after its import shows beside it. An executed call cites its result and,
 under `decision`, the decision it ran under (its arguments' commitment). These are high evidence alerts, and the event
 is marked `tracekit_mismatch`: a citation that does not match its record (another type, tool, trust, source, outcome,
 hash or decision), one of another agent's run, a record cited twice (a held call retried cites its decision each time),
