@@ -147,7 +147,8 @@ def _process_client(Client, RPCError, current_run, schemas):
                 old, token = p.run_id, p.run_token
                 if closed != old:
                     return   # another thread's call renewed it already
-                agent = {"agent": {"name": self.agent}}
+                # a later run of the process's agent, whose model may still hold what the closed run read
+                agent = {"agent": {"name": self.agent}, "continues": True}
                 try:   # linked to the closed run while it is still closing
                     new = super().call("register_run", {**agent, "parent": {"run_id": old, "run_token": token}})
                 except RPCError:
@@ -199,14 +200,16 @@ def _openai_agents(run):
 def _langgraph(run):
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from .integrations.langchain import TracekitMiddleware, pausing, with_fallbacks
+    from .integrations.langchain import (TracekitMiddleware, pass_afunc, pass_arun_one, pass_func, pausing,
+                                         with_fallbacks)
     gate = TracekitMiddleware(run.client, run.run_id, run.run_token, run.registered.get("fail_modes"))
     init = ToolNode.__init__
 
     @functools.wraps(init)
     def gated(self, tools, *a, wrap_tool_call=None, awrap_tool_call=None, **kw):
         w, aw = wrap_tool_call, awrap_tool_call
-        if not isinstance(getattr(w, "__self__", None), TracekitMiddleware):   # tracekit_tool_node gates already
+        wired = not isinstance(getattr(w, "__self__", None), TracekitMiddleware)   # tracekit_tool_node gates already
+        if wired:
             wrap_tool_call = gate.wrap_tool_call if w is None else (
                 lambda req, h: w(req, lambda r: gate.wrap_tool_call(r, h)))
             # no async wrapper of its own: ToolNode runs the sync one, gate included, for async calls too
@@ -215,7 +218,10 @@ def _langgraph(run):
             if "handle_tool_errors" in kw:   # an ask pauses whatever the node's error handling
                 kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
         init(self, tools, *a, wrap_tool_call=wrap_tool_call, awrap_tool_call=awrap_tool_call, **kw)
+        if wired:
+            self._tracekit = gate, wrap_tool_call   # the gate plans each pass's calls together (pass_func)
     ToolNode.__init__ = gated
+    ToolNode._func, ToolNode._afunc, ToolNode._arun_one = pass_func, pass_afunc, pass_arun_one
     ToolNode.with_fallbacks = with_fallbacks   # and through the fallbacks the node is wrapped in
 
 
@@ -306,15 +312,27 @@ def _browser_use(run):
     from browser_use import Tools
 
     from .integrations import browser_use
-    init = Tools.__init__
     # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
     actions = browser_use._actions(run.client, run.registered)
+    if not hasattr(Tools, "act"):   # 1.0: actions are Pydantic AI tools, called through BrowserLoop
+        browser_use._wire_1x(actions)
+        return
+    init = Tools.__init__
 
     @functools.wraps(init)
     def gated(self, *a, **kw):
         init(self, *a, **kw)
         browser_use._wrap(self, actions)
     Tools.__init__ = gated
+
+
+def _browser_use_wired():
+    """Whether the 1.0 seam is installed: its wrapper carries the actions it decides with."""
+    try:
+        from browser_use.agent.loop import BrowserLoop
+    except ImportError:
+        return False
+    return getattr(BrowserLoop.wrap_tool_execute, "tracekit_actions", None) is not None
 
 
 def _pydantic_ai(run):
@@ -325,9 +343,16 @@ def _pydantic_ai(run):
 
     @functools.wraps(init)
     def wired(self, *a, capabilities=None, **kw):
-        if not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
-            capabilities = [*(capabilities or ()), Tracekit(run)]
-        init(self, *a, capabilities=capabilities, **kw)
+        deps = kw.get("deps_type")
+        if getattr(deps, "__module__", "").startswith("browser_use.") and _browser_use_wired():
+            # Browser Use's internal agent is gated by its own integration (BrowserLoop), which decides its `python`
+            # cell as `browser_use:python`; this capability would decide the same call again, under a generic name.
+            # While the seam is not wired, it is the only thing that decides that agent's calls.
+            init(self, *a, capabilities=capabilities, **kw)
+        elif not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
+            init(self, *a, capabilities=[*(capabilities or ()), Tracekit(run)], **kw)
+        else:
+            init(self, *a, capabilities=capabilities, **kw)
     Agent.__init__ = wired
 
 
@@ -349,7 +374,7 @@ FRAMEWORKS = (
     ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
      "quickstarts/claude-agent-sdk", _claude_agent_sdk),
     ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
-    ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
+    ("Browser Use", "browser-use", (0, 13, 11), (1, 1), "browser-use>=0.13.11,<1.1", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
     ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",
@@ -413,6 +438,7 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
+    from .integrations import version_check
     from .sdk.client import Client, SignerUnavailable, current_run
     from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
@@ -442,14 +468,18 @@ def instrument(agent=None):
         atexit.register(_close, run)
         _STATE["run"] = run   # before wiring: an instrument() called while a framework is imported gets this run
         for (label, dist, lo, hi, req, page, wire), version in found:
+            untested = not lo <= _release(version) < hi
+            claimed = untested and version_check.claim(label)
             try:
                 wire(run)
             except Exception as e:
+                if claimed:
+                    version_check.unclaim(label)
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
                               f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
-            if not lo <= _release(version) < hi:
+            if claimed:
                 warnings.warn(f"tracekit.instrument(): {_untested_warning(label, version, req)}", stacklevel=2)
         autotrace.instrument(run)
         return run

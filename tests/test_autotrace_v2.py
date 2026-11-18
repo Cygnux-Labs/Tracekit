@@ -12,6 +12,12 @@ from unittest import mock
 from adapter_contract import OnFake, OnReal, _serve, tmpdir
 from test_autotrace import ANTHROPIC_EVENTS, ANTHROPIC_MSG, OPENAI_CHAT, OPENAI_CHUNKS, anthropic, genai, gtypes, httpx, \
     openai, sse, transport
+try:
+    import boto3
+    from botocore.stub import Stubber
+except ImportError:
+    boto3 = None
+    Stubber = None
 from tracekit import autotrace, findings_v2
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, RunHandle
@@ -323,6 +329,130 @@ class TestOnFake(OnFake, Recording, unittest.TestCase):
 
 
 class TestOnReal(OnReal, Recording, unittest.TestCase):
+    pass
+
+
+@unittest.skipUnless(boto3 is not None and Stubber is not None, "boto3 not installed")
+class RecordingBedrock:
+    def setUp(self):
+        self.client = Client(self.serve_signer())
+        self.addCleanup(self.client.close)
+        self.run = self.client.run("autotrace")
+        self.assertIs(autotrace.init(run=self.run), self.run)
+        self.addCleanup(autotrace._LATE.clear)
+        self.addCleanup(autotrace.uninstrument)
+
+    def exchanges(self, run=None):
+        run = run or self.run
+        evs = [e["data"] for e in self.events({"run_id": run.run_id, "run_token": run.run_token})
+               if e["type"] in ("model.exchange", "model.event")]
+        reqs = [d for d in evs if d["phase"] == "request"]
+        resps = {d["exchange_id"]: d for d in evs if d["phase"] == "response"}
+        return [(r, resps.get(r["exchange_id"])) for r in reqs]
+
+    def one(self):
+        [(req, resp)] = self.exchanges()
+        return req, resp
+
+    def ids(self, resp):
+        return [(t["id"], t["executed_by"]) for t in resp.get("tool_uses", [])]
+
+    def test_bedrock_converse_recorded(self):
+        client = boto3.client("bedrock-runtime", region_name="us-east-1",
+                              aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(client)
+        resp = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"text": "Hello world"},
+                        {"toolUse": {"toolUseId": "tu_1", "name": "Bash", "input": {"command": "ls"}}}
+                    ]
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 10, "outputTokens": 20, "totalTokens": 30},
+            "metrics": {"latencyMs": 100}
+        }
+        params = {"modelId": "anthropic.claude-v2",
+                  "messages": [{"role": "user", "content": [{"text": "hi"}]}]}
+        stubber.add_response("converse", resp, params)
+        stubber.activate()
+
+        out = client.converse(**params)
+        self.assertEqual(out["stopReason"], "tool_use")
+        req, res = self.one()
+        self.assertEqual(req["model"], "anthropic.claude-v2")
+        self.assertEqual(res["model"], "anthropic.claude-v2")
+        self.assertEqual(res["usage"]["input_tokens"], 10)
+        self.assertEqual(res["usage"]["output_tokens"], 20)
+        self.assertEqual(self.ids(res), [("tu_1", "client")])
+
+    def test_bedrock_converse_stream_recorded(self):
+        client = boto3.client("bedrock-runtime", region_name="us-east-1",
+                              aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(client)
+        resp = {
+            "stream": {
+                "contentBlockStart": {
+                    "start": {
+                        "toolUse": {
+                            "toolUseId": "tu_stream_1",
+                            "name": "Bash"
+                        }
+                    },
+                    "contentBlockIndex": 0
+                },
+                "contentBlockDelta": {
+                    "delta": {
+                        "toolUse": {
+                            "input": '{"command": "ls"}'
+                        }
+                    },
+                    "contentBlockIndex": 0
+                },
+                "messageStop": {
+                    "stopReason": "tool_use"
+                },
+                "metadata": {
+                    "usage": {"inputTokens": 14, "outputTokens": 28, "totalTokens": 42},
+                    "metrics": {"latencyMs": 100}
+                }
+            }
+        }
+        params = {"modelId": "anthropic.claude-v2",
+                  "messages": [{"role": "user", "content": [{"text": "hi"}]}]}
+        stubber.add_response("converse_stream", resp, params)
+        stubber.activate()
+
+        out = client.converse_stream(**params)
+        events = list(out["stream"])
+        self.assertEqual(len(events), 4)
+        req, res = self.one()
+        self.assertEqual(req["streamed"], True)
+        self.assertEqual(res["streamed"], True)
+        self.assertEqual(res["usage"]["input_tokens"], 14)
+        self.assertEqual(res["usage"]["output_tokens"], 28)
+        self.assertEqual(res["stop_reason"], "tool_use")
+        self.assertEqual(self.ids(res), [("tu_stream_1", "client")])
+
+    def test_bedrock_other_service_not_recorded(self):
+        s3 = boto3.client("s3", region_name="us-east-1",
+                          aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(s3)
+        stubber.add_response("list_buckets", {"Buckets": []}, {})
+        stubber.activate()
+
+        s3.list_buckets()
+        self.assertEqual(len(self.exchanges()), 0)
+
+
+class TestBedrockOnFake(OnFake, RecordingBedrock, unittest.TestCase):
+    pass
+
+
+class TestBedrockOnReal(OnReal, RecordingBedrock, unittest.TestCase):
     pass
 
 

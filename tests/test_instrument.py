@@ -14,7 +14,7 @@ import types
 import unittest
 import warnings
 import weakref
-from importlib import metadata
+from importlib import metadata, util
 from unittest import mock
 
 from adapter_contract import OnReal
@@ -22,6 +22,7 @@ from quickstart_agents import AGENTS, REFUSED
 
 from tracekit import autowire
 from tracekit.format.canon import event_hash
+from tracekit.integrations import version_check
 from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
 from tracekit.wiki import wiki_url
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -37,6 +38,11 @@ def installed(requirements):
     except metadata.PackageNotFoundError:
         return False
     return sys.version_info >= (3, 10)
+
+
+class FakeTracekit:   # stands in for the capability: autowire's isinstance() needs a type, not a mock
+    def __init__(self, run):
+        self.run = run
 
 
 class DevSigner(unittest.TestCase):
@@ -155,9 +161,10 @@ class TestThreeSteps(DevSigner):
 
 class TestInstrument(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.dict(autowire._STATE, run=None)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (mock.patch.dict(autowire._STATE, run=None),
+                        mock.patch.object(version_check, "_WARNED", set())):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def test_nothing_installed_warns_and_records_nothing(self):
         with mock.patch.object(autowire, "_version", return_value=None), \
@@ -210,6 +217,62 @@ class TestInstrument(unittest.TestCase):
                       "broken>=1,<2", msgs[0])
         self.assertIn(f"wire it by hand ({wiki_url('docs/custom.md')})", msgs[0])   # was docs/custom.md, a repo path
         self.assertIn("Fine 2.1rc1 is wired but untested", msgs[1])
+
+    def test_an_untested_framework_warns_once_not_again_in_its_entry_point(self):
+        """instrument() builds several integrations' entry points itself (some while wiring, some per session or agent
+        after): an untested framework warns once, from instrument(), not a second time from warn_untested."""
+        hooks_mod = types.SimpleNamespace(register_before_tool_call_hook=mock.Mock(),
+                                          register_after_tool_call_hook=mock.Mock())
+        pkg = types.ModuleType("crewai")
+        pkg.hooks = hooks_mod
+        versions = {"crewai": "0.0.1"}
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        have_mcp = installed(AGENTS["mcp"][0])
+        if have_mcp:
+            from mcp import ClientSession
+
+            async def call_tool(gate, *a, **kw):
+                pass
+            versions["mcp"] = "0.0.1"
+            for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts",
+                         "initialize"):
+                if hasattr(ClientSession, name):
+                    stack.enter_context(mock.patch.object(ClientSession, name, getattr(ClientSession, name)))
+            stack.enter_context(mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool))
+        with mock.patch.dict(sys.modules, {"crewai": pkg, "crewai.hooks": hooks_mod}), \
+                mock.patch.object(autowire, "_version", side_effect=versions.get), \
+                mock.patch.object(version_check, "_version", side_effect=versions.get), \
+                mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
+                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            autowire.instrument()
+            if have_mcp:   # TracekitSession is built per session after instrument() returns
+                for _ in range(2):
+                    asyncio.run(object.__new__(ClientSession).call_tool("t", {}))
+        msgs = [str(x.message) for x in w if "is wired but untested" in str(x.message)]
+        self.assertEqual(len(msgs), len(versions), msgs)
+        self.assertTrue(all(m.startswith("tracekit.instrument(): ") for m in msgs), msgs)
+        self.assertTrue(any("CrewAI 0.0.1 is wired but untested" in m for m in msgs), msgs)
+        if have_mcp:
+            self.assertTrue(any("MCP client 0.0.1 is wired but untested" in m for m in msgs), msgs)
+
+    def test_an_untested_framework_that_fails_to_wire_still_warns_when_wired_by_hand(self):
+        from tracekit.integrations import crewai
+        versions = {"crewai": "0.0.1"}
+        with mock.patch.dict(sys.modules, {"crewai": types.ModuleType("crewai"), "crewai.hooks": None}), \
+                mock.patch.object(autowire, "_version", side_effect=versions.get), \
+                mock.patch.object(version_check, "_version", side_effect=versions.get), \
+                mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
+                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            autowire.instrument()
+            crewai.hooks(mock.Mock())
+        msgs = [str(x.message) for x in w]
+        self.assertEqual(len(msgs), 2, msgs)
+        self.assertIn("CrewAI 0.0.1 not wired", msgs[0])
+        self.assertIn("tracekit: CrewAI 0.0.1 is wired but untested; Tracekit is tested with crewai>=1.15.27,<1.16",
+                      msgs[1])
 
     def test_every_framework_names_a_docs_page(self):
         """Its not-wired warning sends people to that page's wiki URL."""
@@ -292,6 +355,8 @@ class TestInstrument(unittest.TestCase):
         """Every Tools built after instrument() (an Agent builds one) has its actions decided, all on one signer stream
         (a run allows 64)."""
         class Tools:
+            act = None   # 0.13's Tools has one; without it the 1.0 seam would be picked
+
             def __init__(self):
                 self.registry = types.SimpleNamespace(execute_action=self.execute)
 
@@ -311,6 +376,107 @@ class TestInstrument(unittest.TestCase):
         decides = [req for method, req in sent if method == "decide"]
         self.assertEqual([d["tool"] for d in decides], ["browser_use:navigate"] * 2)
         self.assertEqual(len({d["stream"] for d in decides}), 1)
+
+    def test_browser_use_1x_is_gated_through_the_loop(self):
+        """On 1.0 instrument() patches BrowserLoop.wrap_tool_execute: the call is decided, consumed and completed."""
+        try:
+            from browser_use import Tools
+            from browser_use.agent.loop import BrowserLoop
+            from browser_use.repl.session import Repl
+        except ImportError:
+            self.skipTest("browser-use not installed")
+        if hasattr(Tools, "act"):
+            self.skipTest("browser-use 0.13 installed (pip install 'browser-use==1.0.2')")
+        self.addCleanup(setattr, BrowserLoop, "wrap_tool_execute", BrowserLoop.wrap_tool_execute)
+        self.addCleanup(setattr, Repl, "call", Repl.call)
+        sent, fake = [], FakeSigner(lambda tool, args: ("allow", []))
+
+        class Recording:
+            def __getattr__(self, method):
+                return lambda req: sent.append((method, req)) or getattr(fake, method)(req)
+        run = types.SimpleNamespace(client=Recording(), registered=fake.register_run(
+            {"request_id": "r1", "agent": {"name": "bu"}}))
+        real = BrowserLoop.wrap_tool_execute
+        autowire._browser_use(run)
+        self.assertIsNot(BrowserLoop.wrap_tool_execute, real)
+
+        async def handler(args):
+            return "ran"
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(finalizing=False, repl=types.SimpleNamespace(secrets=[])))
+        out = asyncio.run(BrowserLoop().wrap_tool_execute(
+            ctx, call=types.SimpleNamespace(tool_name="echo", tool_call_id="id-echo"),
+            tool_def=types.SimpleNamespace(kind="function"), args={"text": "hi"}, handler=handler))
+        self.assertEqual(out, "ran")
+        self.assertEqual([(method, req.get("tool")) for method, req in sent],
+                         [("decide", "browser_use:echo"), ("approval_consume", "browser_use:echo"), ("complete", None)])
+
+    @staticmethod
+    def fake_browser_use(wired):
+        """Browser Use's package as pydantic-ai finds it, with the 1.0 seam marked wired or not."""
+        package, agent, loop = (types.ModuleType("browser_use"), types.ModuleType("browser_use.agent"),
+                                types.ModuleType("browser_use.agent.loop"))
+
+        class Tools:
+            pass
+
+        class BrowserLoop:
+            async def wrap_tool_execute(self, *a, **kw):
+                pass
+        if wired:
+            BrowserLoop.wrap_tool_execute.tracekit_actions = object()
+        package.Tools, loop.BrowserLoop = Tools, BrowserLoop
+        return {"browser_use": package, "browser_use.agent": agent, "browser_use.agent.loop": loop}
+
+    def test_pydantic_ai_leaves_browser_uses_agent_alone(self):
+        """Browser Use's agent is gated by BrowserLoop, which names its cells browser_use:*: the capability would decide
+        every call a second time, so that agent is built with the capabilities it was given."""
+        if util.find_spec("pydantic_ai") is None:   # the distribution is pydantic-ai-slim under browser-use
+            self.skipTest("pydantic-ai not installed")
+
+        class Session:   # Browser Use's own agent deps
+            pass
+        Session.__module__ = "browser_use.agent.loop"
+        cap, seen = object(), []
+
+        class Agent:
+            def __init__(self, *a, capabilities=None, **kw):
+                seen.append(capabilities)
+        with mock.patch.dict(sys.modules, self.fake_browser_use(True)), \
+                mock.patch("pydantic_ai.Agent", Agent), \
+                mock.patch("tracekit.integrations.pydantic_ai.Tracekit", FakeTracekit):
+            autowire._pydantic_ai(mock.Mock(registered={"run_id": "r", "run_token": "t"}))
+            Agent(deps_type=Session, capabilities=[cap])
+            Agent(deps_type=int)
+        self.assertEqual(seen[0], [cap])
+        self.assertEqual(len(seen[1]), 1)
+        self.assertIsNot(seen[1][0], cap)
+
+    def test_a_failed_1x_wiring_keeps_the_pydantic_ai_capability(self):
+        """The capability is left off only while BrowserLoop's seam is installed: if wiring failed, it is the one thing
+        deciding the agent's calls."""
+        if util.find_spec("pydantic_ai") is None:
+            self.skipTest("pydantic-ai not installed")
+        from tracekit.integrations import browser_use as bu
+
+        class Session:   # Browser Use's own agent deps
+            pass
+        Session.__module__ = "browser_use.agent.loop"
+        cap, seen = object(), []
+
+        class Agent:
+            def __init__(self, *a, capabilities=None, **kw):
+                seen.append(capabilities)
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch.dict(sys.modules, self.fake_browser_use(False)), \
+                mock.patch.object(bu, "_wire_1x", side_effect=ImportError("browser_use.repl.session moved")), \
+                mock.patch("pydantic_ai.Agent", Agent), \
+                mock.patch("tracekit.integrations.pydantic_ai.Tracekit", FakeTracekit):
+            with self.assertRaises(ImportError):   # instrument() warns and continues past this
+                autowire._browser_use(run)
+            autowire._pydantic_ai(run)
+            Agent(deps_type=Session, capabilities=[cap])
+        self.assertEqual(len(seen[0]), 2)
+        self.assertIs(seen[0][0], cap)
 
     def test_an_mcp_1_session_is_named_by_its_initialize_result(self):
         if not installed(AGENTS["mcp"][0]):
@@ -444,6 +610,8 @@ class ProcessRun(OnReal, unittest.TestCase):
         self.assertEqual(self.records(types.SimpleNamespace(run_id=first), "tool.result"), ["c1"])
         registered = self.events({"run_id": self.process.run_id})[0]["data"]
         self.assertEqual(registered.get("parent_run"), first)   # linked to the run it replaces
+        decided = [e["data"] for e in self.events({"run_id": self.process.run_id}) if e["type"] == "policy.decision"]
+        self.assertEqual(decided[0]["provenance_reason"], "continues an earlier run of the session")
         self.decide("c3")   # an adapter still addressing the first run reaches the new one
         self.assertEqual(self.records(self.process, "policy.decision"), ["c2", "c3"])
         self.assertEqual(self.gaps(self.process), [])

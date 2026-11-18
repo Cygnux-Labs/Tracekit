@@ -1336,6 +1336,29 @@ class View(unittest.TestCase):
         self.assertEqual(err.getvalue().count("tracekit last: run r1 (a) just closed; waiting up to 0.6 s while the "
                                               "signer finalises it\n"), 1)
 
+    def test_last_waits_for_a_closed_run_that_late_records_follow(self):
+        """1.7.0 QA: right after a Claude Code session ended, `tracekit last` showed the run before it, 3 of 3. It
+        waited only while a run's newest record was run.closing, and the tailer's model events come after close_run:
+        a run is waited for while it is closed and not final yet."""
+        older = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r0"), v2rec(1, "run.final", {}, "r0")]
+        newer = [v2rec(2, "run.registered", {"agent": {"name": "claude-code"}}, "r1"), v2rec(3, "run.closing", {}, "r1"),
+                 v2rec(4, "model.exchange", {}, "r1")]
+        reads = []
+
+        def read(cfg):   # the signer finalises the newer run by the third read
+            reads.append(1)
+            done = newer + [v2rec(5, "run.final", {}, "r1")] * (len(reads) > 2)
+            runs = {("default", "r0"): {"seqs": [0, 1]}, ("default", "r1"): {"seqs": [r["event"]["seq"] for r in done]}}
+            return mock.Mock(runs=runs, iter_run=lambda *key: iter(done if key[1] == "r1" else older))
+        exported = []
+        with mock.patch.object(svc, "reader", side_effect=read), \
+                mock.patch.object(svc, "signer_config", return_value={"data_dir": self.d}), \
+                mock.patch.object(cli, "_export_v2", side_effect=lambda ns, show: exported.append(ns.run) or 1), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertEqual(exported, ["r1"], err.getvalue())
+        self.assertIn("tracekit last: run r1 (claude-code) just closed; waiting up to", err.getvalue())
+
     @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()
@@ -1360,6 +1383,9 @@ class View(unittest.TestCase):
         added checked one by one (the checks of the run as a whole run again, over all of them)."""
         run = self.client.run(agent="grow")
         run.decide("c1", "Bash", {"command": "ls"})
+        # a decision doesn't nudge a checkpoint, and the feed reads a growing run up to the newest one: nudge it, not
+        # wait for the signer's every-CHECKPOINT_S note
+        self.client.call("checkpoint_nudge", {})
         storage, key = self.service.log.storage, ("default", run.run_id)
         covered = lambda: (storage.checkpoint_latest() or (0,))[0] == storage.tree.size  # noqa: E731
         self.assertTrue(wait_for(covered, 20))
@@ -1369,6 +1395,7 @@ class View(unittest.TestCase):
             self.assertTrue(wait_for(lambda: (feed.runs.get(key) or {}).get("count") == 2, 15))
             with mock.patch.object(view.v2, "verify_record", wraps=view.v2.verify_record) as checked:
                 run.decide("c2", "Bash", {"command": "pwd"})
+                self.client.call("checkpoint_nudge", {})
                 self.assertTrue(wait_for(covered, 20))
                 self.assertTrue(wait_for(lambda: feed.runs[key]["count"] == 3, 15))
         self.assertEqual(len(opened), 1)
@@ -1411,9 +1438,11 @@ class View(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.failed(feed, first), 10))
         run = self.client.run(agent="grow")   # an earlier record of a run edited while it grows
         run.decide("c1", "Bash", {"command": "ls"})
+        self.client.call("checkpoint_nudge", {})   # the feed reads a growing run up to the newest checkpoint
         self.assertTrue(wait_for(lambda: (feed.runs.get(("default", run.run_id)) or {}).get("count"), 15))
         self.edit_decision(run.run_id)
         run.decide("c2", "Bash", {"command": "pwd"})
+        self.client.call("checkpoint_nudge", {})
         self.assertTrue(wait_for(lambda: self.failed(feed, run.run_id), 10))
         quiet = self.finished_run()   # an edit no change shows: when the store is hashed again
         self.assertTrue(wait_for(lambda: feed.runs.get(("default", quiet), {}).get("count"), 15))
@@ -1685,6 +1714,7 @@ class View(unittest.TestCase):
             with self.subTest(line=line), mock.patch.object(view, "server") as server, \
                     mock.patch.object(view, "dev_data_dir", return_value=self.d), \
                     mock.patch("tracekit.audit.default_root", return_value=folder), \
+                    mock.patch("tracekit.audit.codex_root", return_value=os.path.join(self.d, "no-codex")), \
                     mock.patch.object(view.StoreFeed, "_watch", lambda feed: None), \
                     mock.patch.object(view.StoreFeed, "_mirrors", lambda feed: None), \
                     mock.patch.object(view.Store, "watch"), mock.patch.object(view.signal, "signal"), \

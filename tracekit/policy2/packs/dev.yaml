@@ -6,21 +6,22 @@
 #
 # Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
 # held: a laptop runs tools and MCP servers no list names; one given a command line or a SQL statement to run is held
-# (TK-A062). And a coding agent's messages to its own agents are class
-# `harness`: Claude Code's Agent and Task prompts, SendMessage, a subagent's SubagentHandback report and its
-# TodoWrite list, and what the hooks map onto those names (Task: Qwen Code's agent, Cursor's Task, OpenCode's and
-# Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's todo_write, OpenCode's todowrite). Every
+# (TK-A062). And a coding agent's messages to its own agents are class `harness`: Claude Code's Agent and Task
+# prompts, SendMessage, a subagent's SubagentHandback report, its TodoWrite list and a Workflow's script (its agents'
+# calls are each decided by their own hook), and what the hooks map onto those names (Task: Qwen Code's agent,
+# Cursor's Task, OpenCode's and Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's
+# todo_write, OpenCode's todowrite). Every
 # rule of no class reads them, but their `target` is only the URLs and network addresses they name, not the file
 # names their prose mentions: TK-S004 (a credentials file) and TK-F005 (a secret-looking path) don't read them, as a
 # prompt that names ~/.aws/credentials doesn't open it. TK-S002 still denies a secret's value in one, and TK-S001 the
 # metadata service's address, as a URL or a bare IPv4 address in any form. A SendMessage can leave the machine, so
 # it is flagged (TK-F018); an Agent or Task run remotely is held (TK-F019), as none of its calls are decided here. An
-# app's own tool by one of these names gets the same reading here. Every email, payment and database tool's call and
+# app's own tool by one of these names (Workflow included) gets the same reading here. Every email, payment and database tool's call and
 # every Browser Use action is flagged (TK-F020 to TK-F023), as the coding pack flags an MCP call: the server parts'
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-4'
+version: '2026.11-dev-9'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -36,6 +37,26 @@ tools:
   ToolSearch: harness        # Claude Code: loads tools' schemas by name or by a search (`select:Read,Edit`)
   Skill: harness             # Claude Code: loads a skill's instructions by its name
   SlashCommand: harness      # Claude Code: expands a slash command's prompt (`/review`)
+  Workflow: harness          # Claude Code: a script that runs its agents (each of their calls has its own hook)
+  # Claude Code's tools that act only inside the session (2.1.311's own descriptions): known, so not flagged as
+  # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
+  # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
+  # are a subagent's answer in its caller's schema), so one given a `command` or `sql` field, which TK-A062 held as an
+  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay unmapped: their writes publish to
+  # claude.ai or send files off the machine to the user's Claude app, so they keep the unknown tool's flag.
+  # RemoteTrigger is held (TK-A081)
+  TaskStop: app              # stops a background task or agent by its id
+  TaskCreate: app            # the session's task list
+  TaskUpdate: app
+  TaskList: app
+  TaskGet: app
+  StructuredOutput: app      # a subagent's or workflow agent's result, as JSON in its caller's schema
+  ListAgents: app            # lists the session's running agents
+  CronCreate: app            # schedules a prompt that runs again in this session (/loop); its calls are decided then
+  CronDelete: app
+  CronList: app
+  AskUserQuestion: app       # asks the person multiple-choice questions and waits
+  ReadNotifications: app     # reads the session's queued notices (an agent finished, a comment came in)
 
 deny:
   - id: TK-DEMO-DENY
@@ -68,7 +89,8 @@ ask:
     # picks; HEAD, @ or origin/HEAD; an expansion or a pattern), of tags (--tags, --follow-tags, a refs/tags/ or tags/
     # refspec, `tag v1.0`) or of every branch (--all, --mirror). A force push is TK-D003's deny and a delete push
     # TK-A002's ask. A push of named branches other than main and master stays flagged (TK-F004). Any other command is
-    # its argv: publishing a package (npm, pnpm, yarn or bun publish, yarn's `npm publish`, uv, poetry or cargo
+    # its argv: publishing a package (npm, pnpm, yarn or bun publish, npm's pu, pub, publ or publi, which it runs as
+    # publish, yarn's `npm publish`, uv, poetry or cargo
     # publish, gem push, twine upload, also as any runner's `-m twine`), pushing an image or a chart (docker or podman
     # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or upgrade,
     # kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`), each after
@@ -80,12 +102,27 @@ ask:
     # (engine._gh_repo_sync's `PUSH:repo-sync`);
     # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
     # Sapling's `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments,
-    # --all, --tracked, a main or master bookmark (exact: too) or a glob:.
-    # lean: another deploy CLI (vercel, fly deploy, gh release create) is recorded, not held; a gh or hub api GET of
+    # --all, --tracked, a main or master bookmark (exact: too) or a glob:. And a platform CLI's production deploy, each
+    # form read from the CLI's own docs (#892): `vercel --prod` or `--environment production` (`deploy` may be left
+    # out) and `vercel promote`, `netlify deploy --prod` or `--prod-if-unlocked`, `fly` or `flyctl deploy`, `wrangler
+    # deploy` (and the older `publish`), `firebase deploy`, `gcloud run`, `app` or `functions deploy` (alpha and beta
+    # too), `railway up`, `sam`, `serverless`, `sls` or `cdk deploy`, `aws cloudformation deploy` and `gh release
+    # create`. `unless` lets through the forms that don't reach production: a gh release saved as a draft (-d or
+    # --draft as an option of its own: the word before it is the tag, another option's value, an option with its
+    # value after `=`, or one of gh's flags that take no value; after --notes, --title, -R or any other option it is
+    # that option's value, and the release is held), a gcloud run deploy with --no-traffic or app deploy with
+    # --no-promote, and a wrangler --env, railway
+    # --environment or serverless --stage naming a dev, staging, preview, test, qa, sandbox or local environment (any
+    # other name, prod included, is held). A preview deploy stays allowed: vercel without --prod, netlify deploy
+    # without --prod, wrangler dev, firebase hosting:channel:deploy.
+    # lean: a deploy CLI not named here (heroku, render, wrangler pages or versions deploy) is recorded, not held; the
+    # subject is a command's words joined by spaces, so a -d or --draft inside another option's quoted value
+    # (`--notes 'see -d'`) reads as a draft and the release is allowed (docs/limits.md); a gh or hub api GET of
     # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
     # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
     # engine seconds on 64 KiB); add a verb here when one is in use
-    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRefs?|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^npm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} pu(?:b(?:li?)?)?(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^vercel(?: [^ ]+){0,8}? (?:--prod|--environment[ =]production)(?: |$)|^vercel(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} promote(?: |$)|^netlify(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: [^ ]+){0,8}? --prod(?:-if-unlocked)?(?: |$)|^fly(?:ctl)?(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish)(?: |$)|^firebase(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?(?:run|app|functions) deploy(?: |$)|^railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^(?:sam|serverless|sls|cdk)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^aws(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} cloudformation deploy(?: |$)|^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRefs?|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    unless: '^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create (?:(?:[\w\W]*? )?(?:[^- ][^ ]*|-[^ =]+=[^ ]*|-[nFtR][^ ]+|-[dp]|--(?:draft|prerelease|generate-notes|latest|verify-tag|notes-from-tag|fail-on-no-commits)) )?(?:-d|--draft(?:=true)?)(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?run deploy (?:[\w\W]*? )?--no-traffic(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?app deploy (?:[\w\W]*? )?--no-promote(?: |$)|^(?:wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish) (?:[\w\W]*? )?(?:--env[ =]|-e ?)|railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up (?:[\w\W]*? )?(?:--environment[ =]|-e ?)|(?:serverless|sls)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy (?:[\w\W]*? )?(?:--stage[ =]|-s ?))(?:dev|development|staging|stage|preview|test|testing|qa|sandbox|local)(?: |$)'
     reason: a push to the default branch or of tags, or a publish or deploy
     remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
     rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
@@ -125,6 +162,16 @@ ask:
     reason: a subagent that runs where Tracekit doesn't decide its calls
     remedy: Have a person approve the held call, or run the subagent locally, where each of its calls is decided.
     rationale: A remote subagent's tool calls aren't decided or recorded here; a person confirms what it is sent to do.
+  - id: TK-A081
+    tool: RemoteTrigger
+    # Claude Code's routines (/schedule): a create, update, run or webhook trigger starts or changes a cloud agent, as
+    # TK-F019's remote subagent; list, get, list_runs and get_run_log only read (still flagged: an unmapped tool). The
+    # whole call as sorted-key JSON, so only its own top-level action exempts it
+    pattern: '^'
+    unless: '^\{"action":"(?:list|get|list_runs|get_run_log)"[,}]'
+    reason: a cloud routine that runs where Tracekit doesn't decide its calls
+    remedy: Have a person approve the held call, or run the task in this session, where each of its calls is decided.
+    rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'

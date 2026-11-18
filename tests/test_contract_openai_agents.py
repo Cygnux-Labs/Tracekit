@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from factories import VersionCheckCases
 from tracekit import findings_v2
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
@@ -234,6 +235,23 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual((types.count("approval.consumed"), types.count("tool.result")), (1, 1))
         self.assertEqual(types.count("model.exchange"), 2)   # T3: the shell call, then "done"
 
+    def test_apply_decisions_reads_every_page_of_approvals(self):
+        ctx = mock.Mock(context={})
+        for i in range(100):   # fill approval_list's first page (its default limit) with decided approvals
+            self.assertTrue(asyncio.run(self.tk._ask(ctx, f"pad-{i}", "pay", {"commands": ["make pay"]})))
+            self.client.approval_decide({"approval_id": ctx.context["tracekit"]["approvals"][f"pad-{i}"],
+                                         "decision": "reject"})
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        a, res = self.go(call, ShellTool(name="pay", executor=lambda req: self.ran.append(req.data.action.commands)
+                                         or "paid"))
+        aid = res.context_wrapper.context["tracekit"]["approvals"]["sh-1"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])   # #842: the 101st approval was unread
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual((self.ran, res.final_output), ([["make pay"]], "done"))
+
     def test_apply_patch_runs_when_allowed_and_refuses_an_ask(self):
         class Editor:
             def create_file(_, op):
@@ -332,6 +350,15 @@ class ResponseBodies(unittest.TestCase):
         for data in (on, off):   # the args each signer committed to (salted): the same tool use either way
             self.assertEqual([{k: v for k, v in t.items() if k != "args_commitment"} for t in data["tool_uses"]],
                              [{"id": "c-1", "name": "echo", "executed_by": "client", "args_source": "raw"}])
+
+
+@unittest.skipUnless(HAVE_OA, "openai-agents not installed")
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "openai_agents", "0.23.1"
+    message = "OpenAI Agents SDK 0.0.1 is wired but untested; Tracekit is tested with openai-agents>=0.23.1,<0.24"
+
+    def entries(self, integration):
+        return (lambda: integration.TracekitAgents(mock.Mock(), {"run_id": "r", "run_token": "t"}),)
 
 
 if __name__ == "__main__":

@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.6.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.6.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.6.0
-cd /usr/local/src/tracekit-1.6.0
+# v1.7.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.7.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.2
+cd /usr/local/src/tracekit-1.7.2
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -159,7 +159,8 @@ Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
    Init restarts the harness helper and the egress observer itself, so they run the new version.
-2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
+2. Keep a copy of the config in root's home (`/root` on Linux, `/var/root` on macOS):
+   `sudo cp /etc/tracekit/signer.yaml ~root/signer.yaml.bak`.
 3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
    the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
    again; no separate launchd command is needed here.
@@ -300,7 +301,8 @@ tracekit monitor --log http://signer.internal:9464 --log-key "$(cat log.vkey)" -
 
 Run the monitor on a host the operator doesn't control, with `serve_records: true` in `metrics` ([monitor](monitor.md)).
 
-Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). Metrics and alerts:
+Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). A tenant's people download its
+runs over the same API with an `export_run` grant: [downloading a run](remote-ingest.md#downloading-a-run). Metrics and alerts:
 [observability](observability.md). Model calls through the [LLM gateway](gateway.md) and tool calls run by a T2
 [executor](approvals.md#tiers-t1-and-t2-executors) are recorded out of the agent's process.
 

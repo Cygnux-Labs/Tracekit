@@ -1,0 +1,990 @@
+[
+ {
+  "name": "Open Interpreter 0.0.61, recorded: native surface over Responses, exec_command arrives as Bash with its cmd renamed command; allowed",
+  "payload": {
+   "session_id": "01a1d674-989b-72c0-9ede-5b26cce14e0f",
+   "turn_id": "01a1d674-98c5-769b-a1bb-141ceb5ea29a",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-48-47-01a1d674-989b-72c0-9ede-5b26cce14e0f.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo rec698"
+   },
+   "tool_use_id": "call_599328103"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "call_599328103",
+   "args": {
+    "command": "echo rec698"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: native surface over Chat Completions, Bash denied: exit 2 and the JSON deny",
+  "payload": {
+   "session_id": "01a1d674-b601-70d3-ac57-fb188a0573e5",
+   "turn_id": "01a1d674-b624-7200-b6d3-a6b65f0345c1",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-48-55-01a1d674-b601-70d3-ac57-fb188a0573e5.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo deny-me"
+   },
+   "tool_use_id": "call_599335943"
+  },
+  "decision": "deny",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "call_599335943",
+   "args": {
+    "command": "echo deny-me"
+   }
+  },
+  "exit": 2,
+  "stdout": {
+   "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "[tracekit] BLOCKED, nothing ran, and no one can approve it (R-1).\nAgent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept."
+   }
+  }
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: Code Mode: apply_patch called from exec's JavaScript (an exec-<uuid> call id), its patch in `command`; an Edit of every file the patch names, held and approved",
+  "payload": {
+   "session_id": "01a1d674-8f08-7046-afdf-f507d6a530bb",
+   "turn_id": "01a1d674-8f2c-70c1-b13d-deba1b04bbe3",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-48-45-01a1d674-8f08-7046-afdf-f507d6a530bb.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.6-sol",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "apply_patch",
+   "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: notes.txt\n+one\n*** End Patch\n"
+   },
+   "tool_use_id": "exec-c0178e7b-9174-469a-856f-bda3449f6266"
+  },
+  "decision": "ask",
+  "request": {
+   "tool": "Edit",
+   "tool_call_id": "exec-c0178e7b-9174-469a-856f-bda3449f6266",
+   "args": {
+    "command": "*** Begin Patch\n*** Add File: notes.txt\n+one\n*** End Patch\n",
+    "file_path": "notes.txt",
+    "paths": [
+     "notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: Code Mode: exec_command called from exec's JavaScript, as Bash; allowed",
+  "payload": {
+   "session_id": "01a1d674-8f08-7046-afdf-f507d6a530bb",
+   "turn_id": "01a1d674-8f2c-70c1-b13d-deba1b04bbe3",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-48-45-01a1d674-8f08-7046-afdf-f507d6a530bb.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.6-sol",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo rec698"
+   },
+   "tool_use_id": "exec-614add32-025f-4603-aed7-645b29dee62f"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "exec-614add32-025f-4603-aed7-645b29dee62f",
+   "args": {
+    "command": "echo rec698"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: an MCP tool as mcp__<server>__<tool> (over Chat too, where the model calls it mcp__rec_server_echo_text)",
+  "payload": {
+   "session_id": "01a1d674-b601-70d3-ac57-fb188a0573e5",
+   "turn_id": "01a1d674-b624-7200-b6d3-a6b65f0345c1",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-48-55-01a1d674-b601-70d3-ac57-fb188a0573e5.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "mcp__rec_server__echo_text",
+   "tool_input": {
+    "text": "hello-mcp"
+   },
+   "tool_use_id": "call_599341276"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "mcp__rec_server__echo_text",
+   "tool_call_id": "call_599341276",
+   "args": {
+    "text": "hello-mcp"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: get_goal, a tool that is neither shell, patch nor MCP, passes through by name",
+  "payload": {
+   "session_id": "01a1d8a9-b51a-7189-8e43-18e79a07922e",
+   "turn_id": "01a1d8a9-b53b-759a-b42c-39fe9dc399e8",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/14/rollout-2026-11-14T06-06-03-01a1d8a9-b51a-7189-8e43-18e79a07922e.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.6-sol",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "get_goal",
+   "tool_input": {},
+   "tool_use_id": "exec-a48ce16b-fa8b-4bc9-8c29-79aa271f3c2f"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "get_goal",
+   "tool_call_id": "exec-a48ce16b-fa8b-4bc9-8c29-79aa271f3c2f",
+   "args": {}
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Write and its own fields",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Write",
+   "tool_input": {
+    "file_path": "/w/notes.txt",
+    "content": "one\n"
+   },
+   "tool_use_id": "toolu_call_599343433"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Write",
+   "tool_call_id": "toolu_call_599343433",
+   "args": {
+    "file_path": "/w/notes.txt",
+    "content": "one\n",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Edit and its own fields",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Edit",
+   "tool_input": {
+    "file_path": "/w/notes.txt",
+    "old_string": "one",
+    "new_string": "uno"
+   },
+   "tool_use_id": "toolu_call_599343539"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Edit",
+   "tool_call_id": "toolu_call_599343539",
+   "args": {
+    "file_path": "/w/notes.txt",
+    "old_string": "one",
+    "new_string": "uno",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Read and its own fields",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Read",
+   "tool_input": {
+    "file_path": "/w/notes.txt"
+   },
+   "tool_use_id": "toolu_call_599343647"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "toolu_call_599343647",
+   "args": {
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Glob and its own fields",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Glob",
+   "tool_input": {
+    "pattern": "*.txt",
+    "path": "/w"
+   },
+   "tool_use_id": "toolu_call_599343752"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Glob",
+   "tool_call_id": "toolu_call_599343752",
+   "args": {
+    "pattern": "*.txt",
+    "path": "/w"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Grep and its own fields",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Grep",
+   "tool_input": {
+    "pattern": "uno",
+    "path": "/w"
+   },
+   "tool_use_id": "toolu_call_599343854"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Grep",
+   "tool_call_id": "toolu_call_599343854",
+   "args": {
+    "pattern": "uno",
+    "path": "/w"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: spawn_agent (the model's multi_agent_v1_spawn_agent) with a local_image item: a Read of that file",
+  "payload": {
+   "session_id": "01a1db0d-4a8f-7507-9758-dee6f65d7220",
+   "turn_id": "01a1db0d-4aae-7293-9258-cedd71adde34",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/14/rollout-2026-11-14T17-14-03-01a1db0d-4a8f-7507-9758-dee6f65d7220.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "spawn_agent",
+   "tool_input": {
+    "items": [
+     {
+      "type": "text",
+      "text": "SUBAGENT-TASK: run echo from-subagent"
+     },
+     {
+      "type": "local_image",
+      "path": "/w/pic.png"
+     }
+    ]
+   },
+   "tool_use_id": "call_676443968"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "call_676443968",
+   "args": {
+    "items": [
+     {
+      "type": "text",
+      "text": "SUBAGENT-TASK: run echo from-subagent"
+     },
+     {
+      "type": "local_image",
+      "path": "/w/pic.png"
+     }
+    ],
+    "file_path": "/w/pic.png",
+    "paths": [
+     "/w/pic.png"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: a sub-agent's own call fires the hook in the session, with its agent_id and agent_type",
+  "payload": {
+   "session_id": "01a1db0d-4a8f-7507-9758-dee6f65d7220",
+   "turn_id": "01a1db0d-4b84-7608-bf60-153c79b01f4d",
+   "agent_id": "01a1db0d-4b66-7404-8bca-446e6b8fad01",
+   "agent_type": "default",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/14/rollout-2026-11-14T17-14-04-01a1db0d-4b66-7404-8bca-446e6b8fad01.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo from-subagent"
+   },
+   "tool_use_id": "call_676444199"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "call_676444199",
+   "args": {
+    "command": "echo from-subagent"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\": Bash with a description, denied",
+  "payload": {
+   "session_id": "01a1d674-d340-728a-b83f-bc5410a94046",
+   "turn_id": "01a1d674-d35d-7603-8358-0dd140ccbe97",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/13/rollout-2026-11-13T19-49-02-01a1d674-d340-728a-b83f-bc5410a94046.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo deny-me",
+    "description": "recording step"
+   },
+   "tool_use_id": "toolu_call_599343958"
+  },
+  "decision": "deny",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "toolu_call_599343958",
+   "args": {
+    "command": "echo deny-me",
+    "description": "recording step"
+   }
+  },
+  "exit": 2,
+  "stdout": {
+   "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "[tracekit] BLOCKED, nothing ran, and no one can approve it (R-1).\nAgent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept."
+   }
+  }
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: bash, the alias every non-native harness adds, as Bash",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "bash",
+   "tool_input": {
+    "command": "echo rec-bash"
+   },
+   "tool_use_id": "toolu_call_745245181"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "toolu_call_745245181",
+   "args": {
+    "command": "echo rec-bash"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Write with its path as filePath, decided on that path",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Write",
+   "tool_input": {
+    "filePath": "/w/notes.txt",
+    "content": "one\n"
+   },
+   "tool_use_id": "toolu_call_745245433"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Write",
+   "tool_call_id": "toolu_call_745245433",
+   "args": {
+    "filePath": "/w/notes.txt",
+    "content": "one\n",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: write, the alias, with filePath, decided on that path",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "write",
+   "tool_input": {
+    "filePath": "/w/notes.txt",
+    "content": "one\n"
+   },
+   "tool_use_id": "toolu_call_745245506"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Write",
+   "tool_call_id": "toolu_call_745245506",
+   "args": {
+    "filePath": "/w/notes.txt",
+    "content": "one\n",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Edit with its path as filePath, decided on that path",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Edit",
+   "tool_input": {
+    "filePath": "/w/notes.txt",
+    "old_string": "one",
+    "new_string": "uno"
+   },
+   "tool_use_id": "toolu_call_745245573"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Edit",
+   "tool_call_id": "toolu_call_745245573",
+   "args": {
+    "filePath": "/w/notes.txt",
+    "old_string": "one",
+    "new_string": "uno",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Read with its path as filePath, decided on that path",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Read",
+   "tool_input": {
+    "filePath": "/w/notes.txt"
+   },
+   "tool_use_id": "toolu_call_745245720"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "toolu_call_745245720",
+   "args": {
+    "filePath": "/w/notes.txt",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: edit, the alias, with path, oldString and newString, as an Edit of that path and text",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "edit",
+   "tool_input": {
+    "path": "/w/notes.txt",
+    "oldString": "uno",
+    "newString": "one"
+   },
+   "tool_use_id": "toolu_call_745245642"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Edit",
+   "tool_call_id": "toolu_call_745245642",
+   "args": {
+    "path": "/w/notes.txt",
+    "oldString": "uno",
+    "newString": "one",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ],
+    "old_string": "uno",
+    "new_string": "one"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: read, the alias, with path, as a Read of it",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "read",
+   "tool_input": {
+    "path": "/w/notes.txt"
+   },
+   "tool_use_id": "toolu_call_745245789"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "toolu_call_745245789",
+   "args": {
+    "path": "/w/notes.txt",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: glob, the alias, as Glob",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "glob",
+   "tool_input": {
+    "pattern": "*.txt",
+    "path": "/w"
+   },
+   "tool_use_id": "toolu_call_745245856"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Glob",
+   "tool_call_id": "toolu_call_745245856",
+   "args": {
+    "pattern": "*.txt",
+    "path": "/w"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: grep, the alias, as Grep",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "grep",
+   "tool_input": {
+    "pattern": "one",
+    "path": "/w"
+   },
+   "tool_use_id": "toolu_call_745245929"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Grep",
+   "tool_call_id": "toolu_call_745245929",
+   "args": {
+    "pattern": "one",
+    "path": "/w"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: Claude Code's Agent passes through by name",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-1d8a-736c-8b34-1ca9ab2f3601",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-45-01a1df27-1d75-74ee-a2e4-48645973676b.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Agent",
+   "tool_input": {
+    "description": "rec7",
+    "prompt": "SUBAGENT-TASK: run echo from-agent"
+   },
+   "tool_use_id": "toolu_call_745246014"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Agent",
+   "tool_call_id": "toolu_call_745246014",
+   "args": {
+    "description": "rec7",
+    "prompt": "SUBAGENT-TASK: run echo from-agent"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"claude-code\" over Anthropic Messages: the Agent's sub-agent's own call fires the hook in the session, with its agent_id",
+  "payload": {
+   "session_id": "01a1df27-1d75-74ee-a2e4-48645973676b",
+   "turn_id": "01a1df27-2170-71d5-837b-16847d5dedef",
+   "agent_id": "01a1df27-215f-727e-a1a1-c5a03601ed43",
+   "agent_type": "default",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-20-46-01a1df27-215f-727e-a1a1-c5a03601ed43.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "claude-sonnet-4-5",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "Bash",
+   "tool_input": {
+    "command": "echo from-agent"
+   },
+   "tool_use_id": "toolu_call_745246125"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "toolu_call_745246125",
+   "args": {
+    "command": "echo from-agent"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"deepseek-tui\" over Chat Completions: exec_shell, which runs as Bash does, as Bash",
+  "payload": {
+   "session_id": "01a1df23-3952-71cd-b8ce-1060a151b5bc",
+   "turn_id": "01a1df23-3965-74c7-a3a0-e2908f9f8142",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-30-01a1df23-3952-71cd-b8ce-1060a151b5bc.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "deepseek-chat",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "exec_shell",
+   "tool_input": {
+    "command": "echo rec-exec-shell"
+   },
+   "tool_use_id": "call_744990159"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Bash",
+   "tool_call_id": "call_744990159",
+   "args": {
+    "command": "echo rec-exec-shell"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"deepseek-tui\" over Chat Completions: write_file as a Write of its path",
+  "payload": {
+   "session_id": "01a1df23-3952-71cd-b8ce-1060a151b5bc",
+   "turn_id": "01a1df23-3965-74c7-a3a0-e2908f9f8142",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-30-01a1df23-3952-71cd-b8ce-1060a151b5bc.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "deepseek-chat",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "write_file",
+   "tool_input": {
+    "path": "/w/notes.txt",
+    "content": "one\n"
+   },
+   "tool_use_id": "call_744990400"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Write",
+   "tool_call_id": "call_744990400",
+   "args": {
+    "path": "/w/notes.txt",
+    "content": "one\n",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"deepseek-tui\" over Chat Completions: edit_file as an Edit of its path, its replace as the new text",
+  "payload": {
+   "session_id": "01a1df23-3952-71cd-b8ce-1060a151b5bc",
+   "turn_id": "01a1df23-3965-74c7-a3a0-e2908f9f8142",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-30-01a1df23-3952-71cd-b8ce-1060a151b5bc.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "deepseek-chat",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "edit_file",
+   "tool_input": {
+    "path": "/w/notes.txt",
+    "search": "one",
+    "replace": "uno"
+   },
+   "tool_use_id": "call_744990469"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Edit",
+   "tool_call_id": "call_744990469",
+   "args": {
+    "path": "/w/notes.txt",
+    "search": "one",
+    "replace": "uno",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ],
+    "old_string": "one",
+    "new_string": "uno"
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"deepseek-tui\" over Chat Completions: read_file as a Read of its path",
+  "payload": {
+   "session_id": "01a1df23-3952-71cd-b8ce-1060a151b5bc",
+   "turn_id": "01a1df23-3965-74c7-a3a0-e2908f9f8142",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-30-01a1df23-3952-71cd-b8ce-1060a151b5bc.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "deepseek-chat",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "read_file",
+   "tool_input": {
+    "path": "/w/notes.txt"
+   },
+   "tool_use_id": "call_744990535"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "call_744990535",
+   "args": {
+    "path": "/w/notes.txt",
+    "file_path": "/w/notes.txt",
+    "paths": [
+     "/w/notes.txt"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: harness = \"kimi-code\" over Chat Completions: ReadMediaFile as a Read of its path",
+  "payload": {
+   "session_id": "01a1df23-40e7-70dc-8629-ad65cd80b8ef",
+   "turn_id": "01a1df23-40fb-73a5-b001-959d7c28ecb7",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-31-01a1df23-40e7-70dc-8629-ad65cd80b8ef.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "kimi-k2",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "ReadMediaFile",
+   "tool_input": {
+    "path": "/w/pic.png"
+   },
+   "tool_use_id": "call_744992100"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "call_744992100",
+   "args": {
+    "path": "/w/pic.png",
+    "file_path": "/w/pic.png",
+    "paths": [
+     "/w/pic.png"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ },
+ {
+  "name": "Open Interpreter 0.0.61, recorded: send_input reaches the hook as multi_agent_v1send_input (its namespace and name joined); a local_image item is a Read of that file",
+  "payload": {
+   "session_id": "01a1df23-46c7-728c-83a9-56a70124f4ce",
+   "turn_id": "01a1df23-46da-7429-82d3-1bd4a767c2c8",
+   "transcript_path": "/home/u/.openinterpreter/sessions/2026/11/15/rollout-2026-11-15T12-16-33-01a1df23-46c7-728c-83a9-56a70124f4ce.jsonl",
+   "cwd": "/w",
+   "hook_event_name": "PreToolUse",
+   "model": "gpt-5.1-codex",
+   "permission_mode": "bypassPermissions",
+   "tool_name": "multi_agent_v1send_input",
+   "tool_input": {
+    "target": "01a1df23-4766-740d-88ad-ae6a16de5545",
+    "items": [
+     {
+      "type": "text",
+      "text": "SUBAGENT-IDLE: look"
+     },
+     {
+      "type": "local_image",
+      "path": "/w/pic.png"
+     }
+    ]
+   },
+   "tool_use_id": "call_744993718"
+  },
+  "decision": "allow",
+  "request": {
+   "tool": "Read",
+   "tool_call_id": "call_744993718",
+   "args": {
+    "target": "01a1df23-4766-740d-88ad-ae6a16de5545",
+    "items": [
+     {
+      "type": "text",
+      "text": "SUBAGENT-IDLE: look"
+     },
+     {
+      "type": "local_image",
+      "path": "/w/pic.png"
+     }
+    ],
+    "file_path": "/w/pic.png",
+    "paths": [
+     "/w/pic.png"
+    ]
+   }
+  },
+  "exit": 0,
+  "stdout": ""
+ }
+]

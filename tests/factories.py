@@ -2,6 +2,7 @@
 
 Import with `from factories import ...` (tests/ is on sys.path under pytest; see conftest.py).
 """
+import contextlib
 import datetime
 import hashlib
 import json
@@ -26,6 +27,7 @@ from tracekit import install, policy  # noqa: E402
 from tracekit.core import now_ts  # noqa: E402
 from tracekit.daemon import Signer, load_config  # noqa: E402
 from tracekit.ledger import read_records  # noqa: E402
+from tracekit.storage import file as storage_file  # noqa: E402
 
 
 def ev(typ, data, run="r1", agent="main", source="hook"):
@@ -361,6 +363,34 @@ def persisted_queue(signer):
         return signer.log.storage.witness_queue()
 
 
+# the modules whose syncs a signer on the file store makes: its logs, its new files, and its state and key files
+SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
+
+
+@contextlib.contextmanager
+def signer_without_fsync():
+    """The signer's syncs (SIGNER_SYNCS) skipped in this process while it's open, for a test of what a signer decides
+    and records, not of its durability, which has tests of its own (test_storage_file's test_durability_modes and
+    test_a_failed_background_sync_names_the_records_not_known_durable, storage_contract's
+    test_torn_tail_is_set_aside_and_reported): fsync is most of such a test's time on windows-latest (#722). Yields the
+    modules of the syncs made anywhere else, which still run: a sync the signer moves to another module fails the test
+    instead of silently making it slow again."""
+    elsewhere, real = [], {name: getattr(os, name) for name in ("fsync", "fdatasync") if hasattr(os, name)}
+
+    def stub(name):
+        def sync(fd):
+            caller = sys._getframe(1).f_globals.get("__name__")
+            if caller not in SIGNER_SYNCS:
+                elsewhere.append(caller)
+                real[name](fd)
+        return sync
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(storage_file, "_sync", lambda fd, full: None))   # macOS's is an fcntl
+        for name in real:
+            stack.enter_context(mock.patch.object(os, name, stub(name)))
+        yield elsewhere
+
+
 def process_pool():
     """Worker processes, one per CPU this process may use (at most 61: Windows takes no more), spawned: a test process
     has threads, which a fork would copy mid-lock."""
@@ -378,27 +408,53 @@ def wait_for(cond, timeout=10, interval=0.05):
         time.sleep(interval)
 
 
+def mcp_tools(n, last=""):
+    """A wide MCP tool list: `n` tools (dicts, as mcp's ListToolsResult takes them) of 8 described string parameters,
+    about 850 bytes and 18 values each (300 of them: over the 4096 values one observe is read for); the first is
+    send_email, and `last` ends the last one's description."""
+    return [{"name": "send_email" if i == 0 else f"tool_{i}",
+             "description": f"Does thing number {i} for the account in the workspace" + last * (i == n - 1),
+             "inputSchema": {"type": "object", "properties": {
+                 f"param_{i}_{j}": {"type": "string", "description": f"The value of field {j} used by tool {i}"}
+                 for j in range(8)}}} for i in range(n)]
+
+
 class VersionCheckCases:
     """The version check a hand-wired integration shares with the others (tracekit.integrations.version_check): a
     framework outside the versions Tracekit is tested with warns once when the integration is built, one inside the
-    range does not. A test class sets `module` (under tracekit.integrations), `inside` and `message`."""
+    range does not. A test class sets `module` (under tracekit.integrations), `inside` and `message`, and overrides
+    `entries` when its entry points are not `(Tracekit(run),)`."""
 
-    def warnings_for(self, version):
+    def entries(self, integration):
+        return (lambda: integration.Tracekit(mock.Mock()),)
+
+    def warnings_for(self, version, entry=None):
         import importlib
         import warnings
         from tracekit.integrations import version_check
-        integration = importlib.import_module("tracekit.integrations." + self.module)
+        if entry is None:
+            integration = importlib.import_module("tracekit.integrations." + self.module)
+            [entry] = self.entries(integration)
         with mock.patch.object(version_check, "_WARNED", set()), \
                 mock.patch.object(version_check, "_version", return_value=version), \
                 warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            integration.Tracekit(mock.Mock())
+            entry()
+            entry()
         return [str(x.message) for x in w if "is wired but untested" in str(x.message)]
 
     def test_it_warns_for_a_version_outside_the_tested_range(self):
-        msgs = self.warnings_for("0.0.1")
-        self.assertEqual(1, len(msgs))
-        self.assertIn(self.message, msgs[0])
+        import importlib
+        integration = importlib.import_module("tracekit.integrations." + self.module)
+        for i, entry in enumerate(self.entries(integration)):
+            with self.subTest(entry=i):
+                msgs = self.warnings_for("0.0.1", entry)
+                self.assertEqual(1, len(msgs))
+                self.assertIn(self.message, msgs[0])
 
     def test_it_does_not_warn_for_a_version_inside_the_tested_range(self):
-        self.assertEqual([], self.warnings_for(self.inside))
+        import importlib
+        integration = importlib.import_module("tracekit.integrations." + self.module)
+        for i, entry in enumerate(self.entries(integration)):
+            with self.subTest(entry=i):
+                self.assertEqual([], self.warnings_for(self.inside, entry))
