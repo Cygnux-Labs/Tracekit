@@ -2,7 +2,7 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.7.2 (2026-11-18) — 1.7.1, published, with three fixes from contributors
+## 1.7.2 (2026-11-18) — 1.7.1, published, with three contributions
 
 1.7.1 was tagged but never published: the release's check of the built wheel ran two version tests that read
 `README.md` and the Hermes plugin's `plugin.yaml`, which that job didn't copy. 1.7.2 is 1.7.1's code with the job
@@ -10,16 +10,21 @@ copying them, plus three pull requests merged since. Everything in 1.7.1's notes
 first, as for 1.7.1.
 
 ### Added
-- Autotrace records model calls made through AWS Bedrock Runtime with boto3 (`Converse`, `ConverseStream`,
-  `InvokeModel`), with tool use and token counts; other AWS calls pass through untouched (#916, by @TheVicky1).
+- Autotrace records model calls made through AWS Bedrock Runtime with boto3: `Converse` and `ConverseStream` with tool
+  use and token counts, `InvokeModel` and `InvokeModelWithResponseStream` as the call and its model; other AWS calls
+  pass through untouched (#916, by @TheVicky1).
 
 ### Fixed
-- The viewer says when a call the policy denied, or a hold nobody answered, ran anyway: "BLOCKED · RAN ANYWAY" and
-  "NOT ANSWERED · RAN ANYWAY" on the tape and PERMISSIONS, and the run review counts it so (#691, by @Saisinare).
-- The hook reads the transcript mark under the run's lock, just before it sends, and the signer orders marks by when
-  they were read, so parallel hooks of one session no longer report a false `trace.tamper/truncated` (#758, by
+- The viewer says when a call the policy denied, or a hold nobody approved (rejected, expired or not answered), ran
+  anyway: "BLOCKED · RAN ANYWAY", "REJECTED · RAN ANYWAY", "NOT ANSWERED · RAN ANYWAY" and so on, on the tape and
+  PERMISSIONS, and the run review counts it so (#691, by @Saisinare).
+- Claude Code's v1 hook reads the transcript mark under the run's lock, just before it sends, so the daemon gets
+  parallel hooks' marks in the order they were read and no longer reports a false `trace.tamper/truncated` (#758, by
   @fcy222fcy).
 - The release's wheel check copies the files its version tests read.
+
+### Contributors
+@TheVicky1, @Saisinare and @fcy222fcy. Thank you.
 
 ## 1.7.1 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
 
