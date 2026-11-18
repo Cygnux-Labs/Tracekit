@@ -261,18 +261,18 @@ def approvals_cmd(signer, use_interpreter=False):
     $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
     Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
     a quote (PowerShell's curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left
-    for the person to fill in."""
+    for the person to fill in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have
+    `tracekit` on PATH) with `-I`: the person runs it in the agent's working folder, where `-m` would first import a
+    `tracekit` package found there; on Windows Codex runs it under PowerShell, which runs a quoted program only through
+    `&`, so a path that needs no quotes goes bare, as agent_hooks does for Codex's hook command."""
     unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
     named = signer and (shlex.quote(signer) if os.name != "nt" else
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
     command = "tracekit approvals" + (f" --signer {named}" if named else "")
     if use_interpreter:
-        interpreter = (
-            subprocess.list2cmdline([sys.executable])
-            if os.name == "nt"
-            else shlex.quote(sys.executable)
-        )
-        command = f"{interpreter} -m {command}"
+        exe = (shlex.quote(sys.executable) if os.name != "nt" else sys.executable
+               if re.fullmatch(r"[A-Za-z0-9_.:\\-]+", sys.executable) else f'& "{sys.executable}"')
+        command = f"{exe} -I -m {command}"
     return command
 
 
@@ -796,7 +796,7 @@ def _pre(client, p, sid, tid, end=None):
         if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
             _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
-            # Claude Code's `! ` and Gemini CLI's `!` command run as the person's OS user;
+            # Claude Code's `! `, and Gemini CLI's and Codex's `!`, command run as the person's OS user;
             # with a named signer, that user is the agent's, whom the signer refuses.
             bang = _approval_command_prefix(AGENT, client.signer)
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"

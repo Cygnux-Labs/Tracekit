@@ -286,42 +286,37 @@ class Mapping(HarnessCase):
         self.assertEqual(prefix("codex", "/path/to/signer.sock"), "")
 
     def test_codex_approval_command_quotes_interpreter_path(self):
-        interpreter = "/path/with spaces/python"
-
-        with mock.patch.object(claude_code.sys, "executable", interpreter):
+        with mock.patch.object(claude_code.os, "name", "posix"), \
+                mock.patch.object(claude_code.sys, "executable", "/path/with spaces/python"):
             command = claude_code.approvals_cmd(None, use_interpreter=True)
+        self.assertEqual(command, "'/path/with spaces/python' -I -m tracekit approvals")
 
-        expected_interpreter = (
-            subprocess.list2cmdline([interpreter])
-            if claude_code.os.name == "nt"
-            else shlex.quote(interpreter)
-        )
-        self.assertEqual(
-            command,
-            f"{expected_interpreter} -m tracekit approvals",
-        )
-
-    def test_codex_approval_command_quotes_interpreter_path_on_windows(self):
-        interpreter = r"C:\Program Files\Tracekit\python.exe"
-
-        with mock.patch.object(claude_code.os, "name", "nt"), \
-                mock.patch.object(claude_code.sys, "executable", interpreter):
+    def test_codex_approval_command_never_imports_tracekit_from_the_working_folder(self):
+        """The person runs the command in the agent's working folder: `python -m tracekit` there would import a
+        tracekit package the agent wrote. `-I` keeps the folder (and PYTHONPATH, the user site) off sys.path."""
+        d = ac.tmpdir(self)
+        os.makedirs(os.path.join(d, "tracekit"))
+        for name in ("__init__.py", "__main__.py"):
+            with open(os.path.join(d, "tracekit", name), "w") as f:
+                f.write("open('PLANTED', 'w').close()\n")
+        with mock.patch.object(claude_code.os, "name", "posix"):
             command = claude_code.approvals_cmd(None, use_interpreter=True)
+        subprocess.run(shlex.split(command) + ["--help"], cwd=d, capture_output=True, timeout=60)
+        self.assertFalse(os.path.exists(os.path.join(d, "PLANTED")))
 
-        self.assertEqual(
-            command,
-            f'{subprocess.list2cmdline([interpreter])} -m tracekit approvals',
-        )
+    def test_codex_approval_command_on_windows_runs_under_powershell_and_cmd(self):
+        for exe, want in ((r"C:\Python312\python.exe", r"C:\Python312\python.exe -I -m tracekit approvals"),
+                          (r"C:\Program Files\Tracekit\python.exe",
+                           r'& "C:\Program Files\Tracekit\python.exe" -I -m tracekit approvals')):
+            with self.subTest(exe=exe), mock.patch.object(claude_code.os, "name", "nt"), \
+                    mock.patch.object(claude_code.sys, "executable", exe):
+                self.assertEqual(claude_code.approvals_cmd(None, use_interpreter=True), want)
 
     def test_held_approval_message_uses_harness_specific_command(self):
         interpreter = "/path/with spaces/python"
         original_approvals_cmd = claude_code.approvals_cmd
         original_prefix = claude_code._approval_command_prefix
-        quoted_interpreter = (
-            subprocess.list2cmdline([interpreter])
-            if claude_code.os.name == "nt"
-            else shlex.quote(interpreter)
-        )
+        quoted_interpreter = f'& "{interpreter}"' if claude_code.os.name == "nt" else shlex.quote(interpreter)
 
         def unnamed_approvals_cmd(signer, use_interpreter=False):
             return original_approvals_cmd(None, use_interpreter)
@@ -330,7 +325,7 @@ class Mapping(HarnessCase):
             return original_prefix(agent, None)
 
         for harness, expected in (
-            ("codex", f"!{quoted_interpreter} -m tracekit approvals approve "),
+            ("codex", f"!{quoted_interpreter} -I -m tracekit approvals approve "),
             ("gemini", "!tracekit approvals approve "),
         ):
             with self.subTest(harness=harness):

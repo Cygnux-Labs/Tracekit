@@ -636,8 +636,9 @@ Agent: …
 ```
 
 Answer it with the command the line names: in Claude Code, Gemini CLI and Codex CLI, use its `! …` form in the
-session. Codex's command names the Python interpreter running the hook (`sys.executable -m tracekit`), quoted
-when necessary, rather than relying on `tracekit` being on `PATH`. Elsewhere, run the command from another
+session. Codex's command names the Python interpreter running the hook (`<python> -I -m tracekit`) rather than
+relying on `tracekit` being on `PATH`; `-I` keeps the working folder off Python's path, so a `tracekit` package there is
+never imported (on Windows, a path that needs quotes runs through PowerShell's `&`). Elsewhere, run the command from another
 terminal without the `!`, which a shell would read as "not" (`tracekit approvals list` shows every held call). Then
 ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
 `tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
