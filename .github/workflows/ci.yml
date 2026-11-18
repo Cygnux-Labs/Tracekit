@@ -488,6 +488,10 @@ jobs:
             echo "::endgroup::"
           done
           python eval/e14_outage.py --quick
+      - name: Run E28 on the AgentDojo runs in eval/e28_agentdojo (exits 1 when a promise its docs make breaks)
+        run: python eval/e28_influence.py
+      - name: E28's results equal the committed file (it holds no timing, platform or path)
+        run: git diff --exit-code -- eval/results/e28_influence.json
       - name: Deterministic results equal the committed files
         run: |
           # byte for byte: these files hold no timing, platform, path or engine version

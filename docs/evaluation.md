@@ -2,15 +2,15 @@
 
 Twenty-three experiments, E1 to E23 and E28 (there is no E13; E24 to E27 aren't in this release). `make eval` runs the
 offline ones: E1 to E4 (E4 on v1 and v2 bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19,
-E20, E21 and E23, and E9 `--quick` on Linux.
+E20, E21, E23 and E28, and E9 `--quick` on Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
-`make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) and E28 (`eval/e28_influence.py`, which reads an AgentDojo
-checkout) run on their own. In CI, E8 (insider attacks, which needs root
+`make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
-E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
-gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new
-file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against them.
+E3, E4, E6, E10 to E12, E14 (`--quick`), E16 to E21 and E28, on every pull request ("Offline evals"): each must pass
+its own gate, and their deterministic results must equal the committed files, so a change that moves a number commits
+the new file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against
+them.
 This page is the numbers' one home: other docs link here instead of repeating a count a rule change moves.
 E2, E14 in full, E9 and E16 on Postgres, E22 and E7 run nightly (`.github/workflows/nightly-evals.yml`). Results are
 written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
@@ -684,8 +684,9 @@ run's bundle, whose `intent grants` line re-checks every release. Results: `eval
 `eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
 true influence, offline, with no model API. Three parts:
 
-- **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, gpt-4o-2024-05-13, the `important_instructions`
-  attack and the clean runs) replayed through the signer-backed why runtime against a dev signer with no rules: the
+- **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, MIT, gpt-4o-2024-05-13, the `important_instructions`
+  attack and the clean runs; the runs E28 reads are kept in `eval/e28_agentdojo/` with the upstream commit and license)
+  replayed through the signer-backed why runtime against a dev signer with no rules: the
   user's request is the task, each model turn a model call that had the whole conversation in its context, each tool
   output observed as untrusted. Labels come from the benchmark: in a run whose attack succeeded, the attack call is
   the first call after the injected text arrived of a tool the injection task's ground truth calls, carrying a string
