@@ -2385,6 +2385,8 @@ def _unwrap(name, args):
             starts.append(i)
         elif a is None or name == "command" and a in ("-v", "-V"):   # the end, or a lookup, not a run
             starts.append(None)
+        elif name == "uv" and a == "-":   # `uv run -`: the Python script it reads from stdin
+            starts.append(i)
         elif a.startswith("-") or name == "cmd" and a.startswith("/"):   # a bare `-` too (env - cmd: an empty environment)
             todo += [i + n for n in reversed(_takes(a, opts, WRAPPER_FLAGS.get(name, ())))]
         elif assigns(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
@@ -2397,6 +2399,8 @@ def _unwrap(name, args):
             inner = inner[1:]
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+        if name == "uv" and inner[:1] == ["-"]:   # `uv run -` is `python -`
+            inner = ["python"] + inner
         yield inner
 
 
@@ -5548,14 +5552,20 @@ PIECE_ROOM = 128
 
 def _lines(words, progs):
     """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
-    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), so a
-    rule that reads the command after a pipe, or where one starts, reads what the wrapper runs."""
+    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), and a
+    runner's where its subcommand runs one (`uv -q run python …`, `poetry run python …` are `python …`: runner_at), so
+    a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
-    cut = {i for p, q in zip(at, at[1:]) if base_name(words[p]) in WRAPPERS and
-           not _STAGE_ENDS.intersection(words[p + 1:q]) for i in range(p, q)}
+
+    def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q
+        name = base_name(words[p])
+        runner = name.partition("@")[0]
+        return name in WRAPPERS or runner in RUNNERS and bool(runner_at(runner, words[p + 1:q]))
+    cut = {i for p, q in zip(at, at[1:]) if not _STAGE_ENDS.intersection(words[p + 1:q]) and runs(p, q)
+           for i in range(p, q)}
     return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
         [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
 
