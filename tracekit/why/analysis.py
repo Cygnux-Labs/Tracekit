@@ -259,6 +259,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                     "node": None})
     from . import influence
     from .import_v2 import content_checks
+    goal = influence.goals(run, g)
     for c in content_checks(run):
         if c["verdict"] == "mismatched":
             out.append({"severity": "high", "title": "Content does not match what the signer committed to",
@@ -278,7 +279,8 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
             if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert
         base = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"],
                 "target": suggest_target(run, ev, prov), "sensitive": sens}
-        drift = influence.drift(influence.graded(g, nid)["edges"]) if influence.consequential(run, ev) else None
+        got = influence.graded(g, nid) if ev.get("status") != "blocked" else None
+        u = got and influence.untrusted(got["edges"])
         if ev.get("status") == "blocked":
             pass  # reported below, once
         elif sens and bad:
@@ -286,12 +288,16 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "title": f"{ev['tool']} used a value that only untrusted content supplied",
                         "detail": f"'{bad[0]['value']}' appears only in " +
                                   ", ".join(s["label"] for s in bad[0]["sources"]) + "."})
-        elif drift:
+        elif got and influence.drifted(got, goal):
             out.append({**base, "severity": "review", "title": f"{ev['tool']} serves no step of the task",
-                        "detail": (f"Its `{drift['field']}` came only from {drift['label']} (untrusted), by the signer's "
-                                   "provenance." if drift["grade"] == "exact" else
-                                   f"A replay without {drift['label']} (untrusted) changed it (effect "
-                                   f"{drift['effect']:+.2f}).") + " See INFLUENCE for its chain to the task."})
+                        "detail": "A replay without the task kept it. See INFLUENCE for what it came from."})
+        elif u:
+            out.append({**base, "severity": "review",
+                        "title": f"{ev['tool']}'s `{u['field']}` came only from untrusted content" if u["grade"] == "exact"
+                        else f"Untrusted content caused {ev['tool']}",
+                        "detail": (f"{u['label']}, by the signer's provenance." if u["grade"] == "exact" else
+                                   f"A replay without {u['label']} changed it (effect {u['effect']:+.2f}).")
+                        + " Test it without the task to see whether it serves the task."})
         elif sens and untrusted_up:
             out.append({**base, "severity": "review",
                         "title": f"Sensitive action {ev['tool']} is downstream of untrusted input",
@@ -537,9 +543,9 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
         s["max_effect"] = max([e["max_effect"] for e in es if e["max_effect"] is not None], default=None)
         s["confirmed_tools"] = sorted({e["tool"] for e in es if e["confirmed"]})
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))
-    # the calls to answer for first: those that serve no step of the task, then the worst ended, then the rest with an
-    # exact or measured edge; otherwise in the order of the runs and their logs
-    calls.sort(key=lambda c: (c["serves"] != "drift", -ENDED.index(c["ended"]),
+    # the calls to answer for first: those that serve no step of the task, then those tied to untrusted content, then
+    # the worst ended, then the rest with an exact or measured edge; otherwise in the order of the runs and their logs
+    calls.sort(key=lambda c: (c["serves"] != "drift", not c["untrusted"], -ENDED.index(c["ended"]),
                               not any(e["grade"] != "seen" for e in c["edges"])))
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
             "edges": list(edges.values()), "calls": calls[:CALLS_KEPT], "calls_total": len(calls),

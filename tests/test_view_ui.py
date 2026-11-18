@@ -2565,13 +2565,16 @@ class PlainPages(unittest.TestCase):
 
     def test_influence_answers_first_for_each_risky_call_in_words_then_its_chain_drawn_by_grade(self):
         """INFLUENCE led with "untrusted content came before a blocked call" and text overlap: neither is a cause. It
-        answers per risky call, in words first, those that serve no step of the task first, each link drawn by how it
-        is known (solid exact, double measured, thin seen); a hint shows only when asked for, never as an influence; a
-        call nothing links says "no influence found"."""
+        answers per risky call, in words first: those a replay without the task kept (they serve no step of it), then
+        those whose argument or cause was untrusted content, each link drawn by how it is known (solid exact, double
+        measured, thin seen); a hint shows only when asked for, never as an influence; a call nothing links says "no
+        influence found"."""
         needs_node(self)
-        from test_why_influence import EXACT, desk
+        from test_why_influence import EXACT, desk, without_task
         from tracekit.why import build_graph
         from tracekit.why.analysis import workspace
+        drifted = desk(args={"branch": "fix-login"})[0]
+        without_task(drifted, "ruled-out", 0.0)
         pushed = desk(EXACT)[0]
         deployed = desk(args={"branch": "fix-login"}, tool="deploy_site")[0]
         deployed.add_test({"intervention": "input:github:issue-12", "target": "tool=deploy_site", "effect": 0.7,
@@ -2581,22 +2584,24 @@ class PlainPages(unittest.TestCase):
         lone = desk(decide=False, args={"branch": "fix-login"})[0]
         lone.of_type("action")[-1].update(status="blocked", policy={"decision": "deny"})
         calls = workspace([], [{"run": r, "graph": build_graph(r, infer=False), "summary": {"started": ""}}
-                               for r in (pushed, deployed, held, lone)])["influence"]
+                               for r in (pushed, deployed, held, lone, drifted)])["influence"]
         S = self.STORE
         page = self.influence(S["sources"], S["edges"], S["groups"], calls=calls)[0]
         self.assertTrue(page.startswith('<div class="inans"><div class="q">WHAT LED TO EACH RISKY CALL?</div>'))
         said = re.findall(r'<div class="icall[^"]*"><div class="w">(.*?) <button type="button" class="cp" data-wwhy="([^"]+)" data-wr="([^"]+)">WHY</button>', page)
+        chain = "dev decided (m; 3 in context, 1 untrusted) → this call."
         self.assertEqual([html.unescape(w) for w, *_ in said], [
-            "git_push (dev) serves no step of the task: its `branch` came only from github:issue-12 (untrusted; exact). "
-            "Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided (m; 3 in context, 1 untrusted) → this call.",
-            "deploy_site (dev) serves no step of the task: a replay without github:issue-12 (untrusted) changed it "
-            "(measured: effect +0.70). Chain: read github:issue-12 (untrusted; measured: effect +0.70) → dev decided (m; 3 "
-            "in context, 1 untrusted) → this call.",
+            f"git_push (dev) serves no step of the task: a replay without the task kept it. Chain: task 'Fix the login "
+            f"bug in issue 12' → {chain}",
+            f"git_push (dev) came from: read github:issue-12 (untrusted; exact: `branch`) → {chain} Its `branch` came "
+            "only from github:issue-12 (untrusted; exact): test it without the task to see whether it serves the task.",
+            f"deploy_site (dev) came from: read github:issue-12 (untrusted; measured: effect +0.70) → {chain} A replay "
+            "without github:issue-12 (untrusted) changed it (measured: effect +0.70): test it without the task to see "
+            "whether it serves the task.",
             "git_push (dev, blocked): no influence found. Nothing exact, measured or seen links it to what the agents read.",
-            f"git_push (dev, held) came from: task 'Fix the login bug in issue 12' → dev decided (m; 3 in context, 1 "
-            "untrusted) → this call."])
+            f"git_push (dev, held) came from: task 'Fix the login bug in issue 12' → {chain}"])
         self.assertEqual([(r, n) for _, n, r in said], [(c["run"], c["node"]) for c in calls["calls"]])   # WHY opens it
-        self.assertEqual(page.count('class="icall drift"'), 2)
+        self.assertEqual(page.count('class="icall drift"'), 1)
         # solid from the step the signer traced an argument to, double from the step a replay tied to the call; thin hops
         arcs = lambda page, c: len(re.findall(f'<path class="{c}" d="M[^"]* C', page))  # noqa: E731  (not the key's swatches)
         self.assertEqual([arcs(page, c) for c in ("g-exact", "g-measured", "g-gap", "g-hint")], [1, 1, 1, 0])

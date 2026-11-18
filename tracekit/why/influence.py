@@ -6,16 +6,21 @@
               runtime, `gateway` (the LLM gateway's record of the request sent it: tool_results_sent) or
               `reconstructed` (an import's "everything the run observed before the model call")
     hint      text overlap: the call's argument text is in the source (why's own value search, or shingle overlap).
-              Never an influence: hidden unless asked for, never used for drift
+              Never an influence: hidden unless asked for, never used for a finding
 
 The goal is the run's task (an input of kind task, else the person's trusted prompts). A consequential call (stopped,
 sensitive, or with provenance) gets a chain walked back from it: a call to the model call that asked for it, a message
 to the model call that wrote it, a model call to the source in its context that carries an exact or measured
 influence on the call (else the goal, when it was in that context, else another agent's message: the run's own hop),
-observed content to the call it repeats. It `serves` the task when the chain reaches the goal or a model call on it
-had the goal in its context, and serves no step of it (drift) when content from outside the run's agents set one of its
-arguments (exact) or a replay showed untrusted content caused it (measured). An exact value from another agent's
-message is not drift: the signer's index is per run, so it can't say where that agent got the value.
+observed content to the call it repeats.
+
+It serves no step of the task (drift) when a replay without the goal kept it (run tests removing the task, or each of
+the person's prompts, verdict ruled out: the call didn't need the task); it `serves` the task when such a replay changed it, or when the chain reaches
+the goal or a model call on it had the goal in its context. An argument set by untrusted content from outside the run's
+agents (exact) or a replay tying the call to untrusted content (measured) is named (`untrusted`), never called drift on
+its own: a task that asks the agent to act on what it reads ("pay the bill in bill.txt") gets those too (E28: 31 of 97
+clean AgentDojo runs). An exact value from another agent's message is not named: the signer's index is per run, so it
+can't say where that agent got the value.
 """
 from __future__ import annotations
 
@@ -48,8 +53,8 @@ def _seen_basis(dec: Dict[str, Any], ref: Optional[str]) -> str:
 
 
 def graded(g: Graph, nid: str) -> Dict[str, Any]:
-    """{"edges": the exact, measured and seen edges into call `nid`, "ruled_out": the labels of sources a replay
-    tested and ruled out}."""
+    """{"edges": the exact, measured and seen edges into call `nid`, "ruled": the sources a replay tested and ruled
+    out}."""
     ev = g.nodes[nid]["event"]
     out: List[Dict[str, Any]] = []
     for p in ev.get("provenance") or []:
@@ -63,7 +68,7 @@ def graded(g: Graph, nid: str) -> Dict[str, Any]:
             out.append({"src": e["src"], "grade": "measured", "basis": "replay", "effect": e.get("effect"),
                         "ci": e.get("ci"), "n": e.get("n"), "target": e.get("target")})
         elif e.get("verdict") == "ruled-out":
-            ruled.append(g.nodes[e["src"]]["label"])
+            ruled.append(e["src"])
     dec = "ev:" + ev["decision"] if ev.get("decision") else None
     if dec in g.nodes:
         dev = g.nodes[dec]["event"]
@@ -73,7 +78,7 @@ def graded(g: Graph, nid: str) -> Dict[str, Any]:
                 out.append({"src": e["src"], "grade": "seen", "basis": basis, "via": dec,
                             **({"cites": dev["tracekit"]} if basis == "gateway" and dev.get("tracekit") else {})})
     _describe(g, out)
-    return {"edges": out, "ruled_out": ruled}
+    return {"edges": out, "ruled": ruled}
 
 
 def hints(run: Run, g: Graph, nid: str, not_from: Set[str], texts=None) -> List[Dict[str, Any]]:
@@ -97,12 +102,20 @@ def _describe(g: Graph, edges: List[Dict[str, Any]]) -> None:
                  trust="untrusted" if e["grade"] == "exact" else n.get("trust", "trusted"))
 
 
-def drift(edges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """The edge that says a call serves no step of the task, or None: content from outside the run's agents (observed
-    content or a tool's result, not another agent's message) set one of its arguments (exact), or a replay showed
-    untrusted content caused it (measured)."""
+def untrusted(edges: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The edge that ties a call to untrusted content, or None: content from outside the run's agents (observed content
+    or a tool's result, not another agent's message) set one of its arguments (exact), or a replay showed untrusted
+    content caused it (measured)."""
     return next((e for e in edges if e["grade"] == "exact" and e["type"] in ("input", "action")
                  or e["grade"] == "measured" and e["trust"] == "untrusted"), None)
+
+
+def drifted(got: Dict[str, Any], goal: List[str]) -> bool:
+    """Whether a call serves no step of the task, from its graded() edges: a replay without each part of the goal kept
+    it (with several prompts, a test of one alone proves nothing) and none without it changed it."""
+    gs = set(goal)
+    return bool(gs) and gs <= set(got["ruled"]) and not any(e["grade"] == "measured" and e["src"] in gs
+                                                            for e in got["edges"])
 
 
 def _context(g: Graph, dec: str) -> List[str]:
@@ -145,16 +158,17 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
     edges = got["edges"]
     steps, cut = chain(g, nid, {e["src"] for e in edges if e["grade"] in ("exact", "measured")}, gs)
     goal_seen = steps[0] in gs or any(g.nodes[s]["type"] == "decision" and gs & set(_context(g, s)) for s in steps)
-    d = drift(edges)
-    serves = "drift" if d else "task" if goal_seen else "unknown"
+    needs = any(e["grade"] == "measured" and e["src"] in gs for e in edges)   # a replay without the task changed it
+    serves = "drift" if drifted(got, goal) else "task" if goal_seen or needs else "unknown"
     step = next((s for s in steps if g.nodes[s]["type"] == "decision"), None) if serves == "task" else None
     seen = [e for e in edges if e["grade"] == "seen"]
     hinted = hints(run, g, nid, {e["src"] for e in edges if e["grade"] != "seen"}, texts)
     out = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"], "ended": _ended(ev),
            "goal": [_goal_text(run, g, s) for s in goal], "seen": len(seen), "hinted": len(hinted),
            "edges": [e for e in edges if e["grade"] != "seen"] + _first(seen), "hints": _first(hinted),
-           "ruled_out": got["ruled_out"], "chain": [_step(g, s, nid, edges) for s in steps], "truncated": cut,
-           "serves": serves, "drift": d, "step": _step(g, step, nid, edges)["text"] if step else None,
+           "ruled_out": [g.nodes[s]["label"] for s in got["ruled"]], "chain": [_step(g, s, nid, edges) for s in steps],
+           "truncated": cut, "serves": serves, "untrusted": untrusted(edges),
+           "step": _step(g, step, nid, edges)["text"] if step else None,
            **({"tracekit": ev["tracekit"]} if ev.get("tracekit") else {})}
     out["words"] = words(out)
     return out
@@ -215,20 +229,25 @@ def words(inf: Dict[str, Any]) -> str:
     path = ("… → " if inf["truncated"] else "") + " → ".join(say(s) for s in inf["chain"])
     if not inf["edges"]:
         return f"{head}: no influence found. Nothing exact, measured or seen links it to what the agents read."
-    d = inf["drift"]
-    if d:
-        why = (f"its `{d['field']}` came only from {d['label']} (untrusted; exact)" if d["grade"] == "exact" else
-               f"a replay without {d['label']} (untrusted) changed it ({_how(d)})")
-        return f"{head} serves no step of the task: {why}. Chain: {path}."
+    u = inf["untrusted"]
+    note = "" if not u or inf["serves"] == "drift" else " " + (
+        f"Its `{u['field']}` came only from {u['label']} (untrusted; exact)" if u["grade"] == "exact" else
+        f"A replay without {u['label']} (untrusted) changed it ({_how(u)})") + \
+        ": test it without the task to see whether it serves the task."
+    if inf["serves"] == "drift":
+        return f"{head} serves no step of the task: a replay without the task kept it. Chain: {path}."
     if inf["serves"] == "unknown":
-        return f"{head}: no chain to the task recorded. {path[0].upper() + path[1:]}."
-    return f"{head} came from: {path}."
+        return f"{head}: no chain to the task recorded. {path[0].upper() + path[1:]}.{note}"
+    return f"{head} came from: {path}.{note}"
 
 
 def influences(run: Run, g: Graph, texts=None, risky: bool = False) -> List[Dict[str, Any]]:
-    """call_influence() of every consequential call of the run, in log order; `risky`: only those stopped or flagged,
-    or with an exact or measured edge (the only ones that can serve no step of the task)."""
+    """call_influence() of every consequential call of the run, in log order; `risky`: the calls stopped or flagged,
+    with an exact or measured edge (a replay tested them), or that serve no step of the task, whatever their tool."""
     goal = goals(run, g)
+
+    def shown(nid: str, ev: Dict[str, Any]) -> bool:
+        got = graded(g, nid)
+        return bool(_ended(ev)) or any(e["grade"] != "seen" for e in got["edges"]) or drifted(got, goal)
     return [call_influence(run, g, nid, goal, texts) for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"])
-            if n["type"] == "action" and consequential(run, n["event"]) and not (
-                risky and not _ended(n["event"]) and all(e["grade"] == "seen" for e in graded(g, nid)["edges"]))]
+            if n["type"] == "action" and (shown(nid, n["event"]) if risky else consequential(run, n["event"]))]
