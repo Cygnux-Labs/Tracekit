@@ -489,7 +489,8 @@ PUBLIC_SUFFIXES = frozenset({
 
 def _loose_host(glob):
     """Why host glob `glob` is too loose, or None: an exact host is not; a glob needs a dot and two or more labels
-    after its last wildcard, and those labels must not be a public suffix anyone can register under."""
+    after its last wildcard, and those labels must not be a public suffix anyone can register under, nor a parent of
+    one (`*` spans dots when an explains host is matched, so `*.amazonaws.com` covers `*.s3.amazonaws.com`)."""
     if not re.search(r"[*?[]", glob):
         return None
     tail = re.split(r"[*?\]]", glob)[-1]
@@ -497,9 +498,12 @@ def _loose_host(glob):
     if not tail.startswith(".") or len(labels) < 2 or "" in labels:
         return ("after its last wildcard it needs a dot and two or more labels (*.pythonhosted.org, not *.com or "
                 "*pypi.org); or name the hosts")
-    if tail[1:].lower() in PUBLIC_SUFFIXES:
-        return (f"{tail[1:].lower()} is a public suffix anyone can register under; name the hosts, or a suffix one "
-                "owner holds (*.cdn.example.co.uk)")
+    t = tail[1:].lower()
+    covered = sorted(s for s in PUBLIC_SUFFIXES if s == t or s.endswith("." + t))
+    if covered:
+        what = (f"{t} is a public suffix" if covered == [t] else
+                f"{t} covers the public suffix {', '.join(covered)}, which")
+        return f"{what} anyone can register under; name the hosts, or a suffix one owner holds (*.cdn.example.co.uk)"
     return None
 
 

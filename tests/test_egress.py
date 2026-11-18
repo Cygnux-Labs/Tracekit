@@ -388,12 +388,18 @@ class TestExplainsLint(unittest.TestCase):
                                                             "*.ibm.de", "*.bbc.co.uk"]}]), [])
 
     def test_a_host_glob_over_a_public_suffix_is_too_loose_and_names_it(self):
-        for h, suffix in (("*.co.uk", "co.uk"), ("*.github.io", "github.io"), ("*.vercel.app", "vercel.app"),
-                          ("cdn*.CO.UK", "co.uk"), ("*.s3.amazonaws.com", "s3.amazonaws.com")):
+        for h, named in (("*.co.uk", "co.uk is a public suffix"), ("*.github.io", "github.io is a public suffix"),
+                         ("*.vercel.app", "vercel.app is a public suffix"), ("cdn*.CO.UK", "co.uk is a public suffix"),
+                         ("*.s3.amazonaws.com", "s3.amazonaws.com is a public suffix"),
+                         # `*` spans dots when an explains host is matched, so a parent covers the suffix too
+                         ("*.amazonaws.com", "amazonaws.com covers the public suffix s3.amazonaws.com")):
             with self.subTest(h):
                 errors = " ".join(self.lint([{"tool": "x", "hosts": [h]}]))
                 self.assertIn("is too loose", errors)
-                self.assertIn(f"{suffix} is a public suffix", errors)
+                self.assertIn(named, errors)
+        for h in ("?.co.uk", "[a-z].github.io", "*.*.co.uk", "*.github.io."):
+            with self.subTest(h):
+                self.assertIn("is too loose", " ".join(self.lint([{"tool": "x", "hosts": [h]}])))
         self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.bbc.co.uk", "*.cdn.example.co.uk", "docs.github.io",
                                                             "*.tracekit.github.io", "*.pythonhosted.org", "*.ibm.de"]}]),
                          [])
