@@ -919,5 +919,162 @@ class Page(unittest.TestCase):
         self.assertFalse(lessons.page([], {}, None)["ok"])
 
 
+class RetireBecause(unittest.TestCase):
+    def _make_store(self, data_dir):
+        """Build a real v2 signer store in `data_dir` with one verified run containing an observe record."""
+        import time
+
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer import service as svc
+        me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
+        s = svc.SignerService(data_dir, grace_s=0, fsck_every_s=0)
+        try:
+            reg = s.call(me, "register_run", {"request_id": "r0", "agent": {"name": "claude-code"}})
+            obs = s.call(me, "observe", {
+                "request_id": "r1", "run_id": reg["run_id"], "run_token": reg["run_token"],
+                "stream": "main", "client_seq": 1,
+                "source": "tool.result", "trust": "trusted", "value": {"ok": False},
+            })
+            s.call(me, "close_run", {"request_id": "r2", "run_id": reg["run_id"], "run_token": reg["run_token"]})
+            s.sweep(time.monotonic() + 1)
+            s.checkpoint()
+            return reg["run_id"], obs["run_seq"]
+        finally:
+            s.close()
+
+    def test_retire_with_because_writes_note_commit_signed_observe_and_page_output(self):
+        from tracekit import tips
+        d = tmp(self)
+        data_dir = os.path.join(d, "data")
+        run_id, seq = self._make_store(data_dir)
+        recorded = []
+
+        class _FakeRun:
+            def __init__(self):
+                self.run_id = "run-person"
+                self._seq = 0
+
+            def observe(self, payload, source, trust):
+                self._seq += 1
+                recorded.append((source, trust, payload))
+                return {"run_seq": self._seq}
+
+            def close(self):
+                pass
+
+        class _FakeClient:
+            def run(self, agent):
+                return _FakeRun()
+
+        folder = lessons.Folder(os.path.join(data_dir, "lessons"), sign=tips._signer(_FakeClient()))
+        waiting = lookups(Scene()).found()[0][0]
+        folder.approve(waiting)
+        lid = waiting["id"]
+
+        with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
+             mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
+             mock.patch("builtins.print"):
+            code = tips.act(["retire", lid, "--because", f"{run_id}:{seq}"], lambda _m: None)
+        self.assertEqual(code, 0)
+
+        [note] = folder.notes()
+        self.assertEqual(note["status"], "retired")
+        self.assertEqual(note["retired_because"], {"run": run_id, "seq": seq})
+        self.assertEqual(lookups(Scene()).found(folder.notes()), ([], []))   # never proposed again
+
+        # Commit message names the disproving RUN:SEQ
+        log = subprocess.check_output(
+            ["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True,
+        ).strip()
+        self.assertIn(f"{run_id}:{seq}", log)
+
+        # Signed person observe carries {run, seq}
+        retire_obs = [p for src, _tr, p in recorded if src == lessons.PERSON and p["action"] == "retire"]
+        self.assertEqual(len(retire_obs), 1)
+        self.assertEqual(retire_obs[0]["because"], {"run": run_id, "seq": seq})
+
+        # lessons.page and lessons_text render the disproved-by message
+        page = lessons.page(lookups(Scene()).rows(), lookups(Scene()).tr, folder, now=T0 + 7 * DAY, since=T0 - DAY)
+        [earlier] = page["earlier"]
+        self.assertEqual(earlier["retired_because"], {"run": run_id, "seq": seq})
+        rendered = "\n".join(tips.lessons_text(page))
+        self.assertIn(f"Retired: disproved by run {run_id} at seq {seq}", rendered)
+
+        # Viewer UI links retired_because to the run/seq record
+        html_path = os.path.join(os.path.dirname(os.path.dirname(lessons.__file__)), "tracekit", "ui", "terminal.html")
+        with open(html_path, encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn("Retired: disproved by run", html)
+        self.assertIn("data-lrec", html)
+
+        # Restore clears retired_because
+        folder.restore(lid)
+        [restored] = folder.notes()
+        self.assertEqual(restored["status"], "active")
+        self.assertIsNone(restored.get("retired_because"))
+
+    def test_retire_with_missing_or_unverified_because_refuses_and_changes_nothing(self):
+        from tracekit import tips
+        d = tmp(self)
+        data_dir = os.path.join(d, "data")
+        run_id, seq = self._make_store(data_dir)
+        observed = []
+
+        class _FakeRun:
+            run_id = "run-person"
+
+            def observe(self, payload, source, trust):
+                observed.append(payload)
+                return {"run_seq": 1}
+
+            def close(self):
+                pass
+
+        class _FakeClient:
+            def run(self, agent):
+                return _FakeRun()
+
+        folder = lessons.Folder(os.path.join(data_dir, "lessons"))
+        waiting = lookups(Scene()).found()[0][0]
+        folder.approve(waiting)
+        lid = waiting["id"]
+        head_before = folder.head()
+
+        # Bad format, unknown run, and unknown seq are each refused with nothing written.
+        for bad in ("not-a-ref", "run-does-not-exist:1", f"{run_id}:9999"):
+            with self.subTest(bad=bad):
+                stderr = []
+                with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
+                     mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
+                     mock.patch("sys.stderr") as err:
+                    err.write.side_effect = stderr.append
+                    code = tips.act(["retire", lid, "--because", bad], lambda _m: None)
+                self.assertEqual(code, 1)
+                self.assertIn("tracekit tips:", "".join(stderr))
+                self.assertEqual(folder.head(), head_before)
+                self.assertEqual(folder.notes()[0]["status"], "active")
+                self.assertEqual(observed, [])
+
+        # A run whose verification fails is also refused with nothing written.
+        with mock.patch.object(tips, "_running", return_value=_FakeClient()), \
+             mock.patch("tracekit.signer.service.dev_data_dir", return_value=data_dir), \
+             mock.patch("tracekit.view.check", return_value=(None, 1, "", [])), \
+             mock.patch("sys.stderr"):
+            code = tips.act(["retire", lid, "--because", f"{run_id}:{seq}"], lambda _m: None)
+        self.assertEqual(code, 1)
+        self.assertEqual(folder.head(), head_before)
+        self.assertEqual(folder.notes()[0]["status"], "active")
+        self.assertEqual(observed, [])
+
+    def test_retired_because_is_host_key_and_retire_without_because_unchanged(self):
+        self.assertIn("retired_because", lessons.HOST)
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        lid, _ = folder.add(PROJECT, "Run pytest with -q.")
+        folder.retire(lid)
+        [note] = folder.notes()
+        self.assertEqual(note["status"], "retired")
+        self.assertIsNone(note.get("retired_because"))
+
+
 if __name__ == "__main__":
     unittest.main()

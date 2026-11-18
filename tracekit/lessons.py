@@ -66,8 +66,8 @@ PROMPT = ":UserPromptSubmit"   # the hook's trusted observe of a prompt's typed 
 TYPED = "claude-code:UserPromptSubmit"   # the Claude Code hook's own: the only typed text a TOLD lesson is read from
 TYPES = ("user", "feedback", "project", "reference")
 # keys only Tracekit writes: `tracekit tips add` takes none of them from the person's words
-HOST = ("status", "superseded_by", "retired_from", "supersedes", "origin", "id", "kind", "key", "evidence", "tier",
-        "approved", "before", "signed")
+HOST = ("status", "superseded_by", "retired_from", "retired_because", "supersedes", "origin", "id", "kind", "key",
+        "evidence", "tier", "approved", "before", "signed")
 LESSON_ID = re.compile(r"L-[0-9a-f]{8}")
 SIGNED = re.compile(r"[\w.-]{1,128}:[0-9]{1,12}")   # run:run_seq of the signed record of a person's answer
 MEASURE = "before and after on the same detector, not a controlled test"
@@ -271,7 +271,7 @@ def parse(file, text):
             out.append(f"{m.group(1)} appears twice")
         v = (m.group(2) or "").strip()
         try:
-            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[") else v
+            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[", "{") else v
         except ValueError:
             out.append(f"{m.group(1)} is not a value")
     for k in ("name", "description"):
@@ -285,6 +285,20 @@ def parse(file, text):
         return out
     return {**fields, "file": file, "type": fields.get("type", "project"), "status": fields.get("status", "active"),
             "origin": fields.get("origin", "run"), "body": lf[head.end():]}
+
+
+def parse_because(ref):
+    """Parse a `--because RUN:SEQ` reference into `{"run": RUN, "seq": SEQ}` (non-negative int), or raise Refused."""
+    if isinstance(ref, dict):
+        run, seq = ref.get("run"), ref.get("seq")
+        if isinstance(run, str) and isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0 \
+                and SIGNED.fullmatch(f"{run}:{seq}"):
+            return {"run": run, "seq": seq}
+        raise Refused("because", f"{ref!r} is not RUN:SEQ")
+    if not isinstance(ref, str) or not SIGNED.fullmatch(ref.strip()):
+        raise Refused("because", f"{ref!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
+    run, seq_str = ref.strip().rsplit(":", 1)
+    return {"run": run, "seq": int(seq_str)}
 
 
 def index(notes):
@@ -376,7 +390,7 @@ class Folder:
         except (OSError, ValueError):
             return None
 
-    def _write(self, project, changed, message, lid, action):
+    def _write(self, project, changed, message, lid, action, because=None):
         """Write the notes `changed` of `project` (every one checked: refused, never cut), rebuild its MEMORY.md
         (refused past INDEX_LINES lines or INDEX_BYTES bytes), have the person's answer `action` to the first signed
         (sign), then commit. -> a note when no history was kept."""
@@ -392,7 +406,8 @@ class Folder:
                                         f"{INDEX_BYTES:,} bytes. Retire one first: refused, never cut")
         for signed in (False, True):   # every check, then the signed record, then every check of what it adds
             if signed and self.sign:
-                changed[0]["signed"] = self.sign(action, lid, text_sha(changed[0]))
+                changed[0]["signed"] = (self.sign(action, lid, text_sha(changed[0]), because=because)
+                                        if because is not None else self.sign(action, lid, text_sha(changed[0])))
             texts = {n["file"]: render(n) for n in changed}
             for f, text in texts.items():
                 bad = problems(text)
@@ -466,9 +481,12 @@ class Folder:
                if n["file"] in note["supersedes"]]
         return self._write(lesson["project"], [note, *old], f"approve {lesson['id']}", lesson["id"], "approve")
 
-    def retire(self, lid, proposal=None):
+    def retire(self, lid, proposal=None, because=None):
         """Retire the note `lid` (it leaves MEMORY.md and is never given again), or, with the waiting `proposal` of
-        that id, keep it as retired so it is never proposed again."""
+        that id, keep it as retired so it is never proposed again. With `because` (`{"run": ..., "seq": ...}` or
+        `RUN:SEQ`), records `retired_because`, names it in the commit message, and includes it in the signed observe."""
+        if because is not None:
+            because = parse_because(because)
         n = self.find(lid)
         if n is None and proposal is None:
             raise Refused("missing", f"no lesson {lid} in use or waiting")
@@ -481,8 +499,9 @@ class Folder:
             raise Refused("status", f"{lid} is retired already")
         else:
             was = "pending" if n["status"] == "pending" else "active"
-        n = dict(n, status="retired", retired_from=was, superseded_by=None)
-        return self._write(n["project"], [n], f"retire {lid}", lid, "retire")
+        n = dict(n, status="retired", retired_from=was, superseded_by=None, retired_because=because)
+        msg = f"retire {lid} (because {because['run']}:{because['seq']})" if because else f"retire {lid}"
+        return self._write(n["project"], [n], msg, lid, "retire", because=because)
 
     def restore(self, lid):
         """Give a retired note back the status it was retired from: in use, or proposed again (pending)."""
@@ -490,7 +509,8 @@ class Folder:
         if n is None or n["status"] != "retired":
             raise Refused("status", f"no retired lesson {lid}")
         back = "active" if n.get("retired_from") == "active" else "pending"
-        return self._write(n["project"], [dict(n, status=back, retired_from=None)], f"restore {lid}", lid, "restore")
+        return self._write(n["project"], [dict(n, status=back, retired_from=None, retired_because=None)],
+                           f"restore {lid}", lid, "restore")
 
     def add(self, project, body, name=None, description=None, kind_type="feedback", now=None):
         """The person's own lesson, in use at once (origin you): one-line name and description, or the body's first
@@ -1243,7 +1263,9 @@ def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None, known=Non
         x["where"] = shown.get(x["project"]) or x["project"]
     return {"ok": True, "folder": folder.path, "commit": folder.head(), "budget": BUDGET, "measure": MEASURE,
             "waiting": waiting, "active": active,
-            "earlier": [{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by")}
+            "earlier": [{**{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by",
+                                                  "retired_because")},
+                         "where": shown.get(n["project"]) or n["project"]}
                         for n in notes if n["status"] in ("retired", "superseded")],
             "not_proposed": sorted(nope, key=lambda x: x["rule"] != "tainted")[:40], "not_proposed_n": len(nope),
             "not_proposed_by": dict(collections.Counter(x["rule"] for x in nope).most_common()),

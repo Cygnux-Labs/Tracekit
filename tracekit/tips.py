@@ -975,6 +975,11 @@ def lessons_text(L, days=7):
                 _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."
                       + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
                 f"    {x['retire']}"]
+    for x in L.get("earlier") or ():
+        if x.get("status") == "retired" and isinstance(x.get("retired_because"), dict):
+            rb = x["retired_because"]
+            out += ["", f"RETIRED · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x.get('where') or x['project']}",
+                    x["name"], _wrap(f"Retired: disproved by run {rb['run']} at seq {rb['seq']}")]
     if nope:
         out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
             [_wrap(f"and {L['not_proposed_n'] - 10} more (--json lists the first 40)")] if L["not_proposed_n"] > 10 else [])
@@ -1059,16 +1064,52 @@ def _vault(say):
 
 def _signer(client):
     """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
-    the lesson's id and its text's sha256, never the text) in one run for this command (agent `tracekit tips`),
-    through `client`, which `sign.close()` closes. -> the record's run:run_seq, which the note keeps."""
+    the lesson's id and its text's sha256, never the text, plus `because` `{run, seq}` when retiring with `--because`)
+    in one run for this command (agent `tracekit tips`), through `client`, which `sign.close()` closes. -> the
+    record's run:run_seq, which the note keeps."""
     run = []
 
-    def sign(action, lid, sha):
+    def sign(action, lid, sha, because=None):
         run[:] = run or [client.run(agent="tracekit tips")]
-        out = run[0].observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
+        payload = {"action": action, "id": lid, "sha256": sha}
+        if because is not None:
+            payload["because"] = because
+        out = run[0].observe(payload, lessons.PERSON, "trusted")
         return f"{run[0].run_id}:{out['run_seq']}"
     sign.close = lambda: run and run[0].close()
     return sign
+
+
+def verify_because(data_dir, ref):
+    """Verify `--because RUN:SEQ` against the signer's store in `data_dir`: returns `{"run": RUN, "seq": SEQ}` only
+    when the run exists, verifies cleanly with the verifier, and contains a record at `seq`; raises lessons.Refused
+    with a plain message otherwise."""
+    import tempfile
+
+    from . import view
+    because = lessons.parse_because(ref)
+    run_id, seq = because["run"], because["seq"]
+    cfg = {"data_dir": data_dir}
+    try:
+        vkeys, _ = view.store_trust(cfg)
+    except (OSError, ValueError) as e:
+        raise lessons.Refused("because", f"cannot verify {run_id}:{seq} in the signer's store: {e}") from e
+    with tempfile.TemporaryDirectory(prefix="tk-because-") as tmp:
+        trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
+        r = view.reader(cfg)
+        try:
+            note = r.checkpoint_latest()
+            key = next((k for k in sorted(r.runs) if k[1] == run_id), None)
+            if key is None or note is None:
+                raise lessons.Refused("because", f"run {run_id} was not found in the signer's store")
+            _, code, _, records = view.check(r, *key, note[1], trust)
+        finally:
+            r.close()
+    if code:
+        raise lessons.Refused("because", f"run {run_id} did not verify (exit {code}): refused")
+    if not any((rec.get("event") or {}).get("run_seq") == seq for rec in records):
+        raise lessons.Refused("because", f"run {run_id} has no verified record at seq {seq}")
+    return because
 
 
 def _scan(folder, since, say):
@@ -1103,6 +1144,9 @@ def act(argv, say):
         p.add_argument("ids", nargs="+" if name == "approve" else 1, metavar="ID")
         if name != "restore":
             p.add_argument("--since", type=when, default="7d", help="the window the lesson was found in (default: 7d)")
+        if name == "retire":
+            p.add_argument("--because", metavar="RUN:SEQ",
+                           help="verified record (RUN:SEQ) in the signer's store that disproved this lesson")
     p = sub.add_parser("add", help="your own lesson, given to the project's sessions from now on")
     p.add_argument("text")
     p.add_argument("--name", help="one line: what it is about (default: its first line)")
@@ -1120,7 +1164,9 @@ def act(argv, say):
                   "first (`tracekit up`)", file=sys.stderr)
             return 1
         sign = _signer(client)
-        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=sign)
+        data_dir = dev_data_dir(create=False)
+        folder = lessons.Folder(os.path.join(data_dir, "lessons"), sign=sign)
+        because = verify_because(data_dir, a.because) if a.act == "retire" and a.because else None
         if a.act == "add":
             lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
                                    a.name, a.description, a.type)
@@ -1131,8 +1177,9 @@ def act(argv, say):
             print(f"restored {a.ids[0]}" + (f" ({note})" if note else ""))
             return 0
         if a.act == "retire" and folder.find(a.ids[0]):
-            note = folder.retire(a.ids[0])
-            print(f"retired {a.ids[0]}: no session is given it from now on" + (f" ({note})" if note else ""))
+            note = folder.retire(a.ids[0], because=because)
+            why = f" (disproved by {because['run']}:{because['seq']})" if because else ""
+            print(f"retired {a.ids[0]}: no session is given it from now on{why}" + (f" ({note})" if note else ""))
             return 0
         L = _scan(folder, a.since, say)
         if not L.get("ok"):
@@ -1147,7 +1194,7 @@ def act(argv, say):
                                                    "tracekit tips lists the ones that do"), file=sys.stderr)
                 code = 1
                 continue
-            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x)
+            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x, because=because)
             print(f"{a.act}d {lid}: {x['name']}" + (" (given to the next sessions of " + x["where"] + ")" if
                                                      a.act == "approve" else " (never proposed again)")
                   + (f" ({note})" if note else ""))

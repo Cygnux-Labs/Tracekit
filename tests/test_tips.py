@@ -1248,7 +1248,7 @@ class Page(unittest.TestCase):
         self.assertIn("not measured", out[1])
 
     LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "LSIGNED", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
-                       "renderLessons"]
+                       "lessonRetired", "renderLessons"]
 
     def lessons_page(self, approve=False):
         """The LESSONS part as lessons.page works it out from three sessions' lookups (and a near miss)."""
