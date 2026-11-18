@@ -85,8 +85,7 @@ VERSIONS = {
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
     # approval.consumed names the decision the signer used the approval for in the non-critical slot (ext), so a
-    # 1.6 verifier still verifies the bundle and says it did not interpret the name; the owner places this row in
-    # the release it ships in
+    # 1.6 verifier still verifies the bundle and says it did not interpret the name
     "1.8.0": {"types": [], "fields": {}, "values": {}, "ext": ["approval.decision"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that

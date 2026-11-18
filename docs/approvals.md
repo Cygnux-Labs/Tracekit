@@ -115,10 +115,11 @@ it, the agent sends the same call again, under a new tool call id, and that call
 
 Sent again before anyone answered, the call asks on its own, with a new approval each time; approving any of them lets
 the next retry run. After a retry ran, the same call is held again: one approval runs one call. The records are the
-ones every approval writes. Every consume from this signer also carries `ext.approval.decision`, the decision it ran
-under, so a bundle with a used approval needs a 1.4 verifier at least, as any bundle with an `ext` name does: 1.2 and
-1.3 answer `UNVERIFIABLE (needs tracekit >= 1.4.0)`. A verifier from 1.4 that doesn't read the name still verifies the
-bundle and warns that it did not interpret it, so `--strict` exits 3.
+ones every approval writes. A consume from this signer also carries `ext.approval.decision`, the decision it ran
+under, when the signer can name one (the call's latest decision with the approved arguments, or the approval's own
+decision for its attempt), so a bundle with a used approval needs a 1.4 verifier at least, as any bundle with an
+`ext` name does: 1.2 and 1.3 answer `UNVERIFIABLE (needs tracekit >= 1.4.0)`. A verifier from 1.4 that doesn't read
+the name still verifies the bundle and warns that it did not interpret it, so `--strict` exits 3.
 A held or quarantined run follows [its own rules](incidents.md).
 
 In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every
