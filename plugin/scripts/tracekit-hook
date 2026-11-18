@@ -3,7 +3,7 @@
 # `tracekit init --v2` wires it: Claude Code's (tracekit.integrations.claude_code) with no AGENT (hooks/hooks.json),
 # else that of `tracekit init --agent AGENT` (tracekit.integrations.harness_hooks AGENT EVENT; hooks/<agent>.json).
 # Needs the `tracekit` package:
-#   uv tool install tracekit-ai==1.7.1 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
+#   uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
 # Every install command it prints names the version in .claude-plugin/plugin.json (tests/test_hook_invocation.py
 # checks), since that package decides which calls run; the agent is asked to show it to the person, not run it.
 # Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs.
@@ -78,7 +78,7 @@ except Exception as e:
     why = "cannot import its hook (%s: %s)" % (type(e).__name__, e)
 if why:
     import tracekit
-    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.7.1 && "
+    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.7.2 && "
           "tracekit init --dev --v2 --no-hooks" % (getattr(tracekit, "__version__", "?"), sys.executable, why,
                                      "call was blocked" if pre else "event was NOT recorded"), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
@@ -114,11 +114,11 @@ for py in "${TRACEKIT_PYTHON:-}" "$venv" python3 python "$tool"; do
   if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$site; import tracekit" >/dev/null 2>&1; then
     "$py" -I -c "$site$RUN" "$@"
     finish $? "$py could not run the tracekit hook" "Ask the person to reinstall: uv tool install --reinstall \
-tracekit-ai==1.7.1"
+tracekit-ai==1.7.2"
   fi
 done
 [ -n "$venv" ] && finish 3 "$venv cannot import tracekit" "Ask the person to reinstall it: uv tool install \
---reinstall tracekit-ai==1.7.1 (or pipx install --force tracekit-ai==1.7.1)"
+--reinstall tracekit-ai==1.7.2 (or pipx install --force tracekit-ai==1.7.2)"
 case $(uname -s 2>/dev/null) in
   Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
   MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
@@ -141,9 +141,9 @@ if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
   esac
   [ -n "$AGENT" ] && off="turn the Tracekit plugin off"
   finish 3 "no Python here (TRACEKIT_PYTHON, python3, python, the tracekit command's) has the tracekit package, though \
-Tracekit is set up" "Ask the person to install it (uv tool install tracekit-ai==1.7.1), set TRACEKIT_PYTHON to the Python that \
+Tracekit is set up" "Ask the person to install it (uv tool install tracekit-ai==1.7.2), set TRACEKIT_PYTHON to the Python that \
 has it, or $off"
 fi
 echo "tracekit plugin: the tracekit package is not installed for python3, so this $EV event was NOT recorded. Ask the person to set it up: \
-uv tool install tracekit-ai==1.7.1 && tracekit init --dev --v2 --no-hooks" >&2
+uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks" >&2
 exit $RUNS
