@@ -6,7 +6,7 @@
 tracekit init --dev --v2 --agent codex      # ~/.codex/hooks.json ($CODEX_HOME/hooks.json when it is set)
 tracekit init --dev --v2 --agent cursor     # ~/.cursor/hooks.json
 tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
-tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
+tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json ($QWEN_HOME/settings.json when it is set)
 tracekit init --dev --v2 --agent droid      # ~/.factory/hooks.json
 tracekit init --dev --v2 --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
 tracekit init --dev --v2 --agent kilo       # $XDG_CONFIG_HOME (or ~/.config)/kilo/plugin/tracekit.js; --project: .kilo/plugin/tracekit.js; system mode: the agent's ~/.config

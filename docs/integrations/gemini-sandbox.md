@@ -83,7 +83,8 @@ still follows. To allow expansions without asking, override `TK-A004` in your ow
   output.
 - **Doesn't record:** Gemini's sandbox settings. They aren't signed into the run; `tracekit doctor` reads them on the
   machine.
-- **Doesn't check:** `GEMINI_SANDBOX` or `-s` at launch, or whether Gemini trusts the folder (it ignores an untrusted
-  project's settings). `D-GEMINI-SANDBOX` merges the files it reads key by key ([doctor](../doctor.md)).
+- **Doesn't check:** `GEMINI_SANDBOX` or `-s` at launch, or IDE trust and `GEMINI_CLI_TRUST_WORKSPACE`, which decide
+  whether Gemini trusts the folder before `trustedFolders.json` does (it ignores an untrusted project's settings, and
+  so does `D-GEMINI-SANDBOX`). `D-GEMINI-SANDBOX` merges the files it reads key by key ([doctor](../doctor.md)).
 
 [Limits](../limits.md) lists these with what to do.

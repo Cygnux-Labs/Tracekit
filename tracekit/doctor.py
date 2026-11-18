@@ -122,8 +122,9 @@ def collect(config=None, issuer_key=None):
                          signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                          client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
                          sandbox_settings=layers,
-                         gemini_settings=_gemini(agent and agent.pw_dir,
+                         gemini_settings=_gemini(agent and os.path.join(agent.pw_dir, ".gemini", "settings.json"),
                                                  h.get("settings") if h.get("agent") == "gemini" else None),
+                         gemini_project=h.get("settings") if h.get("agent") == "gemini" else None,
                          harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
                          else None, no_hooks=h.get("no_hooks") is True)
         # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or Claude Code's
@@ -164,8 +165,9 @@ def collect(config=None, issuer_key=None):
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()],
-                     gemini_settings=_gemini(os.path.expanduser("~"),
-                                             os.path.join(os.getcwd(), ".gemini", "settings.json")))
+                     gemini_settings=_gemini(agent_hooks.config_path("gemini"),
+                                             os.path.join(os.getcwd(), ".gemini", "settings.json")),
+                     gemini_project=os.path.join(os.getcwd(), ".gemini", "settings.json"))
     for trusting in agent_hooks.TRUSTING:   # their v1 hooks (init --dev --agent codex) run only once trusted, as v2 do
         if trusting in harnesses:
             continue
@@ -214,15 +216,62 @@ def _sandbox(paths):
     return out
 
 
-def _gemini(home, project):
-    """Gemini CLI's settings files, lowest rank first: system defaults, the user's, the project's, system settings
-    (the system ones where Gemini CLI looks for them, its two environment variables included)."""
-    d = {"darwin": "/Library/Application Support/GeminiCli", "win32": r"C:\ProgramData\gemini-cli"}.get(
-        sys.platform, "/etc/gemini-cli")
-    system = os.environ.get("GEMINI_CLI_SYSTEM_SETTINGS_PATH") or os.path.join(d, "settings.json")
-    defaults = os.environ.get("GEMINI_CLI_SYSTEM_DEFAULTS_PATH") or os.path.join(os.path.dirname(system),
-                                                                                  "system-defaults.json")
-    return [p for p in (defaults, home and os.path.join(home, ".gemini", "settings.json"), project, system) if p]
+def _gemini(user, project, cli="gemini"):
+    """Gemini CLI's settings files (cli "qwen": Qwen Code's, a fork), lowest rank first: system defaults, the user's,
+    the project's, system settings (the system ones where the CLI looks for them, its two environment variables
+    included; qwen-code 0.28.0 storage-paths-lite)."""
+    env, mac, folder = ("QWEN_CODE", "QwenCode", "qwen-code") if cli == "qwen" else ("GEMINI_CLI", "GeminiCli",
+                                                                                       "gemini-cli")
+    d = {"darwin": f"/Library/Application Support/{mac}", "win32": rf"C:\ProgramData\{folder}"}.get(
+        sys.platform, f"/etc/{folder}")
+    system = os.environ.get(f"{env}_SYSTEM_SETTINGS_PATH") or os.path.join(d, "settings.json")
+    defaults = os.environ.get(f"{env}_SYSTEM_DEFAULTS_PATH") or os.path.join(os.path.dirname(system),
+                                                                              "system-defaults.json")
+    return [p for p in (defaults, user, project, system) if p]
+
+
+def _trusted(cli, home, project):
+    """Whether Gemini CLI (cli "gemini") or Qwen Code ("qwen") loads the project settings file `project` by its folder
+    trust, as gemini-cli 0.68.0 (checkPathTrust) and qwen-code 0.28.0 (isWorkspaceTrusted) decide from their files
+    (home: the agent user's home, else this user's): True when it is the user's own file, or
+    security.folderTrust.enabled is off in the system and user settings (Gemini CLI's default is on, Qwen Code's off);
+    else by the rule in
+    trustedFolders.json for the project's folder (Gemini CLI: the longest rule path; Qwen Code: the deepest folder,
+    DO_NOT_TRUST on a tie), no rule being untrusted; None when that file can't be read (the CLI stops then).
+    -> (that, the trust file).
+    lean: IDE trust and GEMINI_CLI_TRUST_WORKSPACE decide first and doctor can't see them"""
+    from . import agent_hooks
+    user = agent_hooks.config_path(cli, home=home)
+    trust = (None if home else os.environ.get(f"{'QWEN_CODE' if cli == 'qwen' else 'GEMINI_CLI'}_TRUSTED_FOLDERS_PATH")
+             ) or os.path.join(os.path.dirname(user), "trustedFolders.json")
+    on = cli == "gemini"
+    for s in _layers(_gemini(user, None, cli), "security"):   # a project's can't turn it on or off
+        if isinstance(s.get("folderTrust"), dict) and s["folderTrust"].get("enabled") is not None:
+            on = s["folderTrust"]["enabled"]
+    if not on or os.path.realpath(project) == os.path.realpath(user):
+        return True, trust
+    try:
+        rules = _json(trust)
+    except FileNotFoundError:
+        rules = {}
+    except (OSError, ValueError):
+        return None, trust
+    if not isinstance(rules, dict):
+        return None, trust
+
+    def real(p):
+        p = os.path.realpath(p)
+        return p.lower() if sys.platform in ("darwin", "win32") else p
+    here, best = real(os.path.dirname(os.path.dirname(project))), None
+    for rule, level in rules.items():
+        if level not in ("TRUST_FOLDER", "TRUST_PARENT", "DO_NOT_TRUST"):
+            continue
+        at = real(os.path.dirname(rule) if level == "TRUST_PARENT" else rule)
+        if here == at or here.startswith(at.rstrip(os.sep) + os.sep):
+            rank = (len(rule),) if cli == "gemini" else (len(at.rstrip(os.sep).split(os.sep)), level == "DO_NOT_TRUST")
+            if best is None or rank > best[0]:
+                best = rank, level
+    return best is not None and best[1] != "DO_NOT_TRUST", trust
 
 
 def _dev_settings():
@@ -851,6 +900,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
+        if harness == "qwen":
+            _qwen_runs(add, path, home)
         if harness == "kiro":
             version = agent_hooks.kiro_version()
             old = version is not None and version < (3,)
@@ -922,6 +973,28 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _qwen_runs(add, path, home):
+    """Whether Qwen Code (0.28.0) runs Tracekit's hooks in `path` (home: the agent user's home, else this user's): none
+    while a settings file sets disableAllHooks (a true value), and a project's none when folder trust is on and the
+    project's folder isn't trusted (_trusted), as Qwen Code then loads none of the project's settings.
+    lean: with folder trust off a project's hooks run only once a person approves them (hookApprovals.json, bound to
+    the hooks' exact configuration), which doctor doesn't read"""
+    from . import agent_hooks
+    files = _gemini(agent_hooks.config_path("qwen", home=home), agent_hooks.config_path("qwen", os.getcwd()), "qwen")
+    off = [p for p in dict.fromkeys([*files, path]) if _setting(p, "disableAllHooks") not in (None, False, 0, "")]
+    if off:
+        add("D-HOOKS-EVENT", False, f"disableAllHooks is set in {', '.join(off)}: Qwen Code runs none of its hooks, so "
+            "every call runs undecided and unrecorded", f'remove "disableAllHooks" from {", ".join(off)}', bad=WARN)
+    trusted, trust = _trusted("qwen", home, path)
+    folder = os.path.dirname(os.path.dirname(path))
+    if not trusted:
+        add("D-HOOKS-EVENT", False, (f"folder trust is on and {trust} doesn't trust {folder}: Qwen Code loads none of "
+            f"its settings there, so the hooks in {path} don't run" if trusted is False else f"{trust} can't be read, "
+            f"so doctor can't tell whether Qwen Code trusts {folder} and runs the hooks in {path}")
+            + " (IDE trust, which doctor can't see, decides first)", f"trust {folder} in Qwen Code (/permissions)",
+            bad=WARN)
 
 
 def _opencode_loads(add, path, fix, bad):
@@ -1218,14 +1291,15 @@ def _tailer_checks(add, client_json, agent):
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=(), gemini_settings=(),
-              harnesses=None, no_hooks=False):
+              harnesses=None, no_hooks=False, gemini_project=None):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
     (settings file, plugin key) returned by install.plugin_enabled, whose hooks are init's;
     sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox);
-    gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini); harnesses: {coding agent: its hook
+    gemini_settings: Gemini CLI's settings files, lowest rank first (_gemini), of which gemini_project is the project's
+    (left out of D-GEMINI-SANDBOX when Gemini doesn't trust its folder: _trusted); harnesses: {coding agent: its hook
     config} of the other agents with v2 hooks (agent_hooks), whose hooks and reasoning settings are checked; no_hooks:
     init was told --no-hooks (install.record_hooks_settings; system mode: client.json's hooks.no_hooks), so no Claude
     Code hook is the person's choice."""
@@ -1539,20 +1613,26 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "; ".join(fix) + f" ({wiki_url('docs/integrations/claude-code-sandbox.md')})" if fix else "", bad=WARN)
 
     # lean: the settings files only, a later one winning each key of `tools` and `security`; doctor doesn't see
-    # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), folder trust (Gemini skips an untrusted project's
-    # settings) or Gemini's deeper merge of objects such as tools.sandbox; upgrade if a setup relies on them
+    # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), IDE trust or Gemini's deeper merge of objects such
+    # as tools.sandbox; upgrade if a setup relies on them
     if any(agent_hooks._version(json.dumps(h)) for h in _layers(gemini_settings, "hooks")):
-        tools, security = ({k: v for s in _layers(gemini_settings, key) for k, v in s.items()}
+        trusted, trust = _trusted("gemini", agent and agent.pw_dir, gemini_project) if gemini_project else (True, None)
+        read = [p for p in gemini_settings if trusted is not False or p != gemini_project]
+        tools, security = ({k: v for s in _layers(read, key) for k, v in s.items()}
                            for key in ("tools", "security"))
         box = tools.get("sandbox")
         whole = bool(box.get("enabled")) if isinstance(box, dict) else (
             isinstance(box, (int, float, str)) and box not in (False, "", "0", "false"))
         if whole or security.get("toolSandboxing") is True:
-            add("D-GEMINI-SANDBOX", not whole, "Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
+            add("D-GEMINI-SANDBOX", not whole, ("Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
                 "sandbox: in a container the hooks don't run and nothing is recorded; under Seatbelt they can't keep "
                 "their state and block every call" if whole else "Gemini's tool sandbox is on (security.toolSandboxing): "
                 "the shipped coding pack's TK-A004 holds each command that asks it for more; GEMINI_SANDBOX or -s at "
-                "launch, which doctor can't see, would run the whole CLI in a sandbox instead",
+                "launch, which doctor can't see, would run the whole CLI in a sandbox instead") + (
+                "" if trusted else f" ({gemini_project} left out: folder trust is on and {trust} doesn't trust its "
+                "folder; IDE trust and GEMINI_CLI_TRUST_WORKSPACE, which doctor can't see, decide first)"
+                if trusted is False else f" ({trust} can't be read, so doctor can't tell whether Gemini trusts the "
+                f"folder of {gemini_project}, and reads it)"),
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
                 f"({wiki_url('docs/integrations/gemini-sandbox.md')})", bad=WARN)
 

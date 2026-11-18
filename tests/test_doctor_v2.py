@@ -1844,6 +1844,94 @@ class GeminiSandbox(unittest.TestCase):
         self.assertEqual(got["status"], "ok")
 
 
+class FolderTrust(unittest.TestCase):
+    """#973: Gemini CLI and Qwen Code (a fork) load no project settings when folder trust is on and the folder isn't
+    trusted (trustedFolders.json): D-GEMINI-SANDBOX read a project's tools.sandbox that Gemini ignores, and nothing
+    said that a Qwen Code project's hooks, or every hook under disableAllHooks, don't run."""
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home, self.repo = os.path.join(self.d, "home"), os.path.join(self.d, "repo")
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
+                                           "GEMINI_CLI_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "gs.json"),
+                                           "QWEN_CODE_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "qs.json")})
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("QWEN_HOME", "GEMINI_CLI_TRUSTED_FOLDERS_PATH", "QWEN_CODE_TRUSTED_FOLDERS_PATH"):
+            os.environ.pop(k, None)
+
+    def write(self, path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(data if isinstance(data, str) else json.dumps(data))
+        return path
+
+    def sandbox(self, trust=None, user=None):
+        """D-GEMINI-SANDBOX with Tracekit's hooks in the user's settings and tools.sandbox in the project's."""
+        if trust is not None:
+            self.write(os.path.join(self.home, ".gemini", "trustedFolders.json"), trust)
+        settings = [self.write(os.path.join(self.home, ".gemini", "settings.json"), {**GeminiSandbox.HOOKS, **(user or {})}),
+                    self.write(os.path.join(self.repo, ".gemini", "settings.json"), {"tools": {"sandbox": "docker"}})]
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", gemini_settings=settings,
+                                                     gemini_project=settings[1])}.get("D-GEMINI-SANDBOX")
+
+    def test_an_untrusted_projects_sandbox_is_left_out(self):
+        # Gemini CLI's folder trust is on by default, and a folder no rule names is untrusted
+        for trust in (None, {self.repo: "DO_NOT_TRUST"}, {self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"},
+                      {os.path.join(self.d, "other"): "TRUST_FOLDER"}):
+            self.assertIsNone(self.sandbox(trust), trust)
+        got = self.sandbox({}, {"security": {"folderTrust": {"enabled": True}, "toolSandboxing": True}})
+        self.assertEqual(got["status"], "ok")
+        self.assertIn(f"({os.path.join(self.repo, '.gemini', 'settings.json')} left out: folder trust is on", got["detail"])
+
+    def test_a_trusted_project_or_trust_off_reads_the_project_as_before(self):
+        for trust, user in (({self.repo: "TRUST_FOLDER"}, None), ({self.d: "TRUST_FOLDER"}, None),
+                            ({os.path.join(self.repo, "sub"): "TRUST_PARENT"}, None),
+                            ({self.d: "DO_NOT_TRUST", self.repo: "TRUST_FOLDER"}, None),
+                            (None, {"security": {"folderTrust": {"enabled": False}}})):
+            got = self.sandbox(trust, user)
+            self.assertEqual((got["status"], got["detail"].endswith("every call")), ("warn", True), (trust, user))
+        # a trust file doctor can't read: it says so and reads the project
+        got = self.sandbox("{not json")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("can't be read, so doctor can't tell whether Gemini trusts", got["detail"])
+
+    def qwen_rows(self, path, trust=None, system=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("qwen", None if path == agent_hooks.config_path("qwen") else self.repo, v2=True)
+        if trust is not None:
+            self.write(os.path.join(self.home, ".qwen", "trustedFolders.json"), trust)
+        if system is not None:
+            self.write(os.path.join(self.d, "qs.json"), system)
+        rows = []
+        with mock.patch("os.getcwd", return_value=self.repo):
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail, fix)),
+                                        {"qwen": path}, False)
+        return [r for r in rows if not r[1]]
+
+    def test_qwen_disable_all_hooks_warns_naming_the_file(self):
+        user = agent_hooks.config_path("qwen")
+        self.assertEqual(self.qwen_rows(user), [])
+        system = os.path.join(self.d, "qs.json")
+        got = self.qwen_rows(user, system={"disableAllHooks": True})
+        self.assertEqual(got, [("D-HOOKS-EVENT", False, f"disableAllHooks is set in {system}: Qwen Code runs none of "
+                                "its hooks, so every call runs undecided and unrecorded",
+                                f'remove "disableAllHooks" from {system}')])
+
+    def test_qwen_project_hooks_in_an_untrusted_folder_warn(self):
+        project = agent_hooks.config_path("qwen", self.repo)
+        self.assertEqual(self.qwen_rows(project), [])   # Qwen Code's folder trust is off by default
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        self.assertEqual(self.qwen_rows(project, {self.repo: "TRUST_FOLDER"}, on), [])
+        # the deepest rule wins, DO_NOT_TRUST on a tie
+        for trust in ({}, {self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"},
+                      {self.repo: "DO_NOT_TRUST", os.path.join(self.repo, "x"): "TRUST_PARENT"}):
+            got = self.qwen_rows(project, trust, on)
+            self.assertEqual(len(got), 1, trust)
+            self.assertIn(f"doesn't trust {self.repo}: Qwen Code loads none of its settings there, so the hooks in "
+                          f"{project} don't run", got[0][2])
+
+
 class PluginHooks(unittest.TestCase):
     """The Claude Code plugin's hooks are init's: doctor told plugin users `fix: tracekit init --dev --v2`, after which
     every call was decided twice and every approved call blocked."""
