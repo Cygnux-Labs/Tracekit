@@ -237,9 +237,11 @@ def _trusted(cli, home, project):
     security.folderTrust.enabled is off in the system and user settings (Gemini CLI's default is on, Qwen Code's off);
     else by the rule in
     trustedFolders.json for the project's folder (Gemini CLI: the longest rule path; Qwen Code: the deepest folder,
-    DO_NOT_TRUST on a tie), no rule being untrusted; None when that file can't be read (the CLI stops then).
-    -> (that, the trust file).
-    lean: IDE trust and GEMINI_CLI_TRUST_WORKSPACE decide first and doctor can't see them"""
+    DO_NOT_TRUST on a tie), no rule being untrusted; None when that file can't be read (the CLI stops then). Before
+    folder trust, Gemini CLI's environment decides: GEMINI_RESTRICTED_MODE=true or GEMINI_CLI_TRUST_WORKSPACE=false
+    untrusted, GEMINI_CLI_TRUST_WORKSPACE=true trusted (Qwen Code 0.28.0 has no such variable). -> (that, the trust file).
+    lean: IDE trust decides before the file and doctor can't see it; the environment read is doctor's own (this user's
+    only), which a Gemini CLI started elsewhere may not share; a trust file with comments (JSONC) reads as unreadable"""
     from . import agent_hooks
     user = agent_hooks.config_path(cli, home=home)
     trust = (None if home else os.environ.get(f"{'QWEN_CODE' if cli == 'qwen' else 'GEMINI_CLI'}_TRUSTED_FOLDERS_PATH")
@@ -248,7 +250,14 @@ def _trusted(cli, home, project):
     for s in _layers(_gemini(user, None, cli), "security"):   # a project's can't turn it on or off
         if isinstance(s.get("folderTrust"), dict) and s["folderTrust"].get("enabled") is not None:
             on = s["folderTrust"]["enabled"]
-    if not on or os.path.realpath(project) == os.path.realpath(user):
+    if os.path.realpath(project) == os.path.realpath(user):
+        return True, trust
+    if cli == "gemini" and not home:
+        if os.environ.get("GEMINI_RESTRICTED_MODE") == "true" or os.environ.get("GEMINI_CLI_TRUST_WORKSPACE") == "false":
+            return False, trust
+        if os.environ.get("GEMINI_CLI_TRUST_WORKSPACE") == "true":
+            return True, trust
+    if not on:
         return True, trust
     try:
         rules = _json(trust)
@@ -572,20 +581,24 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR", "QWEN_HOME",
+            "INTERPRETER_HOME")
 
 
 def _user_hook_files():
     """(the realpaths of the user's own hook files, the USER_ENV variables set to a relative path). A file such a
     variable places resolves against doctor's working directory, so it isn't counted as the user's (the XDG spec says
-    to ignore a relative XDG_CONFIG_HOME, and Codex resolves a relative CODEX_HOME against its own directory)."""
+    to ignore a relative XDG_CONFIG_HOME, and Codex, Qwen Code and Open Interpreter resolve a relative CODEX_HOME,
+    QWEN_HOME or INTERPRETER_HOME against their own directory)."""
     from . import agent_hooks
-    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(os.environ[k])]
+    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(
+        os.path.expanduser(os.environ[k]) if k == "QWEN_HOME" else os.environ[k])]   # Qwen Code expands ~
     record = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.expanduser("~")   # init's record is under it
     paths = [install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
              *(install.user_settings_all() if os.path.isabs(record) else ()),   # + the absolute paths it records
              *(agent_hooks.config_path(h) for h in agent_hooks.HARNESSES   # it resolves CODEX_HOME itself
-               if not (h == "codex" and "CODEX_HOME" in relative))]
+               if {"codex": "CODEX_HOME", "qwen": "QWEN_HOME", "interpreter": "INTERPRETER_HOME"}.get(h)
+               not in relative)]
     return {os.path.realpath(p) for p in paths if os.path.isabs(p)}, relative
 
 
@@ -982,8 +995,10 @@ def _qwen_runs(add, path, home):
     lean: with folder trust off a project's hooks run only once a person approves them (hookApprovals.json, bound to
     the hooks' exact configuration), which doctor doesn't read"""
     from . import agent_hooks
-    files = _gemini(agent_hooks.config_path("qwen", home=home), agent_hooks.config_path("qwen", os.getcwd()), "qwen")
-    off = [p for p in dict.fromkeys([*files, path]) if _setting(p, "disableAllHooks") not in (None, False, 0, "")]
+    project = agent_hooks.config_path("qwen", os.getcwd())
+    files = [p for p in dict.fromkeys([*_gemini(agent_hooks.config_path("qwen", home=home), project, "qwen"), path])
+             if p not in (project, path) or _trusted("qwen", home, p)[0] is not False]   # Qwen Code loads it
+    off = [p for p in files if _setting(p, "disableAllHooks") not in (None, False, 0, "")]
     if off:
         add("D-HOOKS-EVENT", False, f"disableAllHooks is set in {', '.join(off)}: Qwen Code runs none of its hooks, so "
             "every call runs undecided and unrecorded", f'remove "disableAllHooks" from {", ".join(off)}', bad=WARN)
@@ -1617,20 +1632,27 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     # as tools.sandbox; upgrade if a setup relies on them
     if any(agent_hooks._version(json.dumps(h)) for h in _layers(gemini_settings, "hooks")):
         trusted, trust = _trusted("gemini", agent and agent.pw_dir, gemini_project) if gemini_project else (True, None)
-        read = [p for p in gemini_settings if trusted is not False or p != gemini_project]
-        tools, security = ({k: v for s in _layers(read, key) for k, v in s.items()}
-                           for key in ("tools", "security"))
-        box = tools.get("sandbox")
-        whole = bool(box.get("enabled")) if isinstance(box, dict) else (
-            isinstance(box, (int, float, str)) and box not in (False, "", "0", "false"))
-        if whole or security.get("toolSandboxing") is True:
+        def sandboxes(paths):   # (the whole CLI's sandbox, the tool sandbox) the files turn on
+            tools, security = ({k: v for s in _layers(paths, key) for k, v in s.items()}
+                               for key in ("tools", "security"))
+            box = tools.get("sandbox")
+            return (bool(box.get("enabled")) if isinstance(box, dict) else (
+                isinstance(box, (int, float, str)) and box not in (False, "", "0", "false")),
+                security.get("toolSandboxing") is True)
+        whole, tool = sandboxes([p for p in gemini_settings if trusted is not False or p != gemini_project])
+        if not (whole or tool) and trusted is False and any(sandboxes(gemini_settings)):
+            add("D-GEMINI-SANDBOX", False, f"{gemini_project} turns Gemini's sandbox on, but Gemini doesn't load it: "
+                f"folder trust is on and {trust} doesn't trust its folder (IDE trust, which doctor can't see, decides "
+                "first)", "to sandbox Gemini there, trust the folder (/permissions) or set the sandbox in your user "
+                "settings", bad=INFO)
+        if whole or tool:
             add("D-GEMINI-SANDBOX", not whole, ("Gemini's tools.sandbox runs the whole CLI, Tracekit's hooks with it, in a "
                 "sandbox: in a container the hooks don't run and nothing is recorded; under Seatbelt they can't keep "
                 "their state and block every call" if whole else "Gemini's tool sandbox is on (security.toolSandboxing): "
                 "the shipped coding pack's TK-A004 holds each command that asks it for more; GEMINI_SANDBOX or -s at "
                 "launch, which doctor can't see, would run the whole CLI in a sandbox instead") + (
                 "" if trusted else f" ({gemini_project} left out: folder trust is on and {trust} doesn't trust its "
-                "folder; IDE trust and GEMINI_CLI_TRUST_WORKSPACE, which doctor can't see, decide first)"
+                "folder; IDE trust, which doctor can't see, decides first)"
                 if trusted is False else f" ({trust} can't be read, so doctor can't tell whether Gemini trusts the "
                 f"folder of {gemini_project}, and reads it)"),
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
