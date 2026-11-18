@@ -454,3 +454,9 @@
 {"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
 {"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
 {"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
+{"tool": "Bash", "args": {"command": "sysadminctl -addUser bob -admin"}, "expect": "ask", "note": "creating a macOS admin login with sysadminctl (#996)"}
+{"tool": "Bash", "args": {"command": "sysadminctl -resetPasswordFor bob -newPassword x"}, "expect": "ask", "note": "resetting a macOS user's password with sysadminctl (#996)"}
+{"tool": "Bash", "args": {"command": "dseditgroup -o edit -a bob -t user admin"}, "expect": "ask", "note": "adding a user to macOS's admin group (#996)"}
+{"tool": "Bash", "args": {"command": "setcap cap_dac_override+ep ./x"}, "expect": "ask", "note": "a file capability that writes any file (#996)"}
+{"tool": "Bash", "args": {"command": "setcap cap_sys_ptrace+ep ./x"}, "expect": "ask", "note": "a file capability that traces any process (#996)"}
+{"tool": "Bash", "args": {"command": "echo cap_setuid+ep | setcap - ./x"}, "expect": "ask", "note": "setuid capability given to setcap on stdin (#996)"}
