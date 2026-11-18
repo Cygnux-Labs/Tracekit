@@ -74,6 +74,9 @@
   "golden/v2/trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699",
   "kit/vectors/a-signature-in-non-canonical-base64.tkb": "ace93af22162d21fc637e5562c84e2b53706f07505ed8026ca2d1a3dcd670c0b",
   "kit/vectors/agent-approval.tkb": "33b05cfd78dad2fd12eaf22c88cfeebd32c77b210c18c3d9e73b2543535cbd20",
+  "kit/vectors/ai-approval-one-key.tkb": "5a07d175b891008256d6989c5f7ecf6e5119caf77d99363ef0f18a02a38d2ee8",
+  "kit/vectors/ai-approval-other-kind.tkb": "01fc37f1107cd6bff325e9696501e64aa429e26b369e02e9989d2ae01038f8be",
+  "kit/vectors/ai-approval.tkb": "03f7782573371fecfe68aa6a4911da5a323221fa4b0a6c453250248d532d2a62",
   "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
   "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
   "kit/vectors/every-type.tkb": "bf26a8d07fa4ebe0490429c700b9d0314887db7f7ad278c8acc03d5a9f73d8bf",
@@ -1096,6 +1099,46 @@
    "failed_check": null,
    "decided_by": "§11 step 9 (approvals by agents: without the policy snapshot, a warning)",
    "addon": "agent approvals"
+  },
+  {
+   "name": "an AI approver's yes on a person's precedent in the run",
+   "input": "kit/vectors/ai-approval.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes with one answer",
+   "input": "kit/vectors/ai-approval-one-key.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a yes needs two answers that approve)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent of another kind of call",
+   "input": "kit/vectors/ai-approval-other-kind.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is a person's approval of a request with the same digest)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
   },
   {
    "name": "a signed finding outside a findings run",

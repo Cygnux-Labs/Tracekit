@@ -408,6 +408,46 @@ def vectors():
                       "approver_identity": {"scheme": "token", "subject": "approver", "attested": True}},
          {"tool_call_id": "t1"})), t, 0, "VERIFIED", "witnessed", addon="agent approvals",
          decided_by="§11 step 9 (approvals by agents: without the policy snapshot, a warning)")
+    # the AI approver (format 1.8.0): a person's answer, then an AI yes that names it as its precedent
+    def ai_run(name, answers=2, other_kind=False):
+        key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
+               "project": "api (17978b62)"}
+        ai = {"key": key, "digest": "sha256:" + "5" * 64, "labels": [], "clean": True,
+              "precedents": {"approve": [], "reject": []}}
+        asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"],
+                  "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash"}}
+                 for aid, did, tc in (("a0", "d0", "t0"), ("a1", "d1", "t1"))]
+        return closed(
+            name,
+            ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
+                                 "policy_hash": H}, {"tool_call_id": "t0"}),
+            ("approval.request", {**asked[0], "ai": dict(ai, digest="sha256:" + "6" * 64) if other_kind else ai},
+             {"tool_call_id": "t0"}),
+            ("approval", {"tool_use_id": "t0", "approval_id": "a0", "decision": "approve", "approver": "uid:502",
+                          "channel": "rpc"}, {"tool_call_id": "t0"}),
+            ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1",
+                                 "policy_hash": H}, {"tool_call_id": "t1"}),
+            ("approval.request", {**asked[1], "agent": {"eligible": True, "reason": "x", "rules": ["TK-A025"],
+                                                        "conditions_hash": H, "args_key": "hmac-sha256:" + "2" * 64},
+                                  "ai": dict(ai, precedents={"approve": ["a0"], "reject": []})},
+             {"tool_call_id": "t1"}),
+            ("approval", {"tool_use_id": "t1", "approval_id": "a1", "decision": "approve", "approver": "uid:299",
+                          "channel": "rpc", "approver_kind": "agent",
+                          "approver_identity": {"scheme": "uid", "subject": "299", "attested": True},
+                          "relied_on": {"precedents": {"approve": ["a0"], "reject": []},
+                                        "playbook": {"version": 0, "digest": H}, "policy_hash": H, "labels": [],
+                                        "mode": "enforce", "answers": [{"model": "m", "decision": "approve"}] * answers}},
+             {"tool_call_id": "t1"}))
+    case("an AI approver's yes on a person's precedent in the run", ai_run("ai-approval"), t, 0, "VERIFIED",
+         "witnessed", addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)")
+    case("an AI approver's yes with one answer", ai_run("ai-approval-one-key", answers=1), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a yes needs two answers that approve)")
+    case("an AI approver's yes on a precedent of another kind of call", ai_run("ai-approval-other-kind",
+                                                                              other_kind=True), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is a person's approval of a request with the same digest)")
     case("a signed finding outside a findings run", closed("review-outside-findings-run", (
         "review", {"reviewer": "x", "verdict": {"kind": "finding", "rule": "TK-X200", "severity": "info"},
                    "cites": [{"run_seq": 0, "hash": "sha256:" + "0" * 64}]}, {})), t, 1, "FAILED",
