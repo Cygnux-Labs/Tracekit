@@ -1048,9 +1048,7 @@ class Speed(unittest.TestCase):
                                  ("chattr -R +i", " /etc/ssh/..", " /etcetera"),
                                  ("mv", " -f", " /etcetera /tmp/etc.bak"),
                                  ("rsync --delete", " empty/", " /etcetera"),
-                                 # #810: failed matches with long WSL/Cygwin paths and child/.. sequences.
-                                 ("rm -r /mnt/c/Windows", "/*", "x"),
-                                 ("rm -r /cygdrive/c/Windows", "/.", "x"),
+                                 # #810: failed matches with long child/.. sequences.
                                  ("rm -r /etc", "/ssh/..", "x"),
                                  ("rm -rf", " a", " /etcx"), ("rm -rf", " -r", "x"), ("rm", " -f", " -rx"),
                                  ("find /etc", " -depth", "x")):

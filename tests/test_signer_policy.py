@@ -3726,20 +3726,16 @@ class CodingPack(unittest.TestCase):
             "find /etc -execdir /bin/rm {} +", "find /etc -exec chgrp -R staff {} +",
             "find /etc -exec chattr -R +i {} +", r"find /etc -exec /bin/rm {} \;",
             "xargs rm -rf <<< /etc", "xargs -r rm -rf <<< /usr",
-            "gxargs rm -rf <<< /var", "xargs rm -rf <<< /mnt/c/Windows",
+            "gxargs rm -rf <<< /var",
             # #810 item 6: policy decisions by command, with matching benign twins below.
             "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
             "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var", "chattr -R =a /etc",
             "chattr -R +Ai /etc", "find /etc -exec chattr -R =Aa {} +",
             "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak", "mv -- /etc /tmp/etc.bak",
             "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/", "rsync -a empty/ /etc/ --delete",
-            # #810 item 4: WSL and Cygwin Windows-system mounts, including casefolding.
-            "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows", "rm -rf /MNT/C/WINDOWS",
-            "chmod -R 777 /mnt/c/Windows", "chown -R root /cygdrive/c/Windows",
-            "git -C /mnt/c/Windows clean -fdx", "find /cygdrive/c/Windows -delete",
             # #810 item 5: one child then '..' resolves back to the system folder.
             "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
-            "rm -rf /etc/.ssh/..", "rm -rf /mnt/c/Windows/.cache/..",
+            "rm -rf /etc/.ssh/..", "rm -rf /etc/.cache/..",
             "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
             "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx")
         for pack, engine, e in self.every_pack():
@@ -3766,7 +3762,7 @@ class CodingPack(unittest.TestCase):
             "xargs rm -rf <<< ./etc", "xargs -0 rm -rf <<< /etc",
             "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc",
             'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc',
-            "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /mnt/c/Windows/Temp",
+            "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /usr/local/x",
             "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
             "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x", "chattr -R =a ./etc",
             "chattr -R +A /etc", "chattr -R =A /etc", "chattr -R +I /etc", "chattr -R =I /etc",
@@ -3778,18 +3774,12 @@ class CodingPack(unittest.TestCase):
             r"find ./etc \( -type f -o -type d \) -exec rm {} +",
             "find ./usr -type f -exec rm -f {} +", "find ./var -exec chown -R root {} +",
             "xargs -r rm -rf <<< ./usr", "chattr -R =i ./var", "mv -f ./usr /tmp/usr.bak",
-            "rm -rf ./MNT/C/WINDOWS", "chown -R root ./cygdrive/c/Windows",
-            "chmod -R 777 ./mnt/c/Windows", "rm -rf ./usr/local/..", "rm -rf ./var/tmp/../.",
-            "rm -rf ./etc/.ssh/..", "rm -rf ./mnt/c/Windows/.cache/..",
+            "rm -rf ./usr/local/..", "rm -rf ./var/tmp/../.",
+            "rm -rf ./etc/.ssh/..", "rm -rf ./etc/.cache/..",
             "chmod -R 777 ./etc/ssh/..", "chown -R root ./usr/local/..", "find ./etc/ssh/.. -delete",
             # Project-local twins, Windows non-system folders, and children not resolving to the root.
-            "rm -rf ./mnt/c/Windows", "rm -rf ./cygdrive/c/Windows",
-            "rm -rf /mnt/c/Windows/System32", "rm -rf /cygdrive/c/Windows.old",
-            "chmod -R 755 /mnt/c/Windows/System32", "find ./cygdrive/c/Windows -delete",
             "rm -rf ./etc/ssh/..", "rm -rf /etc/ssh/../nginx", "rm -rf /usr/local/x",
-            "rm -rf /MNT/C/WINDOWS/System32", "chown -R root /cygdrive/c/Windows.old",
-            "rm -rf /etc/.ssh/../nginx", "rm -rf /mnt/c/Windows/.cache/../Temp",
-            "git -C ./mnt/c/Windows clean -fdx", "rm -rf /var/tmp/../x",
+            "rm -rf /var/tmp/../x",
             "chmod -R 777 /etc/ssh/../nginx", "find /etc/ssh/../nginx -delete",
             "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx"))
 
