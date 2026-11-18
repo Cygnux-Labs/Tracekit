@@ -850,7 +850,8 @@ def review(records, rep, verdict, outcomes=None):
     # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
     # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
     # held_calls has them
-    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    # dids: decision_id -> its call; ran: the calls a tool.result names
+    perms, calls, asked, cur, ids, dids, ran = {}, {}, set(), {}, {}, {}, set()
     folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
@@ -867,10 +868,12 @@ def review(records, rep, verdict, outcomes=None):
         elif t == "policy.decision" and e.get("run_seq") in folds:
             out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
+            dids[d.get("decision_id")] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key, seq = d.get("decision"), e.get("run_seq")
+            dids[d.get("decision_id")] = seq
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
             ids[seq] = d.get("tool_use_id")
             if key != "allow":
@@ -878,6 +881,8 @@ def review(records, rep, verdict, outcomes=None):
                     else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
                 asked.add(seq)
+        elif t == "tool.result" and d.get("decision_id") and d["decision_id"] in dids:
+            ran.add(dids[d["decision_id"]])
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -934,7 +939,10 @@ def review(records, rep, verdict, outcomes=None):
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
+    ended = {c: "not answered" if o == OPEN and (out["state"] == "final" or c in ran) else o for c, o in perms.items()}
+    # one the policy refused, or a hold nobody approved, whose result the signer signed under that decision: it ran
+    ended = {c: f"{o} · ran anyway" if c in ran and (o == "blocked" or c in asked and not o.startswith("approved"))
+             else o for c, o in ended.items()}
     out["permissions"] = collections.Counter(ended.values())
     held = {c: o for c, o in ended.items() if c in asked}
     out["holds"] = collections.Counter(held.values())
@@ -1989,12 +1997,13 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
-            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them;
+                # Codex's sessions too in dev mode, from $CODEX_HOME (else ~/.codex) plus sessions
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
                                       transcripts or (audit.default_root() if dev else None),
                                       folder=lessons.Folder(os.path.join(cfg["data_dir"], "lessons")) if dev else None,
-                                      known=functools.partial(known_runs, feed))
+                                      known=functools.partial(known_runs, feed), codex=audit.codex_root() if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -2013,9 +2022,12 @@ def main(argv=None):
              f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
              f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
              else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
-    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
-        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
-              else "  tips: no Claude Code transcripts found", flush=True)
+    if getattr(feed, "tips", None):   # the folders each source reads, only when there is one
+        if feed.tips.root:
+            print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+                  else "  tips: no Claude Code transcripts found", flush=True)
+        if feed.tips.codex and os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
+            print(f"  tips: Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)

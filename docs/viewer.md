@@ -124,7 +124,10 @@ Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
 under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `TO ANSWER`) in STATUS, `RUN` the run's start and
-end, `NOTE` a record of something else the run did (a state write, a message sent). The signer's own records (`LOG`:
+end, `NOTE` a record of something else the run did (a state write, a message sent). A denied call, or a hold nobody
+approved, whose result the signer signed under that decision ran anyway: its STATUS and PERMISSIONS row say so in red
+(`BLOCKED · RAN ANYWAY`, `NOT ANSWERED · RAN ANYWAY`, `REJECTED · RAN ANYWAY`, ...), and the run review counts it so.
+The signer's own records (`LOG`:
 content it read for the viewer, its keys) are left out of **All**; **Tracekit's own** lists them. A row marked
 `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `CHECK` findings
 of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings
@@ -378,8 +381,15 @@ source gave, and each wait of the cache card has its own (`src`). The page's fir
 took a transcript step's place, and the time span
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
-whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
-tips list sessions from every project under the transcripts folder. Dollars are Anthropic's list prices, dated in
+whether it ran in a subagent. Codex CLI's session files (`$CODEX_HOME/sessions`, else `~/.codex/sessions`) are read the
+same way, read-only, but only when the viewer runs `--dev` (with `--transcripts DIR` they are not read), so a
+Codex-only week gets the context tip (its records carry each request's input, cached-input,
+cache-write and output tokens). The cache tip covers no Codex agent — a session record names no cache lifetime
+(OpenAI's writes last 30 minutes or 12 hours, and the record doesn't say which) — while the holds tip, which comes
+from signed records, covers Codex hook runs like any other; a session record's call ids are not read yet, so a
+transcript adds no hold detail for them. Both are left off with the reason, never guessed. Each card names every
+source it mixes, and the page's first line says what it read; the
+tips list sessions from every project under the transcripts folder. Dollars are Anthropic's and OpenAI's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
 once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
@@ -440,11 +450,12 @@ them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what t
 #### tracekit tips
 
 `tracekit tips` (experimental) prints the same lessons and three tips without the viewer, for a terminal or an agent.
-It reads the dev signer's store (or `--data-dir DIR`'s, without transcripts or lessons, as `tracekit view --data-dir`
-reads it) and Claude Code's transcripts, read-only, with no network and no model. It checks each run with a record in
-the window with the verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify
-is left out and counted. For lessons it reads the calls' arguments and the prompts' typed parts from the dev signer's
-content vault, as `tracekit view --dev` does: each read is a signed `content.accessed` record (purpose `tracekit tips`).
+It reads the dev signer's store (or `--data-dir DIR`'s, without transcripts, Codex sessions or lessons, as
+`tracekit view --data-dir` reads it), Claude Code's transcripts and Codex CLI's sessions (`$CODEX_HOME/sessions`,
+else `~/.codex/sessions`), read-only, with no network and no model. It checks each run with a record in the window
+with the verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify is left
+out and counted. For lessons it reads the calls' arguments and the prompts' typed parts from the dev signer's content
+vault, as `tracekit view --dev` does: each read is a signed `content.accessed` record (purpose `tracekit tips`).
 Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
 
 ```bash

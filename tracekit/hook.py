@@ -9,6 +9,7 @@ A policy deny always blocks, whether or not the signer is reachable.
 
     python -I -m tracekit.hook   (wired by `tracekit init`)
 """
+import functools
 import getpass
 import hashlib
 import json
@@ -313,9 +314,8 @@ def build_events(p, pol, reasoning=True):
             pass
     if pol.get("transcript_hashing", True) and evs:
         tp = transcript_path_for(p)
-        mark = transcript_mark(tp) if tp else None
-        if mark:
-            evs[-1]["transcript"] = mark   # checked by the signer against the previous mark (C2)
+        if tp:   # its mark is read as main sends the event, and checked by the signer against the previous mark (C2)
+            evs[-1]["_transcript"] = tp
     return evs, deny
 
 
@@ -354,7 +354,9 @@ def main(harness_reasoning=True, raw=None):
     for ev in evs:
         try:
             attach_pol = ev.pop("_attach_policy", False) or ev["type"] == "run.start"
-            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None)
+            tp = ev.pop("_transcript", None)
+            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None,
+                               mark=functools.partial(transcript_mark, tp) if tp else None)
             if not resp.get("ok"):
                 print(f"[tracekit] signer rejected event: {resp.get('error')}", file=sys.stderr)
                 if ev["type"] == "tool.call":
