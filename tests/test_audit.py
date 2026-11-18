@@ -1536,14 +1536,19 @@ class TestAudit(unittest.TestCase):
         code, out, err = _run(str(db.parent), "--agent", "opencode", "--json")
         self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
         con = sqlite3.connect(db)
-        con.execute("CREATE TABLE session_v2 (id text PRIMARY KEY)")
-        con.execute("CREATE TABLE session_part (id text PRIMARY KEY)")
+        con.execute("CREATE TABLE session_v2 (id text PRIMARY KEY)")   # 2.0 to 2.2: no session_part yet
         con.commit()
-        con.close()
         code, _, err = _run(str(db.parent), "--agent", "opencode")
         self.assertEqual(code, 2)
         self.assertIn("OpenCode 2.x's database, which isn't read yet", err)
         self.assertIn("--calls FILE --agent opencode", err)
+        con.execute("DROP TABLE session_v2")
+        con.execute("CREATE TABLE session_part (id text PRIMARY KEY)")   # session_part alone is 2.x as well
+        con.commit()
+        code, _, err = _run(str(db.parent), "--agent", "opencode")
+        self.assertEqual(code, 2)
+        self.assertIn("OpenCode 2.x's database, which isn't read yet", err)
+        con.close()
 
     def test_opencode_forked_session_counts_its_copied_calls_once_and_calls_without_an_id_each_time(self):
         sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]

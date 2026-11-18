@@ -626,7 +626,7 @@ def _opencode(root: str, since_ts: float, unreadable: list):
     has a parent_id), at the time it started; a part still pending is not a call yet. A call counts once by its call
     id, tool, arguments and start time, not by its session (a forked session copies every part of its parent, with
     the same call id): in the first session that holds it; a part without a call id is always counted. None for a
-    part whose JSON has "type":"tool" and isn't a tool call's shape. OpenCode 2.x's database (session_v2) is
+    part whose JSON has "type":"tool" and isn't a tool call's shape. OpenCode 2.x's database (session_v2 or session_part) is
     refused."""
     db = _opencode_db(os.path.realpath(root))
     err = _not_regular(db)
@@ -640,7 +640,7 @@ def _opencode(root: str, since_ts: float, unreadable: list):
     seen: set[bytes] = set()
     try:
         kinds = dict(con.execute("SELECT name, type FROM sqlite_master"))
-        if {"session_v2", "session_part"} <= set(kinds):
+        if {"session_v2", "session_part"} & set(kinds):   # 2.0 to 2.2 have session_v2 only
             raise ValueError(f"{db} is OpenCode 2.x's database, which isn't read yet: turn its sessions into a "
                              f"calls file and use --calls FILE --agent opencode")
         if kinds.get("session") != "table" or kinds.get("part") != "table":   # a view can make the read run forever
