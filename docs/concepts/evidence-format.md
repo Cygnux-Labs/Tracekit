@@ -84,7 +84,7 @@ The tree is stored as C2SP tlog-tiles, which is storage, not evidence.
 A checkpoint is a C2SP signed note: the log's origin, tree size and root hash, signed by the log key.
 
 ```text
-tracekit.local/<log_id>
+tracekit.local/k<SHA-256 of the log key>
 <tree size>
 <base64 root hash>
 

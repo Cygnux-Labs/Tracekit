@@ -98,6 +98,22 @@ class Server(unittest.TestCase):
         self.assertEqual(self.register(), (200, "registered\n"))
         self.assertEqual(self.register(), (200, "registered\n"))   # the same key again: idempotent
 
+    def test_a_key_derived_origin_is_taken_only_by_its_own_key(self):
+        """1.7.3: a default origin is tracekit.local/k + the SHA-256 of the log key, so a squatter who saw it can't
+        register it, or a tenant registry log under it (<origin>/registry/<id>), first with another key."""
+        mine = checkpoint.key_origin(crypto.public_from_secret(self.secret))
+        registry = f"{mine}/registry/{'0f' * 16}"
+        squatter = hashlib.sha256(b"squatter").digest()
+        for origin in (mine, registry):
+            status, text = self.register(origin=origin, secret=squatter)
+            self.assertEqual(status, 403, origin)
+            self.assertIn("derived from another key", text)
+            self.assertNotIn(origin, self.origins())
+        for other in (mine.upper().replace("TRACEKIT.LOCAL/K", "tracekit.local/k"), mine[:-1], mine + "0"):   # not k-shaped
+            self.assertNotEqual(self.register(origin=other, secret=squatter)[0], 403, other)
+        self.assertEqual(self.register(origin=mine), (200, "registered\n"))
+        self.assertEqual(self.register(origin=registry), (200, "registered\n"))
+
     def test_a_second_key_for_a_taken_origin_is_refused(self):
         self.add(3, 0)
         other = hashlib.sha256(b"other").digest()
@@ -482,13 +498,32 @@ class OptIn(unittest.TestCase):
 
     def test_a_chosen_origin_sent_to_the_public_witness_is_warned_about(self):
         cfg = svc.load_config(self.cfg)   # origin: tracekit.example.org/log/public
-        self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(cfg))
+        derived = checkpoint.key_origin(b"\2" * 32)
+        for chosen in (cfg, {**cfg, "origin": None}):   # a log keeps its origin once chosen, in signer.yaml or not
+            said = public_witness.named_origin(chosen, ORIGIN, derived)
+            self.assertIn(f"origin {ORIGIN} goes to the public witness", said)
+            self.assertIn(f"set origin to {derived} (named after the log key", said)
         own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
                "class": "customer"}
-        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16}, {**cfg, "witnesses": [own]}):
-            self.assertIsNone(public_witness.named_origin(quiet))
+        for origin in ("tracekit.local/" + "0f" * 16, derived):
+            self.assertIsNone(public_witness.named_origin(cfg, origin, derived))
+        self.assertIsNone(public_witness.named_origin({**cfg, "witnesses": [own]}, ORIGIN, derived))
         with mock.patch.object(public_witness, "URL", ""):
-            self.assertIsNone(public_witness.named_origin(cfg))
+            self.assertIsNone(public_witness.named_origin(cfg, ORIGIN, derived))
+
+    def test_serve_warns_with_the_logs_own_origin_once_signer_yaml_drops_it(self):
+        cfg = {**svc.load_config(self.cfg), "origin": None}   # removed from signer.yaml; the log kept it
+        public = crypto.public_from_secret(hashlib.sha256(b"log").digest())
+        service = mock.Mock(origin=ORIGIN, vkey=checkpoint.vkey(ORIGIN, checkpoint.ED25519, public),
+                            log=mock.Mock(head={"closed": False}))
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), mock.patch.object(svc, "load_config", return_value=cfg), \
+                mock.patch.object(svc.logkey, "harden"), mock.patch.object(svc, "open_service", return_value=service), \
+                mock.patch.object(svc, "serve", side_effect=OSError("stopped here")):
+            self.assertEqual(svc.main(["serve", "--config", "signer.yaml"]), 1)
+        self.assertIn(f"origin {ORIGIN} goes to the public witness", err.getvalue())
+        self.assertIn("keeps its origin even once it is removed from signer.yaml: to stop sending it, set origin to "
+                      f"{checkpoint.key_origin(public)} ", err.getvalue())
 
     def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
         for argv in (["init", "--no-witness"], ["init", "--public-witness"],

@@ -62,7 +62,7 @@ $ tracekit signer trust -o trust.json
 $ tracekit export --v2 --run a7ca7a32… -o run.tkb
 $ tracekit verify run.tkb --trust trust.json
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/2524cf9a… at tree size 30, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/k2524cf9a… at tree size 30, signed by its pinned log key
 [PASS] signatures — 14 record(s), keys valid at their position
 [PASS] run chain — run 'a7ca7a32…' of tenant 'default', contiguous from run_seq 0
 …
