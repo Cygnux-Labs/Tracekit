@@ -31,8 +31,8 @@ apply to every call. The RPCs follow in groups, and [Transport and auth](#transp
 **Reading the field tables.** Each RPC has a request table and an answer table, with one row for each field. A dotted
 name such as `parent.run_id` is a field inside an object, and `[]` in a name, as in `events[].type`, is a field of each
 item in a list. Required says whether a request must carry the field, or an answer always does. Types are in plain
-words: text, whole number, number, true or false, object, list of ..., and any value, which is any JSON. Nothing is JSON
-null, so "text or nothing" is a text or null. "One of" lists the only values the field may have, and "always" with a
+words: text, whole number, number, true or false, object, list of ..., and any value, which is any JSON. "Nothing" means
+JSON null, so "text or nothing" is a text or null. "One of" lists the only values the field may have, and "always" with a
 value means that is the only value it may have. The notes give limits: lengths are in characters, a whole number is at
 most 9007199254740991 (2^53 - 1, the largest whole number JSON holds exactly) unless its note says less, and `matches`
 gives a regular expression in which `(?![\s\S])` means the end of the text.
@@ -53,7 +53,8 @@ gives a regular expression in which `(?![\s\S])` means the end of the text.
 - **escalate**: an agent approver does this to hand an approval it will not decide over to people.
 - **gap**: a signed `capture.gap` record that the signer writes when it knows something is missing or went wrong in a
   run, such as a lost transcript tailer, a call that ran after a deny, or a saved state that was tampered with. Gaps are
-  never silent, and no request field can write one. See [Gaps](concepts/capture-and-completeness.md#gaps).
+  never silent, and only the signer writes them: a request can report a loss (`tailer_lost`), but no request supplies a
+  gap record. See [Gaps](concepts/capture-and-completeness.md#gaps).
 - **run token**: the secret that `register_run` returns for a run. Every later call for that run presents it.
   `delegate_run` issues a second one to another identity.
 
