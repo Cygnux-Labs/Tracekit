@@ -1438,14 +1438,13 @@ class TestAudit(unittest.TestCase):
         for name, args in recorded:
             tool, mapped = agent_hooks.tool("opencode", name, args)
             expected.append((sid, tool, evaluate(engine, tool, mapped)[0]["verdict"]))
-        for root in (db.parent, db):   # its data folder, or the database
-            code, out, err = _run(str(root), "--agent", "opencode", "--json")
-            self.assertEqual(code, 0, err)
-            report = json.loads(out)
-            self.assertEqual([(c["session"], c["tool"], c["verdict"]) for c in report["calls"]], expected)
-            self.assertEqual(sorted({c["tool"] for c in report["calls"]}), ["Bash", "Edit", "Read", "Write"])
-            self.assertEqual((report["skipped_malformed"], report["unreadable"]), (0, []))
-            self.assertEqual(report["agents"], {"opencode": {"folder": str(root), "calls": 5, "sessions": 1}})
+        code, out, err = _run(str(db.parent), "--agent", "opencode", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual([(c["session"], c["tool"], c["verdict"]) for c in report["calls"]], expected)
+        self.assertEqual(sorted({c["tool"] for c in report["calls"]}), ["Bash", "Edit", "Read", "Write"])
+        self.assertEqual((report["skipped_malformed"], report["unreadable"]), (0, []))
+        self.assertEqual(report["agents"], {"opencode": {"folder": str(db.parent), "calls": 5, "sessions": 1}})
 
     def test_opencode_shell_call_the_default_policy_denies_is_denied(self):
         sid = json.loads(OPENCODE_RECORDED.read_text())["session"][0]["id"]
@@ -1496,13 +1495,14 @@ class TestAudit(unittest.TestCase):
         self.assertEqual({c["session"] for c in report["calls"]}, {sid})
 
     def test_opencode_root_that_isnt_its_data_folder_is_refused_never_read_as_a_clean_zero(self):
-        db = self._opencode_db()
-        for root, text in ((self.root, "is not OpenCode's data folder"), (self.root / "no-such", "No such file")):
+        self._opencode_db()
+        for root, text in ((self.root, "is not OpenCode's data folder"), (self.root / "no-such", "no such folder")):
             code, _, err = _run(str(root), "--agent", "opencode")
             self.assertEqual(code, 2)
             self.assertIn(text, err)
-        junk = self.root / "junk.db"
-        junk.write_bytes(b"not a database" * 100)
+        junk = self.root / "junk"
+        junk.mkdir()
+        (junk / "opencode.db").write_bytes(b"not a database" * 100)
         code, _, err = _run(str(junk), "--agent", "opencode")
         self.assertEqual(code, 2)
         self.assertIn("is not an OpenCode database", err)
@@ -1515,7 +1515,6 @@ class TestAudit(unittest.TestCase):
         only = self._opencode_db(self.root / "one", "opencode-dev.db")
         code, out, err = _run(str(only.parent), "--agent", "opencode", "--json")
         self.assertEqual((code, json.loads(out)["agents"]["opencode"]["calls"]), (0, 5), err)
-        self.assertTrue(db.exists())
 
     def test_opencode_folder_is_xdg_data_home_else_local_share_in_home(self):
         home = self.root / "home"

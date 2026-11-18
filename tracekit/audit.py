@@ -594,12 +594,9 @@ def opencode_root():
 
 
 def _opencode_db(real: str) -> str:
-    """The database a ROOT names: OpenCode's data folder, or the .db file itself; else a ValueError naming what to
-    give (a folder that holds OpenCode's folder, or one without a database, is not read as a clean zero)."""
-    if os.path.isfile(real):
-        return real
-    names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db")) \
-        if os.path.isdir(real) else []
+    """The database in the folder a ROOT names, OpenCode's data folder; else a ValueError naming what to give (a
+    folder that holds OpenCode's folder, or one without a database, is not read as a clean zero)."""
+    names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db"))
     if "opencode.db" in names:
         return os.path.join(real, "opencode.db")
     if names:   # another channel's (opencode-<channel>.db), when it is the only one
@@ -607,12 +604,12 @@ def _opencode_db(real: str) -> str:
             return os.path.join(real, names[0])
         raise ValueError(f"{real} holds {len(names)} OpenCode databases ({', '.join(names)}): give the one to read")
     raise ValueError(f"{real} is not OpenCode's data folder: give the folder that holds opencode.db "
-                     f"(~/.local/share/opencode) or the database itself")
+                     f"(~/.local/share/opencode)")
 
 
 def _opencode(root: str, since_ts: float, unreadable: list):
     """OpenCode's reader: (time, session, tool, args) for each tool call in the `part` table of its database
-    (ROOT: its data folder, or opencode.db). A call counts under its session's root (a subagent's session has a
+    (ROOT: its data folder). A call counts under its session's root (a subagent's session has a
     parent_id), at the time it started; a part still pending is not a call yet, and a call repeated (same call id,
     tool and arguments) counts once. None for a part that isn't a tool call's shape."""
     db = _opencode_db(os.path.realpath(root))

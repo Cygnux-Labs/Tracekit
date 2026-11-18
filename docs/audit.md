@@ -151,8 +151,7 @@ as one malformed entry; a session file with no Qwen Code record in it (an empty 
 is reported unreadable, never read as a session with no calls.
 
 OpenCode's reader reads the `part` table of its SQLite database, `opencode.db`, as OpenCode 1.19.5 writes it (give
-OpenCode's data folder, `~/.local/share/opencode`, or the database itself as ROOT; any other folder is refused, naming
-what to give). The database is opened read only, so OpenCode may be running. A call is a `part` of type `tool` whose
+OpenCode's data folder, `~/.local/share/opencode`, as ROOT; any other folder is refused, naming what to give). The database is opened read only, so OpenCode may be running. A call is a `part` of type `tool` whose
 state isn't `pending`, at the time it started (its own `time.start`, else the part's), counted under its session's
 root session (a subagent's session has a `parent_id`). A call repeated with the same call id, tool and arguments counts
 once. Each call is decided as OpenCode's Tracekit hook decides it, so `bash` is decided as `Bash`. A part that isn't a
