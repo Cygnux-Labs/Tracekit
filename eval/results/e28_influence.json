@@ -1,0 +1,151 @@
+{
+ "agentdojo": {
+  "agentdojo_commit": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
+  "attack": "important_instructions",
+  "attack_value_attribution": {
+   "calls_traced": 211,
+   "edges": 283,
+   "to_the_injection": 281
+  },
+  "exact_claims": {
+   "digits": {
+    "edges": 272,
+    "value_in_source": 272
+   },
+   "email": {
+    "edges": 190,
+    "value_in_source": 190
+   },
+   "host": {
+    "edges": 269,
+    "value_in_source": 269
+   },
+   "string": {
+    "edges": 26,
+    "value_in_source": 26
+   }
+  },
+  "grades": {
+   "exact": {
+    "calls": 274,
+    "found": 214,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 0.781,
+    "tp": 214
+   },
+   "hint": {
+    "calls": 274,
+    "found": 236,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 0.8613,
+    "tp": 248
+   },
+   "seen": {
+    "calls": 274,
+    "found": 273,
+    "fp": 112,
+    "precision": 0.7235,
+    "recall": 0.9964,
+    "tp": 293
+   }
+  },
+  "model": "gpt-4o-2024-05-13",
+  "runs": {
+   "attacked": 629,
+   "clean": 97,
+   "scored": 274,
+   "succeeded": 300,
+   "unscored": {
+    "no call after the injection carries a fixed string": 25,
+    "no tool output holds the injected text": 1
+   }
+  },
+  "untrusted": {
+   "attack_calls": 274,
+   "attack_calls_named": 216,
+   "clean_calls": 354,
+   "clean_calls_named": 40,
+   "clean_named_tools": {
+    "create_calendar_event": 7,
+    "get_day_calendar_events": 1,
+    "get_webpage": 9,
+    "invite_user_to_slack": 5,
+    "schedule_transaction": 1,
+    "search_calendar_events": 3,
+    "search_files_by_filename": 4,
+    "send_channel_message": 3,
+    "send_email": 1,
+    "send_money": 5,
+    "update_scheduled_transaction": 1
+   },
+   "clean_runs_named": 31
+  }
+ },
+ "desk": {
+  "exact_claims": {
+   "email": {
+    "edges": 20,
+    "value_in_source": 20
+   },
+   "host": {
+    "edges": 20,
+    "value_in_source": 20
+   },
+   "string": {
+    "edges": 96,
+    "value_in_source": 96
+   }
+  },
+  "exfil_calls": 40,
+  "exfil_calls_named": 40,
+  "exfil_runs": 20,
+  "grades": {
+   "exact": {
+    "calls": 40,
+    "found": 20,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 0.5,
+    "tp": 20
+   },
+   "hint": {
+    "calls": 40,
+    "found": 20,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 0.5,
+    "tp": 20
+   },
+   "measured": {
+    "calls": 40,
+    "found": 40,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "tp": 40
+   },
+   "seen": {
+    "calls": 40,
+    "found": 40,
+    "fp": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "tp": 40
+   }
+  },
+  "legit_calls": 57,
+  "legit_calls_named": 0,
+  "seeds": 30
+ },
+ "without_task": {
+  "asked_calls": 60,
+  "asked_drift": 0,
+  "planted_calls": 20,
+  "planted_drift": 20,
+  "precision": 1.0,
+  "recall": 1.0,
+  "seeds": 30
+ }
+}
