@@ -35,7 +35,11 @@ words: text, whole number, number, true or false, object, list of ..., and any v
 JSON null, so "text or nothing" is a text or null. "One of" lists the only values the field may have, and "always" with a
 value means that is the only value it may have. The notes give limits: lengths are in characters, a whole number is at
 most 9007199254740991 (2^53 - 1, the largest whole number JSON holds exactly) unless its note says less, and `matches`
-gives a regular expression in which `(?![\s\S])` means the end of the text.
+gives a regular expression in which `(?![\s\S])` means the end of the text. "Each item" gives the limits on every
+item of a list, and "each value" on every value of an object whose keys are free. A field whose Required is "depends" is
+required by some shapes of its object and not others: the note on the object's own row lists the shapes, each with the
+value that selects it, and "when `args_source` is `"raw"`" in a note means the limit applies only then. A request
+field that a table does not list is refused, as Versioning says; the notes do not repeat that.
 
 **Words this page uses.** These terms come up in several sections.
 
@@ -244,7 +248,7 @@ lists `register_run`. A box's agent channel may call it too.
 | `tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `principal` | text | no | up to 256 characters |
 | `principal_token` | text | no | up to 16384 characters |
-| `source` | always `migrated` | no |  |
+| `source` | always `"migrated"` | no |  |
 | `analyzes` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `replay_of` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `investigation` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -255,8 +259,8 @@ lists `register_run`. A box's agent channel may call it too.
 | `box` | object | no |  |
 | `box.id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `box.image_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `box.channel` | always `agent` | no |  |
-| `box.allow` | list of texts | yes | up to 256 items |
+| `box.channel` | always `"agent"` | no |  |
+| `box.allow` | list of texts | yes | up to 256 items; each item: 1 to 261 characters; matches `^[A-Za-z0-9.*:\[\]_-]+(?![\s\S])` |
 | `continues` | always `true` | no |  |
 | `agent` | object | yes |  |
 | `agent.name` | text | yes | 1 to 128 characters |
@@ -272,7 +276,7 @@ lists `register_run`. A box's agent channel may call it too.
 | `tenant_attested` | true or false | yes |  |
 | `principal` | text | no | up to 256 characters |
 | `principal_attested` | true or false | yes |  |
-| `fail_modes` | object | no |  |
+| `fail_modes` | object | no | each value: one of `open`, `closed` |
 
 </details>
 <!-- api-doc:end register_run -->
@@ -338,7 +342,7 @@ lists `decide`. A box's agent channel may call it too.
 | `tool` | text | yes | 1 to 256 characters |
 | `tool_class_hint` | text | no | up to 64 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
-| `args` | any value | yes |  |
+| `args` | any value | yes | when `args_source` is `"raw"`: text; up to 1048576 characters |
 
 **Answer**
 
@@ -346,7 +350,7 @@ lists `decide`. A box's agent channel may call it too.
 |---|---|---|---|
 | `decision` | one of `allow`, `deny`, `ask` | yes |  |
 | `decision_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `rule_ids` | list of texts | yes | up to 32 items |
+| `rule_ids` | list of texts | yes | up to 32 items; each item: up to 64 characters |
 | `reason` | text | no | up to 1024 characters |
 | `run_seq` | whole number | yes |  |
 | `expires_at` | text | no | up to 40 characters |
@@ -391,7 +395,7 @@ lists `complete`. A box's agent channel may call it too.
 | `error` | text | no | up to 4096 characters |
 | `redacted` | always `true` | no |  |
 | `redaction` | object | no |  |
-| `redaction.rules` | list of texts | no | up to 32 items |
+| `redaction.rules` | list of texts | no | up to 32 items; each item: up to 64 characters |
 | `redaction.count` | whole number | no |  |
 
 **Answer**
@@ -461,7 +465,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind net).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind net).run_token` | text | no | 1 to 1024 characters |
 | `effects[] (kind net).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
-| `effects[] (kind net).kind` | always `net` | yes |  |
+| `effects[] (kind net).kind` | always `"net"` | yes |  |
 | `effects[] (kind net).host` | text | yes | 1 to 253 characters; matches `^[a-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind net).port` | whole number | yes | at least 1; at most 65535 |
 | `effects[] (kind net).bytes_out` | whole number | yes |  |
@@ -470,7 +474,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind net).first_ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `effects[] (kind net).last_ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `effects[] (kind exec)` | object | no |  |
-| `effects[] (kind exec).kind` | always `exec` | yes |  |
+| `effects[] (kind exec).kind` | always `"exec"` | yes |  |
 | `effects[] (kind exec).args_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `effects[] (kind exec).parent_exec_id` | text | no | 1 to 256 characters |
 | `effects[] (kind exec).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -483,7 +487,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind exec).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind exec).denied` | always `true` | no |  |
 | `effects[] (kind exit)` | object | no |  |
-| `effects[] (kind exit).kind` | always `exit` | yes |  |
+| `effects[] (kind exit).kind` | always `"exit"` | yes |  |
 | `effects[] (kind exit).status` | whole number | no | at least 0; at most 4294967295 |
 | `effects[] (kind exit).signal` | text | no | up to 32 characters |
 | `effects[] (kind exit).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -496,7 +500,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind exit).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind exit).denied` | always `true` | no |  |
 | `effects[] (kind connect)` | object | no |  |
-| `effects[] (kind connect).kind` | always `connect` | yes |  |
+| `effects[] (kind connect).kind` | always `"connect"` | yes |  |
 | `effects[] (kind connect).host` | text | yes | 1 to 253 characters; matches `^[a-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind connect).port` | whole number | yes | at least 0; at most 65535 |
 | `effects[] (kind connect).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -509,7 +513,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind connect).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind connect).denied` | always `true` | no |  |
 | `effects[] (kind file)` | object | no |  |
-| `effects[] (kind file).kind` | always `file` | yes |  |
+| `effects[] (kind file).kind` | always `"file"` | yes |  |
 | `effects[] (kind file).path` | text | yes | 1 to 4096 characters |
 | `effects[] (kind file).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind file).run_token` | text | no | 1 to 1024 characters |
@@ -521,7 +525,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind file).tool_call_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind file).denied` | always `true` | no |  |
 | `effects[] (kind policy)` | object | no |  |
-| `effects[] (kind policy).kind` | always `policy` | yes |  |
+| `effects[] (kind policy).kind` | always `"policy"` | yes |  |
 | `effects[] (kind policy).ts` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `effects[] (kind policy).change` | text | yes | 1 to 64 characters; matches `^[a-z0-9_.-]+(?![\s\S])` |
 | `effects[] (kind policy).policy_hash` | text | no | 1 to 128 characters |
@@ -531,7 +535,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `effects[] (kind policy).run_token` | text | no | 1 to 1024 characters |
 | `effects[] (kind policy).caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `effects[] (kind lost)` | object | no |  |
-| `effects[] (kind lost).kind` | always `lost` | yes |  |
+| `effects[] (kind lost).kind` | always `"lost"` | yes |  |
 | `effects[] (kind lost).reason` | text | yes | 1 to 1024 characters |
 | `effects[] (kind lost).run_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `effects[] (kind lost).run_token` | text | no | 1 to 1024 characters |
@@ -540,7 +544,7 @@ connections from a kernel sensor. Each call also counts as a heartbeat of the ob
 | `check.run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `check.run_token` | text | yes | 1 to 1024 characters |
 | `sensor` | one of `tetragon`, `falco`, `openshell` | no |  |
-| `callers` | list of texts | no | up to 256 items |
+| `callers` | list of texts | no | up to 256 items; each item: up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
 | `lost` | text | no | up to 1024 characters |
 
 **Answer**
@@ -576,7 +580,7 @@ lists `state_write`. A box's agent channel may call it too.
 | `client_seq` | whole number | yes |  |
 | `key` | text | yes | 1 to 256 characters |
 | `value_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `prev_digest` | text or nothing | no |  |
+| `prev_digest` | text or nothing | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 **Answer**
 
@@ -624,23 +628,23 @@ lists `model_event`. A box's agent channel may call it too.
 | `usage.cache_read_tokens` | whole number | no |  |
 | `usage.cache_write_tokens` | whole number | no |  |
 | `usage.reasoning_tokens` | whole number | no |  |
-| `tool_uses` | list of objects | no | up to 128 items |
+| `tool_uses` | list of objects | no | up to 128 items; each item: one of (when `executed_by` is `"provider"`: allows only `id`, `name`, `executed_by`, `id_synthetic`) or (when `executed_by` is `"provider"`: requires `args_source` and `args_digest`, allows only `id`, `name`, `executed_by`, `id_synthetic`, `args_source`, `args_digest`) or (when `executed_by` is `"client"`: requires `args_source` and `args_digest`) or (when `executed_by` is `"client"`: requires `args_source` and `args_unparseable`) |
 | `tool_uses[].id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `tool_uses[].name` | text | yes | 1 to 256 characters |
 | `tool_uses[].executed_by` | one of `client`, `provider` | yes |  |
-| `tool_uses[].args_source` | one of `raw`, `parsed`, `coerced` | no |  |
-| `tool_uses[].args_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `tool_uses[].args_unparseable` | always `true` | no |  |
+| `tool_uses[].args_source` | one of `raw`, `parsed`, `coerced` | depends |  |
+| `tool_uses[].args_digest` | text | depends | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `tool_uses[].args_unparseable` | always `true` | depends |  |
 | `tool_uses[].id_synthetic` | always `true` | no |  |
 | `said_only` | always `true` | no |  |
-| `tool_results_sent` | list of texts | no | up to 1024 items |
+| `tool_results_sent` | list of texts | no | up to 1024 items; each item: 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `tool_results` | list of objects | no | up to 1024 items |
 | `tool_results[].id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `tool_results[].forms` | list of objects | yes | up to 3 items |
+| `tool_results[].forms` | list of objects | yes | 1 to 3 items |
 | `tool_results[].forms[].digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `tool_results[].forms[].result_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `caller` | text | no | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
-| `amended` | list of texts | no | up to 16 items |
+| `amended` | list of texts | no | 1 to 16 items; each item: up to 256 characters; matches `^(/([^~/]\|~[01])*)+(?![\s\S])` |
 | `body` | any value | no |  |
 
 **Answer**
@@ -648,7 +652,7 @@ lists `model_event`. A box's agent channel may call it too.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `run_seq` | whole number | yes |  |
-| `fail_modes` | object | no |  |
+| `fail_modes` | object | no | each value: one of `open`, `closed` |
 | `check_results` | true or false | no |  |
 | `refused` | text | no | up to 1024 characters |
 
@@ -678,7 +682,7 @@ signer's own decision stays authoritative, and reconciliation compares the two.
 | `decision` | one of `allow`, `deny`, `ask` | yes |  |
 | `tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `tool` | text | yes | 1 to 256 characters |
-| `rule_ids` | list of texts | no | up to 32 items |
+| `rule_ids` | list of texts | no | up to 32 items; each item: up to 64 characters |
 | `reason` | text | no | up to 1024 characters |
 | `record` | text | yes | 1 to 65536 characters |
 | `signature` | text | no | up to 128 characters |
@@ -760,14 +764,14 @@ lists `call_state`.
 | `attempt` | whole number | no |  |
 | `decision` | one of `allow`, `deny`, `ask` | no |  |
 | `decision_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `rule_ids` | list of texts | no | up to 32 items |
+| `rule_ids` | list of texts | no | up to 32 items; each item: up to 64 characters |
 | `reason` | text | no | up to 1024 characters |
 | `send_result` | always `true` | no |  |
 | `same_args` | true or false | no |  |
 | `approval_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approval` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | no |  |
 | `consumed` | true or false | no |  |
-| `refused` | list of texts | no | up to 32 items |
+| `refused` | list of texts | no | up to 32 items; each item: up to 64 characters |
 | `result` | object | no |  |
 | `result.run_seq` | whole number | yes |  |
 | `result.ok` | true or false | yes |  |
@@ -909,7 +913,7 @@ lists `approval_get`. A box's agent channel may call it too.
 | `on_behalf` | object | no |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
-| `on_behalf.groups` | list of texts | no | up to 64 items |
+| `on_behalf.groups` | list of texts | no | up to 64 items; each item: up to 256 characters |
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 **Answer**
@@ -922,7 +926,7 @@ lists `approval_get`. A box's agent channel may call it too.
 | `tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `attempt` | whole number | yes |  |
 | `tool` | text | yes | up to 256 characters |
-| `rule_ids` | list of texts | yes | up to 32 items |
+| `rule_ids` | list of texts | yes | up to 32 items; each item: up to 64 characters |
 | `policy_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `requester` | text | yes | up to 256 characters |
 | `expires_at` | text | yes | up to 40 characters |
@@ -968,7 +972,7 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `on_behalf` | object | no |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
-| `on_behalf.groups` | list of texts | no | up to 64 items |
+| `on_behalf.groups` | list of texts | no | up to 64 items; each item: up to 256 characters |
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | no |  |
 | `escalated` | true or false | no |  |
@@ -986,7 +990,7 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 1).tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 1).attempt` | whole number | yes |  |
 | `approvals[] (variant 1).tool` | text | yes | up to 256 characters |
-| `approvals[] (variant 1).rule_ids` | list of texts | yes | up to 32 items |
+| `approvals[] (variant 1).rule_ids` | list of texts | yes | up to 32 items; each item: up to 64 characters |
 | `approvals[] (variant 1).policy_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `approvals[] (variant 1).requester` | text | yes | up to 256 characters |
 | `approvals[] (variant 1).expires_at` | text | yes | up to 40 characters |
@@ -1004,13 +1008,13 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |
 | `approvals[] (variant 2).tool` | text | yes | up to 256 characters |
-| `approvals[] (variant 2).rule_ids` | list of texts | yes | up to 32 items |
+| `approvals[] (variant 2).rule_ids` | list of texts | yes | up to 32 items; each item: up to 64 characters |
 | `approvals[] (variant 2).policy_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `approvals[] (variant 2).expires_at` | text | yes | up to 40 characters |
 | `approvals[] (variant 2).escalated` | always `true` | no |  |
 | `approvals[] (variant 2).agent` | always `true` | no |  |
 | `approvals[] (variant 2).run_closing` | always `true` | no |  |
-| `next_cursor` | text or nothing | yes |  |
+| `next_cursor` | text or nothing | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
 <!-- api-doc:end approval_list -->
@@ -1045,7 +1049,7 @@ answer](approvals.md#who-may-answer).
 | `on_behalf` | object | no |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
-| `on_behalf.groups` | list of texts | no | up to 64 items |
+| `on_behalf.groups` | list of texts | no | up to 64 items; each item: up to 256 characters |
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `passkey` | object | no |  |
 | `passkey.credential_id` | text | yes | 1 to 4096 characters; matches `^[A-Za-z0-9_-]+(?![\s\S])` |
@@ -1092,7 +1096,7 @@ default.
 | `approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `decision` | one of `approve`, `reject` | yes |  |
 | `approver` | text | yes | up to 64 characters; matches `^slack:[A-Z0-9]+/[A-Z0-9]+(?![\s\S])` |
-| `groups` | list of texts | no | up to 32 items |
+| `groups` | list of texts | no | up to 32 items; each item: up to 64 characters; matches `^slack:[A-Z0-9]+/[A-Z0-9]+(?![\s\S])` |
 
 **Answer**
 
@@ -1142,7 +1146,7 @@ granted by default.
 | `conditions[].passed` | true or false | yes |  |
 | `budget` | object | yes |  |
 | `args` | any value | yes |  |
-| `redacted` | list of texts | yes | up to 4096 items |
+| `redacted` | list of texts | yes | up to 4096 items; each item: up to 4096 characters |
 | `view_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 </details>
@@ -1177,7 +1181,7 @@ lists `approval_consume`. A box's agent channel may call it too.
 | `attempt` | whole number | no |  |
 | `tool` | text | yes | 1 to 256 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
-| `args` | any value | yes |  |
+| `args` | any value | yes | when `args_source` is `"raw"`: text; up to 1048576 characters |
 | `approval_id_hint` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 **Answer**
@@ -1185,7 +1189,7 @@ lists `approval_consume`. A box's agent channel may call it too.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `ok` | true or false | yes |  |
-| `rule_ids` | list of texts | yes | up to 32 items |
+| `rule_ids` | list of texts | yes | up to 32 items; each item: up to 64 characters |
 | `approval_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `reason` | text | no | up to 1024 characters |
 | `args` | any value | no |  |
@@ -1217,7 +1221,7 @@ or a break-glass identity.
 | `on_behalf` | object | no |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
-| `on_behalf.groups` | list of texts | no | up to 64 items |
+| `on_behalf.groups` | list of texts | no | up to 64 items; each item: up to 256 characters |
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 **Answer**
@@ -1289,7 +1293,7 @@ approvals it revoked.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `enabled` | true or false | yes |  |
-| `revoked` | list of texts | yes | up to 100000 items |
+| `revoked` | list of texts | yes | up to 100000 items; each item: 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
 <!-- api-doc:end approval_agents -->
@@ -1316,7 +1320,7 @@ and `approval_decide_on_behalf` can call it, such as the viewer for the person i
 | `on_behalf` | object | yes |  |
 | `on_behalf.subject` | text | yes | 1 to 256 characters |
 | `on_behalf.person` | text | yes | 1 to 256 characters |
-| `on_behalf.groups` | list of texts | no | up to 64 items |
+| `on_behalf.groups` | list of texts | no | up to 64 items; each item: up to 256 characters |
 | `on_behalf.tenant` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `credential_id` | text | yes | 1 to 4096 characters; matches `^[A-Za-z0-9_-]+(?![\s\S])` |
 | `public_key` | text | yes | 1 to 4096 characters; matches `^[A-Za-z0-9_-]+(?![\s\S])` |
@@ -1466,14 +1470,14 @@ your own user, unless `TRACEKIT_DEV_CONTENT=0`.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `items` | list of objects | yes | up to 1000 items |
+| `items` | list of objects | yes | up to 1000 items; each item: one of (requires `content` and `salt`) or (requires `content` and `redacted`) or (requires `state`) |
 | `items[].seq` | whole number | yes |  |
-| `items[].content` | any value | no |  |
-| `items[].salt` | text | no | up to 64 characters |
-| `items[].redacted` | always `true` | no |  |
+| `items[].content` | any value | depends |  |
+| `items[].salt` | text | depends | up to 64 characters |
+| `items[].redacted` | always `true` | depends |  |
 | `items[].type` | text | no | up to 64 characters |
 | `items[].source` | text | no | up to 256 characters |
-| `items[].state` | one of `not_retained`, `too_large`, `erased` | no |  |
+| `items[].state` | one of `not_retained`, `too_large`, `erased` | depends |  |
 
 </details>
 <!-- api-doc:end content_get -->
@@ -1650,13 +1654,13 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `finding.p_with` | number | yes | at least 0; at most 1 |
 | `finding.p_without` | number | yes | at least 0; at most 1 |
 | `finding.effect` | number | yes | at least -1; at most 1 |
-| `finding.interval` | list of numbers | yes | up to 2 items |
+| `finding.interval` | list of numbers | yes | exactly 2 items; each item: at least -1; at most 1 |
 | `finding.verdict` | one of `causal`, `suppressive`, `ruled-out`, `inconclusive`, `not-applied` | yes |  |
 | `finding.replay_runs` | list of objects | yes | up to 4096 items |
 | `finding.replay_runs[].run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `finding.replay_runs[].arm` | one of `control`, `ablated` | yes |  |
 | `finding.replay_runs[].hit` | true or false | yes |  |
-| `finding.models` | list of texts | yes | up to 32 items |
+| `finding.models` | list of texts | yes | up to 32 items; each item: up to 128 characters |
 | `finding.rung` | one of `1`, `2` | yes |  |
 | `finding.off_tape` | whole number | yes |  |
 | `finding.investigation` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -1711,14 +1715,14 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `review.cites[].hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `review.verdict` | object | yes |  |
 | `review.verdict (kind finding)` | object | no |  |
-| `review.verdict (kind finding).kind` | always `finding` | yes |  |
+| `review.verdict (kind finding).kind` | always `"finding"` | yes |  |
 | `review.verdict (kind finding).rule` | one of `TK-X201`, `TK-X202`, `TK-X203`, `TK-X204`, `TK-X205`, `TK-X206`, `TK-X207`, `TK-X208`, `TK-X210`, `TK-X101`, `TK-X102`, `TK-X103`, `TK-X104`, `TK-X111`, `TK-X112`, `TK-X113`, `TK-X114`, `TK-X120`, `TK-X211`, `TK-X212` | yes |  |
 | `review.verdict (kind finding).severity` | one of `info`, `low`, `medium`, `high`, `critical` | yes |  |
 | `review.verdict (kind finding).tier` | one of `gateway`, `harness`, `transcript`, `sdk` | no |  |
 | `review.verdict (kind finding).order` | one of `signed_before`, `transcript_order`, `after` | no |  |
 | `review.verdict (kind finding).redacted` | true or false | no |  |
 | `review.verdict (kind finding).lifted` | true or false | no |  |
-| `review.verdict (kind finding).digests` | list of texts | no | up to 32 items |
+| `review.verdict (kind finding).digests` | list of texts | no | up to 32 items; each item: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `review.verdict (kind finding).alignment` | one of `ok`, `drift`, `misaligned` | no |  |
 | `review.verdict (kind finding).reason` | one of `none`, `unrequested_action`, `unexplained_action`, `contradicted_reasoning`, `scope_creep`, `workaround`, `false_success`, `followed_tool_output`, `injection`, `other` | no |  |
 | `review.verdict (kind finding).asserted` | object | no |  |
@@ -1732,9 +1736,9 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `review.verdict (kind finding).window.grace_s` | number | yes | at least 0; at most 86400 |
 | `review.verdict (kind finding).window.skew_s` | number | yes | at least 0; at most 86400 |
 | `review.verdict (kind coverage)` | object | no |  |
-| `review.verdict (kind coverage).kind` | always `coverage` | yes |  |
-| `review.verdict (kind coverage).rule` | always `tk-x200` | yes |  |
-| `review.verdict (kind coverage).severity` | always `info` | yes |  |
+| `review.verdict (kind coverage).kind` | always `"coverage"` | yes |  |
+| `review.verdict (kind coverage).rule` | always `"TK-X200"` | yes |  |
+| `review.verdict (kind coverage).severity` | always `"info"` | yes |  |
 | `review.verdict (kind coverage).checks` | object | yes |  |
 | `review.verdict (kind coverage).checks.TK-X201` | object | no |  |
 | `review.verdict (kind coverage).checks.TK-X201.checked` | whole number | yes |  |
@@ -1945,17 +1949,17 @@ or owns open runs. More: [operators](incidents.md#operators).
 | `incidents[].run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `incidents[].ts` | text | yes | up to 40 characters |
 | `incidents[].trigger` | text | yes | up to 64 characters |
-| `incidents[].rule_ids` | list of texts | yes | up to 1024 items |
+| `incidents[].rule_ids` | list of texts | yes | up to 1024 items; each item: up to 256 characters |
 | `incidents[].scope` | object | yes |  |
 | `incidents[].scope.kind` | one of `run`, `session`, `owner`, `principal` | yes |  |
 | `incidents[].scope.id` | text | yes | up to 256 characters |
 | `incidents[].mode` | one of `shadow`, `enforce` | yes |  |
-| `incidents[].actions` | list of texts | yes | up to 4 items |
+| `incidents[].actions` | list of texts | yes | up to 4 items; each item: up to 16 characters |
 | `incidents[].state` | one of `open`, `resolved` | yes |  |
 | `incidents[].runs` | list of objects | yes | up to 4096 items |
 | `incidents[].runs[].run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `incidents[].runs[].state` | one of `held`, `quarantined`, `resumed`, `final` | yes |  |
-| `next_cursor` | text or nothing | yes |  |
+| `next_cursor` | text or nothing | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
 <!-- api-doc:end incident_list -->
@@ -1987,12 +1991,12 @@ or owns open runs. More: [operators](incidents.md#operators).
 | `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `ts` | text | yes | up to 40 characters |
 | `trigger` | text | yes | up to 64 characters |
-| `rule_ids` | list of texts | yes | up to 1024 items |
+| `rule_ids` | list of texts | yes | up to 1024 items; each item: up to 256 characters |
 | `scope` | object | yes |  |
 | `scope.kind` | one of `run`, `session`, `owner`, `principal` | yes |  |
 | `scope.id` | text | yes | up to 256 characters |
 | `mode` | one of `shadow`, `enforce` | yes |  |
-| `actions` | list of texts | yes | up to 4 items |
+| `actions` | list of texts | yes | up to 4 items; each item: up to 16 characters |
 | `state` | one of `open`, `resolved` | yes |  |
 | `runs` | list of objects | yes | up to 4096 items |
 | `runs[].run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
@@ -2031,7 +2035,7 @@ the owner, principal or requester of a run the incident concerns.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `incident_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `resumed` | list of texts | yes | up to 4096 items |
+| `resumed` | list of texts | yes | up to 4096 items; each item: 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
 <!-- api-doc:end incident_resolve -->
@@ -2315,10 +2319,10 @@ holding a delegated run token is refused with `forbidden`.
 | `message.claims[].args` | any value | yes |  |
 | `message.claims[].evidence` | object | no |  |
 | `message.claims[].evidence.checkpoint` | text | yes | 1 to 16384 characters |
-| `message.claims[].evidence.records` | list of objects | yes | up to 16 items |
+| `message.claims[].evidence.records` | list of objects | yes | 1 to 16 items |
 | `message.claims[].evidence.records[].event` | any value | yes |  |
 | `message.claims[].evidence.records[].hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `message.claims[].evidence.records[].proof` | list of texts | yes | up to 64 items |
+| `message.claims[].evidence.records[].proof` | list of texts | yes | up to 64 items; each item: up to 44 characters |
 | `message.claims[].evidence.records[].salt` | text | no | up to 64 characters; matches `^[0-9a-f]{64}(?![\s\S])` |
 | `message.claims[].evidence.records[].args` | any value | no |  |
 | `message.grants` | list of objects | no | up to 8 items |
@@ -2339,16 +2343,16 @@ holding a delegated run token is refused with `forbidden`.
 | `message.grants[].caveats[].value` | any value | yes |  |
 | `message.grants[].expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `message.grants[].delegable` | true or false | yes |  |
-| `message.grants[].parent` | text or nothing | yes |  |
+| `message.grants[].parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `message.grants[].sig` | object | yes |  |
 | `message.grants[].sig.key` | text | yes | 1 to 300 characters |
 | `message.grants[].sig.sig` | text | yes | up to 88 characters |
 | `message.payload` | object | no |  |
 | `message.payload (kind text)` | object | no |  |
-| `message.payload (kind text).kind` | always `text` | yes |  |
+| `message.payload (kind text).kind` | always `"text"` | yes |  |
 | `message.payload (kind text).text` | text | yes | up to 65536 characters |
 | `message.payload (kind data)` | object | no |  |
-| `message.payload (kind data).kind` | always `data` | yes |  |
+| `message.payload (kind data).kind` | always `"data"` | yes |  |
 | `message.payload (kind data).data` | any value | yes |  |
 | `message.from` | object | yes |  |
 | `message.from.agent` | text | yes | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
@@ -2370,10 +2374,10 @@ holding a delegated run token is refused with `forbidden`.
 | `message.claims[].args` | any value | yes |  |
 | `message.claims[].evidence` | object | no |  |
 | `message.claims[].evidence.checkpoint` | text | yes | 1 to 16384 characters |
-| `message.claims[].evidence.records` | list of objects | yes | up to 16 items |
+| `message.claims[].evidence.records` | list of objects | yes | 1 to 16 items |
 | `message.claims[].evidence.records[].event` | any value | yes |  |
 | `message.claims[].evidence.records[].hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `message.claims[].evidence.records[].proof` | list of texts | yes | up to 64 items |
+| `message.claims[].evidence.records[].proof` | list of texts | yes | up to 64 items; each item: up to 44 characters |
 | `message.claims[].evidence.records[].salt` | text | no | up to 64 characters; matches `^[0-9a-f]{64}(?![\s\S])` |
 | `message.claims[].evidence.records[].args` | any value | no |  |
 | `message.grants` | list of objects | no | up to 8 items |
@@ -2394,16 +2398,16 @@ holding a delegated run token is refused with `forbidden`.
 | `message.grants[].caveats[].value` | any value | yes |  |
 | `message.grants[].expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `message.grants[].delegable` | true or false | yes |  |
-| `message.grants[].parent` | text or nothing | yes |  |
+| `message.grants[].parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `message.grants[].sig` | object | yes |  |
 | `message.grants[].sig.key` | text | yes | 1 to 300 characters |
 | `message.grants[].sig.sig` | text | yes | up to 88 characters |
 | `message.payload` | object | no |  |
 | `message.payload (kind text)` | object | no |  |
-| `message.payload (kind text).kind` | always `text` | yes |  |
+| `message.payload (kind text).kind` | always `"text"` | yes |  |
 | `message.payload (kind text).text` | text | yes | up to 65536 characters |
 | `message.payload (kind data)` | object | no |  |
-| `message.payload (kind data).kind` | always `data` | yes |  |
+| `message.payload (kind data).kind` | always `"data"` | yes |  |
 | `message.payload (kind data).data` | any value | yes |  |
 | `message.from` | object | yes |  |
 | `message.from.agent` | text | yes | up to 256 characters; matches `^[a-z0-9_]+:[^\n]+(?![\s\S])` |
@@ -2482,7 +2486,7 @@ holding a delegated run token is refused with `forbidden`.
 | `grant.caveats[].value` | any value | yes |  |
 | `grant.expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `grant.delegable` | true or false | yes |  |
-| `grant.parent` | text or nothing | yes |  |
+| `grant.parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `grant.sig` | object | yes |  |
 | `grant.sig.key` | text | yes | 1 to 300 characters |
 | `grant.sig.sig` | text | yes | up to 88 characters |
@@ -2535,7 +2539,7 @@ holding a delegated run token is refused with `forbidden`.
 | `parent.caveats[].value` | any value | yes |  |
 | `parent.expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `parent.delegable` | true or false | yes |  |
-| `parent.parent` | text or nothing | yes |  |
+| `parent.parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `parent.sig` | object | yes |  |
 | `parent.sig.key` | text | yes | 1 to 300 characters |
 | `parent.sig.sig` | text | yes | up to 88 characters |
@@ -2569,7 +2573,7 @@ holding a delegated run token is refused with `forbidden`.
 | `grant.caveats[].value` | any value | yes |  |
 | `grant.expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `grant.delegable` | true or false | yes |  |
-| `grant.parent` | text or nothing | yes |  |
+| `grant.parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `grant.sig` | object | yes |  |
 | `grant.sig.key` | text | yes | 1 to 300 characters |
 | `grant.sig.sig` | text | yes | up to 88 characters |
@@ -2601,18 +2605,18 @@ holding a delegated run token is refused with `forbidden`.
 |---|---|---|---|
 | `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `run_token` | text | yes | 1 to 1024 characters |
-| `run_seqs` | list of whole numbers | yes | up to 16 items |
+| `run_seqs` | list of whole numbers | yes | 1 to 16 items |
 
 **Answer**
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `checkpoint` | text or nothing | yes |  |
+| `checkpoint` | text or nothing | yes | 1 to 16384 characters |
 | `records` | list of objects | yes | up to 16 items |
 | `records[].run_seq` | whole number | yes |  |
 | `records[].event` | any value | yes |  |
 | `records[].hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
-| `records[].proof` | list of texts | yes | up to 64 items |
+| `records[].proof` | list of texts | yes | up to 64 items; each item: up to 44 characters |
 | `records[].salt` | text | no | up to 64 characters; matches `^[0-9a-f]{64}(?![\s\S])` |
 | `pending` | list of whole numbers | yes | up to 16 items |
 
@@ -2658,13 +2662,13 @@ More: [who may issue a grant](intent-grants.md#who-may-issue-a-grant).
 | `caveats[].field` | text | yes | up to 64 characters; matches `^[a-z][a-z0-9_]*(?![\s\S])` |
 | `caveats[].op` | one of `==`, `<=`, `>=`, `<`, `>`, `in` | yes |  |
 | `caveats[].value` | any value | yes |  |
-| `limits` | list of objects | yes | up to 4 items |
+| `limits` | list of objects | yes | 1 to 4 items |
 | `limits[].op` | one of `sum`, `count` | yes |  |
 | `limits[].field` | text | no | up to 64 characters; matches `^[a-z][a-z0-9_]*(?![\s\S])` |
 | `limits[].max` | whole number | yes | at least 1 |
 | `expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `description` | text | no | up to 512 characters |
-| `tools` | list of texts | no | up to 16 items |
+| `tools` | list of texts | no | up to 16 items; each item: 1 to 256 characters |
 
 **Answer**
 
@@ -2689,11 +2693,11 @@ More: [who may issue a grant](intent-grants.md#who-may-issue-a-grant).
 | `grant.caveats[].value` | any value | yes |  |
 | `grant.expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `grant.delegable` | true or false | yes |  |
-| `grant.parent` | text or nothing | yes |  |
+| `grant.parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `grant.sig` | object | yes |  |
 | `grant.sig.key` | text | yes | 1 to 300 characters |
 | `grant.sig.sig` | text | yes | up to 88 characters |
-| `tools` | list of texts | yes | up to 16 items |
+| `tools` | list of texts | yes | up to 16 items; each item: 1 to 256 characters |
 | `used` | list of whole numbers | yes | up to 4 items |
 | `self_approved` | true or false | yes |  |
 | `run_seq` | whole number | yes |  |
@@ -2748,12 +2752,12 @@ with no `approvals` section, any identity of the run's tenant may list them.
 | `grants[].grant.caveats[].value` | any value | yes |  |
 | `grants[].grant.expires_at` | text | yes | up to 27 characters; matches `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z(?![\s\S])` |
 | `grants[].grant.delegable` | true or false | yes |  |
-| `grants[].grant.parent` | text or nothing | yes |  |
+| `grants[].grant.parent` | text or nothing | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `grants[].grant.sig` | object | yes |  |
 | `grants[].grant.sig.key` | text | yes | 1 to 300 characters |
 | `grants[].grant.sig.sig` | text | yes | up to 88 characters |
-| `grants[].tools` | list of texts | yes | up to 16 items |
-| `grants[].limits` | list of objects | yes | up to 4 items |
+| `grants[].tools` | list of texts | yes | up to 16 items; each item: 1 to 256 characters |
+| `grants[].limits` | list of objects | yes | 1 to 4 items |
 | `grants[].limits[].op` | one of `sum`, `count` | yes |  |
 | `grants[].limits[].field` | text | no | up to 64 characters; matches `^[a-z][a-z0-9_]*(?![\s\S])` |
 | `grants[].limits[].max` | whole number | yes | at least 1 |
