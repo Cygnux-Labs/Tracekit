@@ -279,7 +279,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
             if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert
         base = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"],
                 "target": suggest_target(run, ev, prov), "sensitive": sens}
-        got = influence.graded(g, nid) if ev.get("status") != "blocked" else None
+        got = influence.graded(g, nid, seen=False) if ev.get("status") != "blocked" else None
         u = got and influence.untrusted(got["edges"])
         if ev.get("status") == "blocked":
             pass  # reported below, once

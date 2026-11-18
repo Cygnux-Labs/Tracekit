@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .analysis import _committed, _ended, _short, arg_provenance, is_sensitive
+from .analysis import _committed, _ended, _short, _texts, arg_provenance, is_sensitive
 from .core import Run
 from .graph import Graph
 
@@ -45,16 +45,9 @@ def consequential(run: Run, ev: Dict[str, Any]) -> bool:
     return bool(_ended(ev) or is_sensitive(run, ev) or ev.get("provenance"))
 
 
-def _seen_basis(dec: Dict[str, Any], ref: Optional[str]) -> str:
-    entry = next((c for c in dec.get("context", ()) if c.get("ref") == ref), {})
-    if entry.get("seen") == "gateway":
-        return "gateway"
-    return "reconstructed" if dec.get("context_mode") == "reconstructed" else "recorded"
-
-
-def graded(g: Graph, nid: str) -> Dict[str, Any]:
-    """{"edges": the exact, measured and seen edges into call `nid`, "ruled": the sources a replay tested and ruled
-    out}."""
+def graded(g: Graph, nid: str, seen: bool = True) -> Dict[str, Any]:
+    """{"edges": the exact, measured and (with `seen`) seen edges into call `nid`, "ruled": the sources a replay tested
+    and ruled out}. A finding reads no seen edge: it asks for none."""
     ev = g.nodes[nid]["event"]
     out: List[Dict[str, Any]] = []
     for p in ev.get("provenance") or []:
@@ -70,11 +63,13 @@ def graded(g: Graph, nid: str) -> Dict[str, Any]:
         elif e.get("verdict") == "ruled-out":
             ruled.append(e["src"])
     dec = "ev:" + ev["decision"] if ev.get("decision") else None
-    if dec in g.nodes:
+    if seen and dec in g.nodes:
         dev = g.nodes[dec]["event"]
+        via_gateway = {c["ref"] for c in dev.get("context", ()) if c.get("seen") == "gateway"}
+        rest = "reconstructed" if dev.get("context_mode") == "reconstructed" else "recorded"
         for e in g.in_edges(dec, ("observed",)):
             if e["kind"].startswith("context"):
-                basis = _seen_basis(dev, e.get("ref"))
+                basis = "gateway" if e.get("ref") in via_gateway else rest
                 out.append({"src": e["src"], "grade": "seen", "basis": basis, "via": dec,
                             **({"cites": dev["tracekit"]} if basis == "gateway" and dev.get("tracekit") else {})})
     _describe(g, out)
@@ -244,9 +239,10 @@ def influences(run: Run, g: Graph, texts=None, risky: bool = False) -> List[Dict
     """call_influence() of every consequential call of the run, in log order; `risky`: the calls stopped or flagged,
     with an exact or measured edge (a replay tested them), or that serve no step of the task, whatever their tool."""
     goal = goals(run, g)
+    texts = _texts(run) if texts is None else texts   # read once for every call's hints
 
     def shown(nid: str, ev: Dict[str, Any]) -> bool:
-        got = graded(g, nid)
+        got = graded(g, nid, seen=False)
         return bool(_ended(ev)) or any(e["grade"] != "seen" for e in got["edges"]) or drifted(got, goal)
     return [call_influence(run, g, nid, goal, texts) for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"])
             if n["type"] == "action" and (shown(nid, n["event"]) if risky else consequential(run, n["event"]))]

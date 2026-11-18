@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -231,6 +232,23 @@ class Serves(unittest.TestCase):
         self.assertEqual(inf["seen"], 11)
         self.assertEqual([e["label"] for e in inf["edges"]], ["web:1", "web:0", "web:9", "web:8", "web:7", "web:6",
                                                               "web:5", "web:4"])
+
+    def test_a_model_call_with_a_long_context_grades_in_linear_time(self):
+        """Each seen edge looked its context entry up by scanning the model call's whole context: quadratic per call,
+        cubic over a run whose every model call sees everything before it (61 s for 800 calls' alerts, 17 s before)."""
+        def took(n):   # the best of two, so a busy runner's pause isn't counted
+            rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, signer=False)
+            a = rt.agent("a")
+            read = [a.observe(f"page {i}", source=f"web:{i}") for i in range(n)]
+            a.act("send_email", {"to": "x@example.com"}, decision=a.decide(read, model="m"))
+            run = rt.finish()
+            g, call, best = build_graph(run, infer=False), "ev:" + run.of_type("action")[0]["id"], float("inf")
+            for _ in range(2):
+                start = time.perf_counter()
+                self.assertEqual(len(graded(g, call)["edges"]), n)
+                best = min(best, time.perf_counter() - start)
+            return best
+        self.assertLess(took(2000), 8 * took(500))   # 4x the context: about 4x the time; 16x before
 
     def test_a_long_chain_is_cut_and_says_so(self):
         rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, task=TASK, signer=False)
