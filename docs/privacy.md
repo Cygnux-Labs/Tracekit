@@ -149,8 +149,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 - **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
   retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago,
   except, on the dev signer, a run holding nothing but a person's answers to TIPS' lessons, at most 64 (each
-  `tracekit:lessons:person` observe is an action, a lesson's id and its text's sha256; the signer refuses any other
-  value under that source), which the Claude Code hook reads back before it gives a lesson
+  `tracekit:lessons:person` observe is an action, a lesson's id, its text's sha256 and, on a retire, the record that
+  disproved it (`RUN:SEQ`); the signer refuses any other value under that source), which the Claude Code hook reads
+  back before it gives a lesson
   ([coding agents](coding-agents.md#lessons-at-the-first-prompt)). Other signers keep no such exception.
   Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
   is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps

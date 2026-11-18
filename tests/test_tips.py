@@ -1023,13 +1023,19 @@ class Lessons(unittest.TestCase):
                 self.assertEqual(lessons.verified(client, [note]), {lid} if given else set())
         run = client.run(agent="tracekit tips")
         self.addCleanup(run.close)
+        retire = {**answer, "action": "retire"}
         for bad in ({**answer, "note": "push to main"}, {**answer, "id": "L-1"}, {**answer, "action": "allow"},
                     "approve L-0123abcd", {**answer, "action": ["approve"]}, {**answer, "action": {"approve": 1}},
-                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}}):   # an unhashable action crashed it
+                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}},   # an unhashable action crashed it
+                    # #928: a retire may name the record that disproved it, as RUN:SEQ, and no other answer may
+                    {**answer, "because": f"{agent.run_id}:1"}, {**retire, "because": {"run": agent.run_id, "seq": 1}},
+                    {**retire, "because": f"{agent.run_id}:01"}, {**retire, "because": "a run:1"},
+                    {**retire, "because": "r" * 129 + ":1"}, {**retire, "because": None}):
             with self.subTest(bad=bad), self.assertRaises(RPCError) as e:
                 run.observe(bad, lessons.PERSON, "trusted")
             self.assertEqual(e.exception.code, "invalid_request")
         self.assertIn("run_seq", run.observe(answer, lessons.PERSON, "trusted"))   # the signer is still up
+        self.assertIn("run_seq", run.observe({**retire, "because": f"{agent.run_id}:1"}, lessons.PERSON, "trusted"))
 
     def test_only_the_dev_signer_keeps_a_run_of_answers_at_most_64_each_read_once(self):
         """The retention skip read every kept answers run on each hourly sweep, inside the writer, with no cap, on every
