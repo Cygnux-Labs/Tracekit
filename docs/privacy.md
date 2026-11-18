@@ -4,8 +4,9 @@ Default: **redact, then hash.** Content is replaced by `{"hash": "sha256:…", "
 
 ## Content capture: hashed or full
 
-What the agent did (the command, the file path, the URL) is always recorded in clear. What it read or wrote (file
-contents, command output, prompts, fetched pages) is controlled by `content_capture` in the policy:
+What the agent did (the command, the file path, the URL, and each of them in a call on several) is always recorded in
+clear. What it read or wrote (file contents, command output, prompts, fetched pages) is controlled by
+`content_capture` in the policy:
 
 - `hashed` (default): the content is stored as a SHA-256 hash and its size. You can prove a file or output matches a
   known one, but you cannot read the content back from the log, so the log never becomes a copy of your code or data.
@@ -219,7 +220,7 @@ being given but keeps it, and its text stays in the git history until the folder
 - The ledger stays on the signer host.
 - Witnesses get only checkpoint hashes, `seq`, `kid` and timestamps, never content.
 - v2 witnesses, the public witness included (the default once it is deployed; `--no-witness` opts out), get each
-  log's origin (signer.yaml `origin`, default `tracekit.local/<log id>`; each tenant's registry log is
+  log's origin (signer.yaml `origin`, default `tracekit.local/k<SHA-256 of the log key>`; each tenant's registry log is
   `<origin>/registry/<hash>`, never the tenant's name) and log vkey, its tree sizes and root hashes, the log's
   signature, and the time each checkpoint is sent, so they learn how often and how much each log grows. The public
   witness stores per origin the key, the latest size and root and the last time it cosigned, and the client address

@@ -358,9 +358,10 @@ class Corpus:
             self.forge(base, "record deleted", lines(lambda recs: recs.pop(len(recs) // 2)))
             self.forge(base, "records swapped", lines(swapped))
             self.forge(base, "run truncated", lines(lambda recs: recs.__delitem__(slice(len(recs) // 2 + 1, None))))
-            other = os.path.join(self.dir("forger"), f"{base.replace(' ', '-')}.other-signer.trust.json")
-            with open(other, "w") as f:
-                json.dump({"logs": [_vkey(_origin(base, self), os.urandom(32))], "algs": ["ed25519"]}, f)
+            other, secret = os.path.join(self.dir("forger"), f"{base.replace(' ', '-')}.other-signer.trust.json"), \
+                os.urandom(32)
+            with open(other, "w") as f:   # another signer's key, under the name its log would have
+                json.dump({"logs": [_vkey(_own(_origin(base, self), secret), secret)], "algs": ["ed25519"]}, f)
             self.forge(base, "another signer's trust config", lambda files, manifest: None, trust=other)
             forger = os.path.join(self.dir("forger"), f"{base.replace(' ', '-')}.trust.json")
             self.forge(base, "re-signed by a forger", lambda files, manifest: _resign(files, forger))
@@ -377,10 +378,17 @@ def _vkey(origin, secret):
     return checkpoint.vkey(origin, checkpoint.ED25519, crypto.public_from_secret(secret))
 
 
+def _own(origin, secret):
+    """`origin`, or for a key-derived one (1.7.3's default) the name `secret`'s key gives a log: a key-derived name
+    names one key only (format-v2 §10), so another key's log has its own."""
+    return checkpoint.key_origin(crypto.public_from_secret(secret)) if checkpoint.KEY_ORIGIN.match(origin) else origin
+
+
 def _resign(files, trust_out):
     """Every record re-signed with a forger's record key (declared in place of the signer's), the chains rebuilt, the
     proofs from a tree of the forger's (its other leaves made up) and the checkpoint signed with the forger's log key
-    under the same origin; witness cosignatures dropped. Writes the trust config pinning the forger's log key."""
+    under the same origin, or under its own key's for a key-derived one (_own); witness cosignatures dropped. Writes
+    the trust config pinning the forger's log key."""
     sign, log_secret = RecordSigner(os.urandom(32)), os.urandom(32)
     names = [n for n in files if n.endswith(".jsonl")]
     recs = {n: [json.loads(x) for x in files[n].splitlines()] for n in names}
@@ -404,6 +412,7 @@ def _resign(files, trust_out):
     proofs["inclusion"] = {s: [base64.b64encode(h).decode() for h in merkle.inclusion_proof(int(s), leaves)]
                            for s in proofs["inclusion"]}
     files["proofs/records.json"] = json.dumps(proofs).encode()
+    origin = _own(origin, log_secret)
     text = checkpoint.body(origin, int(size), merkle.root(leaves))
     files[cp] = (text + "\n" + checkpoint.sign(text, origin, log_secret)).encode()
     with open(trust_out, "w") as f:

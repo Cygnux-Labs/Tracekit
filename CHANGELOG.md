@@ -2,6 +2,221 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.7.2 (2026-11-18) — 1.7.1, published, with three contributions
+
+1.7.1 was tagged but never published: the release's check of the built wheel ran two version tests that read
+`README.md` and the Hermes plugin's `plugin.yaml`, which that job didn't copy. 1.7.2 is 1.7.1's code with the job
+copying them, plus three pull requests merged since. Everything in 1.7.1's notes below ships here; upgrade the signer
+first, as for 1.7.1.
+
+### Added
+- Autotrace records model calls made through AWS Bedrock Runtime with boto3: `Converse` and `ConverseStream` with tool
+  use and token counts, `InvokeModel` and `InvokeModelWithResponseStream` as the call and its model; other AWS calls
+  pass through untouched (#916, by @TheVicky1).
+
+### Fixed
+- The viewer says when a call the policy denied, or a hold nobody approved (rejected, expired or not answered), ran
+  anyway: "BLOCKED · RAN ANYWAY", "REJECTED · RAN ANYWAY", "NOT ANSWERED · RAN ANYWAY" and so on, on the tape and
+  PERMISSIONS, and the run review counts it so (#691, by @Saisinare).
+- Claude Code's v1 hook reads the transcript mark under the run's lock, just before it sends, so the daemon gets
+  parallel hooks' marks in the order they were read and no longer reports a false `trace.tamper/truncated` (#758, by
+  @fcy222fcy).
+- The release's wheel check copies the files its version tests read.
+
+### Contributors
+@TheVicky1, @Saisinare and @fcy222fcy. Thank you.
+
+## 1.7.1 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
+
+1.7.0 was tagged but never published: its release job timed out. 1.7.1 is the same code with a longer release timeout.
+
+A feature and security release. The laptop default (`dev.yaml`, which the dev signer uses) now holds the costly short
+list: secrets and credentials, deletes outside the project or on remotes, access changes, guardrail changes, and
+pushes to main, publishes and deploys, so expect more holds than 1.6. The shell reader, the SQL reader and the
+coding-agent hooks read more of what a call really does, and several ways around the rules are closed (Security,
+below). The signer's provenance index now survives restarts and storage recoveries, and a later run of an agent
+session starts it `partial`, so the `from: untrusted` rules hold more there. Cline, GitHub Copilot CLI, CodeBuddy Code,
+gptme, OpenHands, Kiro CLI, jcode and Open Interpreter get hooks; `tracekit audit` reads Cursor, Gemini CLI, Cline and
+Codex sessions and any calls file; TIPS gets LESSONS (Claude Code, experimental). The signer protocol goes from 22 to
+26, so **upgrade the signer first**: a 1.7 client or hook refuses a 1.6 signer (a 1.7 signer still serves clients
+from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bundles. After upgrading, re-run
+`tracekit init` for OpenCode and Kilo Code (their plugin file changed) and restart a running signer.
+
+
+### Added
+- **The laptop default holds the costly short list** (#605). `dev.yaml` holds spending money; messages, emails or
+  posts that leave the machine; deleting data outside the project or on remotes (`kubectl delete`, `helm uninstall`,
+  cloud deletes); deploys, publishes and pushes to the default branch or of tags (`TK-A056`); reading secrets or
+  credentials; running downloaded code; and changes to the guardrails, the agent's own `tracekit init` among them
+  (`TK-A057`). An unmapped tool given a command or a SQL statement is held (`TK-A062`), and so is a subagent that runs
+  where Tracekit doesn't decide its calls (`TK-F019`). Flag-only rules record the rest (`TK-F018`, `TK-F020` to
+  `TK-F023`).
+- **Coding-agent hooks** for Cline, CLI and VS Code extension (experimental, #732, by @khushi-git-7; its tools before
+  4.0 too), GitHub Copilot CLI (#782, carrying #710 by @hossainzarif23), CodeBuddy Code (experimental, #761), gptme
+  (#778, by @souravC01), OpenHands CLI and SDK (experimental, #662, by @aj-codespy), Kiro CLI (experimental, #825, by
+  @khushi-git-7), jcode (experimental, #848, by @Purv-Kabaria) and Open Interpreter 0.0.x (#853, by @khushi-git-7):
+  `tracekit init --dev [--v2] --agent NAME`, with uninstall and doctor. Each maps its harness's tools onto the rules'
+  vocabulary (CodeBuddy's `LibraryUpload` of a secrets file is denied, `TK-D022`), and text a tool types into a
+  running terminal (Codex's and Open Interpreter's `write_stdin`, Copilot's `write_bash`, Devin's
+  `write_to_process`, agy's `send_input`) is decided on its own and as the line it completes.
+  Crush records the model's text from `TurnEnd` (#873, by @Mr45401).
+- **`tracekit audit` reads more agents**: a calls file (`--calls FILE`, mapped with `--agent NAME` as the live hook maps
+  it; #730, by @samueladebisi-dev), Codex's session rollouts (#693, by @kausthubhk), Cursor's agent transcripts (#755,
+  by @Purv-Kabaria), Gemini CLI's chat files (#764, by @samueladebisi-dev), Cline's tasks (#784, by @khushi-git-7) and
+  Qwen Code's sessions (#891, by @khushi-git-7). `--share` gives the calls by decision for each day of the window (#774,
+  carrying #751 by @HarshRajSinghania) and the cause of each `TK-SHELL-PARSE` hold (#814, carrying #785 by @tylrcc); a
+  call a hook can't read has its own error (#779, by @khushi-git-7); help and docs name the agents it reads (#819, by
+  @hayatexe).
+- **LESSONS in TIPS** (experimental, Claude Code only, #866): `tracekit tips` and the viewer's TIPS page find what the
+  agents kept relearning in signed runs, a person approves each lesson, and the Claude Code hook gives the approved
+  ones to the next session at its first prompt, after signing which ones it gave. Each Claude Code turn's token usage
+  is signed as the tailer reads it, and tips prefers the signed counts (#871).
+- **A customer downloads its own run** (#833): the signer's `export_run` (protocol 23) returns one run of the caller's
+  tenant as the `.tkb` the operator's `tracekit export --v2` writes. The signer's HTTP API gives real HTTP statuses
+  and a `Request-Id` on request, reads `TRACEKIT_API_KEY`, and the SDKs retry event calls without recording a call
+  twice (#837).
+- **LangChain: several asks in one message, each answered once** (#851): a `tracekit_tool_node`, or a `ToolNode`
+  that `tracekit.instrument()` wired, pairs each resume with its own call; a node resumed in another process asks the
+  signer what each call did (`call_state`, `call_claim`: protocol 24).
+- Policy: `TK-A061` holds a CI workflow write that sends a secret to a URL (#781, carrying #663 by @kausthubhk; option
+  arguments and `bash -c` starts, #839, by @Parveshkumar2211); `TK-A071` to `TK-A074` hold raw Docker or Podman socket
+  calls, a program pointed at the socket, and cgroup `release_agent` writes (#780, carrying #731 by @munjikesh; macOS
+  socket names, #823, by @Parveshkumar2211; `nohup`, `nice` and `CONTAINER_HOST`, #828, by @munjikesh); `TK-D014`
+  denies deleting or locking a system folder (#783, carrying #762 by @Vedant-200); `TK-A075` to `TK-A078` hold new
+  logins, setuid bits, login and sudo files, and network shells in startup files (#788, carrying #752 by @jay23606;
+  `install` setuid modes and `setcap`, #834, by @60507); `TK-A079` and `TK-A080` hold wiping a disk or a filesystem
+  (#850, carrying #789 by @tylrcc); `TK-A067` and `TK-A068` hold a `.pth` in site-packages as the startup code it is
+  (#787, by @nx9161); `TK-D015` denies sending the whole environment off the machine (#690, by @cpruijsen, and the
+  release review); `TK-A082` to `TK-A085` hold startup items and Git hooks written by any of the shell's writers, a
+  `gh` alias or extension, and an agent skill that runs a command; `TK-A086` holds a destructive SQL statement in an
+  MCP database tool as every SQL dialect reads it; gptme's IPython, tmux keys and MCP loads are held (`TK-A063` to
+  `TK-A065`). `oversize: deny` is accepted (#736, by @Shivansh22Saroha), and `TK-HOOK-BLOCKED` is a reserved id (#744).
+- MCP client: `list_tools`, `list_resources` and `list_prompts` are observed (#685, by @duchangyi666), and what
+  `read_resource` returns is recorded as untrusted input (#776, carrying #689 by @Mr45401); input-required rounds
+  (MCP 2.3) are decided and completed once (#718, by @kings-avathar54). The MCP gateway follows every page of an
+  upstream's lists (#661, by @VaishakRR) and names the real cause when an upstream can't be opened (#786, by
+  @tylrcc).
+- Browser Use 1.0: every function tool is decided at `BrowserLoop.wrap_tool_execute` (#805, by @Koloyaaa), and CI runs
+  its contract on every push (#854).
+- `tracekit analyze --v2` checks a Tracekit Box run's patch against the operator's task (#775, carrying #713 by
+  @shaw778; units and a missing workspace, #822, by @keshtib07-ghost).
+- Doctor checks the transcript tailer a `tailer_lost` gap points at (#801, by @hayatexe) and whether OpenCode can
+  load Tracekit's plugin (`D-OPENCODE-PLUGIN`).
+- E21 gains an email and messaging blind pool (#734, carrying #728 by @Mr-Neutr0n) and a payments pool (#777,
+  carrying #741 by @narayanansriram), each scored at publication and gated by its own false positives (#792).
+- Docs: a recipe for agent spending limits and offline receipts with intent grants (#830); macOS system-mode upgrade
+  steps (#703, by @Siri-Durugapu); system-mode init from a root-owned clone (#802, by @FTFaruque; #824, by
+  @nabeelbaghoor); the Claude Agent SDK's hooks get no `SessionEnd`, so the app closes the run (#826, by @Razepriv);
+  the Claude Code quickstart's first session (#706); your own policy, one rule from a file to a running signer
+  (`docs/policy-guide.md`, #884).
+- Listings: the Claude Code plugin ships the `tracekit-setup` skill, and `glama.json` lists Tracekit on Glama (#705);
+  the Hermes plugin is version 0.2.0 for the catalog update (#708).
+
+### Changed
+- **Policy packs.** Coding `2026.11-v2-97` (from `2026.10-v2-77`), dev `2026.11-dev-8`, server `2026.11-server-18` (from
+  `-16`), whose core rules move to `server-core.yaml` (`2026.11-server-core-1`), server-cloud `2026.11-server-cloud-18`
+  (from `-17`), server-data `2026.11-server-data-5` (from `-4`), strict `2026.11-strict-14` (from `-9`), and the v1
+  default `2026.11-1` (from `2026.10-2`). `TK-F009` and `TK-F015` hold a write to a harness's settings or hooks (they
+  flagged it); `TK-A021` holds gopass reads as it does pass's (#878, by @Seyamalam). Two policy merge trains brought in
+  nineteen pull requests (#799, #850). E17: 952 of 952 harmful calls stopped, 1 false alarm in 971. E21: the server pack
+  stops or holds 287 of 420 held-out calls (255 in 1.6.0), strict 312 (285), with the same false positives.
+- **Signer protocol 26** (from 22): 23 adds `export_run`, 24 `call_state` and `call_claim`, 25 the record `type` and an
+  observed input's `source` in `content_get` (#866), and 26 `register_run`'s `continues`. Older clients keep working;
+  a 1.7 client refuses a 1.6 signer.
+- **A later run of an agent session starts its provenance index `partial`**: every coding-agent hook, Hermes,
+  `tracekit.instrument()` and the TypeScript SDK say so (`continues`) when the run continues an earlier one of the
+  session (the signer closed it while idle, a resume or fork, a session going on after its end, or hook state that is
+  gone). A harness that sends no SessionStart (OpenCode, Kilo Code, goose, Antigravity CLI, Copilot CLI) starts every
+  run `partial`. Its decisions' reason says `continues an earlier run of the session`.
+- **The provenance index survives a restart**: the signer rebuilds it from the run's signed records and the content
+  vault, where it used to be `unavailable` (holding every call a `from: untrusted` rule matched) for the rest of the
+  run. A run with nothing to rebuild from starts `partial`.
+- A held call's message asks the agent to ask the person "approve this call or skip it?" and not to reword the call
+  (#821, by @hayatexe); Gemini CLI gets its own `!command` approval prefix (#704, by @Sejal-Kadgi); `approvals show`
+  says a live grant's reason when it holds a call (#840, by @amarjithkumar2007-wq).
+- Hook deadlines: a hook answers within one deadline, approval waits and a starting dev signer included, so a harness
+  never times the hook out first. The Python and TypeScript SDKs stop retrying, and bound dialing, within a call's
+  deadline (#852, by @X6M-Work).
+- Dev mode's messages say every call is decided and recorded, and that an agent running as you could still stop the
+  signer, change its policy or reach its key (#902, by @hayatexe).
+- A program word that is only the path a name resolves to, quoted as a whole word (`"$(command -v python)" -m
+  pytest`, `"$(which python3)"`), is read as that program, where it was held as a name the line builds, on a line that
+  defines no function and runs no `eval`, `source` or `.`. Unquoted or in backquotes it stays held: an empty one
+  vanishes and bash runs the next word.
+- Flags are quieter (#844): no ask or deny changes, fewer flags on ordinary work; a Claude Code `RemoteTrigger` that
+  starts or changes a routine is held (`TK-A081`).
+- The README leads with the tamper-evident flight recorder (#712); contribute links point to the open-to-many label
+  and the field-report form (#735); `tracekit --help` names `--agent` in init's summary (#702, by @Vanshchandel17).
+- Doctor's re-init fixes keep init's own flags (`--no-hooks`, `--managed`, #845, #858, #860), and count the Claude Code
+  plugin in system mode only from managed settings (#876, by @Mr45401). System init builds `/opt`'s venv from the base
+  Python and restarts a running harness helper (#694); its refusals name v2 init (#719).
+- Hand-wired framework integrations warn on untested versions, as `instrument()` does (#856, by @Mr45401).
+
+### Fixed
+- Claude Code: a stopped transcript tailer is started again, and an idle one is parked, so far fewer false
+  `reconcile.fabricated` gaps (#818).
+- The signer: a snapshot keeps each call's tool, so an approval consumed after a restart no longer fails (#763); a
+  replay ends a consumed call's decision only when a later result ran under its approval.
+- LangChain's async tool gate runs its signer calls in a worker thread, so a slow signer doesn't stall the event loop
+  (#687, by @shounakjoshi88-a11y); OpenAI Agents and Vercel AI follow every page of `approval_list` when resuming
+  (#855, by @Seemanshi2104); an error code a newer signer added is an `RPCError`, not an `AssertionError` (#829).
+- `tracekit why import` keeps one call per tool call id and attempt (#686, by @nsknojj) and a call whose result
+  comes after a later decision under its id (#792); `tracekit why` freezes its trials' heap on Python 3.12 too
+  (#800, by @khushi-git-7).
+- `tracekit last` gives the right session-end guidance for coding-agent sessions (#709, by @vanshhh18; #753); `tracekit
+  audit` no longer crashes on a malformed shell command and names the agent in its closing init line (#754, #792).
+- `tracekit analyze --v2` reads a denial in its turn and as the model's own act, and `TK-X203` reads Claude Code's
+  memory and unsettled paths: no more false criticals on long sessions (#835).
+- MCP: a list too big for a signer frame is recorded as its digest (#753); the gateway's listing errors (#753).
+- The v1 policy reads a Windows path's backslashes as separators in the file rules (#838, by @khushi-git-7).
+- sensor import sends the first heartbeat whatever the clock reads (#772, by @tridev-tej).
+- The client reuses one no-redirect opener, which Windows paid ~40 ms a call for (#807, by @khushi-git-7).
+- Tests and CI: the published 1.6.0 signer packages are locked and CI runs the 1.6.0 verifier (#692); flaky tests
+  fixed at their cause (#711, by @v3ravani; #725, by @qwist1233-cpu; #726; #766; #803, #806 and #874, by
+  @khushi-git-7); the Speed test runs in its own job on every Python and OS (#877, by @khushi-git-7).
+
+### Security
+These are fixed in 1.7.1; each was found by our own review, and none is known to have been used. Upgrade the signer
+and the hooks together. Advisories follow the release.
+- **Provenance**: a write the storage reported failed but kept, a later run of a session, and untrusted input or an
+  MCP list recorded as a digest could each leave the index `complete` without values it should have held, so a
+  `from: untrusted` rule allowed a call it should have held. Each now leaves it `partial`.
+- **Redaction counts**: a value hidden by a redaction mark in the content itself was not counted in the signed
+  `redaction.count`; it is now.
+- **Guardrail changes**: an agent could turn off its harness's Tracekit hooks or approvals with the harness's own
+  commands (Tracekit's plugin named in any spelling or through npx or node, or all plugins at once), start a nested
+  harness with a config of its choosing (through its bin link or the path its name resolves to, after a JavaScript
+  runtime's options, or with a Windows config home moved), or write a harness's hooks, settings or skills through the
+  shell or an interpreter. These are held
+  (`TK-A054`, `TK-A069`, `TK-A070`, `TK-F009`, `TK-F015`, `TK-A085`).
+- **Protected files through the shell**: an in-place editor, a download's output file, a redirection whose target is
+  a pattern, a copy or move into place, an archive extracted or a file decompressed into place, an output option, an
+  interpreter's one-line write, or a Windows spelling of a path or program could write a credentials file, a startup
+  file or a Git hook without the file rules' deny or hold. The shell's writers are now read as file writes (`TK-D023`,
+  `TK-A082`, `TK-A083`), any file in `.ssh/` or `.aws/` is denied from the shell as from a file tool (a host key
+  appended to `known_hosts` excepted), and Windows paths, homes and program names are read as Windows opens them.
+- **Shell reading**: values a loop takes, entries of a `commands` list, shell option clusters, a runner's exec after
+  its options, wrappers after a pipe or named by a path, `cmd /c` and `wsl`, `.cmd`, `.bat` and `.ps1` shims, a
+  variable whose value names the home or working folder, `gh`'s options before its command, and a line typed into a
+  live terminal over several calls are read as they run, so the rules that deny or hold them fire.
+- **SQL**: a statement hidden from every SQL reading (a comment or literal one database reads otherwise, a server in a
+  non-default string mode, statements before a literal that doesn't close) is read by `TK-DB001` to `TK-DB005`, and
+  the coding pack holds one in an MCP database tool (`TK-A086`).
+- **Harness tools decided as unknown**: some coding agents' file, process and sub-agent tools reached the policy as
+  unknown tools, which the laptop packs only flag, or with a decoy argument; a call whose arguments can't be read is
+  now blocked in the hook, and each tool is decided as the call it makes (OpenCode 2.x, Hermes's file tools, Crush,
+  Antigravity CLI, goose, Cursor, Qwen Code, Codex, Gemini CLI). Codex's `view_image` and the files a call's `items`
+  give the model (`spawn_agent`, `send_input`, any call of Codex's or Open Interpreter's with items; an image's `file:`
+  URL too) are each decided as a Read (#901, by @khushi-git-7). MCP input-required answers are decided and recorded.
+
+### Contributors
+@khushi-git-7, @hossainzarif23, @souravC01, @aj-codespy, @Purv-Kabaria, @Mr45401, @samueladebisi-dev, @kausthubhk,
+@HarshRajSinghania, @tylrcc, @hayatexe, @Parveshkumar2211, @munjikesh, @Vedant-200, @jay23606, @60507, @nx9161,
+@cpruijsen, @Shivansh22Saroha, @duchangyi666, @kings-avathar54, @VaishakRR, @Koloyaaa, @shaw778, @keshtib07-ghost,
+@Mr-Neutr0n, @narayanansriram, @Siri-Durugapu, @FTFaruque, @nabeelbaghoor, @Razepriv, @Sejal-Kadgi,
+@amarjithkumar2007-wq, @Vanshchandel17, @shounakjoshi88-a11y, @Seemanshi2104, @nsknojj, @vanshhh18, @tridev-tej,
+@v3ravani, @qwist1233-cpu, @X6M-Work and @Seyamalam. Thank you.
+
 ## 1.6.0 (2026-11-09) — intent grants for payments, a policy that reads what a command really does, a plain verify result that says ANCHORED or NOT ANCHORED, Devin and Kilo Code
 
 A feature release. A person can approve a held payment once and let more payments like it run within limits they set

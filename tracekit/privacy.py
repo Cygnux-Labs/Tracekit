@@ -45,8 +45,18 @@ _PREFILTER = {"private_key": ("private key",), "anthropic_key": ("sk-ant-",), "o
               "bearer_token": ("authorization",), "aws_secret_key": ("aws_secret_access_key",)}
 
 
-def redact_text(s):
-    """Return (redacted_string, was_redacted)."""
+MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")   # what redaction leaves in place of what it took out
+
+
+def _hides(text):
+    """Whether a mark in place of `text` takes out anything besides the marks `text` holds."""
+    return bool(MARK.sub("", text))
+
+
+def redact_text(s, counts=None):
+    """Return (redacted_string, was_redacted). `counts` (a collections.Counter), when given, gets one per mark a rule
+    wrote over something besides marks: text that holds marks already (a client's redaction, or look-alikes) can lose
+    them to a mark, so the marks before and after don't say how many were written."""
     out, hit = s, False
     low = s.lower()
     for name, pat in SECRET_PATTERNS:
@@ -61,7 +71,9 @@ def redact_text(s):
         else:
             out, n = pat.subn(f"[REDACTED:{name}]", out)
         hit = hit or n > 0
-    out, n = _redact_assignments(out)
+        if n and counts is not None:   # none of these patterns matches marks alone
+            counts[name] += n
+    out, n = _redact_assignments(out, counts)
     return out, hit or n > 0
 
 
@@ -146,9 +158,9 @@ def _kw_hits(s):
     return sorted(hits)
 
 
-def _redact_assignments(s):
+def _redact_assignments(s, counts=None):
     """Same result as ASSIGNMENT.subn(...) but fast on large inputs: find the keywords with
-    str.find, then look around each one."""
+    str.find, then look around each one. `counts`: as for redact_text."""
     hits = _kw_hits(s)
     if not hits:
         return s, 0
@@ -165,15 +177,21 @@ def _redact_assignments(s):
         if am and a >= last:
             out.append(s[last:am.start(3)])
             out.append("[REDACTED:assignment]")
+            if counts is not None and _hides(am.group(3)):
+                counts["assignment"] += 1
             last = pos = am.end(3)
             n += 1
     out.append(s[last:])
     return "".join(out), n
 
 
-def redact_dotenv(s):
-    """Redact every value of KEY=value lines (used for content read from .env files)."""
-    out, n = DOTENV_LINE.subn(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED:dotenv]", s)
+def redact_dotenv(s, counts=None):
+    """Redact every value of KEY=value lines (used for content read from .env files). `counts`: as for redact_text."""
+    def mark(m):
+        if counts is not None and _hides(m.group(3)):
+            counts["dotenv"] += 1
+        return f"{m.group(1)}{m.group(2)}[REDACTED:dotenv]"
+    out, n = DOTENV_LINE.subn(mark, s)
     return out, n > 0
 
 
@@ -182,27 +200,31 @@ def mentions_dotenv(*texts):
 
 
 MAX_DEPTH = 64
+NESTED = "[truncated: nesting too deep]"   # what redact() leaves in place of what is nested deeper than MAX_DEPTH
 
 
-def redact(obj, dotenv=False, _depth=0):
+def redact(obj, dotenv=False, _depth=0, counts=None):
     """Recursively redact every string (and every key). Returns (obj, was_redacted).
-    Nesting beyond MAX_DEPTH is replaced by a marker instead of recursing without bound."""
+    Nesting beyond MAX_DEPTH is replaced by a marker instead of recursing without bound. `counts`: as for
+    redact_text, and one under `nesting` per marker."""
     if _depth > MAX_DEPTH:
-        return "[truncated: nesting too deep]", True
+        if counts is not None:
+            counts["nesting"] += 1
+        return NESTED, True
     if isinstance(obj, str):
-        out, hit = redact_text(obj)
+        out, hit = redact_text(obj, counts)
         if dotenv:
-            out, hit2 = redact_dotenv(out)
+            out, hit2 = redact_dotenv(out, counts)
             hit = hit or hit2
         return out, hit
     if isinstance(obj, list):
-        res = [redact(x, dotenv, _depth + 1) for x in obj]
+        res = [redact(x, dotenv, _depth + 1, counts) for x in obj]
         return [r[0] for r in res], any(r[1] for r in res)
     if isinstance(obj, dict):
         out, hit = {}, False
         for k, v in obj.items():
-            rk, hk = redact_text(k) if isinstance(k, str) else (k, False)
-            rv, hv = redact(v, dotenv, _depth + 1)
+            rk, hk = redact_text(k, counts) if isinstance(k, str) else (k, False)
+            rv, hv = redact(v, dotenv, _depth + 1, counts)
             out[rk] = rv
             hit = hit or hk or hv
         return out, hit
@@ -212,9 +234,12 @@ def redact(obj, dotenv=False, _depth=0):
 # Tool-input fields recorded in clear (after redaction): the minimum a security reviewer needs
 # to see *what* was done. Everything else is recorded as a hash unless content_capture=full.
 ALWAYS_CLEAR = {"command", "file_path", "notebook_path", "path", "url", "pattern", "query", "glob",
-                "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit"}
+                "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit",
+                "commands", "paths", "urls"}
 # fields that say which action ran: a .env mention in them turns on dotenv redaction for the others, never for them
 ACTION_FIELDS = ("command", "file_path", "path", "pattern")
+# a call's several commands or files (Cline's run_commands, a patch's files): each entry is an ACTION_FIELDS value
+ACTION_LISTS = ("commands", "paths")
 
 
 def _redact_heredocs(cmd):
@@ -231,13 +256,15 @@ def _redact_heredocs(cmd):
 def tool_input(tool, ti, content_capture="hashed"):
     """Map a raw tool_input dict to {field: content} per docs/privacy.md."""
     out, ti = {}, scrub(ti or {})
-    dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS))
+    dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS),
+                             *(x for k in ACTION_LISTS if isinstance(ti.get(k), list) for x in ti[k]))
     for k, v in ti.items():
         rk = redact_text(k)[0] if isinstance(k, str) else k
-        rv, red = redact(v, dotenv and k not in ACTION_FIELDS)
-        if dotenv and k == "command" and isinstance(rv, str):
-            rv, hit = _redact_heredocs(rv)
-            red = red or hit
+        rv, red = redact(v, dotenv and k not in ACTION_FIELDS and k not in ACTION_LISTS)
+        if dotenv and k in ("command", "commands"):   # a heredoc's body, in the command or in each of several
+            done = [_redact_heredocs(c) if isinstance(c, str) else (c, False)
+                    for c in (rv if isinstance(rv, list) else [rv])]
+            rv, red = [c for c, _ in done] if isinstance(rv, list) else done[0][0], red or any(h for _, h in done)
         if content_capture == "full" or k in ALWAYS_CLEAR:
             out[rk] = content_value(rv, red)
         else:

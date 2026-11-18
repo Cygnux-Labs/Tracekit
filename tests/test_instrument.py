@@ -610,6 +610,8 @@ class ProcessRun(OnReal, unittest.TestCase):
         self.assertEqual(self.records(types.SimpleNamespace(run_id=first), "tool.result"), ["c1"])
         registered = self.events({"run_id": self.process.run_id})[0]["data"]
         self.assertEqual(registered.get("parent_run"), first)   # linked to the run it replaces
+        decided = [e["data"] for e in self.events({"run_id": self.process.run_id}) if e["type"] == "policy.decision"]
+        self.assertEqual(decided[0]["provenance_reason"], "continues an earlier run of the session")
         self.decide("c3")   # an adapter still addressing the first run reaches the new one
         self.assertEqual(self.records(self.process, "policy.decision"), ["c2", "c3"])
         self.assertEqual(self.gaps(self.process), [])

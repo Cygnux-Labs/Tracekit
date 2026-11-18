@@ -111,6 +111,12 @@ class TestAudit(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
+        # a home of the test's own: the person's Claude Code settings (Tracekit's hooks installed there change audit's
+        # last line, #902) are not the test's
+        env = mock.patch.dict(os.environ, {"HOME": str(self.root / "home"), "USERPROFILE": str(self.root / "home")})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -308,7 +314,7 @@ class TestAudit(unittest.TestCase):
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")   # installed: init is on PATH
     def test_the_text_ends_with_the_weeks_summary(self):
         """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
-        (a flag is no stop) and how to guard from now on."""
+        (a flag is no stop) and how to have Tracekit decide these calls as they run."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}),
                                              _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
@@ -317,12 +323,12 @@ class TestAudit(unittest.TestCase):
         self.assertTrue(out.endswith(
             "\n\nyour agent's week: 4 tool calls; Tracekit would have held 2 and blocked 1\n"
             "  top: TK-A001 destroying a deployment, database or volume (2), TK-D004 recursive delete of root or home (1)\n"
-            "  to guard from now on: tracekit init --dev --v2\n"), out)
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"), out)
         self.assertIn("\nyour agent's 2 days: 4 tool calls;", _run(str(self.root), "--since", "2d")[1])
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         self.assertTrue(_run(str(self.root))[1].endswith(
             "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
-            "  to guard from now on: tracekit init --dev --v2\n"))
+            "  to have Tracekit decide these calls as they run: tracekit init --dev --v2\n"))
         self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
 
     def test_without_tracekit_on_path_the_guard_line_says_to_install_it(self):
@@ -330,7 +336,21 @@ class TestAudit(unittest.TestCase):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch("shutil.which", return_value=None):
             out = _run(str(self.root))[1]
-        self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
+        self.assertTrue(out.endswith(
+            "\n  to have Tracekit decide these calls as they run: pip install tracekit-ai, then tracekit init --dev "
+            "--v2\n"))
+
+    def test_with_the_hooks_installed_the_last_line_says_they_decide_live(self):
+        """audit's last line suggests init only when Tracekit's hooks aren't there; with them installed for a Claude
+        Code audit it says new calls are decided as they run (#888)."""
+        from tracekit import install
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        with mock.patch.object(install, "user_settings_all", return_value=["settings.json"]), \
+                mock.patch.object(install, "_v2_hooks_in", return_value=True):
+            out = _run(str(self.root))[1]
+        self.assertTrue(out.endswith(
+            "\n  Tracekit's hooks are installed, so new calls are decided as they run\n"), out)
+        self.assertNotIn("to have Tracekit decide these calls as they run", out)
 
     @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
     def test_the_guard_line_names_the_calls_files_agent(self):
@@ -341,7 +361,8 @@ class TestAudit(unittest.TestCase):
                 code, out, err = _run("--calls", str(self.root / "calls.jsonl"), *(["--agent", agent] if agent else []))
                 self.assertEqual(code, 0, err)
                 flag = f" --agent {agent}" if agent in agent_hooks.AGENT_NAMES else ""   # claude is init's default
-                self.assertTrue(out.endswith(f"\n  to guard from now on: tracekit init --dev --v2{flag}\n"), out)
+                self.assertTrue(out.endswith(
+                    f"\n  to have Tracekit decide these calls as they run: tracekit init --dev --v2{flag}\n"), out)
         with mock.patch("shutil.which", return_value=None):
             out = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex")[1]
         self.assertTrue(out.endswith(", then tracekit init --dev --v2 --agent codex\n"), out)
@@ -664,11 +685,24 @@ class TestAudit(unittest.TestCase):
         old = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
         os.utime(path, (old, old))
         report = audit.audit(str(self.root), agent="cline")
-        self.assertEqual([(c["session"], c["tool"]) for c in report["calls"]],
-                         [("t1", "execute_command"), ("t1", "read_file")])
+        # its own names mapped as the hook maps the legacy extension's tools
+        self.assertEqual([(c["session"], c["tool"]) for c in report["calls"]], [("t1", "Bash"), ("t1", "Read")])
         self.assertEqual(datetime.fromisoformat(report["calls"][1]["time"]).timestamp(), old)   # no ts: the file's
         self.assertEqual([c["tool"] for c in audit.audit(str(self.root), since="7d", agent="cline")["calls"]],
-                         ["execute_command"])
+                         ["Bash"])
+
+    def test_a_pre_v4_cline_call_its_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """A legacy extension's call with no path or no command, which its hook blocks, is denied (TK-HOOK-BLOCKED) and
+        the rest is replayed, as for a v4 session's."""
+        _write_json(self.root / "t1" / "api_conversation_history.json", [
+            {"role": "user", "content": [{"type": "text", "text": "<task>tidy up</task>"}]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a", "name": "read_file", "input": {}},
+                {"type": "tool_use", "id": "b", "name": "execute_command", "input": {"requires_approval": False}},
+                {"type": "tool_use", "id": "c", "name": "execute_command", "input": {"command": "ls"}}]}])
+        report = audit.audit(str(self.root), agent="cline")
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in report["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
 
     def test_since_keeps_cline_calls_by_their_ts(self):
         _write_json(self.root / "s1" / "s1.messages.json", {"messages": [

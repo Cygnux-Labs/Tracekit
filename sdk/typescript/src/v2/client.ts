@@ -725,7 +725,8 @@ export class RunHandle {
   private renew(closed: string, e: RPCError): Promise<void> {
     if (closed !== this.runId) return Promise.resolve();   // renewed already
     this.renewing ??= (async () => {
-      const agent = { agent: { name: this.renewAs } };
+      // a later run of the process's agent, whose model may still hold what the closed run read
+      const agent = { agent: { name: this.renewAs }, continues: true };
       let r;
       try {   // linked to the closed run while it is still closing
         r = await this.client.call("register_run", { ...agent, parent: { run_id: this.runId, run_token: this.runToken } });

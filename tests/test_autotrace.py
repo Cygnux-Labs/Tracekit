@@ -35,6 +35,13 @@ try:
     from google.genai import types as gtypes
 except ImportError:
     genai = None
+    gtypes = None
+try:
+    import boto3
+    from botocore.stub import Stubber
+except ImportError:
+    boto3 = None
+    Stubber = None
 
 
 class FakeTracer:
@@ -332,6 +339,92 @@ class Signed(DaemonCase):
         resp = mine[2]["data"]
         self.assertEqual(resp["tool_uses"][0]["id"], mine[3]["data"]["tool_use_id"], "model request and execution share one id")
         self.assertFalse([e for e in evs if e["type"] == "capture.gap"])
+
+
+@unittest.skipUnless(boto3 is not None and Stubber is not None, "boto3 not installed")
+class Bedrock(unittest.TestCase):
+    def setUp(self):
+        self.t = FakeTracer()
+        autotrace.instrument(self.t, providers=("bedrock",))
+
+    def tearDown(self):
+        autotrace.uninstrument()
+
+    def test_instrument_and_uninstrument_bedrock_only(self):
+        import botocore.client
+        self.assertIsNotNone(getattr(botocore.client.BaseClient._make_api_call, "__tracekit_wrapped__", None))
+        autotrace.uninstrument()
+        self.assertIsNone(getattr(botocore.client.BaseClient._make_api_call, "__tracekit_wrapped__", None))
+
+    def test_bedrock_converse_recorded(self):
+        client = boto3.client("bedrock-runtime", region_name="us-east-1",
+                              aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(client)
+        resp = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"text": "Hello world"},
+                        {"toolUse": {"toolUseId": "tu_conv_1", "name": "Bash", "input": {"command": "ls"}}}
+                    ]
+                }
+            },
+            "stopReason": "tool_use",
+            "usage": {"inputTokens": 12, "outputTokens": 8, "totalTokens": 20},
+            "metrics": {"latencyMs": 150}
+        }
+        params = {"modelId": "anthropic.claude-v2", "messages": [{"role": "user", "content": [{"text": "hi"}]}]}
+        stubber.add_response("converse", resp, params)
+        stubber.activate()
+
+        out = client.converse(**params)
+        self.assertEqual(out["output"]["message"]["content"][0]["text"], "Hello world")
+        reqs, resps = self.t.pairs()
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(len(resps), 1)
+        self.assertEqual(reqs[0]["model"], "anthropic.claude-v2")
+        self.assertEqual(resps[0]["model"], "anthropic.claude-v2")
+        self.assertEqual(resps[0]["usage"]["input_tokens"], 12)
+        self.assertEqual(resps[0]["usage"]["output_tokens"], 8)
+        self.assertEqual(resps[0]["tool_uses"][0]["id"], "tu_conv_1")
+        self.assertEqual(resps[0]["tool_uses"][0]["name"], "Bash")
+        self.assertEqual(resps[0]["stop_reason"], "tool_use")
+
+    def test_bedrock_invoke_model_recorded(self):
+        import io
+        from botocore.response import StreamingBody
+        client = boto3.client("bedrock-runtime", region_name="us-east-1",
+                              aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(client)
+        resp = {
+            "body": StreamingBody(io.BytesIO(b'{"output": "test"}'), len(b'{"output": "test"}')),
+            "contentType": "application/json",
+            "ResponseMetadata": {"RequestId": "req-123"}
+        }
+        params = {"modelId": "anthropic.claude-v2", "body": b'{"prompt": "hi"}'}
+        stubber.add_response("invoke_model", resp, params)
+        stubber.activate()
+
+        out = client.invoke_model(**params)
+        self.assertEqual(out["body"].read(), b'{"output": "test"}')
+        reqs, resps = self.t.pairs()
+        self.assertEqual(len(reqs), 1)
+        self.assertEqual(len(resps), 1)
+        self.assertEqual(reqs[0]["model"], "anthropic.claude-v2")
+        self.assertEqual(resps[0]["model"], "anthropic.claude-v2")
+
+    def test_other_aws_service_not_recorded(self):
+        s3 = boto3.client("s3", region_name="us-east-1",
+                          aws_access_key_id="test", aws_secret_access_key="test")
+        stubber = Stubber(s3)
+        stubber.add_response("list_buckets", {"Buckets": []}, {})
+        stubber.activate()
+
+        s3.list_buckets()
+        reqs, resps = self.t.pairs()
+        self.assertEqual(len(reqs), 0)
+        self.assertEqual(len(resps), 0)
 
 
 if __name__ == "__main__":

@@ -121,8 +121,12 @@ class Storage:
         size, so the next open replays only the records after it. Call it with no append in flight."""
 
     def meta_put(self, key, value):
-        """Store `value` (str) for the store's readers that can't read the signer's data dir (the log key's vkey under
-        "log_vkey"); a store read through that dir (file) keeps none."""
+        """Store `value` (str) under `key` with the store: the log key's vkey ("log_vkey"), for readers that can't read
+        the signer's data dir, and the log's checkpoint origin ("origin"), kept from the log's first start."""
+
+    def meta(self, key):
+        """The value meta_put stored under `key`, or None."""
+        return None
 
     def append_batch(self, records):
         """Append v2 records whose seqs continue the log, with one write. Returns once written; with

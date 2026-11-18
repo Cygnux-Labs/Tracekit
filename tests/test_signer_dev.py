@@ -190,6 +190,45 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertIn("dev signer stopped (pid ", self.cli("down"))
         self.assertFalse(self.held())
 
+    def test_a_signer_still_starting_reports_its_pid(self):
+        """#769: a signer that holds the lock but has not published endpoint.json should report its actual PID."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        ready = os.path.join(self.run_dir, "ready")
+        processes = []
+
+        child = (
+            "import os, sys, time; "
+            "from tracekit.locking import lock_file; "
+            "d = sys.argv[1]; "
+            "f = open(os.path.join(d, 'signer.lock'), 'a'); "
+            "lock_file(f); "
+            "open(os.path.join(d, 'ready'), 'w').close(); "
+            "time.sleep(30)"
+        )
+
+        def spawn_locked(d):
+            with open(os.path.join(d, autospawn.LOG), "ab") as log:
+                p = subprocess.Popen(
+                    [sys.executable, "-c", child, d],
+                    stdout=log,
+                    stderr=log,
+                )
+            processes.append(p)
+            self.addCleanup(p.wait)
+            self.addCleanup(p.kill)
+            wait_for(lambda: os.path.exists(ready), 10)
+            return p
+
+        with mock.patch.object(autospawn, "spawn", side_effect=spawn_locked):
+            with self.assertRaises(autospawn.Hung) as got:
+                autospawn._ensure(self.run_dir, wait=True, timeout=0.2)
+
+        message = str(got.exception)
+        self.assertIn(f"pid {processes[0].pid}", message)
+        self.assertNotIn("pid None", message)
+        self.assertIn("was still starting after 0.2s", message)
+        self.assertIn(os.path.join(self.run_dir, autospawn.LOG), message)
+
     def serving(self, child):
         """`python -c child` with self.run_dir as its argument, once it serves as the dev signer there. Its process."""
         os.makedirs(self.run_dir, 0o700, exist_ok=True)
@@ -216,6 +255,34 @@ class DevSignerEndToEnd(unittest.TestCase):
                                            "lambda: (lambda *a: None, lambda: None)))")
         self.assertEqual(autospawn.down(timeout=10, d=self.run_dir), p.pid)
         self.assertEqual(p.wait(10), 0)
+
+    def starting(self, seconds):
+        """A dev signer of self.run_dir that takes `seconds` to start once it holds signer.lock. Its process."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        child = ("import sys, time; from tracekit.signer import service; sys.exit(service.serve_dev(sys.argv[1], "
+                 f"lambda: time.sleep({seconds}) or (lambda *a: None, lambda: None)))")
+        with open(self.path(autospawn.LOG), "ab") as log:
+            p = subprocess.Popen([sys.executable, "-c", child, self.run_dir], stdout=log, stderr=log)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(self.held, 30)
+        return p
+
+    def test_a_client_waits_past_its_timeout_for_a_signer_that_says_it_is_starting(self):
+        """A dev signer reading a long store (rebuilding its open runs' provenance indexes) takes longer to answer than
+        a client waits: it logs STARTING once it holds signer.lock, and a client waits on while it does."""
+        p = self.starting(2)
+        sock, _, hello = autospawn.ensure(timeout=0.5)
+        sock.close()
+        self.assertEqual(hello["pid"], p.pid)
+
+    def test_a_client_waits_for_a_starting_signer_only_as_long_as_it_may(self):
+        """`start_wait` bounds the whole wait: a hook answers within its harness's timeout (claude_code.start_wait)."""
+        self.starting(30)
+        begun = time.monotonic()
+        with self.assertRaises(autospawn.Hung):
+            autospawn.ensure(timeout=0.5, start_wait=1.5)
+        self.assertLess(time.monotonic() - begun, 5)
 
     def test_a_client_that_finds_the_signer_stopping_starts_the_next_once_it_exits(self):
         """Review of 1.5.3: a client that found signer.lock held and nothing answering (a `tracekit down` while an agent

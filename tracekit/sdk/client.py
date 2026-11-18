@@ -47,7 +47,7 @@ import weakref
 
 import rfc8785
 
-from tracekit import __version__
+from tracekit import __version__, provenance
 from tracekit.core import jsonable
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
@@ -376,11 +376,13 @@ class Client:
     write call (one with a `request_id`) has `recorded`: False, it was not; None, a try of it may have been (its message
     says so); True, it was and only its answer was lost (an event's retry refused client_seq_reused). `token_file`:
     an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE; `token`: a tcp:// signer's token,
-    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read)."""
+    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read); `answer_by`: a time.monotonic() by
+    which a connection to the dev signer has answered or failed, a starting one included (autospawn.ensure's
+    `start_wait`, at most its default; None: no such time)."""
 
-    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None):
+    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None, answer_by=None):
         self.signer = signer or _default_signer()
-        self.timeout, self.hello, self.token = timeout, None, token
+        self.timeout, self.hello, self.token, self.answer_by = timeout, None, token, answer_by
         http = (self.signer or "").startswith(("https://", "http://"))
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
@@ -544,10 +546,7 @@ class Client:
         """-> the frame to send. Fills in `stream` and `client_seq` and validates `req`; counts the event even when
         `connect()` raises, so the signer's client_counter_gap covers a call it never saw (one a caller then ran with
         its fail mode open). Call under self._lock."""
-        if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
-            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
-            # without either keeps its entries for the client's life
-            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
+        self._own()
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
@@ -570,6 +569,13 @@ class Client:
             self._seqs.pop(run_id, None)
             self._order.pop(run_id, None)
         return data
+
+    def _own(self):
+        """A new client, or a forked child: its own stream and connection. Call under self._lock."""
+        if self._pid != os.getpid():
+            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
+            # without either keeps its entries for the client's life
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
 
     def _send(self, method, req, timeout=CONNECT_TIMEOUT_S, deadline=None):
         with self._lock:
@@ -619,7 +625,8 @@ class Client:
             sock, rfile, self.hello = connect(self.signer, timeout=min(CONNECT_TIMEOUT_S, timeout), token=self.token)
         else:
             from tracekit.sdk import autospawn
-            sock, rfile, self.hello = autospawn.ensure()
+            sock, rfile, self.hello = autospawn.ensure(**({} if self.answer_by is None else {"start_wait": min(
+                autospawn.START_WAIT_S, max(self.answer_by - time.monotonic(), 0.0))}))
         return sock, rfile
 
     def _connect(self, timeout=CONNECT_TIMEOUT_S):
@@ -670,6 +677,39 @@ def sendable(out):
         return len(canonical(out)) <= MAX_LINE // 2
     except rfc8785.CanonicalizationError:
         return False
+
+
+def parts(value, key=None):
+    """The values to observe for `value`, a list or dict of items (or a page holding one at `key`): runs of whole
+    items, each in a copy of the page, that one observe carries and the signer indexes whole: sendable, with at most
+    provenance.MAX_VALUES values (counted per item, so a part never holds more). An item too large alone is a part of
+    its own; sent as its digest (result_field) or read past MAX_VALUES, it makes the run's index partial or truncated."""
+    items = value if key is None else value.get(key)
+    if not isinstance(items, (list, dict)):
+        yield value
+        return
+    entries = [{k: v} for k, v in items.items()] if isinstance(items, dict) else [[v] for v in items]
+    put = (lambda part: part) if key is None else (lambda part: {**value, key: part})
+
+    def measure(v):   # (bytes, values) of v, (MAX_LINE, 0) when it is not canonical JSON (sent as its digest)
+        try:
+            return len(canonical(v)), len(provenance.values(v)[0])
+        except (rfc8785.CanonicalizationError, ValueError):
+            return MAX_LINE, 0
+    room = measure(put(type(items)()))
+    part, size, count = type(items)(), *room
+    for entry in entries:
+        s, n = measure(entry)
+        if part and (size + s > MAX_LINE // 2 or count + n > provenance.MAX_VALUES):
+            yield put(part)
+            part, size, count = type(items)(), *room
+        if isinstance(part, list):
+            part += entry
+        else:
+            part |= entry
+        size, count = size + s, count + n
+    if part or not entries:
+        yield put(part)
 
 
 class VaultBody:
