@@ -1259,7 +1259,9 @@ class Shell(unittest.TestCase):
                           ("$'\\x{73}'udo id", ["sudo", "id"]), ("$'\\u0073'udo id", ["sudo", "id"]),
                           ("$'\\163'udo id", ["sudo", "id"]), ("su$'\\cZ'do id", ["su\x1ado", "id"]),
                           ("echo $'\\z\\x\\u\\c'", ["echo", "\\z\\x\\u\\c"]), ("echo $'\\c?\\c\\\\'", ["echo", "\x7f\x1c"]),
-                          ("echo $'\\'\\\"\\?\\\\'", ["echo", "'\"?\\"]), ("echo $'\\777'", ["echo", "\xff"])):
+                          ("echo $'\\'\\\"\\?\\\\'", ["echo", "'\"?\\"]), ("echo $'\\777'", ["echo", "\xff"]),
+                          ("echo $'\\x{2fq}'", ["echo", "/q}"]), ("echo $'\\x{2f'", ["echo", "/"]),
+                          ("echo $'\\x{}'", ["echo", ""])):
             self.assertEqual(argvs(cmd)[0], argv, cmd)
         for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
