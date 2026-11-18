@@ -946,10 +946,18 @@ class RetireBecause(unittest.TestCase):
         head = "name: n\ndescription: d\n"
         read = lambda extra: lessons.parse("n.md", f"---\n{head}{extra}\n---\nbody\n")   # noqa: E731
         self.assertEqual(read('retired_because: {"run": "r-1", "seq": 4}')["retired_because"], {"run": "r-1", "seq": 4})
-        for bad in ('{"run": "r-1"}', '{"seq": 4}', '{"run": "r-1", "seq": "4"}', '{"run": "r-1", "seq": 04}',
+        for bad in ('{"run": "r-1"}', '{"seq": 4}', '{"run": "r-1", "seq": "4"}',
                     '{"run": "r-1", "seq": -1}', '{"run": "r-1", "seq": true}', "[1]", "x"):
             with self.subTest(bad=bad):
                 self.assertNotIn("retired_because", read(f"retired_because: {bad}"))
+        broken = read('retired_because: {"run": "r-1", "seq": 04}')   # not JSON: a malformed note, refused whole
+        self.assertEqual(broken, ["retired_because is not a value"])
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        os.makedirs(os.path.join(folder.path, "projects", PROJECT))
+        with open(os.path.join(folder.path, "projects", PROJECT, "n.md"), "w", encoding="utf-8") as f:
+            f.write(f"---\n{head}retired_because: {{\"run\": \"r-1\", \"seq\": 04}}\n---\nbody\n")
+        with self.assertRaises(lessons.Refused):
+            folder.notes()
         self.assertEqual(read('origin: {"a": 1}')["origin"], '{"a": 1}')   # a bare word, not loaded
 
     def test_one_grammar_for_the_record_of_an_answer(self):

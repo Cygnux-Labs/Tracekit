@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1015,6 +1016,13 @@ class Lessons(unittest.TestCase):
         [gone] = [x for x in L["earlier"] if x["id"] == fix["id"]]
         self.assertEqual(gone["retired_because"], {"run": run.run_id, "seq": seq})
         self.assertIn(f"Retired: disproved by run {run.run_id} at seq {seq}", self.tips()[1])
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        self.assertIn(f"{run.run_id}:{seq}", subprocess.check_output(
+            ["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True))
+        self.assertEqual(self.tips("restore", fix["id"])[0], 0)
+        [back] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(back["status"], "active")
+        self.assertIsNone(back.get("retired_because"))
 
     def test_a_retired_note_whose_because_names_no_run_or_seq_is_listed_as_retired(self):
         fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")

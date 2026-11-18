@@ -276,7 +276,7 @@ def parse(file, text):
                 m.group(1) == "retired_because" and v[:1] == "{") else v
         except ValueError:
             out.append(f"{m.group(1)} is not a value")
-    if "retired_because" in fields:
+    if "retired_because" in fields:   # JSON that isn't one: refused above, as any malformed note; another shape: dropped
         try:
             fields["retired_because"] = parse_because(fields["retired_because"])
         except Refused:

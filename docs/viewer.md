@@ -439,9 +439,10 @@ A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lesson
 `add TEXT` writes your own. Pass `--because RUN:SEQ` to `retire` to name the record that disproved the lesson: at
 retire time `tracekit tips` checks that the run is in the dev store, verifies, and has a record at SEQ; the signer
 checks only the shape of `RUN:SEQ`. The page's "disproved by" line is read back from the note file, not checked again,
-and that this record disproved the lesson is your word. Proposals are worked out from the records each time and never stored. How a session gets
-them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in
-[privacy](privacy.md).
+and that this record disproved the lesson is your word. A `retired_because` in a note that isn't valid JSON refuses
+the note, as any malformed note is refused; valid JSON in the wrong shape is dropped. Proposals are worked out from the
+records each time and never stored. How a session gets them is in
+[coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in [privacy](privacy.md).
 
 #### tracekit tips
 
