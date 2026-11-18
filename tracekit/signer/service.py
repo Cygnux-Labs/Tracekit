@@ -371,6 +371,7 @@ APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
+HIDDEN_CODE = privacy.HIDDEN_CODE   # a held call whose approver's copy would hide code: denied (_shown)
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
@@ -682,13 +683,16 @@ def _digested(v):
     return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
-def _shown(args, dotenv):
-    """The approver's copy of parsed `args`: privacy.redact, with each shell line under an argument the engine reads as
-    a command (engine._COMMAND_KEYS) redacted as the shell reads it (privacy.redact_command), so a value hides nothing
-    that runs after it, and a string redaction may have hid more than values in starting with how much it hid
-    (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use adapter typed) hidden, since an
-    approver could test guesses of a weak secret against it."""
-    shown = privacy.redact(args, dotenv, commands=engine._COMMAND_KEYS, noted=True)[0]
+def _shown(args, dotenv, unclean=None):
+    """The approver's copy of parsed `args`: privacy.approver_copy, each shell line or argv under an argument the engine
+    reads as a command (engine._COMMAND_KEYS) redacted as the shell reads it, so a value hides nothing that runs after
+    it, and a string redaction may have hid more than values in starting with how much it hid (privacy.NOTE); and each
+    digest under `typed_secrets` (a secret the Browser Use adapter typed) hidden, since an approver could test guesses of
+    a weak secret against it. `unclean`, a list: gets True when it hides more than clean values in a command, so a
+    held call is denied (TK-HIDDEN-CODE)."""
+    shown, hides = privacy.approver_copy(args, dotenv, engine._COMMAND_KEYS)
+    if hides and unclean is not None:
+        unclean.append(True)
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
         shown = {**shown, "typed_secrets": {n: [d if not (isinstance(d, str) and _DIGEST.fullmatch(d))
                                                 else "[REDACTED:typed_secret]" for d in v] if isinstance(v, list) else v
@@ -2159,6 +2163,8 @@ class SignerService:
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
         so its label is no reason it was denied or held."""
+        if HIDDEN_CODE in ids:   # its reason alone: the call can't be approved, whatever held it
+            ids = [HIDDEN_CODE]
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
@@ -3068,6 +3074,8 @@ class SignerService:
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
+        unclean = []   # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE)
+        shown = _shown(args, _dotenv(args), unclean) if digest else None
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
@@ -3166,6 +3174,9 @@ class SignerService:
                 record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
                 which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
+                if verdict == "ask" and unclean:   # no person can see what they'd approve: never asked, and recorded
+                    verdict, rule_ids = "deny", rule_ids + [HIDDEN_CODE]
+                    tx.set(run["denied"], digest, True)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
                          **({"args_commitment": commitment} if commitment else {}),
@@ -3223,7 +3234,7 @@ class SignerService:
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
         if written and written[-1][1]:
-            self._retain(key, *written[-1], _shown(args, _dotenv(args)))
+            self._retain(key, *written[-1], shown)
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,

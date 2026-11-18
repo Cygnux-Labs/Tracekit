@@ -232,7 +232,8 @@ def wait_for_approval(ev_call, decision, pol):
         timeout = min(timeout, APPROVAL_CAP_S)
     try:
         r = client.rpc({"op": "approval_request", "run_id": ev_call["run_id"], "agent_id": ev_call["agent_id"],
-                        "tool_use_id": d["tool_use_id"], "summary": f"{d['name']} {shown}"[:400],
+                        "tool_use_id": d["tool_use_id"],
+                        "summary": f"{d['name']} {decision.get('note', '')}{shown}"[:400],   # the note first
                         "rule_ids": decision["rule_ids"], "timeout_s": timeout})
     except client.SignerUnavailable as e:
         return False, f"approval needed but the signer is unavailable ({e}); rejected"
@@ -287,7 +288,10 @@ def build_events(p, pol, reasoning=True):
     elif name == "PreToolUse":
         tool, ti, tid = p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p["tool_use_id"]
         d = policy_mod.evaluate(pol, tool, ti, cwd)
-        evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": privacy.tool_input(tool, ti, cc)}})
+        unclean = []   # the record, which an approver sees, would hide more than clean values in the command
+        rec = privacy.tool_input(tool, ti, cc, unclean)
+        d = privacy.screened(d, ti, rec, unclean)
+        evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": rec}})
         dec = {**b, "type": "policy.decision", "data": {"tool_use_id": tid, "decision": d["decision"],
                                                         "rule_ids": d["rule_ids"], "reasons": d["reasons"] + d["flags"],
                                                         "policy_hash": phash, "policy_version": str(pol.get("version", "unversioned"))}}
@@ -379,6 +383,9 @@ def main(harness_reasoning=True, raw=None):
             return 2
         print(f"[tracekit] {msg}", file=sys.stderr)
         return 0
+    if deny and privacy.HIDDEN_CODE in deny["rule_ids"]:   # one reason the agent can act on
+        print(privacy.HIDDEN_CODE_MESSAGE, file=sys.stderr)
+        return 2
     if deny:
         print("Blocked by tracekit policy: " + "; ".join(f"{i} {r}" for i, r in zip(deny["rule_ids"], deny["reasons"])),
               file=sys.stderr)

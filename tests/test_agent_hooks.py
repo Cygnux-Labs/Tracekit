@@ -4001,6 +4001,48 @@ class Installer(unittest.TestCase):
                 self.assertIn(runs, summary)
                 self.assertNotIn("abcd", summary)
 
+    def test_a_v1_hold_whose_record_would_hide_code_is_denied(self):
+        """v1's approver reads the call as its record keeps it: a hold whose record would hide more than clean values in
+        the command (a value with a ; or a blank in it, a key) is denied with TK-HIDDEN-CODE's reason, recorded so, and
+        never asked; one that hides only clean values is asked, the summary saying how much it hid when that's more
+        than a few values."""
+        from tracekit import hook, policy as policy_mod, privacy
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        pol = {**policy_mod.load()[0], "deny": [], "flag": [], "ask": [{"id": "T-HOLD", "tool": "Bash", "pattern": "."}]}
+        many = "\n".join(f"K{i}=v{i:04}" for i in range(60))   # 300 characters of plain values
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}):
+            for i, (command, decision) in enumerate((
+                    ("cat > .env <<EOF\nDB_PASS=p@ss;word\nEOF\nmake", "deny"),
+                    ("cat > .env <<EOF\nDB_PASS=hunter2\nEOF\nmake", "ask"),
+                    (f"cat > db.conf <<EOF\n{many}\nEOF\nmake # .env", "ask"),
+                    ("TOKEN=abcd;make", "ask"), ("echo 'TOKEN=abcd;rm -rf ~/w' | sh", "deny"))):
+                with self.subTest(command=command):
+                    evs, d = hook.build_events({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                                "tool_name": "Bash", "tool_use_id": f"t{i}",
+                                                "tool_input": {"command": command}}, pol)
+                    [rec] = [e for e in evs if e["type"] == "policy.decision"]
+                    self.assertEqual((d["decision"], rec["data"]["decision"]), (decision, decision))
+                    self.assertEqual(d["rule_ids"][-1], "TK-HIDDEN-CODE" if decision == "deny" else "T-HOLD")
+                    if decision == "ask":
+                        seen = []
+                        call = next(e for e in evs if e["type"] == "tool.call")
+                        with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                                {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else
+                                {"decision": "timeout"})), mock.patch.object(hook, "APPROVAL_CAP_S", 1), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            hook.wait_for_approval(call, d, {"approval_timeout_s": 1})
+                        summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                        self.assertEqual(summary.startswith("Bash # [300 characters hidden by redaction]\n"), i == 2)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}), \
+                mock.patch.object(hook.policy_mod, "load", lambda: (pol, "")), \
+                mock.patch.object(hook.client, "send", lambda *a, **k: {"ok": True}), contextlib.redirect_stderr(err):
+            code = hook.main(raw=json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                             "tool_name": "Bash", "tool_use_id": "t9",
+                                             "tool_input": {"command": "TOKEN='ab;cd' make"}}))
+        self.assertEqual((code, err.getvalue().strip()), (2, privacy.HIDDEN_CODE_MESSAGE))
+
     def test_cline_caps_the_approval_wait_as_the_hook_reads_it(self):
         # the extension runs a call whose hook takes over 30 s: every value float() reads above the cap is capped
         for value, want in (("300.5", "20"), ("1e3", "20"), ("1_000", "20"), ("inf", "20"), ("5", "5"), ("x", "x"),
