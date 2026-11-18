@@ -870,6 +870,12 @@ def _harness(argv):
     one by it: claude-code@latest), a script under a harness package a JavaScript runtime runs (after any options:
     node -r x …/cli.js), or one it runs by the harness's name (node_modules/.bin/claude, `"$(which claude)"`), or a
     module python -m runs; else None."""
+    if argv and argv[0].startswith("@"):
+        pkg = re.sub(r"(?<=.)@[^@]*$", "", argv[0]).replace("\\", "/")
+        m = _HARNESS_PACKAGE.search(pkg)
+        found = m and next((g for g in m.groups() if g), None)
+        if found:
+            return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
     name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
     name = _HARNESS_NAMES.get(name, name)
     if name in _HARNESS_CLIS:

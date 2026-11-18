@@ -4406,7 +4406,7 @@ class _Parser:
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
-            name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
+            name, args = _lower_name(argv[0] if argv[0].startswith("@") else (argv[0].rsplit("/", 1)[-1] or argv[0])), argv[1:]
             if name == "gh" and args[:1] and args[0].startswith("-"):   # options before its command, as cobra reads them
                 order = _gh_order(args)
                 argv, unreadable = [argv[0]] + [args[i] for i in order], [unreadable[0]] + [unreadable[i + 1]
