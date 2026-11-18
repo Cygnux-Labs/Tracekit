@@ -2,7 +2,9 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.7.0 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
+## 1.7.1 (2026-11-17) — a laptop default that holds what costs, eight more coding agents, provenance that survives restarts and later runs, and lessons from signed runs
+
+1.7.0 was tagged but never published: its release job timed out. 1.7.1 is the same code with a longer release timeout.
 
 A feature and security release. The laptop default (`dev.yaml`, which the dev signer uses) now holds the costly short
 list: secrets and credentials, deletes outside the project or on remotes, access changes, guardrail changes, and
@@ -150,7 +152,7 @@ from protocol 15). The bundle format is unchanged: 1.6 verifiers verify 1.7 bund
   @khushi-git-7); the Speed test runs in its own job on every Python and OS (#877, by @khushi-git-7).
 
 ### Security
-These are fixed in 1.7.0; each was found by our own review, and none is known to have been used. Upgrade the signer
+These are fixed in 1.7.1; each was found by our own review, and none is known to have been used. Upgrade the signer
 and the hooks together. Advisories follow the release.
 - **Provenance**: a write the storage reported failed but kept, a later run of a session, and untrusted input or an
   MCP list recorded as a digest could each leave the index `complete` without values it should have held, so a
