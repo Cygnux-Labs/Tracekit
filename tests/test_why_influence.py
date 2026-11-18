@@ -12,6 +12,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import factories  # noqa: E402
+from tracekit.policy2 import compile as compile_policy  # noqa: E402
 from tracekit.why import build_graph, load_run  # noqa: E402
 from tracekit.why.analysis import alerts, analyse, workspace  # noqa: E402
 from tracekit.why.core import Runtime  # noqa: E402
@@ -276,7 +277,7 @@ class GatewaySeen(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def records(self, source):
+    def records(self, source, policy_hash="sha256:unknown"):
         ex = {"exchange_id": "x1", "streamed": False, "model": "m"}
 
         def v2rec(*a, **k):
@@ -285,7 +286,7 @@ class GatewaySeen(unittest.TestCase):
             v2rec(0, "run.registered", {"agent": {"name": "a"}, "identity": {}}),
             v2rec(1, "input.observed", {"source": "task", "trust": "trusted", "output": {"hash": "sha256:t"}}),
             v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "web_fetch", "decision": "allow",
-                                         "rule_ids": [], "policy_hash": "sha256:unknown"}),
+                                         "rule_ids": [], "policy_hash": policy_hash}),
             v2rec(3, "tool.result", {"tool_use_id": "c1", "ok": True, "output": {"hash": "sha256:r"}}),
             v2rec(4, "model.exchange", {**ex, "phase": "request", "tool_results_sent": ["c1"]}, source=source),
             v2rec(5, "model.exchange", {**ex, "phase": "response", "tool_uses": [{"id": "c2", "name": "send"}]},
@@ -303,6 +304,23 @@ class GatewaySeen(unittest.TestCase):
         edges = {e["label"]: e for e in graded(build_graph(run), call)["edges"]}
         self.assertEqual((edges["web_fetch"]["basis"], edges["web_fetch"]["cites"]["run_seq"]), ("gateway", 4))
         self.assertEqual(edges["task"]["basis"], "reconstructed")
+
+    def test_a_results_trust_is_the_policys_the_call_was_decided_under(self):
+        """A result the policy doesn't list as untrusted is trusted context; one of a policy the importer doesn't have is
+        untrusted, so nothing unknown reads as trusted."""
+        trust = {}
+        for name, listed in (("listed", "untrusted: [web_fetch]\n"), ("unlisted", "")):
+            path = os.path.join(self.tmp, name + ".yaml")
+            with open(path, "w") as f:
+                f.write(f"version: t-{name}\ndescription: test\n{listed}")
+            pol, errors = compile_policy.build(path)
+            self.assertEqual(errors, [])
+
+            class Reasons(dict):
+                policies = {"sha256:" + name: pol}
+            run = load_run(convert(self.records("gateway", "sha256:" + name), os.path.join(self.tmp, name), Reasons()))
+            trust[name] = run.of_type("decision")[0]["context"][-1]["trust"]
+        self.assertEqual(trust, {"listed": "untrusted", "unlisted": "trusted"})
 
     def test_an_agents_own_report_of_what_it_sent_adds_nothing(self):
         run = load_run(convert(self.records("sdk"), self.tmp, {}))
