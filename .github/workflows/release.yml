@@ -128,6 +128,9 @@ jobs:
           cp -r tests "$w/"
           cp plugin/.claude-plugin/plugin.json "$w/plugin/.claude-plugin/"
           cp sdk/typescript/package.json "$w/sdk/typescript/"
+          mkdir -p "$w/integrations/hermes"
+          cp README.md "$w/"
+          cp integrations/hermes/plugin.yaml "$w/integrations/hermes/"
           cd "$w"
           "$RUNNER_TEMP/clean/bin/python" -c "import tracekit, sys; sys.exit('site-packages' not in tracekit.__file__)"
           "$RUNNER_TEMP/clean/bin/python" -m pytest -q -p no:cacheprovider tests/test_version.py tests/test_golden.py
