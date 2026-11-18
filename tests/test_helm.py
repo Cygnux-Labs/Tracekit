@@ -325,6 +325,43 @@ class Central(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("agentEgress.podSelector is required", p.stderr)
 
+    def agent_dns_rules(self, *sets):
+        """The agents' egress rules on port 53, with `sets` on top of an enabled agentEgress policy."""
+        m = self.objects(*CUSTODY, "agentEgress.enabled=true", "agentEgress.podSelector.app=agent", *sets)
+        return [r for r in m["NetworkPolicy", "t-agent-egress"]["spec"]["egress"] if r["ports"][0]["port"] == 53]
+
+    def test_agent_egress_dns_resolvers(self):
+        ports = [{"port": 53, "protocol": "UDP"}, {"port": 53, "protocol": "TCP"}]
+        kube_dns = {"to": [{"namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+                            "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}], "ports": ports}
+        self.assertEqual(self.agent_dns_rules(), [kube_dns])
+        # a NodeLocal DNSCache is added to kube-dns, one address on port 53
+        self.assertEqual(self.agent_dns_rules("agentEgress.dns.nodeLocal=169.254.20.10"),
+                         [kube_dns, {"to": [{"ipBlock": {"cidr": "169.254.20.10/32"}}], "ports": ports}])
+        self.assertEqual(self.agent_dns_rules("agentEgress.dns.nodeLocal=fd00::10")[1]["to"],
+                         [{"ipBlock": {"cidr": "fd00::10/128"}}])
+        # other resolvers replace kube-dns when it is off
+        self.assertEqual(self.agent_dns_rules("agentEgress.dns.kubeDns=false", "agentEgress.dns.cidrs={10.0.0.53/32}"),
+                         [{"to": [{"ipBlock": {"cidr": "10.0.0.53/32"}}], "ports": ports}])
+        self.assertEqual(self.agent_dns_rules("agentEgress.dns.kubeDns=false", "agentEgress.dns.nodeLocal=169.254.20.10",
+                                              "agentEgress.dns.cidrs={10.0.0.0/24,fd00::/64}")[0]["to"],
+                         [{"ipBlock": {"cidr": c}} for c in ("169.254.20.10/32", "10.0.0.0/24", "fd00::/64")])
+
+    def test_agent_egress_dns_refuses_what_is_not_an_exact_resolver(self):
+        for sets, err in ((["agentEgress.dns.nodeLocal=169.254.20.0/24"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.nodeLocal=169.254.20.1-169.254.20.9"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.nodeLocal=300.1.1.1"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.cidrs={0.0.0.0/0}"], "too broad"),
+                          (["agentEgress.dns.cidrs={::/0}"], "too broad"),
+                          (["agentEgress.dns.cidrs={10.0.0.0/16}"], "too broad"),
+                          (["agentEgress.dns.cidrs={fd00::/48}"], "too broad"),
+                          (["agentEgress.dns.cidrs={10.0.0.53}"], "must be a CIDR"),
+                          (["agentEgress.dns.cidrs={10.0.0.53/33}"], "must be a CIDR"),
+                          (["agentEgress.dns.kubeDns=false"], "names no resolver")):
+            p = render_central(*CUSTODY, "agentEgress.enabled=true", "agentEgress.podSelector.app=agent", *sets)
+            self.assertNotEqual(p.returncode, 0, sets)
+            self.assertIn(err, p.stderr, sets)
+
     def test_refusals(self):
         for sets, err in ((["tls.secretName=tls", "awsKms.region=r", "awsKms.keyIds={k0}"], "awsKms.keyIds needs a key"),
                           ([], "tls.secretName is required"),
