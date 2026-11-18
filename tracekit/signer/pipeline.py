@@ -365,9 +365,10 @@ class Tx:
         contain_state(self.set, log, run, e, self.pop)
         grant_state(self.set, run, e)
         labels.state(self.set, run, e)
-        # the run labels this record sets, each a signer's run.label right after it, before the run's next call
-        new = log.labels.sets(e, log.approvals.get, run["calls"].get) - set(run.get("labels") or ()) if log.labels \
-            else ()
+        # the run labels this record sets, each a signer's run.label right after it, before the run's next call (a
+        # final run's state keeps no calls: nothing it records runs a call)
+        new = log.labels.sets(e, log.approvals.get, run["calls"].get) - set(run.get("labels") or ()) \
+            if log.labels and "calls" in run else ()
         for label in sorted(new):
             self.emit(run, "run.label", {"label": label, "action": "add", "by": "signer", "source": e["run_seq"]},
                       source="signer")

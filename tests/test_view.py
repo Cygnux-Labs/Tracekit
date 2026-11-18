@@ -93,7 +93,7 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 3},
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 6, "flag": 4},
                                       "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",

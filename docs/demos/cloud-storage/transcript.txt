@@ -5,45 +5,47 @@ Bash 'gsutil ls gs://prod-asset-images/products/': allow
   ran
 
 Bash 'gsutil -m cp -r ./assets/images gs://prod-asset-images/products/': ask TK-A032
-  uploading to cloud storage. Wait for a person to approve the held call, or write the files locally and let a person upload them.
+  uploading to cloud storage. Instead: Have a person approve the held call, or write the files locally and let a person upload them.
 
 the person at the terminal:
-$ tracekit approvals reject apr-4df28a5581d1bfca740097973606bf4f --reason 'I said no new upload'
-rejected: apr-4df28a5581d1bfca740097973606bf4f
+$ tracekit approvals reject apr-0ac47e5e2fb75984fd0285401f0d1b0f --reason 'I said no new upload'
+rejected: apr-0ac47e5e2fb75984fd0285401f0d1b0f
 
 the agent: the call was rejected
 
-Bash "gsutil -m rm 'gs://prod-asset-images/products/**'": ask TK-A031 TK-F003
-  destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket); destructive. Wait for a person to approve the held call; a person deletes bucket data or its version history themselves.
+Bash "gsutil -m rm 'gs://prod-asset-images/products/**'": ask TK-A031
+  destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket). Instead: Have a person approve the held call; a person deletes bucket data or its version history themselves.
 
 the person at the terminal:
-$ tracekit approvals reject apr-5eb974957ef645beaf01da12faeb2c0f --reason 'nothing to roll back: the upload never ran'
-rejected: apr-5eb974957ef645beaf01da12faeb2c0f
+$ tracekit approvals reject apr-7cec3a9a8a16f695aaf0b0a8f1e35e6f --reason 'nothing to roll back: the upload never ran'
+rejected: apr-7cec3a9a8a16f695aaf0b0a8f1e35e6f
 
 the agent: the call was rejected
 
-Bash "gsutil -m rm -a 'gs://prod-asset-images/products/**'": ask TK-A031 TK-F003
-  destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket); destructive. Wait for a person to approve the held call; a person deletes bucket data or its version history themselves.
+Bash "gsutil -m rm -a 'gs://prod-asset-images/products/**'": ask TK-A031
+  destroying cloud storage data (a version purge, a bulk or wildcard delete, or a bucket). Instead: Have a person approve the held call; a person deletes bucket data or its version history themselves.
 
 the person at the terminal:
-$ tracekit approvals reject apr-83302298f94fc0cf6791c75f27441e7a --reason 'never purge the version history'
-rejected: apr-83302298f94fc0cf6791c75f27441e7a
+$ tracekit approvals reject apr-031f21e0dcbc4cf81752845200adb7eb --reason 'never purge the version history'
+rejected: apr-031f21e0dcbc4cf81752845200adb7eb
 
 the agent: the call was rejected
 
 Bash 'git diff --stat': allow
   ran
 
-$ tracekit verify 74c80b3b6d40df36b4540888b27e0e4b.tkb --trust trust.json --detail
+$ tracekit verify 6a06b01524c7980c64a591bfcc1ac1f0.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/773997074cac0b4711cdfa672b714df4 at tree size 20, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/ke421ddbf58bd805f5627fce1b4ac7c5364aba0dd585c4f5874cd2137c6aa90eb at tree size 20, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 19 record(s), keys valid at their position
-[PASS] run chain — run '74c80b3b6d40df36b4540888b27e0e4b' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '6a06b01524c7980c64a591bfcc1ac1f0' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 20
+[PASS] policy snapshot — policies/dfb95a36a50fac4ea1fae8882d2807cdfa1ac1d1bd68ebcca2a85fd7ce2f826c.json
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] run labels — 1 run(s) replayed under their policy, 0 signer-asserted (under several policies, or a policy not in the bundle)
 [PASS] tiers — 5 tool call(s): T1 0, T2 0, T3 0, untiered 5
 [PASS] args source — 5 record(s): raw 0, parsed 5, coerced 0
 [PASS] isolation — signer-reported: remote 1 run(s)
@@ -51,14 +53,14 @@ $ tracekit verify 74c80b3b6d40df36b4540888b27e0e4b.tkb --trust trust.json --deta
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/773997074cac0b4711cdfa672b714df4); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/ke421ddbf58bd805f5627fce1b4ac7c5364aba0dd585c4f5874cd2137c6aa90eb); no witness cosignature; key retirements not proven complete.
 
 the held calls and the person's answers, as signed records:
   #1 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-1"}
   #3 policy.decision {"decision": "ask", "rule_ids": ["TK-A032"], "tool": "Bash", "tool_use_id": "call-2"}
-  #5 approval {"approval_id": "apr-4df28a5581d1bfca740097973606bf4f", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "I said no new upload", "self_approved": false, "tool_use_id": "call-2"}
-  #7 policy.decision {"decision": "ask", "rule_ids": ["TK-A031", "TK-F003"], "tool": "Bash", "tool_use_id": "call-3"}
-  #9 approval {"approval_id": "apr-5eb974957ef645beaf01da12faeb2c0f", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "nothing to roll back: the upload never ran", "self_approved": false, "tool_use_id": "call-3"}
-  #11 policy.decision {"decision": "ask", "rule_ids": ["TK-A031", "TK-F003"], "tool": "Bash", "tool_use_id": "call-4"}
-  #13 approval {"approval_id": "apr-83302298f94fc0cf6791c75f27441e7a", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "never purge the version history", "self_approved": false, "tool_use_id": "call-4"}
+  #5 approval {"approval_id": "apr-0ac47e5e2fb75984fd0285401f0d1b0f", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "I said no new upload", "self_approved": false, "tool_use_id": "call-2"}
+  #7 policy.decision {"decision": "ask", "rule_ids": ["TK-A031"], "tool": "Bash", "tool_use_id": "call-3"}
+  #9 approval {"approval_id": "apr-7cec3a9a8a16f695aaf0b0a8f1e35e6f", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "nothing to roll back: the upload never ran", "self_approved": false, "tool_use_id": "call-3"}
+  #11 policy.decision {"decision": "ask", "rule_ids": ["TK-A031"], "tool": "Bash", "tool_use_id": "call-4"}
+  #13 approval {"approval_id": "apr-031f21e0dcbc4cf81752845200adb7eb", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "never purge the version history", "self_approved": false, "tool_use_id": "call-4"}
   #15 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-5"}
