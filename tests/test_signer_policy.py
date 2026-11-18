@@ -4602,21 +4602,25 @@ class CodingPack(unittest.TestCase):
             "find ~/.local -ipath '*/BIN/TRACEKIT' -delete",
             "shopt -s nocaseglob; ln -sf /tmp/e/tracekit ~/.LOCAL/BIN/TRACE?IT",
             "find ~/.local/share/uv -name '*.log' -delete",   # (a name it may hold inside the Python's own folder)
+            "cp /tmp/evil ~/.local/share/uv/python/cpython-3.12/bin/python3.12", "rm -rf ~/.local/share/uv/python",
+            "chmod -R 000 ~/.local/bin", "chmod 755 ~/.local/bin", "rm -rf ~/.local/sh*", "rm -rf ~/.local/share/u?",
             "rsync -a --remove-source-files ~/.local/bin/ /tmp/x", "tar --remove-files -cf /tmp/a.tar ~/.local/bin",
             "zip -m /tmp/a.zip ~/.local/bin", "cd ~/.local/bin && find . -name tracekit -delete",
             "cd ~/.local && find bin -name tracekit -delete", "env -C ~/.local find bin -name tracekit -delete")]
         benign = [("Bash", {"command": c}) for c in (
             "cd src && cp x plugins/*.js", "cd ~/proj && cp x plug?ns/y.js", "cp -rt build/ src", "cp -t build/ a b",
             "install -m755 -t ~/.local/bin mytool", "cp x ~/.local/bin", "mv ~/.local/bin/other /tmp/o",
-            "rm -rf ~/.local/bin/other", "rm -rf ~/.local/share/Trash", "rm -rf ~/.local/share/uv/python",
+            "rm -rf ~/.local/bin/other", "rm -rf ~/.local/share/Trash",
             "rm -rf ./uv", "rm -rf node_modules/uv/tools", "rm -rf build/bin", "rm -rf .local",
             "rm -rf /tmp/library", "rm -rf /tmp/documents", "find ~/.local/bin -name TRACEKIT -delete",
             "cp /tmp/x ~/.CLA*/settings.json", "rm -rf proj/.local", "cd ~/.local && find bin -name '*.log' -delete",
             "cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh",
             "cp -rt /tmp/d /usr/local/bin/tracekit /tmp/other && /tmp/other approve apr-1",
             "find . -name '*.pyc' -delete", "find ~/.local/bin -name '*.log' -delete",
-            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "cp x src/*/plugins/y", "cp x ~/*/hooks.json",
+            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "chmod 755 ~/.local/bin/mytool", "rm -rf ~/.cache/*", "rm -rf ~/Li*",
+            "cp x vendor/uv/python/f", "rm -rf ~/.local/sh*/Trash", "cp x src/*/plugins/y", "cp x ~/*/hooks.json",
             "shopt -s nocaseglob; cp x src/PLUG?NS/y")]
+        denied.append(("Write", {"path": "/home/u/.local/share/uv/python/cpython-3.12/bin/python3.12"}, "TK-D013"))
         for pack, engine, e in self.every_pack():
             for tool, args, rid in held + denied:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):

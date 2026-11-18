@@ -2053,10 +2053,19 @@ def _write_effects(parsed):
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
     # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
-    tags += [k + ":" + f for k, _, path in (t.partition(":") for t in tags)
-             if k != "MAY_WRITE" and shell._GLOB.search(path)
-             for f in _pattern_forms(path) + _protected_forms(path, options)]
+    forms = [(k, f) for k, _, path in (t.partition(":") for t in tags)
+             if k != "MAY_WRITE" and shell._GLOB.search(path) for f in _pattern_forms(path) + _protected_forms(path, options)]
+    tags += [k + ":" + f for k, f in forms] + ["DELETE_TARGET:" + r for k, f in forms if k == "DELETE_TARGET"
+                                                for r in _roots_below(f)]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+# where the Python the plugin's hook runs and a harness's hooks folder that no whole-folder rule keeps live, in full
+# under a home: deleting, moving or changing the mode of a folder along one takes it too (_under_roots)
+# lean: a UV_TOOL_DIR, PIPX_HOME or XDG_DATA_HOME elsewhere isn't read; list a place when a rule protects it
+_ROOT_PLACES = tuple(tuple(p.split("/")) for p in (
+    ".local/bin/tracekit", ".local/share/uv/tools/tracekit-ai", ".local/share/pipx/venvs/tracekit-ai",
+    ".local/pipx/venvs/tracekit-ai", "Library/Application Support/pipx/venvs/tracekit-ai", "Documents/Cline/Hooks"))
 
 
 # the paths, by their components, whose files an agent's harness runs or reads as settings, hooks and plugins (as
@@ -2073,7 +2082,8 @@ _PROTECTED_PATHS = tuple(tuple(p.split("/")) for p in (
     ".github/copilot/settings.json", ".github/copilot/settings.local.json", "etc/github-copilot", ".agents/hooks.json",
     ".agents/plugins", ".agents/recipes", ".agents/agents", ".agents/skills", ".goose/recipes", ".goose/agents",
     ".config/opencode", ".config/kilo", ".config/goose", ".config/crush", ".config/devin", ".config/gptme",
-    ".local/bin/tracekit", "uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"))
+    ".local/bin/tracekit", "uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai")) + tuple(
+    place[:k] for place in _ROOT_PLACES for k in range(1, len(place)))   # (and the folders along each trust root)
 _LONGEST = max(map(len, _PROTECTED_PATHS))
 _BY_FIRST = {}   # each path of _PROTECTED_PATHS under its first component, casefolded: a literal one is a lookup
 for _path in _PROTECTED_PATHS:
@@ -2231,14 +2241,6 @@ def _zip_moves(args):
 _HOME_START = re.compile(r"~[^/]*|\$\{?HOME\}?|/|/root|/(?:home|Users)/[^/]+|[A-Za-z]:[/\\]Users[/\\][^/\\]+", re.I)
 _FIND_FOLDERS = (".ssh", ".aws", ".git", ".claude", ".codex", ".gemini", ".hermes", ".config")
 
-# where the Python the plugin's hook runs and a harness's hooks folder that no whole-folder rule keeps live, in full under
-# a home, in lowercase: deleting or moving a folder along one takes it too (_under_roots)
-# lean: a UV_TOOL_DIR, PIPX_HOME or XDG_DATA_HOME elsewhere isn't read; list a place when a rule protects it
-_ROOT_PLACES = tuple(tuple(p.split("/")) for p in (
-    ".local/bin/tracekit", ".local/share/uv/tools/tracekit-ai", ".local/share/pipx/venvs/tracekit-ai",
-    ".local/pipx/venvs/tracekit-ai", "library/application support/pipx/venvs/tracekit-ai", "documents/cline/hooks"))
-
-
 def _under_roots(path, home=False):
     """Each trust root `path` is a folder along, as the parts of the root below `path` (`~/.local/share/uv` holds
     uv/tools/tracekit-ai): where its last parts are the first of one of _ROOT_PLACES (a dot folder alone, else two or
@@ -2251,7 +2253,7 @@ def _under_roots(path, home=False):
     parts = path.casefold().split("/")
     at_home = home and _HOME_START.fullmatch(path)
     return [place[k:] for place in _ROOT_PLACES for k in range(len(place) - 1, -1, -1)
-            if k == 0 and at_home or k and parts[-k:] == list(place[:k]) and (k > 1 or place[0][:1] == ".")]
+            if k == 0 and at_home or k and parts[-k:] == [c.casefold() for c in place[:k]] and (k > 1 or place[0][:1] == ".")]
 
 
 def _roots_below(path):
@@ -2726,7 +2728,7 @@ def _command_effects(commands):
         elif exe == "dd":
             out.extend("WRITE_TARGET:" + arg[3:] for arg in args if arg.startswith("of="))
         elif exe in _MODE_CHANGERS:   # each word but an option: the mode, owner or ACL with the files (none is a path)
-            out.extend("MODE_TARGET:" + a for a in args if not a.startswith("-"))
+            out.extend("MODE_TARGET:" + p for a in args if not a.startswith("-") for p in [a, *_roots_below(a)])
         elif (written := _more_writes(exe, args)) is not None:
             out.extend("WRITE_TARGET:" + path for path in written)
         elif exe in ("gzip", "bzip2", "xz", "lzma", "lzip", "compress") and not any(
