@@ -1713,13 +1713,18 @@ _TEXT_FILTERS = {"cut", "tr", "nl", "fold", "fmt", "column", "tac", "rev", "past
 NO_FILES = {"cd", "mkdir", "echo", "printf", "true", "false", ":", "sleep", "pwd", "test", "[", "[[", "date"}
 
 
-def reads_only(c, filters=False):
-    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too) or reads no file
-    (NO_FILES), writing nowhere but /dev/null or stderr."""
+def reads_only(c, filters=False, interp=False):
+    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too; with `interp`,
+    an interpreter with an inline program that reads data without evaluating it) or reads no file (NO_FILES),
+    writing nowhere but /dev/null or stderr."""
     name = c["argv"][0]
-    return (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
-        _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
-        name in _TEXT_FILTERS) and all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    if (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
+            _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
+            name in _TEXT_FILTERS):
+        return all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    if interp and _is_data_interpreter(c):
+        return all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    return False
 
 
 # what else may run on a line whose text written into a data file stays data: commands that only read and print, or
@@ -2614,6 +2619,49 @@ def _loaded(kind, args):
             yield "module", a[2:] or nxt
         elif kind == "python" and (a == "-X" and nxt.startswith("presite") or a.startswith("-Xpresite")):
             yield "held", nxt
+
+
+_INLINE_CODE_EXEC = {
+    "python": re.compile(
+        r"\b(?:exec|eval|compile|__import__|importlib|runpy|system|popen|subprocess|asyncio|"
+        r"cProfile|timeit|pdb|pickle|torch|pydoc|posix|__dict__|getattr|vars|modules|_sys|"
+        r"breakpoint|__class__|__base__|__subclasses__|functools)\b|subprocess|file\s*="
+    ),
+    "node": re.compile(r"\b(?:eval|Function|child_process)\b|(?:\bimport\s*\()|\brequire\s*\(\s*(?!['\"](?:node:)?(?:fs|path|buffer|stream|util|zlib|url|events|string_decoder|querystring|assert|os|crypto|readline)['\"])"),
+    "ruby": re.compile(r"\b(?:eval|instance_eval|class_eval|module_eval|system|exec|spawn|fork)\b|`"),
+    "perl": re.compile(r"\b(?:eval|system|exec|do)\b|`"),
+    "php": re.compile(r"\b(?:eval|exec|system|passthru|shell_exec|popen|proc_open)\b|`"),
+    "lua": re.compile(r"\b(?:load|loadstring|loadfile|dofile)\b"),
+}
+
+
+def evaluates_code(kind, code):
+    """Whether an inline program text evaluates or imports what it reads, or runs subprocesses."""
+    rx = _INLINE_CODE_EXEC.get(kind)
+    return bool(rx and rx.search(code))
+
+
+def _is_data_interpreter(c):
+    """Whether an interpreter command only reads and processes data with an inline program (-c, -e)."""
+    kind = _kind(c["argv"][0])
+    if kind not in _INLINE_CODE_EXEC:
+        return False
+    args = c["argv"][1:]
+    if any(_loaded(kind, args)):
+        return False
+    if kind == "python":
+        flags = []
+        for a in args:
+            if a == "-c" or a.startswith("-c"):
+                break
+            flags.append(a)
+        for f in flags:
+            if not re.fullmatch(r"-[IBusEqO]+", f):
+                return False
+    code = _code_arg(kind, args)
+    if code is None:
+        return False
+    return not evaluates_code(kind, code)
 
 
 def _data_url(url):

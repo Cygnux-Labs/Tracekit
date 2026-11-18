@@ -3295,7 +3295,7 @@ def _inert_downloads(commands, refs, work):
     company = all(re.fullmatch(r"[a-z_][a-z0-9_]*", r.partition("=")[0]) for r in refs if re.match(r"[A-Za-z_]\w*=", r))
     for c in commands:
         shell.charge(work, 1 + len(c["argv"]))
-        reads = shell.reads_only(c)
+        reads = shell.reads_only(c, interp=True)
         if not reads:
             after[c["pipeline"]] = max(after.get(c["pipeline"], -1), (c.get("stage") or 0))
         company = company and (reads or c["argv"][0] in ("curl", "wget") and _download_options(c) is not None)
@@ -3316,9 +3316,12 @@ def _inert_downloads(commands, refs, work):
         if not (alone or saves and d["via"] in (["$()"], ["``"]) and after.get(d["pipeline"], -1) <= (
                 d.get("stage") or 0)) or not company or ("[" in url or "{" in url) and not given & {"-g", "--globoff"}:
             continue
+        url_name = _url_name(url, wget)
+        if "." in url_name and not _DATA_SAVE.search(url_name):
+            continue
         saved = [o for o in d.get("out", ()) if o not in ("/dev/null", "/dev/stderr")] + [
-            _url_name(url, wget) if o == "-O" else o for o in outs if o not in ("-", "/dev/stdout")] + [
-            _url_name(url, wget) for _ in [1] if wget and not outs and "--spider" not in given]
+            url_name if o == "-O" else o for o in outs if o not in ("-", "/dev/stdout")] + [
+            url_name for _ in [1] if wget and not outs and "--spider" not in given]
         if all(_DATA_SAVE.search(s) and not re.search(r"[$`*?[\]{}#\\]", s) for s in saved):
             out.add(id(d))
     return out
