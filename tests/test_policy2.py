@@ -2071,7 +2071,11 @@ class TimedAndBraced(unittest.TestCase):
                         self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
                                              (note, values, whole[1], [s[1] for s in singles]))
                 checked += 1
-                if rank(verdict(e, looped(words, at, values[:1]))[0]) < strictest:
+                # The control is the loosest reduction there is: the loop's first value standing for all of them,
+                # which is that value's own line read as a one-value loop -- the line `singles[0]` already decided,
+                # so it is read from there rather than decided a second time (#722's budget: this was a quarter of
+                # the test's decisions).
+                if rank(singles[0][0]) < strictest:
                     caught += 1
             self.assertGreater(caught, 0, "the corpus no longer catches a first value standing for the rest")
             # the scheme-dropped addresses of #729's review, on every pack that has a shell: a deny whichever way
