@@ -2029,8 +2029,9 @@ class TimedAndBraced(unittest.TestCase):
             header = " ".join("'%s'" % v.replace("'", "'\\''") for v in values)
             return "for tkv in %s; do %s; done" % (header, " ".join(words[:at] + ['"$tkv"'] + words[at + 1:]))
 
-        STEP = 2   # every Nth corpus row, as #722 asks when both engines are over ~20 s: 791 rows on two
-        # engines measured 23.6 s here (re2 9.5 s, regex 14.2 s, Python 3.12, Windows). Step 1 keeps every row.
+        STEP = 2   # every Nth corpus row. #722 asks for a sample while both engines are over ~20 s: on this machine,
+        # both arms measured 21.7 s at step 1 (three runs, 21.51-21.98, Python 3.12, re2 + regex) and 18.0 s at
+        # step 2 (17.36-18.12), with the duplicate dev build below removed. Step 1 is every row, one character.
 
         def corpus():
             """(note, its words, the index of its last word, two values that word may take) for every shell corpus
@@ -2088,7 +2089,10 @@ class TimedAndBraced(unittest.TestCase):
             # the scheme-dropped addresses of #729's review, on every pack that has a shell: a deny whichever way
             # the value is spelled, including with no scheme at all
             for pack in ("dev.yaml", "server.yaml", "server-core.yaml", "strict.yaml"):
-                e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+                # `e` is already dev.yaml's engine on this backend, built for the walk above; building and
+                # compiling it a second time was ~3.5 s of this test's 23.6 s over both engines (#722).
+                if pack != "dev.yaml":
+                    e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
                 for pair in (("189.254.43518", "169.254.43518"), ("189.16689662", "169.16689662")):
                     for form in ("%s", "http:/%s/x", "http:%s/x"):
                         line = "for h in %s %s; do echo %s; done" % (pair[0], pair[1], form % "$h")
