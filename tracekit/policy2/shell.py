@@ -1478,20 +1478,41 @@ def _unread_body(name, args):
     return False
 
 
+def target_directories(args, taking="Smog"):
+    """(the directories cp's, ln's, install's or mv's -t options give, the other arguments): GNU's --target-directory
+    (abbreviated as getopt takes it, `--target=D`), and -t in any cluster (`-rt D`, `-tD`) unless a letter before it
+    is one of `taking`, which takes a value (`-St`, `-mt`); a value is the rest of its word, else the next word."""
+    dirs, rest, i = [], [], 0
+    while i < len(args):
+        a, i = args[i], i + 1
+        if a == "--":
+            rest += ["--"] + args[i:]
+            break
+        long = a.startswith("--t") and "--target-directory".startswith(a.partition("=")[0])
+        short = None if long else re.match(r"-[^-%s]*t(.*)" % taking, a, re.S)
+        if not (long or short):
+            rest.append(a)
+            continue
+        value = a.partition("=")[2] if long and "=" in a else short.group(1) if short else ""
+        if not value and i < len(args):
+            value, i = args[i], i + 1
+        dirs += [value] if value else []
+    return dirs, rest
+
+
 def _copy_operands(args):
     """cp's, ln's, install's or mv's possible sources and destinations. Each option is read both ways, with a value
     (GNU's `--sparse X` or `--suf X`, after the operands too) and without (BSD's `install -S`), so a word after one may
-    be either; none with -t (GNU's --target-directory, abbreviated too; not the value of a letter before it that takes
-    one in GNU's or BSD's tools: `-Stk`), whose copies keep their sources' names."""
+    be either; none with -t (target_directories, not the value of a letter before it that takes one in GNU's or BSD's
+    tools: `-Stk`), whose copies keep their sources' names."""
+    if target_directories(args, "SmogBfDhlMNT")[0]:
+        return [], []
     ops, value = [], False   # (each operand, whether it may be an option's value)
     for i, a in enumerate(args):
         if a == "--":
             ops += [(w, False) for w in args[i + 1:]]
             break
         if a.startswith("-") and a != "-":
-            if re.match(r"-[^-SmogBfDhlMNTt]*t", a) or a.startswith("--t") and "--target-directory".startswith(
-                    a.partition("=")[0]):
-                return [], []
             value = "=" not in a
             continue
         ops.append((a, value))
@@ -1634,12 +1655,13 @@ def _learned(ctx):
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
-    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`)."""
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); the glob
+    options it sets (globs: _glob_options)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
             "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
-            "appended": list(ctx.get("appended", ()))}
+            "appended": list(ctx.get("appended", ())), "globs": ctx["globopts"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):

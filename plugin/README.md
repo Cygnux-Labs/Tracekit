@@ -46,7 +46,7 @@ Then tell your agent: **"Set up Tracekit."** The plugin's hooks wait until the `
 the setup skill installs it once you say yes. To do it yourself:
 
 ```bash
-pip install tracekit-ai==1.7.2      # or: uv tool install tracekit-ai==1.7.2
+uv tool install tracekit-ai==1.7.2  # or: pipx install tracekit-ai==1.7.2 (a venv works: see When a hook can't run)
 tracekit init --dev --v2            # Codex, Copilot CLI, Cursor: add --agent codex|copilot|cursor --no-hooks
                                     # (on native Windows, without --no-hooks: see Platforms)
 tracekit doctor
@@ -164,9 +164,11 @@ runs.
   the hook, tool calls are blocked (with `fail_mode: open` in that file they run, unrecorded, with an error shown).
   Re-run system init from a root-owned clone: `sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
   --no-hooks`.
-- **Dev mode**: the hook runs in the first of `TRACEKIT_PYTHON`, `python3`, `python` and the Python the `tracekit`
-  command names (a `uv tool` or pipx install) that has the `tracekit` package, user site-packages included. A tracekit
-  too old for the hook blocks tool calls and says how to upgrade. With no tracekit at all, tool calls are blocked once
+- **Dev mode**: the hook runs in `TRACEKIT_PYTHON` if that has the `tracekit` package; else in the Python of a `uv
+  tool` or pipx install of Tracekit (the `tracekit` command on `PATH`, or where uv or pipx put it by default), and only
+  there; else in the first of `python3`, `python` and the Python beside any other `tracekit` command that has the
+  package, user site-packages included (their `.pth` files don't run). A tracekit too old for the hook blocks tool
+  calls and says how to upgrade. With no tracekit at all, tool calls are blocked once
   Tracekit is set up for your user: the dev signer's data directory exists (`tracekit init --dev --v2` creates it), or
   `TRACEKIT_PYTHON` or `TRACEKIT_SIGNER` is set. Before that, every event runs, unrecorded, with a notice (Copilot CLI
   and Cursor don't show it: they block a call on any notice that isn't a success).

@@ -4570,6 +4570,62 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_plugin_review_4_cd_find_target_directory_parent_folders_and_glob_options(self):
+        """The plugin's fourth review: a pattern relative to a `cd` or `env -C` folder was read only as written; a
+        `find` name or path test wasn't matched to the trust roots under its start; `cp`, `mv`, `install` and `ln` took
+        -t only alone (not in a cluster, attached or abbreviated); deleting or moving a folder that holds a trust root
+        (`~/.local/bin`, `~/.local/share/uv`) wasn't touching it; and a line's own dotglob, nocaseglob or GLOBIGNORE
+        wasn't read for a pattern's protected paths."""
+        held = [("Bash", {"command": c}, "TK-F015") for c in (
+            "cd ~/.cursor && cp /tmp/evil plug?ns/x.js", "env -C ~/.cursor cp /tmp/evil plug?ns/x.js",
+            "cp -rt ~/.claude/hooks /tmp/evil", "cp -at ~/.claude/hooks /tmp/evil", "cp -t~/.claude/hooks /tmp/evil",
+            "cp --target=~/.claude/hooks /tmp/evil", "install -Dt ~/.claude/hooks /tmp/evil",
+            "shopt -s nocaseglob; cp /tmp/evil ~/.CUR?OR/hooks.json", "shopt -s dotglob; cp /tmp/evil ~/*/hooks.json",
+            "GLOBIGNORE=x; cp /tmp/evil ~/*/hooks.json", "shopt -s dotglob; cp /tmp/e ~/*/plugins/x.js",
+            "shopt -s dotglob; cp x src/*/plugins/y", "shopt -s nocaseglob; cp /tmp/evil ~/.CLA*/settings.json",
+            "setopt nocaseglob; cp /tmp/evil ~/.CUR?OR/hooks.json",
+            "setopt extendedglob; cp /tmp/e ~/*/hooks.json", "cp -t /tmp/a -t ~/.claude/hooks /tmp/evil",
+            "shopt -s nocaseglob; cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh")]
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "cd ~/.local/bin && ln -sf /tmp/e/tracekit trace?it",
+            "env -C ~/.local/share/uv/tools ln -sf /tmp/e/python tracekit-a?/bin/python",
+            "ln -sft ~/.local/bin /tmp/e/tracekit", "ln -st ~/.local/bin /tmp/e/tracekit",
+            "rm -rf ~/.local/bin", "mv ~/.local/bin /tmp/b", "rm -rf ~/.local/share/uv", "rm -rf ~/.local/share/uv/tools",
+            "mv ~/.local/share/uv/tools ~/.local/share/uv/tools.old", "rm -rf ~/.local/pipx/venvs",
+            "rm -rf ~/.local/share/pipx", "cd ~/.local/share && rm -rf uv", "cd ~/.local && mv bin bin.old",
+            "env -C ~/.local rm -rf bin", "rm -rf ~/Library/Application\\ Support/pipx", "rm -rf ~/.LOCAL/BIN",
+            "find ~/.local/bin -name 'trace?it' -delete", "find ~/.local/bin -name tracekit -delete",
+            "find ~/.local -path '*/bin/tracekit' -delete", "find ~/.local/share/uv -name tools -exec rm -rf {} +",
+            "find ~/.local/share/uv/tools -name python -delete",
+            "find ~/.local/share/uv -path '*/tracekit-ai/bin/python' -delete",
+            "find ~ -maxdepth 1 -name '*' -delete", "find ~/.local/bin -iname TRACEKIT -delete",
+            "find ~/.local -ipath '*/BIN/TRACEKIT' -delete",
+            "shopt -s nocaseglob; ln -sf /tmp/e/tracekit ~/.LOCAL/BIN/TRACE?IT",
+            "find ~/.local/share/uv -name '*.log' -delete",   # (a name it may hold inside the Python's own folder)
+            "rsync -a --remove-source-files ~/.local/bin/ /tmp/x", "tar --remove-files -cf /tmp/a.tar ~/.local/bin",
+            "zip -m /tmp/a.zip ~/.local/bin", "cd ~/.local/bin && find . -name tracekit -delete",
+            "cd ~/.local && find bin -name tracekit -delete", "env -C ~/.local find bin -name tracekit -delete")]
+        benign = [("Bash", {"command": c}) for c in (
+            "cd src && cp x plugins/*.js", "cd ~/proj && cp x plug?ns/y.js", "cp -rt build/ src", "cp -t build/ a b",
+            "install -m755 -t ~/.local/bin mytool", "cp x ~/.local/bin", "mv ~/.local/bin/other /tmp/o",
+            "rm -rf ~/.local/bin/other", "rm -rf ~/.local/share/Trash", "rm -rf ~/.local/share/uv/python",
+            "rm -rf ./uv", "rm -rf node_modules/uv/tools", "rm -rf build/bin", "rm -rf .local",
+            "rm -rf /tmp/library", "rm -rf /tmp/documents", "find ~/.local/bin -name TRACEKIT -delete",
+            "cp /tmp/x ~/.CLA*/settings.json", "rm -rf proj/.local", "cd ~/.local && find bin -name '*.log' -delete",
+            "cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh",
+            "cp -rt /tmp/d /usr/local/bin/tracekit /tmp/other && /tmp/other approve apr-1",
+            "find . -name '*.pyc' -delete", "find ~/.local/bin -name '*.log' -delete",
+            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "cp x src/*/plugins/y", "cp x ~/*/hooks.json",
+            "shopt -s nocaseglob; cp x src/PLUG?NS/y")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in held + denied:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertIn(rid, e.decide(tool, args)["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""

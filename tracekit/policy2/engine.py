@@ -2014,13 +2014,21 @@ def _write_effects(parsed):
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
     # a relative target a command after a cd writes is also read in the folder the cd entered, resolved (`cd ~/.hermes
-    # && sed -i … config.yaml`; a pattern there as each protected name it may make, which the parse read)
+    # && sed -i … config.yaml`); one with a pattern only as each protected path it may make (`cd ~/.cursor && cp x
+    # plug?ns/y.js`), as a pattern isn't one there when the folder is a Claude Code worktree's (`cd .claude/worktrees/w
+    # && rm src/*.orig`)
     # (and what env -C runs, in its folder)
-    def joined(folder, effects):
+    options = (parsed[5] if len(parsed) > 5 else {}).get("globs", ())
+
+    def joined(folder, effects, find=False):
         out = [(k, _normal(folder.rstrip("/") + "/" + path)) for k, _, path in (t.partition(":") for t in effects)
-               if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "") and not shell._GLOB.search(path)]
-        return [("WRITE_TARGET" if k == "APPEND_TARGET" and not _KNOWN_HOSTS.search(p) else k) + ":" + p
-                for k, p in out]
+               if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "")]
+        tagged = [(("WRITE_TARGET" if k == "APPEND_TARGET" and not _KNOWN_HOSTS.search(p) else k) + ":" + p)
+                  for k, p in out if not shell._GLOB.search(p)]
+        tagged += [k + ":" + f for k, p in out if shell._GLOB.search(p)
+                   for f in _pattern_forms(p) + _protected_forms(p, options)]
+        return tagged + ["DELETE_TARGET:" + r for k, p in out if k == "DELETE_TARGET" and not find
+                         for r in _roots_below(p)]
     base, appends = "", collections.Counter((parsed[5] if len(parsed) > 5 else {}).get("appended", ()))
     for c in parsed[0]:
         if c["argv"][0] in ("cd", "pushd"):
@@ -2032,17 +2040,22 @@ def _write_effects(parsed):
             for o in c.get("out", ()):   # (an append is one only as many times as the line appends to it)
                 outs.append(("APPEND_TARGET:" if appends[o] > 0 else "WRITE_TARGET:") + o)
                 appends[o] -= 1
-            tags += joined(base, outs + _command_effects([c]))
+            tags += joined(base, outs + _command_effects([c]), c["argv"][0] == "find")
+            if c["argv"][0] == "find":   # (its start paths, read from the folder, for the trust roots under them)
+                tags += _command_effects([dict(c, argv=_find_in(c["argv"], base))])
         folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
         if folder and at:
             folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
-            tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
+            tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]), c["argv"][at] == "find")
+            if c["argv"][at] == "find":
+                tags += _command_effects([{"argv": _find_in(c["argv"][at:], folder)}])
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
     # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
     tags += [k + ":" + f for k, _, path in (t.partition(":") for t in tags)
-             if k != "MAY_WRITE" and shell._GLOB.search(path) for f in _pattern_forms(path) + _protected_forms(path)]
+             if k != "MAY_WRITE" and shell._GLOB.search(path)
+             for f in _pattern_forms(path) + _protected_forms(path, options)]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
 
@@ -2070,12 +2083,14 @@ _FIRSTS = {dot: list(dict.fromkeys(p[0] for p in _PROTECTED_PATHS if (p[0][:1] =
 _PATTERNED_MAX = 32   # the patterned components of one path read: a bound that keeps the reading linear
 
 
-def _protected_forms(path):
+def _protected_forms(path, options=()):
     """`path` with each run of its components that matches one of _PROTECTED_PATHS, a pattern among them, written as
     that path: as bash matches a pattern (shell._glob_fits), a leading dot only by a dot (`.cur?or/plug?ns` is
-    .cursor/plugins, `.*/plugins` is too, `*/plugins` isn't). Read around its first _PATTERNED_MAX patterned
-    components.
-    lean: a line that sets dotglob isn't read for a `*` that would then match a dot folder; read it if one is used"""
+    .cursor/plugins, `.*/plugins` is too, `*/plugins` isn't), unless the line's glob `options` (shell._glob_options)
+    hold dotglob (`*/plugins` is then too) or nocaseglob (`.CUR?OR` is .cursor); "unread" ones read as both. Read around
+    its first _PATTERNED_MAX patterned components.
+    lean: an option a profile, the environment or an earlier call sets isn't read; docs/limits.md says what to do"""
+    dotglob, nocase = bool({"dotglob", "unread"} & set(options)), bool({"nocaseglob", "unread"} & set(options))
     parts, out = path.split("/"), []
     patterned = [i for i, p in enumerate(parts) if shell._GLOB.search(p)][:_PATTERNED_MAX]
     tokens = {i: shell._glob_tokens(parts[i]) for i in patterned}   # (a component past them reads as written)
@@ -2083,6 +2098,8 @@ def _protected_forms(path):
     # tokens (a bracket holding `[` ends where bash ends it); none read for one with a backslash, which escapes them
     pieces = {i: None if "\\" in parts[i] else "".join(t if isinstance(t, str) else "\0" for t in tokens[i]).split("\0")
               for i in patterned}
+    if nocase:
+        pieces = {i: p and [c.casefold() for c in p] for i, p in pieces.items()}
     dot = {i: tokens[i][:1] == ["."] for i in patterned}   # a literal leading dot, escaped too: it may make a dot name
     # `*`, `.*`: any name (any dot name), the dot rule aside
     anything = {i for i in patterned if set(parts[i][1:] if parts[i][:1] == "." else parts[i]) == {"*"}}
@@ -2090,11 +2107,13 @@ def _protected_forms(path):
     def fits(i, n):
         if parts[i].casefold() == n.casefold():   # a folder written out: the file system may ignore its case (macOS)
             return True
-        if i not in tokens or not dot[i] and n[:1] == "." or pieces[i] and not all(c in n for c in pieces[i]):
+        if i not in tokens or not (dot[i] or dotglob) and n[:1] == "." or pieces[i] and not all(
+                c in (n.casefold() if nocase else n) for c in pieces[i]):
             return False
-        return i in anything or shell._glob_fits(tokens[i], n)   # a pattern: bash matches it in the name's case
+        return i in anything or shell._glob_fits(tokens[i], n, nocase)   # a pattern: bash matches it in the name's case
     for i in sorted({i - j for i in patterned for j in range(_LONGEST) if i - j >= 0}):
-        firsts = [parts[i]] if parts[i].casefold() in _BY_FIRST else [n for n in _FIRSTS[dot[i]] if fits(i, n)] \
+        firsts = [parts[i]] if parts[i].casefold() in _BY_FIRST else [
+            n for n in (_FIRSTS[True] + _FIRSTS[False] if dotglob else _FIRSTS[dot[i]]) if fits(i, n)] \
             if i in tokens else []
         for names in (names for n in firsts for names in _BY_FIRST[n.casefold()]):
             span = range(i, i + len(names))
@@ -2212,6 +2231,53 @@ def _zip_moves(args):
 _HOME_START = re.compile(r"~[^/]*|\$\{?HOME\}?|/|/root|/(?:home|Users)/[^/]+|[A-Za-z]:[/\\]Users[/\\][^/\\]+", re.I)
 _FIND_FOLDERS = (".ssh", ".aws", ".git", ".claude", ".codex", ".gemini", ".hermes", ".config")
 
+# where the Python the plugin's hook runs and a harness's hooks folder that no whole-folder rule keeps live, in full under
+# a home, in lowercase: deleting or moving a folder along one takes it too (_under_roots)
+# lean: a UV_TOOL_DIR, PIPX_HOME or XDG_DATA_HOME elsewhere isn't read; list a place when a rule protects it
+_ROOT_PLACES = tuple(tuple(p.split("/")) for p in (
+    ".local/bin/tracekit", ".local/share/uv/tools/tracekit-ai", ".local/share/pipx/venvs/tracekit-ai",
+    ".local/pipx/venvs/tracekit-ai", "library/application support/pipx/venvs/tracekit-ai", "documents/cline/hooks"))
+
+
+def _under_roots(path, home=False):
+    """Each trust root `path` is a folder along, as the parts of the root below `path` (`~/.local/share/uv` holds
+    uv/tools/tracekit-ai): where its last parts are the first of one of _ROOT_PLACES (a dot folder alone, else two or
+    more, so a project's `uv` or `library` is none), or, with `home`, `path` is a home, which holds them whole. A path
+    that is neither absolute nor under ~ or $ is read as written only (a relative one may be anywhere; a cd's is
+    joined)."""
+    if path[:1] not in ("/", "~", "$"):
+        return []
+    path = _normal(path).rstrip("/") or "/"
+    parts = path.casefold().split("/")
+    at_home = home and _HOME_START.fullmatch(path)
+    return [place[k:] for place in _ROOT_PLACES for k in range(len(place) - 1, -1, -1)
+            if k == 0 and at_home or k and parts[-k:] == list(place[:k]) and (k > 1 or place[0][:1] == ".")]
+
+
+def _roots_below(path):
+    """The trust roots a delete or move of `path` takes (_under_roots), each as a path."""
+    return [path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path)]
+
+
+def _find_starts(args):
+    """The positions in a find's arguments of its start paths (after its options: -L, -H, BSD's -E, -x …, and `--`)."""
+    starts = []
+    for i, arg in enumerate(args):
+        if re.fullmatch(r"-[A-Za-z]|-O[0-9]*|--", arg):
+            continue
+        if arg.startswith("-") or arg in ("!", "("):
+            break
+        starts.append(i)
+    return starts
+
+
+def _find_in(argv, folder):
+    """A find's argv with each relative start path read from `folder`."""
+    out = list(argv)
+    for i in _find_starts(argv[1:]):
+        out[i + 1] = out[i + 1] if out[i + 1].startswith(("/", "~", "$")) else posixpath.join(folder, out[i + 1])
+    return out
+
 
 def _find_files(args):
     """The files a find's arguments find, as the rules read paths: under each start path (after its options: -L, -H,
@@ -2221,13 +2287,7 @@ def _find_files(args):
     the start path and all under it; what its path tests and -files0-from name (`-path '*/x/*'`; -delete implies
     -depth, under which -prune doesn't keep find out of a folder); and the log and history names among its tests. A
     name test that is negated (`! -name`, `-not -name`) or pruned names no file it finds."""
-    starts = []
-    for arg in args:
-        if re.fullmatch(r"-[A-Za-z]|-O[0-9]*|--", arg):
-            continue
-        if arg.startswith("-") or arg in ("!", "("):
-            break
-        starts.append(arg)
+    starts = [args[i] for i in _find_starts(args)]
     # each name test's value that finds files: neither negated (before its test) nor pruned (after it)
     kept = [i for i in range(1, len(args)) if args[i + 1:i + 2] != ["-prune"]]
     tested = [args[i] for i in kept if args[i - 1] in ("-name", "-iname") and args[max(i - 2, 0):i - 1] not in
@@ -2241,6 +2301,20 @@ def _find_files(args):
                                                                  "-regex", "-iregex", "-files0-from")
              for p in [args[i], *shell._unglob(args[i], ("dotglob",))]]
     starts = starts or ["."]
+    # each trust root under a start, and each folder along the way, that a name test finds (find matches a name as
+    # fnmatch does, a `*` matching a leading dot), and from a start short of a home what a root holds: a name test's
+    # name inside it, any file for a path test (`find ~/.local/bin -name 'trace?it' -delete`, `find ~/.local/share/uv
+    # -name python -delete`)
+    by_path = any(args[i - 1] in ("-path", "-ipath", "-wholename", "-iwholename") for i in kept)
+    reached = []
+    for s in starts if tested or by_path else ():
+        for rest in _under_roots(s, True):
+            for k in range(1, len(rest) + 1):
+                here = s.rstrip("/") + "/" + "/".join(rest[:k])
+                if any(shell._glob_fits(shell._glob_tokens(t), rest[k - 1], t in folded) for t in tested):
+                    reached.append(here)
+                if k == len(rest) and not _HOME_START.fullmatch(s.rstrip("/") or "/"):
+                    reached += [here + "/**/" + t for t in tested] + [here + "/**"] * by_path
     # a name found in a .git folder may be one of its hooks (`find .git -name pre-commit`)
     hooks = [f"{s.rstrip('/')}/hooks/{t}" for s in starts if s.rstrip("/").endswith(".git") for t in tested]
     # a protected name in one of the folders under a home that keep them (`find ~ -name config` finds ~/.ssh/config;
@@ -2249,7 +2323,7 @@ def _find_files(args):
     found = [f"{s.rstrip('/')}/**/{t}" for s in starts for t in tested] + hooks + [
         f"{s.rstrip('/')}/{d}/{n}" for s in homes for n in names for d in _FIND_FOLDERS] + [
         f"{s.rstrip('/')}/{n}" for s in starts for n in names] if tested else [s.rstrip("/") + "/**" for s in starts]
-    return list(dict.fromkeys(starts + found + paths + [args[i] for i in kept if _log_or_history(args[i])]))
+    return list(dict.fromkeys(starts + found + reached + paths + [args[i] for i in kept if _log_or_history(args[i])]))
 
 
 # an awk program's output redirection: > or >> and the expression it writes to, up to a `;`, `}`, newline or `|`
@@ -2613,37 +2687,37 @@ def _command_effects(commands):
                 found.add("DELETE_TARGET")
             out.extend(kind + ":" + path for kind in sorted(found) for path in _find_files(args))
         elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
+            directories, operands, skip = [], [], False
+            words = args
+            if exe in ("cp", "mv", "install", "ln"):
+                directories, words = shell.target_directories(args)
             valued = ("-s", "--size", "-r", "--reference") if exe == "truncate" else (
-                "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
-            operands, directory, skip = [], None, None
-            for arg in args:
+                "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
+            for arg in words:
                 if skip:
-                    directory = arg if skip in ("-t", "--target-directory") else directory
-                    skip = None
+                    skip = False
                 elif arg in valued:
-                    skip = arg
-                elif arg.startswith("--target-directory="):
-                    directory = arg.split("=", 1)[1]
+                    skip = True
                 elif not arg.startswith("-") or arg == "-":
                     operands.append(arg)
             if exe in ("rm", "unlink", "shred"):
                 deleted, written = operands, []
             elif exe in ("truncate", "tee"):
                 deleted, written = [], operands
-            else:   # cp, mv, install and ln write the last operand or -t's directory, and in a directory each source's
+            else:   # cp, mv, install and ln write the last operand or each -t directory, and in a directory each source's
                 # name (`cp -t ~ x/.bash_history`, `cp x/.bash_history ~/`); mv also removes its sources
-                sources = operands if directory is not None else operands[:-1]
-                dest = directory if directory is not None else next(iter(operands[-1:]), None)
-                written = [] if dest is None else [dest] + [
-                    dest.rstrip("/") + "/" + src.rstrip("/").rsplit("/", 1)[-1] for src in sources
-                    if directory is not None or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
+                sources = operands if directories else operands[:-1]
+                written = []
+                for dest in directories or operands[-1:]:
+                    written += [dest] + [dest.rstrip("/") + "/" + src.rstrip("/").rsplit("/", 1)[-1] for src in sources
+                                         if directories or len(sources) > 1 or dest.endswith("/") or dest in ("~", ".", "..")]
                 deleted = sources if exe == "mv" else []
             # tee's options come before its first file or `--` (after either, `-a` is a file: BSD's tee reads none
             # after a file, so `tee FILE -a` overwrites FILE)
             options = list(itertools.takewhile(lambda a: a.startswith("-") and a != "--", args))
             append = exe == "tee" and any(a in ("-a", "--append") or re.fullmatch(r"-[a-zA-Z]+", a) and "a" in a
                                           for a in options)
-            out.extend(["DELETE_TARGET:" + path for path in deleted] + [
+            out.extend(["DELETE_TARGET:" + path for path in deleted + [r for d in deleted for r in _roots_below(d)]] + [
                 ("APPEND_TARGET:" if append and _KNOWN_HOSTS.search(path) else "WRITE_TARGET:") + path
                 for path in written])
             if exe == "ln" or exe == "cp" and any(a in ("--link", "--symbolic-link")
@@ -2670,7 +2744,8 @@ def _command_effects(commands):
                     skip = True
                 elif not a.startswith("-") and not (exe == "tar" and i == 0 and re.fullmatch(r"[A-Za-z]+", a)):
                     operands.append(a)
-            out.extend("DELETE_TARGET:" + a for a in (operands[:-1] if exe == "rsync" else operands))
+            out.extend("DELETE_TARGET:" + a for d in (operands[:-1] if exe == "rsync" else operands)
+                       for a in [d, *_roots_below(d)])
         elif (editor := _EDITOR.fullmatch(exe)) and any(_in_place(editor.group(1), a) for a in args):
             if editor.group(1) == "sed":   # the operands after the script: the first unless -e, -f or theirs give it
                 files, script_seen, skip, suffix = [], False, False, False
@@ -2729,7 +2804,7 @@ def _command_effects(commands):
                     skip = True
                 elif not arg.startswith("-"):
                     operands.append(arg)
-            out.extend("DELETE_TARGET:" + path for path in operands[1:])
+            out.extend("DELETE_TARGET:" + path for d in operands[1:] for path in [d, *_roots_below(d)])
         elif exe in ("awk", "gawk", "mawk", "nawk"):
             out.extend("WRITE_TARGET:" + path for path in _awk_outputs(args))
             if any(a in ("-iinplace", "--include=inplace") or a == "inplace" and b in ("-i", "--include")
