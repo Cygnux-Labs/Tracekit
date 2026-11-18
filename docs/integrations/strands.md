@@ -103,6 +103,10 @@ signature or redacted content), text and tool uses under their `toolUseId`s. The
   refused, its run is not recorded. Strands' internal tool middleware can replace a call unseen.
 - Strands parses the model's arguments before any hook runs: arguments that aren't JSON reach the hooks, and the tool,
   as `{}`, and the signer decides `{}`.
+- Behind the LLM gateway, a `strands_tools` shell call decided as a `commands` list (above) reads as
+  `reconcile.args_mismatch` "(the decide says a framework coerced them)": reconcile holds a decide to the gateway's
+  record of the model's call (the `coerced` label is the agent's word), and the list it decided is not the model's
+  `command` as written.
 - With `background_tasks`, a background tool another hook asks to retry (`AfterToolCallEvent.retry`) runs again with
   no `BeforeToolCallEvent`: that run is neither decided nor recorded.
 - With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content blocks
