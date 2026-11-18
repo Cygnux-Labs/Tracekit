@@ -29,6 +29,7 @@ AGENT_NAME = "claude-code"
 # seconds a held call may wait for its answer, under a harness that runs the call once its hook takes longer (None: the
 # policy's approval_timeout_s)
 APPROVAL_CAP_S = None
+STATE_KEEP_S = 30 * 86400   # client state no hook has written for this long: a v1 run idles out far sooner
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
 
@@ -161,13 +162,16 @@ def _load_acks():
 def save_ack(path, length):
     if length is None:
         return
+    _change_acks(lambda acks: {**acks, path: length})
+
+
+def _change_acks(change):
     lk = open(_acks_path() + ".lock", "a")
     locked = False
     try:
         lock_file(lk)
         locked = True
-        acks = _load_acks()   # the signer is the authority on what it has seen (it also keeps a history for races)
-        acks[path] = length
+        acks = change(_load_acks())   # the signer is the authority on what it has seen (it keeps a history for races)
         tmp = _acks_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(acks, f)
@@ -178,6 +182,40 @@ def save_ack(path, length):
                 unlock_file(lk)
         finally:
             lk.close()
+
+
+def _held(lock):
+    with open(lock, "a") as f:
+        try:
+            lock_file(f, blocking=False)
+        except BlockingIOError:
+            return True
+        unlock_file(f)
+    return False
+
+
+def _prune(run_id):
+    """Removes the files in runs/ that no hook has written for STATE_KEEP_S, other than run_id's own and those whose
+    lock is held (a lock goes after its state), and drops the acks of transcripts that are gone."""
+    runs = os.path.join(client.client_dir(), "runs")
+    old, keep = time.time() - STATE_KEEP_S, client.state_name(run_id)
+    acks = os.path.basename(_acks_path())
+    for name in sorted(os.listdir(runs), key=lambda n: n.endswith(".lock")):   # the state first, then its lock
+        path = os.path.join(runs, name)
+        if name.startswith((keep, acks)):
+            continue
+        try:
+            if os.path.getmtime(path) >= old:
+                continue
+            # lean: a hook that takes a lock just as it is removed holds a file no later hook opens; rare after a month
+            if name.endswith(".lock") and (os.path.exists(path[:-len(".lock")]) or _held(path)):
+                continue
+            if os.path.exists(path + ".lock") and _held(path + ".lock"):
+                continue
+            os.remove(path)
+        except OSError:   # removed by a parallel hook, or not ours to remove
+            pass
+    _change_acks(lambda a: {p: n for p, n in a.items() if os.path.exists(p)} if isinstance(a, dict) else {})
 
 
 def transcript_mark(path):
@@ -269,6 +307,10 @@ def build_events(p, pol, reasoning=True):
     flag = _started_flag(b["run_id"])
     phash = policy_mod.policy_hash(pol)
     if name == "SessionStart" or not os.path.exists(flag):
+        try:
+            _prune(b["run_id"])
+        except OSError:
+            pass  # what it couldn't remove waits for the next run's start
         evs.append(run_start_event(p, pol, cwd, reasoning))
         try:
             os.makedirs(os.path.dirname(flag), exist_ok=True)

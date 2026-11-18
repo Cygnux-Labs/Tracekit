@@ -13,7 +13,8 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import __version__, agent_hooks, client, install  # noqa: E402
+from tracekit import __version__, agent_hooks, client, hook, install  # noqa: E402
+from tracekit.locking import lock_file, unlock_file  # noqa: E402
 
 MARKER = "SHADOWED-TRACEKIT-RAN"
 SITE = mock.Mock(origin="/usr/lib/python3/site-packages/tracekit/__init__.py")
@@ -413,6 +414,82 @@ class PluginShim(unittest.TestCase):
                 self.assertIn("call was blocked", err)
             for event in ("UserPromptSubmit", "Stop"):
                 self.assertEqual(self.hook(event)[0], 1, (status, event))
+
+
+class PruneRunState(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": os.path.join(self.d, "client")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.runs = os.path.join(client.client_dir(), "runs")
+        self.pol = hook.policy_mod.load()[0]
+
+    def state(self, name, days):
+        path = os.path.join(self.runs, name)
+        with open(path, "w") as f:
+            f.write("{}")
+        t = os.path.getmtime(path) - days * 86400
+        os.utime(path, (t, t))
+        return path
+
+    def start(self, sid="now"):
+        return hook.build_events({"hook_event_name": "SessionStart", "session_id": sid, "cwd": self.d}, self.pol)
+
+    def test_a_session_start_removes_state_no_hook_wrote_for_a_month(self):
+        gone, today, now = (client.state_name(r) for r in ("gone", "today", "now"))
+        old = [self.state(gone + s, 31) for s in (".started", ".started.txoff", ".json", ".json.lock")]
+        old += [self.state(n, 31) for n in ("gemini-0123456789abcdef.json", "gemini-0123456789abcdef.json.lock",
+                                            "typed-0123456789abcdef.json")]
+        kept = [self.state(today + ".started", 0), self.state(now + ".json", 31)]
+        self.start()
+        self.assertEqual([p for p in old if os.path.exists(p)], [])
+        self.assertTrue(all(os.path.exists(p) for p in kept))
+
+    def test_state_whose_lock_is_held_stays(self):
+        queue = self.state("gemini-0123456789abcdef.json", 31)
+        lock = self.state("gemini-0123456789abcdef.json.lock", 31)
+        with open(lock, "a") as f:
+            lock_file(f)
+            try:
+                self.start()
+            finally:
+                unlock_file(f)
+        self.assertTrue(os.path.exists(queue) and os.path.exists(lock))
+
+    def test_acks_of_transcripts_that_are_gone_are_dropped(self):
+        here = os.path.join(self.d, "here.jsonl")
+        open(here, "w").close()
+        acks = os.path.join(self.runs, "transcript-acks.json")
+        with open(acks, "w") as f:
+            json.dump({here: 5, os.path.join(self.d, "deleted.jsonl"): 9}, f)
+        os.utime(acks, (0, 0))
+        self.start()
+        with open(acks) as f:
+            self.assertEqual(json.load(f), {here: 5})
+
+    def test_a_prune_that_cannot_remove_anything_changes_no_decision(self):
+        self.state(client.state_name("gone") + ".started", 31)
+        listdir = os.listdir
+
+        def denied(path="."):
+            if os.path.abspath(path) == os.path.abspath(self.runs):
+                raise PermissionError(13, "denied", path)
+            return listdir(path)
+
+        codes = []
+        for i, call in enumerate(({"tool_name": "Bash", "tool_input": {"command": "rm -rf /"}},
+                                  {"tool_name": "Read", "tool_input": {"file_path": "a"}})):
+            raw = json.dumps({"hook_event_name": "PreToolUse", "session_id": f"s{i}", "tool_use_id": "t", "cwd": self.d,
+                              **call})
+            with mock.patch.object(client, "send", return_value={"ok": True}):
+                code = hook.main(raw=raw)
+                os.remove(os.path.join(self.runs, client.state_name(f"s{i}") + ".started"))
+                with mock.patch("os.listdir", denied), mock.patch("os.remove", side_effect=PermissionError(13, "no")):
+                    self.assertEqual(hook.main(raw=raw), code, call)
+            codes.append(code)
+        self.assertEqual(codes, [2, 0])
 
 
 if __name__ == "__main__":
