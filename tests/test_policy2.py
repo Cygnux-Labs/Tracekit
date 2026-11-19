@@ -432,6 +432,7 @@ class Engines(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
 
+    @pytest.mark.serial
     def test_reading_the_call_is_not_charged_to_the_fallback_time(self):
         """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
         on a laptop) spent it before the first match and denied, marked nondeterministic. Started after the parse, it

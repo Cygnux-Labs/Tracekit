@@ -1199,6 +1199,7 @@ class WindowsPaths(unittest.TestCase):
         d = svc.evaluate(e, "Bash", {"command": command})[0]
         return d["verdict"], d["rule_ids"]
 
+    @pytest.mark.serial
     def test_a_windows_path_is_held_as_its_slash_twin(self):
         for template, rule in self.CASES:
             twin = template.format(q="'", u=self.U.format(s="/"), s="/")
@@ -1287,6 +1288,7 @@ class WindowsPrograms(unittest.TestCase):
         d = svc.evaluate(e, "Bash", {"command": command})[0]
         return d["verdict"], d["rule_ids"]
 
+    @pytest.mark.serial
     def test_a_windows_program_or_home_is_held_as_its_posix_twin(self):
         pairs = [(t.format(q=q, s=s), t.format(q="'", s="/"), rule) for t, rule in self.CASES
                  for q, s in self.SPELLINGS] + [(w, twin, "TK-D004") for w, twin in self.MORE]
