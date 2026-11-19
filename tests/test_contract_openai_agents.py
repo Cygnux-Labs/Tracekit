@@ -27,6 +27,7 @@ try:
     from agents import (Agent, ApplyPatchTool, LocalShellTool, Model, ModelResponse, RunState, Runner, ShellTool,
                         WebSearchTool, function_tool, set_tracing_disabled)
     from agents._tool_invocation import tool_invocation_identity_and_scope   # private: tied to the pinned minor
+    from agents.editor import ApplyPatchOperation
     from agents.items import ToolCallOutputItem
     from agents.usage import Usage
     from openai.types.responses import (Response, ResponseApplyPatchToolCall, ResponseCompletedEvent,
@@ -266,6 +267,22 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         _, res = self.go(call, ApplyPatchTool(name="pay", editor=Editor()))
         self.assertEqual(self.ran, ["a.txt"])
         self.assertIn("cannot wait", res.new_items[1].output)
+
+    def test_an_operation_the_adapter_never_asked_about_is_refused(self):
+        """#985: `needs_approval` is asked only while the run holds no approval status for the call
+        (ApplyPatchAction.execute, agents 0.23.1), so on resume the editor is handed an operation this adapter has no
+        call id for — and an approval can be tool-wide rather than per call. It must refuse rather than apply: an
+        approval that does not belong to this call is not this call's."""
+        op = ApplyPatchOperation(type="create_file", path="a.txt", diff="+hi")
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+            return "created"
+
+        res = asyncio.run(self.tk._patch("pay", fn, op))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("cannot wait", res.output)
 
     def test_an_apps_own_context_object_waits_for_an_approval_too(self):
         @dataclasses.dataclass

@@ -102,6 +102,11 @@ failure policy as without Tracekit.
   **`ComputerTool`** and **handoffs** run outside the hooks Tracekit can gate. `tk.tool(...)` refuses hosted tools
   with a `TypeError`. They appear only as `tool_uses` in the signed model exchange recorded for each model response (T3: what the
   agent process reported, not checked by Tracekit).
-- **`LocalShellTool` and `ApplyPatchTool` cannot wait for an approval**: the SDK has no approval hook for the first and
-  does not tell the editor the call id of the second, so an `ask` for them is refused. Allow and deny work as above.
+- **`LocalShellTool` and `ApplyPatchTool` cannot wait for an approval**, so an `ask` for them is refused. The SDK has no
+  approval hook for the first. For the second it does have one (`needs_approval`), but the SDK asks it only while the
+  run holds no approval status for the call, so on resume it is skipped and the editor receives an operation with no
+  call id; an approval can also be tool-wide rather than per call. Matching the operation against an approval's
+  arguments was considered and rejected: it cannot tell a per-call approval from a tool-wide one, and two identical
+  operations would let one approval authorise a call id the person never approved ([#985](https://github.com/Cygnux-Labs/Tracekit/issues/985)). Allow and deny work
+  as above.
 - The SDK runs each tool call id once, so every call is attempt 0.

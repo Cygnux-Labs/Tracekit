@@ -19,8 +19,11 @@ An approval with a T2 executor runs a FunctionTool with the arguments the consum
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
 executor, LocalShellTool and ApplyPatchTool (gated in the executor or editor). LocalShellTool and ApplyPatchTool cannot
-wait for an approval (the SDK has no approval hook for the first and does not tell the editor its call id), so an
-`ask` for them is refused. Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell),
+wait for an approval, so an `ask` for them is refused: the SDK has no approval hook for the first, and for the second it
+asks `needs_approval` only while the run holds no approval status for the call (`ApplyPatchAction.execute`, agents
+0.23.1), so on resume that is skipped and the editor is handed an operation with no call id; an approval may also be
+tool-wide rather than per call (`_approval_records_for_key`). Not gated: hosted tools (web and file search, code
+interpreter, hosted MCP, hosted shell),
 ComputerTool and handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
 `hooks=tk` records for each model response.
 
