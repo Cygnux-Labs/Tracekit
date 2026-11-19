@@ -77,15 +77,19 @@ The signer classifies the tool and computes the args digest itself; nothing the 
   ```
 
   `apply_decisions` is the one place approvals are applied: it reads them from the signer, not from the saved state.
-  A rejected call reaches the model as `Tool call rejected in Tracekit`.
+  A rejected or expired call reaches the model as `[tracekit] NOT APPROVED, nothing ran (<rules>): <rejected|expired>.`,
+  then the signer's reason on a `Why:` line; after a resume in another process, that is the held rules' reasons only,
+  without a grant's text. The approval commands are for the person, so the model doesn't get them.
 
 The saved run state is not authenticated (the SDK says so), so it carries the approval id only as a hint, in
-`context["tracekit"]["approvals"]`. The SDK does not call `needs_approval` again on resume; the adapter's tool input
-guardrail asks the signer on every execution, with the model's raw arguments string. The call runs only if the
-signer's approval for this exact call and these exact arguments was granted and not used before. Editing the saved
-state (the arguments, the call id, the hint, or approving the call in the state directly) gets the call refused, and
-the signer records why. Exceptions raised by a tool are recorded, then handled by the tool's own failure policy as
-without Tracekit.
+`context["tracekit"]["approvals"]`, and the signer's reason for each held call, also a hint, in
+`context["tracekit"]["reasons"]`, for the app to show the person why it waits: after a load it is only what the saved
+state says (`tracekit approvals show` shows the signer's own). The SDK does not call `needs_approval` again on resume;
+the adapter's tool input guardrail asks the signer on every execution, with the model's raw arguments string. The call
+runs only if the signer's approval for this exact call and these exact arguments was granted and not used before.
+Editing the saved state (the arguments, the call id, the hint, or approving the call in the state directly) gets the
+call refused, and the signer records why. Exceptions raised by a tool are recorded, then handled by the tool's own
+failure policy as without Tracekit.
 
 ## What the model said
 
