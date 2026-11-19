@@ -132,6 +132,7 @@
 {"tool": "Bash", "args": {"command": "keepassxc-cli export passwords.kdbx"}, "expect": "deny", "note": "keepassxc-cli dumps whole database"}
 {"tool": "Bash", "args": {"command": "keepassxc-cli attachment-export db.kdbx entry key.pem out.pem"}, "expect": "ask", "note": "keepassxc-cli extracts stored key file"}
 {"tool": "Bash", "args": {"command": "gh auth token"}, "expect": "ask", "note": "gh prints the stored GitHub token, as a credential store does"}
+{"tool": "Bash", "args": {"command": "git credential fill"}, "expect": "ask", "note": "git credential helpers print the stored username and password"}
 {"tool": "Bash", "args": {"command": "echo x > ~/.bash_history"}, "expect": "ask", "note": "shell history write target"}
 {"tool": "Bash", "args": {"command": "rm /var/log"}, "expect": "ask", "note": "system log delete target"}
 {"tool": "Bash", "args": {"command": "find /var/log -type f -delete"}, "expect": "ask", "note": "system log files deleted"}
