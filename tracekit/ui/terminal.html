@@ -7104,7 +7104,8 @@
       // an argument the signer traced twice (as an address and as a string, say) is one line
       const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
       const lines = [
-        ...by("exact").map(e => `exact: its \`${e.field}\` came only from ${e.label} (untrusted${e.signed ? "; the viewer verified the call's signed record" : ""})`),
+        ...by("exact").map(e => `exact: ${e.label} holds its \`${e.field}\`, and nothing the signer indexed as trusted does${e.signed ? " (the viewer verified the call's signed record)" : ""}`),
+        ...by("claimed").map(e => `claimed by the log, not checked against the signer: its \`${e.field}\` from ${e.label}`),
         ...by("measured").map(e => `measured: a replay without ${e.label} changed it, effect ${sgn(e.effect)}` + (e.ci ? ` [${sgn(e.ci[0])}, ${sgn(e.ci[1])}]` : "")),
         c.seen ? `seen: ${plural(c.seen, "source")} in the context of the model call that asked for it (${[...new Set(seen.map(e => BASIS[e.basis] || e.basis))].join("; ")})` : "",
         c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
@@ -7115,7 +7116,7 @@
     function inflCalls(I, W) {
       const calls = I.calls || [], sw = cls => `<svg class="ichain" width="22" height="8"><path class="${esc(cls)}" d="M0,4H22"/>${cls === "g-measured" ? `<path class="g-gap" d="M0,4H22"/>` : ""}</svg>`;
       return `<div class="inans"><div class="q">WHAT LED TO EACH RISKY CALL?</div>`
-        + (calls.length ? calls.map(c => inflCall(c, W - 36)).join("") : `<div class="none">No risky call: nothing was stopped or flagged, and no argument came from what the agents read.</div>`)
+        + (calls.length ? calls.map(c => inflCall(c, W - 36)).join("") : `<div class="none">No risky call: nothing was stopped or flagged, and no model call had untrusted content in front of it.</div>`)
         + (I.calls_total > calls.length ? `<div class="dim">${esc(`and ${I.calls_total - calls.length} more`)}</div>` : "")
         + (!calls.length ? "" : `<div class="wbar glegend"><span>` + sw("g-exact") + ` exact: the signer traced an argument to it</span><span>` + sw("g-measured") + ` measured: a replay showed it changed the call</span>`
         + `<span>` + sw("hop") + ` seen: in the model's context when it decided</span>`

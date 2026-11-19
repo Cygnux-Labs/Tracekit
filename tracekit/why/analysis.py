@@ -9,7 +9,7 @@ import re
 import sys
 from collections import deque
 from itertools import takewhile
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
 from .graph import Graph, _text, build_graph, nodes_matching, target_hits
@@ -163,7 +163,8 @@ def candidates(run: Run, g: Graph, action_node: str) -> List[Dict[str, Any]]:
     def targets_this(spec: str) -> bool:
         if spec not in hit_cache:
             try:
-                hit_cache[spec] = any(h["id"] == ev["id"] for h in target_hits(run, spec))
+                # the test is about this call only when its target matches no other call (graph._attach_tests)
+                hit_cache[spec] = [h["id"] for h in target_hits(run, spec)] == [ev["id"]]
             except ValueError:
                 hit_cache[spec] = False
         return hit_cache[spec]
@@ -293,9 +294,10 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": "A replay without the task kept it. See INFLUENCE for what it came from."})
         elif u:
             out.append({**base, "severity": "review",
-                        "title": f"{ev['tool']}'s `{u['field']}` came only from untrusted content"
-                        if u["grade"] == "exact" else f"Untrusted content caused {ev['tool']}",
-                        "detail": (f"{u['label']}, by the signer's provenance." if u["grade"] == "exact" else
+                        "title": f"{ev['tool']}'s `{u['field']}` traced to untrusted content" if u["grade"] == "exact"
+                        else f"Untrusted content caused {ev['tool']}",
+                        "detail": (f"{u['label']} holds the value, and nothing the signer indexed as trusted does."
+                                   if u["grade"] == "exact" else
                                    f"A replay without {u['label']} changed it (effect {u['effect']:+.2f}).")
                         + " Test it without the task to see whether it serves the task."})
         elif sens and untrusted_up:
@@ -469,6 +471,34 @@ def _ended(ev: Dict[str, Any]) -> Optional[str]:
         "flagged" if p.get("decision") == "flag" else None
 
 
+def _reach(g: Graph) -> Tuple[List[str], Callable[[str], int]]:
+    """(the run's calls in log order, a function giving the calls a node reaches over observed edges, the actions
+    g.descendants finds from it, as a bit per call of that list), all worked out in one pass back through the log: an
+    observed edge runs from an earlier event to a later one, so a node reaches itself (a call) and what its successors
+    reach. A walk from each source instead took cubic time on a run whose model calls each see everything before them.
+    A graph with an edge that runs back (none build_graph makes) is walked from each node."""
+    order = sorted(g.nodes, key=lambda x: g.nodes[x]["seq"])
+    calls = [x for x in order if g.nodes[x]["type"] == "action"]
+    bit = {x: 1 << i for i, x in enumerate(calls)}
+    reach: Dict[str, int] = {}
+    for x in reversed(order):
+        r = bit.get(x, 0)
+        for e in g.out_edges(x, ("observed",)):
+            if e["dst"] not in reach:
+                return calls, lambda x: sum(bit.get(y, 0) for y in g.descendants([x]))
+            r |= reach[e["dst"]]
+        reach[x] = r
+    return calls, reach.__getitem__
+
+
+def _bits(r: int, calls: List[str]) -> Iterator[str]:
+    """The calls of bits `r` (_reach's)."""
+    while r:
+        low = r & -r
+        yield calls[low.bit_length() - 1]
+        r ^= low
+
+
 def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     """Cross-run, citation-like graph over (run, its graph without inferred edges) pairs. Sources are content (by
     hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
@@ -486,6 +516,13 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     calls: List[Dict[str, Any]] = []
     for run, g in runs:
         calls += [{**c, "run": run.run_id} for c in influences(run, g, risky=True)]
+        order, reach = _reach(g)
+        tools: Dict[str, int] = {}   # each tool's calls and the calls that ended blocked, held or flagged, as _reach's bits
+        ended = 0
+        for i, x in enumerate(order):
+            act = g.nodes[x]["event"]
+            tools[act["tool"]] = tools.get(act["tool"], 0) | 1 << i
+            ended |= (1 << i) if _ended(act) else 0
         for nid, n in g.nodes.items():
             if n["type"] != "input" or n.get("kind") == "task":
                 continue
@@ -505,20 +542,19 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
                 s["labels"].append(ev["source"])
             s["runs"] += 1
             s["cited_by"] += len([e for e in g.out_edges(nid, ("observed",)) if e["kind"].startswith("context")])
-            reached = [x for x in g.descendants([nid]) if g.nodes[x]["type"] == "action"]
-            for tool in {g.nodes[x]["event"]["tool"] for x in reached}:
+            reached = reach(nid)
+            for tool in (t for t, bits in tools.items() if reached & bits):
                 grp["reach"].setdefault(tool, set()).add(run.run_id)
                 outcomes.setdefault(tool, {"id": tool, "runs": 0})
                 e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool, "reach_runs": 0,
                                                               "tests": [], "ended": {}})
                 e["reach_runs"] += 1
-            for x in reached:
+            for x in _bits(reached & ended, order):
                 act = g.nodes[x]["event"]
                 how = _ended(act)
-                if how:
-                    e = edges[ev["ref"] + "|" + act["tool"]]
-                    e["ended"][how] = e["ended"].get(how, 0) + 1
-                    grp["ended"].setdefault(act["tool"], {}).setdefault(how, set()).add((run.run_id, x))
+                e = edges[ev["ref"] + "|" + act["tool"]]
+                e["ended"][how] = e["ended"].get(how, 0) + 1
+                grp["ended"].setdefault(act["tool"], {}).setdefault(how, set()).add((run.run_id, x))
             spec = "input:" + glob_escape(ev["source"])
             for t in run.tests:
                 if t.get("scope", "run") == "run" and t["intervention"] == spec:
@@ -544,9 +580,10 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
         s["confirmed_tools"] = sorted({e["tool"] for e in es if e["confirmed"]})
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))
     # the calls to answer for first: those that serve no step of the task, then those tied to untrusted content, then
-    # the worst ended, then the rest with an exact or measured edge; otherwise in the order of the runs and their logs
+    # the worst ended, then the rest with an exact or measured edge, then those with untrusted content only in context;
+    # otherwise in the order of the runs and their logs
     calls.sort(key=lambda c: (c["serves"] != "drift", not c["untrusted"], -ENDED.index(c["ended"]),
-                              not any(e["grade"] != "seen" for e in c["edges"])))
+                              not any(e["grade"] in ("exact", "measured") for e in c["edges"])))
     return {"sources": src, "outcomes": sorted(outcomes.values(), key=lambda o: -o["runs"]),
             "edges": list(edges.values()), "calls": calls[:CALLS_KEPT], "calls_total": len(calls),
             "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()},

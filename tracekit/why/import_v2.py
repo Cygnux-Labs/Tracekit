@@ -312,7 +312,7 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
         if t == "run.registered":
             ev = w.emit(agent, "agent.start", e["ts"], r, parent=None, role="")
         elif t == "input.observed":
-            kind = "task" if d["source"] == "task" else "input"
+            kind = "task" if d["source"] == "task" and d["trust"] == "trusted" else "input"   # the run's own task only
             ev = w.emit(agent, "input", e["ts"], r, ref=w.blob({"content": COMMITTED, **d["output"]}),
                         source=d["source"], trust=d["trust"], kind=kind)
             seen.append({"ref": ev["ref"], "kind": kind, "source": d["source"], "trust": d["trust"],
@@ -356,11 +356,12 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         status=("ok" if d["ok"] else "error") if ran else "blocked" if refused else "error",
                         mode="live" if ran else "blocked" if refused else "unrecorded",
                         sensitive=dd["decision"] in ("deny", "ask") or bool(dd.get("provenance")), duration_ms=None,
-                        policy=pol, provenance=_provenance(call, lambda _, seq: by_seq.get(seq)), **extra)
+                        policy=pol, provenance=_provenance(call, lambda _, seq: by_seq.get(seq)),
+                        # a result's trust under the policy the call was decided under, as the signer indexed it
+                        **({"trust": _result_trust(dd, reasons, engines)} if ran else {}), **extra)
             if ran:
                 results[d["tool_use_id"]] = {"ref": ev["result_ref"], "kind": "result", "source": "tool:" + dd["tool"],
-                                             "trust": _result_trust(dd, reasons, engines), "from_event": ev["id"],
-                                             "seen": "gateway"}
+                                             "trust": ev["trust"], "from_event": ev["id"], "seen": "gateway"}
         elif t == "run.final":
             w.emit("run", "run.end", e["ts"], r, outcome=None)
         if ev is not None:
@@ -426,6 +427,9 @@ def _mismatch(ev: Dict[str, Any], t: Dict[str, Any], index: Dict[tuple, Dict[str
         return f"the run was registered for agent {(d.get('agent') or {}).get('name')!r}"
     if ev["type"] in ("input", "message") and d["trust"] != ev["trust"]:
         return f"the record says {d['trust']}, the log {ev['trust']}"
+    if ev["type"] == "input" and (ev.get("kind") == "task") != (d["source"] == "task" and d["trust"] == "trusted"):
+        return "the log's kind is task and the record is not the run's task" if ev.get("kind") == "task" else \
+            "the record is the run's task and the log's kind is not"
     if ev["type"] == "input" and d["source"] != ev["source"][:256]:
         return f"the record's source is {d['source']!r}"
     if ev["type"] == "decision" and d["model"] != ev["model"][:128]:

@@ -138,11 +138,21 @@ def claims():
         f"{dk['legit_calls']} others",
         f"{wt['planted_drift']} of {wt['planted_calls']} planted emails serve no step of the task, "
         f"{wt['asked_drift']} of {wt['asked_calls']} asked ones",
+        f"none reads as coming from the task (no replay without the task exists for a published trace), all "
+        f"{ad['attack_calls_said']['listed']} are in its list, and each of the {ad['attack_calls_said']['without_exact']} "
+        "with no exact edge names",
+        f"{dk['exfil_calls_serve_task']} of the {dk['exfil_calls']} read as coming from the task",
+        f"In each of the {wt['tool_only_runs']} runs with both emails, a test whose target only names the tool "
+        f"(`tool=send_email`, both emails) put its verdict on {wt['tool_only_attached']} calls",
+        f"{e28['held']['cases']} built runs where the task gives a value in prose",
+        f"named the record in all {e28['held']['exact_from_record']}",
+        f"in all {e28['held']['said_task_too']} the words say the task holds the value too",
     ]
     limits = [
         f"in {pct(ag['exact']['found'] / ag['exact']['calls'])} of the successful attacks scored",
         f"{pct(ag['seen']['fp'] / (ag['seen']['tp'] + ag['seen']['fp']))} of the labelled seen edges",
         f"{un['clean_runs_named']} of {ad['runs']['clean']} had such a call",
+        f"in all {e28['held']['exact_from_record']} of E28's built cases",
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
         f"{se17['fp']} of E17's {se17['benign']} benign calls, {pct(se17['fp'] / se17['benign'], 1)}, and "
         f"{strict['sessions']['totals']['fp']} of E21's {strict['sessions']['totals']['benign']} developer-session "

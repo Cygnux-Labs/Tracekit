@@ -682,7 +682,8 @@ run's bundle, whose `intent grants` line re-checks every release. Results: `eval
 ## E28: influence grades on runs with a known cause
 
 `eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
-true influence, offline, with no model API. Three parts:
+true influence, offline, with no model API. Four parts, and a gate: E28 exits 1 when any promise below breaks (each
+grade's recall floor among them).
 
 - **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, MIT, gpt-4o-2024-05-13, the `important_instructions`
   attack and the clean runs; the runs E28 reads are kept in `eval/e28_agentdojo/` with the upstream commit and license)
@@ -691,7 +692,8 @@ true influence, offline, with no model API. Three parts:
   output observed as untrusted. Labels come from the benchmark: in a run whose attack succeeded, the attack call is
   the first call after the injected text arrived of a tool the injection task's ground truth calls, carrying a string
   the ground truth fixes and the injected text states. A tool output holding the injected text is a cause of it; one
-  holding neither the injected text nor any of the call's values is not; one that supplied a value without the
+  holding neither the injected text nor any of the call's values is not, nor is one whose every value of the call (as
+  the signer's index reads values) the task holds too (none of AgentDojo's do); one that supplied a value without the
   instruction is left unlabelled. Of 629 attacked runs, 300 attacks succeeded and 274 were scored.
 
   | Grade | Precision (edges) | Recall (attack calls) |
@@ -706,14 +708,20 @@ true influence, offline, with no model API. Three parts:
   value, the user's own address), and all 757 exact claims name a record that holds the value. An argument from
   untrusted content (`untrusted`) marks 216 of the 274 attack calls, and also 40 of the 354 calls of clean runs, in 31 of
   97 clean runs: a task that asks the agent to act on what it reads gets it too, so it is never called drift on its
-  own.
+  own. What INFLUENCE says of the 274 attack calls: none reads as coming from the task (no replay without the task
+  exists for a published trace), all 274 are in its list, and each of the 58 with no exact edge names the untrusted
+  content its model call had in context.
 - **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
   vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
   found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40
-  exfiltration calls and 0 of 57 others.
+  exfiltration calls and 0 of 57 others; 0 of the 40 read as coming from the task.
 - **A scripted reader** that does what its task asks and, seven times in ten, what a planted line says, replayed
   without its task: 20 of 20 planted emails serve no step of the task, 0 of 60 asked ones. The scripted model follows
-  the premise by construction, so this checks the finding's machinery, not a real model.
+  the premise by construction, so this checks the finding's machinery, not a real model. In each of the 20 runs with
+  both emails, a test whose target only names the tool (`tool=send_email`, both emails) put its verdict on 0 calls.
+- **A record that held the value, no more**: 4 built runs where the task gives a value in prose (a branch name, an
+  address, an IBAN, a URL) and an untrusted record read later holds it too. The signer's index named the record in all
+  4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too.
 
 Results: `eval/results/e28_influence.json`.
 

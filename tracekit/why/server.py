@@ -91,30 +91,27 @@ def _stat(path: str) -> Optional[Tuple]:
     return (st.st_size, st.st_mtime_ns, tests)
 
 
-def _last_line(path: str) -> bytes:
-    """The last line of the file at `path`, read back from its end."""
-    with open(path, "rb") as f:
-        end = f.seek(0, os.SEEK_END)
-        tail = b""
-        while end and tail.rstrip(b"\n").count(b"\n") == 0:
-            step = min(1 << 16, end)
-            end -= step
-            f.seek(end)
-            tail = f.read(step) + tail
-    return tail.rstrip(b"\n").rsplit(b"\n", 1)[-1]
+def _ids(path: str) -> Tuple[Dict[str, Any], List[Any]]:
+    """(the first event, the id of every event) of the run folder at `path`."""
+    with open(os.path.join(path, "events.jsonl"), encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    return (events[0] if events else {}), [e.get("id") for e in events]
 
 
 def _covers(imp: Optional[str], log: str) -> bool:
-    """Whether run folder `imp` covers why log `log`: it is where the log's merged import goes (import_v2.merge writes
-    it to _target(root, the log's run id), every event of the log, ids kept) and ends with the log's last event. A log
-    that grew after it was imported is not covered, and shows beside its import. Both are why logs, plain files."""
-    if imp is None:
+    """Whether run folder `imp` is the merged import of why log `log`, all of it: import_v2.merge wrote it (the import's
+    run.start says so and names the log), no ingest made it (no ingest-owner file), and it holds the log's events, every
+    id in order (a log that grew after its import is not covered and shows beside it). A run named tk-, an import's
+    name, is never covered."""
+    if imp is None or os.path.basename(log).startswith("tk-") or os.path.exists(os.path.join(imp, OWNER)):
         return False
     try:
-        last = [json.loads(_last_line(os.path.join(p, "events.jsonl"))).get("id") for p in (imp, log)]
+        start, ids = _ids(imp)
+        meta = start.get("meta") or {}
+        return meta.get("source") == "tracekit" and isinstance(meta.get("merged_from"), str) and \
+            os.path.basename(meta["merged_from"]) == os.path.basename(log) and None not in ids and _ids(log)[1] == ids
     except (OSError, ValueError, AttributeError):
         return False
-    return last[0] == last[1] is not None
 
 
 class Feed:
@@ -202,6 +199,7 @@ class Store:
         self.lock = threading.Lock()
         os.makedirs(root, exist_ok=True)
         self._stat: Dict[str, Tuple] = {}
+        self._covered: Dict[str, Tuple] = {}   # why log -> (the files' state it was read at, whether an import covers it)
         self._seen: Dict[str, set] = {}
         self._sent: Dict[str, int] = {}   # with tape: events of each run already published
         self._heads: Dict[str, Dict[str, Any]] = {}   # run folder -> what ingest needs of it (_head)
@@ -313,7 +311,13 @@ class Store:
         once, as the import, which holds the log's events with their signed records."""
         paths = list_runs(self.root) if os.path.isdir(self.root) and os.listdir(self.root) else []
         named = {os.path.basename(p): p for p in paths}
-        return [p for p in paths if not _covers(named.get(os.path.basename(_target(self.root, os.path.basename(p)))), p)]
+        was, now = self._covered, {}
+        for log in paths:   # each read again only when either run's files changed; a run gone is forgotten
+            imp = named.get(os.path.basename(_target(self.root, os.path.basename(log))))
+            key = (imp, _stat(log), imp and _stat(imp))
+            now[log] = was[log] if was.get(log, (None,))[0] == key else (key, _covers(imp, log))
+        self._covered = now
+        return [p for p in paths if not now[p][1]]
 
     def run_path(self, run_id: str) -> str:
         if not isinstance(run_id, str) or not RUN_ID.fullmatch(run_id):

@@ -330,15 +330,19 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 Across every why run, INFLUENCE answers first, per risky call, what led to it, graded by how each link is known
 ([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance traced an argument to the record),
 measured (a replay without the source changed the call), seen (the source was in the model's context when it decided)
-and hint (text overlap, never an influence).
+and hint (text overlap, never an influence). A why log's own provenance, with no signed record behind it, is shown as
+"claimed by the log".
 
-- **The answer, first.** The risky calls (stopped, flagged, with an exact or measured link, or serving no step of the
-  task), worst first: those a replay without the task kept, then those whose argument or cause was untrusted content,
-  then the stopped ones. Each says in words where it came from, for example "git_push (dev) came from: read
-  github:issue-12 (untrusted; exact: `branch`) → dev decided (plan; 3 in context, 1 untrusted) → this call", and a call
-  nothing links says "no influence found". Below the words, its chain top to bottom: a thin line per step, a solid line
-  from a step the signer traced an argument to, a double line from one a replay tied to the call. **show hints** adds
-  the text-overlap hints, dashed. **WHY** opens the call in its run.
+- **The answer, first.** The risky calls (stopped, flagged, with an exact or measured link, serving no step of the
+  task, or whose model call had untrusted content in front of it), worst first: those a replay without the task kept,
+  then those whose argument or cause was untrusted content, then the stopped ones. Only a replay without the task says
+  a call came from the task; otherwise the words say no replay has tested it, name the untrusted content its model call
+  had in context and give the chain, for example "git_push (dev): no replay has tested it without the task. Untrusted
+  content in its model call's context: github:issue-12. Chain: read github:issue-12 (untrusted; exact: `branch`) → dev
+  decided (plan; 3 in context, 1 untrusted) → this call." A call nothing links says "no influence found". Below the
+  words, its chain top to bottom: a thin line per step, a solid line from a step the signer traced an argument to, a
+  double line from one a replay tied to the call. **show hints** adds the text-overlap hints, dashed. **WHY** opens the
+  call in its run.
 - **The flow.** What the agents had in front of them when they decided, across runs: each kind of content on the left
   (its trust, untrusted framed red, and its sources) and the tools called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
   were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a

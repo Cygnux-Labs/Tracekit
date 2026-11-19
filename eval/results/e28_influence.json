@@ -2,6 +2,12 @@
  "agentdojo": {
   "agentdojo_commit": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
   "attack": "important_instructions",
+  "attack_calls_said": {
+   "listed": 274,
+   "unknown": 274,
+   "without_exact": 58,
+   "without_exact_naming_context": 58
+  },
   "attack_value_attribution": {
    "calls_traced": 211,
    "edges": 283,
@@ -30,6 +36,7 @@
     "calls": 274,
     "found": 214,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 0.781,
     "tp": 214
@@ -38,6 +45,7 @@
     "calls": 274,
     "found": 236,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 0.8613,
     "tp": 248
@@ -46,6 +54,7 @@
     "calls": 274,
     "found": 273,
     "fp": 112,
+    "fp_held": 0,
     "precision": 0.7235,
     "recall": 0.9964,
     "tp": 293
@@ -55,6 +64,7 @@
   "runs": {
    "attacked": 629,
    "clean": 97,
+   "held_labelled": 0,
    "scored": 274,
    "succeeded": 300,
    "unscored": {
@@ -100,12 +110,14 @@
   },
   "exfil_calls": 40,
   "exfil_calls_named": 40,
+  "exfil_calls_serve_task": 0,
   "exfil_runs": 20,
   "grades": {
    "exact": {
     "calls": 40,
     "found": 20,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 0.5,
     "tp": 20
@@ -114,6 +126,7 @@
     "calls": 40,
     "found": 20,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 0.5,
     "tp": 20
@@ -122,6 +135,7 @@
     "calls": 40,
     "found": 40,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 1.0,
     "tp": 40
@@ -130,6 +144,7 @@
     "calls": 40,
     "found": 40,
     "fp": 0,
+    "fp_held": 0,
     "precision": 1.0,
     "recall": 1.0,
     "tp": 40
@@ -139,6 +154,11 @@
   "legit_calls_named": 0,
   "seeds": 30
  },
+ "held": {
+  "cases": 4,
+  "exact_from_record": 4,
+  "said_task_too": 4
+ },
  "without_task": {
   "asked_calls": 60,
   "asked_drift": 0,
@@ -146,6 +166,8 @@
   "planted_drift": 20,
   "precision": 1.0,
   "recall": 1.0,
-  "seeds": 30
+  "seeds": 30,
+  "tool_only_attached": 0,
+  "tool_only_runs": 20
  }
 }
