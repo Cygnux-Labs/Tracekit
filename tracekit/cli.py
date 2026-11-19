@@ -1274,6 +1274,23 @@ def _export_v2(a, show=print):
         if run is None:
             raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in the store")
         about = about_run(reader, tenant, a.run) if a.with_findings else []
+        # A run that closed moments ago has no run.final yet: the signer writes it after its grace window.
+        # A data dir names no running signer, so there is nothing to wait for.
+        state = _run_state(reader, (tenant, a.run))[0]
+        final = state == "run.final"
+        if not a.data_dir and state == "run.closing":
+            deadline, waiting = time.monotonic() + LAST_WAIT_S, False
+            while time.monotonic() < deadline:
+                if _run_state(reader, (tenant, a.run))[0] == "run.final":
+                    break
+                if not waiting:
+                    print(f"tracekit export: run {a.run} just closed; waiting up to {LAST_WAIT_S:g} s "
+                          "while the signer finalises it", file=sys.stderr)
+                    waiting = True
+                time.sleep(0.25)
+                reopen()
+            state = _run_state(reader, (tenant, a.run))[0]
+            final = state == "run.final"
         last = max(reader.runs[(tenant, r)]["seqs"][-1] for r in [a.run, *about])
         note = covering(reader, last)
         if note is None:
@@ -1308,7 +1325,8 @@ def _export_v2(a, show=print):
     finally:
         if reader:
             reader.close()
-    show(_exported(a, info, f"run {a.run}" + (f" and {len(about)} findings or replay run(s) about it" if about else "")))
+    show(_exported(a, info, f"run {a.run}" + (f" and {len(about)} findings or replay run(s) about it" if about else ""),
+                   final=final))
     return 0
 
 
@@ -1341,15 +1359,18 @@ def _export_remote(a, show=print):
     return 0
 
 
-def _exported(a, info, what):
+def _exported(a, info, what, final=True):
     """What `tracekit export --v2` says it wrote (info: bundle_v2.export's summary): the bundle, `what` it holds and
-    the commands that verify it; with --json, info itself, for scripts."""
+    the commands that verify it; with --json, info itself plus `final`, for scripts. A run without `run.final` is
+    named as such, so the open-only verification isn't a surprise."""
     if a.json:
-        return json.dumps(info, indent=2)
+        return json.dumps({**info, "final": final}, indent=2)
     where = f" --config {_quote(a.config)}" if a.config else f" --data-dir {_quote(a.data_dir)}" if a.data_dir else ""
     out = _quote(info["bundle"])
     return (f"wrote {info['bundle']}: {what}, {info['records']} records; a verifier needs tracekit "
             f"{info['verifier_min_version']} or newer\n" + (f"spans: {info['otel']}\n" if info.get("otel") else "")
+            + ("" if final else f"{what} has no run.final yet: the bundle verifies only TO HEAD n (open); "
+                                "export again once the run is final.\n")
             + "next, pin the signer's log key and verify the bundle against it:\n"
               f"  tracekit signer trust{where} -o trust.json\n  tracekit verify {out} --trust trust.json")
 
@@ -1359,6 +1380,14 @@ def _quote(path):
     import shlex
     import subprocess
     return subprocess.list2cmdline([path]) if os.name == "nt" else shlex.quote(path)
+
+
+def _run_state(reader, key):
+    """(state, first event) of a run: `run.final`, `run.closing` (closed, not finalised), or `open`."""
+    events = (x["event"] for x in reader.iter_run(*key))
+    first = next(events)
+    kinds = {first["type"]} | {e["type"] for e in events}
+    return next((k for k in ("run.final", "run.closing") if k in kinds), "open"), first
 
 
 def _last(a):
@@ -1386,10 +1415,8 @@ def _last(a):
                 runs = []
                 for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key[1] != SIGNER_RUN[1]),
                                      reverse=True):
-                    events = (x["event"] for x in r.iter_run(*key))
-                    first = next(events)
-                    kinds = {first["type"]} | {e["type"] for e in events}
-                    runs.append((key, next((k for k in ("run.final", "run.closing") if k in kinds), "open"),
+                    state, first = _run_state(r, key)
+                    runs.append((key, state,
                                  ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
                     if runs[-1][1] == "run.final":
                         break

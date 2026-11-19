@@ -393,6 +393,33 @@ class DevSignerEndToEnd(unittest.TestCase):
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
+    def test_export_says_when_the_run_is_still_open(self):
+        """An export of a run that has not finalised says so, in text and in --json (issue #956)."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            run.decide("c1", "Bash", '{"command": "ls"}')
+            run.complete("c1")
+            said = self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", os.path.join(self.dir, "open.tkb"))
+            self.assertIn(f"run {run.run_id} has no run.final yet: the bundle verifies only TO HEAD n (open); "
+                          "export again once the run is final.\n", said)
+            info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o",
+                                       os.path.join(self.dir, "open2.tkb"), "--json"))
+            self.assertFalse(info["final"])
+
+    def test_export_of_a_run_that_just_closed_waits_for_run_final(self):
+        """No wait in the test: the signer finalises the run during its grace window, and export waits for it."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            run.decide("c1", "Bash", '{"command": "ls"}')
+            run.complete("c1")
+        trust, out = os.path.join(self.dir, "closing-trust.json"), os.path.join(self.dir, "closing.tkb")
+        self.cli("signer", "trust", "--dev", "-o", trust)
+        said = self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
+        self.assertNotIn("has no run.final yet", said)
+        self.assertTrue(self.cli("verify", out, "--trust", trust).startswith("VERIFIED: "))
+
     def test_the_dev_user_signs_findings_about_its_runs_and_they_read_self_asserted(self):
         """The dev signer lists its user in analyzers (#309): a findings run about the user's own run signs a finding,
         which the verifier labels self-asserted, the dev user being the agent too."""
@@ -677,6 +704,21 @@ class DevSignerOverTcp(unittest.TestCase):
             os.chmod(endpoint, 0o644)
             with self.assertRaisesRegex(SignerUnavailable, "readable by no one else"):
                 Client().status()
+
+    def test_export_says_when_the_run_is_not_final(self):
+        """The cross-platform counterpart of the POSIX-only export tests (issue #956)."""
+        c = Client()
+        with c.run("tcp") as run:
+            run.decide("c1", "Bash", '{"command": "ls"}')
+            run.complete("c1")
+            said = DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id,
+                                         "-o", os.path.join(self.dir, "open.tkb"))
+            self.assertIn(f"run {run.run_id} has no run.final yet: the bundle verifies only TO HEAD n (open); "
+                          "export again once the run is final.\n", said)
+            info = json.loads(DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id, "--json",
+                                                    "-o", os.path.join(self.dir, "open2.tkb")))
+            self.assertFalse(info["final"])
+        c.close()
 
     def test_named_signer_with_a_token(self):
         ep = os.path.join(self.dir, "tcp.json")
