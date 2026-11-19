@@ -3001,7 +3001,7 @@ class QwenHome(unittest.TestCase):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d, True)
         self.qwen = os.path.join(self.d, "x")
-        patch_env(self, HOME=self.d, USERPROFILE=self.d, QWEN_HOME=self.qwen)
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
 
     def test_init_and_uninstall_write_qwen_home(self):
         from tracekit import cli, install

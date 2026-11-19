@@ -1948,7 +1948,7 @@ class FolderTrust(unittest.TestCase):
         on = {"security": {"folderTrust": {"enabled": True}}}
         self.assertEqual(self.qwen_rows(user, {}, on), [])
         got = self.qwen_rows(user, {self.repo: "TRUST_FOLDER"}, on)
-        self.assertEqual([r[2].split(":")[0] for r in got], [f"disableAllHooks is set in {project}"])
+        self.assertEqual([r[2].split(": Qwen")[0] for r in got], [f"disableAllHooks is set in {project}"])
 
     def test_qwen_project_hooks_in_an_untrusted_folder_warn(self):
         project = agent_hooks.config_path("qwen", self.repo)
