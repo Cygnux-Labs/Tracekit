@@ -76,10 +76,11 @@ async def main(run):
     result = await Runner.run(agent, "pay this month's print and hosting bills", context={}, hooks=tk)
     first = True
     while result.interruptions:   # a held payment: the run is paused until the person decides in the signer
-        approvals = result.context_wrapper.context["tracekit"]["approvals"]   # call id -> approval id
+        held = result.context_wrapper.context["tracekit"]   # call id -> approval id, and the signer's reason
         for item in result.interruptions:
-            aid = approvals[item.raw_item.call_id]
-            print(f"\n{item.raw_item.call_id} send_payment {item.raw_item.arguments}: held, {aid}")
+            cid = item.raw_item.call_id
+            aid, why = held["approvals"][cid], held.get("reasons", {}).get(cid)
+            print(f"\n{cid} send_payment {item.raw_item.arguments}: held, {aid}" + (f"\n  {why}" if why else ""))
             # the first: approved with a grant for the payments like it; one outside the grant: rejected
             await asyncio.to_thread(decide, run, aid, ["approve", aid, *GRANT] if first else ["reject", aid])
             first = False
