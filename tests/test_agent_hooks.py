@@ -1388,7 +1388,7 @@ class OpenCodeTools(unittest.TestCase):
         def blocked(imgs):
             return agent_hooks._blocked("opencode", {"tool_name": "experimental_image_generate",
                                                      "tool_input": {"prompt": "p", "images": imgs}})
-        self.assertIn("separate calls", blocked(["/w/a.png", images[1]]))
+        self.assertIn("download the image to a file first", blocked(["/w/a.png", images[1]]))
         self.assertIsNone(blocked(["/w/a.png", "/w/b.png"]))
 
 
@@ -3654,7 +3654,9 @@ class Installer(unittest.TestCase):
         e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
         for name, args in [("browser_open", {"url": "http://169.254.169.254/latest/meta-data/"}),
                            ("repo_clone", {"repository": "169.254.169.254/a/b", "url": "https://github.com/o/r"}),
-                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"})]:
+                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"}),
+                           # git connects to the host before the first ':', whatever an '@' after it says
+                           ("repo_clone", {"repository": "10.0.0.5:x@github.com:o/r.git"})]:
             with self.subTest(name=name, args=args):
                 mapped, ti = agent_hooks.tool("kilo", name, args)
                 d = e.decide(mapped, ti)
@@ -3663,6 +3665,7 @@ class Installer(unittest.TestCase):
         for repository, url in [("owner/repo", "https://github.com/owner/repo.git"),
                                 ("github:o/r.git", "https://github.com/o/r.git"),
                                 ("git@gitlab.example:g/r.git", "ssh://git@gitlab.example/g/r.git"),
+                                ("10.0.0.5:x@github.com:o/r.git", "ssh://10.0.0.5/x@github.com:o/r.git"),
                                 ("git+https://h.example/a/b.git#main", "https://h.example/a/b.git"),
                                 (" Code.Example/g/s/r.git/ ", "https://code.example/g/s/r.git"),
                                 ("file:///tmp/r", "file:///tmp/r")]:   # Kilo refuses a file: URL: decided as sent
@@ -3681,6 +3684,20 @@ class Installer(unittest.TestCase):
         mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "forget", "query": "q", "text": "t"})
         self.assertEqual((mapped, ti["paths"], "content" in ti), ("Edit", [memory + f for f in (
             "project.md", "environment.md", "corrections.md")], False))
+        # held as harness settings (TK-F009), from a file tool and from the shell (TK-F015), as Kilo itself asks
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        for pack in ("dev", "coding", "server", "strict"):
+            e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack + ".yaml"))[0])
+            for args in ({"action": "remember", "text": "t"}, {"action": "correct", "text": "t"},
+                         {"action": "forget", "query": "q"}):
+                with self.subTest(pack=pack, args=args):
+                    d = e.decide(*agent_hooks.tool("kilo", "kilo_memory_save", args))
+                    self.assertEqual((d["verdict"], "TK-F009" in d["rule_ids"]), ("ask", True), d)
+            for command in ("echo t >> ~/.local/share/kilo/memory/app-0123456789ab/project.md",
+                            "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
         for name, args in [("kilo_memory_save", {"action": "skip"}),
                            ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
             with self.subTest(name=name):

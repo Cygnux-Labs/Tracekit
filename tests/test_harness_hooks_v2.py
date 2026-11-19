@@ -1030,7 +1030,7 @@ class Mapping(HarnessCase):
                                                     "/home/u/.ssh/id_rsa", "https://x.example/cat.png"]}},
                                    "tool.execute.before")
         self.assertEqual((code, out), (2, ""))
-        self.assertIn("separate calls", err)
+        self.assertIn("download the image to a file first", err)
         self.assertEqual(self.sent, [])
 
     def test_signer_unreachable_is_fail_closed_by_default(self):

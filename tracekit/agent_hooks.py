@@ -813,16 +813,17 @@ def _jcode_dispatch_name(server, called):
 
 def _kilo_remote(repository):
     """The URL Kilo's repo_clone clones `repository` from (Repository.parse, packages/core/src/repository.ts): a URL as
-    given (a git+ prefix dropped), scp-style [user@]host:path as ssh://, and host/path, GitHub's owner/repo and
-    github:owner/repo as https. One Kilo refuses (a file: URL, or no form it reads) is decided as sent.
+    given (a git+ prefix dropped), scp-style [user@]host:path as ssh://, split at its first ':' as git splits it, and
+    host/path, GitHub's owner/repo and github:owner/repo as https. One Kilo refuses (a file: URL, or no form it reads)
+    is decided as sent.
     lean: KILO_REPO_CLONE_GITHUB_BASE_URL, which moves GitHub's clones to another host, isn't read"""
     s = re.sub(r"/+\Z", "", re.sub(r"#[^\n\r\u2028\u2029]*\Z", "", re.sub(r"\Agit\+", "", repository.strip(JS_SPACE))))
     if "://" in s:
         return s
     gh = re.fullmatch(r"github:([^/\s]+/[^/\s]+)", s)
-    scp = None if gh else re.fullmatch(r"(?:([^@/\s]+)@)?([^:/\s]+):(.+)", s)
-    if scp:
-        return f"ssh://{scp[1] + '@' if scp[1] else ''}{scp[2]}/{scp[3]}"
+    if not gh and re.fullmatch(r"(?:[^@/\s]+@)?[^:/\s]+:.+", s):   # git splits scp-style at the first ':'
+        host, path = s.split(":", 1)
+        return f"ssh://{host}/{path}"
     parts = [p for p in (re.sub(r"\.git\Z", "", x.strip(JS_SPACE)) for x in ("github.com/" + gh[1] if gh else s).split("/"))
              if p]
     if len(parts) >= 2 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
@@ -1823,8 +1824,8 @@ def _blocked(harness, p, raw="", line=None):
         else None
     if isinstance(images, list) and len({bool(IMAGE_URL.match(i)) for i in images if isinstance(i, str)}) > 1:
         return ("Blocked by Tracekit: OpenCode's experimental_image_generate call downloads some of its images and "
-                "reads others from disk, and Tracekit decides a call as a fetch or as a read, not both; send the URLs "
-                "and the files in separate calls.")
+                "reads others from disk, and Tracekit decides a call as a fetch or as a read, not both; download the "
+                "image to a file first (a fetch Tracekit decides), then pass only files.")
     if harness == "kiro" and name in KIRO_DECIDED_ON:
         v = _input(p.get("tool_input")).get(KIRO_DECIDED_ON[name])
         if not (isinstance(v, str) and v):

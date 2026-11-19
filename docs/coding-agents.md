@@ -62,7 +62,8 @@ the same names and arguments; of its own tools, `background_process` (it runs it
 `notebook_read` and `send_file` as `Read` and `notebook_edit` as `NotebookEdit`, each on its `path`, and
 `generate_image` as `Write` on the `path` it writes, or, given an `image` it reads and sends to the image provider, as
 a `Read` of that file and the `path`; `browser_open` and `repo_clone` as `WebFetch` of the URL they open or clone,
-and `kilo_memory_save` as a `Write` or an `Edit` of Kilo's memory files. The hook blocks
+and `kilo_memory_save` as a `Write` or an `Edit` of Kilo's memory files, held as harness settings
+(`TK-F009`). The hook blocks
 `notebook_execute`, which runs a notebook cell whose code no rule has read (VS Code only, with
 `experimental.native_notebook_tools`). Kilo's other tools pass through under their own names
 ([limits](limits.md#signer-and-capture)); everything below about OpenCode's plugin holds for Kilo. For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
