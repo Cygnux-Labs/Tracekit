@@ -204,6 +204,16 @@ class StorageContract:
         s.witness_queue_put({"w": {"records": {"size": 3}}})
         self.assertEqual(self.reopen(s).witness_queue(), {"w": {"records": {"size": 3}}})
 
+    def test_meta_round_trip(self):
+        """1.7.3: the signer keeps its log's origin with the store (meta "origin"), read back on every start."""
+        s = self.store()
+        self.assertIsNone(s.meta("origin"))
+        s.meta_put("origin", "tracekit.local/k" + "0f" * 32)
+        s.meta_put("log_vkey", "v")
+        s.meta_put("origin", "tracekit.example.org/log/1")   # replaced, the other key kept
+        again = self.reopen(s)
+        self.assertEqual((again.meta("origin"), again.meta("log_vkey")), ("tracekit.example.org/log/1", "v"))
+
     def test_merkle_roots_match_merkle_tiles(self):
         s, c = self.store(), Chain()
         records = c.batch(300)

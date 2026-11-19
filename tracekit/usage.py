@@ -88,6 +88,23 @@ def from_gemini(u):
                    "cache_read_tokens": cached or None, "reasoning_tokens": thoughts})
 
 
+def from_bedrock(u):
+    """Bedrock Runtime Converse / ConverseStream / InvokeModel usage."""
+    if u is None:
+        return None
+    inp = _int(_g(u, "inputTokens"))
+    if inp is None:
+        inp = _int(_g(u, "input_tokens"))
+    if inp is None:
+        inp = _int(_g(u, "prompt_tokens"))
+    out = _int(_g(u, "outputTokens"))
+    if out is None:
+        out = _int(_g(u, "output_tokens"))
+    if out is None:
+        out = _int(_g(u, "completion_tokens"))
+    return _clean({"input_tokens": inp, "output_tokens": out})
+
+
 def from_otel(a):
     """GenAI semantic conventions, OpenLLMetry and OpenInference span attributes."""
     inp = _int(a.get("gen_ai.usage.input_tokens", a.get("gen_ai.usage.prompt_tokens", a.get("llm.token_count.prompt",

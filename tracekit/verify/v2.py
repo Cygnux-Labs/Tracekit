@@ -588,6 +588,11 @@ def load_trust(path):
             checkpoint.parse_vkey(k)
         except checkpoint.NoteError as e:
             raise ValueError(f"pinned key {k[:80]!r} is not a vkey: {e}") from None
+    for k in t["logs"]:   # a log key named after another key's fingerprint pins nothing a note could be signed under
+        name, _, type_, public = checkpoint.parse_vkey(k)
+        if type_ == checkpoint.ED25519 and checkpoint.names_other_key(name, public):
+            raise ValueError(f"pinned log key {name} is named after another key: a key-derived origin is "
+                             "tracekit.local/k + the SHA-256 of the key it names")
     checkpoint.check_witnesses([w["vkey"] for w in t.get("witnesses", [])])
     classes = {}
     for w in t.get("witnesses", []):

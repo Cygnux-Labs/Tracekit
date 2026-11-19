@@ -676,8 +676,37 @@ class _ManagerProxy:
 # ------------------------------------------------------------------ patch table
 
 def _model_kw(kwargs):
-    m = kwargs.get("model")
+    m = kwargs.get("model") if "model" in kwargs else kwargs.get("modelId")
     return str(m)[:200] if m is not None and type(m).__name__ not in ("Omit", "NotGiven") else None
+
+
+def _bedrock_converse_resp(ex, resp):
+    parsed = parsers.bedrock_converse(resp, ex.kwargs)
+    ex.resp_model = parsed["model"]
+    ex.stop_reason = parsed["finish"]
+    ex.usage = parsed["usage"]
+    for t in parsed["tool_uses"]:
+        ex.tool_uses[t["id"]] = t["name"]
+
+
+def _bedrock_converse_chunk(ex, chunk):
+    c = chunk if isinstance(chunk, dict) else getattr(chunk, "__dict__", {})
+    meta = c.get("metadata")
+    if meta and "usage" in meta:
+        ex.add_usage(_usage.from_bedrock(meta["usage"]))
+    start = c.get("contentBlockStart", {}).get("start", {}) if isinstance(c.get("contentBlockStart"), dict) else {}
+    tu = start.get("toolUse")
+    if tu and "toolUseId" in tu:
+        ex.tool_uses[tu["toolUseId"]] = tu.get("name")
+    delta = c.get("contentBlockDelta", {}).get("delta", {}) if isinstance(c.get("contentBlockDelta"), dict) else {}
+    if "text" in delta:
+        ex.add_text(delta["text"])
+    tu_delta = delta.get("toolUse")
+    if tu_delta and "toolUseId" in tu_delta:
+        ex.tool_uses[tu_delta["toolUseId"]] = tu_delta.get("name")
+    stop = c.get("messageStop", {}) if isinstance(c.get("messageStop"), dict) else {}
+    if "stopReason" in stop:
+        ex.stop_reason = stop["stopReason"]
 
 
 # (provider, module, class, method, operation, is_async, on_response, on_stream_item, stream_kind)
@@ -702,7 +731,7 @@ TARGETS = [
     ("gemini", "google.genai.models", "Models", "generate_content_stream", "generate_content", False, _gemini, _gemini, "always"),
     ("gemini", "google.genai.models", "AsyncModels", "generate_content_stream", "generate_content", True, _gemini, _gemini, "always"),
 ]
-PROVIDERS = ("openai", "anthropic", "gemini")
+PROVIDERS = ("openai", "anthropic", "gemini", "bedrock")
 
 
 def flush():
@@ -726,22 +755,26 @@ def flush():
 atexit.register(flush)
 
 
+def _make_ex(provider, operation, kwargs, streamed, on_resp=None, on_item=None):
+    flush()
+    t = _target()
+    if t is None:
+        return None
+    if isinstance(t, (RunHandle, AsyncRunHandle)):
+        ex = _RunExchange(getattr(t, "_sync", t), provider, operation, kwargs, streamed)
+    elif getattr(t, "_ended", False):
+        if t._policy.get("fail_mode") == "closed":
+            raise Refused("Tracekit: the run has ended and fail_mode=closed; model call refused")
+        return None
+    else:
+        ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed, on_resp, on_item)
+    ex.begin()
+    return ex
+
+
 def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
     def make_ex(kwargs, streamed):
-        flush()
-        t = _target()
-        if t is None:
-            return None
-        if isinstance(t, (RunHandle, AsyncRunHandle)):
-            ex = _RunExchange(getattr(t, "_sync", t), provider, operation, kwargs, streamed)
-        elif getattr(t, "_ended", False):
-            if t._policy.get("fail_mode") == "closed":
-                raise Refused("Tracekit: the run has ended and fail_mode=closed; model call refused")
-            return None
-        else:
-            ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed, on_resp, on_item)
-        ex.begin()
-        return ex
+        return _make_ex(provider, operation, kwargs, streamed, on_resp, on_item)
 
     if stream_kind == "manager":
         @functools.wraps(orig)
@@ -850,6 +883,60 @@ def instrument(tracer, providers=PROVIDERS):
             setattr(klass, meth, _wrap(orig, provider, op, is_async, on_resp, on_item, kind))
             _STATE["patched"].append((klass, meth, orig))
             done.append(f"{provider}:{cls}.{meth}")
+        if "bedrock" in providers:
+            try:
+                import botocore.client
+                b_klass = botocore.client.BaseClient
+                b_meth = "_make_api_call"
+                b_orig = b_klass.__dict__.get(b_meth)
+                if b_orig is not None and getattr(b_orig, "__tracekit_wrapped__", None) is None:
+                    def bedrock_make_api_call(self, operation_name, api_params):
+                        service_model = getattr(getattr(self, "meta", None), "service_model", None)
+                        service_name = getattr(service_model, "service_name", None)
+                        if service_name != "bedrock-runtime" or operation_name not in (
+                            "Converse", "ConverseStream", "InvokeModel", "InvokeModelWithResponseStream"
+                        ):
+                            return b_orig(self, operation_name, api_params)
+
+                        op = "converse" if operation_name in ("Converse", "ConverseStream") else "invoke_model"
+                        streamed = operation_name in ("ConverseStream", "InvokeModelWithResponseStream")
+                        ex = _make_ex("bedrock", op, api_params, streamed,
+                                      on_resp=_bedrock_converse_resp, on_item=_bedrock_converse_chunk)
+                        if ex is None:
+                            return b_orig(self, operation_name, api_params)
+                        try:
+                            out = b_orig(self, operation_name, api_params)
+                        except BaseException as e:
+                            ex.finish(error=repr(e), status=_status_of(e))
+                            raise
+                        if streamed:
+                            stream_key = "stream" if isinstance(out, dict) and "stream" in out else "body" if isinstance(out, dict) and "body" in out else None
+                            if stream_key:
+                                stream_obj = out.get(stream_key)
+                                if isinstance(stream_obj, dict):
+                                    stream_items = [{k: v} for k, v in stream_obj.items()]
+                                elif hasattr(stream_obj, "__iter__"):
+                                    stream_items = stream_obj
+                                else:
+                                    stream_items = [stream_obj]
+                                out[stream_key] = _StreamProxy(stream_items, ex)
+                                return out
+                            return _StreamProxy(out, ex)
+                        try:
+                            ex.response(out)
+                        except Exception:
+                            pass
+                        ex.finish(response=out)
+                        return out
+
+                    bedrock_make_api_call.__tracekit_wrapped__ = b_orig
+                    setattr(b_klass, b_meth, bedrock_make_api_call)
+                    _STATE["patched"].append((b_klass, b_meth, b_orig))
+                    done.append("bedrock:BaseClient._make_api_call")
+                elif b_orig is not None:
+                    done.append("bedrock:BaseClient._make_api_call")
+            except (ImportError, AttributeError):
+                pass
         return done
 
 

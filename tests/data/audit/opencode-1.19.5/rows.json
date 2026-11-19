@@ -1,0 +1,208 @@
+{
+ "session": [
+  {
+   "id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "parent_id": null,
+   "directory": "C:/Users/user/Desktop/oc-test",
+   "path": "Users/user/Desktop/oc-test",
+   "version": "1.19.5",
+   "agent": "build",
+   "time_created": 1794965688009,
+   "time_updated": 1794965765787
+  }
+ ],
+ "part": [
+  {
+   "id": "prt_1ec4aceef001SRdKpdbAodwoqq",
+   "message_id": "msg_1ec4aceeb0017jZWSuPCp6pqBM",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965688054,
+   "time_updated": 1794965688057,
+   "data": "{\"type\":\"text\",\"text\":\"list the files here, create a file hello.txt containing hi, then read hello.txt and add a second line to it\"}"
+  },
+  {
+   "id": "prt_1ec4aeae8001G15dIN90D1L7D8",
+   "message_id": "msg_1ec4acf110015Kn3HghOavkklb",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965695208,
+   "time_updated": 1794965695215,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4aeaf5001pGd4Snw5fsoL38",
+   "message_id": "msg_1ec4acf110015Kn3HghOavkklb",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965695222,
+   "time_updated": 1794965695765,
+   "data": "{\"type\":\"text\",\"text\":\"I'll list the directory, create the file, then read and append to it.\",\"time\":{\"start\":1794965695221,\"end\":1794965695763}}"
+  },
+  {
+   "id": "prt_1ec4aecec001Fk1Gi3q51WAH9c",
+   "message_id": "msg_1ec4acf110015Kn3HghOavkklb",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965695724,
+   "time_updated": 1794965697091,
+   "data": "{\"type\":\"tool\",\"tool\":\"bash\",\"callID\":\"chatcmpl-tool-9110940a78af0cd5\",\"state\":{\"status\":\"completed\",\"input\":{\"command\":\"Get-ChildItem -LiteralPath \\\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\" -Force | Select-Object Name, Mode, Length\",\"workdir\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\"},\"output\":\"(no output)\",\"metadata\":{\"output\":\"(no output)\",\"exit\":0,\"truncated\":false},\"title\":\"Get-ChildItem -LiteralPath \\\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\" -Force | Select-Object Name, Mode, Length\",\"time\":{\"start\":1794965695751,\"end\":1794965697087}}}"
+  },
+  {
+   "id": "prt_1ec4af252001iBdt7CTpdVHx8M",
+   "message_id": "msg_1ec4acf110015Kn3HghOavkklb",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965697107,
+   "time_updated": 1794965697110,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":13246,\"input\":13172,\"output\":74,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":0}},\"cost\":0}"
+  },
+  {
+   "id": "prt_1ec4b00ad001ZElvzGg1hJUQgb",
+   "message_id": "msg_1ec4af27f001zOSxtAwax3PPXw",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965700781,
+   "time_updated": 1794965700784,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4b00b3001RbJRSDKKWhCOb0",
+   "message_id": "msg_1ec4af27f001zOSxtAwax3PPXw",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965700787,
+   "time_updated": 1794965701096,
+   "data": "{\"type\":\"reasoning\",\"text\":\"Empty directory. Create hello.txt containing \\\"hi\\\". Use write tool. Need verify parent exists - already verified via Get-ChildItem? That lists it, so exists. Use write tool to create file with hi.\",\"time\":{\"start\":1794965700787,\"end\":1794965701093}}"
+  },
+  {
+   "id": "prt_1ec4b01ea001ptrE2s6PI1FQFw",
+   "message_id": "msg_1ec4af27f001zOSxtAwax3PPXw",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965701098,
+   "time_updated": 1794965701350,
+   "data": "{\"type\":\"text\",\"text\":\"Directory is empty. Creating `hello.txt`:\",\"time\":{\"start\":1794965701098,\"end\":1794965701348}}"
+  },
+  {
+   "id": "prt_1ec4b0242001xvYeHlwcJJfsup",
+   "message_id": "msg_1ec4af27f001zOSxtAwax3PPXw",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965701186,
+   "time_updated": 1794965701369,
+   "data": "{\"type\":\"tool\",\"tool\":\"write\",\"callID\":\"chatcmpl-tool-980530fed62f13c7\",\"state\":{\"status\":\"completed\",\"input\":{\"content\":\"hi\",\"filePath\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\"},\"output\":\"Wrote file successfully.\",\"metadata\":{\"diagnostics\":{},\"filepath\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"exists\":false,\"truncated\":false},\"title\":\"Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"time\":{\"start\":1794965701342,\"end\":1794965701367}}}"
+  },
+  {
+   "id": "prt_1ec4b02fc001n2hbjbepEWYPK5",
+   "message_id": "msg_1ec4af27f001zOSxtAwax3PPXw",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965701372,
+   "time_updated": 1794965701374,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":13344,\"input\":204,\"output\":41,\"reasoning\":43,\"cache\":{\"write\":0,\"read\":13056}},\"cost\":0}"
+  },
+  {
+   "id": "prt_1ec4b2153001cc3BMHBLdOBvmQ",
+   "message_id": "msg_1ec4b030e0014nC2sFvneR95fh",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965709139,
+   "time_updated": 1794965709141,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4b2158001P6v5qQ1n2Ei4UK",
+   "message_id": "msg_1ec4b030e0014nC2sFvneR95fh",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965709144,
+   "time_updated": 1794965709359,
+   "data": "{\"type\":\"reasoning\",\"text\":\"Now read it, then add second line. Need read tool first before edit.\",\"time\":{\"start\":1794965709144,\"end\":1794965709357}}"
+  },
+  {
+   "id": "prt_1ec4b2232001LKrsnaBy4ZdOS2",
+   "message_id": "msg_1ec4b030e0014nC2sFvneR95fh",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965709363,
+   "time_updated": 1794965709416,
+   "data": "{\"type\":\"tool\",\"tool\":\"read\",\"callID\":\"chatcmpl-tool-899b4dd17e559525\",\"state\":{\"status\":\"completed\",\"input\":{\"filePath\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\"},\"output\":\"<path>C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt</path>\\n<type>file</type>\\n<content>\\n1: hi\\n\\n(End of file - total 1 lines)\\n</content>\",\"metadata\":{\"preview\":\"hi\",\"truncated\":false,\"loaded\":[],\"display\":{\"type\":\"file\",\"path\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"text\":\"hi\",\"lineStart\":1,\"lineEnd\":1,\"totalLines\":1,\"truncated\":false}},\"title\":\"Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"time\":{\"start\":1794965709382,\"end\":1794965709414}}}"
+  },
+  {
+   "id": "prt_1ec4b226c001iVh1tu7Fe3ADyB",
+   "message_id": "msg_1ec4b030e0014nC2sFvneR95fh",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965709421,
+   "time_updated": 1794965709423,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":13402,\"input\":304,\"output\":26,\"reasoning\":16,\"cache\":{\"write\":0,\"read\":13056}},\"cost\":0}"
+  },
+  {
+   "id": "prt_1ec4b8ff5001EVHYcdczVfCLQK",
+   "message_id": "msg_1ec4b227c001PySxonWPZNiOrV",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965737461,
+   "time_updated": 1794965737463,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4b8ffa001w7noBbHpHYEUQC",
+   "message_id": "msg_1ec4b227c001PySxonWPZNiOrV",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965737466,
+   "time_updated": 1794965737719,
+   "data": "{\"type\":\"tool\",\"tool\":\"edit\",\"callID\":\"chatcmpl-tool-8800cd5a28438538\",\"state\":{\"status\":\"completed\",\"input\":{\"filePath\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"oldString\":\"hi\",\"newString\":\"hi\\nsecond line\"},\"output\":\"Edit applied successfully.\",\"metadata\":{\"diagnostics\":{},\"diff\":\"Index: C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n===================================================================\\n--- C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n+++ C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n@@ -1,1 +1,2 @@\\n-hi\\n\\\\ No newline at end of file\\n+hi\\n+second line\\n\\\\ No newline at end of file\\n\",\"filediff\":{\"file\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"patch\":\"Index: C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n===================================================================\\n--- C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n+++ C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\\n@@ -1,1 +1,2 @@\\n-hi\\n\\\\ No newline at end of file\\n+hi\\n+second line\\n\\\\ No newline at end of file\\n\",\"additions\":2,\"deletions\":1},\"truncated\":false},\"title\":\"Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"time\":{\"start\":1794965737689,\"end\":1794965737717}}}"
+  },
+  {
+   "id": "prt_1ec4b90fb001forQBM0nwclTU0",
+   "message_id": "msg_1ec4b227c001PySxonWPZNiOrV",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965737724,
+   "time_updated": 1794965737726,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":13501,\"input\":146,\"output\":43,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":13312}},\"cost\":0}"
+  },
+  {
+   "id": "prt_1ec4beaeb001BX6EJme2NDpFfx",
+   "message_id": "msg_1ec4b9111001ZFt1f5vAlpBHwc",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965760748,
+   "time_updated": 1794965760749,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4beaf0001pdwa615cHYZvG4",
+   "message_id": "msg_1ec4b9111001ZFt1f5vAlpBHwc",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965760752,
+   "time_updated": 1794965760838,
+   "data": "{\"type\":\"reasoning\",\"text\":\"Verify final content.\",\"time\":{\"start\":1794965760752,\"end\":1794965760836}}"
+  },
+  {
+   "id": "prt_1ec4beb480013e5KXuaReiTBh7",
+   "message_id": "msg_1ec4b9111001ZFt1f5vAlpBHwc",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965760840,
+   "time_updated": 1794965761157,
+   "data": "{\"type\":\"tool\",\"tool\":\"read\",\"callID\":\"chatcmpl-tool-b60883ee7ed312d9\",\"state\":{\"status\":\"completed\",\"input\":{\"filePath\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\"},\"output\":\"<path>C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt</path>\\n<type>file</type>\\n<content>\\n1: hi\\n2: second line\\n\\n(End of file - total 2 lines)\\n</content>\",\"metadata\":{\"preview\":\"hi\\nsecond line\",\"truncated\":false,\"loaded\":[],\"display\":{\"type\":\"file\",\"path\":\"C:\\\\Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"text\":\"hi\\nsecond line\",\"lineStart\":1,\"lineEnd\":2,\"totalLines\":2,\"truncated\":false}},\"title\":\"Users\\\\user\\\\Desktop\\\\oc-test\\\\hello.txt\",\"time\":{\"start\":1794965761141,\"end\":1794965761155}}}"
+  },
+  {
+   "id": "prt_1ec4beca3001Aey8N0Ti0kPc2l",
+   "message_id": "msg_1ec4b9111001ZFt1f5vAlpBHwc",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965761187,
+   "time_updated": 1794965761188,
+   "data": "{\"reason\":\"tool-calls\",\"type\":\"step-finish\",\"tokens\":{\"total\":13546,\"input\":204,\"output\":26,\"reasoning\":4,\"cache\":{\"write\":0,\"read\":13312}},\"cost\":0}"
+  },
+  {
+   "id": "prt_1ec4bfdf8001JLMJsoNkr3nM4T",
+   "message_id": "msg_1ec4becaf001lxEMRNrRejUxoR",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965765624,
+   "time_updated": 1794965765626,
+   "data": "{\"type\":\"step-start\"}"
+  },
+  {
+   "id": "prt_1ec4bfdfc001ZS5gxdMY2xgDmr",
+   "message_id": "msg_1ec4becaf001lxEMRNrRejUxoR",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965765628,
+   "time_updated": 1794965765764,
+   "data": "{\"type\":\"text\",\"text\":\"Directory was empty. Created `hello.txt` with `hi`, then appended `second line`. Final contents:\\n\\n```\\nhi\\nsecond line\\n```\",\"time\":{\"start\":1794965765628,\"end\":1794965765763}}"
+  },
+  {
+   "id": "prt_1ec4bfe870019F1dVRZGtVv92X",
+   "message_id": "msg_1ec4becaf001lxEMRNrRejUxoR",
+   "session_id": "ses_e13b53136ffePGQfSVD1emR1tA",
+   "time_created": 1794965765768,
+   "time_updated": 1794965765769,
+   "data": "{\"reason\":\"stop\",\"type\":\"step-finish\",\"tokens\":{\"total\":13638,\"input\":295,\"output\":31,\"reasoning\":0,\"cache\":{\"write\":0,\"read\":13312}},\"cost\":0}"
+  }
+ ]
+}

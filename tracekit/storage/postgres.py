@@ -192,6 +192,11 @@ class _Reads:
                 self._error = self._error or StorageUnavailable(str(e).strip() or type(e).__name__)
                 raise StorageUnavailable(*self._error.args) from e
 
+    def meta(self, key):
+        with self._db() as conn:
+            row = conn.execute("SELECT value FROM tracekit_meta WHERE key = %s", (key,)).fetchone()
+        return row and row[0]
+
     def _pages(self, sql, params, after, hi=None):
         """The rows of `sql`, which takes the first column >= %(after)s and orders by it, read PAGE at a time (the lock
         is not held between pages); with `hi`, only those < hi."""
@@ -546,11 +551,6 @@ class PostgresReader(_Reads):
     def get_run(self, tenant, run_id):
         run = self.runs.get((tenant, run_id))
         return run and {"run_seq": run["run_seq"], "head": run["head"], "count": len(run["seqs"])}
-
-    def meta(self, key):
-        with self._db() as conn:
-            row = conn.execute("SELECT value FROM tracekit_meta WHERE key = %s", (key,)).fetchone()
-        return row and row[0]
 
     def close(self):
         self.conn.close()
