@@ -172,6 +172,8 @@ class Engine:
         # each run label a rule sets (its own label, of RUN_LABELS); the rules on the call's labels (LABELS_FIELD),
         # read after the others, of which a call's own labels are
         self.when = {r["id"]: frozenset(r["when"]["run_has"]) for _, r, *_ in self.rules if "when" in r}
+        # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
+        self.shadow = {r["id"] for _, r, *_ in self.rules if r.get("mode") == "shadow"}
         self.labels = {r["id"]: r["label"] for _, r, *_ in self.rules if "label" in r}
         self.run_label = {i: x for i, x in self.labels.items() if x in RUN_LABELS}
         # (with the policy's labels each matches: a closed set, so a call's are looked up, not searched)
@@ -499,7 +501,7 @@ class Engine:
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
         if cond:
-            out["when"] = {rid: sec for sec, rid in cond}
+            out["when"] = {rid: "flag" if rid in self.shadow else sec for sec, rid in cond}
         if nondeterministic:
             out["nondeterministic"] = True
         if oversize:

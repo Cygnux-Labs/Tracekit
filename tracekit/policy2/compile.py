@@ -21,7 +21,7 @@ DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/de
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
             "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
-             "remedy", "when"}
+             "remedy", "when", "mode"}
 # the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
 # runs matches a rule whose `label` it is (secrets_access: TK-F005), and untrusted_content also when a tool the
 # policy's `untrusted` list names runs or an input is observed as untrusted; a person may clear one
@@ -434,6 +434,9 @@ def _lint(pol, path):
             elif r.get("field") == LABELS_FIELD:
                 errors.append(f"{where}: field labels is for a rule with `when`: a call's labels are its other rules' "
                               "own, which decide it already")
+            if "mode" in r and not (sec == "ask" and "when" in r and r["mode"] in ("shadow", "enforce")):
+                errors.append(f"{where}: mode is shadow or enforce, on an ask rule with `when` (shadow: it records "
+                              "the calls it would hold, as a flag, and holds none)")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):

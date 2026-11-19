@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-100'
+version: '2026.11-v2-101'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -441,6 +441,7 @@ ask:
     # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
     pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)\.config/opera/([^/]+/)?(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/com\.operasoftware\.opera(gx)?/([^/]+/)?(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (gx )?stable/([^/]+/)?(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
+    label: secrets_access
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
@@ -459,6 +460,7 @@ ask:
     pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b))|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
     unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)|^gopass\s+(init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)(\s|$)|^gh\s+auth\s+(token|status(?: (?:-[at]{1,2}|--show-token|--active)){0,4})\s+--help$'
     reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys
+    label: secrets_access
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
     rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
@@ -983,6 +985,7 @@ ask:
     pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}(read|inject)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}item (-[^ ]+ +([^- ][^ ]* +)?){0,8}get .*(--reveal|--fields(=| )[^ ]+|--otp|--format(=| )json)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}document (-[^ ]+ +([^- ][^ ]* +)?){0,8}get(["]| |$)|bw (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get (password|item|notes|totp|attachment)|list items|export)(["]| |$)|doppler (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets(["]| |$)|infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secrets|export)(["]| |$)|lpass (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|export)(["]| |$))'
     unless: '^(aws secretsmanager (batch-)?get-secret-value|gcloud( alpha| beta)? secrets versions access|az keyvault secret (show|show-deleted|download)|op (read|inject|item get|document get)|bw (get (password|item|notes|totp|attachment)|list items|export)|doppler secrets( [a-z][a-z-]{0,20})?|infisical (secrets( [a-z][a-z-]{0,30})?|export)|lpass (show|export)) --help$|^(doppler|infisical) --help( [a-z][a-z0-9-]{0,40}){1,3}$|^doppler secrets( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8} --only-names( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8}$|^infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets +(set|delete|folders +(create|get)|generate-example-env)([ \t]|$)'
     reason: reading a secret's value from a secret store
+    label: secrets_access
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: An agent that can read a live password or key can use it or send it anywhere; commands that only list names or metadata stay allowed.
   - id: TK-A036
@@ -998,6 +1001,7 @@ ask:
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
     pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(aws(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(secretsmanager(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-secret-value|batch-get-secret-value)(?:["]| |\\[tnr]|$)|ssm(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:["]| |\\[tnr]|$))|gcloud(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}((alpha|beta)(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8})?secrets(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}versions(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}access(?:["]| |\\[tnr]|$)|az(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}keyvault(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secret(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(show|show-deleted|download)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(read|inject)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}item(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:[^"\\]|\\.)*?--(reveal|fields(?:=[^"\\ ]+|(?: |\\[tnr])+[^"\\ ]+)|otp|format(?:=|(?: |\\[tnr])+?)json)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}document(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:["]| |\\[tnr]|$)|bw(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:get(?: |\\[tnr])+?(password|item|notes|totp|attachment)|list(?: |\\[tnr])+?items|export)(?:["]| |\\[tnr]|$)|doppler(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secrets(?:["]| |\\[tnr]|$)|infisical(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:secrets|export)(?:["]| |\\[tnr]|$)|lpass(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:show|export)(?:["]| |\\[tnr]|$))'
     reason: reading a secret's value from a secret store through an MCP tool
+    label: secrets_access
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same value-reading commands are held.
   - id: TK-A037
@@ -1007,6 +1011,7 @@ ask:
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])(([Bb]atch[_-]?)?([Gg]et|[Rr]ead|[Ff]etch|[Rr]etrieve|[Rr]eveal|[Ss]how)[_-]?([Kk]ey[_-]?[Vv]ault[_-]?)?[Ss]ecret([_-]?[Vv]alue)?|[Aa]ccess[_-]?[Ss]ecret[_-]?[Vv]ersion|[Kk]ey[_-]?[Vv]ault[_-]?[Ss]ecret[_-]?([Gg]et|[Ss]how|[Rr]ead))|mcp(:[^/]+/|__).*((Batch)?(Get|Read|Fetch|Retrieve|Reveal|Show)(Key[_-]?Vault)?Secret(Value)?|AccessSecretVersion|KeyVaultSecret(Get|Show|Read))'
     pattern: '^'
     reason: reading a secret's value through an MCP tool
+    label: secrets_access
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: The MCP twin of TK-A035, for a tool whose name says it returns a secret (AWS Secrets Manager, GCP Secret Manager, Azure Key Vault); a tool that lists or describes secrets is not held.
   - id: TK-A038
@@ -1014,6 +1019,7 @@ ask:
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])[Gg]et[_-]?[Pp]arameters?([_-]?[Bb]y[_-]?[Pp]ath|[_-]?[Hh]istory)?|mcp(:[^/]+/|__).*Get(Parameters?)(ByPath|History)?'
     pattern: '"([Ww]ith_?[Dd]ecrypt(ion)?|with-decryption|[Dd]ecrypt(ion)?)":(true|"true"|"True"|"TRUE"|1)'
     reason: reading a decrypted parameter through an MCP tool
+    label: secrets_access
     remedy: Have a person approve the held call, or read the parameter without decryption.
     rationale: SSM Parameter Store returns a SecureString's plaintext only when asked to decrypt it; the call that asks is the one a person confirms.
   - id: TK-A052
@@ -1027,6 +1033,7 @@ ask:
     # way; a word ends the type only at a space, `/` or `,` (secret-reader is a name)
     pattern: '^(?:kubectl|oc)(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} (?:get(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:(?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?(?: [^ ]+){0,16}? (?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)|(?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?)|view-secret|create(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} token|extract(?: [^ ]+){0,16}? [Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?/[^ ]*)(?: |$)|^kubectl-view-secret(?: |$)'
     reason: reading a Kubernetes secret's value or creating a token
+    label: secrets_access
     remedy: Have a person approve the held call, or list secrets by name (kubectl get secrets) or describe one, which shows only sizes.
     rationale: A live secret or a new service account token is a cluster credential the agent can use or send anywhere; listing names and describing sizes stay allowed.
   - id: TK-A053
@@ -1037,6 +1044,7 @@ ask:
     # `status` stay allowed
     pattern: '^(?:vault|bao)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:kv(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} get|read|unwrap|print(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} token|token(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} create|write(?: [^ ]+){0,16}? /?auth/token/create(?:[-/][^ ]*)?)(?: |$)'
     reason: reading a Vault secret or creating a Vault token
+    label: secrets_access
     remedy: Have a person approve the held call, or list paths and metadata (vault kv list, vault kv metadata get), which show no values.
     rationale: A Vault secret or a new token is a live credential the agent can use or send anywhere; listing engines, policies and paths stays allowed.
   - id: TK-A003
@@ -1386,11 +1394,18 @@ flag:
     # extension, as a folder or at the end of a file's name (~/.aws/credentials, credentials.json, credentials/,
     # .git-credentials, .credentials.json, application_default_credentials.json, credentials.tfrc.json: a second
     # extension only if .json, so credentials.example.yaml is a template); id_rsa, .ssh/ and .aws/ anywhere. So a word
-    # in code or prose (process.env.X, get_credentials(), "the credentials") isn't. lean: a bare `credentials` file
+    # in code or prose (process.env.X, get_credentials(), "the credentials") isn't. Its label, secrets_access, is for
+    # material that can be secret, so an allowlist of files that never are, each name exact, is left out: in .ssh/,
+    # config (ssh_config takes no password or key, only the key's path), known_hosts (hosts' public keys) and a name
+    # ending in .pub (a public key or certificate: id_rsa.pub, id_ed25519-cert.pub), and id_rsa*.pub anywhere. The
+    # .ssh/ folder itself, a path under a folder in it (config.d/x) and every other name (id_ed25519, authorized_keys,
+    # known_hosts.old, Config) stay. ~/.aws/config stays: the AWS CLI reads access keys from it as from credentials,
+    # and its SSO cache beside it holds tokens. A name is read up to 255 characters (NAME_MAX) after .ssh/ or id_rsa,
+    # which keeps the fallback engine linear. lean: a bare `credentials` file
     # named without a path (`cat credentials`) isn't flagged either, nor an env file's name over 255 characters or with
     # more than eight suffixes (.env.a.b.…: bounds that keep the fallback engine fast)
     field: target
-    pattern: '(?:^|[/\s"''=:@]|\\[nrt])(?:\.env(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|[A-Za-z0-9_.-]{1,255}\.env~?(?:$|[/\s"''\\])|\.netrc(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|credentials(?:\.[A-Za-z0-9_-]+(?:\.json)?(?:$|[/\s"''\\])|/))|id_rsa|\.ssh[/\\]|\.aws[/\\]|[A-Za-z0-9_.-]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|[/\\]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|^credentials$'
+    pattern: '(?:^|[/\s"''=:@]|\\[nrt])(?:\.env(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|[A-Za-z0-9_.-]{1,255}\.env~?(?:$|[/\s"''\\])|\.netrc(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|credentials(?:\.[A-Za-z0-9_-]+(?:\.json)?(?:$|[/\s"''\\])|/))|\.ssh[/\\](?:$|[\s"'']|[^/\\\s"'']{1,255}[/\\]|(?:[^/\\\s"'']{0,255}[^/\\\s"''bgs]|[^/\\\s"'']{0,255}[^/\\\s"''u]b|b|[^/\\\s"'']{0,255}[^/\\\s"''p]ub|ub|[^/\\\s"'']{0,255}[^/\\\s"''.]pub|pub|[^/\\\s"'']{0,255}[^/\\\s"''i]g|g|[^/\\\s"'']{0,255}[^/\\\s"''f]ig|ig|[^/\\\s"'']{0,255}[^/\\\s"''n]fig|fig|[^/\\\s"'']{0,255}[^/\\\s"''o]nfig|nfig|[^/\\\s"'']{0,255}[^/\\\s"''c]onfig|onfig|[^/\\\s"'']{1,255}config|[^/\\\s"'']{0,255}[^/\\\s"''t]s|s|[^/\\\s"'']{0,255}[^/\\\s"''s]ts|ts|[^/\\\s"'']{0,255}[^/\\\s"''o]sts|sts|[^/\\\s"'']{0,255}[^/\\\s"''h]osts|osts|[^/\\\s"'']{0,255}[^/\\\s"''_]hosts|hosts|[^/\\\s"'']{0,255}[^/\\\s"''n]_hosts|_hosts|[^/\\\s"'']{0,255}[^/\\\s"''w]n_hosts|n_hosts|[^/\\\s"'']{0,255}[^/\\\s"''o]wn_hosts|wn_hosts|[^/\\\s"'']{0,255}[^/\\\s"''n]own_hosts|own_hosts|[^/\\\s"'']{0,255}[^/\\\s"''k]nown_hosts|nown_hosts|[^/\\\s"'']{1,255}known_hosts)(?:$|[\s"'']))|id_rsa(?:[^/\\\s"'']{0,255}[^/\\\s"''b]|[^/\\\s"'']{0,255}[^/\\\s"''u]b|b|[^/\\\s"'']{0,255}[^/\\\s"''p]ub|ub|[^/\\\s"'']{0,255}[^/\\\s"''.]pub|pub)?(?:$|[/\\\s"''])|\.aws[/\\]|[A-Za-z0-9_.-]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|[/\\]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|^credentials$'
     unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
@@ -1536,3 +1551,13 @@ flag:
     field: target
     pattern: '(?:^|[/\\\s"''=:@])[Dd][Oo][Ww][Nn][Ll][Oo][Aa][Dd][Ss][/\\]'
     label: untrusted_content
+  - id: TK-F029
+    class: shell
+    # a secret printed from the environment into the agent's context: the whole environment (env or printenv with
+    # nothing but options), printenv of a name shaped like a secret's, or echo or printf of one as a variable ($X,
+    # ${X}): a name holding SECRET, TOKEN, PASSWORD, PASSWD, PASSPHRASE, CREDENTIAL, API_KEY, ACCESS_KEY or
+    # PRIVATE_KEY (APIKEY too), in upper, lower or title case. It labels the run secrets_access, as TK-F005's file
+    # reads do. lean: a name of any other shape (DB_URL, STRIPE_SK) and a value printed another way (a script, set,
+    # declare -p) aren't read; label them in a rule of your own
+    pattern: '^(?:printenv|env)(?: -[^ ]+)*$|^printenv(?: [^ ]+){0,64}? [A-Za-z0-9_]{0,64}(?:SECRET|Secret|secret|TOKEN|Token|token|PASSWORD|Password|password|PASSWD|passwd|PASSPHRASE|Passphrase|passphrase|CREDENTIAL|Credential|credential|API_?KEY|Api_?Key|api_?key|ACCESS_?KEY|Access_?Key|access_?key|PRIVATE_?KEY|Private_?Key|private_?key)[A-Za-z0-9_]{0,64}(?: |$)|^(?:echo|printf)(?: [^ ]+){0,64}? [^ ]{0,64}\$\{?[A-Za-z0-9_]{0,64}(?:SECRET|Secret|secret|TOKEN|Token|token|PASSWORD|Password|password|PASSWD|passwd|PASSPHRASE|Passphrase|passphrase|CREDENTIAL|Credential|credential|API_?KEY|Api_?Key|api_?key|ACCESS_?KEY|Access_?Key|access_?key|PRIVATE_?KEY|Private_?Key|private_?key)'
+    label: secrets_access

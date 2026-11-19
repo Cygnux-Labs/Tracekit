@@ -115,7 +115,10 @@ class TestLint(unittest.TestCase):
                 ({"when": {"run_has": ["secrets_access"], "also": 1}}, "ask", "when must be"),
                 ({"when": {"run_has": ["secrets_access"]}, "label": "untrusted_content"}, "flag",
                  "it would set what it reads"),
-                ({"field": "labels"}, "ask", "field labels is for a rule with `when`")):
+                ({"field": "labels"}, "ask", "field labels is for a rule with `when`"),
+                ({"mode": "shadow"}, "ask", "mode is shadow or enforce, on an ask rule with `when`"),
+                ({"mode": "shadow", "when": {"run_has": ["secrets_access"]}}, "flag", "mode is shadow or enforce"),
+                ({"mode": "off", "when": {"run_has": ["secrets_access"]}}, "ask", "mode is shadow or enforce")):
             with self.subTest(rule=rule, sec=sec):
                 self.assertTrue(any(why in e for e in self.errors(rule, sec)), self.errors(rule, sec))
         no_source = {**POL, "ask": [r for r in POL["ask"] if r["id"] != "T-VAULT"],
@@ -195,6 +198,19 @@ class TestSigner(Case):
         self.assertEqual((code, line["status"], line["detail"]),
                          (0, "pass", "1 run(s) replayed under their policy, 0 signer-asserted (under several "
                                      "policies, or a policy not in the bundle)"))
+
+    def test_a_shadow_condition_records_the_call_and_holds_none(self):
+        pol = {**POL, "ask": [{**r, "mode": "shadow"} if r["id"] == "T-SEND" else r for r in POL["ask"]]}
+        s = self.signer(pol)
+        run = s.register()
+        s.decide(run, SECRET)
+        out = s.decide(run, EGRESS)
+        self.assertEqual((out["decision"], out["rule_ids"]), ("allow", ["T-EGRESS", "T-SEND"]))
+        self.assertNotIn("reason", out)
+        last = s.decisions(run)[-1]
+        self.assertEqual((last["decision"], last["rule_ids"], last["run_labels"]),
+                         ("flag", ["T-EGRESS", "T-SEND"], ["secrets_access"]))
+        self.assertEqual(self.check(*bundle(s, run))[0], 0)
 
     def test_untrusted_content_from_an_untrusted_tool_and_an_untrusted_input(self):
         s = self.signer()
@@ -404,16 +420,56 @@ class TestDevPack(unittest.TestCase):
         cls.pol = pc.build(DEV)[0]
         cls.e = Engine(cls.pol)
 
-    def test_egress_after_a_secret_read_asks_and_a_clean_run_sends_as_before(self):
+    def labelled(self, tool, args):
+        from tracekit.signer.service import evaluate
+        for e in (self.e, Engine(self.pol, "regex")):
+            d = evaluate(e, tool, args)[0]
+            yield labels.Sources(e).of_call(tool, d["rule_ids"])
+
+    def test_egress_after_a_secret_read_is_recorded_in_shadow_and_held_when_enforced(self):
         from tracekit.signer.service import evaluate
         curl = ("Bash", {"command": "curl -s https://api.example.org/v1/items?q=1"})
         d = evaluate(self.e, *curl)[0]
-        self.assertEqual((d["verdict"], d["when"]), ("flag", {"TK-Q001": "ask"}))
-        self.assertEqual(self.e.condition(d, {"secrets_access"})["verdict"], "ask")
-        read = evaluate(self.e, "Read", {"file_path": "/home/u/.aws/config"})[0]
-        self.assertEqual(labels.Sources(self.e).sets({"type": "policy.decision", "data": {
-            "tool": "Read", "decision": read["verdict"], "rule_ids": read["rule_ids"]}}, dict.get, dict.get),
-            {"secrets_access"})
+        self.assertEqual((d["verdict"], d["when"]), ("flag", {"TK-Q001": "flag"}))   # shadow: a flag
+        shadow = self.e.condition(d, {"secrets_access"})
+        self.assertEqual((shadow["verdict"], shadow["rule_ids"][-1], shadow["run_labels"]),
+                         ("flag", "TK-Q001", ["secrets_access"]))
+        enforced = Engine({**self.pol, "ask": [{k: v for k, v in r.items() if k != "mode"} for r in self.pol["ask"]]})
+        held = enforced.condition(evaluate(enforced, *curl)[0], {"secrets_access"})
+        self.assertEqual((held["verdict"], held["run_labels"]), ("ask", ["secrets_access"]))
+        self.assertEqual(self.e.condition(d, ())["verdict"], "flag")   # a clean run: as before
+
+    def test_only_material_that_can_be_secret_labels_secrets_access(self):
+        never = [("Read", {"file_path": "/home/u/.ssh/known_hosts"}), ("Read", {"file_path": "/home/u/.ssh/config"}),
+                 ("Read", {"file_path": "/home/u/.ssh/id_ed25519.pub"}), ("Read", {"file_path": "/k/id_rsa.pub"}),
+                 ("Read", {"file_path": "/home/u/.ssh/id_ed25519-cert.pub"}),
+                 ("Bash", {"command": "cat ~/.ssh/known_hosts"}), ("Bash", {"command": "cat ~/.ssh/id_rsa.pub"}),
+                 ("Bash", {"command": "grep Host ~/.ssh/config"}),
+                 ("Bash", {"command": "ssh-keygen -lf ~/.ssh/id_ed25519.pub"}),
+                 ("mcp__fs__read_file", {"path": "/home/u/.ssh/config"}), ("Bash", {"command": "printenv PATH"}),
+                 ("Bash", {"command": "echo $HOME"}), ("Bash", {"command": "env FOO=1 make"})]
+        can = [("Read", {"file_path": "/home/u/.ssh/id_rsa"}), ("Read", {"file_path": "/home/u/.ssh/id_ed25519"}),
+               ("Bash", {"command": "ls ~/.ssh/"}), ("Read", {"file_path": "/home/u/.ssh/config.d/work"}),
+               ("Read", {"file_path": "/home/u/.ssh/authorized_keys"}),
+               ("Read", {"file_path": "/home/u/.ssh/known_hosts.old"}), ("Read", {"file_path": "/home/u/.ssh/Config"}),
+               ("Read", {"file_path": "/home/u/.aws/config"}), ("Read", {"file_path": "/home/u/.aws/credentials"}),
+               ("Read", {"file_path": "/app/.env"}), ("Read", {"file_path": "/home/u/.netrc"}),
+               ("Read", {"file_path": "/repo/docs/credentials.md"}),
+               ("Bash", {"command": "cat ~/.ssh/config ~/.ssh/id_rsa"}),
+               ("Bash", {"command": "cat ~/.ssh/x.pub/../id_rsa"}), ("Bash", {"command": "cat /k/id_rsa.pub.bak"}),
+               ("Bash", {"command": "cat ~/.ssh/known_hosts ~/.aws/config"}),
+               ("Bash", {"command": "printenv GITHUB_TOKEN"}), ("Bash", {"command": "printenv"}),
+               ("Bash", {"command": "env"}), ("Bash", {"command": "echo $AWS_SECRET_ACCESS_KEY"}),
+               ("Bash", {"command": "echo \"${OPENAI_API_KEY}\""}), ("Bash", {"command": "gh auth token"}),
+               ("Bash", {"command": "security find-generic-password -s x -w"}),
+               ("Bash", {"command": "aws secretsmanager get-secret-value --secret-id prod"}),
+               ("Bash", {"command": "vault kv get secret/app"}), ("Bash", {"command": "kubectl get secret app -o yaml"})]
+        for call in never:
+            with self.subTest(never=call):
+                self.assertEqual(list(self.labelled(*call)), [set(), set()])
+        for call in can:
+            with self.subTest(can=call):
+                self.assertEqual(list(self.labelled(*call)), [{"secrets_access"}] * 2)
 
     def test_the_e21_sessions_hold_no_more_calls_with_labels(self):
         from tracekit.signer.service import evaluate
