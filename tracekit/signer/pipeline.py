@@ -243,8 +243,9 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
-    # lean: a stand-in for 1.8 A's requester labels (the same cooldown_key and window); use A's function once it lands
-    k = cooldown_key(tenant, run) if run.get("owner") else None
+    # lean: a stand-in for 1.8 A's requester labels (`labels_for`: the same cooldown_key and window); swap it in once A
+    # lands. A final run (final_run: no `people`) takes no label.
+    k = cooldown_key(tenant, run) if run.get("owner") and "people" in run else None
     if k and (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
               or typ == "capture.gap" and d.get("kind") == "client_counter_gap"
               or typ == "run.closing" and (ag["tainted"].get(k) or {}).get(e["run_id"], 0) is None):
