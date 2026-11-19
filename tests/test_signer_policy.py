@@ -1748,6 +1748,32 @@ class CodingPack(unittest.TestCase):
                      {"command": "npm test", "additional_permissions": {}}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
+    def test_a_destructive_statement_after_a_hash_comment_line_asks_in_every_pack(self):
+        """TK-A039 (#978): mysql and mariadb read `#` to the end of a line as a comment, so a `#` line before the
+        destructive keyword no longer hides it; a comment that only names one, or a read after it, is not held."""
+        held = [
+            "mysql -e '# c\nDROP TABLE users;'",
+            "mysql -e '# cleanup\nDELETE FROM users;' shop",
+            'mariadb -e "SELECT 1;\n# then\nTRUNCATE orders" shop',
+            "mysql -e '#note\\nDROP TABLE users'",
+        ]
+        routine = [
+            "mysql -e '# c\nSELECT 1;'",
+            "mysql -e '# DROP TABLE users\nSELECT 1;'",
+            "mysql -e 'SELECT 1 # DROP TABLE users'",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertIn("TK-A039", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        self.assertNotIn("TK-A039", e.decide("Bash", {"command": cmd})["rule_ids"])
+
     def test_writes_to_autostart_locations_and_git_hooks_ask(self):
         self.verdicts([({"file_path": "/Users/dev/Library/LaunchAgents/com.example.helper.plist"}, "TK-A010"),
                        ({"file_path": "/home/dev/.config/systemd/user/example.service"}, "TK-A010"),
