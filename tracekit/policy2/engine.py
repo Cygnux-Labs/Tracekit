@@ -3196,6 +3196,8 @@ def _may_run_input(argv):
     return name not in shell.DATA_ONLY
 
 
+# a remote source a runner fetches code from (a URL, a VCS one, a PEP 508 `name @ URL`): _download_runs
+_REMOTE_SOURCE = re.compile(r"(?:[^\s@]+\s*@\s*)?(?:git\+)?(?:https?|ssh|git)://", re.I)
 # what a saved download may be read as without running it
 _DATA_SAVE = re.compile(r"\.(?:json|jsonl|ndjson|csv|tsv|txt|html?|xml|md|svg|png|jpe?g|gif|webp|ico|pdf|mp3|wav|ogg|"
                         r"mp4|webm|woff2?|ttf|otf)$", re.I)
@@ -3333,8 +3335,19 @@ def _download_runs(commands):
     anywhere on the line outside its pipeline (before it too: a background job, a FIFO, a trap, a loop's next turn)
     that runs what it saved, is `curl ; sh <it>`: run by its path or name where that is a saved file's or the URL's
     name, or any path with a name the server picks (-J, -K); a shell, interpreter or source given one as a word or a
-    redirection, or naming one in its inline code."""
+    redirection, or naming one in its inline code. An interpreter a later stage gives inline code or a script, however
+    the line spells it (through a wrapper or runner, after assignments, a versioned name, its code flag in a cluster or
+    with its code attached, as shell._code_arg reads it), is `curl | python -c` or `curl | python <script>`, for
+    TK-A046. A runner that fetches the code it runs (`uv run https://…/x.py`, `uvx --from git+https://…`, `pipx run
+    --spec https://…`: a remote source among its words) is a download into its interpreter too: `curl | python
+    remote`."""
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
+    for c in commands:
+        prog, args = _program(c["argv"]), c["argv"][1:]
+        if (prog == "uvx" or prog in ("uv", "pipx") and shell.runner_at(prog, args)) and any(
+                _REMOTE_SOURCE.match(w) for a in args for w in (a, a.partition("=")[2])):
+            out.append("curl | python remote")
+            break
     for d in commands:
         tool = d["argv"][0]
         if tool not in ("curl", "wget"):
@@ -3342,10 +3355,16 @@ def _download_runs(commands):
         # a later stage of its pipeline that may run what it reads: any program but one known to read only data
         # (shell.DATA_ONLY, tar listing), a shell or an interpreter that reads its code from stdin; one given its code
         # (-c, a script) is TK-A046's
-        for c in commands:
-            if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0) and _may_run_input(c["argv"]):
-                out.append(f"{tool} | sh")
-                break
+        later = [c for c in commands if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0)]
+        if any(_may_run_input(c["argv"]) for c in later):
+            out.append(f"{tool} | sh")
+        for c in later:
+            if (kind := shell._kind(_program(c["argv"]))) in shell.CODE_FLAGS:
+                args = c["argv"][1:]
+                if shell._code_arg(kind, args) is not None:
+                    out.append(f"{tool} | {kind} -{shell.CODE_FLAGS[kind][0]}")
+                elif (i := shell._script_operand(kind, args)) is not None:
+                    out.append(f"{tool} | {kind} {args[i]}")
         if "<()" in d["via"]:
             for c in commands:
                 subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]

@@ -251,7 +251,10 @@ SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".spl
 KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r", "lua": "e"}
+# each interpreter's options whose value is its code (php's -B, -R and -E run code before, for and after each line of
+# stdin), the first its usual one, and their long forms
+CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
+LONG_CODE = {"node": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
                      "--experimental-loader"}
@@ -2581,11 +2584,11 @@ def _code_arg(kind, args):
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
-    flags = CODE_FLAGS[kind]
+    flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
     for i, a in enumerate(args):
-        if kind == "node" and a in ("--eval", "--print"):
+        if a in long:
             return args[i + 1] if i + 1 < len(args) else None
-        if kind == "node" and a.startswith(("--eval=", "--print=")):
+        if a.partition("=")[0] in long:
             return a.split("=", 1)[1]
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
@@ -5566,8 +5569,12 @@ def _lines(words, progs):
         return name in WRAPPERS or runner in RUNNERS and bool(runner_at(runner, words[p + 1:q]))
     cut = {i for p, q in zip(at, at[1:]) if not _STAGE_ENDS.intersection(words[p + 1:q]) and runs(p, q)
            for i in range(p, q)}
+    ran = list(low)
+    for p, q in zip(at, at[1:]):
+        if p in cut and base_name(words[p]) == "hatch":   # hatch run [ENV:]ARGS: the command, not its environment
+            ran[q] = ran[q].split(":", 1)[-1]
     return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
-        [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
+        [" ".join(w for i, w in enumerate(ran) if i not in cut)] if cut else [])
 
 
 _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
