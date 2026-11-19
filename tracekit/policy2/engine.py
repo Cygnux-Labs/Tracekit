@@ -1659,48 +1659,79 @@ def _pushes(commands):
     return out
 
 
-_PIP_URL_OPTS = {"-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--proxy", "-c", "--constraint", "-r",
-                 "--requirement", "--trusted-host", "--cert", "--client-cert"}
+_PIP_URL_OPTS = {"-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--proxy", "-c", "--constraint",
+                 "--trusted-host", "--cert", "--client-cert"}
 _NPM_URL_OPTS = {"--registry", "--proxy", "--https-proxy"}
-# each installer: the verbs whose operands are package sources, and its options whose value may be a URL that is no
-# source (an index, a registry, a proxy, a requirements or constraints file), left out with it; any other option is
-# read as a flag, so a URL after it is a source
-_INSTALLERS = {"pip": ({"install"}, _PIP_URL_OPTS),
-               "uv pip": ({"install"}, _PIP_URL_OPTS | {"--index", "--default-index", "--constraints",
-                                                       "--overrides", "--override", "--build-constraints", "-b",
-                                                       "--requirements"}),
-               "uv": ({"add"}, _PIP_URL_OPTS | {"--index", "--default-index", "--constraints", "--requirements"}),
-               "pipx": ({"install"}, {"--index-url"}), "poetry": ({"add"}, {"--source"}),
-               "npm": ({"install", "i", "add"}, _NPM_URL_OPTS), "pnpm": ({"install", "i", "add"}, _NPM_URL_OPTS),
-               "yarn": ({"add"}, _NPM_URL_OPTS), "bun": ({"install", "i", "add"}, _NPM_URL_OPTS),
-               "gem": ({"install", "i"}, {"-s", "--source", "-p", "--http-proxy"}),
-               "cargo": ({"install", "add"}, {"--index", "--registry", "--git"})}
+_NPM_INSTALL = {(v,) for v in ("install", "i", "add", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
+                               "isntall", "install-test", "it")}   # npm 11's lib/utils/cmd-list.js
+# each installer: the verbs whose operands are package sources (None: any word, yarn's workspace name, pipx inject's
+# venv), its options before the verb that take a value (pip 26's general options, uv 0.13's global ones, npm's: shell),
+# and its options whose value may be a URL that is no source (an index, a registry, a proxy, a constraints file), left
+# out with it; any other option is read as a flag, so a URL after it is a source (a requirements file's too: what it
+# lists is installed). pip wheel and download, uv pip sync and uv tool install build or install what they fetch too
+_INSTALLERS = {
+    "pip": ({("install",), ("wheel",), ("download",)},
+            {"--python", "--log", "--keyring-provider", "--proxy", "--retries", "--timeout", "--exists-action",
+             "--trusted-host", "--cert", "--client-cert", "--cache-dir", "--use-feature", "--use-deprecated",
+             "--resume-retries"}, _PIP_URL_OPTS),
+    "uv": ({("pip", "install"), ("pip", "sync"), ("add",), ("tool", "install")},
+           {"--cache-dir", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"},
+           _PIP_URL_OPTS | {"--index", "--default-index", "--constraints", "--overrides", "--override",
+                            "--build-constraints", "-b"}),
+    "pipx": ({("install",), ("inject", None)}, set(), {"--index-url", "--pip-args"}),
+    "poetry": ({("add",)}, {"-C", "--directory", "-P", "--project"}, {"--source"}),
+    "npm": (_NPM_INSTALL, set(shell._NPM_OPTS), _NPM_URL_OPTS),
+    "pnpm": ({("install",), ("i",), ("add",)}, {"-C", "--dir", "-F", "--filter"}, _NPM_URL_OPTS),
+    "yarn": ({("add",), ("global", "add"), ("workspace", None, "add")}, {"--cwd"}, _NPM_URL_OPTS),
+    "bun": ({("install",), ("i",), ("add",), ("a",)}, {"--cwd"}, _NPM_URL_OPTS),
+    "gem": ({("install",), ("i",)}, set(), {"-s", "--source", "-p", "--http-proxy"}),
+    "cargo": ({("install",), ("add",)}, {"--config", "-Z", "--color", "-C"}, {"--index", "--registry"})}
+# npm's, pnpm's, yarn's and bun's GitHub shorthand: owner/repo (a path starts with ., /, ~ or a drive)
+_NPM_GITHUB = re.compile(r"[\w-][\w.-]*/[\w.-]+(?:#\S*)?")
 
 
 def _install_sources(argv):
-    """`<installer> <verb> <operand>` for each operand of a package install (_INSTALLERS), without its options and the
+    """`<installer> install <operand>` for each operand of a package install (_INSTALLERS), without its options and the
     values of the ones that name an index, registry or proxy: TK-D021 reads a URL source whatever options come before
-    or between (`pip install -q https://…`, `npm i -D https://…`). [] for anything else."""
+    or between (`pip --proxy http://p:1 install -q https://…`, `npm -w a i -D https://…`), TK-A028 a version-control
+    one (npm's owner/repo as github:owner/repo, cargo's --git URL as git+URL). The verb is the first of the
+    installer's own after its options, each with its value where its table names it, and where one it doesn't may
+    take the next word, after that word too. [] for anything else."""
     prog, args = _program(argv), argv[1:]
-    if prog.startswith("python") and (module := _python_module(args))[:1] == ["pip"]:
+    if (prog.startswith("python") or prog == "py") and (module := _python_module(args))[:1] == ["pip"]:
         prog, args = "pip", module[1:]
-    prog = "pip" if _PIP.fullmatch(prog) else "uv pip" if prog == "uv" and args[:1] == ["pip"] else prog
+    prog = "pip" if _PIP.fullmatch(prog) else prog
     if prog not in _INSTALLERS:
         return []
-    verbs, valued = _INSTALLERS[prog]
-    args = args[1:] if prog == "uv pip" else args
-    at = next((i for i, a in enumerate(args) if not a.startswith("-")), None)   # after global options
-    if at is None or args[at] not in verbs:
-        return []
-    out, skip = [], False
-    for a in args[at + 1:]:
-        if skip:
-            skip = False
+    verbs, before, valued = _INSTALLERS[prog]
+    i, maybe, at = 0, False, None   # (maybe: the word before is an option, so this one may be its value)
+    while i < len(args) and at is None:
+        a = args[i]
+        if a.startswith("-") and a != "-":
+            i, maybe = (i + 2, False) if a in before else (i + 1, "=" not in a)
+            continue
+        at = next((i + len(v) for v in verbs if all(w is None or args[i + k:i + k + 1] == [w] for k, w in
+                                                      enumerate(v))), None)
+        if at is None and not maybe:
+            return []
+        i, maybe = i + 1, False
+    out, skip = [], None   # (skip: the next word is an option's value, a source after this prefix if not None)
+    for a in args[at:] if at is not None else ():
+        if skip is not None:
+            out += [f"{prog} install {skip}{a}"] * (skip != "")
+            skip = None
         elif a.startswith("-"):   # (pip's optparse takes a long option's unique prefix: --index-u is --index-url)
-            skip = a in valued or a.startswith("--@") and a.endswith(":registry") or prog == "pip" and \
-                len(a) > 2 and a.startswith("--") and "=" not in a and any(o.startswith(a) for o in valued)
+            name, eq, value = a.partition("=")
+            source = "git+" if prog == "cargo" and name == "--git" else None if name in valued or (
+                name.startswith("--@") and name.endswith(":registry")) or prog == "pip" and len(name) > 2 and \
+                name.startswith("--") and any(o.startswith(name) for o in valued) else ""
+            if eq:
+                out += [f"{prog} install {source}{value}"] * (source is not None)
+            elif source != "":   # an index's, a registry's or a proxy's value, left out, or cargo's --git URL
+                skip = "" if source is None else source
         else:
-            out.append(f"{prog} {args[at]} {a}")
+            out.append(f"{prog} install github:{a}" if prog in ("npm", "pnpm", "yarn", "bun") and
+                       _NPM_GITHUB.fullmatch(a) else f"{prog} install {a}")
     return out
 
 
