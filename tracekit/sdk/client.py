@@ -651,27 +651,33 @@ def parts(value, key=None):
         yield put(part)
 
 
+VAULT_STATUS_TTL_S = 60.0   # how long the signer's status answer is kept before it is asked again
+
+
 class VaultBody:
     """`vault(content, size=None)`: {"body": content} for a model_event when the signer keeps content (`status()`, its
     status answer, names the vault's max_record_bytes), the content's `size` in bytes (default: its canonical JSON)
     fits that and half a frame, and `content` is strict JSON (no integer past 2^53, non-finite number or lone
     surrogate, which a frame cannot carry); else {}: the record keeps the digest and the vault notes the content as
-    not retained. The LLM gateway's and the transcript tailer's."""
+    not retained. The LLM gateway's and the transcript tailer's. The answer is kept for VAULT_STATUS_TTL_S and asked
+    again after that, so an operator turning the vault on or off reaches a process that is already running."""
 
     def __init__(self, status):
         self.status, self.limit = status, None   # the largest body the signer's vault takes; 0: it keeps none
+        self.asked_at = None                     # when that answer came (time.monotonic); None: none yet
+        self.refusal_warned = False              # a refused status says so once per process, not once per answer
 
     def __call__(self, content, size=None):
-        if self.limit is None:
-            # lean: asked once per process, until the signer answers; restart it after turning the signer's vault on
-            # or off
+        if self.limit is None or self.asked_at is None or time.monotonic() - self.asked_at >= VAULT_STATUS_TTL_S:
             try:
                 self.limit = min((self.status().get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
-            except SignerUnavailable:
+                self.asked_at = time.monotonic()
+            except SignerUnavailable:   # asked again on the next call, keeping the answer there was if there was one
                 return {}
             except RPCError as e:   # not granted `status`: no body
-                self.limit = 0
-                if e.code == "forbidden":
+                self.limit, self.asked_at = 0, time.monotonic()
+                if e.code == "forbidden" and not self.refusal_warned:
+                    self.refusal_warned = True
                     warnings.warn(f"tracekit: the signer refused status ({e.message}): with its content vault on, it "
                                   "keeps none of the text this process records, only its digest; grant this identity "
                                   "status in signer.yaml authorize", stacklevel=2)

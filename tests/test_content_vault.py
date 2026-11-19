@@ -20,6 +20,7 @@ from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.sdk import client as sdk_client
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
@@ -329,6 +330,63 @@ class GatewayBody(unittest.TestCase):
         self.assertEqual(gw.body({}, 1), {})
         client.status.side_effect = lambda req: {"content": {"max_record_bytes": 10}}
         self.assertEqual(gw.body({}, 1), {"body": {}})
+
+    def test_the_vault_turned_on_reaches_a_running_gateway(self):
+        """#986: the answer was kept for the process's life, so turning the vault on only took effect after a
+        restart."""
+        answers = [{"rpc_version": 14}, {"content": {"max_record_bytes": 100}}]
+        asks = []
+
+        def status():
+            asks.append(1)
+            return answers[min(len(asks), 2) - 1]
+
+        vault = gateway.VaultBody(status)
+        now = [1000.0]
+        with mock.patch("tracekit.sdk.client.time.monotonic", lambda: now[0]):
+            self.assertEqual(vault({"a": 1}), {})                          # the vault is off
+            self.assertEqual(len(asks), 1)
+            now[0] += sdk_client.VAULT_STATUS_TTL_S + 1                    # an interval passes
+            self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})          # turned on: the body goes with it
+            self.assertEqual(len(asks), 2)
+
+    def test_two_calls_inside_the_interval_ask_status_once(self):
+        """The lean part that stays: one status call a minute, not one per exchange."""
+        asks = []
+
+        def status():
+            asks.append(1)
+            return {"content": {"max_record_bytes": 100}}
+
+        vault = gateway.VaultBody(status)
+        now = [0.0]
+        with mock.patch("tracekit.sdk.client.time.monotonic", lambda: now[0]):
+            self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})
+            now[0] += sdk_client.VAULT_STATUS_TTL_S - 1
+            self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})
+            self.assertEqual(len(asks), 1)                                 # inside the interval
+            now[0] += 2
+            self.assertEqual(vault({"a": 1}), {"body": {"a": 1}})
+            self.assertEqual(len(asks), 2)                                 # past it, asked again
+
+    def test_a_refused_status_says_so_once_across_intervals(self):
+        """A refusal is asked again each interval, but the operator is told once, not once a minute."""
+        asks = []
+
+        def status():
+            asks.append(1)
+            raise RPCError("forbidden", "token:a is not authorized for status")
+
+        vault = gateway.VaultBody(status)
+        now = [0.0]
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with mock.patch("tracekit.sdk.client.time.monotonic", lambda: now[0]):
+                for _ in range(3):
+                    self.assertEqual(vault({"a": 1}), {})
+                    now[0] += sdk_client.VAULT_STATUS_TTL_S + 1
+        self.assertEqual(len(asks), 3)      # asked again each interval
+        self.assertEqual(len(w), 1)         # and said so once
 
 
 class Doctor(unittest.TestCase):

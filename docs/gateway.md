@@ -43,9 +43,9 @@ Only an identity in `gateways` may record an exchange for another identity's run
 anyone else.
 
 To keep exchanges in the signer's [content vault](privacy.md#the-content-vault), turn the vault on in `signer.yaml`
-and also grant the gateway `status`: `[model_event, close_run, status]`. The gateway asks the signer's status once,
-and from then on each `model_event` carries the exchange's `body`. Restart the gateway after you turn the vault on or
-off.
+and also grant the gateway `status`: `[model_event, close_run, status]`. The gateway asks the signer's status and
+keeps the answer for a minute, so from then on each `model_event` carries the exchange's `body`; turning the vault on
+or off reaches a gateway that is already running within that minute, and no restart is needed.
 
 Your agents reach the signer too (`register_run`, the tool decisions, autotrace), each as its own identity. Over the
 signer's HTTPS listener (or `http://127.0.0.1:PORT` with `insecure_loopback: true`, for a local trial: the Python
