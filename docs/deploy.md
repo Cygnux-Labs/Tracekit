@@ -73,9 +73,9 @@ root-owned Python 3.9+ with its `venv` module (Debian, Ubuntu: `sudo apt install
 that is not root and not in a sudo, wheel, admin, docker or similar group.
 
 Init runs from root's Python, so Tracekit must be installed there first. The package is `tracekit-ai`; `tracekit` on
-PyPI is another project. Which way depends on `/usr/bin/python3 --version`. With Python 3.11 or later, install it
-into `/opt/tracekit`, the root-owned venv that init builds anyway. Debian 12, Ubuntu 23.04 and later refuse
-`sudo pip install` (PEP 668: `error: externally-managed-environment`), but pip installs into a venv:
+PyPI is another project. Install it into `/opt/tracekit`, the root-owned venv that init builds anyway. Debian 12,
+Ubuntu 23.04 and later refuse `sudo pip install` (PEP 668: `error: externally-managed-environment`), but pip installs
+into a venv:
 
 ```bash
 sudo /usr/bin/python3 -m venv /opt/tracekit
@@ -85,9 +85,8 @@ sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --approver A
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
 ```
 
-With Python 3.9 or 3.10 (Ubuntu 22.04, Debian 11, macOS's `/usr/bin/python3`), don't run init from that venv: it
-fails and leaves a broken `/opt/tracekit` (`Too many levels of symbolic links`). Run init from the system Python
-instead. These systems don't refuse `sudo pip`, so you can install Tracekit there. But that puts it and the packages
+With Python 3.9 or 3.10 (Ubuntu 22.04, Debian 11, macOS's `/usr/bin/python3`), `sudo pip` isn't refused, so you
+can also install Tracekit into the system Python and run init from there. But that puts it and the packages
 it needs (cryptography, regex, rfc8785, google-re2 on 3.10, and what they need) into the system Python, for every
 program that uses it. Where your distribution ships one of them, as Ubuntu 22.04 ships python3-cryptography 3.4.8, pip
 adds a newer copy that those programs then load instead. That can break programs written for the distribution's
@@ -104,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.6.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.6.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.6.0
-cd /usr/local/src/tracekit-1.6.0
+# v1.7.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.7.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.2
+cd /usr/local/src/tracekit-1.7.2
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -158,18 +157,16 @@ Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops 
 `witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
-   `sudo launchctl bootout system/dev.tracekit.signer`. With `--harness`, also stop
-   `tracekit-harness-helper` on Linux or run
-   `sudo launchctl bootout system/dev.tracekit.harness-helper` on macOS; with `--egress`, also stop
-   `tracekit-egress` on Linux. Until init starts it again, AGENT's tool calls are blocked.
-2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
-3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone
-   route, clone the new release's tag into a new directory. On macOS, init bootstraps the signer and,
-   with `--harness`, the helper again; no separate launchd command is needed here.
+   `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
+   Init restarts the harness helper and the egress observer itself, so they run the new version.
+2. Keep a copy of the config in root's home (`/root` on Linux, `/var/root` on macOS):
+   `sudo cp /etc/tracekit/signer.yaml ~root/signer.yaml.bak`.
+3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
+   the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
+   again; no separate launchd command is needed here.
 4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
-   `sudo systemctl restart tracekit-signer`; on macOS,
-   `sudo launchctl kickstart -k system/dev.tracekit.signer`. On Linux, also restart
-   `tracekit-harness-helper` / `tracekit-egress` if you use them. A run that starts before this keeps no content.
+   `sudo systemctl restart tracekit-signer`; on macOS, `sudo launchctl kickstart -k system/dev.tracekit.signer`. A run
+   that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
 can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant
@@ -272,6 +269,7 @@ own Deployment (one replica per data volume; the signer holds its storage lock) 
 (Kubernetes TokenReview, a SPIFFE CA for mTLS, or named tokens), and optionally Postgres
 (`storage: {postgres: {dsn_file}}`), an AWS KMS log key (`log_key: {aws_kms: {key_id, region}}`) and a
 [record-key issuer](issuer.md).
+The requests the signer accepts, and the answers it gives, are in the [signer API reference](api.md).
 
 ```yaml
 # signer.yaml: central, agents identified by their Kubernetes service account
@@ -304,7 +302,8 @@ tracekit monitor --log http://signer.internal:9464 --log-key "$(cat log.vkey)" -
 
 Run the monitor on a host the operator doesn't control, with `serve_records: true` in `metrics` ([monitor](monitor.md)).
 
-Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). Metrics and alerts:
+Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). A tenant's people download its
+runs over the same API with an `export_run` grant: [downloading a run](remote-ingest.md#downloading-a-run). Metrics and alerts:
 [observability](observability.md). Model calls through the [LLM gateway](gateway.md) and tool calls run by a T2
 [executor](approvals.md#tiers-t1-and-t2-executors) are recorded out of the agent's process.
 

@@ -23,6 +23,29 @@ FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit":
           "Grep": "read", "Glob": "read"}
 
 
+_CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^/]+/)+action\.ya?ml)|"
+                          r"\.gitlab-ci\.yml|\.circleci/config\.yml|azure-pipelines\.ya?ml|jenkinsfile)$")
+# A GitHub commit SHA is public build metadata, even when a notification includes it in a request body, unless the
+# text names GITHUB_SHA other than as `$GITHUB_SHA` or `${GITHUB_SHA…}` (`GITHUB_SHA=$TOKEN`, an `env:` key): then
+# it is read as any other variable.
+_CI_PUBLIC_SHA = re.compile(r"(\$\{?)?\bGITHUB_SHA\b")
+# a skill OpenHands loads from a project's or the home folder's .agents/skills/ (any .md there, at any depth), whose
+# invoke_skill runs each !`cmd` in it with shell=True (openhands-sdk skills/execute.py)
+_AGENT_SKILL = re.compile(r"(?:^|/)\.agents/skills/(?:[^/]+/)*[^/]+\.md$")
+
+
+def _texts(value):
+    """Every string in a JSON value, at any depth."""
+    out, todo = [], [value]
+    while todo:
+        v = todo.pop()
+        if isinstance(v, str):
+            out.append(v)
+        elif isinstance(v, (dict, list)):
+            todo.extend(v.values() if isinstance(v, dict) else v)
+    return out
+
+
 def first(args, *keys):
     return next((args[k] for k in keys if args.get(k) is not None), None)
 
@@ -194,39 +217,63 @@ def url_target(url):
 
 
 # SQL as each dialect lexes it: (backslash escapes in '' and "", $tag$ quotes, nested /* */, # comments, [ident],
-# `ident`, -- starts a comment only before a space). A statement that splits differently in two dialects (a comment
-# or literal one hides and the other runs) is matched in every reading.
-# lean: Oracle q'[...]' quotes and MySQL's NO_BACKSLASH_ESCAPES are not modelled; add a reading if a deployment uses them
-SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
-                "mysql": (True, False, False, True, False, True, True),
-                "sqlite": (False, False, False, False, True, True, False),
-                "mssql": (False, False, True, False, True, False, False)}
-_DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+# `ident`, -- starts a comment only before a blank or a control character, a CR ends a -- or # comment as a LF does:
+# PostgreSQL's scanner and SQL Server's documentation; MySQL and SQLite end one at a LF only). A statement that splits
+# differently in two dialects (a comment or literal one hides and the other runs) is matched in every reading. A
+# session or a server can change how literals read, so PostgreSQL with standard_conforming_strings off and MySQL with
+# NO_BACKSLASH_ESCAPES are readings too, however the setting was made.
+# lean: Oracle q'[...]' quotes and MySQL's ANSI_QUOTES are not modelled, and the PostgreSQL reading with backslash
+# escapes takes them in "" too (more is held, never less); add a reading if a deployment uses them
+SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False, True),
+                "postgres-escapes": (True, True, True, False, False, False, False, True),
+                "mysql": (True, False, False, True, False, True, True, False),
+                "mysql-no-escapes": (False, False, False, True, False, True, True, False),
+                "sqlite": (False, False, False, False, True, True, False, False),
+                "mssql": (False, False, True, False, True, False, False, True)}
+# a dollar-quote tag is an identifier: PostgreSQL's scanner takes any byte past ASCII as a letter (dolq_start)
+_DOLLAR = re.compile(r"\$([A-Za-z_\x80-\U0010ffff][A-Za-z0-9_\x80-\U0010ffff]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
-_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b]+")   # characters no dialect starts a comment, literal or quote with
+_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b*]+")   # characters no dialect starts a comment, literal or quote with
+_LINE_END = {False: re.compile("\n"), True: re.compile("[\r\n]")}
 
 
-def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
+def sql_code(stmt, *dialect):
     """`stmt` with every comment a space, every literal or quoted identifier '' or "" and a vertical tab (whitespace to
     each dialect, not to a pattern's \\s) a space, as one dialect lexes it: what a keyword rule should see. None when a
     literal or comment is not closed (the database rejects it)."""
-    out, i, n = [], 0, len(stmt)
+    code, closed = sql_read(stmt, *dialect)
+    return code if closed else None
+
+
+def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space, cr):
+    """(what sql_code reads of `stmt`, whether every literal and comment closed): where one doesn't, the code read
+    before it (a database may run the statements a `;` ends there, then fail). Each search starts where the last one
+    ended, so a statement is read in time linear in its length."""
+    out, i, n, runs = [], 0, len(stmt), 0   # runs: MySQL /*! ... */ open, whose */ closes it as a blank
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
-        if (two == "--" and (not dash_space or stmt[i + 2:i + 3] in ("", " ", "\t", "\n", "\r", "\f", "\v"))) or \
+        # MySQL's -- needs a blank or any control character after it (sql_lex.cc: my_isspace or my_iscntrl), DEL too
+        if (two == "--" and (not dash_space or stmt[i + 2:i + 3] <= " " or stmt[i + 2:i + 3] == "\x7f")) or \
                 (c == "#" and hash_comment):
-            j = stmt.find("\n", i)
-            i = n if j < 0 else j
+            end = _LINE_END[cr].search(stmt, i)
+            i = end.start() if end else n
             out.append(" ")
         elif hash_comment and stmt.startswith(("/*!", "/*M!"), i):   # MySQL runs what /*! ... */ holds, MariaDB /*M! too
-            i = _MYSQL_RUN.match(stmt, i).end()
+            i, runs = _MYSQL_RUN.match(stmt, i).end(), runs + 1
+            out.append(" ")
+        elif two == "*/" and runs:
+            i, runs = i + 2, runs - 1
+            out.append(" ")
         elif two == "/*":
-            depth, j = 1, i + 2
+            depth, j, close = 1, i + 2, -1
             while depth:
-                close = stmt.find("*/", j)
-                if close < 0:
-                    return None
-                opened = stmt.find("/*", j, close) if nest else -1
+                if close < j:   # the */ found last is still the next one until it is read
+                    close = stmt.find("*/", j)
+                    if close < 0:
+                        return "".join(out), False
+                # an opener that starts before the */ opens, even where they share the * (`/*/`): PostgreSQL's scanner
+                # reads left to right, and its xcstart takes `/*` first
+                opened = stmt.find("/*", j, close + 1) if nest else -1
                 depth, j = (depth + 1, opened + 2) if opened >= 0 else (depth - 1, close + 2)
             out.append(" ")
             i = j
@@ -237,7 +284,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             j = i + 1
             while True:
                 if j >= n:
-                    return None
+                    return "".join(out), False
                 if escapes and stmt[j] == "\\":
                     j += 2
                 elif stmt[j] != close:
@@ -248,11 +295,12 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                     break
             out.append("''" if c == "'" else '""')
             i = j + 1
-        elif c == "$" and dollar and _DOLLAR.match(stmt, i) and not re.match(r"[\w$]", stmt[i - 1:i]):
+        # a $ inside an identifier (`a$b`; `€$a$`: a byte past ASCII is an identifier's to PostgreSQL) opens no quote
+        elif c == "$" and dollar and _DOLLAR.match(stmt, i) and not re.match(r"[\w$\x80-\U0010ffff]", stmt[i - 1:i]):
             tag = _DOLLAR.match(stmt, i).group(0)
             end = stmt.find(tag, i + len(tag))
             if end < 0:
-                return None
+                return "".join(out), False
             out.append("''")
             i = end + len(tag)
         elif m := _SQL_TEXT.match(stmt, i):   # a run of text, read in one step
@@ -261,7 +309,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
         else:
             out.append(" " if c == "\x0b" else c)
             i += 1
-    return "".join(out)
+    return "".join(out), True
 
 
 A2A_PARTS = ("text", "file", "data")
@@ -309,8 +357,9 @@ def _name(v):
     return v.lower() if isinstance(v, str) and A2A_NAME.fullmatch(v) else None
 
 
-def extract(cls, tool, args):
-    """{field: value} for `cls`; a missing value is left out."""
+def extract(cls, tool, args, limit=None):
+    """{field: value} for `cls`; a missing value is left out. SQL longer than `limit` characters (the engine's
+    MAX_SUBJECT) isn't lexed: its `code` is the text as written, which every rule on it takes as TK-OVERSIZE."""
     if cls == "shell":
         out = {"command": first(args, *SHELL_KEYS)}
     elif cls == "fs":
@@ -318,6 +367,22 @@ def extract(cls, tool, args):
         content = first(args, "content", "new_string", "new_source", "edits")
         out = {"path": fs_path(path) if isinstance(path, str) else path, "op": FS_OPS.get(tool) or args.get("op"),
                "content_digest": None if content is None else event_hash(content)}
+        # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject. Under each
+        # harness's name for it (OpenHands' and Copilot's file_text and new_str, OpenCode's newString, Cursor's
+        # contents), every one sent, so a decoy under one name never hides the text under another
+        written = "\n".join(args[k] for k in {"Write": ("content", "file_text", "contents"),
+                                              "Edit": ("new_string", "new_str", "newString")}.get(tool, ())
+                            if isinstance(args.get(k), str)) or None
+        if isinstance(written, str) and any(_CI_WORKFLOW.search(p.casefold()) for p in fs_forms(path)):
+            if all(m[1] for m in _CI_PUBLIC_SHA.finditer(written)):
+                written = _CI_PUBLIC_SHA.sub("GITHUB_SHA", written)
+            out["ci_workflow"] = written
+        # the text of a call on an agent skill file, every string but its paths (the harnesses name it content,
+        # new_string, file_text, new_str, ...). lean: an edit's old text is read too, so removing a !`cmd` line is held
+        # as adding one is; read only the new text if that stops real work
+        files = [path, *(args["paths"] if isinstance(args.get("paths"), list) else ())]
+        if any(_AGENT_SKILL.search(p.casefold()) for f in files for p in fs_forms(f)):
+            out["agent_skill"] = "\n".join(_texts({k: v for k, v in args.items() if k not in (*PATH_KEYS, "paths")}))
     elif cls in ("http", "browser"):
         url = first(args, "url")
         info = url_info(url) if isinstance(url, str) else {}
@@ -346,8 +411,14 @@ def extract(cls, tool, args):
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(
             isinstance(s, str) for s in stmt) else None
-        code = [] if text is None else list(dict.fromkeys(c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values())
-                                                          if c is not None))
+        if text is None or limit is not None and len(text) > limit:
+            code = [] if text is None else [text]
+        else:
+            # a reading whose literal or comment doesn't close is read up to its last `;`: a database that runs a
+            # statement at a time (MySQL, SQLite) runs those, then fails. None closing is TK-SQL-PARSE (Engine)
+            read = [sql_read(text, *d) for d in SQL_DIALECTS.values()]
+            code = list(dict.fromkeys(c if closed else c[:c.rfind(";") + 1] for c, closed in read
+                                      if closed or ";" in c)) if any(closed for _, closed in read) else []
         out = {"statement": stmt, "db": first(args, "db", "database"), "code": code or None,
                "verb": code[0].split()[0].upper() if code and code[0].split() else None}
     elif cls == "payment":

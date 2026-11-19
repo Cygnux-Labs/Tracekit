@@ -24,6 +24,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
+from e22_import import import_e22  # noqa: E402
 from tracekit import cli, crypto, gateway, grants  # noqa: E402
 from tracekit.bundle import Report  # noqa: E402
 from tracekit.bundle_v2 import VERSIONS, export  # noqa: E402
@@ -731,9 +732,17 @@ class Agreement(SignerBundles):
         damage_crc(self.bundles["closed"], bad)
         with open(self.bundles["closed"], "rb") as f, open(cut, "wb") as w:
             w.write(f.read()[:-100])
-        trust, missing = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.json") for n in ("trust", "missing"))
+        trust, missing, mispinned, registry = (os.path.join(self.d, f"{n}-{uuid.uuid4().hex}.json")
+                                               for n in ("trust", "missing", "mispinned", "registry"))
         with open(trust, "w") as f:
             json.dump({"logs": ["x+00000000+AA=="], "algs": ["ed25519"]}, f)
+        stolen = checkpoint.key_origin(crypto.public_from_secret(hashlib.sha256(b"a").digest()))
+        # 1.7.3: a log key named after another key's fingerprint, or a log under it (a tenant registry), refused by both
+        for path, name in ((mispinned, stolen), (registry, f"{stolen}/registry/{'0f' * 16}")):
+            with open(path, "w") as f:
+                json.dump({"logs": [checkpoint.vkey(name, checkpoint.ED25519,
+                                                    crypto.public_from_secret(hashlib.sha256(b"b").digest()))],
+                           "algs": ["ed25519"]}, f)
         negative = os.path.join(TESTS, "golden", "negative")
         for bundle, t, integrity, said in (
                 (bad, self.trusts["witnessed"], "UNUSABLE BUNDLE", "cannot read bundle: the bundle file is damaged: "
@@ -744,6 +753,10 @@ class Agreement(SignerBundles):
                  "cannot read bundle: the bundle file is damaged: no manifest.json"),
                 (self.bundles["closed"], trust, "UNVERIFIABLE (the trust file can't be used)",
                  "pinned key 'x+00000000+AA==' is not a vkey: "),
+                (self.bundles["closed"], mispinned, "UNVERIFIABLE (the trust file can't be used)",
+                 f"pinned log key {stolen} is named after another key: "),
+                (self.bundles["closed"], registry, "UNVERIFIABLE (the trust file can't be used)",
+                 f"pinned log key {stolen}/registry/{'0f' * 16} is named after another key: "),
                 (self.bundles["closed"], missing, "UNVERIFIABLE (the trust file can't be used)",
                  f"{missing}: No such file or directory")):
             with self.subTest(os.path.basename(bundle), trust=os.path.basename(t)):
@@ -1412,6 +1425,22 @@ class Agreement(SignerBundles):
             json.dump({**t, "logs": t["logs"] + [checkpoint.vkey(checkpoint.parse_vkey(t["logs"][0])[0], *slh[2:])]}, f)
         self.assertEqual(self.agree(os.path.join(golden, "closed.tkb"), trust)[0], 1)
 
+    def test_a_hybrid_key_under_a_key_derived_origin_is_pinned_in_both(self):
+        """1.7.3: a default-origin log's SLH-DSA vkey carries the name derived from its Ed25519 key. Only an Ed25519
+        log key named after another key is refused, so both read this trust file and fail the note's missing line."""
+        with open(os.path.join(TESTS, "vectors", "slh_dsa_note.json"), encoding="utf-8") as f:
+            slh = checkpoint.parse_vkey(json.load(f)["slh_vkey"])
+        with open(self.trusts["witnessed"], encoding="utf-8") as f:
+            t = json.load(f)
+        name = checkpoint.parse_vkey(t["logs"][0])[0]
+        self.assertRegex(name, r"^tracekit\.local/k[0-9a-f]{64}$")   # this class's signer has the default origin
+        trust = os.path.join(self.d, f"trust-hybrid-{uuid.uuid4().hex}.json")
+        with open(trust, "w") as f:
+            json.dump({**t, "logs": t["logs"] + [checkpoint.vkey(name, *slh[2:])]}, f)
+        code, rep = self.agree(self.bundles["closed"], trust)
+        self.assertEqual(code, 1)
+        self.assertNotIn("trust config", rep.failures)
+
 
 try:   # the findings case builds on the replay tests, whose helpers need pytest (absent when the TypeScript suite runs this)
     import test_why_signed_replay  # noqa: E402
@@ -1529,9 +1558,7 @@ class AgreementScripts(unittest.TestCase):
         """agree() compared the Python CLI only when it printed a report: one that crashed on a forgery counted as
         agreeing, and in E22 as expected. The Python CLI's refusal of a file that is no v2 bundle is no crash."""
         _build()
-        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
-        import e22_verifier_agreement as e22
-        import verify_page_check as vpc
+        e22, vpc = import_e22("verify_page_check")
         sample = os.path.join(TS, "src", "verify", "sample")
         with tempfile.TemporaryDirectory() as d:
             crash = os.path.join(d, "python")
@@ -1561,8 +1588,7 @@ class AgreementScripts(unittest.TestCase):
     def test_e22_forges_each_bundles_other_signer_trust_from_its_own_origin(self):
         """E22's "another signer's trust config" forgery wrote one shared file, so every base was checked against a key
         under the last base's origin, not its own."""
-        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
-        import e22_verifier_agreement as e22
+        e22 = import_e22()
         bundles = {"demo run": os.path.join(ROOT, "tests", "golden", "v2", "closed.tkb"),
                    "hook": os.path.join(TS, "src", "verify", "sample", "sample.tkb")}
         with tempfile.TemporaryDirectory() as d:

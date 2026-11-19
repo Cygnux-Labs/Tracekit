@@ -11,7 +11,10 @@ decided in the signer, `await tk.apply_decisions(state)` approves or rejects the
 `Runner.run(agent, state, hooks=tk)`. The RunState JSON is not authenticated, so a dict run context carries the
 approval id only as a hint in `context["tracekit"]["approvals"]` (any other context carries none: the signer finds the
 approval by the call id): every call that is not denied runs only after the signer's `approval_consume` agrees, and the
-SDK does not call `needs_approval` again on resume.
+SDK does not call `needs_approval` again on resume. The signer's reason for each hold is also a hint, in
+`context["tracekit"]["reasons"]`, for the app to show the person (after a load, only what the saved state says). A call
+rejected or expired tells the model so and why, without the approval commands, which are the person's; after a resume
+in another process, the why is the held rules' reasons only.
 An approval with a T2 executor runs a FunctionTool with the arguments the consume returns.
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
@@ -44,13 +47,23 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations import version_check
+from tracekit.integrations.claude_code import _rules, stopped
 from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
 _EVENTS = ("decide", "complete", "model_event")
+_FRAMEWORK = version_check.framework("openai-agents")
 MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one call
+
+
+def _held(head, d, outcome):
+    """What the model reads for a call the signer asked about that did not run: `head` (the coding-agent hooks' BLOCKED
+    or NOT APPROVED), that nothing ran and why, in their stopped() form, without the approval commands, which are for
+    the person."""
+    return stopped(f"{head}, nothing ran{_rules(d['rule_ids'])}: {outcome}.", d.get("reason"))
 
 
 def _keep(d, k, v):
@@ -69,6 +82,7 @@ def _source(args):
 class TracekitAgents(RunHooks):
     def __init__(self, signer, run):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`)."""
+        version_check.warn_untested(*_FRAMEWORK)
         self.signer, self.run = signer, {"run_id": run["run_id"], "run_token": run["run_token"]}
         self.fail_modes = run.get("fail_modes")
         # lean: a new stream per instance, so each process that resumes the run opens one (the signer allows 64 per
@@ -108,7 +122,10 @@ class TracekitAgents(RunHooks):
         except (RPCError, SignerUnavailable):
             return False   # no approval to wait for: the gate's approval_consume refuses the call
         if isinstance(ctx.context, dict):   # an app's own context object (a dataclass, a pydantic model) gets no hint
-            ctx.context.setdefault("tracekit", {}).setdefault("approvals", {})[call_id] = apr["approval_id"]
+            tk = ctx.context.setdefault("tracekit", {})
+            tk.setdefault("approvals", {})[call_id] = apr["approval_id"]
+            if d.get("reason"):   # why the signer holds it, for the app to show the person
+                tk.setdefault("reasons", {})[call_id] = d["reason"]
         return True
 
     async def _gate(self, ctx, call_id, tool, args, can_wait=True):
@@ -125,7 +142,7 @@ class TracekitAgents(RunHooks):
         if d["decision"] == "deny":
             return BLOCKED + (refusal(d) or "deny")
         if d["decision"] == "ask" and not can_wait:
-            return BLOCKED + "approval required, and this tool cannot wait for one"
+            return _held("BLOCKED", d, "approval required, and this tool cannot wait for one")
         try:
             hint = ctx.context["tracekit"]["approvals"][call_id]
         except (AttributeError, KeyError, TypeError, IndexError):
@@ -243,21 +260,41 @@ class TracekitAgents(RunHooks):
     async def apply_decisions(self, state):
         """Approve or reject the paused calls in a RunState as the signer's approvers decided; returns the calls
         still waiting. Resuming with a call approved some other way runs nothing: the signer refuses it."""
-        listed = await self._call("approval_list", {"run_id": self.run["run_id"]})
-        decided = {}
-        for a in listed["approvals"]:
-            decided.setdefault(a["tool_call_id"], a["state"])
+        decided, req = {}, {"run_id": self.run["run_id"]}
+        while True:   # every page: a call approved after the first page's worth would stay waiting
+            listed = await self._call("approval_list", req)
+            for a in listed["approvals"]:
+                decided.setdefault(a["tool_call_id"], a)
+            if not listed["next_cursor"]:
+                break
+            req = {**req, "cursor": listed["next_cursor"]}
         waiting = []
         for item in state.get_interruptions():
             raw = item.raw_item
-            s = decided.get(raw.get("call_id") if isinstance(raw, dict) else getattr(raw, "call_id", None))
+            a = decided.get(raw.get("call_id") if isinstance(raw, dict) else getattr(raw, "call_id", None)) or {}
+            s = a.get("state")
             if s == "approved":
                 state.approve(item)
             elif s in ("rejected", "expired"):
-                state.reject(item, rejection_message=f"Tool call {s} in Tracekit")
+                d = {"rule_ids": a["rule_ids"], "reason": await self._reason(a["tool_call_id"])}
+                state.reject(item, rejection_message=_held("NOT APPROVED", d, s))
             else:
                 waiting.append(item)
         return waiting
+
+    async def _reason(self, call_id):
+        """Why the signer held the call: its decision's reason when this process asked; after a resume in another
+        process, the held rules' reasons only (call_state), without what decide joins in (a grant's, a constraint's,
+        who said no). None when there is none, or when the signer can't say (a warning)."""
+        # lean: call_state gives the rules' reasons, not the reason the decision recorded; that is a signer change
+        d = self._decided.get(call_id)
+        if d is not None:
+            return d.get("reason")
+        try:
+            return (await self._call("call_state", {**self.run, "tool_call_id": call_id})).get("reason")
+        except Exception as e:   # e.g. a SignerAPI of the app's own without call_state: the other calls are applied
+            warnings.warn(f"tracekit: why tool call {call_id} was held not read: {e}", stacklevel=2)
+            return None
 
     async def on_llm_end(self, context, agent, response):
         """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included, and

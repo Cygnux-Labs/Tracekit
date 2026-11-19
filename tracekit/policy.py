@@ -245,27 +245,35 @@ def _matches(r, tool, ti):
 
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
-    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's) is decided on each
-    one as its file_path: a rule that matches any of them applies."""
+    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's), commands (a `commands`
+    list, as Cline's run_commands or gptme's tmux batch, each run in its own shell) or URLs (`urls`) is decided on each
+    one as its file_path, command or url: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
-    paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
-    calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
+    field = FIELD_FOR_TOOL.get(tool)
+    each = ti.get({"file_path": "paths", "command": "commands", "url": "urls"}.get(field))
+    calls = [ti] + [{**ti, field: x} for x in each] if isinstance(each, list) else [ti]
+    # typed input is also decided as the line a shell would read it into (agent_hooks.typed_line)
+    if field == "command" and isinstance(ti.get("typed_line"), str):
+        calls.append(dict(ti, command=ti["typed_line"]))
+    # a Windows path's separator is a backslash: the file rules, written with `/`, read it with `/` too
+    ruled = calls + [dict(c, **{k: c[k].replace("\\", "/")}) for c in calls for k in ("file_path", "notebook_path")
+                     if isinstance(c.get(k), str) and "\\" in c[k]]
     # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
     # applies under either name, so one written for Bash and one for the tool itself both match
     names = [tool] + (["Bash"] if tool in ("Monitor", "PowerShell") else [])
     rule_ids, reasons, flags = [], [], []
     deny = ask = False
     for r in pol.get("deny", []):
-        if any(_matches(r, t, c) for c in calls for t in names):
+        if any(_matches(r, t, c) for c in ruled for t in names):
             deny = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("ask", []):
-        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in calls for t in names):
+        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in ruled for t in names):
             ask = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("flag", []):
-        if any(_matches(r, t, c) for c in calls for t in names):
+        if any(_matches(r, t, c) for c in ruled for t in names):
             if r["id"] not in rule_ids:
                 rule_ids.append(r["id"])
             flags.append(r.get("label", "flag"))

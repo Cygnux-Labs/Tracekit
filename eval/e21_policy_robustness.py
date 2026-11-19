@@ -18,9 +18,10 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     each decision over a fixed reference workload timed right after each try (`reference`: no Tracekit code), which a
     busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
-    runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
-    E17, blind) doesn't rise; p99_ref stays under its recorded cap on the same machine (re-measured once before
-    failing; another machine is not compared): 25% over the first run's, or a cap recorded again since, as the comment
+    runs: per profile, held-out recall doesn't drop, the false-positive rate of each benign set (held-out, sessions,
+    E17) doesn't rise, and neither does each blind pool's count of false positives, recorded at its first run; p99_ref
+    stays under its recorded cap on the same machine (re-measured once before failing; another machine is not
+    compared): 25% over the first run's, or 5% over the highest of four runs where --record wrote it, as the comment
     above the gates says. False positives over 2% (default) or 5% (strict) are reported as over target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
 import collections
@@ -164,15 +165,38 @@ def run(record=False):
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):
         out["latency"][f"dev/{e.engine.split('@')[0]}"] = latency(e, calls)
     old = None if record or not os.path.exists(RESULTS) else json.load(open(RESULTS, encoding="utf-8")).get("gates")
+    # a cap --record writes is 5% over the highest p99_ref of four runs (this one and three more), as each cap recorded
+    # again by hand was; one a run adds without it (a new profile or engine) is 25% over its one run
+    highest = {k: v["p99_ref"] for k, v in out["latency"].items()}
+    for key in highest if record else ():
+        prof, engine = key.split("/")
+        pol = pc.build(os.path.join(PACKS, PROFILES.get(prof, prof + ".yaml")))[0]
+        highest[key] = max([highest[key]] + [latency(Engine(pol, engine), calls)["p99_ref"] for _ in range(3)])
     # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
     # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
     # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
-    # Default's is still the first run's.
+    # Default's is still the first run's. dev/regex was re-recorded on 2026-11-11, the same way: 8.25, 5% over the
+    # highest of seven runs at #605's head (7.62 to 7.86), as the dev pack carries the server parts' rules since #605:
+    # a deliberate cost of about 5% against main on the fallback engine (the larger pack about 12% slower, the engine's
+    # own changes faster).
+    # The blind set is gated pool by pool (max_blind_fp), each by its own count of false positives: a pooled rate,
+    # recorded again when a pool joins (strict's rose to 14.17% with email_ops), let the older pools get worse.
+    # Every gate was recorded again (--record) on 2026-11-13 for the 1.7.0 release: default's amandeavor pool holds one
+    # more harmless call, `curl --dry-run …` (curl has no such option, and curl's reader holds a download whose options
+    # it doesn't know as unread), and the closer reading of shell lines, downloads and the environment costs about
+    # 13-20% at p99 against main measured beside it, once the decision path's own costs were cut with no decision
+    # changed and loop values and patterns were read (medians of three runs side by side, main 5dd9eba90d: default
+    # 6.22 / 7.35, strict 5.91 / 7.06, dev 6.47 / 7.49 on RE2 / regex; this code 7.58 / 8.35, 7.15 / 8.01, 7.83 /
+    # 8.62). Each max_p99_ref is 5% over the highest of that day's four runs (--record, 2026-11-14 for the loop and
+    # pattern readings, a held-out call more caught); the results file's latency rows are its first run's.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
-        "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p} for n, p in out["profiles"].items()},
-        "max_p99_ref": {k: round(v["p99_ref"] * 1.25, 2) for k, v in out["latency"].items()}})
+        "max_fp_rate": {n: {k: p[k]["fp_rate"] for k in SETS if k in p and k != "blind"}
+                        for n, p in out["profiles"].items()},
+        "max_blind_fp": {n: {pool: t["totals"].get("fp", 0) for pool, t in p["blind"]["pools"].items()}
+                         for n, p in out["profiles"].items() if "blind" in p},
+        "max_p99_ref": {k: round(v * (1.05 if record else 1.25), 2) for k, v in highest.items()}})
     out["over_target"] = [f"{n} {k} false positives {p[k]['fp_rate']:.2%} over the {TARGET_FP[n]:.0%} target"
                           for n, p in out["profiles"].items() for k in SETS
                           if k in p and p[k]["fp_rate"] > TARGET_FP[n]]
@@ -195,6 +219,10 @@ def gate(out, calls):
             cap = g["max_fp_rate"].get(name, {}).get(key)
             if key in p and cap is not None and p[key]["fp_rate"] > cap:
                 failed.append(f"{name} {key} false positives {p[key]['fp_rate']:.2%} > the first run's {cap:.2%}")
+        pools = p.get("blind", {}).get("pools", {})
+        for pool, cap in g.get("max_blind_fp", {}).get(name, {}).items():
+            if (fp := pools.get(pool, {}).get("totals", {}).get("fp", 0)) > cap:
+                failed.append(f"{name} blind pool {pool} false positives {fp} > the recorded {cap}")
         want = g["min_heldout_recall"].get(name)
         if want is not None and "heldout" in p and p["heldout"]["recall"] < want:
             failed.append(f"{name} held-out recall {p['heldout']['recall']:.2%} < {want:.2%}")

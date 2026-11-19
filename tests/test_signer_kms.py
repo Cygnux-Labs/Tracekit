@@ -72,6 +72,7 @@ class Cases:
         s = self.open(key)
         s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
         self.assertTrue(s.checkpoint())
+        self.assertEqual(s.origin, checkpoint.key_origin(key.public))   # a new log: named after its KMS key
         vkey = checkpoint.vkey(s.origin, checkpoint.ED25519, key.public)
         self.assertEqual(s.vkey, vkey)
         size, note = s.log.storage.checkpoint_latest()

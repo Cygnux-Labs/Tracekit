@@ -71,7 +71,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, grants, parsers
+from . import findings_text, findings_v2, grants, lessons, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -303,6 +303,7 @@ ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PAR
                 "TK-HOLD": "the run is held by an incident: every call is held for a person",
                 "TK-QUARANTINE": "the run is quarantined by an incident: its calls are refused",
                 "TK-ARGS-INVALID": "arguments the signer could not read, so it refused the call",
+                "TK-HOOK-BLOCKED": "the agent's Tracekit hook denies this call before the policy decides it",
                 "TK-A2A-NAME": policy_compile.ENGINE_REASONS["TK-A2A-NAME"]["reason"]}
 # a signed gap's kind in words (the kind itself stays on the row, for its tooltip and DETAIL)
 GAP_WORDS = {
@@ -484,10 +485,11 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "SessionStart"),
                      "source": f"{d.get('signer_isolation')} signer · {_who(d.get('identity'))}"
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
-        if t == "input.observed":
+        if t == "input.observed":   # with its kept content when it was read (wanted): what TIPS' lessons read
+            kept = self.content.pop((e["run_id"], e.get("run_seq")), None)
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
-                        source=d.get("source"))
+                        source=d.get("source"), **({"value": kept} if kept is not None else {}))
         if t == "content.accessed":   # the tape folds a row of reads by one reader for one purpose
             seqs = d.get("seqs") or []
             what = f"the kept content of {len(seqs)} record{'s' * (len(seqs) != 1)} of run {d.get('run_id')}"
@@ -768,7 +770,8 @@ class Translator(observe.Translator):
         """A model exchange: a person's prompt (UserPromptSubmit), what the model said (a model_turn whose blocks name
         their form), a response's tool uses (observe's model line); without retained content, what is committed."""
         body = self.content.pop((e["run_id"], e.get("run_seq")), None)
-        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []   # a transcript line has neither
+        # a transcript's thinking or text line has neither, unless it is its message's last: the tailer signs usage there
+        out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []
         x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
         for r in out:
             r["v2"] = x
@@ -846,7 +849,8 @@ def review(records, rep, verdict, outcomes=None):
     # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
     # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
     # held_calls has them
-    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    # dids: decision_id -> its call; ran: the calls a tool.result names
+    perms, calls, asked, cur, ids, dids, ran = {}, {}, set(), {}, {}, {}, set()
     folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
@@ -863,10 +867,12 @@ def review(records, rep, verdict, outcomes=None):
         elif t == "policy.decision" and e.get("run_seq") in folds:
             out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
+            dids[d.get("decision_id")] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key, seq = d.get("decision"), e.get("run_seq")
+            dids[d.get("decision_id")] = seq
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
             ids[seq] = d.get("tool_use_id")
             if key != "allow":
@@ -874,6 +880,8 @@ def review(records, rep, verdict, outcomes=None):
                     else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
                 asked.add(seq)
+        elif t == "tool.result" and d.get("decision_id") and d["decision_id"] in dids:
+            ran.add(dids[d["decision_id"]])
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -930,7 +938,10 @@ def review(records, rep, verdict, outcomes=None):
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
+    ended = {c: "not answered" if o == OPEN and (out["state"] == "final" or c in ran) else o for c, o in perms.items()}
+    # one the policy refused, or a hold nobody approved, whose result the signer signed under that decision: it ran
+    ended = {c: f"{o} · ran anyway" if c in ran and (o == "blocked" or c in asked and not o.startswith("approved"))
+             else o for c, o in ended.items()}
     out["permissions"] = collections.Counter(ended.values())
     held = {c: o for c, o in ended.items() if c in asked}
     out["holds"] = collections.Counter(held.values())
@@ -942,12 +953,26 @@ def review(records, rep, verdict, outcomes=None):
     return out
 
 
-def dev_content_source(purpose="tracekit view", connect=None, say=None):
+def wanted(r):
+    """Whether the viewer (and tracekit tips) reads record r's kept content: a decision's arguments, a model exchange's
+    content, and the trusted observes TIPS' lessons read: a prompt's typed part and the lessons a session was given
+    (the hooks send them), and a person's answer to a lesson (tracekit tips sends it)."""
+    e = r["event"]
+    d = e.get("data") or {}
+    return bool(e["type"] == "policy.decision" and d.get("args_commitment")
+                or e["type"] == "model.exchange" and d.get("content_digest")
+                or e["type"] == "input.observed" and d.get("trust") == "trusted" and (
+                    str(d.get("source")).endswith(lessons.PROMPT)
+                    or d.get("source") in (lessons.SOURCE, lessons.PERSON)))
+
+
+def dev_content_source(purpose="tracekit view", connect=None, say=None, chunk=None):
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
-    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
-    record naming `purpose`. `connect()`: the client (default Client(), which starts the dev signer when none runs). A
+    doesn't, and nothing is shown; content redaction changed is left out). Each read, of up to `chunk` records
+    (default vault_content's), is one signed content.accessed record naming `purpose`. `connect()`: the client
+    (default Client(), which starts the dev signer when none runs). A
     refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good; while the signer is down or
     speaks another protocol it reads nothing. `say(text)` is told once why calls show no arguments, for a refusal or a
     signer of another protocol (default: printed to stderr after `purpose`)."""
@@ -965,7 +990,8 @@ def dev_content_source(purpose="tracekit view", connect=None, say=None):
         try:
             state["client"] = state["client"] or (connect or Client)()
             # content redaction changed opens no commitment: not shown as what the record holds
-            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose)
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, purpose,
+                                                                          **({"chunk": chunk} if chunk else {}))
                    if opened}
         except RPCError as e:
             state["off"] = True
@@ -1298,9 +1324,7 @@ class StoreFeed:
                 oldest = next((x["tk_seq"] for x in self.records if x is not observe.RETRACTED
                                and x.get("tk_seq") is not None), None) if self.base else None
             hidden = not state["shown"] and oldest is not None and records[-1]["event"]["seq"] < oldest
-            want = [r for r in records[state["shown"]:] if self.content and not hidden and (
-                r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")
-                or r["event"]["type"] == "model.exchange" and (r["event"].get("data") or {}).get("content_digest"))]
+            want = [r for r in records[state["shown"]:] if self.content and not hidden and wanted(r)]
             from .why.signed import EvidenceAlert
             new = []
             if want:   # content_get per run and refresh, each a content.accessed record
@@ -1537,6 +1561,13 @@ class StoreFeed:
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
                     + [f"{again} run(s) being checked again: the store's bytes changed after the viewer read them"]
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
+
+
+def known_runs(feed):
+    """The ids of the store's client runs at the feed's latest refresh, None before its first (TIPS' lessons: a lesson
+    naming a run the store doesn't hold was written by hand)."""
+    with feed.lock:
+        return {run for _, run in feed.listed} or None
 
 
 def shown(feed):
@@ -1965,10 +1996,13 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
-            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them;
+                # Codex's sessions too in dev mode, from $CODEX_HOME (else ~/.codex) plus sessions
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
-                                      transcripts or (audit.default_root() if dev else None))
+                                      transcripts or (audit.default_root() if dev else None),
+                                      folder=lessons.Folder(os.path.join(cfg["data_dir"], "lessons")) if dev else None,
+                                      known=functools.partial(known_runs, feed), codex=audit.codex_root() if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1987,9 +2021,12 @@ def main(argv=None):
              f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
              f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
              else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
-    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
-        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
-              else "  tips: no Claude Code transcripts found", flush=True)
+    if getattr(feed, "tips", None):   # the folders each source reads, only when there is one
+        if feed.tips.root:
+            print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+                  else "  tips: no Claude Code transcripts found", flush=True)
+        if feed.tips.codex and os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
+            print(f"  tips: Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)

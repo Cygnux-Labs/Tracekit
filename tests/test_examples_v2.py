@@ -11,6 +11,8 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from e22_import import import_e22  # noqa: E402
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
          "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",),
@@ -68,6 +70,23 @@ class Examples(unittest.TestCase):
 
     def test_openai_agents(self):
         self.run_example("openai_agents")
+
+    def test_openai_agents_spending(self):
+        """docs/quickstarts/agent-spending.md: held, granted, two payments within the grant, one held past its total
+        and rejected, and the bundle verified with its grant line."""
+        if any(importlib.util.find_spec(m) is None for m in NEEDS["openai_agents"]):
+            self.skipTest("openai-agents not installed")
+        p = python(os.path.join(ROOT, "examples", "v2", "openai_agents", "spending.py"), "--scripted", env=self.env,
+                   cwd=self.dir)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        for said in ("90 of 120 USD left", "call-3: (pretend) paid 25.00 USD to acct-print-shop",
+                     "call-4: [tracekit] NOT APPROVED, nothing ran", "20 of 120 USD left",
+                     "[PASS] intent grants — 1 grant(s)",
+                     "Integrity: VERIFIED.", "100 of 120 USD used; this call needs 40 USD"):
+            self.assertIn(said, p.stdout)
+        # the hold itself says why, from the adapter, before the person answers
+        self.assertRegex(p.stdout, r"\ncall-4 send_payment .*: held, apr-\w+\n"
+                                   r"  grant g-\w+: 100 of 120 USD used; this call needs 40 USD")
 
     def test_claude_agent_sdk(self):
         self.run_example("claude_agent_sdk")
@@ -137,13 +156,25 @@ class DemoServer(unittest.TestCase):
     def test_e22_reads_the_kept_dir_from_its_line_alone(self):
         """Since the demo prints how to verify and view the kept files after "kept DIR" (#600), E22 read those lines as
         part of the dir, and the nightly run failed."""
-        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
-        import e22_verifier_agreement as e22
+        e22 = import_e22()
         with tempfile.TemporaryDirectory() as d:
             corpus = e22.Corpus(d)
             corpus.demo()
             self.assertEqual([(c["name"], os.path.isfile(c["bundle"])) for c in corpus.cases],
                              [("demo run", True), ("demo tampered", True)])
+
+
+class E22Import(unittest.TestCase):
+    def test_importing_e22_leaves_sys_path_alone(self):
+        """Importing the E22 script put examples/v2 at the front of sys.path, so ``find_spec("crewai")`` found the
+        example folder and the Examples tests ran without their dependencies (#721)."""
+        before = list(sys.path)
+        import_e22()
+        self.assertEqual(sys.path, before)
+        spec = importlib.util.find_spec("crewai")
+        self.assertFalse(spec is not None and spec.origin is None
+                         and any(os.path.join("examples", "v2") in p for p in spec.submodule_search_locations),
+                         "find_spec('crewai') points into examples/v2")
 
 
 if __name__ == "__main__":

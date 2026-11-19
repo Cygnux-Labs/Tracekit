@@ -793,6 +793,33 @@ class Permissions(unittest.TestCase):
                                   ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
         self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
 
+    def test_a_call_that_ran_anyway_says_so_on_the_tape_and_in_permissions(self):
+        """A result under a deny, or under a hold nobody approved (unanswered, rejected, expired), is a call that ran:
+        the rows still read BLOCKED, NOT ANSWERED or REJECTED."""
+        needs_node(self)
+        done = lambda seq, call, did: {"event": "PostToolUse", "session_id": "r1", "tool_use_id": call,  # noqa: E731
+                                       "tk_seq": seq, "v2": {"decision_id": did}}
+        recs = [hold(1, "c1", decision="deny", decision_id="d1"), done(2, "c1", "d1"),
+                hold(3, "c2", decision_id="d2"), done(4, "c2", "d2"), hold(5, "c3", decision="deny", decision_id="d3"),
+                hold(6, "c4", decision_id="d4"), answer(7, "c4", "reject", approver="uid:501"), done(8, "c4", "d4"),
+                hold(9, "c5", decision_id="d5"), answer(10, "c5", "expired"), done(11, "c5", "d5")]
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid",
+                                  "permOf", "lastAnswer", "ended", "callState", "didFact"], f"""
+            const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
+            const post = {{ tk_seq: 2 }}, ask = {{ v2: {{ decision: "ask" }}, approvals: [], flags: [], post }}, deny = {{ denied: true, flags: [], post }};
+            const rej = {{ ...ask, approvals: [{{ v2: {{ approval: "reject" }} }}] }};
+            process.stdout.write(JSON.stringify([permRows().map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), ...x.out]),
+                                                 callState(deny), callState(ask), callState(rej), didFact(deny)[1], didFact(ask)[1],
+                                                 didFact(rej)[1]]));"""))
+        self.assertEqual(out, [[["c5", "all ask expired", "s-err", "EXPIRED · RAN ANYWAY"],
+                                ["c4", "all ask rejected", "s-err", "REJECTED · RAN ANYWAY"],
+                                ["c3", "all deny", "s-deny", "BLOCKED"],
+                                ["c2", "all ask expired", "s-err", "NOT ANSWERED · RAN ANYWAY"],
+                                ["c1", "all deny", "s-err", "BLOCKED · RAN ANYWAY"]],
+                               ["s-err", "BLOCKED · RAN ANYWAY"], ["s-err", "NOT ANSWERED · RAN ANYWAY"],
+                               ["s-err", "REJECTED · RAN ANYWAY"], "blocked by the signer, and it ran anyway",
+                               "held, not approved, and it ran anyway", "held, not approved, and it ran anyway"])
+
     def test_a_use_refused_after_a_rejection_or_a_revoke_reads_as_the_run_review_says(self):
         """A use the signer refused because a person rejected the approval read rejected in the run review and the
         report, and REFUSED in PERMISSIONS; one of an approval a person revoked read rejected and REFUSED."""
@@ -2924,6 +2951,79 @@ class ApproveThenRetry(unittest.TestCase):
                                       ("approval.consumed", {"approval_id": "X"}), ("tool.result", "d2"),
                                       ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
                          ([[2, "ask", 6], [7, "deny", 8]], [("ask", "ok"), ("deny", "ok")]))
+
+    def test_an_approval_expiry_is_filed_with_the_held_call_not_a_later_decision_under_its_id(self):
+        """When an approved call did not run and the agent subsequently issued a different decision
+        under the same tool_use_id (e.g. deny or flag), the approval's expiry on run close must
+        attach to the held call, leaving the held call EXPIRED and the later call intact (BLOCKED
+        or RAN · FLAGGED)."""
+        needs_node(self)
+        top = {"run": "exp-after-deny", "tool_call_id": "c1", "attempt": 0, "tenant": "t", "log_id": "L"}
+        recs = [
+            v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top),
+            v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                         "decision_id": "d2", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, **top),
+            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve", "approver": "u1"}, **top),
+            v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "deny",
+                                         "decision_id": "d5", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(6, "approval.expired", {"approval_id": "X"}, **top),
+            v2rec(7, "run.final", {"head_run_seq": 7}, **top),
+        ]
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": "exp-after-deny", "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        out = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                  "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                  "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify({{
+                calls: S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                perm: permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]]),
+            }}));"""))
+        self.assertEqual(out["calls"], [["ask", "EXPIRED"], ["deny", "BLOCKED"]])
+        self.assertEqual(out["perm"], [["deny", "BLOCKED"], ["ask", "EXPIRED"]])
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(dict(view.review(recs, rep, "verified")["permissions"]), {"expired": 1, "blocked": 1})
+
+        recs_flag = [
+            v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top),
+            v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                         "decision_id": "d2", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, **top),
+            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve", "approver": "u1"}, **top),
+            v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "flag",
+                                         "decision_id": "d5", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(6, "tool.result", {"tool_use_id": "c1", "decision_id": "d5", "ok": True, "output": {"size": 1}}, **top),
+            v2rec(7, "approval.expired", {"approval_id": "X"}, **top),
+            v2rec(8, "run.final", {"head_run_seq": 8}, **top),
+        ]
+        rows_flag = []
+        for r in recs_flag:
+            rows_flag += [{**x, "ts": r["event"]["run_seq"], "session_id": "exp-after-flag", "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        out_flag = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                       "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                       "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows_flag)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify({{
+                calls: S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                perm: permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]]),
+            }}));"""))
+        self.assertEqual(out_flag["calls"], [["ask", "EXPIRED"], ["flag", "⚑ OK"]])
+        self.assertEqual(out_flag["perm"], [["flag", "RAN · FLAGGED"], ["ask", "EXPIRED"]])
+        self.assertEqual(dict(view.review(recs_flag, rep, "verified")["permissions"]), {"expired": 1, "flagged": 1})
 
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an

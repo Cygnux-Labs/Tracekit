@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.10-v2-77'
+version: '2026.11-v2-99'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -33,6 +33,7 @@ tools:
   Read: fs
   Grep: fs
   Glob: fs
+  LibraryUpload: fs          # CodeBuddy Code: sends the local file at its path to its library (TK-D022, TK-F024)
   WebFetch: http
   WebSearch: http
   'srt:request': http        # a request srt-proxy asks about (tracekit srt-decider)
@@ -63,8 +64,9 @@ deny:
   - id: TK-D003
     class: shell
     # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
-    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
-    # git --work-tree dir push, an empty value too: git --namespace '' push); -f may sit in a short-option cluster
+    # a commit message naming one is not the push's arguments. `git send-pack` and `hub push` (hub runs git) push as
+    # `git push` does. Global options may come before `push` (git -C dir push, git --work-tree dir push, an empty
+    # value too: git --namespace '' push); -f may sit in a short-option cluster
     # before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be abbreviated (`--m`: push's only option
     # starting with m); a `+` refspec forces too; so does send-pack's (git's plumbing push). A config that forces a push
     # (a mirror remote, a + push refspec) and an alias to push are read as the push they make (policy2/shell.py), and
@@ -72,7 +74,7 @@ deny:
     # field or body of any value but a literal false or 0 (a PATCH without one only fast-forwards, as a plain push
     # does; one whose body the parser can't read, from a file or a variable, is held as TK-SHELL-PARSE).
     # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
-    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack)\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
+    pattern: '^(?:git|hub) (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack)\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
@@ -94,6 +96,24 @@ deny:
     reason: recursive delete of root or home
     remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
+  - id: TK-D014
+    class: shell
+    # a system folder itself: /etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt, /srv, macOS's /System,
+    # /Library, /Applications and /private/etc or /private/var, and C:\Windows (C:/, /c/, /mnt/c/, /cygdrive/c/), in any
+    # case (macOS's and Windows' file systems ignore it), under a root spelled with extra slashes, `/./` or one
+    # `<folder>/../` step (/usr/../etc), with a trailing / or /. or a pattern holding a `*` (`/etc/*`, `/etc/.*`,
+    # `/etc/*/*`); a folder inside one (/var/tmp/x, /usr/local) isn't one. Denied: rm -r of one (the option before or
+    # after it among up to 16 other words, or before it among any number of plain words, as TK-D004 reads a home);
+    # find with -delete on one with no filter but depth and type or one that matches every file, as TK-D004 reads a
+    # home, so `find /var -name '*.log' -delete` isn't; git clean in one (-C, --work-tree) or of one; chmod -R or chown
+    # -R of one or of /. Each command on its own (sudo, env and sh -c read through), anchored, so a message or a search
+    # that names `rm -rf /etc` isn't one. The ending after a folder and the plain words are each one class run, and the
+    # runs before a name are lazy: the fallback engine backs off a repeated group, or a greedy run before a list of
+    # names, in time that grows with the square of its length
+    pattern: '^rm(( [^ ]+){0,16}?| [-A-QS-Za-qs-z ]*?) (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)(( [^ ]+){0,16}?| [-A-Za-z ]*?) (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( |$)|^rm( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ |-i?(name|path|wholename) \* |-i?regex \.\* |-size \+0[bckwMG]? |(!|-not) -i?(name|path|wholename|regex) [^ ]+ )*-delete( |$)|^git( [^ ]+){0,8}? (-C |--work-tree[= ])(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,8}? clean( |$)|^git( [^ ]+){0,8}? clean( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|[/.?]*\*[/.?*]*)?|(/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( |$)'
+    reason: recursive delete or permission change of a system folder
+    remedy: Delete or change only the project's own paths, named in full; a person changes system folders themselves.
+    rationale: A system folder holds the operating system and its configuration; deleting it or locking it breaks the machine, as deleting root does.
   - id: TK-D010
     class: shell
     field: target
@@ -106,6 +126,21 @@ deny:
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
+  - id: TK-D023
+    class: shell
+    field: effects
+    # every file a command writes (engine._effects: redirections, tee, cp, mv, install, dd of=, truncate, sed -i,
+    # perl -i, awk's print >, find -exec, and each name a pattern there may stand for), as TK-D005 reads a path, so an
+    # in-place editor reaches no credentials file TK-D010's list of writers leaves out: any file in or under .ssh/ or
+    # .aws/ (the folder itself too, which an archive or a folder copy writes into), as TK-D005 holds a file tool's. An
+    # .env template is exempt, as in TK-D005; a host key appended to known_hosts by the shell (`ssh-keyscan >>`,
+    # `tee -a`, which CI setups run; a Windows spelling too) is an APPEND_TARGET, which this rule doesn't read, where a
+    # copy, link, in-place edit or plain write of it is denied
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:[^/]*?(?:\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|credentials|\.(?:aws|ssh)(?:/[\w\W]*)?)$'
+    unless: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt]))$'
+    reason: writing to a credentials file from the shell
+    remedy: Write a template (.env.example) with the file-editing tool and let a person fill in credentials; remove a stale host key with ssh-keygen -R HOST, add one with ssh-keyscan HOST >> ~/.ssh/known_hosts.
+    rationale: TK-D010 for every way the shell writes a file, so sed -i or truncate is no second route to what TK-D005 blocks.
   - id: TK-D011
     class: shell
     field: line
@@ -114,7 +149,7 @@ deny:
     # scp, rsync, curl or wget naming the .ssh or .aws folder itself (scp -r ~/.ssh), a file in .ssh or a private key
     # (id_rsa, id_ed25519, id_rsa_work): a word that ends where a word does, and not in .pub, so a public key
     # (id_rsa.pub, id_ed25519-cert.pub) may go
-    pattern: '\b(cat|tar|zip|base64|gzip|xxd)\b[^\n]*((\.ssh([*?\[][^\s''";|&)<>]*|/([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)?|id_(rsa|ed25519|ecdsa|dsa)([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)([\s''";&)<>][^\n]*)?|(\.aws|\.netrc|/etc/shadow|/etc/passwd|\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)[^\n]*)\|\s*(curl|nc|ncat|socat|wget|gh\s+gist\s+create)\b|\b(scp|rsync|curl|wget|gh\s+gist\s+create)\b[^\n]*(\.ssh([*?\[][^\s''";|&)<>]*|/([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)?([\s''";|&)<>]|$)|id_(rsa|ed25519|ecdsa|dsa)([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?([\s''";|&)<>]|$)|\.aws/?([\s''";|&)<>]|$)|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))|\b(scp|rsync)\s[^\n]*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)\b[^\n]*?\s\S*:|\b(curl|wget)\s[^\n]*?(@|-T ?|--upload-file[ =]|--(post|body)-file[ =])\S*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)'
+    pattern: '\b(cat|tar|zip|base64|gzip|xxd)\b[^\n]*((\.ssh([*?\[][^\s''";|&)<>]*|/([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)?|id_(rsa|ed25519|ecdsa|dsa)([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)([\s''";&)<>][^\n]*)?|(\.aws|\.netrc|/etc/shadow|/proc/[^\s/]+/environ\b|/etc/passwd|\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)[^\n]*)\|\s*(curl|nc|ncat|socat|wget|gh\s+gist\s+create)\b|\b(scp|rsync|curl|wget|gh\s+gist\s+create)\b[^\n]*(\.ssh([*?\[][^\s''";|&)<>]*|/([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?)?([\s''";|&)<>]|$)|id_(rsa|ed25519|ecdsa|dsa)([^\s''";|&)<>]*([^\s''";|&)<>b]|[^\s''";|&)<>u]b|[^\s''";|&)<>p]ub|[^\s''";|&)<>.]pub)|b|ub|pub)?([\s''";|&)<>]|$)|\.aws/?([\s''";|&)<>]|$)|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))|\b(scp|rsync)\s[^\n]*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)\b[^\n]*?\s\S*:|\b(curl|wget)\s[^\n]*?(@|-T ?|--upload-file[ =]|--(post|body)-file[ =])\S*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)'
     reason: sending credential files off the machine
     remedy: Keep keys and cloud credentials on the machine; a person shares access through the deployment's secret store.
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
@@ -122,11 +157,40 @@ deny:
     class: shell
     field: line
     # .env in any case (macOS and Windows ignore it); a read of it piped into an upload or a new gist, sent as a
-    # network command's file or body (`$(cat .env)` too), or a gist of it
-    pattern: '\b(cat|base64|xxd|gzip)\s[^|\n]*?\.[Ee][Nn][Vv]\b[^\n]*\|\s*(curl|wget|nc|ncat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.[Ee][Nn][Vv]\b|--data[-a-z]*[ =]@?\S*\.[Ee][Nn][Vv]\b|--upload-file\s+\S*\.[Ee][Nn][Vv]\b|--(post|body)-file[ =]\S*\.[Ee][Nn][Vv]\b|\s\S*\.[Ee][Nn][Vv]\s+\S+:|<\s*\S*\.[Ee][Nn][Vv]\b|\$\((cat\s|base64\s|<)[^)\n]*?\.[Ee][Nn][Vv]\b)|\bgh\s+gist\s+(create|new)\b[^\n]*?\s\S*\.[Ee][Nn][Vv]\b'
-    reason: uploading a secrets file
+    # network command's file or body (`$(cat .env)` too), or a gist of it; the whole environment (env, printenv or
+    # export -p where a command starts, or after a wrapper such as command, nohup or timeout, with flags but no
+    # command) piped into an upload in the same pipeline, alone or through up to two stages that pass its text on (an
+    # encoder, a compressor, a filter; not `wc`), or `$(env)` in a network command's arguments
+    pattern: '(^|[;&|(!]|\b(then|do|else)\s)\s*([A-Za-z_][A-Za-z0-9_]*=[^\s;&|]*\s+)?((command|nohup|time|nice|timeout|sudo|doas|setsid|stdbuf|exec|builtin|busybox)(\s+(-[^\s;&|]*|[0-9][^\s;&|]*))?(\s+(-[^\s;&|]*|[0-9][^\s;&|]*))?\s+)?([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?\s*(\|\s*([^\s|;&(){}`]{0,256}/)?(base64|gzip|bzip2|xz|zstd|xxd|od|openssl|cat|tee|sort|uniq|grep|egrep|head|tail|sed|awk|tr|cut)\b[^\n;&|]*)?(\|\s*([^\s|;&(){}`]{0,256}/)?(base64|gzip|bzip2|xz|zstd|xxd|od|openssl|cat|tee|sort|uniq|grep|egrep|head|tail|sed|awk|tr|cut)\b[^\n;&|]*)?\|\s*(command\s+|[^\s|;&(){}`]{0,256}/)?(curl|wget|nc|ncat|netcat|socat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)\s[^\n;&|]*\$\(\s*([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)\s*\)|\b(cat|base64|xxd|gzip)\s[^|\n]*?\.[Ee][Nn][Vv]\b[^\n]*\|\s*(curl|wget|nc|ncat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.[Ee][Nn][Vv]\b|--data[-a-z]*[ =]@?\S*\.[Ee][Nn][Vv]\b|--upload-file\s+\S*\.[Ee][Nn][Vv]\b|--(post|body)-file[ =]\S*\.[Ee][Nn][Vv]\b|\s\S*\.[Ee][Nn][Vv]\s+\S+:|<\s*\S*\.[Ee][Nn][Vv]\b|\$\((cat\s|base64\s|<)[^)\n]*?\.[Ee][Nn][Vv]\b)|\bgh\s+gist\s+(create|new)\b[^\n]*?\s\S*\.[Ee][Nn][Vv]\b'
+    reason: uploading a secrets file or the environment
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
+  - id: TK-D015
+    class: shell
+    field: environment
+    # the whole environment (env or printenv alone, export, set, declare -p or typeset -p with no name, a read of a
+    # process's environ file) printed into a program that sends it off the machine (curl, wget, nc, ssh, scp, rsync,
+    # a gist): a later stage of its pipeline, or that program's own words or herestring (`$(env)`, `<(env)`), also
+    # from a block or subshell (engine._environment_sent); not through a stage that only counts or hashes it
+    pattern: '^SENT:'
+    reason: uploading the whole environment
+    remedy: Send only the values the request needs; a person shares secrets through the deployment's secret store.
+    rationale: The environment holds the session's tokens and keys; sending all of it off the machine is exfiltration.
+  - id: TK-D022
+    class: fs
+    tool: LibraryUpload
+    field: path
+    # an upload tool's file (CodeBuddy Code's LibraryUpload sends the local file at its path to its library), each
+    # path form as the file rules read it: the files TK-D006 and TK-D011 deny sending from the shell. A .env file (any
+    # name with `.env` as a word, as TK-D006 reads it), the .ssh folder or a file in it, a private key (id_rsa,
+    # id_ed25519, id_ecdsa, id_dsa, and a name going on from one: id_rsa_work), the .aws folder or its credentials,
+    # .netrc, and a cluster, Docker, gcloud or Git credential file; a public key (.pub) may go, as there. A key's file
+    # name is read up to NAME_MAX (255) after its id_<type>, which keeps the fallback engine linear
+    pattern: '\.env\b|(^|/)\.ssh(/|$)|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,255}$|(^|/)\.aws/?$|\.aws/credentials|\.netrc|(^|/)\.kube/config$|(^|/)\.docker/config\.json$|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|(^|/)\.git-credentials$'
+    unless: '(^|/)\.ssh/[^/]{0,255}\.pub$|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,255}\.pub$'
+    reason: uploading a secrets file
+    remedy: Upload only the files the task needs, never a credentials file; a person shares secrets through the deployment's secret store.
+    rationale: The upload tool twin of TK-D006 and TK-D011. A file an upload tool sends off the machine is as gone as one curl or scp sends.
   - id: TK-D008
     class: shell
     field: effects
@@ -206,7 +270,9 @@ deny:
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
     # `eval` and a path to the binary resolved): `tracekit approve|reject`, `tracekit approvals [OPTIONS]
-    # approve|reject` (with --grant too) and every `tracekit grant` whatever follows it: a grant releases calls like an
+    # approve|reject` (with --grant too), a person's answer to a lesson (`tracekit tips approve|retire|restore|add`, its
+    # first word: `tracekit tips` reads the action nowhere else; a lesson changes what every later session reads) and
+    # every `tracekit grant` whatever follows it: a grant releases calls like an
     # approval, and an agent needs no grant command (listing or revoking included), so its options and action aren't
     # read at all and no spelling of them (an argparse prefix of --signer, a repeated or spaced value, an action from
     # stdin or computed) gets past; also as `python -m tracekit[.cli]` (python,
@@ -242,17 +308,17 @@ deny:
     # "${S:-/tmp/s}" list`) is denied, and so is a variable as the action where the line also uses it unknown (`for c
     # in a b; do tracekit $c; done; echo $c`: the parser's unresolved names are the line's); use a literal path, or a
     # person runs it
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant)( |$)|(approvals( --[\w\W]*?)? )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals )?\$\x7f( |$))'
-    reason: answering an approval or issuing a grant from the agent's session
-    remedy: Leave answering held calls and granting calls to a person at their own terminal; `tracekit approvals list` and `show` stay allowed.
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant|tips (approve|retire|restore|add))( |$)|(approvals( --[\w\W]*?)? |tips )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals |tips )?\$\x7f( |$))'
+    reason: answering an approval, a lesson or a grant from the agent's session
+    remedy: Leave answering held calls, lessons and granting calls to a person at their own terminal; `tracekit approvals list` and `show`, `tracekit tips` and `tracekit tips --for-agent` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
   - id: TK-D020
     class: shell
     field: argv
     # security's global options (-q, -v, -p prompt …) may come before its command; `security export` exports every
     # item but with -t certs or pubKeys (unless), which hold no secret; `pass grep` and `gopass grep` decrypt every
-    # entry
-    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b'
+    # entry; keepassxc-cli export dumps the whole database
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+export\b'
     unless: '^security( -[hilqv]+| -p [^-\s]\S*)* export( [^\n]*)? -t ?(certs|pubKeys)( |$)'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
@@ -268,6 +334,25 @@ deny:
     rationale: A URL bypasses the configured package source and can install unreviewed code.
 
 ask:
+  - id: TK-A063
+    tool: '^ipython$'
+    pattern: '^'
+    reason: running Python in gptme's IPython kernel
+    remedy: Have a person review and approve the Python code.
+    rationale: Shell rules cannot determine the effects of code executed in the Python kernel.
+  - id: TK-A064
+    tool: '^Bash$'
+    field: gptme_tmux_input
+    pattern: '^true$'
+    reason: sending keys to an existing gptme tmux pane
+    remedy: Have a person review the input, or start a new session with the complete command.
+    rationale: Existing input and the program in the pane can change what the keys do.
+  - id: TK-A065
+    tool: '^mcp__gptme__load$'
+    pattern: '^'
+    reason: loading an MCP server through gptme
+    remedy: Have a person review and approve the server configuration.
+    rationale: Loading a server can start a subprocess or connect to a remote server.
   - id: TK-A046
     class: shell
     field: code
@@ -284,31 +369,94 @@ ask:
     class: shell
     # each command's argv: removing or stopping Tracekit as a person would, `tracekit uninstall`, `down` or `up
     # --replace`, which stops the running signer first (also as `python -m tracekit`, as TK-D012 reads it), uninstalling
-    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's uninstall or
-    # disable, and a user service's stop, after any number of options. Held, not denied, so a person who means it
-    # approves it; TK-D007 denies touching the signer's files or process directly
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
+    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's or Hermes
+    # Agent plugin's uninstall or disable, and a user service's stop, after any number of options. A plugin is named in
+    # any case, by a path (`./tracekit`, `tracekit/`) or with a version, or all of them (`--all`, `-a`). Hermes's also
+    # as hermes-agent or `python -m hermes_cli[.main]`, and with the plugin's name built at run time (`$(echo
+    # tracekit)`) or none (`echo tracekit | xargs hermes plugins disable` gives it from xargs's input). Held, not denied, so a
+    # person who means it approves it; TK-D007 denies touching the signer's files or process directly
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +([^- ][^ ]* +)?)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? (([^ ]*/)?[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt](@[^ ]*)?/*|--all|-[A-Za-z]*a[A-Za-z]*)( |$)|^(hermes|hermes-agent|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?hermes_cli(\.main)?) (-[^ ]+ +([^- ][^ ]* +)?)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)(( [\w\W]*?)? ([^ ]*/)?[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt](@[^ ]*)?/*( |$)|( [\w\W]*?)? ([^ ]*[$`][^ ]*|--all|-[A-Za-z]*a[A-Za-z]*)( |$)| *$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
+  - id: TK-A069
+    class: shell
+    # each command's argv: a harness's own command that changes its settings, as TK-F015 holds a write to its files:
+    # Hermes Agent's `config set`, `unset`, `edit` or `migrate` (approvals.mode, plugins.disabled, its hook timeout)
+    # and `profile use`, which makes another profile's settings the default, after any number of options; as hermes,
+    # hermes-agent or `python -m hermes_cli[.main]`, as TK-A054 reads them
+    pattern: '^(hermes|hermes-agent|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?hermes_cli(\.main)?) (-[^ ]+ +([^- ][^ ]* +)?)*(config (-[^ ]+ +)*(set|unset|edit|migrate)|profile (-[^ ]+ +)*use)( |$)'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: Hermes's settings decide which plugins run, Tracekit's among them, and what Hermes asks a person first.
+  - id: TK-A070
+    class: shell
+    field: harness_launch
+    # an agent harness's CLI (also through npx, bunx, pnpx, pnpm dlx, a JavaScript runtime on its package's script or
+    # its bin link, node_modules/.bin/claude, or `"$(which claude)"`, a program word `"$(command -v claude)"`, python
+    # -m hermes_cli or gptme, hermes-agent) started with settings the line chooses (engine._harness_launches): HOME,
+    # XDG_CONFIG_HOME, Windows' APPDATA or LOCALAPPDATA, or the harness's own home, config or data variable set or
+    # unset in any way bash does (a loop's too), env -i or -u of them, a settings option (claude --settings,
+    # --setting-sources or --bare, --config,
+    # copilot's --config-dir, --profile but gptme's, codex -p, hermes -p, codex -c with its hooks, notify, sandbox,
+    # approvals or profiles in its value, and
+    # codex --disable of such a feature), words xargs gives it, or a word set at run time; and codex's `features
+    # disable` of such a feature. Such a run reads none of the person's settings, and so runs none of the hooks that
+    # would record it. A model, effort or MCP option (-c model_reasoning_effort=high, --mcp-config) and AWS_PROFILE,
+    # KUBECONFIG or JAVA_HOME change none of them, and a harness started as the person set it up runs those hooks: neither is held
+    pattern: '^LAUNCH:'
+    label: harness_config
+    reason: starting an agent harness with settings the agent chose
+    remedy: Have a person approve the held call, or start the harness with the person's own settings, which record its calls.
+    rationale: A nested agent run under another home or settings skips Tracekit's hooks, so none of its calls would be decided or recorded.
+  - id: TK-A084
+    class: shell
+    field: gh_runs
+    # gh running what its own commands don't say (engine._gh_runs): an alias set or imported (a --shell one runs a
+    # shell; a plain one any gh command, `pr merge --admin` or an API write), an extension installed, upgraded, browsed
+    # for or run by `gh extension exec`, a command that is none of gh's own (an alias's or an extension's: `gh m 1`,
+    # `gh x`), and the editor, pager or browser `gh config set` names. Held, as the alias's or extension's own words
+    # aren't on the line that runs them
+    pattern: '^GH:'
+    reason: a gh alias or extension, which runs what its definition says
+    remedy: Run the gh command or program itself, or have a person approve the held call.
+    rationale: An alias or extension runs words the call doesn't show (an admin merge, an API write, any program), so the policy can't decide what it does.
+  - id: TK-A057
+    class: shell
+    # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
+    # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings)
+    # lean: `tracekit init --help` is held too: the joined argv can't tell a last word `--help` from a quoted value
+    # ending in ` --help`, with which init still runs; exempt it if the engine ever matches argv word by word
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
+    reason: running Tracekit's setup from the agent's session
+    remedy: Have a person run tracekit init from their own terminal; it changes Tracekit's hooks.
+    rationale: Init rewrites the hooks that record the agent; a person confirms it, as for removing Tracekit (TK-A054).
   - id: TK-A020
     class: fs
     tool: Read|Grep
     field: path
     # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
-    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)\.config/opera/([^/]+/)?(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/com\.operasoftware\.opera(gx)?/([^/]+/)?(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (gx )?stable/([^/]+/)?(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
   - id: TK-A021
     class: shell
     field: target
-    # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
-    # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's); ssh-add's -L anywhere in a
-    # cluster (-qL, -Lq). Paths in lower case: the target is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
-    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
-    reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
+    # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does (gopass,
+    # the compatible rewrite, reads the same stores), so every pass or gopass command but those that don't decrypt an
+    # entry (`unless`; grep is TK-D020's). `pass find` only lists names; gopass's find/search showed the secret itself
+    # on a match until gopass stopped it, so they stay held there. ssh-add's -L anywhere in a cluster (-qL, -Lq).
+    # keepassxc-cli show, clip and attachment-export extract passwords or key files; hold them for approval.
+    # `gh auth token` prints the stored GitHub token outright; `gh auth status` masks it unless `-t`/`--show-token`
+    # (a short cluster with t too, -ht), so only a status carrying one is held (`--help` prints help, not a token:
+    # `unless`). `git credential fill` and each helper's own `get` print the stored username and password
+    # (approve/store and reject/erase don't read them, so they aren't held).
+    # Paths in lower case: the target is also matched casefolded
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b))|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
+    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)|^gopass\s+(init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)(\s|$)|^gh\s+auth\s+(token|status)\b[\w\W]*?--help(\s|$)'
+    reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
     rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
@@ -451,16 +599,37 @@ ask:
     # only prints SQL) and text that names a command aren't held, nor is a command that only asks for help: --help or -h
     # as the last word after the program and at most two short words
     pattern: '^(?:(?:(?:npx|bunx|bun x|pnpm dlx|pnpm exec|pnpm|yarn dlx|yarn|npm exec) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?(?:prisma(?:@[^ ]+)? (?:migrate reset|db push(?: [^ ]+){0,8}? --force-reset)|sequelize(?:-cli)?(?:@[^ ]+)? db:drop|supabase(?:@[^ ]+)? db reset|typeorm(?:-ts-node-(?:commonjs|esm))?(?:@[^ ]+)? schema:drop)|(?:bundle exec (?:[^ ]*/)?)?(?:rails|rake) db:(?:drop|reset|purge|truncate_all|migrate:reset|seed:replant)(?::\w+)*|(?:(?:python[\d.]*|py) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:(?:[^ ]*/)?manage\.py|-m django)|django-admin|manage\.py) flush|(?:(?:php[\d.]*|sail) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?artisan (?:migrate:(?:fresh|reset|refresh)|db:wipe)|mix ecto\.(?:drop|reset)|dotnet(?: ef|-ef) database drop)(?: |$)'
-    unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} (--help|-h)$'
+    unless: '^[a-z0-9-]{1,16}( [a-z:]{1,32}){0,2} (--help|-h)$'
     reason: dropping or resetting a database through a framework command
     remedy: Wait for a person to approve the held call, or reset a disposable copy of the database and leave the real one.
     rationale: A framework's reset or drop command wipes the database its configuration points at, which may not be a throwaway one; a person confirms it.
+  - id: TK-A067
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a .pth file written directly into a site-packages or dist-packages folder: Python's site module reads
+    # every one at each interpreter start and runs its import lines, so it isn't a model weights file
+    pattern: '(?:^|[/\\])(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
+  - id: TK-A068
+    class: shell
+    field: effects
+    # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, directly in a
+    # site-packages or dist-packages folder and ending in .pth; TK-A067's shell twin
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
   - id: TK-A058
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
     pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is TK-A067's, not a weights file
+    unless: '(?:^|[/\\])(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
@@ -470,6 +639,8 @@ ask:
     # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, ending in model weights
     # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
     pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is TK-A068's, not a weights file
+    unless: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
@@ -482,6 +653,48 @@ ask:
     reason: publishing model weights to a model hub
     remedy: Have a person approve the held call, or work with local models and leave the hub''s copy as it is.
     rationale: Publishing model weights to a model hub changes what every user of that model gets; a person confirms it.
+  - id: TK-A071
+    class: shell
+    field: argv
+    # each command's argv: curl, wget, socat, nc, ncat or netcat, then any words, one that names docker.sock,
+    # docker.raw.sock, podman.sock, podman-machine-<name>-api.sock or podman/<name>-api.sock (`--unix-socket
+    # /var/run/docker.sock`, `UNIX-CONNECT:/run/podman/podman.sock`, `nc -U`, an http+unix:// URL). Lazy, so the
+    # fallback engine stays linear. `ls -la /var/run/docker.sock`, `docker ps` and text that names the socket aren't held
+    pattern: '^(?:curl|wget|socat|ncat|nc|netcat) [^\n]*?(?:docker(?:\.raw)?\.sock|podman\.sock|podman(?:-machine-|/|%2[Ff])[A-Za-z0-9_.-]{1,100}-api\.sock)(?:[^A-Za-z0-9_]|$)'
+    reason: a raw request through the Docker or Podman socket
+    remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
+    rationale: A request to the container socket skips what the docker command shows a person, and can start a privileged container that mounts the host; a person confirms it.
+  - id: TK-A072
+    class: shell
+    field: line
+    # DOCKER_HOST, or Podman's CONTAINER_HOST, set to a unix:// socket where a command starts (also after { then do
+    # else, up to eight assignments, options, numbers, env, nohup or nice (each also by a path), command, time or !
+    # words) for a program that isn't docker, podman, docker-compose, podman-compose or podman-remote (by a path too,
+    # or .exe), which talks to the daemon directly; `export DOCKER_HOST=…` and a grep for it aren't held
+    pattern: '(?:^|[;&|({]\s*|\b(?:then|do|else)\s+)(?:(?:env|command|time|nohup|nice|!|\+?[0-9]+|(?:[^\s/;&|()=]*/){1,8}(?:env|nohup|nice)|-[^\s;&|()]*|[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*)\s+){0,8}?(?:DOCKER|CONTAINER)_HOST=unix://(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*\s+(?:(?:[^\s/;&|()]*/){9}\S*|(?:[^\s/;&|()]*/){0,8}(?:[^\s/;&|()dp][^\s/]*|d(?:[^\s/o][^\s/]*|o(?:[^\s/c][^\s/]*|c(?:[^\s/k][^\s/]*|k(?:[^\s/e][^\s/]*|e(?:[^\s/r][^\s/]*|r(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?|p(?:[^\s/o][^\s/]*|o(?:[^\s/d][^\s/]*|d(?:[^\s/m][^\s/]*|m(?:[^\s/a][^\s/]*|a(?:[^\s/n][^\s/]*|n(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/cr][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?|r(?:[^\s/e][^\s/]*|e(?:[^\s/m][^\s/]*|m(?:[^\s/o][^\s/]*|o(?:[^\s/t][^\s/]*|t(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?))(?:\s|$)'
+    reason: a program pointed at the Docker or Podman socket through DOCKER_HOST or CONTAINER_HOST
+    remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
+    rationale: A program given the container socket can start a privileged container that mounts the host without the docker command showing what it does; a person confirms it.
+  - id: TK-A073
+    class: shell
+    field: effects
+    # each file a command writes (redirections, tee …), as TK-A059 reads them, in lower case: a file named
+    # release_agent or notify_on_release, wherever the cgroup is mounted (/sys/fs/cgroup/, or the /tmp/cgrp an
+    # escape mounts); a cgroup's release_agent runs a program as root on the host. One lazy path prefix keeps the
+    # fallback engine linear. Reading either file is allowed
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)$'
+    reason: writing a cgroup's release_agent or notify_on_release
+    remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
+    rationale: A cgroup's release_agent makes the host run a program when the cgroup empties, which breaks out of a container; reading the files is allowed.
+  - id: TK-A074
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a file named release_agent or notify_on_release written or edited through file tools, as TK-A073 reads the shell's
+    pattern: '(?:^|/)(?:release_agent|notify_on_release)$'
+    reason: writing a cgroup's release_agent or notify_on_release
+    remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
+    rationale: A cgroup's release_agent makes the host run a program when the cgroup empties, which breaks out of a container; reading the files is allowed.
   - id: TK-A039
     class: shell
     field: argv
@@ -544,11 +757,11 @@ ask:
     remedy: Have a person approve the held call, or flush only the keys the change needs.
     rationale: FLUSHALL and FLUSHDB piped or fed into redis-cli empty the whole cache or database; a person confirms it.
   - id: TK-A041
-    class: mcp
     tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
     # a destructive SQL statement in an MCP tool's sql, query or statement argument, but only for SQL-like tools
-    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; the mapped ones,
-    # mcp:postgres/query and kin, are TK-DB001..003's already, and a search tool's query text is not a call). The
+    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; a search tool's query
+    # text is not a call), in any class: also where a pack maps the tool to class sql (the server parts map
+    # mcp:postgres/query and kin, which TK-DB001..003 read too, so the dev pack keeps this reading of them). The
     # statement is read as TK-A039 reads a client's: up to eight statements may come first, where a statement ends
     # at `;` only (an escape counts as one character, so a quoted or escaped keyword cannot hide the
     # destructive one), and a comment may come before the keyword; a comment ends with its argument's text (another
@@ -558,6 +771,20 @@ ask:
     # node 16` doesn't match. There is no ROLLBACK exemption: a destructive statement in one argument isn't undone
     # by a transaction in another. A list-valued argument isn't read. Its whitespace runs are lazy, as TK-A039's are.
     pattern: '"(sql|query|statement)":"((?:[^;\"\\]|\\.)*;){0,8}(?:\s|\\[ntrf]|\\u000[bB]|--[^\\\n"]*(?:\n|\\n)|/\*(?:[^!M*"\\]|\\.|M(?:[^!*"\\]|\\.)|M?\*[^/"\\]|M?\*\\.)(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/|/\*M?\*/|/\*M?![0-9]*)*?([Dd][Rr][Oo][Pp](?:(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])?)?(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?([Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Bb][Yy])|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*|;|")|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Ff][Rr][Oo][Mm](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)(?:\s*[^\s;"]+(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?(?:[Aa][Ss](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+)?[A-Za-z_][A-Za-z0-9_]*(?:(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)[^;"]*|(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)|(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?|\\n)[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)[^;"]*|(?:\s(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)?)|[^;"]*[Ww][Hh][Ee][Rr][Ee](?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)+?(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1)(?:\s|\\[ntrf]|\\u000[bB]|/\*(?:[^*"\\]|\\.|\*[^/"\\]|\*\\.)*\*/)*?)(;|"|\*/))'
+    reason: a destructive SQL statement through an MCP database tool
+    remedy: Have a person approve the held call, or run the change as a reviewed migration.
+    rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
+  - id: TK-A086
+    class: mcp
+    tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
+    field: run
+    # TK-A041's statements as every SQL dialect lexes them, as TK-DB001..003 read a SQL tool's (engine._runs: comments
+    # and literals blanked, a blank run one space, `SQL;` before a statement a `;` ends and `SQL:` before the last), so
+    # a comment that one database reads otherwise than TK-A041's one reading does (a nested /* */, a -- before a
+    # control character, a CR that ends a comment) doesn't hide the statement after it. A tool a pack maps to class sql
+    # is read by TK-DB001..003 instead. Words are one blank apart there, so the DELETE's words are read lazily, one at a
+    # time, and the fallback engine stays linear
+    pattern: '^SQL[:;][Dd][Rr][Oo][Pp] (?:[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])? )?(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd] [Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn] [Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd] [Bb][Yy])\b|^SQL[:;][Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\b|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm] [^ ]+(?: (?:[Aa][Ss] )?[A-Za-z_][A-Za-z0-9_]*)?(?: [Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg] .*)?$|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm](?: [^ ]+)+? [Ww][Hh][Ee][Rr][Ee] (?:1 ?= ?1|'''' ?= ?''''|[Tt][Rr][Uu][Ee]|1)$'
     reason: a destructive SQL statement through an MCP database tool
     remedy: Have a person approve the held call, or run the change as a reviewed migration.
     rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
@@ -574,7 +801,8 @@ ask:
     rationale: Bulk deletes and version purges in object storage can't be undone, and a bucket's version history is often the only copy left.
   - id: TK-A002
     class: shell
-    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
+    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. A push is also `git send-pack` or
+    # `hub push`, as TK-D003 reads one. No dry-run exemption: `-o` takes the next
     # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
     # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
     # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
@@ -585,7 +813,7 @@ ask:
     # glab api too; GitLab's name URL-encoded, as it takes one), or a GraphQL deleteRef mutation.
     # lean: a GitHub ref of up to nine `/`-separated parts (refs/heads/a/b/…), so the fallback engine doesn't back off
     # over a long path one character at a time; read more parts if a real branch name has them
-    pattern: '^(?:git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|glab api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|glab api (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:https?|xhs?) (?:[^ ]* ){0,16}[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?deleteRef\b)'
+    pattern: '^(?:(?:git|hub) (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(?:push|send-pack)\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|glab api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|glab api (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:https?|xhs?) (?:[^ ]* ){0,16}[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?deleteRef\b)'
     reason: deleting a remote Git ref
     remedy: Have a person approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
@@ -654,6 +882,21 @@ ask:
     reason: removing a repository's secrets, branch protection, rulesets or security features through GitHub
     remedy: Have a person approve the held call, or leave the change to a person in the repository's settings.
     rationale: Deleting secrets or branch protection, or turning secret scanning off, removes what guards a repository's code and deploys; a person confirms it.
+  - id: TK-A087
+    class: shell
+    # taking a GitLab project's protections apart through glab or its API, as TK-A047 does for GitHub (#897): glab
+    # variable delete (or remove, rm), with up to four options before each word as TK-A047 reads them; a DELETE
+    # through glab api or curl, the method flag before or after the path (after -X ending a cluster of short options
+    # too: -iX), on a project's protected_branches/<name> (to 250 characters), protected_tags/<name>, variables/<key>
+    # or push_rule, or a group's variables/<key>; each path bare, after /api/v4/ or after a host, with or without a
+    # scheme in any case; the project or group id numeric or URL-encoded (group%2Fproj); up to sixteen words (empty
+    # ones too) before the method flag or the path and sixteen between them; the method in any case. A GET of the same
+    # paths, glab variable list, get and set aren't held; a PUT or PATCH that loosens a protection isn't read, nor is
+    # a method or path set at run time. Every gap is bounded, so the fallback engine stays linear
+    pattern: '^(?:glab +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}variable +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:delete|remove|rm)(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#/]{1,250}|protected_tags/[^ ?#/]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#/]{1,250}|protected_tags/[^ ?#/]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee](?: |$))'
+    reason: removing a GitLab project's protected branches, protected tags, push rule or CI/CD variables, or a group's variables
+    remedy: Have a person approve the held call, or leave the change to a person in the project's settings.
+    rationale: Deleting a protected branch or the CI/CD variables that hold deploy credentials removes what guards a project's code and deploys; a person confirms it, as for GitHub's (TK-A047).
   - id: TK-A043
     class: shell
     # moving money through Stripe, PayPal or Square from the shell, each command's argv: the Stripe CLI's refunds,
@@ -725,25 +968,37 @@ ask:
   - id: TK-A035
     class: shell
     # each command's argv: AWS Secrets Manager's get-secret-value, SSM Parameter Store's reads with --with-decryption
-    # (a word of its own or any prefix of it: --no-with-decryption is not it), gcloud's `secrets versions access` and
-    # az's `keyvault secret show`. Up to eight options (with a value) before the service and again before each word
-    pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$))'
-    reason: reading a secret's value from a cloud secret store
+    # (a word of its own or any prefix of it: --no-with-decryption is not it), gcloud's `secrets versions access`,
+    # az's `keyvault secret show`, and value-reading commands for 1Password, Bitwarden, Doppler, Infisical and LastPass.
+    # Doppler's secrets set prints the values it sets, and delete and upload print every value, so they stay held.
+    # Up to eight options (with a value) before the service and again before each word. `unless`: help only as
+    # `--help` right after a held command's own words (`op read --help`, `doppler secrets get --help`): a quoted last
+    # word reads as two (`op document get "k --help"`), so any other word before it could be a renamed item or a
+    # file to write; with only command words, a quoted `"get --help"` reaches the CLI as a command it refuses
+    # (doppler's and infisical's `secrets` take no argument). Also doppler's and infisical's `--help` before plain
+    # words; doppler's `--only-names` among its own flags only, a project or config given as a name (a path value,
+    # `--scope "/a --only-names"`, could hide it); infisical's commands that print no stored value
+    pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}(read|inject)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}item (-[^ ]+ +([^- ][^ ]* +)?){0,8}get .*(--reveal|--fields(=| )[^ ]+|--otp|--format(=| )json)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}document (-[^ ]+ +([^- ][^ ]* +)?){0,8}get(["]| |$)|bw (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get (password|item|notes|totp|attachment)|list items|export)(["]| |$)|doppler (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets(["]| |$)|infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secrets|export)(["]| |$)|lpass (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|export)(["]| |$))'
+    unless: '^(aws secretsmanager (batch-)?get-secret-value|gcloud( alpha| beta)? secrets versions access|az keyvault secret (show|show-deleted|download)|op (read|inject|item get|document get)|bw (get (password|item|notes|totp|attachment)|list items|export)|doppler secrets( [a-z][a-z-]{0,20})?|infisical (secrets( [a-z][a-z-]{0,30})?|export)|lpass (show|export)) --help$|^(doppler|infisical) --help( [a-z][a-z0-9-]{0,40}){1,3}$|^doppler secrets( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8} --only-names( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8}$|^infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets +(set|delete|folders +(create|get)|generate-example-env)([ \t]|$)'
+    reason: reading a secret's value from a secret store
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
-    rationale: An agent that can read a live password or key can use it or send it anywhere; listing secrets, describing one and reading a parameter without decryption stay allowed.
+    rationale: An agent that can read a live password or key can use it or send it anywhere; commands that only list names or metadata stay allowed.
   - id: TK-A036
     class: mcp
     # TK-A035's commands as the cli_command, command or cmd argument of an MCP tool (the AWS API MCP server's
     # call_aws), starting with the program. The argument is JSON text, so any run of spaces, or of escaped tabs,
     # newlines or returns, separates its words, and an escaped quote stays in its word: a word can't hold a
-    # separator, so each text reads one way. The scan for the decryption flag
-    # stops at the end of that value, so each occurrence rescans only it. Only for a tool named for running a
-    # command: a rule on every MCP call makes each call over 64 KiB ask (TK-OVERSIZE)
+    # separator, so each text reads one way. A raw quote isn't a word character either — it ends the JSON value
+    # (the word classes once let `op -a ` copies chain option scans past each closing quote). The scan for the
+    # decryption flag stops at the end of that value, so each occurrence rescans only it. Only for a tool named for
+    # running a command: a rule on every MCP call makes each call over 64 KiB ask (TK-OVERSIZE). No `unless`: the
+    # call is one subject, so an exemption could be read from another argument (`"cmd": "--help"` beside the read), and
+    # TK-A035's help and names-only forms are held here too
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
-    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(aws(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(secretsmanager(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-secret-value|batch-get-secret-value)(?:["]| |\\[tnr]|$)|ssm(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:["]| |\\[tnr]|$))|gcloud(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}((alpha|beta)(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8})?secrets(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}versions(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}access(?:["]| |\\[tnr]|$)|az(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}keyvault(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secret(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(show|show-deleted|download)(?:["]| |\\[tnr]|$))'
-    reason: reading a secret's value from a cloud secret store through an MCP tool
+    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(aws(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(secretsmanager(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-secret-value|batch-get-secret-value)(?:["]| |\\[tnr]|$)|ssm(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:["]| |\\[tnr]|$))|gcloud(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}((alpha|beta)(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8})?secrets(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}versions(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}access(?:["]| |\\[tnr]|$)|az(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}keyvault(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secret(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(show|show-deleted|download)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(read|inject)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}item(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:[^"\\]|\\.)*?--(reveal|fields(?:=[^"\\ ]+|(?: |\\[tnr])+[^"\\ ]+)|otp|format(?:=|(?: |\\[tnr])+?)json)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}document(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:["]| |\\[tnr]|$)|bw(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:get(?: |\\[tnr])+?(password|item|notes|totp|attachment)|list(?: |\\[tnr])+?items|export)(?:["]| |\\[tnr]|$)|doppler(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secrets(?:["]| |\\[tnr]|$)|infisical(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:secrets|export)(?:["]| |\\[tnr]|$)|lpass(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:show|export)(?:["]| |\\[tnr]|$))'
+    reason: reading a secret's value from a secret store through an MCP tool
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
-    rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same commands are held, listing and describing stay allowed.
+    rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same value-reading commands are held.
   - id: TK-A037
     class: mcp
     # a tool whose name ends in a word for reading a secret, as `mcp__<server>__<tool>` or `mcp:<server>/<tool>`, with
@@ -795,8 +1050,9 @@ ask:
   - id: TK-A014
     # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
     # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
-    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results
-    tool: Bash|PowerShell|Monitor
+    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results. `bash`
+    # too: the server parts map that name (Anthropic's bash tool) to the shell class as Bash
+    tool: '[Bb]ash|PowerShell|Monitor'
     field: allowed_domains
     pattern: '^(\[[^\]]|[^\[])'
     reason: opening network hosts beyond Claude Code's sandbox for one command
@@ -826,16 +1082,27 @@ ask:
   - id: TK-A011
     class: shell
     field: target
-    # the TK-A010 locations as where a command writes, copies or links to (cp, install, mv or ln: the last word, or
+    # the TK-A010 locations (cron's /etc/cron* and its spool, /var/spool/cron, two parts deep for a copy's last word:
+    # Debian's crontabs/<user>) as where a command writes, copies or links to (cp, install, mv or ln: the last word, or
     # -t's directory; tee, sed -i, dd of=: any of its files) or as a redirection target, and turning a startup item on
     # (systemctl enable, reenable, preset or add-wants after any options); each command and target on its own,
     # anchored and lazy, as TK-D010, and casefolded (lower-case places). Listing them, copying out of them and reading
     # them stay unheld (but for a read redirected with `<`), and so does managing an existing service (`systemctl
     # restart`)
-    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ +([^- ][^ ]* +)?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron(/[^/ ]+)?)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/(etc/(systemd/system|init\.d|rc\.local|xdg/autostart|cron[^/ ]*)|var/spool/cron)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ +([^- ][^ ]* +)?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+  - id: TK-A082
+    class: shell
+    field: effects
+    # TK-A010's places as every file a command writes (engine._effects, as TK-D023 reads them), so sed -i, perl -i
+    # and the other writers TK-A011's list leaves out are held too; a home's shell startup files are TK-F025's, as
+    # TK-F011 flags a redirection into one
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:library/launch(?:agents|daemons)/|\.config/(?:systemd/user|autostart)/|etc/(?:systemd/system|init(?:\.d)?|rc\.local|xdg/autostart|profile\.d)(?:/|$)|etc/(?:cron[^/]*|profile|bash\.bashrc|bashrc|zshenv|zshrc|zprofile|zlogin|zlogout|zsh|rc[^/]*\.d)(?:/|$)|var/spool/cron(?:/|$)|(?:\.config|etc)/fish/(?:config\.fish$|conf\.d/)|(?:usr/)?lib/systemd/(?:system|user)/)'
+    reason: adding something that runs at every login or boot
+    remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
+    rationale: TK-A010 for every way the shell writes a file.
 
   # --- Git hooks: code that runs on every commit, checkout or push in the repository (a submodule's under
   # .git/modules/<name>/hooks/). lean: a submodule's name and nesting of up to eight parts, so the fallback engine
@@ -854,10 +1121,218 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+  - id: TK-A083
+    class: shell
+    field: effects
+    # TK-A012's hooks folders as every file a command writes (engine._effects, as TK-D023 reads them): perl -i and
+    # the other writers TK-A013's list leaves out
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.git/(?:modules/(?:[^/]+/){1,8})?hooks/'
+    reason: writing a Git hook
+    remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: TK-A012 for every way the shell writes a file.
+
+  # --- logins, setuid bits and network shells that outlive the session: held, as a person adds them (#750)
+  - id: TK-A075
+    class: shell
+    field: argv
+    # useradd and adduser of any form; usermod with a group option (-G or -g, also in a cluster or joined to its value,
+    # --groups, --gid) naming sudo, wheel or admin, or making a login root (-u 0, also with -o); gpasswd adding a
+    # member or an administrator to one of those groups (-a, -M, -A); macOS's dscl creating a user record under
+    # /Users. lean: up to 16 words before the option, as the fallback engine backtracks a longer list slowly; read more
+    # if a real call has more
+    pattern: '^(?:useradd|adduser)(?: |$)|^usermod(?: [^ ]+){0,16}? (?:(?:-[a-fh-zA-FH-Z]*[Gg] ?|--(?:groups|gid)[ =])(?:[^ ]*?,)?(?:sudo|wheel|admin)(?:,| |$)|(?:-[a-tv-zA-Z]*u ?|--uid[ =])0+?(?: |$))|^gpasswd(?: [^ ]+){0,4}? (?:-[aMA]|--(?:add|members|administrators))[ =][^ ]+ (?:sudo|wheel|admin)(?: |$)|^dscl(?: [^ ]+){0,16}? -create /[Uu]sers/'
+    reason: creating a login or adding a user to an administrator group
+    remedy: Have a person create the account or change its groups; the task rarely needs a login.
+    rationale: A new login or sudo membership grants access that outlives the session; a person confirms it.
+  - id: TK-A076
+    class: shell
+    field: effects
+    # a file a command writes (a redirection, tee, cp, mv, dd …) that is an account or sudo file: the password, shadow,
+    # group and gshadow files, the sudoers file and sudoers.d's drop-ins; reads of them are not written, so they stay
+    # unheld
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?etc/(?:passwd|shadow|group|gshadow|sudoers)$|^WRITE_TARGET:(?:[^\n]*?/)?etc/sudoers\.d/'
+    reason: changing the system's login or sudo files
+    remedy: Have a person edit the account or sudoers file; use the account tools (useradd, visudo) from a person's terminal.
+    rationale: These files decide who can log in and who can run commands as root; a person confirms each change.
+  - id: TK-A077
+    class: shell
+    field: argv
+    # chmod's setuid or setgid bit in its mode after up to eight options, and install's (-m, --mode or a GNU prefix of
+    # it: --m, --mo, --mod) after up to 64 words: an s that a + or = adds, in any clause of a comma list and among
+    # other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a numeric mode whose setuid/setgid digit is set (4 digits
+    # starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755); and setcap granting cap_setuid,
+    # cap_setgid or cap_sys_admin (by name in any case, or by number as libcap's strtoul(…, 0) reads it: 7, 6 and 21 in
+    # decimal, octal or hex, 07, 006, 025, 0x7, 0X15), or every capability (`all`, or an
+    # empty list before =: =ep), after up to sixteen words: a list of up to 64 names holding one of them, then
+    # operators each with its flags, one a + or = that adds e, i or p (+ep, =eip, =+ep, -e+p). Removing it (chmod u-s,
+    # install -m u-s, setcap -r, cap_setuid-ep, cap_setuid=), the sticky bit alone (1777) and setcap -v (verify only)
+    # stay unheld. lean: the word and list bounds keep the fallback engine linear
+    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_[Aa][Dd][Mm][Ii][Nn])|[Aa][Ll][Ll]|0*[67]|21|0+25|0[Xx]0*(?:[67]|15))(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'
+    unless: '^setcap(?: -(?:q|n [^ ]+)){0,4} -(?:q?v|vq)(?: |$)'
+    reason: setting the setuid or setgid bit or privileged file capabilities
+    remedy: Have a person set the bit or capabilities; a program that runs with elevated privileges needs a person's review.
+    rationale: A setuid, setgid or capability-enabled file runs with elevated rights on every run; a person confirms it.
+  - id: TK-A078
+    class: shell
+    field: line
+    # a write (a redirection or tee) into a bash or zsh startup file (TK-F011's: .bashrc, .bash_profile, .bash_login,
+    # .profile, .zshrc, .zprofile, .zshenv, .zlogin) whose line holds a network shell: /dev/tcp/ or /dev/udp/, socat,
+    # or nc, ncat or netcat with -e, -c, --exec or --sh-exec after up to four of its words, in either order; read in
+    # the raw command and in each line as the parser read it (`tee ${X}-a` is `tee -a`). An rc edit without one stays
+    # unheld. lean: the shell and the write within 128 characters of each other, so the fallback engine scans a
+    # bounded stretch from each; a padded line is still TK-F011's flag; read further if a real one is longer
+    pattern: '(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)[^\n]{0,128}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b[^\n]{0,128}?(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)'
+    reason: adding a network shell to a shell startup file
+    remedy: Have a person add the startup line; a shell that connects out on every login is not part of the task.
+    rationale: A startup file runs in every new shell, so a line that opens a connection gives a remote party access each login; a person confirms it.
+
+  # --- the agent harness's settings: held, as changing the guardrails (#604)
+  - id: TK-F009
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
+    # are .agents/hooks.json; goose's plugins are under .agents/plugins/, and its recipes and sub-agents, whose stdio
+    # extensions (cmd and args) goose starts with no hook when one runs, under .agents/ or .goose/, recipes/ and
+    # agents/, in a project or the home folder (the folder's skills/ is ordinary work, but for an OpenHands skill that
+    # runs a command: TK-A085); Factory Droid keeps its hooks and settings in .factory/, goose its settings in
+    # ~/.config/goose (on Windows AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
+    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
+    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin), and OpenHands
+    # .openhands/ (its hooks.json, agent_settings.json and mcp.json) in a project and the home folder. Claude Code
+    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
+    # commands with `!` lines) under .claude/ (held, as the rest of .claude/ is); Cursor its MCP servers in
+    # .cursor/mcp.json. Cline runs every hook file in Documents/Cline/Hooks (wherever Documents is), ~/.cline/hooks and
+    # a workspace's .cline/hooks and .clinerules/hooks, and keeps its settings, hooksEnabled among them, in ~/.cline/.
+    # Hermes Agent keeps its config, plugins (Tracekit's too) and profiles in ~/.hermes.
+    # Copilot CLI keeps its hooks and settings in ~/.copilot, reads a repository's .github/hooks/ and
+    # .github/copilot/settings*.json (whose disableAllHooks turns every hook off), and the machine's
+    # /etc/github-copilot/policy.d/*.json hooks.
+    # CodeBuddy Code reads its hooks from .codebuddy/settings.json and settings.local.json, and ~/.codebuddy/ (held, as
+    # the rest of .codebuddy/ is, but for its worktrees: below). gptme reads ~/.config/gptme/ (its config.toml and the
+    # plugins there, Tracekit's among them) and a project's gptme.toml or gptme.local.toml. jcode reads its hooks from
+    # ~/.jcode/config.toml (or $JCODE_HOME's) and re-reads them on a config reload, without a restart.
+    # Kiro CLI runs the hook files in .kiro/hooks (a project's, and ~/.kiro's), and reads its agents (hooks inline among
+    # them), MCP servers and settings from .kiro/ too. Open Interpreter, a Codex fork, reads its hooks.json and
+    # config.toml (where the hooks' trust is kept) from ~/.openinterpreter ($INTERPRETER_HOME) and a project's
+    # .openinterpreter/.
+    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
+    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
+    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
+    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
+    # PowerShell/7-preview/).
+    # A file inside one of Claude Code's or CodeBuddy Code's worktrees (.claude/worktrees/<name>/…,
+    # .codebuddy/worktrees/<name>/…) is judged as it is in the worktree: that .claude or .codebuddy is no setting, the
+    # worktree's own .claude, .codebuddy, .codex, .mcp.json and the rest are. The .claude and .codebuddy branch spells
+    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
+    # itself, and a name starting with a dot
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes|openhands|copilot|jcode|kiro|openinterpreter)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.github/(hooks(/|$)|copilot/settings[^/]*\.json$)|(^|/)etc/github-copilot(/|$)|(^|/)\.(claude|codebuddy)($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|(plugins|recipes|agents)(/|$))|(^|/)\.goose/(recipes|agents)(/|$)|(^|/)(\.config/goose|\.config/kilo|\.config/devin|\.config/gptme|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)gptme(\.local)?\.toml$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
+    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
+    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: These files decide which hooks run, Tracekit's among them, and what the agent may do without asking.
+  - id: TK-F015
+    class: shell
+    field: effects
+    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME, Hermes's HERMES_HOME, CodeBuddy
+    # Code's CODEBUDDY_CONFIG_DIR and CODEBUDDY_PROJECT_CONFIG_DIR, jcode's JCODE_HOME and Open Interpreter's
+    # INTERPRETER_HOME are matched by name. OpenCode's user config (its plugins, Tracekit's too) is ~/.config/opencode;
+    # Crush's is ~/.config/crush, and its project or home config is crush.json, .crush.json, crushrc or .crushrc; Kilo
+    # Code's are OpenCode's under its own names
+    # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
+    # .clinerules/hooks and Documents/Cline/Hooks; Kiro CLI's are .kiro (a project's and ~/.kiro).
+    # $XDG_CONFIG_HOME/opencode and /kilo, and the folder
+    # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
+    # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
+    # So is .agents/skills/ (a project's or the home's), whose skills OpenHands runs each !`cmd` line of: a shell write's
+    # text isn't read, so every one there is held (a file tool's only with a !`cmd`: TK-A085).
+    # PowerShell's profiles are TK-F009's, and
+    # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
+    # three), in any case.
+    # A file inside one of Claude Code's or CodeBuddy Code's worktrees is judged as TK-F009 judges it. Targets aren't
+    # normalised, so a
+    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
+    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
+    # only the worktree (`x/`, `x/.`, `x//`).
+    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
+    # bounded and the fallback engine linear; read deeper if a real worktree nests further
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes|openhands|copilot|jcode|kiro|openinterpreter)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\.github[/\\](?:hooks(?:[/\\]|$)|copilot[/\\]settings[^/\\]*\.json$)|etc[/\\]github-copilot(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|(?:plugins|recipes|agents|skills)(?:[/\\]|$))|\.goose[/\\](?:recipes|agents)(?:[/\\]|$)|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin|gptme)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|gptme(\.local)?\.toml$|\.claude\.json$|\$\{?(?:QWEN_HOME|HERMES_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR|JCODE_HOME|INTERPRETER_HOME)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    # Claude Code's memory notes, as TK-D008 reads them
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: TK-F009 for the shell.
+  - id: TK-A079
+    class: shell
+    # Wiping a disk or a filesystem (#748): dd whose of= is a block device, mkfs (and mkfs.<type>, mke2fs,
+    # mkswap, newfs*) making a filesystem on one, shred or wipefs erasing one, and diskutil's eraseDisk,
+    # eraseVolume, zeroDisk, secureErase, randomDisk and reformat, the verb in any case. A device is /dev's
+    # sd, hd, vd or xvd disks and their partitions, nvme or mmcblk names, a macOS disk or raw disk name
+    # (disk2, rdisk2), or a device-mapper path. Up to sixteen options may come before the device, as the
+    # tools read them, and the device path may carry extra slashes or a dot (//dev/sda, /dev/./sda). A disk
+    # image file is an ordinary file: dd to one, mkfs on one and shred of a file stay as they are.
+    pattern: '^dd( [^ ]+){0,16}? of=/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:mkfs(?:\.[^ ]+)?|mke2fs|mkswap|newfs[^ ]*)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:shred|wipefs)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^diskutil (?:[Ee][Rr][Aa][Ss][Ee][Dd][Ii][Ss][Kk]|[Ee][Rr][Aa][Ss][Ee][Vv][Oo][Ll][Uu][Mm][Ee]|[Zz][Ee][Rr][Oo][Dd][Ii][Ss][Kk]|[Ss][Ee][Cc][Uu][Rr][Ee][Ee][Rr][Aa][Ss][Ee]|[Rr][Aa][Nn][Dd][Oo][Mm][Dd][Ii][Ss][Kk]|[Rr][Ee][Ff][Oo][Rr][Mm][Aa][Tt])( |$)'
+    reason: wiping a disk or filesystem
+    remedy: Have a person approve the held call, or work on a disk image file instead.
+    rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.
+  - id: TK-A080
+    class: shell
+    field: effects
+    # TK-A079's twin, read off what a command writes (the effects TK-A011 reads): a WRITE_TARGET on a block
+    # device, however the command reaches it (dd's of= in any spelling, a redirection, cp, tee). /dev/null,
+    # /dev/stdout and friends are not in the device list, and reading a device (dd if=/dev/sda) writes to
+    # the of= file, not to the device.
+    pattern: '^WRITE_TARGET:/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)'
+    reason: wiping a disk or filesystem
+    remedy: Have a person approve the held call, or work on a disk image file instead.
+    rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.
+
+  # --- a skill that runs commands, written: the commands a harness runs from a file it loads are held when the file is
+  # written (goose's recipes, TK-F009 and TK-F015; an OpenHands skill, TK-F015 and this rule), and running one is
+  # flagged (TK-F026, TK-F027), as running a script the repository already has isn't held
+  - id: TK-A085
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: agent_skill
+    # a call on a .md file under .agents/skills/ (OpenHands loads each, in a project or the home folder) whose text
+    # holds an inline command, !`cmd`, which OpenHands' invoke_skill runs with shell=True; \!`cmd` is kept as text.
+    # Skill text without one stays unheld, as do other agents' skill folders' files (.claude/ is TK-F009's)
+    pattern: '(?:^|[^\\])!`[^`]+`'
+    reason: writing an agent skill that runs a shell command when it is invoked
+    remedy: Have a person read the skill's !`cmd` lines and approve the held call, or write the skill without them.
+    rationale: OpenHands runs a skill's inline commands with no hook when the skill is invoked; a person confirms them.
+
+  - id: TK-A061
+    class: fs
+    tool: Write|Edit
+    field: ci_workflow
+    # lean: direct Write/Edit only; not a YAML or shell parser, and not generated workflows or actions.
+    # A secret must be in the upload option's own argument, or on stdin piped to @-. Two bounded
+    # orderings of the URL and data flag; optional YAML quoting at the start of a command.
+    # A command starts after a newline, `;`, `&` or `|`, behind up to eight wrapper words (by a path too),
+    # keywords, options, `(`, `{`, `!`, `bash -c '…'` or `X=$(`, each word bounded so the fallback engine stays
+    # linear. An option may take a separate argument (`sudo -u "$U"`) that no other item could read: it doesn't
+    # start with `-`, `(`, `{`, `!` or a backquote unless it is a whole backquoted word (`whoami` in backquotes,
+    # `pwd` in backquotes then /dist), and one that starts with a digit isn't a number (`1000:1000`;
+    # `-k 5s 30` reads two numbers). An argument another item could also read made `-x -x …` or `-1 { -1 { …` read
+    # in 2^8 ways at each command start (#839's and #850's reviews). The shell may be sh, bash, zsh,
+    # dash or ksh, after up to four options (`-o pipefail`), with `--` or a `$'…'` string after `-c`; option names
+    # are bounded at 24 characters, as RE2 refuses nested repeats over 1,000. A double-quoted
+    # value reads a backslash and the next character as one pair; one quoted part may come first.
+    # No newline, comment or shell separator joins separate commands.
+    # Executable path prefixes are unbounded so long valid paths remain covered.
+    pattern: '(?:^|[\n;&|])[ \t]*(?:-[ \t]*)?(?:(?:run|script|before_script|after_script|command|bash|pwsh|powershell):[ \t]*(?:[|>][-+]?[ \t]*\r?\n[ \t]*)?|(?:sh|bat|bash|pwsh|powershell)(?:[ \t]*\([ \t]*(?:script:[ \t]*)?|[ \t]+)[\x27\"]{0,2})?[\x27\"]?(?:(?:(?:[./a-zA-Z0-9_-]*/)?(?:sudo|doas|env|time|nohup|command|exec|builtin|nice|timeout)|if|then|else|elif|do|while|until|[0-9][0-9.]{0,15}[smhd]?|[A-Za-z_][A-Za-z0-9_]*=[^ \t;|&#]{0,64}|-[-A-Za-z0-9]{1,32}(?:=[^ \t;|&#]{0,64}|[ \t]+(?:[^-({!\x60 \t\r\n;|&#0-9][^ \t\r\n;|&#]{0,63}|[0-9][0-9.]{0,31}(?:[smhd][^ \t\r\n;|&#]|[^0-9.smhd \t\r\n;|&#])[^ \t\r\n;|&#]{0,31}|\x60[^\x60 \t\r\n;|&#]{1,62}\x60[^ \t\r\n;|&#]{0,62}))?)[ \t]+|[({!][ \t]*|(?:[./a-zA-Z0-9_-]*/)?(?:sh|bash|zsh|dash|ksh)(?:[ \t]+(?:-[-a-zA-Z0-9]{1,16}|[-+][a-zA-Z]{0,8}o[ \t]+[A-Za-z_-]{1,24})){0,4}[ \t]+-[a-zA-Z0-9]*c[a-zA-Z0-9]*(?:[ \t]+--)?[ \t]*\$?[\x27\"][ \t]*|(?:[A-Za-z_][A-Za-z0-9_]{0,63}=)?\"?(?:\$\(|\x60)[ \t]*){0,8}(?:(?:[./a-zA-Z0-9_-]*/curl|[./a-zA-Z0-9_-]*/wget|curl|wget)\b[^;\r\n|&#]{0,128}(?:(?:-[a-zA-Z]*[dF]|--(?:data(?:-[a-z-]+)?|form(?:-string)?|json|post-data|body-data))(?:[ \t]+|=)?(?:(?:[^\s"\x27@;|&#=]{1,48}=|\x27[^\x27@\r\n;|&#]{0,96}\x27|"(?:[^"\\@\r\n;|&#]|\\.){0,96}")?(?:"(?:[^"\\@\r\n;|&#]|\\.){0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})(?:[^"\\\r\n;|&#]|\\.){0,96}"|[^\s"\x27@;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^\s"\x27;|&#]{0,96})|\\"[^"@\r\n;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^"\r\n;|&#]{0,96}\\"|\x27[^\x27@\r\n;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^\x27\r\n;|&#]{0,96}\x27)[^;\r\n|&#]{0,128}https?://|https?://[^;\r\n|&#]{0,128}(?:-[a-zA-Z]*[dF]|--(?:data(?:-[a-z-]+)?|form(?:-string)?|json|post-data|body-data))(?:[ \t]+|=)?(?:(?:[^\s"\x27@;|&#=]{1,48}=|\x27[^\x27@\r\n;|&#]{0,96}\x27|"(?:[^"\\@\r\n;|&#]|\\.){0,96}")?(?:"(?:[^"\\@\r\n;|&#]|\\.){0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})(?:[^"\\\r\n;|&#]|\\.){0,96}"|[^\s"\x27@;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^\s"\x27;|&#]{0,96})|\\"[^"@\r\n;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^"\r\n;|&#]{0,96}\\"|\x27[^\x27@\r\n;|&#]{0,96}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^\x27\r\n;|&#]{0,96}\x27))|(?:(?:echo|printf|cat)[ \t]+[^;\r\n|&#]{0,128}\$(?:[A-Za-z_][A-Za-z0-9_]*|\{!?[A-Za-z_][A-Za-z0-9_]*(?:[:=+?#%/^,@\[-][^}\r\n;|&#]{0,48})?\}|\([A-Za-z_][A-Za-z0-9_]*\)|\{env\.[A-Za-z_][A-Za-z0-9_]*\}|[Ee][Nn][Vv]:[A-Za-z_][A-Za-z0-9_]*|\{\{[ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Ee][Nn][Vv](?:\.[A-Za-z_][A-Za-z0-9_.]*|\[[\x27\"][A-Za-z_][A-Za-z0-9_.-]*[\x27\"]\])|[Gg][Ii][Tt][Hh][Uu][Bb](?:\.[Tt][Oo][Kk][Ee][Nn]|\[[\x27\"][Tt][Oo][Kk][Ee][Nn][\x27\"]\])|[Tt][Oo][Jj][Ss][Oo][Nn]\([ \t]*(?:[Ss][Ee][Cc][Rr][Ee][Tt][Ss]|[Gg][Ii][Tt][Hh][Uu][Bb]|[Ee][Nn][Vv])[ \t]*\))[ \t]*\}\})[^;\r\n|&#]{0,128}|(?:printenv|env|set|export|declare)(?:[ \t]+[-A-Za-z0-9_]+){0,2})[ \t]*\|[ \t]*(?:base64(?:[ \t]+[-A-Za-z0-9=]+){0,3}[ \t]*\|[ \t]*)?(?:[./a-zA-Z0-9_-]*/curl|[./a-zA-Z0-9_-]*/wget|curl|wget)\b[^;\r\n|&#]{0,128}(?:(?:(?:-[a-zA-Z]*[dF]|--(?:data(?:-[a-z-]+)?|form(?:-string)?|json|post-data|body-data))(?:[ \t]+|=)?@-|(?:-T|--upload-file)(?:[ \t]+|=)-)[^;\r\n|&#]{0,128}https?://|https?://[^;\r\n|&#]{0,128}(?:(?:-[a-zA-Z]*[dF]|--(?:data(?:-[a-z-]+)?|form(?:-string)?|json|post-data|body-data))(?:[ \t]+|=)?@-|(?:-T|--upload-file)(?:[ \t]+|=)-)))'
+    reason: a CI command sends a secret to a URL
+    remedy: Check the workflow command and its destination before approving the write; keep secrets out of network request data.
+    rationale: A workflow can leak a CI secret when the runner executes it, after the agent's write has finished.
 
 flag:
   - id: TK-F001
@@ -871,30 +1346,63 @@ flag:
     label: network
   - id: TK-F003
     class: shell
-    field: line
-    pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
+    # each command's argv, not the line (a heredoc's or a message's words aren't a command): rm, unlink, shred,
+    # truncate, mv, chmod or chown given a target outside the project and the temp folders (an absolute path but one
+    # in /tmp, /private/tmp, /var/folders or /private/var/folders; ~, `..`), the project's root (`.`, and a pattern of
+    # only `*`, `?` and `/`: `*`, `**`, `./**`), its .git (and a pattern at the root that may match it, after `./` too:
+    # a name that starts with `.` and holds `*`, `?` or `[`, or starts with `[`: `.*`, `.g*`, `.[!.]*`, `[.]git`), or a
+    # target the line can't tell (a variable, a substitution, find's {}); dd writing one (of=); xargs or parallel
+    # running one (its targets come at run time). A relative target is the project's: deleting a build output there is
+    # no riskier than a Write.
+    # lean: a cd elsewhere earlier on the line isn't followed (`cd /etc && rm x` isn't flagged), nor a link the line
+    # makes to a folder other than a home or root (the parser reads a recursive rm through `ln -s ~ h` as the home's:
+    # `ln -s ~/Documents d && rm -rf d/x` isn't flagged), a pattern for a .git in a folder (`sub/.g*`, a nested
+    # repository's) isn't read (backing off over each `/` of a long path is slow on the fallback engine), and a target
+    # after 64 other words isn't read (it keeps the fallback engine fast); read the line's cd and links, or further, if
+    # that hides a real one
+    pattern: '^(?:xargs|parallel)(?: [^ ]+){0,16}? (?:rm|unlink|shred|truncate|mv|chmod|chown)(?: |$)|^(?:(?:rm|unlink|shred|truncate|mv|chmod|chown)(?: [^ ]+){0,64}? |dd(?: [^ ]+){0,8}? of=)(?:[^ ]*(?:[$`]|\{\})[^ ]*|~[^ ]*|(?:[^ ]*/)?\.\.(?:/[^ ]*)?|(?:[^ ]*/)?\.git(?:/[^ ]*)?|\.(?:/+[*?/]*)?|(?:\./+){0,8}(?:\.[^ /]*[*?\[]|\[)[^ ]*|[*?][*?/]*|[A-Za-z]:[\\/][^ ]*|/(?:[^ ptv][^ ]*|p(?:[^ r][^ ]*|r(?:[^ i][^ ]*|i(?:[^ v][^ ]*|v(?:[^ a][^ ]*|a(?:[^ t][^ ]*|t(?:[^ e][^ ]*|e(?:[^ /][^ ]*|/(?:[^ tv][^ ]*|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)(?: |$)'
     label: destructive
   - id: TK-F004
     class: shell
     field: line
-    # git's push, reset --hard and clean after up to eight global options, as TK-D003 reads `push` (git -C dir push); a
-    # package install or publish (npm, pnpm, yarn, bun, pip of any version, uv, pipx, poetry, conda, cargo, gem,
-    # bundle, go, brew, apt, dnf, yum, apk, twine), a docker or podman run or push (container run, image push, after
-    # up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and kubectl apply or
-    # delete (both after up to eight options). The strict pack holds it, so its list is what "every install" means there
-    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
+    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ or publi, which
+    # it runs as publish, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publi too, also after up to eight options, as
+    # TK-A056 reads one: npm --dry-run publish as npm publish --dry-run), a docker or podman run or push (container
+    # run, image push, after up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and
+    # kubectl apply or delete (both after up to eight options). The strict pack holds it, so its list is what "every
+    # install" means there
+    # lean: an install after options (npm --prefix x install) isn't read; add it as publish is if one is in use
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|(npm|pnpm|yarn|bun|uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+pu(b(li?)?)?|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
     # shell, file and MCP tool counts, not only the coding agents' own; writes included. A target that is one env
-    # template path (no space: never a whole command) is exempt
+    # template path (no space: never a whole command) is exempt. A name counts as a path: its own part of one (after
+    # the start, a `/` or `\`, a space, a quote, `=`, `:` or curl's `@`, and up to the end, a `/`, a space or a quote:
+    # .env, .env.local, .env-local, .env~, prod.env, ~/.netrc, .netrc.bak), and `credentials` only after a `/`, with an
+    # extension, as a folder or at the end of a file's name (~/.aws/credentials, credentials.json, credentials/,
+    # .git-credentials, .credentials.json, application_default_credentials.json, credentials.tfrc.json: a second
+    # extension only if .json, so credentials.example.yaml is a template); id_rsa, .ssh/ and .aws/ anywhere. So a word
+    # in code or prose (process.env.X, get_credentials(), "the credentials") isn't. lean: a bare `credentials` file
+    # named without a path (`cat credentials`) isn't flagged either, nor an env file's name over 255 characters or with
+    # more than eight suffixes (.env.a.b.…: bounds that keep the fallback engine fast)
     field: target
-    pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    pattern: '(?:^|[/\s"''=:@]|\\[nrt])(?:\.env(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|[A-Za-z0-9_.-]{1,255}\.env~?(?:$|[/\s"''\\])|\.netrc(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|credentials(?:\.[A-Za-z0-9_-]+(?:\.json)?(?:$|[/\s"''\\])|/))|id_rsa|\.ssh[/\\]|\.aws[/\\]|[A-Za-z0-9_.-]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|[/\\]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|^credentials$'
     unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp
-    pattern: '.*'
+    # an MCP tool's own name (after mcp__<server>__ or mcp:<server>/): every one but a tool that says it reads (get,
+    # list, search, read, find, describe, show, view, lookup, count, inspect, fetch), or acts only in the local browser
+    # (navigate, screenshot, snapshot, console, network, logs, hover, wait, scroll, zoom, resize, tabs), first or after
+    # browser_, puppeteer_, playwright_, preview_ or page_: a send, create, update or delete stays flagged, as do clicks,
+    # typing and page JavaScript, whose page the call doesn't name. A URL a navigation reaches is TK-F012's.
+    # lean: the name is the server's word, and only its first verb is read (get_or_create_x reads as a read)
+    field: tool
+    pattern: '^'
+    unless: '^(?:(?:browser|puppeteer|playwright|preview|page)[_-])?(?:get|list|search|read|find|describe|show|view|lookup|count|inspect|fetch|navigate|goto|go_to|screenshot|take_screenshot|snapshot|console|network|logs|hover|wait|scroll|zoom|resize|tabs)(?:[_-][A-Za-z0-9_-]*|[A-Z][A-Za-z0-9_-]*)?$'
     label: external_tool
   - id: TK-F007
     class: shell
@@ -910,66 +1418,18 @@ flag:
     pattern: '&\s*$|&\s*;'
     label: background_spawn
   - id: TK-F008
-    tool: Bash
+    tool: '[Bb]ash'   # bash too, as TK-A014
     field: run_in_background
     pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
-  - id: TK-F009
-    class: fs
-    tool: Write|Edit|MultiEdit
-    field: path
-    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
-    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
-    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
-    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
-    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
-    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
-    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
-    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
-    # .cursor/mcp.json.
-    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
-    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
-    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
-    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
-    # PowerShell/7-preview/).
-    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
-    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
-    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
-    # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
-    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
-    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
-    label: harness_config
-  - id: TK-F015
-    class: shell
-    field: effects
-    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
-    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
-    # (.kilo, .kilocode, ~/.config/kilo, kilo.json). $XDG_CONFIG_HOME/opencode and /kilo, and the folder
-    # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
-    # and a delete of a whole .agents folder (agy's hooks.json with it). PowerShell's profiles are TK-F009's, and
-    # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
-    # three), in any case.
-    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
-    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
-    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
-    # only the worktree (`x/`, `x/.`, `x//`).
-    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
-    # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
-    # Claude Code's memory notes, as TK-D008 reads them
-    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
-    label: harness_config
   - id: TK-F016
     class: fs
-    tool: Write|Edit|MultiEdit
+    tool: Write|Edit|MultiEdit|NotebookEdit
     # ANTHROPIC_BASE_URL (where the agent's model calls go; ANTHROPIC_BEDROCK_BASE_URL, ANTHROPIC_VERTEX_BASE_URL and
-    # any other ANTHROPIC_<provider>_BASE_URL too) anywhere in a Write, Edit or MultiEdit call's arguments, in any
-    # case: Windows reads an environment variable's name in any case (`set anthropic_base_url=…`). A mention is
-    # flagged with a setting: the ways to set or remove it are too many to list (an assignment, a settings key,
-    # os.Setenv, set_var, reg add, a value on the next line, …), and a flag only marks the call
+    # any other ANTHROPIC_<provider>_BASE_URL too) anywhere in a Write, Edit, MultiEdit or NotebookEdit call's
+    # arguments, in any case: Windows reads an environment variable's name in any case (`set anthropic_base_url=…`).
+    # A mention is flagged with a setting: the ways to set or remove it are too many to list (an assignment, a settings
+    # key, os.Setenv, set_var, reg add, a value on the next line, …), and a flag only marks the call
     pattern: '[Aa][Nn][Tt][Hh][Rr][Oo][Pp][Ii][Cc]_([A-Za-z]+_)?[Bb][Aa][Ss][Ee]_[Uu][Rr][Ll]'
     label: harness_config
   - id: TK-F017
@@ -986,21 +1446,83 @@ flag:
     label: shell_shadowing
   - id: TK-F011
     class: shell
-    field: command
+    field: target
     # a variable that changes what the next commands run or load (PATH, its += too, the loaders' preload and library
     # paths, Python's startup file, git's ssh command), unsetting the model URL or a proxy, and appending to or teeing
-    # into a bash or zsh startup file
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
+    # into a bash or zsh startup file (a redirection's target is its own subject, so its path alone, ~/.bashrc, counts).
+    # What a command acts on (its argv, assignments and redirections, as TK-F005 reads them), so each assignment is its
+    # own subject: a PATH or PYTHONPATH assignment (a command's prefix, or the shell's own for the rest of the call)
+    # that adds only the project (a relative folder, $PWD, so a venv in it: .venv/bin) or a toolchain folder (nvm's
+    # node, go, cargo, Homebrew's) to $PATH or $PYTHONPATH isn't flagged; `export` or env given one still is, and so is
+    # a venv by an absolute path (/tmp/x/venv/bin, another checkout's .venv/bin), which the line can't tell is the
+    # project's.
+    # lean: a folder in the project the agent wrote can shadow a program (PATH=bin:$PATH with its own bin/git); a path
+    # of more than 32 parts keeps the flag (a bound that keeps the fallback engine fast)
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b|^~?/?[^\s>]*?\.(?:bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
+    unless: '^(?:PATH|PYTHONPATH)\+?=(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?)(?::(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?))*$'
+    label: env_tamper
+  - id: TK-F025
+    class: shell
+    field: effects
+    # a bash or zsh startup file as every file a command writes (engine._effects, as TK-D023 reads them: sed -i, cp,
+    # a pattern that may name one), as TK-F011 reads a redirection into one; the strict pack holds it
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.(?:bashrc|bash_profile|bash_login|bash_logout|profile|zshenv|zshrc|zprofile|zlogin|zlogout)$'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
-    # a query string sends data too, so egress is not only what TK-P003's sends_to reads
+    # a query string sends data too, so egress is not only what TK-P003's sends_to reads. Not flagged: a subject whose
+    # every URL is on this machine (localhost, 127.x.x.x, [::1], 0.0.0.0), and one that is a single plain URL (http
+    # or https, no query string): an http or browser call's URL, a URL a subagent's prompt or report only names. A
+    # command's argv, or an MCP tool's arguments, with a URL elsewhere is still flagged.
+    # A plain URL's host has a letter in it: an address (http://203.0.113.9/, or a bare address a command names) stays
+    # flagged. lean: the URL alone is read, so a plain URL's path can carry data out, and an http tool's body or params
+    # aren't read here (TK-F002 still flags every web call); if TK-F002 is ever only recorded, exempt only calls
+    # without sends_to. A subject is read for local URLs up to about 1,000 characters and four URLs (bounds that keep
+    # the fallback engine fast): a longer one keeps the flag
+    # A URL spelled with a scheme but no `//` (https:host, https:/host, https:\host: a browser reads each as
+    # https://host) is flagged as written, not through the scheme://host/ form a URL is also read as, which carries no
+    # query. A local URL's host ends at a `/`, `?`, `#` or the subject's end, or at a quote or a blank followed by no
+    # `@`, `.` or `%` (nor a character outside ASCII) up to one of those or the next local URL: a host's userinfo or
+    # name can go on past any other character (http://127.0.0.1;@evil.example/ reaches evil.example). Any other
+    # http, https, ws, wss or ftp URL in the subject keeps the flag, with `//`, one `/` or none (a colon right after a
+    # p or an s, the last letter of each of those schemes, is read as one: `maps:x` next to a local URL keeps it too)
+    # lean: a URL with no scheme at all (an http tool given evil.example/?k=v) is read only as that form, so a query
+    # in it isn't flagged here; the HTTP clients behind the mapped http tools refuse such a URL (requests, httpx)
     field: target
-    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
+    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://|\b(?:[Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp]):(?:[^/\s"''<>`]|/[^/\s"''<>`])'
+    unless: '^(?:[^:pPsS]|[pPsS]+[^:pPsS]|:(?::|/:)*/?(?:[^:/pPsS]|[pPsS]+[^:pPsS])){0,250}[pPsS]*(?::+//?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?(?:(?:["\s](?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|:+(?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~])){0,250}[pPsS]*)?(?:[/?#]|$)(?:[^:pPsS]|[pPsS]+[^:pPsS]|:(?::|/:)*/?(?:[^:/pPsS]|[pPsS]+[^:pPsS])){0,250}[pPsS]*|["\s](?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|:+(?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~])){0,250}[pPsS]*)){1,4}(?::(?::|/:)*/?[pPsS]*)?$|^[Hh][Tt][Tt][Pp][Ss]?://[0-9.-]*[A-Za-z][A-Za-z0-9.-]*(?::[0-9]{1,5})?(?:/[^?#\s"''<>\\]*)?(?:#[^\s"''<>\\]*)?$'
     label: egress
   - id: TK-F013
     # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL;
-    # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too
+    # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too. Not flagged: curl, wget, HTTPie or xh
+    # whose every target is on this machine (http://127.0.0.1:8000/, localhost:3000): each other word an option
+    # without `:` or `@` (no proxy URL) or a value without `.`, `:` or `@` (/dev/null, %{http_code}); a word that
+    # may name another host, or a file (-o out.json), keeps the flag, and so does an option that reads more hosts
+    # from a file: curl's -K or --config, wget's -i, --input-file, -e, --execute or --config, alone or in a cluster
+    # (-sK, -qi). lean: up to 64 words on either side of the URL (a bound that keeps the fallback engine fast); a host
+    # named without a dot reads as a value (`-x box`, a bare `box?k=v`: a one-label name the machine resolves), and a
+    # proxy or URL the environment or a startup file gives (http_proxy, ~/.curlrc, ~/.wgetrc) isn't read
     class: shell
     pattern: '^(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|dig|nslookup|host|http|https|xh|xhs|aria2c)( |$)|^openssl s_client( |$)'
+    unless: '^(?:curl|https?|xhs?)(?: (?:-(?:[^ :@K-][^ :@K]*)?|--(?:[^ :@c][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)){0,64} (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)(?: (?:-(?:[^ :@K-][^ :@K]*)?|--(?:[^ :@c][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)| (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)){0,64}$|^wget(?: (?:-(?:[^ :@ie-][^ :@ie]*)?|--(?:[^ :@cei][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?|e(?:[^ :@x][^ :@]*|x(?:[^ :@e][^ :@]*)?)?|i(?:[^ :@n][^ :@]*|n(?:[^ :@p][^ :@]*)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)){0,64} (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)(?: (?:-(?:[^ :@ie-][^ :@ie]*)?|--(?:[^ :@cei][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?|e(?:[^ :@x][^ :@]*|x(?:[^ :@e][^ :@]*)?)?|i(?:[^ :@n][^ :@]*|n(?:[^ :@p][^ :@]*)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)| (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)){0,64}$'
     label: egress
+  - id: TK-F024
+    # every call of an upload tool (CodeBuddy Code's LibraryUpload): its file leaves the machine, as one a network
+    # command sends (TK-F013); a secrets file is TK-D022's deny
+    tool: LibraryUpload
+    pattern: '^'
+    label: egress
+  - id: TK-F026
+    tool: delegate
+    field: source
+    # goose's delegate with a `source` runs that recipe or sub-agent, first starting the stdio extensions it names (a
+    # recipe's `extensions:` cmd and args), commands goose runs with no hook (platform_extensions/summon.rs); a
+    # delegate with only `instructions` names none. Writing a recipe where goose loads it is held (TK-F009, TK-F015)
+    pattern: '^'
+    label: recipe_run
+  - id: TK-F027
+    tool: invoke_skill
+    # OpenHands' invoke_skill renders a loaded skill, running each !`cmd` in it with shell=True (openhands-sdk
+    # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
+    pattern: '^'
+    label: skill_run

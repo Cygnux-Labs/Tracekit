@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import glob
+import hashlib
 import os
 import re
 import shutil
@@ -135,26 +136,27 @@ class DocCommands(unittest.TestCase):
         """The macOS upgrade commands must use the launchd label configured by init."""
         upgrade = read(os.path.join(ROOT, "docs", "deploy.md")).split("To upgrade:", 1)[1]
         self.assertIn(f"sudo launchctl bootout system/{install.V2_LABEL}", upgrade)
-        self.assertIn(f"sudo launchctl bootout system/{install.HELPER_LABEL}", upgrade)
         self.assertIn(f"sudo launchctl kickstart -k system/{install.V2_LABEL}", upgrade)
 
     def test_every_tracekit_command_in_a_code_block_exists(self):
         known = cli_commands()
         self.assertIn("verify", known)
-        pages = [os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        pages = [os.path.join(ROOT, "README.md")] + [p for d in ("docs", "plugin") for p in glob.glob(
+            os.path.join(ROOT, d, "**", "*.md"), recursive=True)]
         unknown = [f"{os.path.relpath(p, ROOT)}: tracekit {m}" for p in pages for _, block in FENCE.findall(read(p))
                    for m in COMMAND.findall(block) if m not in known]
         self.assertEqual(unknown, [])
 
-    def test_no_system_mode_command_needs_tracekit_on_roots_path(self):
+    def test_no_command_needs_tracekit_on_roots_path(self):
         """System-mode init installs Tracekit only into /opt/tracekit (install._install_venv) and puts no `tracekit`
-        command on root's PATH, so `sudo tracekit ...` finds none there. `tracekit deploy compose` isn't system mode."""
+        command on root's PATH, so `sudo tracekit ...` finds none there. Nor does `deploy compose` from a checkout's or a
+        venv's Tracekit, which docs/deploy-compose.md gave as `sudo tracekit deploy compose` (#464)."""
         pages = [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "tracekit_sdk.py")] + [
             p for pattern in ("docs/**/*.md", "plugin/**/*.md", "tracekit/**/*.py", "tracekit/**/*.yaml", "eval/*.py",
                               "eval/*.yaml")
             for p in glob.glob(os.path.join(ROOT, pattern), recursive=True)]
         hits = [f"{os.path.relpath(p, ROOT)}:{n}" for p in pages for n, line in enumerate(read(p).splitlines(), 1)
-                if re.search(r"sudo tracekit (?!deploy )", line)]
+                if "sudo tracekit " in line]
         self.assertEqual(hits, [])
 
     def test_signer_yaml_snippets_in_deploy_guide_load(self):
@@ -173,6 +175,16 @@ class DocCommands(unittest.TestCase):
                     with self.subTest(block=i, pyyaml_blocked=blocked), \
                             mock.patch.dict("sys.modules", {"yaml": None} if blocked else {}):
                         self.assertIn("data_dir", service.load_config(path))
+
+
+class PluginSkills(unittest.TestCase):
+    def test_the_plugins_setup_skill_is_the_public_one(self):
+        """The plugin ships Cygnux-Labs/tracekit-skills' skills/tracekit-setup/SKILL.md byte for byte, so skill indexes
+        find one text. Change it there first, copy it here, then pin its git blob id: `git rev-parse
+        main:skills/tracekit-setup/SKILL.md` in that repository."""
+        data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
+        self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
+                         "91a5eb5ca2a8c2acf89250299a3aba98faea80a3")   # tracekit-skills#3 (skills/kiro)
 
 
 class DocTableCells(unittest.TestCase):

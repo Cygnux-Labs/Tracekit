@@ -19,13 +19,14 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
              "remedy"}
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT",
+                "TK-HOOK-BLOCKED"}   # tracekit audit's id for a call an agent's hook denies before the policy
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -54,6 +55,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "download": {"reason": "it defines a shell function on a line that may download",
                                         "remedy": "Write out the commands the function runs, each program named "
                                                   "plainly."},
+                           "typed": {"reason": "it is text typed into a command already running, a key, or a line "
+                                               "left open, which runs with what came before or comes after it",
+                                     "remedy": "Send the whole command in one call, on lines it closes."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
@@ -71,6 +75,11 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
                                               "read (a file, input or variable), which may force it",
                                     "remedy": "Give the update's fields on the line (-f sha=…), without force."},
+                           "output": {"reason": "a download writes a file the policy can't name (a variable, a pattern, a "
+                                                "config file, a URL list, a name the server picks, a recursive fetch, an "
+                                                "option the policy doesn't know)",
+                                      "remedy": "Name the file it writes plainly (-o file), with options the policy "
+                                                "knows."},
                            "budget": {"reason": "the line is too long or too complex for the policy to read all of it",
                                       "remedy": "Split it into shorter calls, or write repeated commands as a loop."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
@@ -103,15 +112,15 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit"},
-           "fs": {"path", "op", "content_digest"},
+                     "tracekit", "push", "harness_launch", "environment", "gh_runs"},
+           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
-           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
+           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args", "run"},
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},
-           "app": set(), "unknown": set()}
+           "app": set(), "unknown": {"run"}, "harness": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
@@ -404,6 +413,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):

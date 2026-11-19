@@ -77,7 +77,7 @@ signer.yaml:
     idle_s: 3600                             # a run without calls for this long is closed
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
-    origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
+    origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/k<SHA-256 of the log key>
     route: tracekit-central-0                # one replica of a central signer (docs/deploy-kubernetes.md): its run and
                                              # approval ids start with `<route>.`, which clients route by; a client's
                                              # own run_id must start with it too
@@ -285,7 +285,7 @@ exchange redaction changed whose tool_uses carry args_commitments, which the sal
 retention_days ago, checked at start and every CONTENT_SWEEP_S) delete a run's key and blobs, then write
 `content.erased`. Records are never changed.
 
-Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
+Provenance (docs/policy-v2.md): each open run has an index, in memory only, of the
 values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
 carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
 content was trusted (an observed input is what the caller says; other tools' results are not indexed: they can echo
@@ -293,10 +293,17 @@ the agent's own arguments). Values are read before redaction (only their HMACs a
 trusted stays trusted. `decide` answers `send_result` for an untrusted tool, so its adapter completes it with the
 result rather than a digest. `from: untrusted` rules match on the index, and every decision records which arguments
 carry untrusted-only values (field, kind, source record; never the value). The index is `partial` once an untrusted
-tool completes with a digest or no result, or a client's events skip a client_seq (a lost observe or result),
-`truncated` once a result carries more values than are read or the run's index is full, `unavailable` after a restart
-(a storage recovery keeps it), and a decision whose values take past its deadline is `timeout`; in each, `from:
-untrusted` rules fail closed: they match whenever their pattern does.
+tool completes with a digest or no result, an untrusted input is observed as a digest, or a client's events skip a
+client_seq (a lost observe or result), from
+its start for a run registered with `continues` (a later run of an agent session, whose model may still hold what an
+earlier run read; kept in the run state and snapshots, and in the reason its decisions record), `truncated` once a
+result carries more values than are read or the run's index is full, and a decision whose values take past its
+deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern does. A
+restart rebuilds each open run's index from its records and the content vault (_rebuilt), `partial` where an untrusted
+record's content can't be read whole or for a run with no decision that no snapshot holds (after a crash, nothing says
+whether it was registered with `continues`), `unavailable` without a vault; a storage recovery keeps the index, `partial`
+once records it never read turn out to have reached the store, and a decision during the outage reads it as
+`partial`.
 """
 import argparse
 import base64
@@ -327,8 +334,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
-    public_witness, yamlmini
+from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
+    provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -351,7 +358,8 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
-from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
+from tracekit.storage.base import ACK_ON_WRITE, RECORDS, ZERO_HASH, StorageCorrupt, StorageUnavailable, \
+    registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
@@ -378,6 +386,10 @@ FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
 PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
+CONTINUES = "continues an earlier run of the session"   # register_run `continues`: the index's reason
+# the reason of a run rebuilt with no decision, which no snapshot holds: was it registered with `continues`?
+CRASHED = ("rebuilt after a signer crash before the run's first decision: whether it continues an earlier run of its "
+           "session is unknown")
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
@@ -435,16 +447,36 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
 # heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
-# channel_open: a box_daemons identity's alone, whatever `authorize` lists
+# channel_open: a box_daemons identity's alone, whatever `authorize` lists; export_run: any run of the caller's tenant
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open"}) | OPERATOR
+                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
+                           "export_run"}) | OPERATOR
+EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
+# what an identity granted export_run may also call: calls that write nothing, so no agent's identity downloads runs
+EXPORT_READS = frozenset({"status", "read", "approval_get", "approval_list", "grant_list", "incident_list",
+                          "incident_show"})
+# export_run: bundles kept whole in memory for their later chunks, in all and per tenant; one unused for EXPORT_IDLE_S
+# may be dropped for another tenant's. Bundles built at once, one per tenant; builds per identity and per tenant.
+# lean: fixed sizes and rates; make them config keys, or spill bundles to disk, once tenants download large runs at once
+EXPORT_KEPT_BYTES, EXPORT_TENANT_BYTES, EXPORT_IDLE_S = 1 << 30, 1 << 28, 300
+EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
+EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
+# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
+# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
+# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+LESSON_ANSWERS = "tracekit:lessons:person"
+LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
+                 re.compile(r"[0-9a-f]{64}"))
+ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
+ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
@@ -462,6 +494,26 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
     if errors:
         raise ValueError("; ".join(errors))
     return Engine(pol, backend)
+
+
+# a file tool of another harness or framework (Hermes Agent's tools/file_tools.py, LangChain's FileManagementToolkit)
+# that the policy doesn't map is also decided as the file tool it is (evaluate), on every path it names: what the file
+# rules protect (a credentials file, a startup file, a Git hook, a harness's settings) is read where its own class,
+# unknown, reaches none of them
+FILE_TOOLS = {"write_file": "Write", "patch": "Edit", "read_file": "Read", "search_files": "Grep"}
+# a V4A patch's file headers as Hermes Agent's parser reads them (tools/patch_parser.py: `***`, any blanks, Add, Update
+# or Delete File:, and Move File: a -> b, which names both) and as Codex's (Move to:), any blanks before them too
+PATCH_FILE = re.compile(r"^\s*\*\*\*\s*(?:(?:Add|Update|Delete|Move)\s+File|Move\s+to)\s*:(.+)$", re.M)
+
+
+def _as_file_tool(tool, args):
+    """A FILE_TOOLS call's arguments as its file tool reads them: `paths`, every path a path key names (Hermes reads
+    `path`, LangChain `file_path`: a decoy under the other is decided too) and each file a V4A patch's headers name."""
+    files = [v for k in classes.PATH_KEYS if isinstance(v := args.get(k), str)]
+    files += [f for f in args["paths"] if isinstance(f, str)] if isinstance(args.get("paths"), list) else []
+    if tool == "patch" and isinstance(args.get("patch"), str):
+        files += [f.strip() for h in PATCH_FILE.findall(args["patch"]) for f in [h, *h.split("->")]]
+    return {**args, "paths": list(dict.fromkeys(files))}
 
 
 def _stricter(a, b):
@@ -494,6 +546,27 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+        if tool in FILE_TOOLS and cls == "unknown":
+            d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
+        # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text
+        # earlier calls typed, then its own; the hooks set it), which counts wherever a deny or ask rule matches it,
+        # TK-SHELL-PARSE too: a line keys alone put text into that the hook can't read (completion, history) holds a
+        # NUL (agent_hooks.UNKNOWN), unread, and is decided without it too, so a deny the text makes stands. Text typed
+        # into a running process (Hermes Agent's process_manage write or submit) is also decided as the shell line it
+        # is, where that process is a shell, counting only where a deny or ask rule of the pack matches it: a line a
+        # shell can't read (a REPL's) isn't held for that
+        typed = args.get("typed_line")
+        for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
+            b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
+            if b["verdict"] in ("ask", "deny"):
+                d = _stricter(d, b)
+        flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
+        data = args.get("data")
+        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
+                isinstance(data, str):
+            b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
+            if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
+                d = _stricter(d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
         if tool.startswith("mcp__") and "__" in tool[5:]:
             # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
@@ -503,14 +576,16 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             mcps = [f"mcp:{server}/{name}"]
         elif tool.startswith("mcp__"):
             # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-            # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
-            # tool, as before it was named an MCP one (the server packs hold it)
-            # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+            # ends the server's name, nor Copilot CLI's <server>-<tool> (mcp__<server>-<tool>) which `-`: each of the
+            # first eight of either is tried, and the call is also decided as an unknown tool, as before it was named
+            # an MCP one (the server packs hold it)
+            # lean: a server name of more than seven of its separator reaches the mcp: mappings under no split
             rest = tool[5:]
-            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for sep in "_-"
+                    for i in [i for i, c in enumerate(rest) if c == sep][:8]]
             d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
-        elif tool == "PowerShell":
-            # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+        elif tool.casefold() == "powershell":
+            # Claude Code's PowerShell tool (in any case) is an unknown tool (held on the server packs), and is also read as a
             # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
             # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
             b = policy.decide("Bash", args, untrusted=untrusted)
@@ -553,7 +628,7 @@ def _waiting(a, now):
     return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
 
 
-MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
+MARK = privacy.MARK
 
 
 def _salt(key, label):
@@ -583,9 +658,8 @@ def _committed(e):
 
 def _redact(value, dotenv, claim=None):
     """(`value` through privacy.redact, its manifest). `claim`: the client's manifest when it says it redacted."""
-    before = collections.Counter(MARK.findall(canonical(value).decode()))
-    out = privacy.redact(value, dotenv)[0]
-    fired = collections.Counter(MARK.findall(canonical(out).decode())) - before
+    fired = collections.Counter()
+    out = privacy.redact(value, dotenv, counts=fired)[0]
     manifest = {"rules": sorted(fired), "count": sum(fired.values()), "client_claimed": claim is not None}
     if claim is not None:
         manifest["client"] = claim
@@ -600,6 +674,12 @@ def _dotenv(args):
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _digested(v):
+    """Whether a result or an observed value a client sent is a digest (a `sha256:` string or a `{hash, size}`
+    reference) in place of the content: nothing the provenance index can read."""
+    return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
 def _shown(args, dotenv):
@@ -658,6 +738,48 @@ def _secret(path, make, size=32):
         raise ValueError(f"{path} holds {len(data)} bytes, not a {size}-byte key: restore it from a backup")
     logkey.mlock(data)
     return data
+
+
+def _log_origin(storage, configured, public):
+    """The log's checkpoint origin, decided before RecordLog writes its startup records and kept with the store
+    (meta "origin"), so a start never renames a live log. In order: signer.yaml's `origin`, checked, which the caller
+    keeps once the start has passed its checks (a new log keeps its key-derived name until then); else the kept one,
+    unless it names another key and no note was signed under it (the log key changed before the first note), and
+    warned about when the latest note carries another (an older Tracekit ran the log under that name since); else, for
+    a log an older Tracekit started, the origin its latest note carries, or None for the caller's
+    tracekit.local/<log id>, the name it always had; else, a new log, its key-derived one (checkpoint.key_origin). Kept
+    here, but for a configured one."""
+    kept, latest = storage.meta("origin"), storage.checkpoint_latest()
+    noted = latest and latest[1].split("\n", 1)[0]   # another key's note is refused by the start's key check
+    warn = logging.getLogger(__name__).warning
+    if configured:
+        try:
+            checkpoint.vkey(configured, checkpoint.ED25519, public)
+        except checkpoint.NoteError as e:
+            raise ValueError(f"signer.yaml's origin is not a log name ({e}): use a name like host/path") from None
+        if checkpoint.names_other_key(configured, public):
+            raise ValueError(f"signer.yaml's origin {configured} is named after another log key: remove it (a new log "
+                             "is then named after its own key; an existing one keeps its origin)")
+        if not kept and not storage.tail_state()["tree_size"]:   # a new log: its own name until this start passes,
+            storage.meta_put("origin", checkpoint.key_origin(public))   # so an interrupted one keeps that
+        name = configured
+    elif kept and not latest and checkpoint.names_other_key(kept, public):
+        name = checkpoint.key_origin(public)
+        warn("tracekit signer: this log's origin %s is named after another log key and no note was signed under it: "
+             "it is now %s, named after the log key", kept, name)
+    elif kept:
+        if noted and noted != kept:
+            warn("tracekit signer: this log's latest note is under %s, but its origin is %s (an older Tracekit ran it "
+                 "since?): its next note is under %s; to keep %s, set it as origin in signer.yaml", noted, kept, kept,
+                 noted)
+        name = kept
+    elif storage.tail_state()["tree_size"]:
+        name = noted or None
+    else:
+        name = checkpoint.key_origin(public)
+    if name and name != kept and not configured:   # a configured one is kept once the start has passed every check
+        storage.meta_put("origin", name)
+    return name
 
 
 PREFIX_ENDS = (":*", "/*")
@@ -905,6 +1027,7 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.content = content_config(content)
+        self._answer_runs = {}   # expire_content's verdict on each closed run: a run of a person's answers or not
         if posture is not None and not (isinstance(posture, dict) and set(posture) <= {"network", "tool_calls"}
                                         and all(v in ("enforced", "open") for v in posture.values())):
             raise ValueError("posture takes network and tool_calls, each enforced or open (gateway_mandatory is a "
@@ -919,6 +1042,7 @@ class SignerService:
         self._unmatched = set()   # (decision_id, result_digest) of a gateway's forms that open no tool.result of it
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
+        self._kept = {}   # policy_hash -> the policy kept in <data_dir>/policies, None if not (_kept_policy)
         authorize = dict(authorize or {})
         grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
         if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
@@ -929,6 +1053,20 @@ class SignerService:
             raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
                              "an agent's identity can't operate its own containment; give operators an identity of "
                              f"their own ({wiki_url('docs/incidents.md')})")
+        exporters = [k for k, m in authorize.items() if "export_run" in m]
+        both = [f"{k} ({', '.join(sorted(w))})" for k in sorted(exporters)
+                if (w := set(authorize[k]) - EXPORT_READS - {"export_run"})]
+        if both:
+            raise ValueError(f"authorize grants export_run with calls that write: {'; '.join(both)}. An identity an "
+                             "agent writes through would download every run of its tenant and the policy they cite; "
+                             f"export_run goes with {', '.join(sorted(EXPORT_READS))} only, so give the people who "
+                             f"download runs an identity of their own ({wiki_url('docs/remote-ingest.md')})")
+        # a token or OIDC identity can carry its tenant (a token's --tenant, an issuer's tenant claim): checked per call
+        loose = sorted(k for k in exporters if k.split(":", 1)[0] not in ("token", "oidc", "person", "group")
+                       and lookup(dict(tenants or {}), k) is None)
+        if loose:
+            raise ValueError(f"authorize grants export_run to {', '.join(loose)}, which `tenants` gives no tenant: "
+                             "export_run reads the caller's own tenant, never the default one; map each in `tenants`")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -963,12 +1101,16 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
+            name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
                                  detect.Detector.of(policy))
         except BaseException:
             storage.close()
             raise
         self.log.respond = self._respond
+        # where the log stood when this process started: a consume before it may have run under a claim this process
+        # never saw (_call_claim)
+        self._started_at = self.log.head["seq"]
         self._suspensions = Suspensions(suspensions or os.path.join(data_dir, "suspensions.json"))
         start = storage.tail_state()["tree_size"]
         self._webhooks = [webhook.Sender(w["url"], set(w["events"]) - {"incident"}, w["secret"],
@@ -1030,8 +1172,13 @@ class SignerService:
         self._passkeys_lock = threading.Lock()
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
+        # export_run: run key -> {latest: the latest note's size when built, sha, data, used: monotonic}, least recently
+        # used first; tenant -> the run it is building; and the build rates per identity and per tenant (EXPORT_RATES)
+        self._exports, self._exports_lock, self._building = collections.OrderedDict(), threading.Lock(), {}
+        self._export_quotas = tuple(Quotas(r) for r in EXPORT_RATES)
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
-        self.origin = origin or f"tracekit.local/{self.log.log_id}"
+        # None: a log an older Tracekit started that had no note yet, under the name it always had
+        self.origin = name or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
         self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
         self._anchor = next(((a.pop("size"), a) for a in storage.anchors()[-1:]), None)   # (size, the latest anchor)
@@ -1080,6 +1227,13 @@ class SignerService:
             self._check_notes(acknowledge_rollback)
             self._check_witnesses(witnesses, acknowledge_rollback,
                                   WITNESS_START_S if witness_start_s is None else witness_start_s)
+            if self.log.storage.meta("origin") != self.origin:   # past every check of the start: a refused one keeps
+                latest = self.log.storage.checkpoint_latest()      # the log's name as it was
+                noted = latest and latest[1].split("\n", 1)[0]
+                if noted and noted != self.origin:
+                    logging.getLogger(__name__).warning("tracekit signer: this log's origin changes from %s to %s "
+                                                        "(signer.yaml): its witnesses see a new log", noted, self.origin)
+                self.log.storage.meta_put("origin", self.origin)
         except BaseException:
             self.log.close()
             for w in self._webhooks:
@@ -1122,6 +1276,7 @@ class SignerService:
             pass
         except Exception:   # as the ticker: the signer still starts
             self._loop_error("ticker")
+        self._rebuild()   # after the sweep: a run it closed decides nothing more
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -1199,7 +1354,8 @@ class SignerService:
         self._tamper("rollback", "records", {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})},
                        {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}, acknowledged,
                        f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint ({size}): "
-                       "rolled back")
+                       "rolled back, or a new store under an old log key and origin (a new log needs a new log key: "
+                       "a new data_dir, or with log_key aws_kms a new KMS key; or a new origin in signer.yaml)")
 
     # --- dispatch ---
 
@@ -1241,16 +1397,21 @@ class SignerService:
         if self._is_agent(identity) and method not in AGENT_METHODS:   # whatever its groups or prefixes are granted
             raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it is not authorized for "
                                         f"{method}")
-        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
-        granted = {m for g in found for m in g}
-        if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
-            granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
-        if identity.scheme == "box":   # a box's agent channel, whatever the config says
-            granted = CHANNEL_METHODS
-        elif method == "channel_open":   # a Box daemon's, never an authorize grant
+        granted = self._granted(identity)
+        if method == "channel_open" and identity.scheme != "box":   # a Box daemon's, never an authorize grant
             granted = {method} if subject(identity) in self.box_daemons else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
+
+    def _granted(self, identity):
+        """What `identity` may call: its `authorize` entries together; unconfigured, a uid's or the dev token's
+        defaults (DevToken scopes the token); a box's agent channel, its methods whatever the config says."""
+        if identity.scheme == "box":
+            return CHANNEL_METHODS
+        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
+        if not found and not self._is_agent(identity):
+            return DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else frozenset()
+        return {m for g in found for m in g}
 
     def _is_agent(self, identity):
         return subject(identity) in self._agents
@@ -2168,6 +2329,138 @@ class SignerService:
             elif had is None or had["trust"] == "untrusted" and source["trust"] == "trusted":
                 tx.set(idx, k, source)
 
+    def _rebuild(self):
+        """After a restart, rebuild the provenance index of each open run from its records and the content vault, each
+        in one writer item that also writes the content.accessed of what it read (none without a vault: the index stays
+        unavailable). A run whose rebuild fails starts partial."""
+        if self._content_key is None:
+            return
+        # lean: every open run is rebuilt before the signer serves, reading its records and the content of its observes
+        # and untrusted results: seconds for a long run (2.5 s for one of 15,800 calls and observes, 10 s for one with
+        # 2,000 of 32 KiB each); rebuild a run on its first decide instead if restarts must answer sooner
+        for key in [k for k in self.log.live if not self.log.runs[k]["closed"]]:
+            def fn(tx, key=key):
+                try:
+                    prov, read = self._rebuilt(key)
+                except Exception as e:   # the content key doesn't open (_data_key), the store can't be read, ...
+                    prov, read = {"state": "partial", "reason": f"the index could not be rebuilt after a signer "
+                                                                f"restart: {e}"[:256], "index": {}}, []
+                tx.set(self.log.runs[key], "prov", prov)
+                if prov.get("reason") == CRASHED:   # in the run state until a decision records it, as `continues` is
+                    tx.set(self.log.runs[key], "partial_start", CRASHED)
+                for i in range(0, len(read), 1000):   # content_accessed's seqs
+                    tx.emit(self.log.signer_run(tx, key[0]), "content.accessed", {
+                        "principal": "signer", "run_id": key[1], "seqs": read[i:i + 1000],
+                        "purpose": "rebuilding the run's provenance index after a signer restart"}, source="signer")
+            try:
+                self.log.write(fn)
+            except Exception:   # its content.accessed not written (storage down): the run's index stays unavailable
+                logging.getLogger(__name__).exception("tracekit signer: the provenance index of run %s was not rebuilt",
+                                                      key[1])
+
+    def _rebuilt(self, key):
+        """(run `key`'s provenance index as _index, _observe and _complete built it, the run_seqs whose content it read),
+        from the run's records, checked against its head, and the vault. Trust comes from signed records only: an
+        observe's `trust`, and a tool result is untrusted when the policy or one the run's decisions recorded lists its
+        tool. A value comes only from content that opens against its record (the vault's binding) and its commitment
+        and that redaction left whole: a mark may hide a value, whatever the record's count says. An untrusted record
+        whose content can't be read so makes the index partial; trusted content left out only holds more calls."""
+        prov, read, tools, head = {"state": "complete", "index": {}}, [], {}, ZERO_HASH
+        if self.log.runs[key].get("partial_start"):   # CONTINUES or CRASHED, from the run state or a snapshot
+            prov.update(state="partial", reason=self.log.runs[key]["partial_start"])
+        decided = False
+        policies = {self.policy.policy_hash: self.policy}   # policy_hash -> the policy (None: not kept)
+        run, at, dk = {"prov": prov}, types.SimpleNamespace(set=dict.__setitem__), self._data_key(key)
+        for r in self.log.storage.iter_run(*key):
+            e, d = r["event"], r["event"]["data"]
+            if e["run_prev_hash"] != head or event_hash(e) != r["hash"]:
+                degrade(at, prov, "partial", f"run_seq {e['run_seq']} breaks the run's chain: run `tracekit signer fsck`")
+                return prov, read
+            head, seq, t = r["hash"], e["run_seq"], e["type"]
+            if t == "policy.decision":
+                tools[d["decision_id"]], decided = d["tool"], True
+                if d.get("provenance_reason") in (CONTINUES, CRASHED):   # a crash since the snapshot lost the run state
+                    degrade(at, prov, "partial", d["provenance_reason"])
+                if d["policy_hash"] not in policies:
+                    policies[d["policy_hash"]] = self._kept_policy(d["policy_hash"])
+            elif t == "capture.gap" and d.get("kind") == "client_counter_gap":
+                degrade(at, prov, "partial", d["reason"] + LOST)
+            if t == "input.observed":
+                source = {"run_seq": seq, "trust": d["trust"]}
+            elif t == "tool.result" and d["decision_id"] in tools:
+                tool = tools[d["decision_id"]]
+                if not any(p.untrusted_results(tool) for p in policies.values() if p):
+                    if None in policies.values():
+                        degrade(at, prov, "partial", "a policy this run's decisions recorded is not in the signer's "
+                                                     f"policies directory: whether {tool[:64]}'s results are untrusted "
+                                                     "is unknown")
+                    continue
+                source = {"run_seq": seq, "tool": tool, "tool_call_id": e["tool_call_id"], "trust": "untrusted"}
+            else:
+                continue
+            blob = None if dk in (None, ERASED) else self.log.storage.content_get(self.log.log_id, *key, seq)
+            value, why = None, "was erased" if dk is ERASED else "was too large to keep" if blob == b"" else \
+                "was not kept" if not blob else None
+            if blob:
+                try:
+                    value = loads_strict(dk.decrypt(blob[:12], blob[12:], self._aad(key, seq, _committed(e))))
+                    read.append(seq)
+                    c = canonical(value)
+                except (InvalidTag, StrictJSONError):
+                    why = "does not open against its record"
+                else:
+                    text = c.decode()
+                    why = "does not open its commitment" if not self._opens(
+                        _committed(e), salt_label(e), "sha256:" + hashlib.sha256(c).hexdigest()) else \
+                        "was redacted" if MARK.search(text) or privacy.NESTED in text else None
+            if why:
+                if source["trust"] == "untrusted":
+                    degrade(at, prov, "partial", f"the content of run_seq {seq} {why}, so the index rebuilt after a "
+                                                 "signer restart lacks its values")
+                continue
+            keys, overflow = self._keys(value)
+            self._index(at, run, keys, source)
+            if t == "tool.result":
+                if overflow:
+                    degrade(at, prov, "truncated", f"the result of {e['tool_call_id']} carried more values than are read")
+                if d["ok"] and ("result" not in value or _digested(value["result"])):
+                    degrade(at, prov, "partial", f"{e['tool_call_id']} ({tool[:64]}) completed with a digest, not its "
+                                                 "result")
+            elif source["trust"] == "untrusted":
+                if overflow:
+                    degrade(at, prov, "truncated", f"observed input {seq} carried more values than are read")
+                if _digested(value):   # as _observe: its values were never sent
+                    degrade(at, prov, "partial", f"observed input {seq} ({d['source'][:64]}) is a digest, not its "
+                                                 "content")
+        if head != self.log.runs[key]["head"]:
+            degrade(at, prov, "partial", "the run's records in the store end before its head: run `tracekit signer fsck`")
+        if not decided and key in self.log.unsnapped:   # neither a decision's reason nor the run state can say
+            degrade(at, prov, "partial", CRASHED)
+        return prov, read
+
+    def _kept_policy(self, policy_hash):
+        """The policy (an Engine) with `policy_hash` this signer kept in <data_dir>/policies, or None."""
+        if policy_hash in self._kept:
+            return self._kept[policy_hash]
+        name, kept = policy_hash[len("sha256:"):], None
+        if policy_hash.startswith("sha256:") and re.fullmatch("[0-9a-f]{64}", name):
+            try:
+                with open(os.path.join(self.data_dir, "policies", name + ".json"), "rb") as f:
+                    data = f.read()
+                kept = Engine(json.loads(data)) if hashlib.sha256(data).hexdigest() == name else None
+            except (OSError, ValueError):
+                pass
+        self._kept[policy_hash] = kept
+        return kept
+
+    def _untrusted_results(self, tool, policy_hash):
+        """Whether `tool`'s results are untrusted under this signer's policy or the one its call was decided under
+        (`policy_hash`: a restart may have changed it); None when only that one could say and it isn't kept."""
+        if self.policy.untrusted_results(tool) or policy_hash in (None, self.policy.policy_hash):
+            return self.policy.untrusted_results(tool)
+        kept = self._kept_policy(policy_hash)
+        return None if kept is None else kept.untrusted_results(tool)
+
     def _provenance(self, key, args, req):
         """(`untrusted(subject, field)` for the policy, a function giving the decision's provenance fields) of a call
         with `args` in run `key`, decided by event `req`. Whenever the index is not complete (partial, truncated,
@@ -2178,16 +2471,22 @@ class SignerService:
         # see that batch's values for that moment; read on the writer if that ever matters
         idx = prov["index"] if prov else {}
         st = ({"state": prov["state"], "reason": prov.get("reason")} if prov else
-              {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart, so from: "
-                                                 "untrusted rules hold every call they match for the rest of this run: "
-                                                 "answer the holds, or start the task again in a new run"})
+              {"state": "unavailable", "reason": "the index was lost in a signer restart (no content vault to rebuild it "
+                                                 "from), so from: untrusted rules hold every call they match for the "
+                                                 "rest of this run: answer the holds, or start the task again in a new "
+                                                 "run"})
+        down = st["state"] == "complete" and self.log.down
+        if down:   # a write the storage reported failed may have reached it, unread by the index (RecordLog._recover)
+            st = {"state": "partial", "reason": f"the storage failed a write at {down[0]}, which may have reached it: "
+                                                "the index can't vouch for a value until it recovers"}
         gap = st["state"] == "complete" and skipped(self.log.runs[key], req)
         if gap:   # a gap this decide reveals: the writer degrades the index with it
             st = {"state": "partial", "reason": (gap + LOST)[:256]}
         deadline, entries = time.monotonic() + PROVENANCE_S, []
 
         def timeout():
-            st.update(state="timeout", reason="reading the call's values took past the decision's deadline")
+            if st["state"] == "complete":   # an index already not complete keeps its reason, which a rebuild reads
+                st.update(state="timeout", reason="reading the call's values took past the decision's deadline")
 
         def hits(obj):
             keys, overflow = self._keys(obj, False, deadline)
@@ -2265,10 +2564,14 @@ class SignerService:
             raise RPCError("forbidden", "not from the run's harness process")
 
     def _tenant_of(self, identity):
-        """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
-        tenant claim, or a box channel's box run's), else the default."""
+        """The identity's tenant: its own (_own_tenant), else the default."""
+        return self._own_tenant(identity) or self.tenant
+
+    def _own_tenant(self, identity):
+        """`tenants`' tenant for the identity, else the tenant its named token was issued for (or its OIDC issuer's
+        tenant claim, or a box channel's box run's), else None."""
         token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc", "box") else None
-        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
+        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token
 
     def _certified(self, tenant):
         """RPCError forbidden for a tenant the record key's certificate does not cover: its records would not verify."""
@@ -2721,7 +3024,10 @@ class SignerService:
             tx.set(self.log.open_runs, count, n + 1)
             tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
-            tx.set(run, "prov", {"state": "complete", "index": {}})
+            if req.get("continues"):   # kept in the run state (and its snapshots) for the index's rebuild
+                tx.set(run, "partial_start", CONTINUES)
+            tx.set(run, "prov", {"state": "partial", "reason": CONTINUES, "index": {}} if req.get("continues") else
+                   {"state": "complete", "index": {}})
             if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
                 tx.set(run, "rec", None)
             if imported:   # not reconciled (as pipeline replays it), and watched for the follower's heartbeats
@@ -2826,9 +3132,14 @@ class SignerService:
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
-        # rule_ids say only TK-OVERSIZE: name the subjects it stands for
-        reasons = [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
-                    + ", ".join(ruled[0]["oversize"]))[:4096]] if ruled and ruled[0].get("oversize") else []
+        # rule_ids say only TK-OVERSIZE: name the subjects it stands for, and what to do (a held call waits for a person)
+        reasons = []
+        if ruled and ruled[0].get("oversize"):
+            kib = engine.MAX_SUBJECT // 1024
+            remedy = f"Split it into calls under {kib} KiB each (write a large file in parts)" + (
+                ", or have a person approve it." if ruled[0]["verdict"] == "ask" else ".")
+            reasons = [f"TK-OVERSIZE: over {kib} KiB, so never matched: "
+                       + ", ".join(ruled[0]["oversize"])[:600] + INSTEAD + remedy]
         if ruled and ruled[0].get("nondeterministic"):   # the rule it was matching when time ran out is no match
             reasons.append(f"nondeterministic: the fallback regex engine ran out of its {engine.REGEX_TIMEOUT_S:g} s on "
                            "these arguments, so the call is denied; the rule it was matching then is among the rule ids "
@@ -2911,7 +3222,8 @@ class SignerService:
                 call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
                         "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                         "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
-                        "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid}
+                        "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
+                        "policy_hash": self.policy.policy_hash}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
@@ -3006,13 +3318,15 @@ class SignerService:
         # the provenance index: only an untrusted tool's results (any other tool may echo what the agent put in its
         # arguments, which would launder an injected value into trusted content), read before redaction (HMACs in
         # memory only), so a value next to a secret's label still counts. A digest instead of the result: partial.
-        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
+        # Untrusted under this policy or the one the call was decided under (a restart may have changed it).
+        decided = self.log.runs[key].get("decisions", {}).get(did) or {}
+        tool = decided.get("tool")   # None: no decision record names it
         keys, overflow, missing = [], False, False
-        if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
+        untrusted = self._untrusted_results(tool, decided.get("policy_hash")) if tool and self.log.runs[key].get(
+            "prov") else False
+        if untrusted:
             keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
-            r = req.get("result")
-            missing = req["status"] == "ok" and ("result" not in req or isinstance(r, str) and _DIGEST.fullmatch(r)
-                                                 or isinstance(r, dict) and {"hash", "size"} <= r.keys())
+            missing = req["status"] == "ok" and ("result" not in req or _digested(req["result"]))
         open_call = self.log.runs[key].get("decisions", {}).get(did)
         if not (gw and open_call and (open_call.get("via"), open_call.get("caller")) == holder):
             self.quotas.take_event(identity, gw)   # a gateway's result for its own decision: its decide paid
@@ -3031,6 +3345,9 @@ class SignerService:
                                                      **({"via": holder[0]} if gw else {})},
                            tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
+            latest = run["calls"].get(tcid)
+            if latest and latest["attempt"] == attempt:   # what call_state answers
+                tx.set(latest, "ended", [seq, req["status"] == "ok"])
             comparable = req["status"] == "ok" and "result" in req and "error" not in req   # no result: nothing to compare
             tx.set(run["results"], tcid, run["results"].get(tcid, [])[1 - RESULTS_PER_CALL:] + [
                 [did, output["hash"], comparable, output["redacted"], None]])
@@ -3042,6 +3359,10 @@ class SignerService:
             if missing:
                 degrade(tx, run.get("prov"), "partial", f"{tcid} ({call['tool'][:64]}) completed with a digest, "
                                                           "not its result")
+            if untrusted is None:
+                degrade(tx, run.get("prov"), "partial", f"the policy {tcid} was decided under is not in the signer's "
+                                                          f"policies directory: whether {tool[:64]}'s results are "
+                                                          "untrusted is unknown")
             # approved: this call consumed the approval (pipeline.ran), not the attempt whose approval a retry consumed,
             # and only once: under the decision that consumed it, or a later one while that is still open
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
@@ -3065,6 +3386,14 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
+        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
+                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                and lid.fullmatch(v["id"])
+                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+            raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
+                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
+                                              "and nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -3085,6 +3414,9 @@ class SignerService:
             if overflow and req["trust"] == "untrusted":   # trusted values left out only make more calls held
                 degrade(tx, run.get("prov"), "truncated",
                               f"observed input {written[0]} carried more values than are read")
+            if _digested(req["value"]) and req["trust"] == "untrusted":   # its values were never sent: partial
+                degrade(tx, run.get("prov"), "partial",
+                        f"observed input {written[0]} ({req['source'][:64]}) is a digest, not its content")
             return {"run_seq": written[0]}
         res = self.log.submit(identity, "observe", req, fn, key)
         if written:
@@ -3739,6 +4071,8 @@ class SignerService:
                     "approved_commitment": a["commitment"],
                     "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
                         source="signer", **top)
+                if call and call["attempt"] == attempt:   # what call_state answers
+                    tx.set(call, "refused", ["TK-APPROVAL-MISMATCH"])
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
@@ -3758,11 +4092,14 @@ class SignerService:
                         raise RPCError("unavailable", f"the stored arguments of {aid} are gone")
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
+                tx.set(a, "consumed_at", self.log.head["seq"])   # the seq its approval.consumed takes (_call_claim)
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
                 # under this call's tool_call_id; the approval.request it names has the earlier attempt's
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
+                    tx.set(call, "refused", None)
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
                     if tcid in rec["l2"]:
@@ -3774,6 +4111,8 @@ class SignerService:
             if a is not None:
                 data["approval_id"] = aid
             tx.emit(run, "approval.refused", data, source="signer", **top)
+            if call and call["attempt"] == attempt:   # what call_state answers
+                tx.set(call, "refused", [why[0]])
             return {"ok": False, **{k: v for k, v in data.items() if k != "tool_use_id"}}
         out = self.log.submit(identity, "approval_consume", req, fn, key)
         if "args" in out:   # T2: the approved copy; a retry, which the cache answers, opened the same commitment
@@ -4627,6 +4966,188 @@ class SignerService:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         return {"events": events, "next_seq": next_seq}
 
+    def _call_state(self, identity, req):
+        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
+        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
+        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
+        nothing."""
+        key, tcid = self._authorize(identity, req), req["tool_call_id"]
+
+        def state(tx):
+            call = self.log.runs[key].get("calls", {}).get(tcid)
+            if call is None:
+                return {}
+            attempt = call["attempt"]
+            out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
+                   "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
+            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
+                out["reason"] = why
+            if call.get("tool") and self.policy.untrusted_results(call["tool"]):
+                out["send_result"] = True
+            if "args_digest" in req:
+                out["same_args"] = self._same(call, req["args_digest"])
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            a = self.log.approvals.get(aid)
+            if a is not None:
+                out.update(approval_id=aid, approval="requested" if _waiting(a, time.time()) else a["state"],
+                           consumed=a["state"] == "consumed" and ran(a)[:2] == (tcid, attempt))
+            if call.get("refused"):
+                out["refused"] = call["refused"]
+            if call.get("ended"):
+                out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
+            return out
+        return self.log.write(state)
+
+    def _call_claim(self, identity, req):
+        """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
+        under the approval this attempt consumed: the first claim after `answers` answered interrupts of the node is
+        ok, any other is not (another resume of the same thread, in any process). A call this attempt didn't consume,
+        or that has a result, has nothing to go on with. Claims are run state in memory, so one whose approval was
+        consumed before this process started (it may have gone on under a claim a crash took with it) is refused: a
+        person approves the call again. Writes no record."""
+        key, tcid, attempt = self._authorize(identity, req), req["tool_call_id"], req["attempt"]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            call = run["calls"].get(tcid)
+            a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt))) or {}
+            if not (call and call["attempt"] == attempt and not call.get("ended") and a.get("state") == "consumed"
+                    and ran(a)[:2] == (tcid, attempt)):
+                return {"ok": False, "reason": f"{tcid} attempt {attempt} has no consumed approval it goes on under"}
+            if a.get("consumed_at", -1) < self._started_at:
+                return {"ok": False, "reason": "the signer restarted since this call's approval was used; ask again"}
+            claimed = f"{tcid}/{attempt}/{req['answers']}"
+            if claimed in run.get("claims", {}):
+                return {"ok": False, "reason": f"{tcid} already went on after that pause: its thread was resumed twice "
+                                               "at once"}
+            if "claims" not in run:
+                tx.set(run, "claims", {})
+            tx.set(run["claims"], claimed, True)
+            return {"ok": True}
+        return self.log.submit(identity, "call_claim", req, fn, key)
+
+    def _export_run(self, identity, req):
+        """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,
+        kept since a chunk before (else conflict: the download starts again); else of its bundle now, kept since the
+        latest checkpoint or built. The tenant is the identity's own (_export_tenant), so another tenant's run is
+        refused as a run that doesn't exist. No build waits for another: one at a time per tenant and EXPORT_BUILDS in
+        all, else unavailable; each spends one of the identity's and one of the tenant's (EXPORT_RATES)."""
+        key, digest = (self._export_tenant(identity), req["run_id"]), req.get("digest")
+        if key not in self.log.runs:
+            raise RPCError("unknown_run", req["run_id"])
+        self.quotas.take_event(identity)
+        # read before the lock (a query on Postgres), and only for a new download: a chunk names its bundle
+        latest = None if digest else (self.log.storage.checkpoint_latest() or (0,))[0]
+        with self._exports_lock:   # never held while a bundle is built
+            kept = self._exports.get(key)
+            if digest is not None and (kept is None or kept["sha"] != digest):
+                raise RPCError("conflict", f"the signer no longer holds that bundle of run {key[1]} (a newer checkpoint, "
+                                           "or unused too long): download it again from its first chunk")
+            if kept is not None and (digest is not None or kept["latest"] == latest):
+                kept["used"] = time.monotonic()
+                self._exports.move_to_end(key)
+            elif key[0] in self._building or len(self._building) >= EXPORT_BUILDS:
+                raise RPCError("unavailable", "the signer is building " + (
+                    "another bundle of your tenant" if key[0] in self._building else
+                    "as many bundles as it builds at once") + ": ask again", retry_after_ms=EXPORT_RETRY_MS)
+            else:
+                for spend in (0, 1):   # check both, then spend both
+                    for quotas, bucket, whose in zip(self._export_quotas, (quota_key(identity), key[0]),
+                                                     ("your identity's", "your tenant's")):
+                        quotas.take(bucket, f"{whose} bundle builds are spent for now (export_run)", spend)
+                self._building[key[0]], kept = key[1], None
+        if kept is None:
+            try:
+                data = self._export_bytes(key)
+                kept = {"latest": latest, "sha": "sha256:" + hashlib.sha256(data).hexdigest(), "data": data,
+                        "used": time.monotonic()}
+                with self._exports_lock:
+                    self._keep(key, kept)
+            finally:
+                with self._exports_lock:
+                    del self._building[key[0]]
+        offset, data = req.get("offset", 0), kept["data"]
+        if offset > len(data):
+            raise RPCError("invalid_request", f"offset {offset} is past the bundle's {len(data)} bytes")
+        return {"digest": kept["sha"], "size": len(data), "offset": offset,
+                "data": base64.b64encode(data[offset:offset + EXPORT_CHUNK]).decode("ascii")}
+
+    def _export_tenant(self, identity):
+        """The tenant export_run reads: the caller's own, as `tenants` or its token or OIDC issuer names it, never the
+        default one. An identity its keys together also grant a call that writes (beyond EXPORT_READS: the startup
+        check sees each `authorize` entry alone) may be one an agent writes through: refused."""
+        writes = self._granted(identity) - EXPORT_READS - {"export_run"}
+        if writes:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted calls that write "
+                                        f"({', '.join(sorted(writes))[:512]}): runs are downloaded by an identity that "
+                                        "only reads")
+        tenant = self._own_tenant(identity)
+        if tenant is None:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} has no tenant of its own: export_run needs one, from "
+                                        "`tenants` or a token issued with --tenant")
+        return tenant
+
+    def _keep(self, key, entry):
+        """Keep bundle `entry` of run `key` for its later chunks (under _exports_lock), within EXPORT_TENANT_BYTES for
+        its tenant and EXPORT_KEPT_BYTES in all: bundles unused for EXPORT_IDLE_S go first, then the tenant's own,
+        least recently used first. Another tenant's bundle in use is never dropped: when those leave no room,
+        unavailable, with nothing dropped."""
+        size = len(entry["data"])
+        if size > EXPORT_TENANT_BYTES:
+            raise RPCError("quota_exceeded", f"the bundle of run {key[1]} is {size >> 20} MiB, over the "
+                                             f"{EXPORT_TENANT_BYTES >> 20} MiB a tenant's downloads may hold: ask the "
+                                             "signer's operator for it")
+        idle = [k for k, e in self._exports.items() if entry["used"] - e["used"] > EXPORT_IDLE_S]
+        if sum(len(e["data"]) for k, e in self._exports.items() if k[0] != key[0] and k not in idle) + size > \
+                EXPORT_KEPT_BYTES:
+            raise RPCError("unavailable", "the signer holds as many bundles as it keeps, for other tenants' downloads: "
+                                          "ask again", retry_after_ms=EXPORT_RETRY_MS)
+        for k in [*idle, key]:
+            self._exports.pop(k, None)
+
+        def held(tenant=None):
+            return sum(len(e["data"]) for k, e in self._exports.items() if tenant in (None, k[0]))
+        mine = [k for k in self._exports if k[0] == key[0]]
+        while held(key[0]) + size > EXPORT_TENANT_BYTES or held() + size > EXPORT_KEPT_BYTES:
+            del self._exports[mine.pop(0)]
+        self._exports[key] = entry
+
+    def _export_bytes(self, key):
+        """The .tkb bytes of run `key`, as `tracekit export --v2 --run` writes them from this signer's store: read to
+        the note bundle_v2.covering picks, by a reader opened after it, with the compiled policies its records cite.
+        While no note covers the run's last record: a nudge, and unavailable with a retry hint."""
+        cfg = {"data_dir": self.data_dir, "storage": self.storage_config}
+        try:
+            r = reader(cfg)
+            try:
+                run = r.runs.get(key)
+                note = run and bundle_v2.covering(r, run["seqs"][-1])
+            finally:
+                r.close()
+            if not note:
+                self._nudged.set()
+                raise RPCError("unavailable", f"no checkpoint covers run {key[1]} yet; the signer is writing one: ask "
+                                              "again", retry_after_ms=int(CHECKPOINT_MIN_S * 1000))
+            # lean: each reader indexes the whole store, O(records), as the operator's export does; keep one open and
+            # update() it once exports are frequent on a large store
+            r = reader(cfg)   # opened after the note: holds its records
+            try:
+                files, _ = bundle_v2.bundle(r, *key, note[1], policy_dir=os.path.join(self.data_dir, "policies"))
+            finally:
+                r.close()
+        except ValueError as e:   # over the format's limits
+            raise RPCError("quota_exceeded", str(e)) from None
+        except (OSError, StorageUnavailable, StorageCorrupt) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        # lean: refused whole; per-tenant record keys or a blinded tenant list in certificates is a format change
+        named = {t for line in files["keys/records.jsonl"].splitlines()
+                 for k in json.loads(line)["event"]["data"].get("keys", ()) if "cert" in k
+                 for t in k["cert"]["certificate"]["cert"]["tenants"]}
+        if named - {key[0]}:
+            raise RPCError("forbidden", "a bundle of this signer holds its record-key certificates, which name tenants "
+                                        "other than yours: ask the signer's operator to export the run")
+        return bundle_v2.zipped(files)
+
     def _checkpoint_nudge(self, identity, req):
         self._nudged.set()
         return {"scheduled": True}
@@ -4781,7 +5302,9 @@ class SignerService:
                 # the salt also opens a model exchange's args_commitments, over the arguments before redaction
                 guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
                     "args_commitment" in u for u in e["data"].get("tool_uses", ()))
-                items.append({"seq": seq, "content": value} | (
+                src = e["data"].get("source") if e["type"] == "input.observed" else None
+                kind = {"type": e["type"]} | ({"source": src} if isinstance(src, str) else {})
+                items.append({"seq": seq, "content": value} | kind | (
                     {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
                     and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
             out = {"items": items}
@@ -4841,16 +5364,40 @@ class SignerService:
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
-        replay and findings runs' (their content never outlives their run's)."""
+        replay and findings runs' (their content never outlives their run's). The dev signer (isolation same-user),
+        where lessons live, keeps a run of a person's answers to lessons alone (_answers)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
         runs = self.log.write(lambda tx: self.log.storage.content_runs())
-        replays, done = self._vault_replays(runs), set()
+        replays, done, dev = self._vault_replays(runs), set(), self.isolation == "same-user"
         for log_id, tenant, run_id, stored in runs:
-            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done:
+            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done \
+                    and not (dev and self._answers((tenant, run_id))):
                 todo = [k for k in replays.get((tenant, run_id), []) if k not in done]
                 self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer",
                             replays=todo)
                 done.update([(tenant, run_id), *todo])
+
+    def _answers(self, key):
+        """Whether run `key` holds nothing but a person's answers to lessons (input.observed, source LESSON_ANSWERS:
+        _observe keeps them to an action, an id and a sha256), at most ANSWERS_KEPT, besides its start and end
+        (ANSWER_RUN). Read up to the first record that isn't one (an agent's run costs a record or two), and a closed
+        run's verdict is kept, so it is read once."""
+        if key in self._answer_runs:
+            return self._answer_runs[key]
+
+        def fn(tx):
+            n, final = 0, (self.log.runs.get(key) or {}).get("final")
+            for r in self.log.storage.iter_run(*key):
+                e = r["event"]
+                if e["type"] == "input.observed" and e["data"].get("source") == LESSON_ANSWERS and n < ANSWERS_KEPT:
+                    n += 1
+                elif e["type"] not in ANSWER_RUN:
+                    return final, False
+            return final, n > 0
+        final, out = self.log.write(fn)
+        if final:
+            self._answer_runs[key] = out
+        return out
 
     # --- OTLP import (tracekit.signer.otel) ---
 
@@ -5233,11 +5780,12 @@ def dev_data_dir(create=True):
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
               idle_s=900, data_dir=None, stacks=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
-    with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
-    `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's), and `stacks`, the signal
-    on which this process writes every thread's stack to its log (autospawn.down sends it to a stop that hangs); before
-    returning, unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
+    with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life, and logs
+    STARTING (a client waits longer for it: autospawn); then `open_handler()` -> (handle_frame, close); then binds the
+    socket (loopback TCP without Unix sockets) and publishes endpoint.json, which names `data_dir` as hello does
+    (autospawn takes only its own HOME's), and `stacks`, the signal on which this process writes every thread's stack to
+    its log (autospawn.down sends it to a stop that hangs); before returning, unpublishes both, then calls close(). Call
+    it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -5252,6 +5800,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                 print("LOST: another dev signer holds signer.lock", file=sys.stderr)
                 return 1
             time.sleep(0.05)
+    print(f"STARTING pid {os.getpid()}", file=sys.stderr, flush=True)
     stop = []   # not an Event: its set() in the handler waits forever on the lock a wait() it interrupts holds
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
@@ -5566,7 +6115,7 @@ def main(argv=None):
         # lean: run by hand while v1 hooks still sign with the v1 key; run the bridge on first v2 start once the hook
         # speaks the RPC (M1a-14)
         try:
-            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"))))
+            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"), cfg.get("origin"))))
         except (OSError, ValueError, StorageUnavailable, format_bridge.BridgeError) as e:
             print(f"tracekit signer bridge: {e}", file=sys.stderr)
             return 1
@@ -5599,9 +6148,6 @@ def main(argv=None):
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
                   f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
-        named = public_witness.named_origin(cfg)
-        if named:
-            print(f"tracekit: warning: {named}", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:
@@ -5622,9 +6168,14 @@ def main(argv=None):
         return 0
     if service.log.head["closed"]:
         service.close()
-        print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
-              file=sys.stderr)
+        print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new store "
+              "(a new data_dir; with storage postgres, a new database or schema) and either a new log key (a new "
+              "data_dir makes one; with log_key aws_kms, a new KMS key) or a new origin in signer.yaml", file=sys.stderr)
         return 1
+    # the log's origin, kept once set (in signer.yaml or not), and the name its key gives it
+    named = public_witness.named_origin(cfg, service.origin, checkpoint.key_origin(checkpoint.parse_vkey(service.vkey)[3]))
+    if named:
+        print(f"tracekit: warning: {named}", file=sys.stderr)
     stop = []   # not an Event, as in serve_dev
     signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     try:

@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "displayName": "Make notes.txt, read it, change one to uno, then run echo.",
+  "source": "prompt",
+  "updatedAt": "2026-11-16T14:10:11.257Z"
+}

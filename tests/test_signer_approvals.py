@@ -4,6 +4,7 @@ self-approval and the verifier's cap, and the `tracekit approvals` CLI against t
 import contextlib
 import hashlib
 import io
+import itertools
 import json
 import os
 import shutil
@@ -28,6 +29,7 @@ from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.storage import file as file_storage
 from test_signer_privacy import SECRET
 
 PAY = {"to": "acct-42", "cents": 1500}
@@ -354,6 +356,42 @@ class TestRealSigner(unittest.TestCase):
         self.assertIsNone(self.s.approval_get({"approval_id": aid})["args"])   # purged once consumed
         self.assertEqual(os.listdir(os.path.join(self.dir, "approvals")), [])
 
+    def test_a_retry_decided_before_a_restart_consumes_the_approval_after_it(self):
+        """The snapshot kept each call without its tool, so the retry's consume raised KeyError once the signer
+        restarted from it (found by the stateful property test of #760)."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-2",
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        self.restart()
+        out = self.consume(tool_call_id="tc-2")
+        self.assertEqual((out["ok"], out["approval_id"]), (True, aid))
+
+    def test_a_snapshot_written_before_calls_kept_their_tool_still_serves_the_retry(self):
+        """A run open across the upgrade: its calls in the older snapshot have no tool, which the start reads from
+        their decisions' records."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-2",
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        self.s.close()
+        snaps = os.path.join(self.dir, "store", "snapshots")
+        path = os.path.join(snaps, max(os.listdir(snaps), key=lambda n: int(n.split(".")[0])))
+        with open(path, "rb") as f:
+            snap = json.loads(f.read().partition(b"\n")[2])
+        for r in snap["state"]["runs"]:   # as a snapshot written before 1.7 holds them
+            for c in [*r.get("calls", {}).values(), *r.get("decisions", {}).values()]:
+                del c["tool"]
+        body = json.dumps(snap, separators=(",", ":")).encode()
+        with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
+            mac = file_storage._mac(f.read(), body)
+        with open(path, "wb") as f:
+            f.write(mac + b"\n" + body)
+        self.s = self.open()
+        self.assertIsNotNone(self.s.log.storage.snapshot)   # it started from the edited snapshot
+        out = self.consume(tool_call_id="tc-2")
+        self.assertEqual((out["ok"], out["approval_id"]), (True, aid))
+
     def test_args_are_encrypted_at_rest(self):
         aid = self.pending()
         with open(os.path.join(self.dir, "approvals", aid), "rb") as f:
@@ -414,6 +452,36 @@ class TestRealSigner(unittest.TestCase):
             self.s.approval_decide({"request_id": h, "approval_id": a, "decision": "approve"})
         self.s.log.approvals[aid]["not_before"] = svc._iso(time.time() + 60)   # as an agent approver's veto delay
         self.assertEqual(self.retry("tc-3", 2)["approval_id"], later)
+
+    def test_a_replay_keeps_the_consumed_call_open_when_a_result_of_other_args_did_not_use_its_approval(self):
+        """tc-1 consumed its approval, was decided again with other arguments and completed only under that second
+        decision, which ran without an approval (executed_against_policy). The first, approved decision never
+        completed: a decided_not_completed gap at close, after a restart from the snapshot and after one that replays
+        the records (a crash) alike. The replay ended it with the second decision's result. With the same arguments
+        the second decision's result is the approved call's own, and neither restart leaves a gap."""
+        cases = ((dict(PAY, cents=1), [("executed_against_policy", "tc-1"), ("decided_not_completed", "tc-1")]),
+                 (PAY, []))
+        for (other, gaps), snapshot in itertools.product(cases, (True, False)):
+            with self.subTest(snapshot=snapshot, same=other == PAY):
+                self.dir = ts.tmpdir(self)
+                self.s = self.open()
+                aid = self.pending()
+                self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+                self.assertTrue(self.consume()["ok"])
+                d2 = self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1,
+                                    "tool_call_id": "tc-1", "tool": "pay", "args_source": "parsed",
+                                    "args": other})["decision_id"]
+                self.s.complete({"request_id": "c2", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-1",
+                                 "decision_id": d2, "args_digest": event_hash({"tool": "pay", "args": other}),
+                                 "status": "ok"})
+                self.s.close()
+                if not snapshot:
+                    shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+                self.s = self.open()
+                self.s.close_run({"request_id": "x", **self.run})
+                self.s.sweep(now=time.monotonic() + svc.GRACE_S + 1)
+                self.assertEqual([(e["data"]["kind"], e["data"]["tool_use_id"]) for e in self.events()
+                                  if e["type"] == "capture.gap"], gaps)
 
     def test_a_call_completed_twice_on_one_approval_has_a_gap_the_second_time(self):
         """A call that consumed its approval, decided again with the same arguments and completed under both decisions,
