@@ -5715,6 +5715,15 @@ class GuardrailsAndPushes(unittest.TestCase):
             {"sql_query": "SELECT 1"},
             {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
 
+    def test_a_long_explain_or_paren_lead_decides_in_time(self):
+        # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time
+        for statement in ("(" * 60000, "( " * 30000, "EXPLAIN (" + "a" * 60000, "EXPLAIN (" + "ANALYZE " * 7000,
+                          "EXPLAIN ANALYZE " * 3500):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, statement=statement[:12]):
+                    d = e.decide("acme_runner", {"statement": statement})
+                    self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+
     def test_a_harness_or_mcp_tool_is_not_read_as_an_unmapped_one(self):
         """Review of #605, through the signer's own reading (evaluate): TK-A062 held Claude Code's ToolSearch, Skill
         and SlashCommand, Anthropic's text-editor and memory tools (a `command` of `view` or `create`), a Gemini CLI or
