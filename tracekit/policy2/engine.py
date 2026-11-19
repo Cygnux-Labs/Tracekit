@@ -3387,7 +3387,8 @@ def _download_runs(commands):
     with its code attached, as shell._code_arg reads it), is `curl | python -c` or `curl | python <script>`, for
     TK-A046. A runner that fetches the code it runs (`uv run https://…/x.py`, `uvx --from git+https://…`, `pipx run
     --spec https://…`: a remote source among its words) is a download into its interpreter too: `curl | python
-    remote`."""
+    remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's first
+    download in it (a later one's are among them), and each command once against the names every download saves."""
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
     for c in commands:
         prog, args = _program(c["argv"]), c["argv"][1:]
@@ -3395,14 +3396,40 @@ def _download_runs(commands):
                 _REMOTE_SOURCE.match(w) for a in args for w in (a, a.partition("=")[2])):
             out.append("curl | python remote")
             break
+    pipes, first, outs, groups, fed, into = {}, {}, {}, {}, [], []
+    for c in commands:
+        pipes.setdefault(c["pipeline"], []).append(c)
     for d in commands:
-        tool = d["argv"][0]
+        tool, p = d["argv"][0], d["pipeline"]
         if tool not in ("curl", "wget"):
             continue
+        first[p, tool] = min(first.get((p, tool), d.get("stage", 0)), d.get("stage", 0))
+        if "<()" in d["via"]:
+            fed += [tool] * (tool not in fed)
+            continue
+        if p not in outs:   # the files its pipeline's redirections and tees write, and whether one is a >( )
+            ts = [t for c in pipes[p] for t in [*c.get("out", ()), *c["argv"][1:] * (c["argv"][0] == "tee")]
+                  if _saved(t)]
+            outs[p] = (ts, any(t.startswith(">(") for t in ts))
+        own = _saves(d)
+        if outs[p][1] or any(t.startswith(">(") for t in own):
+            into += [tool] * (tool not in into)
+        hosts = {host[u] if u in host else host.setdefault(u, classes.url_info(u).get("host") or "")
+                 for u in _URL.findall(" ".join(d["argv"][1:]))}
+        if not (outs[p][0] or own) or hosts and all(h == "localhost" or h.startswith(("127.", "[::1]", "::1"))
+                                                    for h in hosts):
+            continue
+        if (p, tool) not in groups:   # (the names its pipeline's files are given, once)
+            groups[p, tool] = [_names(outs[p][0]), False]
+        group = groups[p, tool]
+        group[0] |= _names(d["argv"][1:] + own)
+        group[1] = group[1] or tool == "curl" and any(
+            re.fullmatch(r"--remote-header-name|--config|-[A-Za-z]*[JK][A-Za-z]*", a) for a in d["argv"][1:])
+    for (p, tool), stage in first.items():
         # a later stage of its pipeline that may run what it reads: any program but one known to read only data
         # (shell.DATA_ONLY, tar listing), a shell or an interpreter that reads its code from stdin; one given its code
         # (-c, a script) is TK-A046's
-        later = [c for c in commands if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0)]
+        later = [c for c in pipes[p] if c.get("stage", 0) > stage]
         if any(_may_run_input(c["argv"]) for c in later):
             out.append(f"{tool} | sh")
         for c in later:
@@ -3412,34 +3439,58 @@ def _download_runs(commands):
                     out.append(f"{tool} | {kind} -{shell.CODE_FLAGS[kind][0]}")
                 elif (i := shell._script_operand(kind, args)) is not None:
                     out.append(f"{tool} | {kind} {args[i]}")
-        if "<()" in d["via"]:
-            for c in commands:
-                subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]
-                if subs and _runs_code(c["argv"]):
-                    out += [f"{tool} | " + ("sh" if c["argv"][0] in ("source", ".") else
-                                            shlex.join(["/dev/stdin" if w == s else w for w in c["argv"]])) for s in subs]
-            continue
-        saved = _saves(d, commands)
-        if any(t.startswith(">(") for t in saved):
-            out += [f"{tool} | " + shlex.join(c["argv"]) for c in commands if ">()" in c["via"] and _runs_code(c["argv"])]
-        hosts = {host[u] if u in host else host.setdefault(u, classes.url_info(u).get("host") or "")
-                 for u in _URL.findall(" ".join(d["argv"][1:]))}
-        if not saved or hosts and all(h == "localhost" or h.startswith(("127.", "[::1]", "::1")) for h in hosts):
-            continue
-        names = {n for w in d["argv"][1:] + saved for n in (posixpath.basename(w), shell.base_name(w))} - {""}
-        anyname = tool == "curl" and any(re.fullmatch(r"--remote-header-name|--config|-[A-Za-z]*[JK][A-Za-z]*", a)
-                                         for a in d["argv"][1:])
+    for tool in fed:
+        for c in commands:
+            subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]
+            if subs and _runs_code(c["argv"]):
+                out += [f"{tool} | " + ("sh" if c["argv"][0] in ("source", ".") else
+                                        shlex.join(["/dev/stdin" if w == s else w for w in c["argv"]])) for s in subs]
+    out += [f"{tool} | " + shlex.join(c["argv"]) for tool in into for c in commands
+            if ">()" in c["via"] and _runs_code(c["argv"])]
+    # each name a download saves (a saved file's, its URL's), and any with a name the server picks (-J, -K), by tool,
+    # with the pipelines they come from: two tell that one isn't a command's own
+    froms, anyname, lens = {}, {}, {}
+    for (p, tool), (names, anyn) in groups.items():
+        for n in names:
+            if len(ps := froms.setdefault((tool, n), set())) < 2:
+                ps.add(p)
+        if anyn and len(ps := anyname.setdefault(tool, set())) < 2:
+            ps.add(p)
+        lens.setdefault(tool, set()).update(map(len, names))
+    lens = {tool: sorted(ks) for tool, ks in lens.items()}
+    for c in commands:
+        p, word, given = c["pipeline"], c["word"], c["argv"][1:] + list(c.get("in", ()))
+        for tool, ks in lens.items():
+            def other(name):   # a name a download outside this command's pipeline saves
+                return any(q != p for q in froms.get((tool, name), ()))
 
-        def named(w):   # a word that names a saved file, as bash reads it or as Windows does (shell.base_name)
-            return bool(names & {posixpath.basename(w), shell.base_name(w)})
-
-        def runs(c):
-            given = c["argv"][1:] + list(c.get("in", ()))
-            return named(c["word"]) or anyname and "/" in c["word"] or _runs_code(c["argv"]) and (
-                anyname and given or any(named(w) or re.search(
-                    r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)), w) for w in given))
-        out += [f"{tool} ; sh {c['word']}" for c in commands if c["pipeline"] != d["pipeline"] and runs(c)]
+            def named(w):   # a word that names a saved file, as bash reads it or as Windows does (shell.base_name)
+                return other(posixpath.basename(w)) or other(shell.base_name(w))
+            far = any(q != p for q in anyname.get(tool, ()))
+            if named(word) or far and "/" in word or _runs_code(c["argv"]) and (
+                    far and given or any(named(w) or _mentions(w, ks, other) for w in given)):
+                out.append(f"{tool} ; sh {word}")
     return out
+
+
+def _names(words):
+    """The names `words` give a file, as bash reads each or as Windows does (shell.base_name)."""
+    return {n for w in words for n in (posixpath.basename(w), shell.base_name(w))} - {""}
+
+
+def _mentions(w, lens, named):
+    """Whether `w` holds a name `named` takes, as `(?<![\\w.-])(?:NAME)(?![\\w-])` finds one: where neither a word
+    character, a dot nor a dash comes before it, and neither a word character nor a dash after. `lens`: the lengths of
+    the names, ascending. Each place a name may start is tried once for each length."""
+    for i in range(len(w)):
+        if i and (w[i - 1].isalnum() or w[i - 1] in "_.-"):
+            continue
+        for k in lens:
+            if i + k > len(w):
+                break
+            if (i + k == len(w) or not (w[i + k].isalnum() or w[i + k] in "_-")) and named(w[i:i + k]):
+                return True
+    return False
 
 
 _NOWHERE = ("-", "/dev/null", "/dev/stdout", "/dev/stderr")
@@ -3450,13 +3501,16 @@ _WGET_OUTPUT = re.compile(r"--output-document(?:=(.*))?|-[A-Za-z]*?O(.*)")
 _CURL_NAMED = re.compile(r"--remote-name(?:-all)?|--remote-header-name|--config|-[A-Za-z]*[OJK][A-Za-z]*")
 
 
-def _saves(d, commands):
-    """The files a download writes: curl's -o or --output, or its URL's name with -O, -J or --remote-name (or any, with
-    a config file's options: -K); wget's -O or --output-document, else its URL's name (not with --spider); a
-    redirection or tee in its pipeline. Not stdout or /dev/null (a link check)."""
-    curl, args = d["argv"][0] == "curl", d["argv"][1:]
-    out = [t for c in commands if c["pipeline"] == d["pipeline"]
-           for t in list(c.get("out", ())) + (c["argv"][1:] if c["argv"][0] == "tee" else [])]
+def _saved(t):
+    """Whether a download's output `t` is a file: not stdout or /dev/null (a link check)."""
+    return bool(t) and t not in _NOWHERE and not t.startswith("-")
+
+
+def _saves(d):
+    """The files a download writes by its own options (a redirection or tee in its pipeline writes them too): curl's -o
+    or --output, or its URL's name with -O, -J or --remote-name (or any, with a config file's options: -K); wget's -O
+    or --output-document, else its URL's name (not with --spider)."""
+    curl, args, out = d["argv"][0] == "curl", d["argv"][1:], []
     named = not curl and "--spider" not in args
     option = _CURL_OUTPUT if curl else _WGET_OUTPUT
     for a, value in zip(args, args[1:] + [""]):
@@ -3465,8 +3519,7 @@ def _saves(d, commands):
             named = named and curl
         elif curl and _CURL_NAMED.fullmatch(a):
             named = True
-    return [t for t in out if t and t not in _NOWHERE and not t.startswith("-")] + [
-        a for a in args if named and not a.startswith("-")]   # the URL, whose name it takes
+    return [t for t in out if _saved(t)] + [a for a in args if named and not a.startswith("-")]   # the URL's name
 
 
 _REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds
