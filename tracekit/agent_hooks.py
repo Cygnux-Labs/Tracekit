@@ -1383,6 +1383,11 @@ def normalise(harness, p):
             if ev == "tool.execute.after":
                 out["tool_response"] = p.get("tool_response")
             return out
+        if ev == "session.prompt":   # OpenCode 2.x's prompt hook: also a command's or a plugin's prompt, and a
+            # subagent's, with nothing in it that says a person typed it (the TUI sends no metadata): untrusted
+            return dict(out, hook_event_name="UserPromptSubmit", prompt=p.get("prompt"), source="prompt")
+        if ev == "session.deleted":   # OpenCode 2.x: the session was deleted
+            return dict(out, hook_event_name="SessionEnd", reason="session deleted")
         return None
     if harness == "goose":
         # goose names its event `event`, not `hook_event_name` (the v2 hook's command-line event arrives as the
@@ -1995,7 +2000,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE) or (
         harness == "openhands" and not p.get("hook_event_name") and p.get("event_type") in PRE)
     q = normalise(harness, p)
-    if harness == "gptme" and q and q["hook_event_name"] == "PromptObserved":
+    if q and (harness == "gptme" and q["hook_event_name"] == "PromptObserved" or
+              harness in PLUGIN_TOOLS and q["hook_event_name"] == "UserPromptSubmit"):
         q = None   # v1 has no untrusted prompt observation
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
@@ -2299,7 +2305,8 @@ def _opencode_plugin(python, v2, harness="opencode"):
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
-                _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
+                _dev_hook_argv(module, "entry", (harness, ev))
+                for ev in ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")}
     batch_error = json.dumps(_opencode_batch_reason(harness))
     return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
@@ -2307,7 +2314,7 @@ const commands = {json.dumps(commands)};
 // other coding agents' pre-tool timeout: a hook still running then hung, so it is killed and its call blocked
 const KILL_MS = 600000;
 
-async function tracekit(event, input, toolInput, toolResponse) {{
+async function tracekit(event, input, toolInput, toolResponse, more) {{
   const payload = {{
     hook_event_name: event,
     session_id: input.sessionID,
@@ -2316,6 +2323,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
     tool_input: toolInput,
     tool_response: toolResponse,
     cwd: input.cwd,
+    ...more,
   }};
   let timer, killed = false;
   try {{
@@ -2370,6 +2378,37 @@ export default {{
                                     event.status === "completed" ? event.result : {{ error: event.error }});
       if (result.code !== 0) console.error(result.message);
     }});
+    try {{   // registered after the tool hooks: an OpenCode without these hooks still decides each call
+      // each prompt as OpenCode admits it, once per message (a concurrent submission of one id runs the hook again).
+      // The draft is only read, never changed, and a hook that fails never stops the prompt
+      // lean: the ids live as long as the server, one per prompt
+      const prompted = new Set();
+      await ctx.session.hook("prompt", async (event) => {{
+        try {{
+          if (prompted.has(event.messageID)) return;
+          prompted.add(event.messageID);
+          const result = await tracekit("session.prompt", {{ sessionID: event.sessionID, cwd: ctx.location.directory }},
+                                        undefined, undefined, {{ prompt: event.prompt.text }});
+          if (result.code !== 0) console.error(result.message);
+        }} catch (error) {{
+          console.error(`[tracekit] the prompt was not recorded (${{error}})`);
+        }}
+      }});
+      // a deleted session is over, so its run closes; OpenCode 2.x sends plugins no other session end
+      const ended = new AbortController();
+      (async () => {{
+        for await (const event of ctx.event.subscribe({{ types: ["session.deleted"], signal: ended.signal }})) {{
+          const result = await tracekit("session.deleted", {{ sessionID: event.data.sessionID,
+                                                              cwd: ctx.location.directory }});
+          if (result.code !== 0) console.error(result.message);
+        }}
+      }})().catch((error) => {{
+        if (!ended.signal.aborted) console.error(`[tracekit] session ends are not recorded (${{error}})`);
+      }});
+      return () => ended.abort();
+    }} catch (error) {{
+      console.error(`[tracekit] prompts and session ends are not recorded (${{error}})`);
+    }}
   }},
 }};
 '''
