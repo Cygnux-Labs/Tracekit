@@ -1844,6 +1844,17 @@ class JcodeTools(unittest.TestCase):
                     (expected_name, expected_args),
                 )
 
+        # a name over 64 characters is cut and ends in the hash of server and tool, as jcode's dispatch_name does it
+        long_name = "mcp__srv__" + "t" * 54
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "srv", "tool": "t" * 54})[0], long_name)
+        long_call = {"server": "my-server", "tool": "get.x" + "y" * 60}
+        for route in (("mcp_call", long_call), ("mcp", {"action": "call", **long_call})):
+            name = agent_hooks.tool("jcode", *route)[0]
+            self.assertEqual(len(name), 64)
+            self.assertTrue(name.startswith("mcp__my_server__get_xyyy"), name)
+            self.assertRegex(name[55:], r"^_[0-9a-f]{8}$")
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "a", "tool": "b" * 70})[0][55:], "_" + "%08x" % 0x71695508)
+
         # Invalid or missing server/tool fields fall back gracefully without crashing
         for invalid_payload in (
             {"tool": "get.x"},
