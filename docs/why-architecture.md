@@ -234,7 +234,7 @@ A citation index counts who cited whom. This one also records which citations we
 
 ## Live guard
 
-`Guard.check(rt, agent, tool, args, decision, sensitive)` runs inside `Agent.act` (or `Agent.check` for adapters) before the tool executes, on a snapshot of the log so far. The built-in rule is the alert rule above with the verbatim search alone: a `high` alert when some argument value appears only in untrusted content (`untrusted-value`), else a `review` alert when the deciding call's output is untrusted (`untrusted-upstream`). Custom rules return an alert dict. In `block` mode an alert whose severity is in `block_on` stops the call. The verdict is stored on the action event, so it is hash-chained with it.
+`Guard.check(rt, agent, tool, args, decision, sensitive)` runs inside `Agent.act` (or `Agent.check` for adapters) before the tool executes, on a snapshot of the log so far. The built-in rule is the alert rule above: a `high` alert when some argument value appears only in untrusted content and no trusted content holds it (`untrusted-value`), else a `review` alert when the deciding call's output is untrusted (`untrusted-upstream`). Custom rules return an alert dict. In `block` mode an alert whose severity is in `block_on` stops the call. The verdict is stored on the action event, so it is hash-chained with it.
 
 ## Live server
 

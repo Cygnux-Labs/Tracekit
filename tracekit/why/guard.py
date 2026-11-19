@@ -30,7 +30,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .analysis import SENSITIVE_HINT, value_provenance
+from .analysis import SENSITIVE_HINT, _texts, trusted_holders, value_provenance
 from .core import Ref, Run
 
 MODES = ("off", "alert", "block")
@@ -112,9 +112,13 @@ class Guard:
             return c
         with rt._lock:  # a consistent snapshot; other agents may be writing
             run = Run(rt.run_id, list(rt.events), rt.blobs, rt.path)
-        prov = value_provenance(run, args, len(run.events)) if sensitive else []
+        end, texts = len(run.events), _texts(run) if sensitive else []
+        prov = value_provenance(run, args, end, texts) if sensitive else []
         if sensitive and self.builtin:
-            bad = [p for p in prov if p["status"] == "untrusted-only"]
+            # the alert's rule (analysis.alerts): why's search finds the value only in untrusted content, and no trusted
+            # content holds it as the signer's index reads values either (an IBAN the task writes in groups)
+            memo: Dict[Any, Any] = {}
+            bad = [p for p in prov if p["status"] == "untrusted-only" and not trusted_holders(run, end, p["value"], texts, memo)]
             if bad:
                 c.alerts.append({"severity": "high", "rule": "untrusted-value",
                                  "title": f"{tool} would use a value that only untrusted content supplied",

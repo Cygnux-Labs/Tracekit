@@ -219,7 +219,7 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
            "chain": [_step(g, s, nid, edges, memo) for s in steps], "truncated": cut, "serves": serves,
            "untrusted": u,
            # the trusted content that holds the traced value too (the task, a trusted result): said beside
-           "also": trusted_holders(run, ev, traced, texts, memo) if traced is not None else [],
+           "also": trusted_holders(run, ev["seq"], traced, texts, memo) if traced is not None else [],
            "in_context": list(dict.fromkeys(g.nodes[e["src"]]["label"] for e in bad)),
            "step": _step(g, step, nid, edges, memo)["text"] if step else None,
            **({"tracekit": ev["tracekit"]} if ev.get("tracekit") else {})}

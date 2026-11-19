@@ -154,9 +154,10 @@ def _numbers(v: Any) -> List[Any]:
     return [v] if isinstance(v, (int, float)) and not isinstance(v, bool) else []
 
 
-def trusted_holders(run: Run, ev: Dict[str, Any], value: Any, texts: Optional[List[Tuple]] = None,
+def trusted_holders(run: Run, before_seq: int, value: Any, texts: Optional[List[Tuple]] = None,
                     memo: Optional[Dict[Any, Any]] = None) -> List[str]:
-    """The trusted content before call `ev` (the task, a trusted result) that holds all of argument `value` too. Each
+    """The trusted content before `before_seq` (the call's seq; the live guard's, past the end of the log), the task or a
+    trusted result, that holds all of argument `value` too. Each
     atom of it (atoms()) is found by why's search over text read as the signer's index reads it (_plain: an IBAN the
     task writes in groups), or as a value the index reads in the content that is all of the atom (the whole string a
     JSON result holds, the address it is; not an address inside a URL); a number only as a value the index reads (a
@@ -172,7 +173,7 @@ def trusted_holders(run: Run, ev: Dict[str, Any], value: Any, texts: Optional[Li
                            if trust == "trusted"]
     found: Set[str] = set()
     for e, text, label in memo["trusted"]:
-        if e["seq"] >= ev["seq"] or label in found:
+        if e["seq"] >= before_seq or label in found:
             continue
         if ("read", e["id"]) not in memo:
             held = run.value(e.get("ref") if e["type"] == "input" else e.get("result_ref"))
@@ -330,7 +331,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
         prov = arg_provenance(run, g, ev, texts)
         # only untrusted content holds the value: why's search finds it there, and no trusted content holds it as the
         # signer's index reads values either (an IBAN the task writes in groups)
-        bad = [p for p in prov if p["status"] == "untrusted-only" and not trusted_holders(run, ev, p["value"], texts, memo)]
+        bad = [p for p in prov if p["status"] == "untrusted-only" and not trusted_holders(run, ev["seq"], p["value"], texts, memo)]
         untrusted_up = [g.nodes[a]["label"] for a in g.ancestors(nid, ("observed",))
                         if g.nodes[a]["type"] == "input" and g.nodes[a].get("trust") == "untrusted"] \
             if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert

@@ -508,9 +508,12 @@ class Alerts(unittest.TestCase):
                          ["send_money used a value that only untrusted content supplied"])
 
     def test_a_whole_value_a_trusted_result_holds_is_not_one_only_untrusted_content_supplied(self):
-        """A JSON result's text escapes quotes: why's search missed the payee the trusted lookup returned."""
+        """A JSON result's text escapes quotes: why's search missed the payee the trusted lookup returned. The index
+        reads a string without its outer or repeated white space, so a payee the call ends with a newline is it too."""
         payee = 'ACME "North" Ltd'
         self.assertEqual(only(paid("Pay this month's supplier invoice", payee, {"payee": payee, "terms": "30 days"})),
+                         [])
+        self.assertEqual(only(paid("Pay this month's supplier invoice", "ACME North Ltd\n", {"payee": "ACME North Ltd"})),
                          [])
         self.assertEqual(only(paid("Pay this month's supplier invoice", payee, {"payee": "ACME Ltd", "terms": "30 days"})),
                          ["send_money used a value that only untrusted content supplied"])
