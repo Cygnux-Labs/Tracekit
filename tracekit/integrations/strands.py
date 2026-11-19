@@ -137,8 +137,9 @@ def _as_run(name, tool, args):
     `sh -c '…'`, which reads it as a POSIX shell does, with only the other options its shell reads. Strands' vended
     shell (strands.vended_tools, by any name) runs its `command` string by its sandbox's `sh -c`: decided so too. Another
     tool named `shell` may be a copy of strands_tools', loaded by path or kept in ./tools/ (a module of its own name), or
-    a tool that takes an argv: its list of strings, or a string that is a JSON array of them, is decided both ways, as
-    the signer reads its `command` and each entry as `sh -c '…'`, so no command hides from a rule whichever way it runs.
+    a tool that runs its string by bash or takes an argv: its string, its list of strings or a string that is a JSON
+    array of them is decided both ways, as the signer reads its `command` and each entry as `sh -c '…'`, so no command
+    hides from a rule whichever way it runs.
     Labelled coerced: reconcile doesn't hold them to the model's tool use. An entry the shell can't run is left out. Any
     other call as it is."""
     module = getattr(getattr(tool, "_tool_func", None), "__module__", None) or ""
@@ -154,7 +155,7 @@ def _as_run(name, tool, args):
             entries = json.loads(command)
         except (ValueError, RecursionError):
             pass
-    if known and not isinstance(entries, list):
+    if isinstance(entries, str) or known and not isinstance(entries, list):
         entries = [entries]
     if not isinstance(entries, list) or not known and not all(isinstance(e, str) for e in entries):
         return args, {}

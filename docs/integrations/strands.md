@@ -53,8 +53,9 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   follows, is held), on its own and all of them joined, so an open quote or a here-document in one can't hide the
   next; with only the other options its shell reads (`parallel`, `ignore_errors`, `timeout`, `work_dir`). Another tool
   named `shell` (a copy of `strands_tools`' shell loaded by path or kept in `./tools/` is a module of its own name, or
-  a tool that takes an argv) given a list of strings, or a string that is a JSON array of them, is decided both ways:
-  as the signer reads its `command` (a list as one argv) and each entry as `sh -c '…'`; the stricter stands. These
+  a tool that takes an argv) given a string, a list of strings or a string that is a JSON array of them is decided
+  both ways: as the signer reads its `command` (a string as bash, a list as one argv) and each entry as `sh -c '…'`;
+  the stricter stands. These
   arguments are labelled `args_source: coerced`: they are the commands that run, not the model's `command` as written.
   Strands' vended shell (`strands.vended_tools`) runs its `command` string with its sandbox's `sh -c`, so that string is
   decided as `sh -c '…'` too (`echo hi &>/dev/null sudo id` is held), also labelled `coerced`. Codex's and OpenAI

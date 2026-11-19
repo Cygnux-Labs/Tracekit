@@ -691,16 +691,19 @@ class ShellLists(unittest.TestCase):
         for argv, verdict in ((["git", "commit", "-m", "sudo id"], "allow"), (["bash", "-lc", "sudo id"], "deny")):
             self.assertEqual(svc.evaluate(policy, "shell", {"command": argv})[0]["verdict"], verdict, argv)
 
-    def test_another_shell_tool_given_a_list_is_decided_both_ways(self):
+    def test_another_shell_tool_given_a_list_or_a_string_is_decided_both_ways(self):
         """A copy of strands_tools' shell loaded by path (module `shell`) ran `["echo hi", "rm -rf ~"]`, allowed as one
-        argv. A list of strings to such a tool is decided both as the signer reads it and as each entry run by sh; a
-        string, as it is."""
+        argv, and `echo hi &>/dev/null sudo id` by dash, allowed as bash reads it. A list of strings or a string to such
+        a tool is decided both as the signer reads it and as each entry run by sh."""
         ran, events = self.go(svc.load_policy(), [["echo hi", "rm -rf ~"], ["git", "commit", "-m", "sudo id"],
-                                                  ["rm", "-rf", "/"], ["ls", "pwd"], "sudo id"], module="shell")
+                                                  ["rm", "-rf", "/"], "sudo id", ["ls", "pwd"], "ls",
+                                                  "echo hi &>/dev/null sudo id"], module="shell")
         got = {e["tool_call_id"]: e for e in events if e["type"] == "policy.decision"}
-        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in range(5)],
-                         [("deny", "coerced")] * 3 + [("allow", "coerced"), ("deny", "parsed")])
-        self.assertEqual(ran, [["ls", "pwd"]])
+        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in range(6)],
+                         [("deny", "coerced")] * 4 + [("allow", "coerced")] * 2)
+        self.assertIn((got["s6"]["data"]["decision"], got["s6"]["args_source"]),
+                      [("ask", "coerced"), ("deny", "coerced")])
+        self.assertEqual(ran, [["ls", "pwd"], "ls"])
 
     def test_only_what_strands_tools_shell_reads_is_decided(self):
         """A JSON array's entries alone (every version parses it: read as written too, a 40 KiB one was over the
