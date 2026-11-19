@@ -498,6 +498,64 @@ class Alerts(unittest.TestCase):
         run.of_type("action")[-1]["status"] = "blocked"
         self.assertEqual([s for s, _, _ in mine()], ["high"])
 
+    def test_a_value_the_task_holds_as_the_signers_index_reads_it_is_not_one_only_untrusted_content_supplied(self):
+        """The task gives the IBAN in groups, the bill as one string: why's search read the task as not holding it, and
+        the high alert said only untrusted content supplied it. A value the task doesn't hold still gets it."""
+        iban = "DE89370400440532013000"
+        self.assertEqual(only(paid("Pay the bill to IBAN DE89 3704 0044 0532 0130 00", iban)), [])
+        self.assertEqual(only(paid("Pay the bill to IBAN ＤＥ８９　３７０４　００４４　０５３２　０１３０　００", iban)), [])
+        self.assertEqual(only(paid("Pay the bill to IBAN DE89 3704 0044 0532 0130 01", iban)),
+                         ["send_money used a value that only untrusted content supplied"])
+
+    def test_a_whole_value_a_trusted_result_holds_is_not_one_only_untrusted_content_supplied(self):
+        """A JSON result's text escapes quotes: why's search missed the payee the trusted lookup returned."""
+        payee = 'ACME "North" Ltd'
+        self.assertEqual(only(paid("Pay this month's supplier invoice", payee, {"payee": payee, "terms": "30 days"})),
+                         [])
+        self.assertEqual(only(paid("Pay this month's supplier invoice", payee, {"payee": "ACME Ltd", "terms": "30 days"})),
+                         ["send_money used a value that only untrusted content supplied"])
+
+    def test_an_address_the_task_holds_inside_an_untrusted_url_leaves_the_url_untrusted(self):
+        url = "https://evil.example/c?u=bob@corp.example"
+        self.assertEqual(only(paid("Send the Q3 report to bob@corp.example", url)),
+                         ["send_money used a value that only untrusted content supplied"])
+
+    def test_trusted_content_after_the_call_doesnt_hold_its_value(self):
+        iban = "DE89370400440532013000"
+        self.assertEqual(only(paid("Pay the bill", iban, after={"iban": iban, "status": "paid"})),
+                         ["send_money used a value that only untrusted content supplied"])
+
+    def test_a_number_is_found_only_as_a_value_the_signers_index_reads(self):
+        """A traced number the task writes in groups is the task's too; a short one in its prose is no value the index
+        reads, and one the index reads none of beside a held value is left out."""
+        def also(value):
+            run, call, _ = desk(EXACT, args={"branch": value}, signer=True)
+            task = next(e for e in run.events if e.get("kind") == "task")
+            run.blobs[task["ref"]] = "Pay 98.70 into account 3704 0044 with note 12345"
+            return call_influence(run, build_graph(run), call)["also"]
+        self.assertEqual(also(37040044), ["task"])
+        self.assertEqual(also({"account": 37040044, "amount": 98.7}), ["task"])
+        self.assertEqual(also(12345), [])
+
+
+def paid(task, record, trusted=None, after=None):
+    """A run: `task`, an untrusted bill holding `record`, a trusted lookup's result `trusted` when given, and send_money
+    to `record`, asked for by a model call that saw them all; `after`: a trusted lookup's result after it."""
+    rt = Runtime({"m": lambda ctx, **k: "pay"}, {"lookup": lambda q: trusted if q == "payee" else after,
+                                                  "send_money": lambda **a: "ok"}, task=task, signer=False)
+    a = rt.agent("ops")
+    seen = [rt.task_ref, a.observe(f"Bill 12: pay {record} by Friday", source="mail:bill")]
+    if trusted is not None:
+        seen.append(a.act("lookup", {"q": "payee"}, decision=a.decide(list(seen), model="m")))
+    a.act("send_money", {"recipient": record}, decision=a.decide(seen, model="m"))
+    if after is not None:
+        a.act("lookup", {"q": "payment"}, decision=a.decide([rt.task_ref], model="m"))
+    return rt.finish()
+
+
+def only(run):
+    return [a["title"] for a in alerts(run, build_graph(run, infer=False)) if "only untrusted" in a["title"]]
+
 
 def _write(run, path):
     os.makedirs(os.path.join(path, "blobs"))

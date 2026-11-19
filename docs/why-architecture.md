@@ -112,7 +112,7 @@ Alerts:
 
 | Severity | Condition |
 |---|---|
-| high | sensitive action with at least one `untrusted-only` argument value; or the log fails verification |
+| high | sensitive action with at least one `untrusted-only` argument value that no earlier trusted content holds read as the signer's index reads values either (`analysis.trusted_holders`: the search over text read as the index reads it, so an IBAN the task writes in groups is the task's, or a value the index reads that is the whole value, such as the string a JSON result holds); or the log fails verification |
 | review | sensitive action downstream of an untrusted input (reach only); failed tool call; failed model call |
 | info | tool call stubbed during a replay |
 
@@ -234,7 +234,7 @@ A citation index counts who cited whom. This one also records which citations we
 
 ## Live guard
 
-`Guard.check(rt, agent, tool, args, decision, sensitive)` runs inside `Agent.act` (or `Agent.check` for adapters) before the tool executes, on a snapshot of the log so far. The built-in rule is the alert rule above: a `high` alert when some argument value appears only in untrusted content (`untrusted-value`), else a `review` alert when the deciding call's output is untrusted (`untrusted-upstream`). Custom rules return an alert dict. In `block` mode an alert whose severity is in `block_on` stops the call. The verdict is stored on the action event, so it is hash-chained with it.
+`Guard.check(rt, agent, tool, args, decision, sensitive)` runs inside `Agent.act` (or `Agent.check` for adapters) before the tool executes, on a snapshot of the log so far. The built-in rule is the alert rule above with the verbatim search alone: a `high` alert when some argument value appears only in untrusted content (`untrusted-value`), else a `review` alert when the deciding call's output is untrusted (`untrusted-upstream`). Custom rules return an alert dict. In `block` mode an alert whose severity is in `block_on` stops the call. The verdict is stored on the action event, so it is hash-chained with it.
 
 ## Live server
 

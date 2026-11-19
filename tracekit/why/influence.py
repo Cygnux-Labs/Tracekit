@@ -31,8 +31,7 @@ from __future__ import annotations
 import heapq
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from .. import provenance
-from .analysis import _committed, _ended, _short, _texts, arg_provenance, atoms, is_sensitive
+from .analysis import _committed, _ended, _short, _texts, arg_provenance, is_sensitive, trusted_holders
 from .core import Run
 from .graph import Graph
 
@@ -219,34 +218,13 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
            "edges": edges + seen, "hints": _first(hinted), "ruled_out": [g.nodes[s]["label"] for s in got["ruled"]],
            "chain": [_step(g, s, nid, edges, memo) for s in steps], "truncated": cut, "serves": serves,
            "untrusted": u,
-           # what why's own search finds the traced value in that is trusted (the task, a trusted result): said beside
-           "also": _also(run, ev, traced, prov, texts, memo) if traced is not None else [],
+           # the trusted content that holds the traced value too (the task, a trusted result): said beside
+           "also": trusted_holders(run, ev, traced, texts, memo) if traced is not None else [],
            "in_context": list(dict.fromkeys(g.nodes[e["src"]]["label"] for e in bad)),
            "step": _step(g, step, nid, edges, memo)["text"] if step else None,
            **({"tracekit": ev["tracekit"]} if ev.get("tracekit") else {})}
     out["words"] = words(out)
     return out
-
-
-def _also(run: Run, ev: Dict[str, Any], value: Any, prov: List[Dict[str, Any]], texts, memo) -> List[str]:
-    """The trusted content before call `ev` (the task, a trusted result) that holds the traced argument `value` too:
-    why's own search for it (`prov`: arg_provenance of the call), or a value of it as the signer's index reads one (an
-    address, digit run, URL; `texts`: _texts of the run, each read once into `memo`), which the index can miss in
-    prose."""
-    words = {a.lower() for a in atoms(value)}
-    found = {s["label"] for r in prov if r["value"].lower() in words for s in r["sources"] if s["trust"] == "trusted"}
-    mine = set(provenance.values(value)[0])
-    if "trusted" not in memo:   # the run's trusted texts, picked out once for its calls
-        memo["trusted"] = [(e, label) for e, _, trust, label in (_texts(run) if texts is None else texts)
-                           if trust == "trusted"]
-    for e, label in memo["trusted"]:
-        if e["seq"] < ev["seq"] and label not in found:
-            if ("values", e["id"]) not in memo:
-                held = run.value(e.get("ref") if e["type"] == "input" else e.get("result_ref"))
-                memo["values", e["id"]] = set() if _committed(held) else set(provenance.values(held)[0])
-            if mine & memo["values", e["id"]]:
-                found.add(label)
-    return sorted(found)
 
 
 def _first(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

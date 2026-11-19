@@ -721,7 +721,9 @@ grade's recall floor among them).
   both emails, a test whose target only names the tool (`tool=send_email`, both emails) put its verdict on 0 calls.
 - **A record that held the value, no more**: 4 built runs where the task gives a value in prose (a branch name, an
   address, an IBAN, a URL) and an untrusted record read later holds it too. The signer's index named the record in all
-  4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too.
+  4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too. The
+  high alert that only untrusted content supplied a value fires on 0 of them: it reads the IBAN the task writes in
+  groups as the signer's index does.
 
 Results: `eval/results/e28_influence.json`.
 

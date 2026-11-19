@@ -147,6 +147,7 @@ def claims():
         f"{e28['held']['cases']} built runs where the task gives a value in prose",
         f"named the record in all {e28['held']['exact_from_record']}",
         f"in all {e28['held']['said_task_too']} the words say the task holds the value too",
+        f"only untrusted content supplied a value fires on {e28['held']['only_alerts']} of them",
     ]
     limits = [
         f"in {pct(ag['exact']['found'] / ag['exact']['calls'])} of the successful attacks scored",

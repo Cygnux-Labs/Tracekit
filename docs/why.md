@@ -258,8 +258,9 @@ they are known (`tracekit/why/influence.py`):
 
 A hint is never called an influence and never drives a finding. In the viewer an exact edge reads signed only on a
 call whose signed record the viewer verified. An exact edge says what the signer's index saw, not that the record
-supplied the value: when why's own search, or a value as the index reads one, finds the value in the task or a trusted
-result too, the words say so.
+supplied the value: when the task or a trusted result holds all of it too, the words say so. Why's own search finds
+it there, also over text read as the index reads it (an IBAN the task writes in groups), or a value the index reads
+there that is the whole of it (the string a JSON result holds); an address inside a URL is not the URL.
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
@@ -292,7 +293,7 @@ AgentDojo's published runs.
 
 | Severity | When |
 |---|---|
-| **high** | a sensitive tool used an argument value that appears only in untrusted content, or the log fails verification |
+| **high** | a sensitive tool used an argument value that appears only in untrusted content (no trusted content holds it, read as the signer's index reads values too: an IBAN the task writes in groups is the task's), or the log fails verification |
 | **review** | a call serves no step of the task (a replay without the task kept it); an argument traced to untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
 | **info** | a tool call was stubbed during replay |
 

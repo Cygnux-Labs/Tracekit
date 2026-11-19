@@ -157,6 +157,7 @@
  "held": {
   "cases": 4,
   "exact_from_record": 4,
+  "only_alerts": 0,
   "said_task_too": 4
  },
  "without_task": {

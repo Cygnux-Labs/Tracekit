@@ -53,7 +53,8 @@ class Gate(unittest.TestCase):
                  (("without_task", "asked_drift"), 1, "without_task: an asked call serves no step of the task"),
                  (("without_task", "tool_only_attached"), 1, "without_task: a target several calls match put a verdict on one"),
                  (("held", "said_task_too"), -1,
-                  "held: an exact edge from a record that only held the value doesn't say the task holds it too")]
+                  "held: an exact edge from a record that only held the value doesn't say the task holds it too"),
+                 (("held", "only_alerts"), 1, "held: a high alert says only untrusted content supplied a value the task holds")]
         for path, delta, said in cases:
             with self.subTest(said=said):
                 r = copy.deepcopy(r0)

@@ -9,8 +9,9 @@ import re
 import sys
 from collections import deque
 from itertools import takewhile
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
+from .. import provenance
 from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
 from .graph import Graph, _text, build_graph, nodes_matching, target_hits
 
@@ -127,6 +128,59 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
             status = "trusted"
         rows.append({"value": a, "status": status, "sources": srcs})
     return rows
+
+
+_DIGIT_SEP = re.compile(r"(?<=[0-9])[ .-](?=[0-9])")
+
+
+def _plain(s: str) -> str:
+    """`s` as the signer's index reads text (provenance.norm), case folded, without the ' ', '.' or '-' between two
+    digits: a digit run written in groups (an IBAN, an account or card number) reads as one, as the index reads it."""
+    return _DIGIT_SEP.sub("", provenance.norm(s)).casefold()
+
+
+def _whole(a: str) -> Set[Tuple[str, str]]:
+    """The values the signer's index reads in `a` that are all of it: the whole string, or the address, URL or digit
+    run it is; not a host or an address inside it."""
+    p = _plain(a)
+    return {(k, v) for k, v in provenance.values(a)[0] if k == "string" or _plain(v) == p}
+
+
+def _numbers(v: Any) -> List[Any]:
+    if isinstance(v, dict):
+        v = list(v.values())
+    if isinstance(v, list):
+        return [n for x in v for n in _numbers(x)]
+    return [v] if isinstance(v, (int, float)) and not isinstance(v, bool) else []
+
+
+def trusted_holders(run: Run, ev: Dict[str, Any], value: Any, texts: Optional[List[Tuple]] = None,
+                    memo: Optional[Dict[Any, Any]] = None) -> List[str]:
+    """The trusted content before call `ev` (the task, a trusted result) that holds all of argument `value` too. Each
+    atom of it (atoms()) is found by why's search over text read as the signer's index reads it (_plain: an IBAN the
+    task writes in groups), or as a value the index reads in the content that is all of the atom (the whole string a
+    JSON result holds, the address it is; not an address inside a URL); a number only as a value the index reads (a
+    digit run of 8 or more), and one it reads none of is left out. `texts`: _texts of the run; `memo`: each content's
+    readings, kept for the calls of a run."""
+    reads = [(_plain(a), _whole(a)) for a in atoms(value)] + \
+        [(None, w) for w in (_whole(str(n)) for n in _numbers(value)) if w]
+    if not reads:
+        return []
+    memo = {} if memo is None else memo
+    if "trusted" not in memo:   # the run's trusted content, picked out once for its calls
+        memo["trusted"] = [(e, text, label) for e, text, trust, label in (_texts(run) if texts is None else texts)
+                           if trust == "trusted"]
+    found: Set[str] = set()
+    for e, text, label in memo["trusted"]:
+        if e["seq"] >= ev["seq"] or label in found:
+            continue
+        if ("read", e["id"]) not in memo:
+            held = run.value(e.get("ref") if e["type"] == "input" else e.get("result_ref"))
+            memo["read", e["id"]] = _plain(text), set() if _committed(held) else set(provenance.values(held)[0])
+        plain, got = memo["read", e["id"]]
+        if all(p is not None and p in plain or bool(whole & got) for p, whole in reads):
+            found.add(label)
+    return sorted(found)
 
 
 def suggest_target(run: Run, action_ev: Dict[str, Any], prov: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -267,14 +321,16 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": f"{c['kind']} of {c['agent']}: log seq {c['seq']} ({c['type']}). The why log's "
                                   "content was changed, or the record is about something else.",
                         "node": "ev:" + c["event"]})
-    texts = _texts(run)
+    texts, memo = _texts(run), {}
     for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"]):
         if n["type"] != "action":
             continue
         ev = n["event"]
         sens = is_sensitive(run, ev)
         prov = arg_provenance(run, g, ev, texts)
-        bad = [p for p in prov if p["status"] == "untrusted-only"]
+        # only untrusted content holds the value: why's search finds it there, and no trusted content holds it as the
+        # signer's index reads values either (an IBAN the task writes in groups)
+        bad = [p for p in prov if p["status"] == "untrusted-only" and not trusted_holders(run, ev, p["value"], texts, memo)]
         untrusted_up = [g.nodes[a]["label"] for a in g.ancestors(nid, ("observed",))
                         if g.nodes[a]["type"] == "input" and g.nodes[a].get("trust") == "untrusted"] \
             if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert
