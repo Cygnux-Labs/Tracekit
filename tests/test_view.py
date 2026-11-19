@@ -1822,8 +1822,10 @@ class View(unittest.TestCase):
 
     def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
         run_id = self.finished_run()
-        seen = []
-        feed = store_feed(self, {"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        # `feed` is named before its threads start: the mirror thread can call on_run before the constructor returns
+        seen, feed = [], view.StoreFeed.__new__(view.StoreFeed)
+        feed.__init__({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        self.addCleanup(feed.close)
         self.report(feed, run_id)
         wait_for(lambda: seen, 15)
         shown, (tenant, rid, records, reasons) = seen[0]
