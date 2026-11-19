@@ -525,8 +525,8 @@ DATA_READERS = frozenset((
     "wget", "http", "https", "xh", "touch", "mkdir", "ls", "cp", "mv", "rm", "ln", "chmod", "chown", "test", "[",
     "true", "false", "export", "declare", "local", "readonly", "typeset"))
 # options whose value is data though their program may run other words it gets as code: a value hidden there may be
-# text a shell would split (`--set "k=a b"`). Each value is the word after its option or joined to it (`--set=k=v`,
-# `-pSECRET`); every other word of these programs is code to them, as any program's outside DATA_READERS
+# text a shell would split (`--set "k=a b"`). Where it is, _data_args says; every other word of these programs is code
+# to them, as any program's outside DATA_READERS
 _DATA_OPTIONS = {
     "terraform": ("-var",),   # an input variable's value, which the configuration reads as a value
     "helm": ("--set", "--set-string", "--set-json"),   # a chart value, which its templates render as text
@@ -538,8 +538,17 @@ _DATA_OPTIONS = {
     "mongosh": ("-u", "--username", "-p", "--password", "--host", "--port", "--authenticationDatabase"),
     "redis-cli": ("-u", "-h", "-p", "-a", "--user", "--pass"),
 }
-# a database client's positional connection URI (scheme://…) is data too
-_URI, _URI_CLIENTS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://"), ("psql", "mysql", "mongosh", "redis-cli")
+# the subcommands that take those options: kubectl and helm run a plugin for any other (`kubectl foo`, `kubectl create
+# foo`, `helm diff`), which gets their words to read as it likes
+_DATA_COMMANDS = {"helm": ("install", "upgrade", "template", "lint"), "kubectl": ("create secret", "create configmap")}
+# getopt's programs, whose short option's value may be the rest of its word (-Uapp, -pSECRET); mongosh's parser reads
+# `-uf` as two options, the second taking the next word (its -f: a file it runs)
+_JOINED = ("psql", "mysql")
+# a database client's connection URI as a positional (a word that is neither an option nor an option's value): psql's
+# conninfo and mysql's database name, wherever they stand; mongosh's first, unless --nodb: it runs every other
+# positional as a file. redis-cli runs its first positional as its command (its URI is -u's)
+_URIS = {"psql": re.compile(r"postgres(?:ql)?://"), "mysql": re.compile(r"mysql://"),
+         "mongosh": re.compile(r"mongodb(?:\+srv)?://")}
 # environment variables a program reads as data (a connection or a credential), whatever the program: a value given
 # one before a program not among DATA_READERS is data (`DATABASE_URL=… npm run migrate`); any other name there may be
 # code the program runs (LD_PRELOAD, NODE_OPTIONS, PYTHONSTARTUP, BASH_ENV, GIT_SSH_COMMAND, EDITOR, PAGER)
@@ -548,12 +557,40 @@ _DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|\w*_(?:URL|DSN|PASSWO
 
 
 def _data_args(name, args):
-    """The indexes of `args` (program `name`'s words after its name) that are data to it as _DATA_OPTIONS says."""
-    opts, out = _DATA_OPTIONS.get(name, ()), set()
+    """The indexes of `args` (program `name`'s words after its name, under a subcommand of _DATA_COMMANDS) that are
+    data to it: an option of _DATA_OPTIONS's value, in its word (`--set=k=v`, `-var=…`, _JOINED's `-Uapp`) or the word
+    after it unless that starts with `-` (mongosh's parser reads it as an option, and mysql's -p takes a value only
+    joined), and a connection URI of _URIS. Only an option the words before place as one: not a word another option
+    may take as its value (one this doesn't name: psql's -c, --eval, --quiet), nor past redis-cli's command (its words
+    may be code: EVAL's script) or a word an expansion makes (any number of words)."""
+    if name in _DATA_COMMANDS and not any(args[:c.count(" ") + 1] == c.split() for c in _DATA_COMMANDS[name]):
+        return set()
+    opts, out, state, first = _DATA_OPTIONS[name], set(), "option", True   # first: no positional yet
+    uri = None if name == "mongosh" and "--nodb" in args else _URIS.get(name)
     for k, a in enumerate(args):
-        if k and args[k - 1] in opts or any(a.startswith(o + "=") or len(o) == 2 and a.startswith(o) and len(a) > 2
-                                            for o in opts) or name in _URI_CLIENTS and _URI.match(a):
+        if not getattr(a, "lit", False):
+            break
+        dash, joined = a.startswith("-"), a.startswith("--") and "=" in a
+        if state == "value" and not dash:
             out.add(k)
+            state = "option"
+        elif state != "option":   # maybe the value of the option before: neither an option nor data
+            if name == "redis-cli" and not dash:   # or its command
+                break
+            first = first and dash
+            state = "option" if not dash or joined else "unsure"
+        elif a in opts:
+            state = "value"
+        elif any(a.startswith(o + "=") for o in opts) or name in _JOINED and a[:2] in opts and len(a) > 2:
+            out.add(k)
+        elif dash:   # an option this doesn't name, which may take the next word
+            state = "option" if joined else "unsure"
+        elif name == "redis-cli":
+            break
+        else:
+            if uri and uri.match(a) and (first or name != "mongosh"):
+                out.add(k)
+            first = False
     return out
 _SEEN = {CODE: _CODE_LIKE, SQ: re.compile(r"[\s|&;()<>$`']"), DQ: re.compile(r'[\s|&;()<>$`"\\]'),
          ANSI: re.compile(r"[\s|&;()<>$`'\\]"), LITERAL: re.compile(r"[\s|&;()<>$`]"),
@@ -675,6 +712,11 @@ class _Facts:
                 script = next((a for a in args if a[:1] != "-"), None)
             if script:   # (as a program's word: where it is written as it is)
                 self.programs.append((script.at if getattr(script, "inner", None) else None, within))
+        data = {}   # a program's word is data only if it is in each reading of the line (`psql $O '-h…'`: O may be -c)
+        for name, spans in self.args:
+            for a, b, reads in spans:
+                data[name, a, b] = data.get((name, a, b), True) and reads
+        self.args = [(name, [(a, b, data[name, a, b]) for a, b, _ in spans]) for name, spans in self.args]
         self.placed = learned["placed"]
         self.sure = not learned["pieces_cut"] and not any(c.get("opaque") for c in cmds)
 

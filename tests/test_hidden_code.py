@@ -396,9 +396,41 @@ class Lines(unittest.TestCase):
                 ("mysql -h db -u root --password='Zq8abcd' app", "mysql -e 'select 1 /* token=abcd1234 */'"),
                 ("mysql 'mysql://u:hunter2@db/app'", "mysql app -e 'system token=abcd1234'"),
                 ('mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app"', "mongosh --eval 'token=\"abcd1234\"'"),
-                ("redis-cli -u 'redis://default:hunter2@cache:6379' ping", "redis-cli EVAL 'token=abcd1234' 0")):
+                ("redis-cli -u 'redis://default:hunter2@cache:6379' ping", "redis-cli EVAL 'token=abcd1234' 0"),
+                # where the words before place the option: past an option it doesn't name, under its subcommand
+                ("helm upgrade --install app ./c --set 'token=abcd1234'",
+                 "helm upgrade app ./c --post-renderer-args --set 'token=abcd1234'"),
+                ("kubectl create configmap c -n prod --from-literal 'token=abcd1234'",
+                 "kubectl myplugin --from-literal 'token=abcd1234'"),
+                ("helm template app ./c --set 'token=abcd1234'", "helm diff upgrade app ./c --set 'token=abcd1234'"),
+                (f"psql -v ON_ERROR_STOP=1 '{url}' -f x.sql", "psql -c '-hx; token=abcd1234'"),
+                ("terraform -chdir=infra apply -var 'db_password=hunter2 pass'", f"DB_PASSWORD_COMMAND='{key}' npm start")):
             with self.subTest(command=command):
                 self.assertFalse(held({"command": command})[1])
+            with self.subTest(twin=twin):
+                self.assertTrue(held({"command": twin})[1])
+        for command in ("helm upgrade app ./c --namespace=prod --set 'token=abcd1234'",
+                        "helm upgrade --install app ./c --set-string 'token=abcd1234'"):
+            with self.subTest(command=command):
+                self.assertFalse(held({"command": command})[1])
+        for twin in (   # an option's value or a URI the words before don't place as one
+                "kubectl exec pod -- sh -c 'eval \"$1\"' --from-literal 'token=abcd1234'",   # not create's: a plugin's
+                "redis-cli EVAL 'return loadstring(ARGV[1])()' 0 -a 'token=abcd1234'",   # past redis-cli's command
+                # (and past a word that may be it: a script may start with `-`, a Lua comment)
+                "redis-cli --no-auth-warning EVAL '-- x\nreturn loadstring(ARGV[1])()' 0 -a 'token=abcd1234'",
+                "redis-cli 'redis://u:hunter2@h' 'token=abcd1234'",   # its first positional: its command
+                "mongosh -p '--eval=token=\"abcd1234\"'",   # an option to mongosh's parser, not -p's value
+                "mysql -p '-esystem token=abcd1234'",   # mysql's -p takes a value only joined
+                "mongosh --eval '-undefined;token=\"abcd1234\"'",   # the value of an option it doesn't name
+                "psql -X -c '-hx; token=abcd1234'",   # and so after one (-X may take -c)
+                "mongosh -uf 'mongodb://u:hunter2@h/x.js'",   # yargs's -uf: -u, and -f taking the next word
+                "psql $O '-hx; token=abcd1234'",   # O may be -c, and in the reading where it is empty, data
+                "psql * '-hx; token=abcd1234'",   # a file named -c may be first
+                "mongosh 'mongodb://h/db' 'mongodb://u:hunter2@h/x.js'",   # mongosh runs every positional but its
+                "mongosh --quiet x.js 'mongodb://u:hunter2@h/y.js'",   # first as a file,
+                "mongosh 'mongodb://u:hunter2@h/x.js' --nodb",   # and that one too under --nodb,
+                "mongosh 'https://u:hunter2@h/x.js'",   # and one not its scheme's ending .js
+                "helm install app 'oci://registry/charts/x?token=abcd1234'"):   # no database client's URI
             with self.subTest(twin=twin):
                 self.assertTrue(held({"command": twin})[1])
 
