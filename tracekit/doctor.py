@@ -316,6 +316,12 @@ def _harness_hooks(harness, config):
     return config.get("hooks") or {}
 
 
+def _hook_entries(hooks):
+    """[(event, hook)] of a coding agent's {event: [hook groups]}: each group's hooks, or the group itself."""
+    return [(ev, h) for ev, groups in hooks.items() for g in groups
+            for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
+
+
 def _config(harness, path):
     """A coding agent's hook config at `path`, parsed: jcode's TOML, the others' JSON."""
     from . import agent_hooks
@@ -913,12 +919,25 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
             hooks = _harness_hooks(harness, _config(harness, path))
-            cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
-                    for h in (g.get("hooks") or () if "hooks" in g else [g])
-                    if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+            every = _hook_entries(hooks)
+            cmds = [(ev, h) for ev, h in every if agent_hooks._version(h.get("command")) == "v2"]
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
+        if harness == "interpreter":   # /import copies Claude Code's hooks into the user's file (#940)
+            held = {path: every}
+            user = agent_hooks.config_path(harness, home=home)
+            if os.path.realpath(user) != os.path.realpath(path):
+                with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):   # none, or not hooks
+                    held[user] = _hook_entries(_harness_hooks(harness, _config(harness, user)))
+            copied = {f: sorted({ev for ev, h in entries if install._cmd_version(h.get("command")) is not None})
+                      for f, entries in held.items()}
+            copied = {f: evs for f, evs in copied.items() if evs}
+            add("D-HOOKS-EVENT", not copied,
+                " and ".join(f"{f} holds Tracekit's Claude Code hook ({', '.join(evs)})" for f, evs in copied.items())
+                + ": Open Interpreter runs it as well as its own, so each call is decided a second time, recorded as "
+                "claude-code" if copied else f"no Tracekit Claude Code hook in {' or '.join(held)}",
+                f"remove Tracekit's Claude Code hook from {' and '.join(copied or held)}", bad=WARN)
         if harness in agent_hooks.TRUSTING:
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
