@@ -696,10 +696,10 @@ class ShellLists(unittest.TestCase):
         argv. A list of strings to such a tool is decided both as the signer reads it and as each entry run by sh; a
         string, as it is."""
         ran, events = self.go(svc.load_policy(), [["echo hi", "rm -rf ~"], ["git", "commit", "-m", "sudo id"],
-                                                  ["ls", "pwd"], "sudo id"], module="shell")
+                                                  ["rm", "-rf", "/"], ["ls", "pwd"], "sudo id"], module="shell")
         got = {e["tool_call_id"]: e for e in events if e["type"] == "policy.decision"}
-        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in range(4)],
-                         [("deny", "coerced"), ("deny", "coerced"), ("allow", "coerced"), ("deny", "parsed")])
+        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in range(5)],
+                         [("deny", "coerced")] * 3 + [("allow", "coerced"), ("deny", "parsed")])
         self.assertEqual(ran, [["ls", "pwd"]])
 
     def test_only_what_strands_tools_shell_reads_is_decided(self):

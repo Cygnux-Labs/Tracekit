@@ -809,11 +809,8 @@ def _plain(raw, work, spent, at=0, readings=True, persistent_target=None, cmds=(
     for piece in (m.group() for m in _PIECE.finditer(raw, start)):
         if work[0] > shell.MAX_WORK:   # spent: the rest isn't read (32,000 pieces took 0.6 s)
             break
-        words = piece.split()
-        while words and words[0] in shell.KEYWORDS:   # (a loop's or a group's command, `do sudo${IFS}id`: sudo's)
-            words.pop(0)
         try:
-            found.append(shell.analyse_argv(words, readings, work) if words else ())
+            found.append(shell.analyse_argv(piece.split(), readings, work) if piece.split() else ())
         except shell.ParseError:
             pass
     for reading in found:
