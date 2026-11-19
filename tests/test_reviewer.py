@@ -164,6 +164,12 @@ class TestReviewer(Case):
                 load(f"signer: https://s\ngateway: {gateway}\n{tenants}")
         self.assertEqual(load(f"signer: https://s\ngateway: http://127.0.0.1:8080\n{tenants}")["gateway"],
                          "http://127.0.0.1:8080")
+        # a signer's insecure_loopback listener: plain http to this machine only, its token never on the wire
+        self.assertEqual(load(f"signer: http://127.0.0.1:8443\ngateway: https://gw\n{tenants}")["signer"],
+                         ["http://127.0.0.1:8443"])
+        for signer in ("http://signer.internal:8443", "http://user@127.0.0.1:8443"):
+            with self.subTest(signer), self.assertRaisesRegex(ValueError, "signer: an https:// URL"):
+                load(f"signer: {signer}\ngateway: https://gw\n{tenants}")
 
 
 class TestShadow(Case):

@@ -2,9 +2,9 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 28 adds the AI approver (docs/approvals.md#the-ai-
 approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
-`ai` (an agent approver's answers, the project rule it quotes, and the commit it read the project's rules from),
-approval_review's `ai` (the precedent key, run labels, precedents, playbook, project and recent calls of an approval
-held by the policy's approval_agent rules) and `approver` (people: the circuit breaker's state and the playbook,
+`ai` (an agent approver's answers) and `view_digest` (the approval_review it answers, required for an approval
+held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
+playbook and recent calls of such an approval) and `approver` (people: the circuit breaker's state and the playbook,
 accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 26 adds
 register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
@@ -238,14 +238,9 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
 # commits `object` (a file name) and holds a later call that breaks it for a person's approval, never lowering a decision
 CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
 # an agent approver's answers to an approval_agent approval (approval_decide `ai`): each answer's model and
-# decision (one, or two independent ones: a yes needs two that agree), the project rule it quotes, verbatim, and the
-# commit of the project's repository it read the project's rules from with the files it read, or why it read none
+# decision (one, or two independent ones: a yes needs two that agree)
 APPROVER_ANSWER = _obj(["answers"], answers={"type": "array", "minItems": 1, "maxItems": 2, "items": _obj(
-    ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]})},
-    project_rule=_str(1024, minLength=1), project={"oneOf": [
-        _obj(["commit", "files"], commit=_str(64, pattern=r"^([0-9a-f]{40}|[0-9a-f]{64})" + _END),
-             files={"type": "array", "maxItems": 16, "items": _str(256, minLength=1)}),
-        _obj(["unread"], unread=_str(256, minLength=1))]})
+    ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]})})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -376,9 +371,10 @@ REQUESTS = {
                             reason=REASON, on_behalf=PERSON, passkey=PASSKEY,
                             # an agent approver's word for what it runs: recorded as unattested
                             asserted=_obj([], model=_str(128), version=_str(64), prompt_hash=DIGEST),
-                            # its answers (two keys: two that agree for a yes), the project rule it quotes and the
-                            # project files it read: recorded, its word, on an approval_agent approval (version 28)
-                            ai=APPROVER_ANSWER),
+                            # its answers (two keys: two that agree for a yes): recorded, its word, on an
+                            # approval_agent approval, and the view_digest of the approval_review it answers, which
+                            # the signer requires there (version 28)
+                            ai=APPROVER_ANSWER, view_digest=DIGEST),
     # a chat bridge answers for the person who clicked (`approver`, slack:<team>/<user>), who `groups` (user groups of
     # the same team, slack:<team>/<group>) the bridge found them in; an `authorize` grant, never a default
     "approval_decide_on_behalf": _obj(["request_id", "approval_id", "decision", "approver"], request_id=ID,

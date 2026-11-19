@@ -171,7 +171,7 @@ from tracekit.policy2 import compile as policy_compile
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.signer import rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN
+from tracekit.signer.pipeline import PRECEDENT_S, SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
 # capture.gap kinds that say nothing against a run's own records: the witness, anchor, key and bridge lines judge those
@@ -1156,7 +1156,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                                 anchors, monitored, reg_cosigs)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     _approvals(rep, runs, policies)
-    _ai_approvals(rep, runs)
+    _ai_approvals(rep, runs, policies)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -1266,15 +1266,18 @@ def _approvals(rep, runs, policies):
             f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
 
 
-def _ai_approvals(rep, runs):
+def _ai_approvals(rep, runs, policies):
     """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any:
     the `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and
     circuit-breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`)
     carries `relied_on` with mode enforce, two answers that approve and a person's precedent, and no person's
-    rejection of a call like it. Each precedent it names that the bundle holds is checked: a person's approval, not
-    self-approved, of a request with the same precedent key (its digest), tenant and requester, made in a clean run,
-    before the answer and not revoked as a precedent (precedent.revoked) before it; one the bundle doesn't hold (a
-    precedent is often another run's) is counted, not checked."""
+    rejection of a call like it; with the snapshot of the policy it names, none of its run's labels is one the policy's
+    approval_agent run bound names. A precedent it names, when the bundle holds it, and any person's rejection the
+    bundle holds of a call like it, count as the signer counts them: a person's own answer (not a self-approval, not
+    break-glass) to a request with the same precedent key (its digest), tenant and requester, made in a run clean when
+    asked and when answered (run_clean), before the answer and at most PRECEDENT_S before it, not revoked as a
+    precedent (precedent.revoked) before it. A named precedent that doesn't count, or a rejection that does, fails the
+    line; a named precedent the bundle doesn't hold (often another run's) is counted, not checked."""
     events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
     asked, answered, gone, broken = {}, {}, {}, []
     yes = shadow = checked = outside = changes = 0
@@ -1288,6 +1291,20 @@ def _ai_approvals(rep, runs):
             changes += 1
             if e["type"] == "precedent.revoked":
                 gone.setdefault((e.get("tenant"), d["approval_id"]), e["seq"])
+
+    def when(e):
+        return datetime.datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).timestamp()
+
+    def discounted(p, pa, e):
+        """Why person's answer `p` (to request `pa`) doesn't count as a precedent at AI answer `e`, or None."""
+        return ("was self-approved" if p["data"].get("self_approved") else
+                "was a break-glass answer" if p["data"].get("break_glass") else
+                "was made in a run that wasn't clean" if not (pa["data"]["ai"]["clean"]
+                                                              and p["data"].get("run_clean") is True) else
+                "came after the answer" if p["seq"] > e["seq"] else
+                f"is more than {PRECEDENT_S // 86400} days older than the answer" if when(e) - when(p) > PRECEDENT_S
+                else "was revoked as a precedent before the answer"
+                if gone.get((e.get("tenant"), p["data"]["approval_id"]), e["seq"]) < e["seq"] else None)
     for e in events:
         d = e["data"]
         if e.get("type") == "approval.suggested" and "relied_on" in d:
@@ -1303,22 +1320,32 @@ def _ai_approvals(rep, runs):
             continue
         if not x["precedents"]["approve"] or x["precedents"]["reject"]:
             broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
+        snap = policies.get(x["policy_hash"])
+        try:
+            bound = (loads_strict(snap).get("approval_agent") or {}).get("run", {}).get("clean", ()) if snap else ()
+        except (ValueError, TypeError, AttributeError):
+            bound = ()
+        if set(x["labels"]) & set(bound):
+            broken.append(f"{at}: an AI yes in a run that carried {sorted(set(x['labels']) & set(bound))[0]}, which "
+                          "the policy's run bound names")
         for pid in x["precedents"]["approve"]:
             p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
             if p is None or pa is None:
                 outside += 1
                 continue
             checked += 1
-            why = ("is no person's approval" if p["data"]["decision"] != "approve" else
-                   "was self-approved" if p["data"].get("self_approved") else
+            why = ("is no person's approval" if p["data"].get("decision") != "approve" else
                    "is of another kind of call" if pa["data"]["ai"]["digest"] != mine["data"]["ai"]["digest"] else
                    "is another requester's" if pa["data"]["requester"] != mine["data"]["requester"] else
-                   "was made in a run that wasn't clean" if not pa["data"]["ai"]["clean"] else
-                   "came after the answer" if p["seq"] > e["seq"] else
-                   "was revoked as a precedent before the answer" if gone.get((e.get("tenant"), pid), e["seq"]) < e["seq"]
-                   else None)
+                   discounted(p, pa, e))
             if why:
                 broken.append(f"{at}: precedent {pid[:64]} {why}")
+        for (tenant, pid), p in answered.items():   # a rejection that counted, named or not
+            pa = asked.get((tenant, pid))
+            if tenant == e.get("tenant") and pa is not None and p["data"].get("decision") == "reject" \
+                    and pa["data"]["ai"]["digest"] == mine["data"]["ai"]["digest"] \
+                    and pa["data"]["requester"] == mine["data"]["requester"] and discounted(p, pa, e) is None:
+                broken.append(f"{at}: a person's rejection of a call like it ({pid[:64]}) counted when the AI said yes")
     if asked or shadow or changes:   # a bundle without the AI approver keeps the report it always had
         rep.check("AI approvals", not broken,
                   f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "

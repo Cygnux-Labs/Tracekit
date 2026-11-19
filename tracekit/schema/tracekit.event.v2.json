@@ -2038,6 +2038,10 @@
         },
         "relied_on": {
           "$ref": "#/$defs/approver_answer"
+        },
+        "run_clean": {
+          "type": "boolean",
+          "description": "format 1.8: a person's answer to an approval_agent approval: whether the run still met the AI approver's run bound when they answered (their answer is a precedent only then)"
         }
       }
     },
@@ -5037,9 +5041,10 @@
         "playbook",
         "policy_hash",
         "labels",
-        "mode"
+        "mode",
+        "view"
       ],
-      "description": "format 1.8: what an AI answer to an approval_agent approval relied on, as the signer read it when it answered (precedents, the playbook in force, the policy, the run's labels, whether its answer decided or was a suggestion and why: the circuit breaker), and the reviewer's own word (answers: each model's decision; a project rule it quoted; the project files it read)",
+      "description": "format 1.8: what an AI answer to an approval_agent approval relied on, as the signer read it when it answered (precedents, the playbook in force, the policy, the run's labels, the view it served the reviewer, whether its answer decided or was a suggestion and why: the circuit breaker), and the reviewer's own word (answers: each model's decision)",
       "properties": {
         "precedents": {
           "type": "object",
@@ -5135,53 +5140,9 @@
             }
           }
         },
-        "project_rule": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 1024
-        },
-        "project": {
-          "description": "the commit of the project's repository the reviewer read the project's rules from, which pins what each file held, and the files read; or why it read none (no git repository: a working tree's files are the agent's to write)",
-          "oneOf": [
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "commit",
-                "files"
-              ],
-              "properties": {
-                "commit": {
-                  "type": "string",
-                  "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
-                  "maxLength": 64
-                },
-                "files": {
-                  "type": "array",
-                  "maxItems": 16,
-                  "items": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 256
-                  }
-                }
-              }
-            },
-            {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "unread"
-              ],
-              "properties": {
-                "unread": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                }
-              }
-            }
-          ]
+        "view": {
+          "$ref": "#/$defs/commitment",
+          "description": "the view the reviewer was served (approval_review's view_digest) and named in its answer, committed under this record's salt"
         }
       }
     },

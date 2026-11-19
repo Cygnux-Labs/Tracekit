@@ -673,7 +673,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
       + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
-  aiApprovals(rep, runs);
+  aiApprovals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
@@ -1267,17 +1267,23 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
 /** The rules an operator's approval_agent may list (tracekit/policy2/compile.py APPROVER_RULES). */
 export const APPROVER_RULES: J[] = ["TK-SHELL-PARSE", "TK-A062", "TK-A025"];
 
+/** How long a person's answer counts as a precedent (tracekit/signer/pipeline.py PRECEDENT_S). */
+export const PRECEDENT_S = 30 * 86400;
+
 /**
  * The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
  * `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-breaker
- * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on` with
- * mode enforce, two answers that approve and a person's precedent, and no person's rejection of a call like it. Each
- * precedent it names that the bundle holds is checked: a person's approval, not self-approved, of a request with the
- * same precedent key (its digest), tenant and requester, made in a clean run, before the answer and not revoked as a
- * precedent (precedent.revoked) before it; one the bundle doesn't hold (a precedent is often another run's) is counted,
- * not checked.
+ * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on`
+ * with mode enforce, two answers that approve and a person's precedent, and no person's rejection of a call like it;
+ * with the snapshot of the policy it names, none of its run's labels is one the policy's approval_agent run bound
+ * names. A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
+ * count as the signer counts them: a person's own answer (not a self-approval, not break-glass) to a request with the
+ * same precedent key (its digest), tenant and requester, made in a run clean when asked and when answered (run_clean),
+ * before the answer and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A
+ * named precedent that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't
+ * hold (often another run's) is counted, not checked.
  */
-function aiApprovals(rep: Report, runs: Map<string, J[]>) {
+function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
   const events: J[] = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)).sort((a, b) => a.seq - b.seq);
   const asked = new Map<string, J>(), answered = new Map<string, J>(), gone = new Map<string, number>(), broken: string[] = [];
   let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0;
@@ -1291,6 +1297,15 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>) {
       if (e.type === "precedent.revoked" && !gone.has(k)) gone.set(k, e.seq);
     }
   }
+  const when = (e: J) => Date.parse(e.ts) / 1000;
+  /** Why person's answer `p` (to request `pa`) doesn't count as a precedent at AI answer `e`, or null. */
+  const discounted = (p: J, pa: J, e: J): string | null => p.data.self_approved ? "was self-approved"
+    : p.data.break_glass ? "was a break-glass answer"
+    : !(pa.data.ai.clean && p.data.run_clean === true) ? "was made in a run that wasn't clean"
+    : p.seq > e.seq ? "came after the answer"
+    : when(e) - when(p) > PRECEDENT_S ? `is more than ${PRECEDENT_S / 86400} days older than the answer`
+    : (gone.get(key(get(e, "tenant"), p.data.approval_id)) ?? e.seq) < e.seq
+      ? "was revoked as a precedent before the answer" : null;
   for (const e of events) {
     const d = e.data;
     if (e.type === "approval.suggested" && has(d, "relied_on")) shadow++;
@@ -1306,18 +1321,31 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>) {
     }
     if (!x.precedents.approve.length || x.precedents.reject.length)
       broken.push(`${where}: an AI yes without a person's precedent, or with a person's rejection of a call like it`);
+    const snap = policies.get(x.policy_hash);
+    let bound: J[] = [];
+    try {
+      const run = snap ? get(get(get(strictParseBytes(snap, floats), "approval_agent") ?? {}, "run") ?? {}, "clean") : null;
+      bound = Array.isArray(run) ? run : [];
+    } catch {
+      bound = [];
+    }
+    const met = x.labels.filter((l: J) => bound.includes(l)).sort();
+    if (met.length) broken.push(`${where}: an AI yes in a run that carried ${met[0]}, which the policy's run bound names`);
     for (const pid of x.precedents.approve) {
       const k = key(get(e, "tenant"), pid), p = answered.get(k), pa = asked.get(k);
       if (p === undefined || pa === undefined) { outside++; continue; }
       checked++;
       const why = p.data.decision !== "approve" ? "is no person's approval"
-        : p.data.self_approved ? "was self-approved"
         : pa.data.ai.digest !== mine.data.ai.digest ? "is of another kind of call"
-        : pa.data.requester !== mine.data.requester ? "is another requester's"
-        : !pa.data.ai.clean ? "was made in a run that wasn't clean"
-        : p.seq > e.seq ? "came after the answer"
-        : (gone.get(k) ?? e.seq) < e.seq ? "was revoked as a precedent before the answer" : null;
+        : pa.data.requester !== mine.data.requester ? "is another requester's" : discounted(p, pa, e);
       if (why) broken.push(`${where}: precedent ${cut(str(pid), 64)} ${why}`);
+    }
+    for (const [k, p] of answered) {   // a rejection that counted, named or not
+      const pa = asked.get(k), [tenant, pid] = JSON.parse(k);
+      if (tenant === (get(e, "tenant") ?? null) && pa !== undefined && p.data.decision === "reject"
+        && pa.data.ai.digest === mine.data.ai.digest && pa.data.requester === mine.data.requester
+        && discounted(p, pa, e) === null)
+        broken.push(`${where}: a person's rejection of a call like it (${cut(str(pid), 64)}) counted when the AI said yes`);
     }
   }
   if (!asked.size && !shadow && !changes) return;   // a bundle without the AI approver keeps the report it always had

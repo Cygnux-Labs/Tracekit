@@ -14,7 +14,7 @@ import re
 import shlex
 import time
 import unicodedata
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from . import classes, shell
 from .compile import APPROVER_RULES, BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, \
@@ -199,10 +199,11 @@ class Engine:
     def target(self, rule_ids, tool, args):
         """{rule id: the kind of target a call of `tool` with `args` acts on, as that rule reads it}, for each rule of
         `rule_ids` the AI approver may answer (compile.APPROVER_RULES): what its precedents are matched by
-        (docs/approvals.md#precedent). TK-A025: the package sources the line selects, each as scheme://host[:port]/path
-        without a user or password (a value that isn't a URL as written), sorted; TK-A062: each command or SQL
-        statement the tool is given to run (_runs), exactly; TK-SHELL-PARSE: the shell command, exactly. None when a
-        target can't be read."""
+        (docs/approvals.md#precedent). TK-A025: each package source the line selects, as how it was selected (the
+        program and option, config key or variable) and the source as scheme://host[:port]/path without a user or
+        password, sorted; TK-A062: each command or SQL statement the tool is given to run (_runs), exactly;
+        TK-SHELL-PARSE: the shell command, exactly. None when a target can't be read, or when a source is no http(s) URL
+        _source reads (a path or file:// URL: its content is the agent's to write)."""
         args = args if isinstance(args, dict) else {"value": args}
         out = {}
         for rid in sorted(set(rule_ids) & set(APPROVER_RULES)):
@@ -216,7 +217,11 @@ class Engine:
                     kind = [command]
                 else:
                     parsed, _ = self._parse(args, command, [0], fallback=False)
-                    kind = sorted({_source(v) for v in _package_indexes(parsed[0], parsed[2])}) if parsed else []
+                    pairs = [(how, _source(v)) for how, v in (
+                        _package_indexes(parsed[0], parsed[2], kinds=True) if parsed else [])]
+                    if any(v is None for _, v in pairs):
+                        return None
+                    kind = sorted({f"{how} {v}" for how, v in pairs})
             if not kind:
                 return None
             out[rid] = kind
@@ -1210,10 +1215,12 @@ def _environment_sent(parsed):
     return list(dict.fromkeys(out))
 
 
-def _package_indexes(commands, refs=()):
-    """Return only explicitly selected non-default package sources, one subject per effective option or variable."""
+def _package_indexes(commands, refs=(), kinds=False):
+    """Return only explicitly selected non-default package sources, one subject per effective option or variable; with
+    `kinds`, each as (how it was selected: the variable, or the program and its option or config key, the source), as
+    Engine.target keys a precedent by (an --extra-index-url is no --index-url)."""
     words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
-    out = [value for name, eq, value in (w.partition("=") for w in words)
+    out = [(name.upper(), value) for name, eq, value in (w.partition("=") for w in words)
            if eq and name.upper() in _SOURCE_VARIABLES and _non_default_source(value, _SOURCE_VARIABLES[name.upper()])]
     for command in commands:
         argv = command["argv"]
@@ -1257,7 +1264,7 @@ def _package_indexes(commands, refs=()):
                         (exe == "pip" and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url", "find-links"})
                         or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
                     if _non_default_source(value, default):
-                        out.append(value)
+                        out.append((f"{exe} config {key}", value))
             continue
         selected, i = [], 0
         while i < len(args):
@@ -1272,33 +1279,43 @@ def _package_indexes(commands, refs=()):
                     value = args[i + 1]
                     i += 1
                 if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
-                    out += [value] if value is not None and _non_default_source(value, default) else []
+                    out += [(f"{exe} {name}", value)] if value is not None and _non_default_source(value, default) \
+                        else []
                 elif exe in ("npm", "pnpm", "yarn", "bun"):
-                    selected = [value] if value is not None else []  # npm uses the last --registry
+                    selected = [(name, value)] if value is not None else []  # npm uses the last --registry
                 elif value is not None:
                     if exe == "uv" and name == "--index" and "=" in value:
                         value = value.split("=", 1)[1]
-                    selected.append(value)
+                    selected.append((name, value))
             elif exe == "pip" and arg.startswith("-i") and arg != "-i":
-                selected.append(arg[2:])
+                selected.append(("-i", arg[2:]))
             i += 1
-        for value in selected:
+        for name, value in selected:
             if value is None or _non_default_source(value, default):
-                out.append(value or "<missing>")
-    return out
+                out.append((f"{exe} {_LONG_OPTIONS.get(name, name)}", value or "<missing>"))
+    return out if kinds else [value for _, value in out]
+
+
+_LONG_OPTIONS = {"-i": "--index-url", "-f": "--find-links", "-s": "--source", "-a": "--add"}   # one option, two names
 
 
 def _source(value):
-    """A package source as the AI approver's precedent names it (Engine.target): scheme://host[:port]/path of a URL,
-    without its user, password, query or fragment; any other value as written."""
+    """A package source as the AI approver's precedent names it (Engine.target): scheme://host[:port]/path of an
+    http(s) URL, without its user, password, query or fragment, its path percent-encoded (no space in it), or None for
+    any other value or a host or port it can't read."""
     try:
         u = urlsplit(value)
         port = u.port
     except ValueError:
-        return value
-    if not (u.scheme and u.hostname):
-        return value
-    return f"{u.scheme.lower()}://{u.hostname.lower()}{f':{port}' if port else ''}{u.path}"
+        return None
+    host = (u.hostname or "").lower()
+    if u.scheme.lower() not in ("http", "https") or not re.fullmatch(r"[a-z0-9._:-]+", host):
+        return None
+    return (f"{u.scheme.lower()}://{f'[{host}]' if ':' in host else host}{f':{port}' if port else ''}"
+            f"{quote(u.path, safe=_PATH_SAFE)}")
+
+
+_PATH_SAFE = "/%!$&'()*+,;=:@~-._"   # RFC 3986 path characters, kept as written (and percent escapes)
 
 
 def _python_module(args):

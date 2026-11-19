@@ -69,9 +69,10 @@ CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "
              "detect_ids", "via", "caller", "refused", "ended", "policy_hash")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
-# the AI approver (approver_state): how long a person's answer counts as a precedent; the circuit breaker's agreement of
-# AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
-PRECEDENT_S = 30 * 86400
+# the AI approver (approver_state): how long a person's answer counts as a precedent, and a requester's runs carry
+# secrets_access after its labelled run closed; the circuit breaker's agreement of AI suggestions with people's answers,
+# over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
+PRECEDENT_S, SECRETS_S = 30 * 86400, 86400
 AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
@@ -168,7 +169,8 @@ def degrade(tx, prov, state, reason):
 
 def new_agent():
     """The agent-approval state (agent_state), empty."""
-    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {}}
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
+            "tainted": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -218,7 +220,11 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it (precedent.revoked), an
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (cooldown_key, the requester -> {run
+    id: None while open, else when it closed} of its runs that had a call decided under a rule labelled
+    secrets_access, `log.secret_rules`, or lost events the signer never got, for SECRETS_S after each closed: the run
+    bound reads it across all of the requester's runs, so a run it registers afresh is no way around it). A precedent
+    goes bad when a person revokes it (precedent.revoked), an
     incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI
     approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more,
     or an answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled
@@ -237,6 +243,14 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
+    # lean: a stand-in for 1.8 A's requester labels (the same cooldown_key and window); use A's function once it lands
+    k = cooldown_key(tenant, run) if run.get("owner") else None
+    if k and (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
+              or typ == "capture.gap" and d.get("kind") == "client_counter_gap"
+              or typ == "run.closing" and (ag["tainted"].get(k) or {}).get(e["run_id"], 0) is None):
+        now = epoch(e["ts"])
+        live = {r: t for r, t in (ag["tainted"].get(k) or {}).items() if t is None or t > now - SECRETS_S}
+        set_(ag["tainted"], k, {**live, e["run_id"]: now if run.get("closed") else None})
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
             k, now = f"{tenant}\0{r}", pinned(d)
@@ -249,7 +263,9 @@ def approver_state(set_, log, run, e, a, pop):
     elif typ == "approval.suggested" and ap and d["decision"] in ("approve", "reject"):
         set_(a, "suggested", d["decision"])
     elif typ == "approval" and ap and d.get("approver_kind") != "agent" and d["decision"] in ("approve", "reject"):
-        if ap["clean"] and not d.get("self_approved"):
+        # a person's own answer in a run clean when asked and when answered (run_clean); never a self-approval or a
+        # break-glass answer
+        if ap["clean"] and d.get("run_clean") is True and not d.get("self_approved") and not d.get("break_glass"):
             for old in [k for k, p in ag["precedents"].items() if p["at"] < epoch(e["ts"]) - PRECEDENT_S]:
                 pop(ag["precedents"], old)
             set_(ag["precedents"], d["approval_id"], {
@@ -529,7 +545,8 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None,
+                 secret_rules=frozenset()):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
@@ -551,6 +568,7 @@ class RecordLog:
         # SignerService.flush_refusals writes them as late_activity (memory only)
         self.late = {}
         self.handoff = lambda tool: False   # the policy's handoffs (SignerService sets it): see reconcile.observe
+        self.secret_rules = secret_rules   # the policy's rules labelled secrets_access (approver_state's `tainted`)
         self.down, self._last_try = None, 0.0
         self._replay()
         if bridge and self.head["seq"]:
@@ -779,7 +797,8 @@ class RecordLog:
             if "calls" in run:   # a final run's state keeps none
                 outcome(run["calls"], e)
             if not run["final"]:
-                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
+                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent,
+                                                                    secret_rules=self.secret_rules), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
         for run in runs.values():   # a run's last result had no executed_against_policy gap after it

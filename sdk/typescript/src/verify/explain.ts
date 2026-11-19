@@ -251,8 +251,9 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
     pass: "Held calls an AI approver answered, each yes with two model answers that agree and a person's earlier yes "
       + "to a call like it, checked where the bundle holds that yes.",
     fail: "An AI approver's yes decided a call without two answers that agree, without a person's earlier yes to a "
-      + "call like it, or on one that doesn't hold: another kind of call, a self-approval, a run that wasn't clean, "
-      + "given after it, or revoked before it.",
+      + "call like it, in a run the policy's run bound closed to it, with a person's rejection of a call like it, or "
+      + "on an earlier yes that doesn't hold: another kind of call, a self-approval or break-glass answer, a run that "
+      + "wasn't clean, given after it or over 30 days before it, or revoked before it.",
   },
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "

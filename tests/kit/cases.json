@@ -74,11 +74,18 @@
   "golden/v2/trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699",
   "kit/vectors/a-signature-in-non-canonical-base64.tkb": "ace93af22162d21fc637e5562c84e2b53706f07505ed8026ca2d1a3dcd670c0b",
   "kit/vectors/agent-approval.tkb": "33b05cfd78dad2fd12eaf22c88cfeebd32c77b210c18c3d9e73b2543535cbd20",
-  "kit/vectors/ai-approval-listed.tkb": "0c9f541a8e9d77fa908576b7548bf02c9a9e288cbfbd091f30e796e85643c8a4",
-  "kit/vectors/ai-approval-one-key.tkb": "238a57858af4e01f6ace6482865c580cd81fe3a99a1fdff35ee4d3f34b5ed58d",
-  "kit/vectors/ai-approval-other-kind.tkb": "fbdf68061f9d4d28f412feeaaee05d65cfd095b33793c6c935217ff5f9e130ad",
-  "kit/vectors/ai-approval-unlisted.tkb": "0e9581550ba9a2afa0220038a247e7648ef7b3dcd8424745a6a277535fb93508",
-  "kit/vectors/ai-approval.tkb": "cec913acb9da7f504b22f23fc69537583ebce576381b48db7eea6d4e2ad92421",
+  "kit/vectors/ai-approval-30-day-precedent.tkb": "89232f69ef0479a2702b2be03ce3bde9fe3681d4a4067faa63a804437ea6e788",
+  "kit/vectors/ai-approval-answered-unclean.tkb": "1f33dcf1d647a76022234329fb95e43e74393d1350c9fb51cb772ea6cf93643d",
+  "kit/vectors/ai-approval-break-glass.tkb": "768f250d81ff1cff278c90254c571636b2571ed499ec9bbf165ac8706e0d4387",
+  "kit/vectors/ai-approval-listed.tkb": "aa41e79cdcebe309be18fff9b82df5232be48e20fa7f7c07833e3fc8303574f9",
+  "kit/vectors/ai-approval-old-precedent.tkb": "8d433c24e89025c54990277c174cb75ee87161e2e4090e8eb3cf81882100c22c",
+  "kit/vectors/ai-approval-one-key.tkb": "526f5ceb3f9281285e892b23c62354d6ba1516fb7badac7219a5bc2e277a8dc0",
+  "kit/vectors/ai-approval-other-kind.tkb": "458a6f96b6ef4c9134a368446838e5df33e65b540c343c3dd64efe0cf5e37a5e",
+  "kit/vectors/ai-approval-revoked-rejection.tkb": "e997cb108d15256b7b174e00e7ad51924f1a834140999292944ceb468ca83e2b",
+  "kit/vectors/ai-approval-run-bound.tkb": "6687d4a5b97fdb16debf4c2578ad906aaadd9f0ae96782ce69c48a997a959a58",
+  "kit/vectors/ai-approval-unlisted.tkb": "62fff4b52af04a27923cd190ab79d0a0ef06817ed337897fc36e632ce86365d2",
+  "kit/vectors/ai-approval-unnamed-rejection.tkb": "dbf2069631f0598a8a7e7e4fcd3763f219c6068df402e76d6bcee211925f13bf",
+  "kit/vectors/ai-approval.tkb": "b79a10b1050956041440e0a0c73b8f635f9c76ee76e0c16216fe6a2890733f6c",
   "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
   "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
   "kit/vectors/every-type.tkb": "bf26a8d07fa4ebe0490429c700b9d0314887db7f7ad278c8acc03d5a9f73d8bf",
@@ -1165,6 +1172,100 @@
     "approvals by agents"
    ],
    "decided_by": "§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes in a run carrying a label of the snapshot's run bound",
+   "input": "kit/vectors/ai-approval-run-bound.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent more than 30 days older",
+   "input": "kit/vectors/ai-approval-old-precedent.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a precedent exactly 30 days older",
+   "input": "kit/vectors/ai-approval-30-day-precedent.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on a break-glass answer",
+   "input": "kit/vectors/ai-approval-break-glass.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a break-glass answer is no precedent)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes on an answer made once the run wasn't clean",
+   "input": "kit/vectors/ai-approval-answered-unclean.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a precedent is an answer made in a run clean when it was answered)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes with a person's rejection of a call like it in the bundle",
+   "input": "kit/vectors/ai-approval-unnamed-rejection.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: no rejection of a call like it counts when the AI says yes)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a person's rejection of a call like it was revoked as a precedent",
+   "input": "kit/vectors/ai-approval-revoked-rejection.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: a precedent revoked before the answer doesn't count, a rejection too)",
    "addon": "AI approvals",
    "needs": "1.8.0"
   },

@@ -410,8 +410,10 @@ def vectors():
          {"tool_call_id": "t1"})), t, 0, "VERIFIED", "witnessed", addon="agent approvals",
          decided_by="§11 step 9 (approvals by agents: without the policy snapshot, a warning)")
     # the AI approver (format 1.8.0): a person's answer, then an AI yes that names it as its precedent
-    def ai_run(name, answers=2, other_kind=False, listed=None):
-        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot)."""
+    def ai_run(name, answers=2, other_kind=False, listed=None, labels=(), person=None, rejected=False):
+        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot); `labels`: the
+        run's labels the AI's answer relied on; `person`: fields of the person's answer a0 (and its record's `ts`);
+        `rejected`: a person's rejection of a call like it (a2), named by no precedent list, before the AI's yes."""
         pol = {"tools": {"Bash": "shell"}, "ask": [{"id": "TK-A025", "class": "shell", "field": "package_index",
                                                    "pattern": "^"}],
                "approval_agent": {"mode": "enforce", "rules": listed or [], "run": {"clean": ["secrets_access"]}}}
@@ -423,14 +425,23 @@ def vectors():
             with open(os.path.join(pdir, ph.removeprefix("sha256:") + ".json"), "w", encoding="utf-8") as f:
                 f.write(pc.canonical(pol))
             kw["policy_dir"] = pdir
-        key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
+        key = {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["pip --index-url https://pypi.internal/…"]},
                "project": "api (17978b62)"}
         ai = {"key": key, "digest": "hmac-sha256:" + "5" * 64, "labels": [], "clean": True,
               "precedents": {"approve": [], "reject": []}}
         asked = [{**ASKED, "approval_id": aid, "decision_id": did, "rule_ids": ["TK-A025"], "policy_hash": ph,
                   "binding": {**ASKED["binding"], "approval_id": aid, "tool_call_id": tc, "tool": "Bash",
                               "policy_hash": ph}}
-                 for aid, did, tc in (("a0", "d0", "t0"), ("a1", "d1", "t1"))]
+                 for aid, did, tc in (("a0", "d0", "t0"), ("a1", "d1", "t1"), ("a2", "d2", "t2"))]
+        person = dict(person or {})
+        when = {"ts": person.pop("ts")} if "ts" in person else {}
+        no = [("policy.decision", {"tool_use_id": "t2", "decision": "ask", "rule_ids": ["TK-A025"],
+                                   "decision_id": "d2", "policy_hash": ph}, {"tool_call_id": "t2"}),
+              ("approval.request", {**asked[2], "ai": ai}, {"tool_call_id": "t2"}),
+              ("approval", {"tool_use_id": "t2", "approval_id": "a2", "decision": "reject", "approver": "uid:502",
+                            "channel": "rpc", "run_clean": True}, {"tool_call_id": "t2"})] if rejected else []
+        if rejected == "revoked":
+            no.append(("precedent.revoked", {"approval_id": "a2", "by": "uid:502", "reason": "the index is ours"}, {}))
         return closed(
             name,
             ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
@@ -438,7 +449,8 @@ def vectors():
             ("approval.request", {**asked[0], "ai": dict(ai, digest="hmac-sha256:" + "6" * 64) if other_kind else ai},
              {"tool_call_id": "t0"}),
             ("approval", {"tool_use_id": "t0", "approval_id": "a0", "decision": "approve", "approver": "uid:502",
-                          "channel": "rpc"}, {"tool_call_id": "t0"}),
+                          "channel": "rpc", "run_clean": True, **person}, {"tool_call_id": "t0", **when}),
+            *no,
             ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1",
                                  "policy_hash": ph}, {"tool_call_id": "t1"}),
             ("approval.request", {**asked[1], "agent": {"eligible": True, "reason": "x", "rules": ["TK-A025"],
@@ -449,8 +461,9 @@ def vectors():
                           "channel": "rpc", "approver_kind": "agent",
                           "approver_identity": {"scheme": "uid", "subject": "299", "attested": True},
                           "relied_on": {"precedents": {"approve": ["a0"], "reject": []},
-                                        "playbook": {"version": 0, "digest": H}, "policy_hash": ph, "labels": [],
-                                        "mode": "enforce", "answers": [{"model": "m", "decision": "approve"}] * answers}},
+                                        "playbook": {"version": 0, "digest": H}, "policy_hash": ph,
+                                        "labels": list(labels), "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
+                                        "answers": [{"model": "m", "decision": "approve"}] * answers}},
              {"tool_call_id": "t1"}), **kw)
     case("an AI approver's yes on a person's precedent in the run", ai_run("ai-approval"), t, 0, "VERIFIED",
          "witnessed", addon="AI approvals", needs="1.8.0",
@@ -470,6 +483,34 @@ def vectors():
                                                                                    listed=["TK-A062"]), t, 1, "FAILED",
          failed_check=["approvals by agents"], addon="AI approvals", needs="1.8.0",
          decided_by="§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)")
+    case("an AI approver's yes in a run carrying a label of the snapshot's run bound", ai_run(
+        "ai-approval-run-bound", listed=["TK-A025"], labels=["secrets_access"]), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)")
+    case("an AI approver's yes on a precedent more than 30 days older", ai_run(
+        "ai-approval-old-precedent", person={"ts": "2026-09-09T11:59:59.000000Z"}), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)")
+    case("an AI approver's yes on a precedent exactly 30 days older", ai_run(
+        "ai-approval-30-day-precedent", person={"ts": "2026-09-09T12:00:00.000000Z"}), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is at most 30 days older than the answer)")
+    case("an AI approver's yes on a break-glass answer", ai_run("ai-approval-break-glass", person={
+        "break_glass": True, "reason": "on call"}), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a break-glass answer is no precedent)")
+    case("an AI approver's yes on an answer made once the run wasn't clean", ai_run(
+        "ai-approval-answered-unclean", person={"run_clean": False}), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent is an answer made in a run clean when it was answered)")
+    case("an AI approver's yes with a person's rejection of a call like it in the bundle", ai_run(
+        "ai-approval-unnamed-rejection", rejected=True), t, 1, "FAILED", failed_check=["AI approvals"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: no rejection of a call like it counts when the AI says yes)")
+    case("an AI approver's yes after a person's rejection of a call like it was revoked as a precedent", ai_run(
+        "ai-approval-revoked-rejection", rejected="revoked"), t, 0, "VERIFIED", "witnessed", addon="AI approvals",
+         needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a precedent revoked before the answer doesn't count, a rejection too)")
     case("a signed finding outside a findings run", closed("review-outside-findings-run", (
         "review", {"reviewer": "x", "verdict": {"kind": "finding", "rule": "TK-X200", "severity": "info"},
                    "cites": [{"run_seq": 0, "hash": "sha256:" + "0" * 64}]}, {})), t, 1, "FAILED",

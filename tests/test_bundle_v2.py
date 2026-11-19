@@ -1413,7 +1413,7 @@ AI_ASKED = {"key": {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": 
                     "project": "api (17978b62)"}, "digest": "hmac-sha256:" + "0" * 64, "labels": [], "clean": True,
             "precedents": {"approve": ["apr-0"], "reject": []}}
 RELIED_ON = {"precedents": {"approve": ["apr-0"], "reject": []}, "playbook": {"version": 0, "digest": H},
-             "policy_hash": H, "labels": [], "mode": "enforce",
+             "policy_hash": H, "labels": [], "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
              "answers": [{"model": "m", "decision": "approve"}, {"model": "m", "decision": "approve"}]}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
@@ -1517,6 +1517,7 @@ ENTRIES = {
     # the AI approver (1.8.0)
     "approval.request.ai": [registered(), asked(ai=AI_ASKED)],
     "approval.relied_on": [registered(), answered(relied_on=RELIED_ON)],
+    "approval.run_clean": [registered(), answered(run_clean=True)],
     "approval.suggested.relied_on": [registered(), ("approval.suggested", {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "uid:299",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent", "relied_on": RELIED_ON}, "run-a")],

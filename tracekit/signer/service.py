@@ -324,6 +324,7 @@ import re
 import secrets
 import signal
 import socket
+import stat
 import sys
 import threading
 import time
@@ -352,7 +353,7 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog, approval,
+from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, SECRETS_S, RecordLog, approval,
                                       constraint_state, cooldown_key, degrade, epoch, final_run, owner,
                                       person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
@@ -831,6 +832,54 @@ def _agents(approvals, authorize, multi_tenant_apps):
     return frozenset(agents)
 
 
+def agent_key_access(agents, data_dir, signer_uid=None):
+    """Why an agent approver that is a local user (`uid:N` in approvals.agents) could answer as the signer or read its
+    data, or None: N is the signer's own user (`signer_uid`, default this process's), or it can open the data dir, its
+    keys dir or a key in it (it owns it, or the mode lets its groups or every user read it, or enter it for a directory).
+    The signer refuses to start then, and `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as a user of its
+    own (docs/approvals.md#the-ai-approver)."""
+    if not hasattr(os, "getuid"):
+        return None
+    import pwd   # POSIX only: Windows has no uid to compare
+    me = os.getuid() if signer_uid is None else signer_uid
+    keys = os.path.join(data_dir, "keys")
+    paths = [p for p in (data_dir, keys) if os.path.isdir(p)] + (
+        [os.path.join(keys, n) for n in sorted(os.listdir(keys))] if os.path.isdir(keys) else [])
+    for a in sorted(agents):
+        if not re.fullmatch(r"uid:[0-9]{1,10}", a):
+            continue
+        uid = int(a[4:])
+        if uid == me:
+            return (f"approvals.agents: {a} is the signer's own user, which can read its keys: run the reviewer as a "
+                    "user of its own (docs/approvals.md#the-ai-approver)")
+        try:
+            pw = pwd.getpwuid(uid)
+            groups = set(os.getgrouplist(pw.pw_name, pw.pw_gid))   # as the system resolves them (macOS's staff too)
+        except KeyError:   # no such user here: only the bits for every user can let it in
+            groups = set()
+        for p in paths:
+            st = os.lstat(p)
+            other, group = ((stat.S_IROTH | stat.S_IXOTH, stat.S_IRGRP | stat.S_IXGRP) if stat.S_ISDIR(st.st_mode)
+                            else (stat.S_IROTH, stat.S_IRGRP))
+            if st.st_uid == uid or st.st_mode & other or st.st_mode & group and st.st_gid in groups:
+                return (f"approvals.agents: {a} can open {p}: make the signer's data dir its user's alone (chmod -R "
+                        "go-rwx on it, owned by the signer's user), and run the reviewer as a user of its own")
+    return None
+
+
+def _shown_target(target, dotenv):
+    """What an approval request's `ai.key` shows of each target: TK-A025's sources as how they were selected and the
+    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others'
+    commands redacted as the approver's copy is (dotenv values too), at most 16 of 256 characters each. The full target
+    is in the key's committed digest only."""
+    def one(rule, k):
+        if rule == "TK-A025":
+            how, _, url = k.rpartition(" ")
+            return f"{how} {'/'.join(url.split('/', 3)[:3])}/…"
+        return privacy.redact(k, dotenv)[0][:256]
+    return {r: [one(r, k) for k in v[:16]] for r, v in target.items()}
+
+
 def _project(path):
     """A project as the AI approver's precedent key names it: its folder's name and 8 hex digits of its path's sha256
     (two folders of the same name stay apart), or None."""
@@ -1140,9 +1189,13 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
+            why = agent_key_access(self._agents, data_dir)   # the keys made: what an agent approver could open
+            if why:
+                raise ValueError(why)
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
-                                 detect.Detector.of(policy))
+                                 detect.Detector.of(policy), frozenset(
+                                     r["id"] for _, r, *_ in policy.rules if r.get("label") == "secrets_access"))
         except BaseException:
             storage.close()
             raise
@@ -2324,15 +2377,17 @@ class SignerService:
                 "spend": spend, **({"target": target, "untrusted": bool(prov)} if target is not None else {})}
 
     def _run_labels(self, run):
-        """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ):
-        secrets_access once a call of the run was decided under a rule labelled secrets_access (TK-F005 and its kin,
-        as detection counts the label; a denied or held call too), or when the run continues an earlier run of its
-        session, whose calls this one can't see. untrusted_content is not read yet: a bound that names it sends every
-        hold to people (_unclean)."""
+        """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ), read for
+        the run's requester (pipeline.cooldown_key) across all of its runs, never from what a client says:
+        secrets_access while one of them that had a call decided under a rule labelled secrets_access (TK-F005 and its
+        kin, as detection counts the label; a denied or held call too) or lost events the signer never got (a
+        client_counter_gap: what they held is unknown) is open, and for SECRETS_S after it closed; and for a run
+        registered as continuing an earlier one. A run the agent registers afresh is no way around it.
+        untrusted_content is not read yet: a bound that names it sends every hold to people (_unclean)."""
         # lean: untrusted_content is unread until run labels are signed records (1.8 A's run.label); read it here then
-        secret = {r["id"] for _, r, *_ in self.policy.rules if r.get("label") == "secrets_access"}
-        return ["secrets_access"] if run.get("partial_start") or any(
-            secret.intersection(c["rule_ids"]) for c in run["calls"].values()) else []
+        since = time.time() - SECRETS_S
+        ends = (self.log.agent["tainted"].get(cooldown_key(run["tenant"], run)) or {}).values()
+        return ["secrets_access"] if run.get("partial_start") or any(t is None or t > since for t in ends) else []
 
     def _unclean(self, run):
         """The labels of approval_agent's run bound that `run` carries now, or that this signer can't read: while one
@@ -2352,20 +2407,21 @@ class SignerService:
                         and not p.get("bad") and p["at"] > since), reverse=True)
         return {x: [aid for _, aid, d in found if d == x][:PRECEDENTS_NAMED] for x in ("approve", "reject")}
 
-    def _approver_request(self, run, tool, target, untrusted, requester, project):
+    def _approver_request(self, run, tool, target, untrusted, requester, project, dotenv):
         """(the `ai` of an approval.request held only by approval_agent's rules, why an AI answer can't decide it or
-        None): its precedent key as shown and its digest's commitment (precedent_key), the run's labels, `clean` (the run carried no label of the run bound,
-        and no argument a value only untrusted content brought: a person's answer to it is a precedent only then), the
+        None): its precedent key as shown (_shown_target; no target at all when the run isn't clean) and its digest's
+        commitment (precedent_key), the run's labels, `clean` (the run carried no label of the run bound, and no
+        argument a value only untrusted content brought: a person's answer to it is a precedent only then), the
         precedents that count now, and `asserted: [project]` when the agent's client named the project."""
         key, plain = precedent_key(tool, target, project)
         # a commitment under the tenant's own salt: equal keys match, and what redaction or the cut left out of the
         # shown key can't be confirmed by guessing it
         digest = self._commit(f"precedent:{run['tenant']}", plain)
         unclean, prec = self._unclean(run), self._precedents(run["tenant"], requester, digest)
-        ext = {"key": {**key, "tool": tool[:256], "target": {r: [privacy.redact_text(k)[0][:256] for k in v[:16]]
-                                                             for r, v in target.items()}},
-               "digest": digest, "labels": self._run_labels(run), "clean": not (unclean or untrusted),
-               "precedents": prec, **({"asserted": ["project"]} if project else {})}
+        clean = not (unclean or untrusted)
+        ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
+               "digest": digest, "labels": self._run_labels(run), "clean": clean, "precedents": prec,
+               **({"asserted": ["project"]} if project else {})}
         why = (f"the run carries {unclean[0]}: people answer it" if unclean and unclean[0] in RUN_LABELS_READ else
                f"the run bound names {unclean[0]}, which this signer doesn't read yet: people answer it" if unclean else
                "an argument carries a value only untrusted content brought into the run: people answer it"
@@ -3833,7 +3889,8 @@ class SignerService:
                     agent.update(eligible=False, reason=reason)
                     reask = reason.startswith("reask_after_reject")
             if target is not None:   # held by approval_agent's rules alone: its precedent key, whoever answers
-                ai, why = self._approver_request(run, p["tool"], target, untrusted, sub, req.get("project"))
+                ai, why = self._approver_request(run, p["tool"], target, untrusted, sub, req.get("project"),
+                                                 call["dotenv"])
                 if why and agent.get("eligible"):
                     agent.update(eligible=False, reason=why[:1024])
             if agent:
@@ -3851,8 +3908,6 @@ class SignerService:
                 copy["reason"] = privacy.redact(req["reason"], call["dotenv"])[0]
             if ai:
                 data["ai"] = ai
-                if "project" in req:   # where the AI approver reads the project's own rules
-                    copy["project"] = req["project"]
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
             tx.set(self.log.approvals, aid, approval(*key, data, _iso(time.time())))
             tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
@@ -3960,6 +4015,8 @@ class SignerService:
                 data["reason"] = req["reason"]
             if held:
                 data["incident_id"] = held
+            if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then
+                data["run_clean"] = a["ai"]["clean"] and not self._unclean(run)
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -3983,9 +4040,7 @@ class SignerService:
         rules = self._agent_rules(a["agent"]["rules"])
         shadow = any(r["approval"]["agent"]["mode"] == "shadow" for r in rules)
         veto_s = max((r["approval"]["agent"].get("veto_s", 0) for r in rules), default=0)
-        given = {k: v for k, v in (req.get("ai") or {}).items() if k != "project_rule"}
-        if "project_rule" in req.get("ai", {}):   # the reviewer's quote of a project file: redacted as a reason is
-            given["project_rule"] = privacy.redact_text(req["ai"]["project_rule"])[0]
+        given = dict(req.get("ai") or {})
         copy = self._unseal(aid) if decision == "approve" else {}
         if copy is None:   # its sum budget's spend is in the copy: an approval without one can't be counted
             raise RPCError("approval_not_pending",
@@ -4009,6 +4064,10 @@ class SignerService:
                 raise RPCError("forbidden", why)
             ap, demoted, ext, basis = a.get("ai"), self._demoted(a), {}, None
             if ap:   # what the answer relied on, in its record (relied_on): the signer's own reading of each
+                served = (a.get("viewed") or {}).get(sub)
+                if served is None or req.get("view_digest") != served:
+                    raise RPCError("forbidden", f"{aid}: answer the view approval_review served you (its view_digest): "
+                                                "read it again")
                 prec = self._precedents(run["tenant"], a["requester"], ap["digest"])
                 book = _playbook_ref(self.log.agent["playbook"].get(run["tenant"]))
                 pin = pinned({**data, "relied_on": {"playbook": book}})
@@ -4016,7 +4075,7 @@ class SignerService:
                     "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
                     ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
                 ext = {"relied_on": {
-                    "precedents": prec, "playbook": book,
+                    "precedents": prec, "playbook": book, "view": self._commit(f"approval.view:{aid}", served),
                     "policy_hash": a["policy_hash"], "labels": self._run_labels(run),
                     "mode": "shadow" if shadow or demoted else "enforce", **({"demoted": demoted} if demoted else {}),
                     **given}}
@@ -4081,14 +4140,20 @@ class SignerService:
                 "args": _escaped(shown),
                 "redacted": sorted(_escaped(k)[:4096] for k, v in (shown.items() if isinstance(shown, dict) else ())
                                    if MARK.search(canonical(v).decode())), **more}
-        return {**view, "view_digest": "sha256:" + hashlib.sha256(canonical(view)).hexdigest()}
+        digest = "sha256:" + hashlib.sha256(canonical(view)).hexdigest()
+        if a.get("ai"):   # what this identity was shown: its answer must name it (_agent_answer)
+            def served(tx):
+                live = self.log.approvals.get(aid)
+                if live is not None:
+                    tx.set(live, "viewed", {**(live.get("viewed") or {}), subject(identity): digest})
+            self.log.write(served)
+        return {**view, "view_digest": digest}
 
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
         conditions as they stand now, and `ai`: the precedent key, the run's labels, the precedents (each
-        person's answer, when, and their reason), the playbook in force, the project the client named and the run's
-        last calls (tool, decision, rule ids), and for a local user's call that user's uid. Strings the agent chose are
-        escaped."""
+        person's answer, when, and their reason), the playbook in force and the run's last calls (tool, decision, rule
+        ids). Strings the agent chose are escaped."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
         unclean, prec = self._unclean(run), self._precedents(a["run_key"][0], a["requester"], ap["digest"])
         found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
@@ -4104,11 +4169,8 @@ class SignerService:
                 "target": _escaped(ap["key"]), "labels": self._run_labels(run),
                 "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
                                 **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
-                "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": v["text"]} for k, v in
+                "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in
                                                                 sorted((book or {"entries": {}})["entries"].items())]},
-                **({"project": _escaped(copy["project"])} if copy.get("project") else {}),
-                # whose files the reviewer may read there (reviewer.project_rules): the requesting agent's own user's
-                **({"owner_uid": int(a["requester"][4:])} if re.fullmatch(r"uid:[0-9]{1,10}", a["requester"]) else {}),
                 "recent": [{"tool": _escaped(c["tool"] or "")[:256], "decision": c["decision"], "rule_ids": c["rule_ids"]}
                            for c in list(run.get("calls", {}).values())[-RECENT_CALLS:]]}}
 
@@ -4344,8 +4406,12 @@ class SignerService:
             elif a.get("not_before", "") > _iso(time.time()):
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
             elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
-                    f"the run carries {u[0]} now" if (u := self._unclean(run)) else None)):
-                # the circuit breaker tripped, or the run took a label of the bound, since the AI approved it
+                    f"the run carries {u[0]} now" if (u := self._unclean(run)) else None) or (
+                    "a person rejected a call like this one" if (p := self._precedents(
+                        run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
+                    "no person's answer to a call like this one counts now" if not p["approve"] else None)):
+                # the circuit breaker tripped, the run took a label of the bound, or the precedents changed, since the
+                # AI approved it
                 self._revoke(tx, run, aid, "signer", f"AI approval withdrawn: {stop}")
                 why = "TK-APPROVAL-REJECTED", f"the AI approval was withdrawn: {stop}"[:1024]
             else:
