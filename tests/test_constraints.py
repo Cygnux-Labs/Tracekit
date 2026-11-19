@@ -11,6 +11,8 @@ import timeit
 import unittest
 from unittest import mock
 
+import pytest
+
 import test_bundle_v2 as b
 from factories import unverified_bundles
 from test_reviews import ME, Signed
@@ -407,6 +409,7 @@ class Grammar(unittest.TestCase):
         claude_code.prompted(mock.Mock(call=lambda m, **kw: sent.append(kw["constraint"]) or {"run_seq": 1}), text)
         self.assertEqual(sent, [{"kind": "keep_away", "object": "billing.py"}])
 
+    @pytest.mark.serial
     def test_a_64_kib_prompt_is_read_in_bounded_time(self):
         n = 1 << 16
         for unit in ("don't ", "leave ", "hands off ", "only ", "it ", '"', "`", "```", "nothing else ", "? ",
@@ -485,6 +488,7 @@ class Grammar(unittest.TestCase):
         self.assertEqual(constraints.breaks("read_only", f, None), "billing.py")
         self.assertIsNone(constraints.breaks("no_push", f, None))
 
+    @pytest.mark.serial
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("don't " * 100_000 + "touch billing.py", "a/" * 300_000, "x.py " * 100_000, "." * 600_000):
             t0 = time.perf_counter()

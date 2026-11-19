@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2350,6 +2352,7 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(mapped, name)
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
+    @pytest.mark.serial
     def test_a_long_run_of_spaces_takes_linear_time(self):
         # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
         line = "a" + " " * 40_000 + "b"
@@ -3888,6 +3891,7 @@ class Installer(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(agent_hooks.kiro_version())
 
+    @pytest.mark.serial
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)

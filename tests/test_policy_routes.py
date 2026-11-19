@@ -19,6 +19,8 @@ import unittest
 import urllib.parse
 from unittest import mock
 
+import pytest
+
 from tracekit import agent_hooks, constraints
 from tracekit.integrations import hermes
 from tracekit.policy2 import classes, compile as pc, engine as engine_module, shell
@@ -487,6 +489,7 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("ls -l ~/.ssh/id_*", "chmod 600 ~/.ssh/id_*"), "flag", packs=("dev", "coding"))
         self.expect(self.bash("ls -l ~/.ssh/id_*", "chmod 600 ~/.ssh/id_*"), "flag", packs=("strict",))
 
+    @pytest.mark.serial
     def test_a_pattern_is_matched_in_time_linear_in_its_length(self):
         # a run of stars is one star: 30 and 60 of them took 61 s and over 90 s, the signer stalled meanwhile
         e = self.engines[("coding", BACKENDS[0])]

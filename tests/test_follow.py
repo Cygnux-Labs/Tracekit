@@ -10,6 +10,8 @@ import time
 import uuid
 from unittest import mock
 
+import pytest
+
 from adapter_contract import _serve
 from test_signer_lifecycle import Lifecycle
 from test_signer_service import ME, records
@@ -280,6 +282,7 @@ class TestAgentsh(Followed):
                               r"killed; what the log says after that is not recorded: read the log itself for it, and "
                               r"restart `tracekit follow`$")
 
+    @pytest.mark.serial
     def test_a_long_backlog_is_read_in_linear_time_with_heartbeats(self):
         al, log = self.agentsh()
         with open(al.path, "ab") as f:   # 24 MB written while the signer was unreachable

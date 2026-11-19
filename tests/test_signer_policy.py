@@ -14,6 +14,8 @@ import tracemalloc
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import SLOWER
 from tracekit import schema
 from tracekit.format.canon import event_hash
@@ -5871,6 +5873,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                         self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
         self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
 
+    @pytest.mark.serial
     def test_a_nested_argument_is_read_once(self):
         """Final review of #605: TK-A062 read each string under a sql, query or statement argument once for each such
         argument above it, and wrote a command argument's value out again for each command argument above it, so a
@@ -6154,6 +6157,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                                             "refUpdates:[{name:\"refs/heads/main\",afterOid:\"x\"}]}){clientMutationId}}'"})],
                       "ask", "TK-A056")
 
+    @pytest.mark.serial
     def test_an_over_cap_calls_sql_isnt_lexed_and_its_verdict_stands(self):
         """Sixth review of #605: TK-A062's SQL reading and the sql class's lexed every dialect of a call over MAX_SUBJECT,
         which every pack that reads them holds unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
