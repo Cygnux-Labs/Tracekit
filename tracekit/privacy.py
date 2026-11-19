@@ -326,8 +326,8 @@ def _argv_hows(words, budget=None):
     hows = dict.fromkeys(range(len(words)), "word")
     for reads in (False, True):   # a word any data reader gets is data, whichever other command gets it too
         for name, spans in facts.args:
-            for a, _ in spans:
-                if (name in DATA_READERS) == reads:
+            for a, _, data in spans:
+                if data == reads:
                     hows[a] = "word" if reads else "interp" if _unread_interpreter(name) else "code"
     for how, at, inner, within in facts.placed:
         if within is not None:   # in a word its own line reading reads
@@ -524,6 +524,37 @@ DATA_READERS = frozenset((
     "openssl", "sha256sum", "sha1sum", "md5sum", "shasum", "wc", "head", "tail", "sort", "uniq", "cut", "tr", "curl",
     "wget", "http", "https", "xh", "touch", "mkdir", "ls", "cp", "mv", "rm", "ln", "chmod", "chown", "test", "[",
     "true", "false", "export", "declare", "local", "readonly", "typeset"))
+# options whose value is data though their program may run other words it gets as code: a value hidden there may be
+# text a shell would split (`--set "k=a b"`). Each value is the word after its option or joined to it (`--set=k=v`,
+# `-pSECRET`); every other word of these programs is code to them, as any program's outside DATA_READERS
+_DATA_OPTIONS = {
+    "terraform": ("-var",),   # an input variable's value, which the configuration reads as a value
+    "helm": ("--set", "--set-string", "--set-json"),   # a chart value, which its templates render as text
+    "kubectl": ("--from-literal",),   # a secret's or config map's key=value, which it stores
+    # a database client's connection (user, host, port, database, and mysql's, mongosh's and redis-cli's password),
+    # never its code: psql's -c and its \!, mysql's -e and its system, mongosh's --eval, redis-cli's EVAL, -f files
+    "psql": ("-U", "--username", "-h", "--host", "-p", "--port", "-d", "--dbname"),
+    "mysql": ("-u", "--user", "-h", "--host", "-P", "--port", "-D", "--database", "-p", "--password"),
+    "mongosh": ("-u", "--username", "-p", "--password", "--host", "--port", "--authenticationDatabase"),
+    "redis-cli": ("-u", "-h", "-p", "-a", "--user", "--pass"),
+}
+# a database client's positional connection URI (scheme://…) is data too
+_URI, _URI_CLIENTS = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://"), ("psql", "mysql", "mongosh", "redis-cli")
+# environment variables a program reads as data (a connection or a credential), whatever the program: a value given
+# one before a program not among DATA_READERS is data (`DATABASE_URL=… npm run migrate`); any other name there may be
+# code the program runs (LD_PRELOAD, NODE_OPTIONS, PYTHONSTARTUP, BASH_ENV, GIT_SSH_COMMAND, EDITOR, PAGER)
+_DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|\w*_(?:URL|DSN|PASSWORD|PASSWD|TOKEN|SECRET|API_KEY)|"
+                       r"\w*_ACCESS_KEY\w*")
+
+
+def _data_args(name, args):
+    """The indexes of `args` (program `name`'s words after its name) that are data to it as _DATA_OPTIONS says."""
+    opts, out = _DATA_OPTIONS.get(name, ()), set()
+    for k, a in enumerate(args):
+        if k and args[k - 1] in opts or any(a.startswith(o + "=") or len(o) == 2 and a.startswith(o) and len(a) > 2
+                                            for o in opts) or name in _URI_CLIENTS and _URI.match(a):
+            out.add(k)
+    return out
 _SEEN = {CODE: _CODE_LIKE, SQ: re.compile(r"[\s|&;()<>$`']"), DQ: re.compile(r'[\s|&;()<>$`"\\]'),
          ANSI: re.compile(r"[\s|&;()<>$`'\\]"), LITERAL: re.compile(r"[\s|&;()<>$`]"),
          EXPANDED: re.compile(r"[\s|&;()<>$`\\]")}
@@ -631,7 +662,9 @@ class _Facts:
         for c, at, within in learned["programs"]:
             name, args = c["argv"][0], c["argv"][1:]
             self.programs.append((at, within))
-            self.args.append((name, [a.at for a in args if getattr(a, "at", None)]))
+            data = _data_args(name, args) if name in _DATA_OPTIONS else ()
+            self.args.append((name, [(*a.at, name in DATA_READERS or k in data) for k, a in enumerate(args)
+                                     if getattr(a, "at", None)]))
             kind, script = shell._kind(name), None
             if name in shell.SHELLS:
                 mode, script = shell._shell_mode(args, name)
@@ -687,7 +720,8 @@ class _Reading:
     content. `ctx`: where each character sits (CODE, SQ, DQ, ANSI, LITERAL, EXPANDED). `body`: 1 in each heredoc body.
     `unsure`: 1 in what the reader can't read as bash does (_read_shell); `interp`: 1 in an interpreter's program.
     `quote`: 1 at each quote that opens or closes a part ($'…''s at its $); `inq`: 1 in each part after its opening
-    quote, to its closing one. `data`: 1 in each herestring a program that reads only data reads. `starts`: where
+    quote, to its closing one. `data`: 1 in each herestring and heredoc body a program that reads only data reads.
+    `starts`: where
     each word outside quotes may start. `pipes`: each pipeline's commands' word spans, of all the code read as a shell
     line."""
 
@@ -838,6 +872,7 @@ def _read_shell(s, facts=None):
                         b, e = _end_line(s, i, end, tabs, z, not kept)
                         _mark(body, i, b)
                         if owner["data"]:
+                            _mark(r.data, i, b)
                             _mark(ctx, i, b, LITERAL if kept else EXPANDED)
                             while not kept and (x := _EXPANDS.search(s, i, b)):   # its $(...) and `...` run now
                                 i = unread(x.start(), min(_past(s, x.end(), *_CLOSES[x.group()], end=b), b))
@@ -1000,10 +1035,11 @@ def _clean(s, r, marks, crossed, facts):
     """Whether each of `marks` (in shell line `s` as _Reading `r` reads it with the policy parser's _Facts `facts`)
     hides only a clean value, which an approver may see a copy without: on a line the parser reads whole (_Facts.sure);
     not where the parser read a program or code it can't place in the line (a git alias's value, a variable's program:
-    its `within`, None the whole line), nor in a program's or a script file's word it places; not starting a word of
-    its own (`crossed`); in one place (_Reading.ctx) and holding nothing _SEEN there; not in an interpreter's program,
-    nor where the reader is unsure; in quotes, in a word a program of DATA_READERS gets, an assignment's value, or a
-    herestring such a program reads, or a value assigned where no program runs (`K='a b'`)."""
+    its `within`, None the whole line), nor in a program's or a script file's word it places; in one place
+    (_Reading.ctx) and holding nothing _SEEN there; not in an interpreter's program, nor where the reader is unsure; in
+    quotes, and when it starts a word of its own (`crossed`: `KEY: x`) anywhere, data: in a word a program of
+    DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a heredoc such a program reads, a value
+    assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV."""
     if not facts.sure:
         return False
     program, data, loose = bytearray(len(s) + 1), bytearray(r.data), []
@@ -1017,20 +1053,24 @@ def _clean(s, r, marks, crossed, facts):
             _mark(program, *at)
     # each word as the innermost command that gets it reads it: echo's `$(osascript -e '…')` is osascript's code; a
     # word a wrapper passes on (sudo curl -H '…') is the data reader's
-    for a, b, reads, name in sorted(((a, b, name in DATA_READERS, name) for name, spans in facts.args
-                                     for a, b in spans), key=lambda w: (w[0] - w[1], w[2])):
+    for a, b, reads, name in sorted(((a, b, reads, name) for name, spans in facts.args for a, b, reads in spans),
+                                    key=lambda w: (w[0] - w[1], w[2])):
         _mark(data, a, b, reads)
         if _unread_interpreter(name):
             _mark(r.interp, a, b)
     shell = _policy("shell")
-    for pipe in r.pipes:   # an assignment with no program on its command sets the shell's own variable: data
-        for spans in pipe:
-            if all(shell._ASSIGN.match(s, a, b) for a, b in spans):
-                for a, b in spans:
+    for pipe in r.pipes:   # an assignment with no program on its command sets the shell's own variable: data; one
+        for spans in pipe:   # before a program, when its name is one of _DATA_ENV
+            alone = all(shell._ASSIGN.match(s, a, b) for a, b in spans)
+            for a, b in spans:
+                if not (m := shell._ASSIGN.match(s, a, b)):
+                    break
+                if alone or _DATA_ENV.fullmatch(s, a, a + len(m.group().rstrip("+=").split("[")[0])):
                     _mark(data, a, b)
     for v, e, _ in marks:   # (one that leaves its quotes, body or comment holds what ends them, which _SEEN finds)
         c = r.ctx[v]
-        if v in crossed or r.unsure.find(1, v, e) >= 0 or r.interp.find(1, v, e) >= 0 or \
+        if v in crossed and data.count(1, v, e) < e - v or r.unsure.find(1, v, e) >= 0 or \
+                r.interp.find(1, v, e) >= 0 or \
                 program.find(1, v, e) >= 0 or _SEEN[c].search(s[v:e] if c == CODE else _QUERY.sub("", s[v:e])) or \
                 any(w is None or w[0] < e and v < w[1] for w in loose) or \
                 c in (SQ, DQ, ANSI) and data.count(1, v, e) < e - v:

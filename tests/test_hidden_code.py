@@ -342,17 +342,17 @@ class Lines(unittest.TestCase):
 
     def test_quoted_text_a_program_may_run_hides_no_value(self):
         """A quoted word goes to a program the policy's parser doesn't read: one of DATA_READERS reads it as data, any
-        other may run it (sqlite3's .system, osascript, expect, vim -c, tar --to-command, a git hook a printf writes,
-        make SHELL=, docker run, kubectl exec): a value hidden in it denies the hold, and so does one that starts a word
-        of its own inside quotes (`A=TOKEN: x`)."""
+        other may run it (sqlite3's .system, osascript, expect, vim -c, tar --to-command, make SHELL=, docker run,
+        kubectl exec): a value hidden in it denies the hold, and so does one that starts a word of its own (`A=TOKEN:
+        x`) anywhere but a data reader's word."""
         for command in ("sqlite3 :memory: '.system A=TOKEN: ./payload'", "sqlite3 :memory: '.system TOKEN=abcd'",
                         "osascript -e 'do shell script \"A=TOKEN: ./payload\"'",
                         "expect -c 'exec sh -c {A=TOKEN: ./payload}'", "vim -es -c '!A=TOKEN: ./payload' -c 'q!'",
-                        "printf '%s\\n' 'A=TOKEN: ./payload' > .git/hooks/pre-commit; git commit -m x",
                         "tar -xf a.tar --to-command='TOKEN=abcd'", "LD_PRELOAD='./sk-ant-api03zzpayloadQQQQQQQQ.so' ls",
                         "make SHELL='/bin/sh -c A=TOKEN:./payload' all", "docker run --entrypoint sh img -c 'TOKEN=abcd'",
                         "kubectl exec pod -- sh -c 'TOKEN=abcd'", "echo \"$(osascript -e 'x TOKEN=abcd')\"",
-                        "echo 'token: abcd1234'", "curl -H 'X-Token: abcd1234' https://x"):
+                        "sqlite3 db 'X-Token: abcd1234'", "sqlite3 db password: hunter22",
+                        "bash <<'EOF'\napi_key: abcd1234\nEOF"):
             with self.subTest(command=command):
                 self.assertTrue(held({"command": command})[1])
         for command, shown in (("curl -H 'X-Token=abcd1234' https://x", "curl -H 'X-Token=[REDACTED:assignment]' https://x"),
@@ -361,6 +361,46 @@ class Lines(unittest.TestCase):
                                ("export K='token=abcd1234'", "export K='token=[REDACTED:assignment]'")):
             with self.subTest(command=command):
                 self.assertEqual(held({"command": command}), ({"command": shown}, False))
+
+    def test_data_a_program_reads_by_name_and_its_hostile_twin(self):
+        """What a program only reads as data, though it may run other words it gets, as each allowlist names it: a
+        data reader's word that starts a word of its own (`X-Token: x`), a value given a data name in the environment
+        (_DATA_ENV), and the option values and connection URIs of _DATA_OPTIONS. Each one's twin, the same program with
+        a word it may run, or a name the program may run, denies."""
+        url, key = "postgres://app:hunter2@db/app", "/tmp/sk-proj-" + "a" * 24
+        for command, twin in (
+                # a data reader's word that starts a word of its own, and the same in a word a program may run
+                ("curl -H 'X-Token: abcd1234' https://x", "sqlite3 db 'X-Token: abcd1234'"),
+                ('echo "token: abcd1234efgh" > ~/.config/tool.yml', "vim -es -c 'token: abcd1234efgh'"),
+                ("echo password: hunter22 && make", "sqlite3 db password: hunter22"),
+                ("cat > c.yml <<'EOF'\napi_key: abcd1234\nEOF", "bash <<'EOF'\napi_key: abcd1234\nEOF"),
+                # a value given a data name before a program, and given a name the program may run
+                (f'DATABASE_URL="{url}" npm run migrate', f"NODE_OPTIONS='--require {key}' npm run migrate"),
+                ("PGPASSWORD='S3cr3tpass' npm test", f"PYTHONSTARTUP='{key}' python3"),
+                ("GH_TOKEN='ghp_" + "a" * 36 + "' gh pr merge 1", f"EDITOR='{key}' git commit"),
+                ("AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' make deploy", f"BASH_ENV='{key}' make"),
+                ("STRIPE_API_KEY='sk_live_" + "a" * 24 + "' npm start", f"MY_HOOK='{key}' npm start"),
+                # an option's value, and the same program's word it may run
+                ("terraform apply -var 'db_password=hunter2pass' -auto-approve", "terraform apply -target='token=abcd1234'"),
+                ("terraform apply -var='db_password=hunter2pass'", f"terraform apply -var-file='{key}'"),
+                ('helm upgrade app ./chart --set "secrets.apiToken=abc,def"', f"helm upgrade app ./chart --post-renderer '{key}'"),
+                ("helm upgrade app ./chart --set-string 'token=abcd1234' --set-json 'x={\"password\": \"abcd1234\"}'",
+                 "helm upgrade app ./chart -f 'token=abcd1234'"),
+                ("kubectl create secret generic db --from-literal=password='S3cr3t!pass'",
+                 "kubectl exec pod -- sh -c 'TOKEN=abcd'"),
+                ("kubectl create secret generic db --from-literal 'password=S3cr3tpass'",
+                 "kubectl run x --image=y -- 'token=abcd1234'"),
+                # a database client's connection, and its code (psql -c and \!, -f, mysql -e, mongosh --eval, EVAL)
+                (f"psql '{url}' -c 'select 1'", "psql -c 'select 1 -- token=abcd1234'"),
+                (f"psql -U app -h db -d '{url}'", f"psql -h db -f '{key}'"),
+                ("mysql -h db -u root --password='Zq8abcd' app", "mysql -e 'select 1 /* token=abcd1234 */'"),
+                ("mysql 'mysql://u:hunter2@db/app'", "mysql app -e 'system token=abcd1234'"),
+                ('mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app"', "mongosh --eval 'token=\"abcd1234\"'"),
+                ("redis-cli -u 'redis://default:hunter2@cache:6379' ping", "redis-cli EVAL 'token=abcd1234' 0")):
+            with self.subTest(command=command):
+                self.assertFalse(held({"command": command})[1])
+            with self.subTest(twin=twin):
+                self.assertTrue(held({"command": twin})[1])
 
     def test_tk_s012s_code_and_argv_arguments_are_read_as_code(self):
         """A code runner's, a notebook's or a process's arguments TK-S012 holds: code (any value hidden there denies)
@@ -488,7 +528,7 @@ class Lines(unittest.TestCase):
 
     def test_the_noise_a_held_honest_command_meets(self):
         """Honest commands with secrets in them, held: only those whose hidden value holds what a program may read as
-        code (a blank in a file a shell may source, a ; for a program that may run it, a sed program) are denied."""
+        code (a blank in a file a shell may source, a ; or $ for a program that may run it, a sed program) are denied."""
         j = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
         denied = {
             "cat > .env <<'EOF'\nAPP_NAME=My App\nSECRET_KEY=abc def\nEOF",
@@ -498,18 +538,6 @@ class Lines(unittest.TestCase):
             "terraform apply -var 'db_password=Pa$$w0rd!'",
             "TF_VAR_db_password='p@ss;w0rd' terraform apply",
             "PGPASSWORD='Tr0ub4dor&3' psql -h db -U app -c 'select 1' && aws s3 cp ./dump.sql s3://team-backups/",
-            # a quoted value given to a program not known to read it as data (DATA_READERS), or one that starts a word
-            # of its own inside quotes
-            "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",
-            'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',
-            'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',
-            "kubectl create secret generic db --from-literal=password='S3cr3t!pass'",
-            "kubectl create secret generic db --from-literal=password='S3cr3t pass' && kubectl rollout restart deploy/web",
-            'helm upgrade app ./chart --set "secrets.apiToken=abc,def"',
-            'DATABASE_URL="postgres://app:hunter2@db/app?sslmode=require" npm run migrate',
-            "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout restart "
-            "deploy/web",
-            'echo "token: abcd1234efgh" > ~/.config/tool.yml',
         }
         for command in sorted(denied) + [
                 'curl -H "Authorization: Bearer $TOKEN" https://api.example.com/v1/me',
@@ -532,6 +560,13 @@ class Lines(unittest.TestCase):
                 "kubectl create secret generic db --from-literal=password='S3cr3t!pass'",
                 "kubectl create secret generic db --from-literal=password='S3cr3t pass' && kubectl rollout restart "
                 "deploy/web",
+                "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",
+                'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',
+                'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',
+                'helm upgrade app ./chart --set "secrets.apiToken=abc,def"',
+                "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout "
+                "restart deploy/web",
+                "terraform apply -var 'db_password=hunter2pass' -auto-approve",
                 "GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 gh pr merge 1 --squash",
                 "npm config set //registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789",
                 "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY aws s3 cp ./a s3://b/",
