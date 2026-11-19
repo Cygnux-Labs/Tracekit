@@ -5308,6 +5308,15 @@ class QuietFlags(unittest.TestCase):
                            ("TK-F012", ("WebFetch", {"url": "http://127.0.0.1:8000/", "prompt": "p"}))):
             self.check(rule, [], [call], pack="strict")
 
+    def test_f028_flags_an_email_send_with_a_recipient_only_on_the_server_pack(self):
+        # TK-F028 is the server pack's own rule: an email send with a recipient is egress there (TK-Q001 counts
+        # it); a send that names no recipient is not, and the laptop packs carry no such rule, so the same calls
+        # are decided there as before
+        self.check("TK-F028", [("send_email", {"subject": "hi"}), ("send_email", {})],
+                   [("send_email", {"to": "a@b.c"}), ("gmail_send_message", {"cc": "a@b.c"})], pack="server")
+        for e in self.packs["dev"]:
+            self.assertNotIn("TK-F028", e.decide("send_email", {"to": "a@b.c"})["rule_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()
