@@ -2336,8 +2336,11 @@ def _gh_order(args):
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
-    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`; one that may be an option's
-    value is read both ways (`uv --directory run run x`). Each word read once: linear; [] for none (`npm test`)."""
+    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`. The value of an option its
+    table names (RUNNERS: `uv --directory run run x`) is never the subcommand, and a flag WRAPPER_FLAGS names takes
+    none; one that may be another option's value is read both ways. Each word read once: linear; [] for none (`npm
+    test`)."""
+    opts, flags = RUNNERS[name][1], WRAPPER_FLAGS.get(name, ())
     at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
         a = args[i]
@@ -2347,14 +2350,14 @@ def runner_at(name, args):
                 return at
             i, valued = i + 1, False
             continue
-        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") else \
-            1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
+        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") or \
+            a in opts else 1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
         if skip:
             i, valued = i + skip, False
             continue
         if not a.startswith("-") and not valued:
             return at
-        valued = a.startswith("-") and a != "--"
+        valued = a.startswith("-") and a != "--" and "=" not in a and a not in flags
         i += 1
     return at
 
@@ -2870,6 +2873,11 @@ class _Parser:
 
     def charge(self, n):
         charge(self.ctx["work"], n)
+
+    def charged(self, n, readings):
+        """`readings` (a generator), charging `n` first, when the first is read: what reading them scans."""
+        self.charge(n)
+        yield from readings
 
     def reading_pieces(self):
         """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
@@ -4499,7 +4507,7 @@ class _Parser:
                 if name not in WRAPPERS:
                     self.charge(at[-1])
                 more = _unwrap(name, args) if name in WRAPPERS else \
-                    itertools.chain.from_iterable(_unwrap(runner, args[k:]) for k in at)
+                    itertools.chain.from_iterable(self.charged(len(args) - k, _unwrap(runner, args[k:])) for k in at)
                 inner = next(more)
                 for other in more:   # what it may run where an option it doesn't know takes a value, each read once
                     if (key := (pid, name, tuple(other))) not in self.unwrapped:
