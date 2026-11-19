@@ -2874,11 +2874,6 @@ class _Parser:
     def charge(self, n):
         charge(self.ctx["work"], n)
 
-    def charged(self, n, readings):
-        """`readings` (a generator), charging `n` first, when the first is read: what reading them scans."""
-        self.charge(n)
-        yield from readings
-
     def reading_pieces(self):
         """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
         return bool(self.ctx.get("pieces")) and not self.ctx["pieces_cut"]
@@ -4508,7 +4503,7 @@ class _Parser:
                 if name not in WRAPPERS:
                     self.charge(at[-1])
                 more = _unwrap(name, args) if name in WRAPPERS else \
-                    itertools.chain.from_iterable(self.charged(len(args) - k, _unwrap(runner, args[k:])) for k in at)
+                    itertools.chain.from_iterable(_unwrap(runner, args[k:]) for k in at)
                 inner = next(more)
                 for other in more:   # what it may run where an option it doesn't know takes a value, each read once
                     if (key := (pid, name, tuple(other))) not in self.unwrapped:
