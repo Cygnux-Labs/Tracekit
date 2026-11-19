@@ -102,11 +102,12 @@ failure policy as without Tracekit.
   **`ComputerTool`** and **handoffs** run outside the hooks Tracekit can gate. `tk.tool(...)` refuses hosted tools
   with a `TypeError`. They appear only as `tool_uses` in the signed model exchange recorded for each model response (T3: what the
   agent process reported, not checked by Tracekit).
-- **`LocalShellTool` and `ApplyPatchTool` cannot wait for an approval**, so an `ask` for them is refused. The SDK has no
-  approval hook for the first. For the second it does have one (`needs_approval`), but the SDK asks it only while the
-  run holds no approval status for the call, so on resume it is skipped and the editor receives an operation with no
-  call id; an approval can also be tool-wide rather than per call. Matching the operation against an approval's
-  arguments was considered and rejected: it cannot tell a per-call approval from a tool-wide one, and two identical
-  operations would let one approval authorise a call id the person never approved ([#985](https://github.com/Cygnux-Labs/Tracekit/issues/985)). Allow and deny work
-  as above.
+- **`LocalShellTool` cannot wait for an approval**: the SDK has no approval hook for it, so an `ask` is refused. Allow
+  and deny work as above.
+- **`ApplyPatchTool` waits, but only for an approval of that call.** The adapter records what an approved patch call
+  will ask the editor to do, and consumes that record once, exactly on the operation's `type`, `path`, `diff` and
+  `move_to`. Refused, and the model is told why: an operation whose call has no approval of its own — the SDK resumed on
+  a tool-wide approval (`approve_tool(..., always_approve=True)`), or two approved calls carry the same patch — and any
+  operation that differs from the approved one by a single character. Approve the call itself, not the tool
+  ([#985](https://github.com/Cygnux-Labs/Tracekit/issues/985)).
 - The SDK runs each tool call id once, so every call is attempt 0.
