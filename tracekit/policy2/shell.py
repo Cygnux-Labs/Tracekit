@@ -5578,15 +5578,17 @@ def _lines(words, progs):
     without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), and a
     runner's where its subcommand runs one (`uv -q run python …`, `poetry run python …` are `python …`: runner_at), so
     a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs; and again
-    with each reserved word where a command starts (do, then, else, {, !) as a `;`, so it reads a loop's or a group's
-    commands as it reads them alone (`for h in x; do echo FLUSHDB | redis-cli; done` holds `echo FLUSHDB | redis-cli`)."""
+    with each reserved word where a command starts (do, then, else, {, !, and case, which the parser gives right
+    before its first arm's commands, its word and patterns left out, and each ;;, ;& or ;;& as a `;`) as a `;`, so it
+    reads a loop's, a group's or a case arm's commands as it reads them alone (`for h in x; do echo FLUSHDB |
+    redis-cli; done` and `case x in x) echo FLUSHDB | redis-cli;; esac` hold `echo FLUSHDB | redis-cli`)."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
     bare, start = list(words), True
     for i, w in enumerate(words):
-        if start and w in KEYWORDS:
+        if start and (w in KEYWORDS or w == "case"):
             bare[i] = ";"
         else:
             start = w in _STAGE_ENDS

@@ -4431,13 +4431,14 @@ class HarmlessStops(unittest.TestCase):
                        "yarn workspaces foreach -p exec sudo id", "yarn workspaces foreach -A -p exec sudo id",
                        "pnpx -p sudo id", "dotenv run sudo id", "dotenv -f .env run --override -- sudo id")])
 
-    def test_a_loop_decides_at_least_as_its_body_alone_and_with_each_value_written_in(self):
-        """#794's review: a loop's commands were read after its `do`, where a rule that reads a command where one
-        starts missed them (`for h in x; do echo FLUSHDB | valkey-cli …; done` was allowed, held alone: TK-A040), and a
-        loop value a `$` is quoted in was no value (`for u in 'http://169.254.170.2$AWS_…'; do curl -s "$u"; done`
-        flagged, denied written in). Every E17 shell row, on every shell pack and both engines, decides as a loop's
-        body at least as strictly as alone, and as a loop over its last word (shlex's words, both quoted the same way)
-        at least as strictly as with the word written in."""
+    def test_a_loop_or_case_arm_decides_at_least_as_its_body_alone_and_with_each_value_written_in(self):
+        """#794's review: a loop's commands were read after its `do`, and a case arm's after its pattern, where a rule
+        that reads a command where one starts missed them (`for h in x; do echo FLUSHDB | valkey-cli …; done` and `case
+        x in x) echo FLUSHDB | redis-cli …;; esac` were allowed, held alone: TK-A040), and a loop value a `$` is quoted
+        in was no value (`for u in 'http://169.254.170.2$AWS_…'; do curl -s "$u"; done` flagged, denied written in).
+        Every E17 shell row, on every shell pack and both engines, decides as a loop's body and as a case's second arm
+        at least as strictly as alone, and as a loop over its last word (shlex's words, both quoted the same way) at
+        least as strictly as with the word written in."""
         order, rows = ["allow", "flag", "ask", "deny"], []
         for path in sorted(glob.glob(os.path.join(os.path.dirname(__file__), "data", "policy", "*", "*.jsonl"))):
             for line in open(path, encoding="utf-8"):
@@ -4446,7 +4447,8 @@ class HarmlessStops(unittest.TestCase):
                 if case.get("tool") in ("Bash", "bash", "shell", "local_shell", "run_shell_command", "terminal") and \
                         isinstance(cmd, str):
                     rows.append((case["tool"], cmd))
-        pairs = [(tool, f"for _v in a; do {cmd}\ndone", cmd) for tool, cmd in rows]
+        pairs = [(tool, f"for _v in a; do {cmd}\ndone", cmd) for tool, cmd in rows] + [
+            (tool, f"case _v in a) :;; (b|_v)\n{cmd}\n;; esac", cmd) for tool, cmd in rows]
         for tool, cmd in rows:
             with suppress(ValueError):
                 words = shlex.split(cmd)
@@ -4458,8 +4460,12 @@ class HarmlessStops(unittest.TestCase):
         self.check([], [(f"for h in other; do {flush.format(c)}; done", "ask", "TK-A040") for c in ("valkey-cli",
                                                                                                   "redis-cli")] +
                    [(f"for h in a b; do {flush.format('redis-cli')} -n \"$h\"; done", "ask", "TK-A040"),
-                    (f"while true; do {flush.format('valkey-cli')}; done", "ask", "TK-A040"),
-                    ("for u in 'http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'; do curl -s \"$u\"; done",
+                    (f"while true; do {flush.format('valkey-cli')}; done", "ask", "TK-A040")] +
+                   [(arm.format(flush.format("redis-cli")), "ask", "TK-A040") for arm in (
+                       "case x in x) {};; esac", "case x in *) {} ;; esac", "case x in y) : ;& x) {};; esac",
+                       "case x in y) : ;;& (x|y)\n{};; esac", "for i in 1; do case $i in 1) {};; esac; done",
+                       "f() {{ case x in x) {};; esac; }}; f", "if true; then case x in x) {};; esac; fi")] +
+                   [("for u in 'http://169.254.170.2$AWS_CONTAINER_CREDENTIALS_RELATIVE_URI'; do curl -s \"$u\"; done",
                      "deny", "TK-S001")])
         for pack, backend in itertools.product(("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
