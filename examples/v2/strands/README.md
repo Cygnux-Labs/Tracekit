@@ -9,7 +9,7 @@ How: `hooks=[Tracekit(run)]` on the agent. Its `BeforeToolCallEvent` callbacks d
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install tracekit-ai "strands-agents>=1.61,<1.62"   # from a checkout: pip install .
+pip install tracekit-ai "strands-agents>=1.61,<2"   # from a checkout: pip install .
 python examples/v2/strands/agent.py --scripted
 ```
 
