@@ -943,9 +943,10 @@ class View(unittest.TestCase):
         with open(path, "rb") as f:
             orig = f.read()
 
-        def put(p, data):
-            with open(p, "wb") as f:
+        def put(p, data):   # replaced whole, as the store writes its note: the feed's thread reads it meanwhile
+            with open(p + ".tmp", "wb") as f:
                 f.write(data)
+            os.replace(p + ".tmp", p)
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
         self.assertIsNone(feed.stopped)
