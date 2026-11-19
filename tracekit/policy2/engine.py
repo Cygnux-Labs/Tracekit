@@ -3274,12 +3274,17 @@ def _may_run_input(argv):
     return name not in shell.DATA_ONLY
 
 
-# a remote source a runner fetches code from (a URL, a VCS one, a PEP 508 `name @ URL`): _download_runs
-_REMOTE_SOURCE = re.compile(r"(?:[^\s@]+\s*@\s*)?(?:git\+)?(?:https?|ssh|git)://", re.I)
+# a remote source a runner fetches code from (a URL, a VCS one: git, Mercurial, Subversion, Bazaar, a PEP 508 `name @
+# URL`): _download_runs; for npm's runners also its hosted-git shorthands and owner/repo (_NPM_GITHUB)
+_REMOTE_SOURCE = re.compile(r"(?:[^\s@]+\s*@\s*)?(?:(?:git|hg|svn|bzr)\+)?(?:https?|ssh|git)://", re.I)
+_NPM_HOSTED = re.compile(r"(?:github|gitlab|bitbucket|gist):", re.I)
 # each package runner that fetches the code it runs: (its subcommands that do, none for one that runs it at once; its
-# options whose value is a package it installs to run it)
-_FETCHERS = {"uvx": ((), ("--from", "--with", "-w")), "uv": (("run",), ("--with", "-w")),
-             "pipx": (("run",), ("--spec", "--with"))}
+# options whose value is a package it installs to run it; the interpreter that runs it)
+_FETCHERS = {"uvx": ((), ("--from", "--with", "-w"), "python"), "uv": (("run",), ("--with", "-w"), "python"),
+             "pipx": (("run",), ("--spec", "--with"), "python"), "npx": ((), ("-p", "--package"), "node"),
+             "pnpx": ((), ("--package",), "node"), "bunx": ((), ("-p", "--package"), "node"),
+             "npm": (("exec", "x"), ("--package",), "node"), "pnpm": (("dlx",), ("--package",), "node"),
+             "yarn": (("dlx",), ("-p", "--package"), "node"), "bun": (("x",), ("-p", "--package"), "node")}
 
 
 def _fetched(args, starts, sources, valued, flags):
@@ -3288,8 +3293,13 @@ def _fetched(args, starts, sources, valued, flags):
     runs, its first word that is no option, or that may be the value of an option neither `valued` (shell's table of
     those that take one) nor `flags` names, read both ways as shell._unwrap reads one. An index's URL, any other
     option's value and the words after what it runs aren't. Each word read once: linear (a place's words are read up
-    to the next place, from where its reading is the next one's)."""
+    to the next place, from where its reading is the next one's). An option `sources` names before the subcommand
+    counts too (`pnpm --package=URL dlx x`: npm's and pnpm's options go anywhere)."""
     out = []
+    for i, a in enumerate(args[:max(starts[0], 0)] if starts else ()):
+        name, eq, value = a.partition("=")
+        if name in sources:
+            out += [value] if eq else args[i + 1:i + 2]
     for n, start in enumerate(starts):
         end, i, maybe = (starts[n + 1:] or [len(args)])[0], start + 1, False   # (maybe: the word may be an option's)
         while i < len(args) and i <= end:
@@ -3454,22 +3464,23 @@ def _download_runs(commands):
     the line spells it (through a wrapper or runner, after assignments, a versioned name, its code flag in a cluster or
     with its code attached, as shell._code_arg reads it), is `curl | python -c` or `curl | python <script>`, for
     TK-A046. A runner that fetches the code it runs from a remote source (`uv run https://…/x.py`, `uvx --from
-    git+https://…`, `pipx run --spec https://…`: the package or script it runs, or an option's that names one, not
-    an index's URL or the arguments it gives what it runs: _fetched) is a download into its interpreter too: `curl |
-    python remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's
+    hg+https://…`, `pipx run --spec https://…`, `npx github:o/r`, `npm exec --package=https://…`, `pnpm dlx`, `yarn
+    dlx`, `bunx`: the package or script it runs, or an option's that names one, not an index's URL or the arguments it
+    gives what it runs: _fetched) is a download into its interpreter too: `curl | python remote`, `curl | node
+    remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's
     first download in it (a later one's are among them), and each command once against the names every download
     saves."""
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
     for c in commands:
-        prog, args = _program(c["argv"]), c["argv"][1:]
-        if prog in _FETCHERS:   # (uv tool run is read as the uvx it is: shell)
-            verbs, sources = _FETCHERS[prog]
+        # (uv tool run is read as the uvx it is: shell; a runner at a version, pnpm@9, as that runner)
+        prog, args = _program(c["argv"]).partition("@")[0], c["argv"][1:]
+        if prog in _FETCHERS and f"curl | {_FETCHERS[prog][2]} remote" not in out:
+            verbs, sources, kind = _FETCHERS[prog]
             starts = [k for k in shell.runner_at(prog, args) if args[k] in verbs] if verbs else [-1]
             opts = shell.RUNNERS[prog][1] if verbs else shell.WRAPPERS[prog][0]
-            if any(_REMOTE_SOURCE.match(w) for w in _fetched(args, starts, sources, opts,
-                                                             shell.WRAPPER_FLAGS.get(prog, ()))):
-                out.append("curl | python remote")
-                break
+            if any(_REMOTE_SOURCE.match(w) or kind == "node" and (_NPM_HOSTED.match(w) or _NPM_GITHUB.fullmatch(w))
+                   for w in _fetched(args, starts, sources, opts, shell.WRAPPER_FLAGS.get(prog, ()))):
+                out.append(f"curl | {kind} remote")
     pipes, first, outs, groups, fed, into = {}, {}, {}, {}, [], []
     for c in commands:
         pipes.setdefault(c["pipeline"], []).append(c)
