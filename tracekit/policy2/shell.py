@@ -3582,9 +3582,10 @@ class _Parser:
                 if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
                     header += self.header_pattern(text)
                     continue
-                # a word whose every expansion is a variable's one known literal (word(): given) is that literal
-                header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
-                              else text)
+                # a word whose every expansion is a variable's one known literal (word(): given) is that literal; one
+                # with none is its text, a `$` or backquote it quotes too (`for u in 'http://…$X'`: what curl gets)
+                header.append(None if g or self.exps and (re.search(r"[$`]", text) or re.search(r"[$`]", raw) and
+                                                          not self.given) else text)
                 if header[-1] is None and self.readings:   # (a word with a blank an expansion joins: track_values)
                     header_blank += [r for r in self.readings if re.search(r"[ \t\n]", r) and
                                      not any(e in r for e in self.exps)]   # (none of its expansions as written)
@@ -5565,11 +5566,19 @@ def _lines(words, progs):
     """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
     without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), and a
     runner's where its subcommand runs one (`uv -q run python …`, `poetry run python …` are `python …`: runner_at), so
-    a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs."""
+    a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs; and again
+    with each reserved word where a command starts (do, then, else, {, !) as a `;`, so it reads a loop's or a group's
+    commands as it reads them alone (`for h in x; do echo FLUSHDB | redis-cli; done` holds `echo FLUSHDB | redis-cli`)."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
+    bare, start = list(words), True
+    for i, w in enumerate(words):
+        if start and w in KEYWORDS:
+            bare[i] = ";"
+        else:
+            start = w in _STAGE_ENDS
 
     def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q
         name = base_name(words[p])
@@ -5582,7 +5591,8 @@ def _lines(words, progs):
         if p in cut and base_name(words[p]) == "hatch":   # hatch run [ENV:]ARGS: the command, not its environment
             ran[q] = ran[q].split(":", 1)[-1]
     return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
-        [" ".join(w for i, w in enumerate(ran) if i not in cut)] if cut else [])
+        [" ".join(w for i, w in enumerate(ran) if i not in cut)] if cut else []) + (
+        [" ".join(bare)] if bare != words else [])
 
 
 _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
