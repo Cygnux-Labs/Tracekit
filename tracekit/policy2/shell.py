@@ -542,10 +542,9 @@ _ANSI_ESCAPE = re.compile(r"\\(x\{[0-9A-Fa-f]*\}?|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]
 # interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
 # parentheses: perl's and ruby's `system "x"`), its quoted commands and pipes, and sed's `e` command; a command the code
 # builds at run time is held (_Parser.runs, shell_calls).
-# lean: a call is found by its name (Python's and Node's by the names the code imports them as), a runner or module
-# taken as a value is held, and so is a lookup by a name made at run time of the kinds _CODE_RUNS lists; a call through
-# a property the code computes in some other way (JS `obj[k]()`, `this.constructor.constructor(…)`) isn't followed:
-# read what that code calls if one hides there
+# A call is found by its name (Python's and Node's by the names the code imports them as); a runner or module taken
+# as a value is held (an object holding one: `{r: cp.execSync}`, `cp[k]`), and so is a lookup by a name made at run time
+# of the kinds _CODE_RUNS lists (JS `process[k]`, `globalThis[k]`, `x.constructor.constructor(…)`)
 _CALL = re.compile(r"\b(system|popen|execSync|execFileSync|exec|spawn\w*|run|call|check_call|check_output|Popen|getoutput|"
                    r"shell_exec|passthru|proc_open|os\.execute)(\s*\(\s*|\s+)")
 _PY_CALL = re.compile(_CALL.pattern.replace(r"(\s*\(\s*|\s+)", r"(\s*\(\s*)"))   # (Python calls with parentheses)
@@ -972,30 +971,41 @@ _RUNS = {k: re.compile(r"\b(%s)\b%s" % (v, r"|\.\s*(`)(?=\s*\()" * (k == "ruby")
          for k, v in _RUN_NAMES.items()}   # (and Ruby's Kernel.`(…))
 # a call that runs its argument as the program's own code: Perl's eval of a string (not of a block), Ruby's eval,
 # instance_eval, class_eval, module_eval (not a variable: `print $eval;`), Python's exec and eval (and the standard
-# library's runners of a code string: cProfile's, profile's and pdb's run, timeit's), Node's eval, Function
+# library's runners of a code string: cProfile's, profile's and pdb's run, timeit's; runpy's, whose literal is read
+# as code too, a path or module name harmlessly), Node's eval, Function
 # and vm's, PHP's eval, Lua's load and loadstring; and Ruby's call of a method by its name (send, __send__, public_send)
 _EVALS = {"perl": re.compile(r"(?<![$@\w])eval\b"), "ruby": re.compile(r"\b(?:instance_|class_|module_)?eval\b"),
           "python": re.compile(r"(?<![\w.])(?:exec|eval)\b|\b(?:cProfile|profile|pdb)\s*\.\s*run(?:eval|ctx)?\b|"
-                               r"\btimeit\s*\.\s*(?:timeit|repeat|Timer)\b"),
+                               r"\btimeit\s*\.\s*(?:timeit|repeat|Timer)\b|\brunpy\s*\.\s*run_(?:path|module|code)\b"),
           "php": re.compile(r"(?<![\w>:$])eval\b"),
           "node": re.compile(r"(?<![\w.$])(?:eval|Function)\b|\bvm\s*\.\s*(?:run\w*|compileFunction|Script)\b"),
           "lua": re.compile(r"(?<![\w.:])(?:load|loadstring)\b")}
 # code a program runs that no eval call names: Perl's s///ee (its replacement evaluated as code, then run: _perl_ee)
 # and a pattern's code block ((?{…}), (??{…}), (*{…}); `use re "eval"`, under which a pattern made at run time may
 # hold one); Ruby's ERB template; Python's getattr, vars or __dict__ of a process module, globals() and locals(), and
-# __import__ or import_module of one or of a name made at run time; Node's require or import of a name it makes (any
-# but a literal) and process.binding; PHP's function named by a value (`$f(…)`, call_user_func); Lua's _G, os or io
-# indexed (`os[n](c)`): held, with what they may run read loose
+# __import__ or import_module of one or of a name made at run time, runpy's runs (a literal's are read as code:
+# _EVALS), the deserialisers that run code (pickle, marshal, dill, yaml.load but its safe loaders); Node's require or
+# import of a name it makes (any but a literal), process.binding, and a property computed on process, vm, globalThis,
+# global, module or require, or a constructor's constructor (Function); Ruby's Erubi, Erubis and Tilt templates; PHP's
+# function named by a value (`$f(…)`, call_user_func, create_function), preg_replace with /e (or a pattern it makes),
+# assert of a string; Lua's _G, os or io indexed (`os[n](c)`): held, with what they may run read loose
 _CODE_RUNS = {"perl": re.compile(r"\((?:\?\??|\*)\{|\buse\s+re\b[^;\n]{0,64}\beval\b"),
-              "ruby": re.compile(r"\bERB\s*\.\s*new\b"),
+              "ruby": re.compile(r"\bERB\s*\.\s*new\b|\b(?:Erubis?|Tilt)\s*(?:::|\.)"),
               "python": re.compile(r"\b(?:getattr|vars)\s*\(\s*(?:os|subprocess|pty|commands|asyncio|posix|nt)\b|"
                                    r"\b(?:os|subprocess|pty|commands|asyncio|posix|nt)\s*\.\s*__dict__|"
                                    r"\b(?:globals|locals)\s*\(\s*\)|"
                                    r"(?:\b__import__|\bimport_module)\s*\(\s*(?!['\"](?!(?:os|subprocess|pty|commands|"
-                                   r"asyncio|posix|nt)['\"])\w+['\"])"),
+                                   r"asyncio|posix|nt)['\"])\w+['\"])|"
+                                   r"\b(?:pickle|cPickle|_pickle|marshal|dill)\s*\.\s*(?:loads?|Unpickler)\b|"
+                                   r"\byaml\s*\.\s*(?:unsafe_load|full_load)(?:_all)?\b|"
+                                   r"\byaml\s*\.\s*load(?:_all)?\s*\((?![^)\n]{0,200}\b(?:C?SafeLoader|BaseLoader)\b)"),
               "node": re.compile(r"(?<![\w.$])(?:require|import)\s*\(\s*(?![\"'`][\w@./:-]*[\"'`]\s*\))|"
-                                 r"\bprocess\s*\.\s*(?:binding|_linkedBinding)\b"),
-              "php": re.compile(r"(?<![\w>:])\$\w+\s*\(|\bcall_user_func(?:_array)?\s*\("),
+                                 r"\bprocess\s*(?:\.\s*|\[\s*[\"'`])(?:binding|_linkedBinding)\b|"
+                                 r"\b(?:process|vm|globalThis|global|module|require|child_process)\s*\[\s*"
+                                 r"(?![\"'`][\w$]*[\"'`]\s*\])|\bconstructor\s*(?:\.\s*constructor\b|\[)"),
+              "php": re.compile(r"(?<![\w>:])\$\w+\s*\(|\b(?:call_user_func(?:_array)?|create_function)\s*\(|"
+                                r"\bpreg_replace\s*\(\s*(?:(['\"])[^'\"\n]{0,500}?[^\w\s\\'\"][a-zA-Z]*e[a-zA-Z]*\1|(?!['\"]))|"
+                                r"\bassert\s*\(\s*(?:['\"]|\$\w+\s*[,)])"),
               "lua": re.compile(r"\b(?:_G|os|io)\s*\[")}
 _PERL_S = re.compile(r"(?<![\w$@%&*])s(?=[^\w\s]|\s+\S)")
 _SEND = re.compile(r"\b(?:__send__|public_send|send)\b")
@@ -1029,6 +1039,7 @@ _SHELL_CALLS = {"php": re.compile(r"(?<![\w>:$])(system|exec|passthru|shell_exec
                 "lua": re.compile(r"\b(os\s*\.\s*execute|io\s*\.\s*popen)\s*(\(|(?=[\"']))"),
                 "awk": re.compile(r"\b(system)\s*\(")}
 _PY_SHELL = re.compile(r"system|popen[234]?|getoutput|getstatusoutput|create_subprocess_shell")
+_PYDOC_PAGER = re.compile(r"\bpydoc\s*\.\s*(?:pipepager|pipe|tempfilepager)\s*\(")   # (text, the shell line)
 # a runner PHP or Lua code takes as a value: PHP's name of one as a string (`$f = 'system'`,
 # call_user_func('exec', …)), Lua's os.execute or io.popen not called (`local f = os.execute`)
 _SHELL_TAKEN = {"php": re.compile(r"""['"](?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)['"]"""),
@@ -2774,6 +2785,23 @@ def _foreign_runs_text(shell, args):
                 "command".startswith(name) or name == "ec" or "encodedcommand".startswith(name)):
             return True
     return True
+
+
+def _as_node(name, args):
+    """Node's words for Deno's or Bun's run of code (`deno eval CODE`, `bun -e CODE` or --eval, --print: `-e CODE`) or of
+    its stdin (`deno run … -`, `bun run -`: `-`), so node's reading applies; None for any other (a script file, a
+    package script, a subcommand)."""
+    if name == "bun":
+        code = next((text for _, text in _code_words("node", args)), None)
+        return ["-e", code] if code is not None else ["-"] if args[:1] == ["run"] and "-" in args[1:] else None
+    sub = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
+    if sub is None or args[sub] not in ("eval", "run"):
+        return None
+    rest = args[sub + 1:]
+    if args[sub] == "run":
+        return ["-"] if "-" in rest else None
+    lines = [a for a in rest if not a.startswith("-")]   # (each word an option doesn't take: its code, read whole)
+    return ["-e", "\n".join(lines)] if lines else None
 
 
 def _npm_call(args):
@@ -4772,6 +4800,10 @@ class _Parser:
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
                 continue
+            elif name in ("deno", "bun") and (node := _as_node(name, args)) is not None:   # their code: node's
+                argv, via, unreadable = ["node", *node], via + [name], [False] * (1 + len(node))
+                self.charge(len(argv))
+                continue
             elif name == "uv" and args[:2] in (["tool", "run"], ["tool", "uvx"]):   # uvx's long forms
                 argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
                 self.charge(len(argv))
@@ -5115,7 +5147,8 @@ class _Parser:
             if cmd is not None and _SED_S_E.search(code):
                 cmd["opaque"] = True
             return
-        calls, loose = _py_calls(code) if kind == "python" else _CALL, False
+        # (Python's and Node's calls take parentheses: `spawn } from "child_process"` is no call)
+        calls, loose = _py_calls(code) if kind == "python" else _PY_CALL if kind == "node" else _CALL, False
         for m in calls.finditer(code):
             if kind == "python" and m.group(1) == "exec" or kind in _RUNS and re.fullmatch(_RUN_NAMES[kind], m.group(1)):
                 continue   # Python's exec runs Python, not a shell; Perl's and Ruby's runners: runs()
@@ -5238,6 +5271,10 @@ class _Parser:
             kind == "node" and _node_taken(code) or kind in _SHELL_TAKEN and bool(_SHELL_TAKEN[kind].search(code))
         if loose:
             self.hold(cmd, "code")
+        for m in _PYDOC_PAGER.finditer(code) if kind == "python" else ():   # (its command is its second argument)
+            items, end = _call_args(kind, code, m.end(), True, self.charge)
+            self.charge(end - m.end())
+            self.run_words(items[1:2] or [None], pid, via, cmd)
         for m in calls.finditer(code) if calls else ():
             items, end = _call_args(kind, code, m.end(), m.group().rstrip().endswith("("), self.charge)
             self.charge(end - m.end())

@@ -3406,7 +3406,12 @@ class InterpreterRuns(unittest.TestCase):
             ("python3 -c 'import os; o = os; o.system(\"sudo id\")'", S),
             ("python3 -c 'import sys, os; sys.modules[\"os\"].system(\"sudo id\")'", S),
             ("node -e 'const f = require(\"child_process\").execSync; f(\"sudo id\")'", S),
-            ("php -r '$f = \"system\"; $f(\"sudo id\");'", S), ("lua -e 'local f = os.execute; f(\"sudo id\")'", S)],
+            ("php -r '$f = \"system\"; $f(\"sudo id\");'", S), ("lua -e 'local f = os.execute; f(\"sudo id\")'", S),
+            ("deno eval 'require(\"child_process\").execSync(\"sudo id\")'", S),
+            ("bun -e 'require(\"child_process\").execSync(\"sudo id\")'", S),
+            ("deno run -A - <<'EOF'\nrequire('child_process').execSync('sudo id')\nEOF", S),
+            ("bun run - <<'EOF'\nrequire('child_process').execSync('sudo id')\nEOF", S),
+            ("python3 -c 'import pydoc; pydoc.pipepager(t, \"sudo id\")'", S)],
     }
     HELD = {   # a command or code the program makes at run time: held (TK-SHELL-PARSE)
         "perl": ["perl -e '$c = \"sudo id\"; qx/$c/'", "perl -e '$c = \"sudo id\"; print `$c`'",
@@ -3428,7 +3433,8 @@ class InterpreterRuns(unittest.TestCase):
                  "ruby -e 'send(:eval, c)'", "ruby -e 'open(ARGV[0])' x", "ruby -e 'ARGV.each(&method(:system))' x",
                  "ruby -e 'alias_method :run, :system'", "ruby -rerb -e 'puts ERB.new(t).result'",
                  "ruby -rerb -e 'ERB.new(\"<%= 1 %>\").result(binding)'", "ruby -e 'Object.instance_eval(c)'",
-                 "ruby -e 'String.class_eval(c)'"],
+                 "ruby -e 'String.class_eval(c)'", "ruby -e 'Tilt.new(f).render'", "ruby -e 'Erubi::Engine.new(t).src'",
+                 "ruby -e 'Erubis::Eruby.new(t).result'", "ruby -e 'Tilt::ERBTemplate.new { t }.render'"],
         "perl code run without eval": [
             "perl -pe 's/x/$c/ee'", "perl -pe 's{x}{$c}gee'", "perl -pe 's {x} {$c}eeg'", "perl -pe 's#x#$c#ee'",
             "perl -e '$s =~ s/x/\"sys\".\"tem q(id)\"/ee'", "perl -e '\"a\" =~ /(??{ $c })/'",
@@ -3457,7 +3463,14 @@ class InterpreterRuns(unittest.TestCase):
             "python3 -c 'import posix; posix.system(c)'", "python3 -c 'from nt import system; system(c)'",
             "python3 -c 'import cProfile; cProfile.run(c)'", "python3 -c 'import timeit; timeit.timeit(c)'",
             "python3 -c 'import pdb; pdb.run(c)'", "python3 -c 'import os; os.__dict__[n](c)'",
-            "python3 -c 'globals()[n](c)'"],
+            "python3 -c 'globals()[n](c)'", "python3 -c 'import runpy; runpy.run_path(p)'",
+            "python3 -c 'import runpy; runpy.run_module(m)'", "python3 -c 'import runpy; runpy.run_code(c)'",
+            "python3 -c 'import pydoc; pydoc.pipepager(t, c)'", "python3 -c 'import pydoc; pydoc.pipe(t, c)'",
+            "python3 -c 'import pickle; pickle.loads(d)'", "python3 -c 'import pickle; pickle.load(f)'",
+            "python3 -c 'import pickle; pickle.loads(b\"cos\\nsystem\\n.\")'", "python3 -c 'import marshal; marshal.loads(d)'",
+            "python3 -c 'import dill; dill.loads(d)'", "python3 -c 'import yaml; yaml.load(s)'",
+            "python3 -c 'import yaml; yaml.load(s, Loader=yaml.Loader)'", "python3 -c 'import yaml; yaml.unsafe_load(s)'",
+            "python3 -c 'import yaml; yaml.full_load(s)'"],
         "node": [
             "node -e 'require(\"child_process\").exec(`echo ${x}`)'",
             "node -e 'require(\"child_process\").execSync(\"echo \" + x)'",
@@ -3474,7 +3487,13 @@ class InterpreterRuns(unittest.TestCase):
             "node -e 'const cp = require(\"child_process\"); const c2 = cp; c2.exec(`ls ${d}`)'",
             "node -e 'foo(require(\"child_process\"))'", "node -e 'require(m).execSync(c)'",
             "node -e 'process.binding(\"spawn_sync\")'", "node -e '[c].forEach(require(\"child_process\").execSync)'",
-            "node -e 'const { execSync } = require(\"child_process\"); [c].map(execSync)'"],
+            "node -e 'const { execSync } = require(\"child_process\"); [c].map(execSync)'",
+            "deno eval 'require(\"child_process\").execSync(`echo ${x}`)'", "deno eval --ext=js 'eval(c)'",
+            "bun -e 'require(\"child_process\").execSync(c)'", "bun --eval 'eval(c)'", "node -e 'process[k](c)'",
+            "node -e 'process[\"binding\"](\"spawn_sync\")'", "node -e 'globalThis[\"req\" + \"uire\"](m)'",
+            "node -e 'global[k](c)'", "node -e 'module[k](m)'", "node -e 'require(\"vm\"); vm[k](c)'",
+            "node -e '[].constructor.constructor(c)()'", "node -e 'const cp = require(\"child_process\"); cp[k](c)'",
+            "node -e 'const o = {r: require(\"child_process\").execSync}; o[k](c)'"],
         "php, lua and awk": [
             "php -r 'system(\"echo $x\");'", "php -r 'shell_exec($c);'", "php -r 'passthru(\"ls \" . $d);'",
             "php -r 'exec(\"ls {$d}\");'", "php -r '$p = popen($c, \"r\");'", "php -r '\\system($c);'",
@@ -3483,7 +3502,9 @@ class InterpreterRuns(unittest.TestCase):
             "awk 'BEGIN { c | getline }'", "awk '{ print $0 | c }'", "awk '{ print | (\"sort \" o) }'",
             "awk 'BEGIN { c |& getline }'", "php -r '$f = \"system\"; $f($c);'", "php -r 'call_user_func($f, $c);'",
             "lua -e 'local f = os.execute; f(c)'", "lua -e 'os[n](c)'", "php -r '$f($c);'",
-            "php -r 'array_map(\"system\", $a);'"],
+            "php -r 'array_map(\"system\", $a);'", "php -r 'preg_replace(\"/x/e\", $c, $s);'",
+            "php -r 'preg_replace(\"#x#ie\", $c, $s);'", "php -r 'preg_replace($p, \"y\", $s);'",
+            "php -r 'assert(\"system(1)\");'", "php -r 'assert($c);'", "php -r 'create_function(\"\", $c);'"],
     }
     BENIGN = [
         "perl -ne 'print if /qx/'", "perl -ne 'print if /^qx\\s/'", "perl -pe 's/qx/QX/g'", "perl -e 'print q(qx)'",
@@ -3519,7 +3540,16 @@ class InterpreterRuns(unittest.TestCase):
         "python3 -c 'from os import system; system(\"ls\")'", "python3 -c 'from subprocess import run, call; run([\"ls\"])'",
         "node -e 'const cp = require(\"child_process\"); console.log(\"cp\"); cp.execSync(\"ls\")'",
         "node --input-type=module -e 'import * as cp from \"child_process\"; cp.execSync(\"ls\")'",
-        "node -e 'require(\"fs\").readFileSync(\"a\")'", "php -r 'echo \"system ok\";'", "php -r '$o->run($x);'"]
+        "node -e 'require(\"fs\").readFileSync(\"a\")'", "php -r 'echo \"system ok\";'", "php -r '$o->run($x);'",
+        "deno eval 'console.log(1)'", "bun --eval 'console.log(1)'", "bun run build", "deno fmt", "deno run main.ts", "deno test --filter 'eval(c)'",
+        "node -e 'console.log(process.argv[k])'", "node -e 'const o = {a: 1}; console.log(o[k])'",
+        "node -e 'console.log(process[\"env\"].HOME)'",
+        "node --input-type=module -e 'import { exec as run, spawn } from \"child_process\"; run(\"ls\")'",
+        "node --input-type=module -e 'import { execSync } from \"child_process\"; execSync(\"ls\")'",
+        "python3 -c 'import json; json.loads(d)'", "python3 -c 'import yaml; yaml.safe_load(s)'",
+        "python3 -c 'import yaml; yaml.load(s, Loader=yaml.SafeLoader)'", "python3 -c 'import pickle; print(pickle.dumps(1))'",
+        "python3 -c 'import runpy; runpy.run_module(\"http.server\")'", "python3 -c 'import pydoc; pydoc.pipepager(t, \"less\")'",
+        "ruby -e 'puts \"Tilt\"'", "php -r 'preg_replace(\"/x/i\", \"y\", $s);'", "php -r 'assert($x > 0);'"]
 
     @classmethod
     def setUpClass(cls):
@@ -4576,7 +4606,7 @@ class HarmlessStops(unittest.TestCase):
               "TK-D002"),
              # code made from what it reads holds too (TK-SHELL-PARSE): the strict pack denies it
              (f'curl {CURL} | python3 -c "import sys; exec(sys.stdin.read())"', "parse", "TK-A046"),
-             (f'curl {CURL} | python3 -c "import sys,yaml; yaml.load(sys.stdin)"', "ask", "TK-A046"),
+             (f'curl {CURL} | python3 -c "import sys,yaml; yaml.load(sys.stdin)"', "parse", "TK-A046"),
              (f"curl {CURL} | python3 parse.py", "ask", "TK-A046"),
              (f"curl {CURL} | node -e 'process.stdin.pipe(process.stdout)'", "ask", "TK-A046"),
              # what a download prints, piped into code or kept in a variable, stops as on 1.5.3
