@@ -19,7 +19,7 @@ from urllib.parse import unquote, urlsplit
 from . import classes, shell, source as source_reader
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
-MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
+MAX_SUBJECT = source_reader.MAX_SUBJECT   # bytes of UTF-8; a longer subject is never cut or windowed, and the reader resolves no literal longer
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
 # where a quoted value with a space looked like two words (`git -C 'my dir' push --force`); this one is no blank (\s)
 # on either engine, no word character, matched by [^ ], and one byte, so that subject is never longer than the other
@@ -57,6 +57,8 @@ REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one d
 # what deciding an argument as a command (shell.hidden_commands) spends of its call's work budget beyond its parse: a
 # decision's pass of every deny rule takes about as long as parsing 128 characters of commands does (~110 us)
 DECISION_COST = 128
+# the class of each sub-call the source reader names, so a policy that maps only its own tools still decides them
+_SUB_CLASS = {"shell": "shell", "http_get": "http"}
 # the subject length from which a rule's alternatives' strings (compile.requirements) are checked before it is searched:
 # a shorter subject's search costs no more than the check (E21's calls decided 2-4% slower at p99 with every one checked)
 REQUIREMENTS_FROM = 1024
@@ -295,7 +297,7 @@ class Engine:
             # on_parse_error (TK-SOURCE-PARSE)
             key, mode = source_reader.CELLS[tool]
             text = args.get(key)
-            reading = source_reader.read(text, mode) if isinstance(text, str) else None
+            reading = source_reader.read(text, mode, work=work) if isinstance(text, str) else None
             held = "text" if reading is None else reading.held
             for sub_tool, sub_args in (() if reading is None else reading.calls):
                 work[0] += DECISION_COST
@@ -303,7 +305,8 @@ class Engine:
                     held = held or "budget"
                     break
                 try:
-                    inner = self.decide(sub_tool, sub_args, untrusted=untrusted, _budget=(work, deadline))
+                    inner = self.decide(sub_tool, sub_args, _SUB_CLASS.get(sub_tool, "browser"), untrusted,
+                                        _budget=(work, deadline))
                 except TimeoutError:
                     nondeterministic, held = True, held or "budget"
                     break

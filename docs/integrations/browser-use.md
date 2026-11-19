@@ -69,11 +69,22 @@ On 1.0, the `python` cell is a tool like the others: its decide names it `browse
 source (`code`) with `ast.parse` only, never running it. Each literal browser-helper or shell call the source names is
 decided as the action it stands for, on the pack's own rules (`goto_url` as a navigation, `js` as evaluate, and so on),
 and the cell takes the strictest of those decisions; `finish_from_repl` is read the same way from its `expression`. A
-source the reader can't follow waits for `on_parse_error` (`TK-SOURCE-PARSE`): a callee or required argument that isn't
-literal text, a computed `getattr`, `globals`/`locals`/`vars`, `__import__`, a program or argv invocation, nested code
-past three levels, over 256 calls, or over 64 KiB. Code with no mapped action is left to the cell: file writes through
-`open`, third-party HTTP (`requests`, `urllib`), a function the cell defines and calls by name, or any call built at run
-time. A cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
+function or lambda body is read where it is defined, whether or not the cell calls it; a parameter or module name in it
+is not literal, and a literal `exec`/`eval` without a namespace shares the cell's names. A literal argv list is decided
+as the shell command it runs, for `subprocess.run`/`Popen` and for `asyncio.create_subprocess_exec`, `os.exec*` and
+`spawn*`, `posix_spawn*` and `pty.spawn` (the program path must be literal too). A call a binding target or an
+annotation evaluates is read too: a subscript's base and index or slice, an attribute's base, a `del`, `for`, `with` or
+comprehension target, an augmented assignment, a module or class annotation, and a parameter, return or PEP 695
+type-parameter annotation (a function's, a class's or a `type` alias's). A source the reader can't follow waits
+for `on_parse_error` (`TK-SOURCE-PARSE`): a callee or required argument that isn't literal text, an unknown bare callee
+that is neither defined in the cell nor a Python builtin (raw CDP such as `cdp(...)` and `_`-prefixed helpers), a helper
+or command used as a value (`goto_url.__call__`, `map(goto_url, ...)`, `Thread(target=os.system)`), `setattr`/`delattr`,
+a computed `getattr`, `globals`/`locals`/`vars`, `__import__`, an unmapped network, process or FFI import (`urllib`,
+`http`, `socket`, `requests`, `httpx`, `aiohttp`, `ctypes`, `multiprocessing`), nested `exec`/`eval` with a namespace of
+its own, a name that may be rebound (`global`/`nonlocal`, a match capture, a comprehension or loop target, a branch),
+nested code past three levels, over 256 calls, or over 64 KiB. A value a branch or a nested `exec` assigns is read as it
+becomes. Code with no mapped action is left to the cell: file writes through `open`, ordinary stdlib calls, or a call
+built at run time. A cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
 completion carries the text and the error status. The `finish_from_repl` delivery is an output tool, which Pydantic AI
 runs without the tool hook above: it is decided and completed at `Repl.call`, which is where its expression runs.
 `Repl.call` gates both ops it runs. The `python` cell's `exec` is the one the tool hook just decided: it marks that
@@ -236,7 +247,9 @@ carries no model call id, so they are not linked to the actions. Which framework
   the agent is on that page (its URL is in the next step's browser state).
 - On 1.0, no page is observed and `page_url` is empty. A `python` cell's browser calls run inside the cell, not as
   actions: Tracekit reads the cell's source and decides each literal helper or shell call as the action it stands for,
-  with the cell at the strictest; what it can't follow is held as `TK-SOURCE-PARSE`. It does not read code with no
-  mapped action (file writes through `open`, third-party HTTP, a call through a function the cell defines or a name
-  built at run time). The same goes for the `finish_from_repl` expression. A cell can still hide an action behind such
-  code; read a 1.0 decision as a statement about the calls its source names literally.
+  with the cell at the strictest; what it can't follow is held as `TK-SOURCE-PARSE`. It reads a function or lambda
+  body where it is defined, so the calls in it are decided too; a value that may be rebound, an unknown bare callee,
+  raw CDP, and an unmapped network, process or FFI import are held. It does not read code with no mapped action (file
+  writes through `open`, ordinary stdlib calls, a name built at run time). The same goes for the `finish_from_repl`
+  expression. A cell can still hide an action behind such code; read a 1.0 decision as a statement about the calls its
+  source names literally.

@@ -1012,6 +1012,56 @@ class SourceReaderOnRealSigner(unittest.TestCase):
         self.assertIn("TK-SOURCE-PARSE", str(caught.exception))
         self.assertEqual(self.ran, [])
 
+    def test_a_cell_whose_uncalled_function_body_navigates_is_refused_before_it_runs(self):
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        with self.assertRaises(Refused) as caught:
+            asyncio.run(Repl.call(self.repl, "exec",
+                                  'def f():\n    goto_url("file:///etc/passwd")', 5))
+        self.assertIn("TK-B001", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
+    def test_an_unknown_helper_waits_for_a_person(self):
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        with self.assertRaises(Refused) as caught:
+            asyncio.run(Repl.call(self.repl, "exec", 'cdp("Page.navigate", "file:///x")', 5))
+        self.assertIn("TK-SOURCE-PARSE", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
+
+@unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
+class SourceReaderArgvOnRealSigner(unittest.TestCase):
+    """A literal argv is decided as the shell command it runs, on a real signer whose pack denies it."""
+
+    def setUp(self):
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        self.addCleanup(setattr, BrowserLoop, "wrap_tool_execute", BrowserLoop.wrap_tool_execute)
+        self.addCleanup(setattr, Repl, "call", Repl.call)
+        self.ran = []
+
+        async def worker(repl, op, code, timeout):
+            self.ran.append((op, code))
+            return {"value": None, "output": "", "images": [], "error": None}
+        real = Repl.call
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        strict = os.path.join(os.path.dirname(PACK), "strict.yaml")
+        self.s = svc.SignerService(ac.tmpdir(self), policy=svc.load_policy(strict))
+        self.addCleanup(self.s.close)
+        run = self.s.register_run({"request_id": "r-src-argv", "agent": {"name": "bu-src"}})
+        trace_tools(_Tools(), self.s, run, approval_wait_s=0)
+        self.repl = types.SimpleNamespace(secrets=[])
+
+    def test_a_literal_argv_shell_command_is_refused_before_it_runs(self):
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        with self.assertRaises(Refused) as caught:
+            asyncio.run(Repl.call(self.repl, "exec", 'subprocess.run(["rm", "-rf", "~"])', 5))
+        self.assertIn("TK-D004", str(caught.exception))
+        self.assertEqual(self.ran, [])
+
 
 class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "browser_use", "1.0.2"

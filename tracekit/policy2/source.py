@@ -2,19 +2,28 @@
 
 The signer decides one call per cell. This module reads the source with `ast.parse` (never compile or exec), maps
 each literal helper or command call to the action it stands for, and leaves the engine to decide each and take the
-strictest. A source it cannot follow is held as TK-SOURCE-PARSE. Ordinary Python the policy has no action for
-(`open`, a third-party library, a function defined in the cell and called by name) is left unread; docs/limits.md
-says what that leaves out.
+strictest. A source it cannot follow, a name the cell can rebind or reach indirectly, a function body it reads, and an
+unmapped network, process or FFI import are held as TK-SOURCE-PARSE. Ordinary Python the policy has no action for
+(`open`, a plain stdlib call) is left unread; docs/limits.md says what that leaves out.
 """
 import ast
+import builtins
+
+from . import shell
 
 MAX_SOURCE = 64 * 1024   # bytes of UTF-8; a longer cell or delivery is held, not cut
-MAX_CALLS = 256          # calls read from one source; a nested source is capped on its own
+MAX_SUBJECT = 64 * 1024  # bytes of UTF-8; no literal the reader resolves is longer (the engine's subject limit)
+MAX_CALLS = 256          # calls read for one decision; nested readers share this counter
 MAX_DEPTH = 3            # nested exec/eval: the cell, then three levels of literal code
 
 _MISSING = object()
 REFLECTION = {"globals", "locals", "vars"}
 DYNAMIC_CALLS = {"__import__", "importlib.import_module"}
+SETATTR = {"setattr", "delattr"}
+# an import of one of these, used or not, leaves what it can run out of the reader's sight (requests and httpx are
+# third-party; the rest are standard library and still held, to keep the set closed)
+HELD_IMPORTS = {"urllib", "http", "socket", "requests", "httpx", "aiohttp", "ctypes", "multiprocessing"}
+_BUILTINS = frozenset(dir(builtins))
 _HELPER_MODULES = ("browser_harness.helpers.", "helpers.")
 
 
@@ -48,7 +57,15 @@ SHELL = {
     "os.system": "command", "os.popen": "cmd",
     "asyncio.create_subprocess_shell": "cmd",
 }
-SHELL_ARGV = {"asyncio.create_subprocess_exec"}   # an argv list, which no shell rule reads
+_SPAWNL = {"os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe"}
+_SPAWNV = {"os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe"}
+# calls that run a program from an argv list, which no shell rule reads through the action's own line
+SHELL_ARGV = {
+    "asyncio.create_subprocess_exec",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    "os.posix_spawn", "os.posix_spawnp",
+    "pty.spawn",
+} | _SPAWNL | _SPAWNV
 # the two Browser Use 1.x actions whose source this reads: the action -> (its argument, its parse mode)
 CELLS = {"browser_use:python": ("code", "exec"), "browser_use:finish_from_repl": ("expression", "eval")}
 
@@ -57,9 +74,19 @@ _TRY = tuple(c for c in (ast.Try, getattr(ast, "TryStar", None)) if c is not Non
 _MATCH = getattr(ast, "Match", None)
 
 
-def read(code, mode="exec", depth=0):
+class _State:
+    """What every reader of one decision shares: the calls found, the call counter, the stop flag, and the budget."""
+
+    def __init__(self, work=None):
+        self.calls = []
+        self.count = 0
+        self.stop = False
+        self.work = [0] if work is None else work
+
+
+def read(code, mode="exec", depth=0, work=None):
     """(the calls a source names, why it is held or None): [(tool, args)]. Parse only; never run the source."""
-    return Reader(code, mode, depth).run()
+    return Reader(code, mode, depth, state=_State(work)).run()
 
 
 class _Reading:
@@ -68,35 +95,64 @@ class _Reading:
 
 
 class Reader(ast.NodeVisitor):
-    def __init__(self, code, mode="exec", depth=0, aliases=None, env=None):
-        self.code, self.mode, self.depth = code, mode, depth
-        self.aliases, self.env = dict(aliases or {}), dict(env or {})
-        self.calls, self.held = [], None
-        self.count = 0
-        self.stop = False
-        self.defined, self.dynamic, self.shadowed = set(), set(), set()
+    def __init__(self, code, mode="exec", depth=0, state=None, scope=None, force_conditional=False):
+        self.code, self.mode, self.depth, self.state = code, mode, depth, state or _State()
+        if scope is None:
+            self.env, self.aliases = {}, {}
+            self.defined, self.dynamic, self.shadowed, self.never = set(), set(), set(), set()
+        else:
+            self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never = scope
+        self.held = None
+        self.force_conditional = force_conditional
+        self.in_conditional = force_conditional
+
+    @property
+    def calls(self):
+        return self.state.calls
 
     def run(self):
-        if not isinstance(self.code, str):
-            self.hold("text")
-            return _Reading(self.calls, self.held)
-        if len(self.code.encode("utf-8", "surrogatepass")) > MAX_SOURCE:
+        size = len(self.code.encode("utf-8", "surrogatepass"))
+        if size > MAX_SOURCE:
             self.hold("size")
-            return _Reading(self.calls, self.held)
+            return _Reading(self.state.calls, self.held)
+        if not self._charge(size):
+            return _Reading(self.state.calls, self.held)
         try:
             tree = ast.parse(self.code, mode=self.mode)
         except Exception as exc:   # SyntaxError, ValueError (a null byte), MemoryError, RecursionError: unread, never raised
             self.hold("syntax" if isinstance(exc, SyntaxError) else "unreadable")
-            return _Reading(self.calls, self.held)
+            return _Reading(self.state.calls, self.held)
+        # `global`/`nonlocal`: a name that may be written from a function is never a literal or an alias
+        for sub in ast.walk(tree):
+            if isinstance(sub, (ast.Global, ast.Nonlocal)):
+                self.never.update(sub.names)
+        for name in self.never:
+            self._forget(name)
         try:
             self.visit(tree)
         except Exception:   # a nesting too deep or an unusual node: held, never raised into the signer
             self.hold("unreadable")
-        return _Reading(self.calls, self.held)
+        return _Reading(self.state.calls, self.held)
 
     def hold(self, cause):
         if self.held is None:
             self.held = cause
+
+    def _charge(self, n):
+        """Spend the decision's budget; a spent budget holds the source and stops the whole read."""
+        try:
+            shell.charge(self.state.work, n)
+        except shell.ParseError:
+            self.hold("budget")
+            self.state.stop = True
+            return False
+        return True
+
+    def _save(self):
+        return self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never
+
+    def _restore(self, saved):
+        self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never = saved
 
     # --- statements: read calls in the order they run, so a name only resolves to a value assigned before it ---
     def visit_Module(self, node):
@@ -106,21 +162,31 @@ class Reader(ast.NodeVisitor):
         self.visit(node.body)
 
     def stmts(self, body, conditional=False):
-        for stmt in body:
-            if self.stop:
-                return
-            self.stmt(stmt, conditional)
+        saved = self.in_conditional
+        self.in_conditional = self.in_conditional or conditional
+        try:
+            for stmt in body:
+                if self.state.stop:
+                    return
+                self.stmt(stmt, conditional)
+        finally:
+            self.in_conditional = saved
 
     def stmt(self, node, conditional=False):
         if isinstance(node, (ast.Import, ast.ImportFrom)):
             self.bind_import(node)
         elif isinstance(node, ast.Assign):
-            self.visit(node.value)
+            if not self._alias_value(node.value):
+                self.visit(node.value)
             self.bind_targets(node.targets, node.value, conditional)
         elif isinstance(node, ast.AnnAssign):
             if node.value is not None:
-                self.visit(node.value)
+                if not self._alias_value(node.value):
+                    self.visit(node.value)
                 self.bind_targets([node.target], node.value, conditional)
+            else:
+                self.visit_target(node.target)   # a non-simple target is evaluated even without a value
+            self.visit(node.annotation)   # a module or class annotation is evaluated, so its calls are the cell's
         elif isinstance(node, ast.AugAssign):
             self.visit(node.value)
             self.aug_assign(node, conditional)
@@ -170,6 +236,7 @@ class Reader(ast.NodeVisitor):
         elif _MATCH is not None and isinstance(node, _MATCH):
             self.visit(node.subject)
             for case in node.cases:
+                self._forget_pattern(case.pattern)
                 if case.guard is not None:
                     self.visit(case.guard)
                 self.stmts(case.body, True)
@@ -185,11 +252,15 @@ class Reader(ast.NodeVisitor):
     def bind_import(self, node):
         if isinstance(node, ast.Import):
             for a in node.names:
+                if a.name.split(".")[0] in HELD_IMPORTS:
+                    self.hold("import")
                 name = a.asname or a.name.split(".")[0]
                 self.aliases[name] = a.name if a.asname else a.name.split(".")[0]
                 self._clear(name)
         else:
             base = node.module or ""
+            if base.split(".")[0] in HELD_IMPORTS:
+                self.hold("import")
             for a in node.names:
                 if a.name == "*":
                     continue
@@ -210,6 +281,17 @@ class Reader(ast.NodeVisitor):
         self.aliases.pop(name, None)
         self.shadowed.add(name)
 
+    def _forget_pattern(self, pattern):
+        for sub in ast.walk(pattern):
+            name = (sub.name if isinstance(sub, (ast.MatchAs, ast.MatchStar)) else
+                    sub.rest if isinstance(sub, ast.MatchMapping) else None)
+            if name:
+                self._forget(name)
+
+    def _alias_value(self, value):
+        """A plain `name = helper` or `name = module.helper` keeps the helper readable under its new name."""
+        return isinstance(value, (ast.Name, ast.Attribute)) and self.alias_of(value) is not None
+
     def bind_targets(self, targets, value, conditional):
         for target in targets:
             if isinstance(target, (ast.Tuple, ast.List)):
@@ -217,20 +299,60 @@ class Reader(ast.NodeVisitor):
                 if values is None or len(values) != len(target.elts) or any(isinstance(e, ast.Starred)
                                                                              for e in target.elts):
                     for elt in target.elts:
-                        name = elt.value if isinstance(elt, ast.Starred) else elt
-                        if isinstance(name, ast.Name):
-                            self.bind(name.id, None, True)
+                        self.forget_target(elt)
                 else:
                     for elt, v in zip(target.elts, values):
                         if isinstance(elt, ast.Name):
                             self.bind(elt.id, v, conditional, literal=True)
+                        else:
+                            self.forget_target(elt)
             elif isinstance(target, ast.Name):
                 self.bind(target.id, value, conditional)
-            # an attribute or subscript writes an object the reader does not follow
+            else:
+                self.forget_target(target)
+
+    def visit_target(self, target):
+        """Read the expressions a target evaluates without binding or forgetting anything."""
+        if isinstance(target, ast.Starred):
+            self.visit_target(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self.visit_target(elt)
+        elif isinstance(target, ast.Attribute):
+            self.visit(target.value)
+        elif isinstance(target, ast.Subscript):
+            self.visit(target.value)
+            self.visit(target.slice)
+
+    def forget_target(self, target):
+        """Forget the names a target binds and read the expressions it evaluates: a subscript's base and index and
+        an attribute's base run before the store, so a call inside one is a call the cell makes."""
+        if isinstance(target, ast.Starred):
+            self.forget_target(target.value)
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                self.forget_target(elt)
+        elif isinstance(target, ast.Name):
+            self.bind(target.id, None, True)
+        elif isinstance(target, ast.Attribute):
+            # `helpers.press_key = ...` rebinds what the dotted name reaches, and the helper it names
+            dotted = self.name(target)
+            if dotted:
+                self._forget_dotted(dotted)
+            self.visit(target.value)
+        elif isinstance(target, ast.Subscript):
+            self.visit(target.value)
+            self.visit(target.slice)
+
+    def _forget_dotted(self, dotted):
+        self._forget(dotted)
+        for prefix in _HELPER_MODULES:
+            if dotted.startswith(prefix):
+                self._forget(dotted[len(prefix):])
 
     def bind(self, name, value, conditional=False, literal=False):
         self.defined.discard(name)
-        if conditional:
+        if name in self.never or conditional or self.force_conditional:
             self._forget(name)
             return
         if value is None:
@@ -262,10 +384,20 @@ class Reader(ast.NodeVisitor):
         self.shadowed.add(name)
 
     def aug_assign(self, node, conditional):
+        if isinstance(node.target, ast.Attribute):
+            dotted = self.name(node.target)
+            if dotted:
+                self._forget_dotted(dotted)
+            self.visit(node.target.value)
+            return
+        if isinstance(node.target, ast.Subscript):
+            self.visit(node.target.value)
+            self.visit(node.target.slice)
+            return
         if not isinstance(node.target, ast.Name):
             return
         name = node.target.id
-        if not conditional and isinstance(node.op, ast.Add) and name in self.env:
+        if not conditional and isinstance(node.op, ast.Add) and name in self.env and name not in self.never:
             v = lit(ast.BinOp(left=ast.Constant(self.env[name]), op=ast.Add(), right=node.value), self.env)
             if v is not _MISSING and not isinstance(v, (list, tuple, dict, set)):
                 self.env[name] = v
@@ -274,26 +406,82 @@ class Reader(ast.NodeVisitor):
 
     def alias_of(self, node):
         dotted = self.name(node)
-        if dotted is None or dotted in self.dynamic or dotted in self.defined:
+        if dotted is None or dotted in self.dynamic or dotted in self.defined or dotted in self.never:
             return None
         return dotted if self.known(dotted) else None
 
     # --- expressions: calls ---
     def visit_Call(self, node):
-        self.call(node)
-        if not self.stop:
+        consumed = self.call(node)
+        if self.state.stop:
+            return
+        if not consumed:
             self.generic_visit(node)
+            return
+        for arg in node.args:
+            self.visit(arg)
+        for kw in node.keywords:
+            self.visit(kw.value)
+
+    def visit_Name(self, node):
+        dotted = self.name(node)
+        if dotted is not None and dotted not in self.defined and not self.is_dynamic(dotted) \
+                and self.known(dotted):
+            self.hold("value")   # a helper or command used as a value, not as the callee of this call
+
+    def visit_Attribute(self, node):
+        dotted = self.name(node)
+        for candidate in (dotted, self.name(node.value)):
+            if candidate is not None and candidate not in self.defined and not self.is_dynamic(candidate) \
+                    and self.known(candidate):
+                self.hold("value")
+                return
+        self.generic_visit(node)
 
     def visit_NamedExpr(self, node):
         self.visit(node.value)
         if isinstance(node.target, ast.Name):
             self.bind(node.target.id, None, True)
 
+    def _function_scope(self, args, body):
+        saved = self._save()
+        self.env = {}
+        self.aliases = dict(saved[1])
+        self.defined, self.dynamic, self.shadowed, self.never = (set(saved[2]), set(saved[3]), set(saved[4]),
+                                                                 set(saved[5]))
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
+            self.bind(arg.arg, None, True)
+        for arg in (args.vararg, args.kwarg):
+            if arg is not None:
+                self.bind(arg.arg, None, True)
+        try:
+            body()
+        finally:
+            self._restore(saved)
+
+    def _type_params(self, node):
+        """PEP 695 bounds and defaults are lazy, but a cell can force them through `__bound__`; read them."""
+        for param in getattr(node, "type_params", ()):
+            for part in (getattr(param, "bound", None), getattr(param, "default_value", None)):
+                if part is not None:
+                    self.visit(part)
+
+    def _annotations(self, args, returns):
+        for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs, args.vararg, args.kwarg]:
+            if arg is not None and arg.annotation is not None:
+                self.visit(arg.annotation)
+        if returns is not None:
+            self.visit(returns)
+
     def visit_FunctionDef(self, node):
         self.bind_defined(node.name)
         for d in node.decorator_list:
             self.visit(d)
         self.visit_defaults(node.args)
+        self._annotations(node.args, node.returns)   # evaluated at `def`, in the enclosing names
+        self._type_params(node)
+        # the body runs when called: its calls are read whether or not this cell calls it
+        self._function_scope(node.args, lambda: self.stmts(node.body))
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
@@ -301,57 +489,120 @@ class Reader(ast.NodeVisitor):
         self.bind_defined(node.name)
         for d in node.decorator_list + node.bases + [k.value for k in node.keywords]:
             self.visit(d)
+        self._type_params(node)
         # the body runs at definition time, in a namespace of its own that ends with the class
-        saved = self.env, self.aliases, self.dynamic, self.defined, self.shadowed
+        saved = self._save()
         self.env, self.aliases = dict(self.env), dict(self.aliases)
         self.dynamic, self.defined, self.shadowed = set(self.dynamic), set(self.defined), set(self.shadowed)
-        self.stmts(node.body)
-        self.env, self.aliases, self.dynamic, self.defined, self.shadowed = saved
+        self.never = set(self.never)
+        try:
+            self.stmts(node.body)
+        finally:
+            self._restore(saved)
 
     def visit_Lambda(self, node):
-        # a lambda body runs only when called; a call on a lambda literal is held by call()
         self.visit_defaults(node.args)
+        self._function_scope(node.args, lambda: self.visit(node.body))
+
+    def _comprehension(self, node, elts):
+        generators = node.generators
+        self.visit(generators[0].iter)   # the first iterable runs in the enclosing scope
+        saved = self._save()
+        self.env, self.aliases = dict(self.env), dict(self.aliases)
+        self.dynamic, self.defined, self.shadowed = set(self.dynamic), set(self.defined), set(self.shadowed)
+        self.never = set(self.never)
+        try:
+            for i, gen in enumerate(generators):
+                if i:
+                    self.visit(gen.iter)
+                self.bind_targets([gen.target], None, True)
+                for condition in gen.ifs:
+                    self.visit(condition)
+            for elt in elts:
+                self.visit(elt)
+        finally:
+            self._restore(saved)
+
+    def visit_ListComp(self, node):
+        self._comprehension(node, [node.elt])
+
+    def visit_SetComp(self, node):
+        self._comprehension(node, [node.elt])
+
+    def visit_GeneratorExp(self, node):
+        self._comprehension(node, [node.elt])
+
+    def visit_DictComp(self, node):
+        self._comprehension(node, [node.key, node.value])
 
     def call(self, node):
-        self.count += 1
-        if self.count > MAX_CALLS:
+        """Read one call; True when its callee was taken (mapped, held, or a builtin/defined name to leave unread)."""
+        self.state.count += 1
+        if self.state.count > MAX_CALLS:
             self.hold("calls")
-            self.stop = True
-            return
+            self.state.stop = True
+            return True
+        if not self._charge(1):
+            return True
         if isinstance(lit(node, self.env), str):
-            return   # a literal string expression (a `sep.join` of literals): its value is read where it is used
+            return True   # a literal string expression (a `sep.join` of literals): its value is read where it is used
         func = node.func
         if isinstance(func, ast.Call):
             self.indirect(node, func)
-            return
-        if isinstance(func, (ast.Subscript, ast.Lambda)):
+            return True
+        if isinstance(func, ast.Subscript):
             self.hold("call")
-            return
+            return True
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Call):
-            return   # a method on a call result (open(path).write(text)): ordinary Python, its inner call is read
+            return False   # a method on a call result (open(path).write(text)): ordinary Python, its inner call is read
         dotted = self.name(func)
         if dotted is None:
             self.hold("call")
-            return
+            return True
         dotted = self.normalize(dotted)
         if self.is_dynamic(dotted):
             self.hold("call")
-            return
+            return True
         if dotted == "getattr":
             self.reflection(node)
-        elif dotted in REFLECTION:
+            return True
+        if dotted in REFLECTION:
             self.hold(dotted)
-        else:
-            self.dispatch(dotted, node)
+            return True
+        if dotted in SETATTR:
+            self.hold(dotted)
+            return True
+        if dotted in ("exec", "eval"):
+            self.nested(dotted, node)
+            return True
+        if dotted in DYNAMIC_CALLS:
+            self.hold(dotted)
+            return True
+        if dotted in SHELL_ARGV:
+            self.argv_call(dotted, node)
+            return True
+        if dotted in SHELL:
+            self.shell_call(dotted, node)
+            return True
+        helper = self.helper(dotted)
+        if helper is not None:
+            self.helper_call(helper, node)
+            return True
+        if "." not in dotted:
+            if dotted in self.defined or dotted in self.aliases or dotted in _BUILTINS:
+                return True   # a builtin, or a function the cell defines and this reader already read
+            self.hold("callee")   # a helper or action under a name this cell did not define: not followed
+            return True
+        return False   # an ordinary library call: left unread (its arguments are still read)
 
     def dispatch(self, dotted, node):
         """Read or hold a resolved literal callee; a name with no mapped action is ordinary Python, left unread."""
         if dotted in ("exec", "eval"):
             self.nested(dotted, node)
-        elif dotted in DYNAMIC_CALLS:
+        elif dotted in DYNAMIC_CALLS or dotted in SETATTR:
             self.hold(dotted)
         elif dotted in SHELL_ARGV:
-            self.hold("argv")
+            self.argv_call(dotted, node)
         elif dotted in SHELL:
             self.shell_call(dotted, node)
         else:
@@ -373,6 +624,9 @@ class Reader(ast.NodeVisitor):
             if self.is_dynamic(dotted):
                 self.hold("call")
                 return
+            if not self.known(dotted) and self.known(base):
+                self.hold("value")   # an attribute of a helper or command, taken as a value
+                return
             self.dispatch(dotted, node)
             return
         self.hold("call")
@@ -388,14 +642,54 @@ class Reader(ast.NodeVisitor):
         if not isinstance(code, str):
             self.hold(dotted)
             return
+        if node.keywords or len(node.args) > 1:
+            self.hold("namespace")   # a namespace of its own: its names are not the cell's
+            return
         if self.depth >= MAX_DEPTH:
             self.hold("depth")
             return
-        nested = Reader(code, "exec" if dotted == "exec" else "eval", self.depth + 1, self.aliases, self.env)
+        # no namespace: the code runs in the cell's own names, and its assignments stay visible after the call
+        nested = Reader(code, "exec" if dotted == "exec" else "eval", self.depth + 1, state=self.state,
+                        scope=self._save(), force_conditional=self.in_conditional)
         reading = nested.run()
-        self.calls.extend(reading.calls)
         if reading.held is not None:
             self.hold(reading.held)
+
+    def argv_call(self, dotted, node):
+        argv = self._argv(dotted, node)
+        if argv is None:
+            self.hold("argv")
+            return
+        self.calls.append(("shell", {"command": argv}))
+
+    def _argv(self, dotted, node):
+        if node.keywords or any(isinstance(a, ast.Starred) for a in node.args):
+            return None
+        args = node.args
+        program = None   # the path the call runs, where it is separate from the argv list
+        if dotted in _SPAWNL:
+            program = lit(args[1], self.env) if len(args) > 1 else _MISSING
+            nodes = args[2:]
+        elif dotted in _SPAWNV:
+            program = lit(args[1], self.env) if len(args) > 1 else _MISSING
+            nodes = args[2:3]
+        elif dotted == "asyncio.create_subprocess_exec":
+            nodes = args
+        elif dotted == "pty.spawn":
+            nodes = args[:1]
+        else:   # exec*, posix_spawn*
+            program = lit(args[0], self.env) if args else _MISSING
+            nodes = args[1:2]
+        if program is not None and not isinstance(program, str):
+            return None   # the program the argv runs is not the literal the reader saw
+        if len(nodes) == 1 and isinstance(nodes[0], (ast.List, ast.Tuple)):
+            nodes = nodes[0].elts
+        values = [lit(e, self.env) for e in nodes]
+        if not values or any(not isinstance(v, str) for v in values):
+            return None
+        if program is not None:
+            values = [program] + values[1:]   # the path, not a caller-chosen argv[0], is what runs
+        return values
 
     def helper_call(self, helper, node):
         args = self.bind_args(node, helper)
@@ -415,20 +709,18 @@ class Reader(ast.NodeVisitor):
                     self.hold("arg")
                     return None
                 values[param] = node.args[i]
-            elif param in helper.defaults:
-                values[param] = helper.defaults[param]
-            elif param in helper.out:
-                self.hold("arg")
-                return None
         for kw in node.keywords:
-            if kw.arg is None or kw.arg in values and kw.arg in helper.params:
+            if kw.arg is None or kw.arg not in helper.params or kw.arg in values:
                 self.hold("arg")
                 return None
-            if kw.arg in helper.params:
-                values[kw.arg] = kw.value
+            values[kw.arg] = kw.value
+        for param in helper.params:
+            if param not in values and param in helper.defaults:
+                values[param] = helper.defaults[param]
         args = {}
         for param, name in helper.out.items():
-            value = values[param] if not isinstance(values.get(param), ast.AST) else lit(values[param], self.env)
+            value = values.get(param, _MISSING)
+            value = lit(value, self.env) if isinstance(value, ast.AST) else value
             if value is _MISSING or not isinstance(value, str):
                 self.hold("arg")
                 return None
@@ -450,7 +742,11 @@ class Reader(ast.NodeVisitor):
                 self.hold("arg")
                 return
         if isinstance(arg, (ast.List, ast.Tuple)):
-            self.hold("argv" if dotted.startswith("subprocess.") or shell else "command")
+            argv = [lit(e, self.env) for e in arg.elts]
+            if not argv or any(not isinstance(v, str) for v in argv):
+                self.hold("argv")
+                return
+            self.calls.append(("shell", {"command": argv}))
             return
         command = lit(arg, self.env)
         if not isinstance(command, str):
@@ -471,8 +767,8 @@ class Reader(ast.NodeVisitor):
         return None
 
     def known(self, dotted):
-        return self.helper(dotted) is not None or dotted in SHELL or dotted in SHELL_ARGV or dotted in DYNAMIC_CALLS \
-            or dotted in ("exec", "eval", "getattr")
+        return self.helper(dotted) is not None or dotted in SHELL or dotted in SHELL_ARGV \
+            or dotted in DYNAMIC_CALLS or dotted in SETATTR or dotted in ("exec", "eval", "getattr")
 
     def normalize(self, dotted):
         """A builtin spelled through the `builtins` module or the `__builtins__` dunder (`builtins.exec`,
@@ -500,9 +796,15 @@ class Reader(ast.NodeVisitor):
         return any(".".join(parts[:i + 1]) in self.dynamic for i in range(len(parts)))
 
 
+def _over(value):
+    """A literal longer than MAX_SUBJECT bytes: the reader stops resolving it, so no value grows past the limit."""
+    return len(value) > MAX_SUBJECT or (len(value) > MAX_SUBJECT // 4
+                                        and len(value.encode("utf-8", "surrogatepass")) > MAX_SUBJECT)
+
+
 def lit(node, env):
     """The literal value `node` evaluates to without running code, or _MISSING. Names resolve only to values assigned
-    before the call was reached; no call is evaluated except a literal `sep.join([...])` of literal strings."""
+    before the call was reached; a value longer than MAX_SUBJECT is not resolved."""
     if isinstance(node, ast.Constant):
         return node.value if isinstance(node.value, (str, int, float, bool, type(None))) else _MISSING
     if isinstance(node, ast.Name):
@@ -510,7 +812,8 @@ def lit(node, env):
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
         a, b = lit(node.left, env), lit(node.right, env)
         if a is not _MISSING and b is not _MISSING and type(a) is type(b) and isinstance(a, (str, int, float)):
-            return a + b
+            value = a + b
+            return _MISSING if isinstance(value, str) and _over(value) else value
         return _MISSING
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
         v = lit(node.operand, env)
@@ -518,7 +821,7 @@ def lit(node, env):
             return -v if isinstance(node.op, ast.USub) else v
         return _MISSING
     if isinstance(node, ast.JoinedStr):
-        parts = []
+        parts, size = [], 0
         for value in node.values:
             if isinstance(value, ast.FormattedValue):
                 if value.conversion != -1 or value.format_spec is not None:
@@ -527,6 +830,9 @@ def lit(node, env):
             v = lit(value, env)
             if not isinstance(v, str):
                 return _MISSING
+            size += len(v.encode("utf-8", "surrogatepass"))
+            if size > MAX_SUBJECT:
+                return _MISSING
             parts.append(v)
         return "".join(parts)
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "join" \
@@ -534,6 +840,10 @@ def lit(node, env):
         sep = lit(node.func.value, env)
         values = [lit(e, env) for e in node.args[0].elts]
         if isinstance(sep, str) and all(isinstance(v, str) for v in values):
+            size = sum(len(v.encode("utf-8", "surrogatepass")) for v in values) \
+                + len(sep.encode("utf-8", "surrogatepass")) * max(0, len(values) - 1)
+            if size > MAX_SUBJECT:
+                return _MISSING
             return sep.join(values)
     return _MISSING
 
