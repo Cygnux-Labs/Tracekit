@@ -635,7 +635,10 @@ Person: look with `! tracekit approvals show apr-…`; allow once with `! tracek
 Agent: …
 ```
 
-Answer it with the command the line names: in Claude Code, its `! …` form in the session; elsewhere, from another
+Answer it with the command the line names: in Claude Code, Gemini CLI and Codex CLI, use its `! …` form in the
+session. Codex's command names the Python interpreter running the hook (`<python> -I -m tracekit`) rather than
+relying on `tracekit` being on `PATH`; `-I` keeps the working folder off Python's path, so a `tracekit` package there is
+never imported (on Windows, a path that needs quotes runs through PowerShell's `&`). Elsewhere, run the command from another
 terminal without the `!`, which a shell would read as "not" (`tracekit approvals list` shows every held call). Then
 ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
 `tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
@@ -717,7 +720,10 @@ Without anything else installed, the signer turns what it saw and then never hea
 - a call the policy allowed, or whose approval was consumed, and that never completed (`decided_not_completed`, at the
   end of the run). A call you decline in the harness's own permission prompt runs no post-call hook, nor does one you
   interrupt: the hook completes such calls as errors ("no PostToolUse came") when the session ends, so they get no
-  gap (a session that never ends, such as a killed harness, leaves them as gaps);
+  gap (a session that never ends, such as a killed harness, leaves them as gaps). In Claude Code's Code Mode, a call
+  the script's code made that another hook refused is completed as soon as the script's `REPL` call ends, with the
+  error the code saw, when that call is certain, and a script refused as a whole at the session's end, with an error
+  that names Code Mode ([limits](limits.md#signer-and-capture));
 - with harness binding (Linux system mode), a second run started from inside the same harness process while another
   session's run is open there, once both have recorded events since (`concurrent_run`; an older session left open and
   idle gets none). Two harness windows side by side are separate processes and get none. A sub-agent's run started
