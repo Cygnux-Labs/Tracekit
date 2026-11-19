@@ -3276,6 +3276,43 @@ def _may_run_input(argv):
 
 # a remote source a runner fetches code from (a URL, a VCS one, a PEP 508 `name @ URL`): _download_runs
 _REMOTE_SOURCE = re.compile(r"(?:[^\s@]+\s*@\s*)?(?:git\+)?(?:https?|ssh|git)://", re.I)
+# each package runner that fetches the code it runs: (its subcommands that do, none for one that runs it at once; its
+# options whose value is a package it installs to run it)
+_FETCHERS = {"uvx": ((), ("--from", "--with", "-w")), "uv": (("run",), ("--with", "-w")),
+             "pipx": (("run",), ("--spec", "--with"))}
+
+
+def _fetched(args, starts, sources, valued, flags):
+    """The words a package runner may fetch code from, among its words `args` after its subcommand at each of `starts`
+    (shell.runner_at's places; -1 for none): each value of an option `sources` names, and the package or script it
+    runs, its first word that is no option, or that may be the value of an option neither `valued` (shell's table of
+    those that take one) nor `flags` names, read both ways as shell._unwrap reads one. An index's URL, any other
+    option's value and the words after what it runs aren't. Each word read once: linear (a place's words are read up
+    to the next place, from where its reading is the next one's)."""
+    out = []
+    for n, start in enumerate(starts):
+        end, i, maybe = (starts[n + 1:] or [len(args)])[0], start + 1, False   # (maybe: the word may be an option's)
+        while i < len(args) and i <= end:
+            a = args[i]
+            name, eq, value = a.partition("=")
+            if a == "--":
+                out += args[i + 1:i + 2]
+                break
+            if a.startswith("-") and a != "-":
+                if name in sources:
+                    out += [value] if eq else args[i + 1:i + 2]
+                    i, maybe = i + 1 + (not eq), False
+                elif a[:2] in sources and a[1] != "-":   # its value attached (-wURL)
+                    out.append(a[2:])
+                    i, maybe = i + 1, False
+                else:
+                    i, maybe = (i + 2, False) if name in valued and not eq else (i + 1, not eq and a not in flags)
+                continue
+            out.append(a)
+            if not maybe:
+                break
+            i, maybe = i + 1, False
+    return out
 # what a saved download may be read as without running it
 _DATA_SAVE = re.compile(r"\.(?:json|jsonl|ndjson|csv|tsv|txt|html?|xml|md|svg|png|jpe?g|gif|webp|ico|pdf|mp3|wav|ogg|"
                         r"mp4|webm|woff2?|ttf|otf)$", re.I)
@@ -3416,17 +3453,23 @@ def _download_runs(commands):
     redirection, or naming one in its inline code. An interpreter a later stage gives inline code or a script, however
     the line spells it (through a wrapper or runner, after assignments, a versioned name, its code flag in a cluster or
     with its code attached, as shell._code_arg reads it), is `curl | python -c` or `curl | python <script>`, for
-    TK-A046. A runner that fetches the code it runs (`uv run https://…/x.py`, `uvx --from git+https://…`, `pipx run
-    --spec https://…`: a remote source among its words) is a download into its interpreter too: `curl | python
-    remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's first
-    download in it (a later one's are among them), and each command once against the names every download saves."""
+    TK-A046. A runner that fetches the code it runs from a remote source (`uv run https://…/x.py`, `uvx --from
+    git+https://…`, `pipx run --spec https://…`: the package or script it runs, or an option's that names one, not
+    an index's URL or the arguments it gives what it runs: _fetched) is a download into its interpreter too: `curl |
+    python remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's
+    first download in it (a later one's are among them), and each command once against the names every download
+    saves."""
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
     for c in commands:
         prog, args = _program(c["argv"]), c["argv"][1:]
-        if (prog == "uvx" or prog in ("uv", "pipx") and shell.runner_at(prog, args)) and any(
-                _REMOTE_SOURCE.match(w) for a in args for w in (a, a.partition("=")[2])):
-            out.append("curl | python remote")
-            break
+        if prog in _FETCHERS:   # (uv tool run is read as the uvx it is: shell)
+            verbs, sources = _FETCHERS[prog]
+            starts = [k for k in shell.runner_at(prog, args) if args[k] in verbs] if verbs else [-1]
+            opts = shell.RUNNERS[prog][1] if verbs else shell.WRAPPERS[prog][0]
+            if any(_REMOTE_SOURCE.match(w) for w in _fetched(args, starts, sources, opts,
+                                                             shell.WRAPPER_FLAGS.get(prog, ()))):
+                out.append("curl | python remote")
+                break
     pipes, first, outs, groups, fed, into = {}, {}, {}, {}, [], []
     for c in commands:
         pipes.setdefault(c["pipeline"], []).append(c)
