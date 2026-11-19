@@ -300,6 +300,119 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertIn(user, later()[2])
 
+    # each form install_hooks writes into Claude Code's settings: dev v2, dev v1, system mode (under /bin/sh)
+    CLAUDE_FORMS = ((install.V2_HOOK, None), ("tracekit.hook", None), (install.V2_HOOK, install.OPT_PYTHON))
+
+    def oi_rows(self, path, home):
+        """The failing D-HOOKS-EVENT rows of the Open Interpreter hooks doctor reads at `path`."""
+        got = []
+        doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.append((rid, ok, detail, fix)),
+                                    {"interpreter": path}, False, home)
+        return [r for r in got if r[0] == "D-HOOKS-EVENT" and not r[1]]
+
+    def claude_copy(self, module, python, name="claude"):
+        """The hooks Tracekit writes into a Claude Code settings file, as Open Interpreter's /import would copy them."""
+        claude = os.path.join(self.d, name, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(claude, module=module, python=python)
+        with open(claude) as c:
+            return json.load(c)["hooks"]
+
+    def test_a_claude_code_hook_copied_into_open_interpreters_hooks_is_named(self):
+        """#940: Open Interpreter's /import copies Claude Code's hooks into its hooks.json, so Tracekit's Claude Code
+        hook there decides each call a second time, recorded as claude-code: doctor names the file and the hook."""
+        path = os.path.join(self.d, "oi", "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("interpreter", path=path, v2=True)
+        self.assertEqual(self.oi_rows(path, self.d), [])
+        with open(path) as f:
+            ours = json.load(f)
+        for module, python in self.CLAUDE_FORMS:
+            copied = self.claude_copy(module, python, f"claude-{module}-{bool(python)}")
+            for events in (set(copied), {"Stop"}):   # every copied event, or one that decides no call
+                config = copy.deepcopy(ours)
+                for ev in events:
+                    config["hooks"].setdefault(ev, []).extend(copied[ev])
+                with open(path, "w") as f:
+                    json.dump(config, f)
+                with self.subTest(module=module, python=python, events=sorted(events)):
+                    ((rid, ok, detail, fix),) = self.oi_rows(path, self.d)
+                    self.assertEqual((rid, ok), ("D-HOOKS-EVENT", False))
+                    self.assertIn(path, detail)
+                    self.assertIn("Claude Code hook", detail)
+                    self.assertIn(", ".join(sorted(events)), detail)
+                    self.assertTrue(detail.endswith(": Open Interpreter runs it as well as its own, so each call is "
+                                                    "decided a second time, recorded as claude-code"), detail)
+                    self.assertIn(f"remove Tracekit's Claude Code hook from {path}", fix)
+
+    def test_a_claude_code_hook_in_the_file_open_interpreter_imports_into_is_named(self):
+        """#940: Tracekit's Open Interpreter hooks are in the project's file, /import's copy of its Claude Code hook in
+        the user's: doctor names the user's file, $INTERPRETER_HOME's when that is set, and no other."""
+        project = os.path.join(self.d, "project", ".openinterpreter", "hooks.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("interpreter", path=project, v2=True)
+        with open(project) as f:
+            ours = json.load(f)
+        oi_home = os.path.join(self.d, "oi-home")
+        os.makedirs(oi_home)
+        # where the user's file is: under ~ (home: another user's), or in $INTERPRETER_HOME
+        places = (("~", self.d, {}, os.path.join(self.d, ".openinterpreter", "hooks.json")),
+                  ("$INTERPRETER_HOME", None, {"INTERPRETER_HOME": oi_home},
+                   os.path.join(os.path.realpath(oi_home), "hooks.json")))
+        for module, python in self.CLAUDE_FORMS:
+            copied = self.claude_copy(module, python, f"claude-{module}-{bool(python)}")
+            for where, home, env, user in places:
+                os.makedirs(os.path.dirname(user), exist_ok=True)
+                with self.subTest(module=module, python=python, home=where), mock.patch.dict(
+                        os.environ, {"HOME": self.d, "USERPROFILE": self.d, **env}):
+                    with open(user, "w") as f:
+                        json.dump({"hooks": copied}, f)
+                    ((rid, ok, detail, fix),) = self.oi_rows(project, home)
+                    self.assertIn(user, detail)
+                    self.assertNotIn(project, detail)
+                    self.assertIn(f"remove Tracekit's Claude Code hook from {user}", fix)
+                    self.assertNotIn(project, fix)
+                    self.assertTrue(detail.endswith("recorded as claude-code"), detail)
+                    with open(user, "w") as f:
+                        json.dump({"hooks": {}}, f)   # no copy in either file
+                    self.assertEqual(self.oi_rows(project, home), [])
+                    with open(user, "w") as f:
+                        f.write("{ not json")   # a user file doctor can't read is not a copy, and not an error
+                    self.assertEqual(self.oi_rows(project, home), [])
+                    os.remove(user)
+            user = places[0][3]   # both files hold a copy: both are named
+            config = copy.deepcopy(ours)
+            for ev, groups in copied.items():
+                config["hooks"].setdefault(ev, []).extend(groups)
+            with open(project, "w") as f:
+                json.dump(config, f)
+            with open(user, "w") as f:
+                json.dump({"hooks": copied}, f)
+            with self.subTest(module=module, python=python, home="both files"):
+                ((rid, ok, detail, fix),) = self.oi_rows(project, self.d)
+                self.assertIn(project, detail)
+                self.assertIn(user, detail)
+                self.assertEqual(detail.count("recorded as claude-code"), 1)
+            os.remove(user)
+            with open(project, "w") as f:
+                json.dump(ours, f)
+
+    def test_a_claude_code_hook_alone_in_open_interpreters_hooks_is_no_row(self):
+        """#940: with no Tracekit Open Interpreter hook at all, doctor reads no Open Interpreter file: there is no row,
+        however the user's hooks.json came by a Claude Code hook."""
+        user = os.path.join(self.d, ".openinterpreter", "hooks.json")
+        os.makedirs(os.path.dirname(user))
+        work = os.path.join(self.d, "work")
+        os.makedirs(work)
+        with open(user, "w") as f:
+            json.dump({"hooks": self.claude_copy(install.V2_HOOK, None)}, f)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(work)
+        env = {k: v for k, v in os.environ.items() if k != "INTERPRETER_HOME"}
+        with mock.patch.dict(os.environ, {**env, "HOME": self.d, "USERPROFILE": self.d}, clear=True):
+            self.assertNotIn("interpreter", doctor._dev_harnesses())
+
     def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
         """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
         gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""
