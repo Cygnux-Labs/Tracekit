@@ -4402,6 +4402,35 @@ class HarmlessStops(unittest.TestCase):
         self.check([], [(f"echo FLUSHDB | {runner}redis-cli -h cache.internal", "ask", "TK-A040")
                         for runner in ("uv run ", "hatch run test:", "poetry run ")])
 
+    def test_each_runner_s_short_options_that_take_a_value_are_its_own(self):
+        """The word after an option a runner's table names is that option's value, never its subcommand
+        (shell.runner_at), so npm's -p, which is --parseable, a flag (--package has no short form), hid `npm -p exec
+        -- sudo id`, as yarn workspaces foreach's -p (--parallel) and pnpx's (pnpm's --parseable) hid theirs. Each
+        runner's and package runner's short options that take a value are those its own source gives, and what each
+        runs after a flag, or with npm exec's -c after npm's own options, is decided as alone; python-dotenv's
+        `dotenv run` runs its command too."""
+        short = {   # each tool's short options that take a value, from its source
+            "uv": "-b -C -c -f -i -p -P -w", "uvx": "-b -C -c -f -i -p -P -w",   # uv 0.13: uv run/uv tool run --help
+            "npm": "-c -C -L -m -w",   # npm 11.6.2: @npmcli/config/lib/definitions/definitions.js
+            "npx": "-c -C -L -m -n -p -w",   # and npm's bin/npx-cli.js
+            "pnpm": "-C -F", "pnpx": "-C -F",   # pnpm 11: pnpm/src/shorthands.ts
+            "yarn": "-j -p",   # berry: workspaces foreach's -j (its -p is --parallel: WRAPPER_FLAGS), dlx's -p
+            "bun": "-p", "bunx": "-p", "conda": "-n -p", "mamba": "-n -p", "micromamba": "-a -n -p -r",
+            "poetry": "-C -P", "pdm": "-p", "pipx": "-i", "doppler": "-c -p", "mise": "-C -j", "pixi": "-c -e -s",
+            "dotenv": "-e -p -v", "hatch": "", "pipenv": "", "direnv": "", "op": "", "bundle": "", "rye": "",
+            "rustup": ""}
+        self.assertEqual(set(shell.RUNNERS) - set(short), set())
+        for name, want in short.items():
+            opts = shell.RUNNERS[name][1] if name in shell.RUNNERS else shell.WRAPPERS[name][0]
+            self.assertEqual(sorted(o for o in opts if len(o) == 2), sorted(want.split()), name)
+        self.assertIn("-p", shell.WRAPPER_FLAGS["yarn"])
+        self.check(["npm exec -- ls", "yarn dlx -p typescript tsc", "dotenv run pytest", "npx -p typescript tsc"],
+                   [(cmd, "deny", "TK-D001") for cmd in (
+                       "npm -p exec -- sudo id", "npm exec -p sudo id", "npm x -p sudo id",
+                       "npm -p -w app exec -- sudo id", "npm -p exec -c 'sudo id'", "npm -w app exec --call='sudo id'", "npm exec -p -c \"s'u'do id\"",
+                       "yarn workspaces foreach -p exec sudo id", "yarn workspaces foreach -A -p exec sudo id",
+                       "pnpx -p sudo id", "dotenv run sudo id", "dotenv -f .env run --override -- sudo id")])
+
     def test_a_loop_decides_at_least_as_its_body_alone_and_with_each_value_written_in(self):
         """#794's review: a loop's commands were read after its `do`, where a rule that reads a command where one
         starts missed them (`for h in x; do echo FLUSHDB | valkey-cli …; done` was allowed, held alone: TK-A040), and a

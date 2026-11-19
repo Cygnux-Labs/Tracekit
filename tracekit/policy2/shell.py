@@ -124,6 +124,10 @@ UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "
            "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
            "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
            "--only-group", "--no-editable-package")
+# npm 11's options that take a value and have a short form (@npmcli/config's definitions.js: -p is --parseable, a
+# flag; --package has none), and npx's: its own -p (--package), -c (--call) and -n (--node-arg) besides (bin/npx-cli.js)
+_NPM_OPTS = ("-c", "--call", "-C", "--prefix", "-L", "--location", "-m", "--message", "-w", "--workspace", "--package")
+_NPX_OPTS = _NPM_OPTS + ("-p", "-n", "--node-arg")
 # wrapper -> (options that take a value, positional arguments before the command); an option not named is read both
 # ways (_unwrap)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
@@ -155,8 +159,9 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "unbuffer": ((), 0), "fakeroot": (("-l", "-s", "-i", "-b", "--lib", "--faked"), 0),
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
-            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
-            "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
+            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (_NPX_OPTS, 0),
+            # pnpm dlx's and pnpm's own (pnpm 11: -p is --parseable, a flag)
+            "pnpx": (("-C", "--dir", "-F", "--filter", "--package", "--allow-build"), 0), "corepack": ((), 0),
             # cmd.exe's switches start with / (// where MSYS rewrites one: cmd //c); wsl runs its words in its distro's
             # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
             "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
@@ -203,7 +208,12 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                            "--close", "--no-fork", "--verbose"),
                  "setsid": ("-c", "-f", "-w", "--ctty", "--fork", "--wait"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
-                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
+                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z"),
+                 # yarn's before its subcommand, workspaces foreach's (berry: -p there is --parallel; after dlx, the
+                 # option RUNNERS names, --package)
+                 "yarn": ("-A", "--all", "-R", "--recursive", "-W", "--worktree", "-v", "--verbose", "-p", "--parallel",
+                          "-i", "--interlaced", "-t", "--topological", "--topological-dev", "-n", "--dry-run",
+                          "--no-private")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
@@ -218,9 +228,10 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
            "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
            "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
-           "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
+           "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
-           "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0),
+           "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
+           "bun": (("x",), ("-p", "--package"), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -2338,8 +2349,8 @@ def runner_at(name, args):
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
     yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`. The value of an option its
     table names (RUNNERS: `uv --directory run run x`) is never the subcommand, and a flag WRAPPER_FLAGS names takes
-    none; one that may be another option's value is read both ways. Each word read once: linear; [] for none (`npm
-    test`)."""
+    none, here before the subcommand where both name it (yarn's -p); one that may be another option's value is read
+    both ways. Each word read once: linear; [] for none (`npm test`)."""
     opts, flags = RUNNERS[name][1], WRAPPER_FLAGS.get(name, ())
     at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
@@ -2351,7 +2362,7 @@ def runner_at(name, args):
             i, valued = i + 1, False
             continue
         skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") or \
-            a in opts else 1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
+            a in opts and a not in flags else 1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
         if skip:
             i, valued = i + skip, False
             continue
@@ -2407,6 +2418,10 @@ def _unwrap(name, args):
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
         if name == "uv" and inner[:1] == ["-"]:   # `uv run -` is `python -`
             inner = ["python"] + inner
+        if name == "dotenv" and inner[:1] == ["run"]:   # python-dotenv's: dotenv [-f FILE] run [--[no-]override] CMD
+            yield inner
+            k = next((k for k, w in enumerate(inner) if k and w not in ("--override", "--no-override")), len(inner))
+            inner = inner[k + (inner[k:k + 1] == ["--"]):]
         yield inner
 
 
@@ -2511,15 +2526,17 @@ def _foreign_runs_text(shell, args):
     return True
 
 
-def _npm_call(args):
-    """The script of npm exec's (npx's) -c/--call, among the options before the command it runs, or None."""
-    i = 0
-    while i < len(args) and args[i].startswith("-") and args[i] != "--":
-        if args[i] in ("-c", "--call"):
-            return args[i + 1] if i + 1 < len(args) else ""
-        if args[i].startswith("--call="):
-            return args[i][7:]
-        i += 2 if args[i] in ("-p", "--package", "-w", "--workspace") else 1
+def _npm_call(name, args):
+    """The script of npx's -c/--call, or npm exec's after its own options (each place runner_at reads its subcommand:
+    `npm -w a exec -c …`), among the options before the command it runs, or None."""
+    opts, starts = (_NPX_OPTS, [0]) if name == "npx" else (_NPM_OPTS, [k + 1 for k in runner_at("npm", args)])
+    for i in starts:   # (each scan stops at a word runner_at reads no further than: linear)
+        while i < len(args) and args[i].startswith("-") and args[i] != "--":
+            if args[i] in ("-c", "--call"):
+                return args[i + 1] if i + 1 < len(args) else ""
+            if args[i].startswith("--call="):
+                return args[i][7:]
+            i += 2 if args[i] in opts else 1
     return None
 
 
@@ -4485,8 +4502,7 @@ class _Parser:
                 argv, via, unreadable = ["env", *split], via + ["env -S"], [False] * (1 + len(split))
                 self.charge(len(argv))
                 continue
-            elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
-                    (script := _npm_call(args if name == "npx" else args[1:])) is not None:
+            elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
