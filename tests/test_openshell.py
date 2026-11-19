@@ -410,6 +410,29 @@ class Authenticated(Middleware):
             self.rpc["Describe"](gateway(), timeout=20)
         self.assertEqual(e.exception.code(), self.grpc.StatusCode.UNAUTHENTICATED)
 
+    def test_streams_refused_past_a_sandboxs_share_leave_the_others_counted(self):
+        share = openshell.MAX_STREAMS // 4
+        feeds = [queue.Queue() for _ in range(share)]
+        calls = [self.response(iter(q.get, None), timeout=60, metadata=_bearer(token())) for q in feeds]
+        self.addCleanup(lambda: [q.put(None) for q in feeds])
+        for i, (q, call) in enumerate(zip(feeds, calls)):
+            q.put(preflight(f"r-share-{i}"))
+            next(call)
+        for _ in range(3):   # refused, and not counted: they release nothing when they end
+            with self.assertRaises(self.grpc.RpcError) as e:
+                self.respond(preflight("r-share-x"), auth=token())
+            self.assertEqual(e.exception.code(), self.grpc.StatusCode.RESOURCE_EXHAUSTED)
+        feeds[0].put(None)
+        list(calls[0])
+        feed = queue.Queue()   # takes the freed one and stays open
+        taken = self.response(iter(feed.get, None), timeout=60, metadata=_bearer(token()))
+        self.addCleanup(lambda: feed.put(None))
+        feed.put(preflight("r-share-y"))
+        self.assertEqual(fields(fields(next(taken))[1]), {1: b""})
+        with self.assertRaises(self.grpc.RpcError) as e:   # the share is full again
+            self.respond(preflight("r-share-z"), auth=token())
+        self.assertEqual(e.exception.code(), self.grpc.StatusCode.RESOURCE_EXHAUSTED)
+
     def test_a_peer_cannot_complete_another_sandboxs_call(self):
         self.assertEqual(self.evaluate(request("allowed.example", b'{"q": 1}', "r-2"), token())[0], openshell.ALLOW)
         for auth, code in ((None, "UNAUTHENTICATED"), (token("another-sandbox"), "INVALID_ARGUMENT")):

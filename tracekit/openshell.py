@@ -846,7 +846,7 @@ def serve(cfg, client=None):
             why = f"{MAX_STREAMS} responses are streaming through the middleware already"
             print(f"tracekit openshell-middleware: a response refused: {why}", file=sys.stderr, flush=True)
             context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, why)
-        held = [sandbox]   # the sandbox its streams count against, once known
+        held = [None]   # the sandbox this stream is counted against, once counted
 
         def bind(sandbox_id):
             """Count the stream against the sandbox its preflight names, and refuse it past that sandbox's share."""
