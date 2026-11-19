@@ -134,15 +134,19 @@ def _as_run(name, tool, args):
     each by /bin/sh -c (dash on Debian and Ubuntu, where bash's `&>` runs what follows it): a string, each entry of a
     list (a string or a {"command": ...}), one {"command": ...}, and a string that is a JSON array as its entries. Its
     call is decided as `commands`, which the policy reads each on its own and joined (Engine._parse), each as
-    `sh -c '…'`, which reads it as a POSIX shell does, with only the other options its shell reads. Another tool named
-    `shell` but Strands' vended one (its `command` a string, one sh line) may be a copy of it, loaded by path or kept in
-    ./tools/ (a module of its own name), or a tool that takes an argv: its list of strings, or a string that is a JSON
-    array of them, is decided both ways, as the signer reads its `command` and each entry as `sh -c '…'`, so no command
-    hides from a rule whichever way it runs. Labelled coerced: reconcile doesn't hold them to the model's tool use. An
-    entry the shell can't run is left out. Any other call as it is."""
+    `sh -c '…'`, which reads it as a POSIX shell does, with only the other options its shell reads. Strands' vended
+    shell (strands.vended_tools, by any name) runs its `command` string by its sandbox's `sh -c`: decided so too. Another
+    tool named `shell` may be a copy of strands_tools', loaded by path or kept in ./tools/ (a module of its own name), or
+    a tool that takes an argv: its list of strings, or a string that is a JSON array of them, is decided both ways, as
+    the signer reads its `command` and each entry as `sh -c '…'`, so no command hides from a rule whichever way it runs.
+    Labelled coerced: reconcile doesn't hold them to the model's tool use. An entry the shell can't run is left out. Any
+    other call as it is."""
     module = getattr(getattr(tool, "_tool_func", None), "__module__", None) or ""
     command = args.get("command") if isinstance(args, dict) else None
-    if name != "shell" or command is None or module.startswith("strands.vended_tools."):
+    if module.startswith("strands.vended_tools.shell"):   # (a list it refuses: nothing runs, decided as it is)
+        return ({**{k: args[k] for k in ("timeout",) if k in args}, "commands": [shlex.join(["sh", "-c", command])]},
+                {"args_source": "coerced"}) if isinstance(command, str) else (args, {})
+    if name != "shell" or command is None:
         return args, {}
     known, entries = module == "strands_tools.shell", command
     if isinstance(command, str) and command.strip().startswith("[") and command.strip().endswith("]"):

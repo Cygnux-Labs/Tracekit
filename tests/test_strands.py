@@ -730,13 +730,15 @@ class ShellLists(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "strands not installed")
 class VendedShell(unittest.TestCase):
-    """Strands' own vended shell (make_shell) is named `shell` too, takes `command` as a string and runs it as one sh
-    line: on a real signer its calls are decided on their input as it is, a string that looks like a JSON array as the
-    line it is (read as entries, `["'$(sudo id)'"]` was a quoted literal, allowed, while sh runs the $(…)), and a list
-    as the signer reads one (the tool runs none)."""
-    CALLS = ["""["'$(sudo id)'"]""", """["'$(rm -rf ~)'"]""", """["# $(sudo id)"]""", ["ls", "sudo id"]]
+    """Strands' own vended shell (make_shell) is named `shell` too, takes `command` as a string and runs it with its
+    sandbox's `sh -c` (dash on Debian and Ubuntu): on a real signer its string is decided as `sh -c '…'`, so bash's `&>`,
+    which dash reads as `&` and so runs what follows, is held (`echo hi &>/dev/null sudo id` was allowed); a string that
+    looks like a JSON array as the line it is (read as entries, `["'$(sudo id)'"]` was a quoted literal, allowed, while
+    sh runs the $(…)); a list as the signer reads one (the tool runs none)."""
+    CALLS = ["""["'$(sudo id)'"]""", """["'$(rm -rf ~)'"]""", """["# $(sudo id)"]""", "echo hi &>/dev/null sudo id",
+             "ls", ["ls", "sudo id"]]
 
-    def test_its_command_is_decided_as_it_is_and_runs_nothing_held(self):
+    def test_its_command_is_decided_as_sh_runs_it_and_runs_nothing_held(self):
         class Box:   # a sandbox that records each command it is asked to run, and runs none
             async def execute(self, command, timeout=None, **_):
                 ran.append(command)
@@ -752,12 +754,15 @@ class VendedShell(unittest.TestCase):
         got = {e["event"]["tool_call_id"]: e["event"] for e in s.log.storage.iter_run("default", rid)
                if e["event"]["type"] == "policy.decision"}
         for i, c in enumerate(self.CALLS):
-            want = svc.evaluate(policy, "shell", {"command": c})[0]
+            text = isinstance(c, str)
+            want = svc.evaluate(policy, "shell", {"commands": [shlex.join(["sh", "-c", c])]} if text else
+                                {"command": c})[0]
             d = got[f"v{i}"]
             self.assertEqual((d["data"]["decision"], d["data"]["rule_ids"], d["args_source"]),
-                             (want["verdict"], want["rule_ids"], "parsed"), c)
+                             (want["verdict"], want["rule_ids"], "coerced" if text else "parsed"), c)
         self.assertEqual([got[f"v{i}"]["data"]["decision"] for i in range(3)], ["deny"] * 3)
-        self.assertEqual(ran, [])
+        self.assertIn(got["v3"]["data"]["decision"], ("ask", "deny"))
+        self.assertEqual(ran, ["ls"])
 
 
 @unittest.skipUnless(HAVE, "strands not installed")

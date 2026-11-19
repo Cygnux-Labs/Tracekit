@@ -56,8 +56,9 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   a tool that takes an argv) given a list of strings, or a string that is a JSON array of them, is decided both ways:
   as the signer reads its `command` (a list as one argv) and each entry as `sh -c '…'`; the stricter stands. These
   arguments are labelled `args_source: coerced`: they are the commands that run, not the model's `command` as written.
-  Strands' vended shell (`strands.vended_tools`) is decided on its `command` string as it is, as are Codex's and OpenAI
-  Agents' `shell` calls (their list is one argv).
+  Strands' vended shell (`strands.vended_tools`) runs its `command` string with its sandbox's `sh -c`, so that string is
+  decided as `sh -c '…'` too (`echo hi &>/dev/null sudo id` is held), also labelled `coerced`. Codex's and OpenAI
+  Agents' `shell` calls are decided as they are (their list is one argv).
 - **Never runs a refused call.** A deny, a rejected or unanswered approval, a refused consume, a signer refusal, an
   outage under a closed fail mode and any error of Tracekit's own all set `cancel_tool`: the model reads Tracekit's
   reason as an error tool result and the run goes on. Under an open fail mode a call runs unrecorded during an outage,
@@ -109,10 +110,10 @@ signature or redacted content), text and tool uses under their `toolUseId`s. The
   refused, its run is not recorded. Strands' internal tool middleware can replace a call unseen.
 - Strands parses the model's arguments before any hook runs: arguments that aren't JSON reach the hooks, and the tool,
   as `{}`, and the signer decides `{}`.
-- Behind the LLM gateway, a `strands_tools` shell call decided as a `commands` list (above) reads as
-  `reconcile.args_mismatch` "(the decide says a framework coerced them)": reconcile holds a decide to the gateway's
-  record of the model's call (the `coerced` label is the agent's word), and the list it decided is not the model's
-  `command` as written.
+- Behind the LLM gateway, a `shell` call decided as a `commands` list (above: `strands_tools`' and the vended shell's)
+  reads as `reconcile.args_mismatch` "(the decide says a framework coerced them)": reconcile holds a decide to the
+  gateway's record of the model's call (the `coerced` label is the agent's word), and the list it decided is not the
+  model's `command` as written.
 - With `background_tasks`, a background tool another hook asks to retry (`AfterToolCallEvent.retry`) runs again with
   no `BeforeToolCallEvent`: that run is neither decided nor recorded.
 - With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content blocks
