@@ -44,14 +44,18 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   the call's `toolUseId`, tool name and `input`: the arguments as Strands parsed them from the model, missing or empty
   ones as `{}`. An approval is bound to those arguments and used once. Under the [executor](../executor.md) (T2), a
   call whose approved arguments are not the model's is refused, not run with either.
-- **Decides each command of a shell list.** A call to `strands_tools`' shell (0.1 to 0.8, told by its function's
-  module) whose `command` it runs as several commands, each in a shell of its own (a list, a `{"command": ...}`, and
-  from 0.3 a string that is a JSON array), is decided as a `commands` list: each command read on its own, as its shell
-  runs it, and all of them joined, so an open quote or a here-document in one can't hide the next; such a string is
-  read as written too, as 0.1 and 0.2 run it. Its arguments are labelled `args_source: coerced`: they are the commands
-  that run, not the model's `command` as written. Every other `shell` is decided on its input as it is: Strands'
-  vended shell (`strands.vended_tools`) runs its `command` string as one line, and Codex and OpenAI Agents send a
-  list as one argv.
+- **Decides each command of a shell list.** `strands_tools`' shell (0.1 to 0.8, told by its function's module) runs
+  each command of its `command` (a string, each entry of a list, a `{"command": ...}`, a string that is a JSON array
+  as its entries) with `/bin/sh -c`, which is dash on Debian and Ubuntu. Its call is decided as a `commands` list:
+  each command as `sh -c '…'`, read as a POSIX shell reads it (bash's `&>`, which dash reads as `&` and so runs what
+  follows, is held), on its own and all of them joined, so an open quote or a here-document in one can't hide the
+  next; with only the other options its shell reads (`parallel`, `ignore_errors`, `timeout`, `work_dir`). Another tool
+  named `shell` (a copy of `strands_tools`' shell loaded by path or kept in `./tools/` is a module of its own name, or
+  a tool that takes an argv) given a list of strings, or a string that is a JSON array of them, is decided both ways:
+  as the signer reads its `command` (a list as one argv) and each entry as `sh -c '…'`; the stricter stands. These
+  arguments are labelled `args_source: coerced`: they are the commands that run, not the model's `command` as written.
+  Strands' vended shell (`strands.vended_tools`) is decided on its `command` string as it is, as are Codex's and OpenAI
+  Agents' `shell` calls (their list is one argv).
 - **Never runs a refused call.** A deny, a rejected or unanswered approval, a refused consume, a signer refusal, an
   outage under a closed fail mode and any error of Tracekit's own all set `cancel_tool`: the model reads Tracekit's
   reason as an error tool result and the run goes on. Under an open fail mode a call runs unrecorded during an outage,

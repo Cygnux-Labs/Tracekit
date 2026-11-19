@@ -6,6 +6,7 @@ import importlib.util
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -30,7 +31,7 @@ if HAVE:
     from strands.tools.mcp import MCPAgentTool
     from strands.vended_tools.shell import make_shell
 
-    from tracekit.integrations.strands import Tracekit
+    from tracekit.integrations.strands import Tracekit, _as_run
 
     class Scripted(Model):
         """A model that asks for each turn's tool uses [(toolUseId, name, input)] in turn, and then answers with the
@@ -631,24 +632,26 @@ class Provenance(unittest.TestCase):
 
 @unittest.skipUnless(HAVE, "strands not installed")
 class ShellLists(unittest.TestCase):
-    """On a real signer, each shipped pack and both engines: a call to strands_tools' shell whose `command` it runs as
-    several commands, each in a shell of its own, is decided on each of them, where the signer read one argv (a deny
-    there was held at most, `["echo", "$(sudo id)"]` allowed); a here-document in one doesn't hide the next, as one
-    line joined would, and a string that is a JSON array is read as written too, as its 0.1 and 0.2 run it. Codex's argv
-    under the same name reads as before."""
+    """On a real signer, each shipped pack and both engines: strands_tools' shell runs each command of its `command` (a
+    string, a list's entries, a {"command": ...}, a JSON array's entries) by /bin/sh -c, so each is decided as
+    `sh -c '…'`: as it would be alone (the signer read a list as one argv: a deny held at most, `["echo", "$(sudo id)"]`
+    allowed), a here-document in one doesn't hide the next, and bash's `&>`, which dash reads as `&` and so runs what
+    follows, is held. Another `shell` tool given a list (a copy of strands_tools' loaded by path is a module named
+    `shell`) is decided both as the signer reads it and as each entry run by sh. Codex's argv reads as before."""
     SUDO = [["ls", "sudo id"], '["ls", "sudo id"]', [{"command": "ls"}, {"command": "sudo id"}], ["echo", "$(sudo id)"],
-            ["cat <<EOF", "sudo id", "EOF"], """["'$(sudo id)'"]"""]
+            ["cat <<EOF", "sudo id", "EOF"]]
+    DASH = [["ls", "echo hi &>/dev/null sudo id"], "echo hi &>/dev/null sudo id", ["true &>/dev/null rm -rf ~"]]
 
-    def test_each_command_of_the_list_is_decided_on_every_pack(self):
+    def test_each_command_is_decided_as_sh_runs_it_on_every_pack(self):
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex"):
                 with self.subTest(pack=pack, engine=engine):
                     self.check(svc.load_policy(os.path.join(os.path.dirname(svc.__file__), "..", "policy2", "packs",
                                                             pack), engine))
 
-    def go(self, policy, commands, hook=None):
-        """(the commands the tool ran, the run's records once final) when the model calls `shell` with each of
-        `commands` at once, ids s0, s1, ...; `hook` runs after Tracekit's last check"""
+    def go(self, policy, commands, hook=None, module="strands_tools.shell"):
+        """(the commands the tool ran, the run's records once final) when the model calls `shell`, a tool whose function
+        is of `module`, with each of `commands` at once, ids s0, s1, ...; `hook` runs after Tracekit's last check"""
         s = SignerService(ac.tmpdir(self), policy=policy, grace_s=0)
         self.addCleanup(s.close)
         client, ran = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame))), []
@@ -657,7 +660,7 @@ class ShellLists(unittest.TestCase):
             """Run shell commands."""
             ran.append(command)
             return "ran"
-        shell.__module__ = "strands_tools.shell"   # strands_tools' shell, as the hook knows it, running nothing
+        shell.__module__ = module   # strands_tools' shell by default, as the hook knows it, running nothing
         # a call held instead of denied waits a second for a person, not five minutes
         with client.run(agent="strands-shell") as r, mock.patch.object(gate, "WAIT_MS", 1000):
             a = Agent(model=Scripted([(f"s{i}", "shell", {"command": c}) for i, c in enumerate(commands)]),
@@ -670,20 +673,50 @@ class ShellLists(unittest.TestCase):
         return ran, [e["event"] for e in s.log.storage.iter_run("default", rid)]
 
     def check(self, policy):
-        ran, events = self.go(policy, [*self.SUDO, ["ls", "pwd"], "ls"])
+        ran, events = self.go(policy, [*self.SUDO, *self.DASH, ["ls", "pwd"], "ls"])
         got = {e["tool_call_id"]: e for e in events if e["type"] == "policy.decision"}
         sudo = svc.evaluate(policy, "shell", {"command": "sudo id"})[0]
-        for i in range(len(self.SUDO)):   # each as `sudo id` alone is, never looser
+        for i, c in enumerate(self.SUDO):   # each as `sudo id` alone is, never looser
             d = got[f"s{i}"]
-            self.assertEqual((d["data"]["decision"], d["args_source"]), (sudo["verdict"], "coerced"), self.SUDO[i])
-            self.assertLessEqual(set(sudo["rule_ids"]), set(d["data"]["rule_ids"]), self.SUDO[i])
-        n = len(self.SUDO)
+            self.assertEqual((d["data"]["decision"], d["args_source"]), (sudo["verdict"], "coerced"), c)
+            self.assertLessEqual(set(sudo["rule_ids"]), set(d["data"]["rule_ids"]), c)
+        for i, c in enumerate(self.DASH, len(self.SUDO)):
+            self.assertIn((got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]),
+                          [("ask", "coerced"), ("deny", "coerced")], c)
+        n = len(self.SUDO) + len(self.DASH)
         self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in (n, n + 1)],
-                         [("allow", "coerced"), ("allow", "parsed")])
+                         [("allow", "coerced")] * 2)
         self.assertEqual(sorted(map(str, ran)), ["['ls', 'pwd']", "ls"])
         self.assertNotIn("reconcile.args_mismatch", [e["type"] for e in events])   # coerced: not the model's bytes
         for argv, verdict in ((["git", "commit", "-m", "sudo id"], "allow"), (["bash", "-lc", "sudo id"], "deny")):
             self.assertEqual(svc.evaluate(policy, "shell", {"command": argv})[0]["verdict"], verdict, argv)
+
+    def test_another_shell_tool_given_a_list_is_decided_both_ways(self):
+        """A copy of strands_tools' shell loaded by path (module `shell`) ran `["echo hi", "rm -rf ~"]`, allowed as one
+        argv. A list of strings to such a tool is decided both as the signer reads it and as each entry run by sh; a
+        string, as it is."""
+        ran, events = self.go(svc.load_policy(), [["echo hi", "rm -rf ~"], ["git", "commit", "-m", "sudo id"],
+                                                  ["ls", "pwd"], "sudo id"], module="shell")
+        got = {e["tool_call_id"]: e for e in events if e["type"] == "policy.decision"}
+        self.assertEqual([(got[f"s{i}"]["data"]["decision"], got[f"s{i}"]["args_source"]) for i in range(4)],
+                         [("deny", "coerced"), ("deny", "coerced"), ("allow", "coerced"), ("deny", "parsed")])
+        self.assertEqual(ran, [["ls", "pwd"]])
+
+    def test_only_what_strands_tools_shell_reads_is_decided(self):
+        """A JSON array's entries alone (every version parses it: read as written too, a 40 KiB one was over the
+        subject limit), and only the options its shell reads (`cmd` beside `command` read as a second command field
+        was unreadable)."""
+        def f():
+            pass
+        f.__module__ = "strands_tools.shell"
+        shell_tool, big = types.SimpleNamespace(_tool_func=f), "echo " + "a" * 40000
+        for args, want in (({"command": json.dumps([big]), "timeout": 5},
+                            {"timeout": 5, "commands": [shlex.join(["sh", "-c", big])]}),
+                           ({"command": ["ls", "pwd"], "cmd": "ls", "work_dir": "/tmp"},
+                            {"work_dir": "/tmp", "commands": ["sh -c ls", "sh -c pwd"]})):
+            decided, source = _as_run("shell", shell_tool, args)
+            self.assertEqual((decided, source), (want, {"args_source": "coerced"}))
+            self.assertEqual(svc.evaluate(svc.load_policy(), "shell", decided)[0]["verdict"], "allow", args)
 
     def test_a_refused_list_a_later_hook_runs_is_signed_as_executed_against_policy(self):
         def undo(event):

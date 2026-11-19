@@ -5,8 +5,7 @@ call before it runs (an `ask` waits for a person) and records the outcome after.
     agent = Agent(model=..., tools=[...], hooks=[Tracekit(run)])
 
 The signer decides the model's own call (its toolUseId and input) in a BeforeToolCallEvent callback that runs before
-every other hook; a call to strands_tools' shell whose `command` it runs as several commands is decided as those
-commands (_as_run). A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
+every other hook; a `shell` call is decided as the commands its shell runs (_as_run). A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
 the run goes on. A second callback, after every other hook, keeps that refusal if a hook cleared it, and refuses an
 allowed call whose input or tool a hook changed after the decision. The AfterToolCallEvent callback, after every other
 hook, records the result the model reads; a call a hook changed after Tracekit's last look is recorded as an error, and
@@ -20,6 +19,7 @@ import asyncio
 import copy
 import json
 import math
+import shlex
 import threading
 import warnings
 
@@ -32,6 +32,7 @@ from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
 BACKGROUND = "_background_execution"   # the flag Strands strips from a call's input before it runs (background_tasks)
+SHELL_OPTIONS = ("parallel", "ignore_errors", "timeout", "work_dir")   # what strands_tools' shell reads beside command
 
 
 class Tracekit(HookProvider):
@@ -67,7 +68,7 @@ class Tracekit(HookProvider):
             attempt = self._attempts.get(call_id, 0)
             self._attempts[call_id] = attempt + 1
         seen = copy.deepcopy(use)   # the call as decided: a later hook may change the event's
-        args, source = _as_run(event.selected_tool, seen.get("input") or {})
+        args, source = _as_run(seen["name"], event.selected_tool, seen.get("input") or {})
         d, why = await gate_call(self.run, call_id, attempt, use["name"], args, cancelled=event.agent.cancel_signal,
                                  **source)
         self._decided[id(event)] = d, attempt, why, seen if d else None, event.selected_tool, args
@@ -127,28 +128,38 @@ def _said(content):
             yield said.text(b["text"])
 
 
-def _as_run(tool, args):
-    """(the arguments the signer decides a call by, decide's args_source for them), for the selected tool `tool`.
-    strands_tools' shell (0.1 to 0.8: its function's module, the name `shell` being Strands' vended shell's, Codex's
-    and OpenAI Agents' too) runs a `command` list, or one {"command": ...}, as several commands, each in a shell of its
-    own; a string that is a JSON array too, from 0.3 (0.1 and 0.2 run it as one line). Its call is decided as
-    `commands`, which the policy reads each on its own and joined (Engine._parse), not as one argv: such a string as
-    written among them, so no command hides from a rule whichever version runs it; labelled coerced (reconcile doesn't
-    hold them to the model's tool use). An entry the shell can't run is left out. Any other call as it is: the vended
-    shell runs its `command` string as one sh line."""
-    command = args.get("command") if isinstance(args, dict) and \
-        getattr(getattr(tool, "_tool_func", None), "__module__", None) == "strands_tools.shell" else None
-    written = []
+def _as_run(name, tool, args):
+    """(the arguments the signer decides a call by, decide's args_source for them), for a call to tool `name`, `tool`
+    the selected one. strands_tools' shell (0.1 to 0.8, told by its function's module) runs its `command` as commands,
+    each by /bin/sh -c (dash on Debian and Ubuntu, where bash's `&>` runs what follows it): a string, each entry of a
+    list (a string or a {"command": ...}), one {"command": ...}, and a string that is a JSON array as its entries. Its
+    call is decided as `commands`, which the policy reads each on its own and joined (Engine._parse), each as
+    `sh -c '…'`, which reads it as a POSIX shell does, with only the other options its shell reads. Another tool named
+    `shell` but Strands' vended one (its `command` a string, one sh line) may be a copy of it, loaded by path or kept in
+    ./tools/ (a module of its own name), or a tool that takes an argv: its list of strings, or a string that is a JSON
+    array of them, is decided both ways, as the signer reads its `command` and each entry as `sh -c '…'`, so no command
+    hides from a rule whichever way it runs. Labelled coerced: reconcile doesn't hold them to the model's tool use. An
+    entry the shell can't run is left out. Any other call as it is."""
+    module = getattr(getattr(tool, "_tool_func", None), "__module__", None) or ""
+    command = args.get("command") if isinstance(args, dict) else None
+    if name != "shell" or command is None or module.startswith("strands.vended_tools."):
+        return args, {}
+    known, entries = module == "strands_tools.shell", command
     if isinstance(command, str) and command.strip().startswith("[") and command.strip().endswith("]"):
         try:   # as strands_tools' shell reads it
-            command, written = json.loads(command), [command]
+            entries = json.loads(command)
         except (ValueError, RecursionError):
             pass
-    if not isinstance(command, (list, dict)):
+    if known and not isinstance(entries, list):
+        entries = [entries]
+    if not isinstance(entries, list) or not known and not all(isinstance(e, str) for e in entries):
         return args, {}
-    lines = written + [c if isinstance(c, str) else c.get("command") if isinstance(c, dict) else None
-                       for c in (command if isinstance(command, list) else [command])]
-    return ({**{k: v for k, v in args.items() if k != "command"}, "commands": [c for c in lines if isinstance(c, str)]},
+    runs = [e if isinstance(e, str) else e.get("command") if isinstance(e, dict) else None for e in entries]
+    lines = [shlex.join(["sh", "-c", e]) for e in runs if isinstance(e, str)]
+    if known:
+        return {**{k: args[k] for k in SHELL_OPTIONS if k in args}, "commands": lines}, {"args_source": "coerced"}
+    as_given = command if isinstance(command, str) else shlex.join(command)
+    return ({**{k: v for k, v in args.items() if k != "command"}, "commands": [as_given, *lines]},
             {"args_source": "coerced"})
 
 
