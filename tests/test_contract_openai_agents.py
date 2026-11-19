@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -17,6 +18,7 @@ from factories import VersionCheckCases
 from tracekit import findings_v2
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.service import CONTENT_READ, DEFAULT_GRANTS, SignerService
 from tracekit.why.signed import vault_content
@@ -304,6 +306,110 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider",
                                                "args_source": "parsed", "args_commitment": self.service._commit(
                                                    f"model.exchange:{first['salt_id']}", digest)}])
+
+
+def _output(result):
+    """The tool output the model got in a run's result."""
+    [out] = [i.output for i in result.new_items if i.type == "tool_call_output_item"]
+    return out
+
+
+@unittest.skipUnless(HAVE_OA, "openai-agents not installed")
+class TestHeldReason(unittest.TestCase):
+    """A held call gives the app the signer's reason, and one rejected or expired tells the model so and why (#832)."""
+    REASON = "100 of 120 USD used; this call needs 40 USD"
+
+    def serve(self, reason=None):
+        """A signer whose R-PAY asks about `pay`, giving `reason` (none when None)."""
+        self.service = SignerService(ac.tmpdir(self), policy=self.policy(reason))
+        self.addCleanup(self.service.close)
+        self.client = Client(ac._serve(self, self.service.handle_frame))
+        self.addCleanup(self.client.close)
+        r = self.client.register_run({"agent": {"name": "held"}})
+        self.run_, self.ran = {"run_id": r["run_id"], "run_token": r["run_token"]}, []
+
+    @staticmethod
+    def policy(reason):
+        rule = {"id": "R-PAY", "tool": "^pay$", "pattern": "^", **({"reason": reason} if reason else {})}
+        return Engine({"ask": [rule]})
+
+    def held(self, tk):
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        pay = ShellTool(name="pay", executor=lambda req: self.ran.append(req.data.action.commands) or "paid")
+        a = Agent(name="held", model=StubModel(call), tools=[tk.tool(pay)])
+        return a, Runner.run_sync(a, "go", context={}, hooks=tk)
+
+    def told(self, a, res, tk):
+        """What the model gets for the held call once `tk` applies the signer's decisions to the run's saved state."""
+        state = res.to_state()
+        self.assertEqual(asyncio.run(tk.apply_decisions(state)), [])
+        return _output(Runner.run_sync(a, state, hooks=tk))
+
+    def test_the_app_gets_the_reason_and_the_model_why_it_was_not_approved(self):
+        self.serve(self.REASON)
+        tk = TracekitAgents(self.client, self.run_)
+        a, res = self.held(tk)
+        self.assertEqual(res.context_wrapper.context["tracekit"]["reasons"], {"sh-1": self.REASON})
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
+                                     "decision": "reject"})
+        # call_state gives the held rules' reasons now, not the decision's: each source of the reason shows
+        self.service.policy = self.policy("the rules' reason")
+        for resumed, why in ((tk, self.REASON), (TracekitAgents(self.client, self.run_), "the rules' reason")):
+            with self.subTest(same_process=resumed is tk):
+                told = self.told(a, res, resumed)
+                self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): rejected.", told)
+                self.assertIn(f"Why: {why}\n", told)
+                self.assertNotIn("approvals", told)   # the approval commands are the person's
+        self.assertEqual(self.ran, [])
+
+    def test_an_expired_approval_tells_the_model_it_expired(self):
+        self.serve(self.REASON)
+        tk = TracekitAgents(self.client, self.run_)
+        a, res = self.held(tk)
+        self.service.sweep(wall=time.time() + 10 * 86400)   # past the approval's expiry
+        told = self.told(a, res, tk)
+        self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): expired.", told)
+        self.assertIn(f"Why: {self.REASON}", told)
+        self.assertEqual(self.ran, [])
+
+    def test_a_hold_without_a_reason_gives_none(self):
+        self.serve()
+        tk = TracekitAgents(self.client, self.run_)
+        a, res = self.held(tk)
+        self.assertNotIn("reasons", res.context_wrapper.context["tracekit"])
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
+                                     "decision": "reject"})
+        told = self.told(a, res, tk)
+        self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): rejected.", told)
+        self.assertNotIn("Why:", told)
+
+    def test_a_tool_that_cannot_wait_tells_the_model_why_it_was_blocked(self):
+        self.serve(self.REASON)
+        class Editor:
+            def create_file(_, op):
+                self.ran.append(op.path)
+        call = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                          operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
+        tk = TracekitAgents(self.client, self.run_)
+        a = Agent(name="held", model=StubModel(call), tools=[tk.tool(ApplyPatchTool(name="pay", editor=Editor()))])
+        told = _output(Runner.run_sync(a, "go", context={}, hooks=tk))
+        self.assertIn("[tracekit] BLOCKED, nothing ran (R-PAY): approval required, and this tool cannot wait for one.",
+                      told)
+        self.assertIn(f"Why: {self.REASON}", told)
+        self.assertEqual(self.ran, [])
+
+    def test_a_signer_that_cannot_say_why_warns_and_applies_every_decision(self):
+        self.serve(self.REASON)
+        a, res = self.held(TracekitAgents(self.client, self.run_))
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
+                                     "decision": "reject"})
+        tk = TracekitAgents(self.client, self.run_)   # another process: the reason comes from call_state
+        with mock.patch.object(self.client, "call_state", side_effect=ValueError("boom"), create=True), \
+                self.assertWarns(UserWarning):
+            told = self.told(a, res, tk)
+        self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): rejected.", told)
+        self.assertNotIn("Why:", told)
 
 
 @unittest.skipUnless(HAVE_OA, "openai-agents not installed")
