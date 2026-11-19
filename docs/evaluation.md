@@ -542,13 +542,13 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 287 / 420 (68.3%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 312 / 420 (74.3%) | 158 (37.6%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 290 / 420 (69.0%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 315 / 420 (75.0%) | 161 (38.3%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
-32, Kubernetes 25 of 27. By evasion, calls with none are caught 172 of 275; quoting 12 of 18, environment prefixes 10 of 14, substitution 41
-of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
+32, Kubernetes 25 of 27. By evasion, calls with none are caught 176 of 275; quoting 12 of 18, environment prefixes 10 of 14, substitution 41
+of 49, interpreter one-liners 26 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
@@ -559,14 +559,14 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 1 |
-| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 38 (84.4%), 18 denied | 1 |
+| | strict | 25 (55.6%), 19 denied | 2 | 41 (91.1%), 20 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
 | narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
 | | strict | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
-| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 104 (72.2%), 25 denied | 13 (9.1%) |
-| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 109 (75.7%), 28 denied | 19 (13.3%) |
+| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 105 (72.9%), 25 denied | 13 (9.1%) |
+| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 110 (76.4%), 29 denied | 19 (13.3%) |
 
 The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
 rows are the first of the four runs the gates were recorded from, on 2026-11-14: 2,827 calls.
@@ -584,9 +584,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 156 / 170 | 440 / 482 | 1161 / 1499 | 8.11 / 9.03 |
-| strict, RE2 / regex | 155 / 170 | 407 / 455 | 1060 / 1498 | 7.45 / 8.52 |
-| dev, RE2 / regex | 161 / 178 | 451 / 505 | 1225 / 1574 | 8.14 / 9.41 |
+| default, RE2 / regex | 168 / 183 | 461 / 532 | 1231 / 1567 | 8.17 / 9.35 |
+| strict, RE2 / regex | 169 / 183 | 429 / 486 | 1140 / 1572 | 7.57 / 8.49 |
+| dev, RE2 / regex | 174 / 192 | 488 / 546 | 1296 / 1676 | 8.44 / 9.55 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (68.3% default, 74.3% strict) and no benign set's

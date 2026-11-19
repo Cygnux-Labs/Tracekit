@@ -261,6 +261,8 @@ class Lines(unittest.TestCase):
         for it, an argv whose code is several words joined: no value on it is hidden from an approver."""
         from tracekit.policy2 import engine
         for args in ({"command": "echo TOKEN=abcd1234 | sh"}, {"command": "TOKEN=abcd1234 $(cat cmd)"},
+                     # (the line's, though an interpreter's program comes first: that program's span is its own)
+                     {"command": "python3 -c 'print(1)'; X=./payload; TOKEN=abcd $X"},
                      {"command": "TOKEN=abcd ./run " + "x" * engine.MAX_SUBJECT},
                      {"command": ["ssh", "host", "TOKEN=abcd", "./run"]}):
             with self.subTest(args=str(args)[:80]):
