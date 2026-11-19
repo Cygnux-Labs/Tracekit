@@ -327,8 +327,10 @@ deny:
     class: shell
     field: argv
     # a URL in any case, also as a PEP 508 direct reference (`name @ https://…`); a version-control source, npm's
-    # github: shorthand among them, is TK-A028's (ask)
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?[Hh][Tt][Tt][Pp][Ss]?://'
+    # github: shorthand among them, is TK-A028's (ask). The engine also gives each install's operands without its
+    # options, as `pip install <operand>` (engine._install_sources: an index's, registry's or proxy's URL is no
+    # operand), so options before or between them (`pip install -q https://…`) hide none
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get|i)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?[Hh][Tt][Tt][Pp][Ss]?://'
     reason: installing a package directly from a URL
     remedy: Install the package by name from the configured index; a person adds a URL source after reviewing it.
     rationale: A URL bypasses the configured package source and can install unreviewed code.

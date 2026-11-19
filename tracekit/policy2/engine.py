@@ -556,10 +556,12 @@ class Engine:
             # also with `\` as `/` (_slashes), as a line is
             # and a harness a runner, a JavaScript runtime or python -m starts as `<harness> <its own words>`, the
             # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
-            # plugin …` and `node node_modules/.bin/claude plugin …` too
+            # plugin …` and `node node_modules/.bin/claude plugin …` too; and each operand of a package install without
+            # the install's options (_install_sources), as TK-D021 reads a URL source
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
+                s for c in parsed[0] for s in _install_sources(c["argv"])] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -1654,6 +1656,50 @@ def _pushes(commands):
             out += [s for s in _gh_api(argv, given, bool(runner)) if s not in out]
         out += [s for s in _github_rest(argv) if s not in out]
         out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
+    return out
+
+
+_PIP_URL_OPTS = {"-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--proxy", "-c", "--constraint", "-r",
+                 "--requirement", "--trusted-host", "--cert", "--client-cert"}
+_NPM_URL_OPTS = {"--registry", "--proxy", "--https-proxy"}
+# each installer: the verbs whose operands are package sources, and its options whose value may be a URL that is no
+# source (an index, a registry, a proxy, a requirements or constraints file), left out with it; any other option is
+# read as a flag, so a URL after it is a source
+_INSTALLERS = {"pip": ({"install"}, _PIP_URL_OPTS),
+               "uv pip": ({"install"}, _PIP_URL_OPTS | {"--index", "--default-index", "--constraints",
+                                                       "--overrides", "--override", "--build-constraints", "-b",
+                                                       "--requirements"}),
+               "uv": ({"add"}, _PIP_URL_OPTS | {"--index", "--default-index", "--constraints", "--requirements"}),
+               "pipx": ({"install"}, {"--index-url"}), "poetry": ({"add"}, {"--source"}),
+               "npm": ({"install", "i", "add"}, _NPM_URL_OPTS), "pnpm": ({"install", "i", "add"}, _NPM_URL_OPTS),
+               "yarn": ({"add"}, _NPM_URL_OPTS), "bun": ({"install", "i", "add"}, _NPM_URL_OPTS),
+               "gem": ({"install", "i"}, {"-s", "--source", "-p", "--http-proxy"}),
+               "cargo": ({"install", "add"}, {"--index", "--registry", "--git"})}
+
+
+def _install_sources(argv):
+    """`<installer> <verb> <operand>` for each operand of a package install (_INSTALLERS), without its options and the
+    values of the ones that name an index, registry or proxy: TK-D021 reads a URL source whatever options come before
+    or between (`pip install -q https://…`, `npm i -D https://…`). [] for anything else."""
+    prog, args = _program(argv), argv[1:]
+    if prog.startswith("python") and (module := _python_module(args))[:1] == ["pip"]:
+        prog, args = "pip", module[1:]
+    prog = "pip" if _PIP.fullmatch(prog) else "uv pip" if prog == "uv" and args[:1] == ["pip"] else prog
+    if prog not in _INSTALLERS:
+        return []
+    verbs, valued = _INSTALLERS[prog]
+    args = args[1:] if prog == "uv pip" else args
+    at = next((i for i, a in enumerate(args) if not a.startswith("-")), None)   # after global options
+    if at is None or args[at] not in verbs:
+        return []
+    out, skip = [], False
+    for a in args[at + 1:]:
+        if skip:
+            skip = False
+        elif a.startswith("-"):
+            skip = a in valued or a.startswith("--@") and a.endswith(":registry")   # (npm's scoped registry)
+        else:
+            out.append(f"{prog} {args[at]} {a}")
     return out
 
 
