@@ -23,7 +23,7 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
-from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
+from tracekit import __version__, agent_hooks, cli, client, doctor, findings_v2, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.policy2.engine import Engine
@@ -571,11 +571,29 @@ class Mapping(HarnessCase):
                 run = self.signer._runs[state["run_id"]]
                 self.assertEqual([(e["data"]["source"], e["data"]["trust"]) for e in run["events"]
                                   if e["type"] == "input.observed"],
-                                 [(f"{agent}:UserPromptSubmit", "trusted"), (f"{agent}:prompt", "untrusted")])
-                self.assertEqual(self.observed[-2:], ["", [prompt]])
+                                 [(f"{agent}:prompt", "untrusted")])   # no trusted prompt record, not even empty
+                self.assertEqual(self.observed[-1], [prompt])
                 self.assertFalse(run.get("closed"))
                 self.assertEqual(self.hook(harness, {"session_id": sid}, "session.deleted")[:2], (0, ""))
                 self.assertTrue(run["closed"])
+
+    def test_opencode_2_prompts_leave_the_gateways_request_the_runs_intent(self):
+        # #989's review: a trusted `opencode:UserPromptSubmit` record (empty) beside each untrusted prompt made findings
+        # read the run as one whose hook records the person's prompts, so the request the LLM gateway recorded was
+        # only the agent's claim and the run had no intent; its seqs were also read as the person's task boundaries
+        from test_findings_v2 import call, records
+        prompt, ask = "keep away from prod", "Fix src/pager.py. Don't touch billing.py."
+        self.assertEqual(self.hook("opencode", {"session_id": "oc2-intent", "prompt": prompt}, "session.prompt")[0], 0)
+        run = self.signer._runs[claude_code._load(claude_code._state("oc2-intent"))["run_id"]]
+        hooked = [("input.observed", "sdk", {k: e["data"][k] for k in ("source", "trust")}, prompt)
+                  for e in run["events"] if e["type"] == "input.observed"]
+        recs, content = records(*hooked, ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1"},
+                                          {"messages": [{"role": "user", "content": ask}]}), *call("t1", "billing.py"))
+        self.assertEqual(findings_v2._Run(recs).hook_seqs, [])
+        out = findings_v2.analyze(recs, content)
+        f = next(f for f in out["findings"] if f["verdict"]["rule"] == "TK-X204")
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(out["shown"]["calls"]["t1"]["checks"]["TK-X204"], "found")
 
     def test_gptme_invalid_confirmation_blocks_before_deciding(self):
         payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",

@@ -1312,8 +1312,11 @@ def _handle(client, p, event, sid, tid, end=None):
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
-                     value=typed)
+                # OpenCode 2.x proves no prompt typed: an empty one would read as the person's prompt
+                # (findings_v2's hooked, hook_seqs), so only its untrusted record is kept
+                if typed or AGENT not in ("opencode", "kilo"):
+                    _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
+                         value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
