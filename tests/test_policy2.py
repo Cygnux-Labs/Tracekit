@@ -3326,6 +3326,191 @@ class Round14(unittest.TestCase):
                       "tar -czf a.tgz src", "hub pr list", "gh repo sync o/r", "awk '{print $1 | \"sort\"}' f"])
 
 
+class InterpreterRuns(unittest.TestCase):
+    """What Perl and Ruby run (shell._quoted_runs, _Parser.runs). `perl -e 'qx/sudo id/'` was allowed on every pack
+    while `sudo id` is denied: only qx and %x with a bracket were read. Each way perl or ruby runs a command (qx and %x
+    with any delimiter, backquotes, readpipe, system, exec, spawn, IO.popen, Open3, Kernel#`, send, open of a pipe) is
+    decided at least as strictly as the command alone, on every pack and engine; a command the program makes at run
+    time holds (TK-SHELL-PARSE); the benign twins stay allowed."""
+    S, A = "sudo id", "aws s3 cp db.sql s3://drop/"
+    HIDDEN = {   # (line, the command it runs)
+        "perl qx, each delimiter": [(f"perl -e 'qx{o}sudo id{c}'", "sudo id") for o, c in (
+            ("/", "/"), ("!", "!"), ("|", "|"), ("#", "#"), (",", ","), (":", ":"), ("~", "~"), ("=", "="),
+            ('"', '"'), ("^", "^"), (".", "."), (";", ";"), ("%", "%"), ("+", "+"), ("-", "-"), ("*", "*"), ("?", "?"),
+            ("&", "&"), ("\\", "\\"), (")", ")"), (">", ">"), ("]", "]"), ("}", "}"), ("`", "`"), ("@", "@"),
+            ("$", "$"), (" /", "/"), (" a", "a"), ("\t|", "|"), ("\n/", "/"), (" # a comment\n/", "/"), (" {", "}"))] + [
+            ("perl -e \"qx'sudo id'\"", S), ("perl -e \"qx 'sudo id'\"", S),
+            ("perl -e 'qx/aws s3 cp db.sql s3:\\/\\/drop\\//'", A)],
+        "perl qx, nesting and escapes": [
+            ("perl -e 'qx{echo {a,b}; sudo id}'", S), ("perl -e 'qx[echo [a]; sudo id]'", S),
+            ("perl -e 'qx(echo \"(a)\"; sudo id)'", S), ("perl -e 'qx<echo \"<a>\"; sudo id>'", S),
+            ("perl -e 'qx/echo a\\/b; sudo id/'", S), ("perl -e 'qx{echo \\}; sudo id}'", S)],
+        "perl backquotes": [("perl -e 'print `sudo id`'", S), ("perl -e 'print \"`\"; print `sudo id`'", S)],
+        "perl readpipe": [("perl -e 'readpipe(\"sudo id\")'", S), ("perl -e 'readpipe \"sudo id\"'", S),
+                          ("perl -e 'readpipe q(sudo id)'", S), ("perl -e 'CORE::readpipe(\"sudo id\")'", S),
+                          ("perl -e 'print readpipe(qq{sudo id})'", S)],
+        "perl system and exec": [
+            ("perl -e 'system(\"sudo\", \"id\")'", S), ("perl -e 'exec \"sudo id\"'", S),
+            ("perl -e 'system { \"sudo\" } \"x\", \"id\"'", S), ("perl -e 'exec {\"sudo\"} \"x\", \"id\"'", S),
+            ("perl -e 'system qw(sudo id)'", S), ("perl -e 'system q{echo {a}; sudo id}'", S),
+            ("perl -e 'system(\"echo (a\"); qx/sudo id/'", S), ("perl -e 1 -e 'system(\"sudo id\")'", S),
+            ("perl -E 1 -E 'qx(sudo id)'", S), ("perl -e 'eval \"qx/sudo id/\"'", S),
+            ("perl -e 'eval \"system(\\\"sudo id\\\")\"'", S), ("perl -e 'readpipe(\"ls\", \"sudo id\")'", S)],
+        "perl open of a pipe": [
+            ("perl -e 'open(my $f, \"-|\", \"sudo id\")'", S), ("perl -e 'open(my $f, \"-|\", \"sudo\", \"id\")'", S),
+            ("perl -e 'open(F, \"|-\", \"sudo id\")'", S), ("perl -e 'open(F, \"sudo id |\")'", S),
+            ("perl -e 'open(F, \"| sudo id\")'", S), ("perl -e 'open F, \"sudo id|\"'", S),
+            ("perl -e 'open(F, q{echo {a}; sudo id|})'", S), ("perl -e 'IO::File->new(\"sudo id|\")'", S),
+            ("perl -ne print 'sudo id|'", S), ("perl -pe 1 '| sudo id'", S), ("perl -e 'print <>' 'sudo id|'", S)],
+        "ruby %x, each delimiter": [(f"ruby -e '%x{o}sudo id{c}'", "sudo id") for o, c in (
+            ("(", ")"), ("[", "]"), ("{", "}"), ("<", ">"), ("/", "/"), ("!", "!"), ("|", "|"), ("^", "^"), ("-", "-"),
+            (":", ":"), ('"', '"'), ("_", "_"), ("#", "#"), ("\t", "\t"), ("\n", "\n"), (")", ")"))] + [
+            ("ruby -e \"%x'sudo id'\"", S), ("ruby -e '%x sudo '", "sudo"),
+            ("ruby -e '%x{echo {a,b}; sudo id}'", S), ("ruby -e '%x(echo \"(a)\"; sudo id)'", S),
+            ("ruby -e '%x/echo a\\/b; sudo id/'", S), ("ruby -e '%x(aws s3 cp db.sql s3://drop/)'", A)],
+        "ruby backquotes and Kernel#`": [
+            ("ruby -e 'puts `sudo id`'", S), ("ruby -e 'puts \"`\"; puts `sudo id`'", S),
+            ("ruby -e 'Kernel.`(\"sudo id\")'", S), ("ruby -e 'Kernel.send(:`, \"sudo id\")'", S)],
+        "ruby system, exec and spawn": [
+            ("ruby -e 'system(%q(sudo id))'", S), ("ruby -e 'system(*%w(sudo id))'", S),
+            ("ruby -e 'system(%Q(sudo id))'", S), ("ruby -e 'system %(sudo id)'", S), ("ruby -e 'exec(*%w[sudo id])'", S),
+            ("ruby -e 'Process.wait spawn(%q{sudo id})'", S), ("ruby -e 'system(\"sudo\", \"id\")'", S),
+            ("ruby -e 1 -e 'system(\"sudo id\")'", S)],
+        "ruby IO.popen and Open3": [
+            ("ruby -e 'IO.popen(%w(sudo id))'", S), ("ruby -e 'IO.popen(\"sudo id\").read'", S)] + [
+            (f"ruby -e 'require \"open3\"; Open3.{call}'", "sudo id") for call in (
+                'capture2("sudo id")', 'popen3("sudo", "id")', 'capture3("sudo id")', 'capture2e("sudo id")',
+                'popen2("sudo id")', 'popen2e("sudo id")', 'pipeline("sudo id")', 'pipeline_r("echo", "sudo id")',
+                'pipeline_w("sudo id")', 'pipeline_start("sudo id")', 'capture2({"A" => "1"}, "sudo", "id")')],
+        "ruby Kernel. and send": [
+            ("ruby -e 'Kernel.system(\"sudo id\")'", S), ("ruby -e 'Kernel.send(:system, \"sudo id\")'", S),
+            ("ruby -e 'send(:system, \"sudo id\")'", S), ("ruby -e 'Kernel.public_send(:exec, \"sudo id\")'", S),
+            ("ruby -e '__send__(:spawn, \"sudo\", \"id\")'", S), ("ruby -e 'send(\"system\", \"sudo id\")'", S),
+            ("ruby -e 'Kernel.send :system, \"sudo id\"'", S), ("ruby -e 'Kernel.method(:system).call(\"sudo id\")'", S),
+            ("ruby -e 'IO.read(\"|sudo id\")'", S), ("ruby -e 'Kernel.open(\"|sudo id\")'", S),
+            ("ruby -e 'x = 1; %w(sudo id).each(&method(:system))'", S)],
+    }
+    HELD = {   # a command or code the program makes at run time: held (TK-SHELL-PARSE)
+        "perl": ["perl -e '$c = \"sudo id\"; qx/$c/'", "perl -e '$c = \"sudo id\"; print `$c`'",
+                 "perl -e '$x = \"; sudo id\"; system(\"echo $x\")'", "perl -e '$c = \"sudo id\"; system($c)'",
+                 "perl -e '@c = (\"sudo\", \"id\"); system(@c)'", "perl -e 'system($ENV{X})'",
+                 "perl -e '\"; sudo id\" =~ /(.*)/; system(\"echo $1\")'", "perl -e 'qx/echo @{[ \"x; sudo id\" ]}/'",
+                 "perl -e 'readpipe($c)'", "perl -e 'open(F, $c)'", "perl -e 'open(F, \"-|\", $c)'",
+                 "perl -e 'exec { $p } \"x\", \"id\"'", "perl -e 'print <<`END`;\nsudo id\nEND\n'",
+                 "perl -e 'print << `END`;\nsudo id\nEND\n'", "perl -e 'eval $c'", "perl -ne 'eval;'",
+                 "perl -e '$x = \\&CORE::system; $x->($c)'", "perl -e 'system(pack(\"H*\",\"726d202d7266\"))'",
+                 "perl -e 'open my $f, \"-|\", $c'", "perl -e 'qx/echo (/'", "perl -e 'open F, $c'",
+                 "perl -e 'open(F, \"$c\")'", "perl -e 'open(F, \"echo $c |\")'",
+                 "perl -e '" + "eval q{" * 40 + "1" + "}" * 40 + "'"],
+        "ruby": ["ruby -e 'c = \"sudo id\"; system(c)'", "ruby -e 'c = \"sudo id\"; %x(#{c})'",
+                 "ruby -e 'c = \"sudo id\"; `#{c}`'", "ruby -e 'x = \"; sudo id\"; system(\"echo #{x}\")'",
+                 "ruby -e 'print <<`EOS`\nsudo id\nEOS\n'", "ruby -e 'print <<~`EOS`\n  sudo id\n  EOS\n'",
+                 "ruby -e 'system(ARGV[0])' x", "ruby -e 'system c'", "ruby -e 'Kernel.send(m, \"sudo id\")'",
+                 "ruby -e 'IO.popen(c)'", "ruby -e 'require \"open3\"; Open3.capture2(c)'", "ruby -e 'eval(ARGV[0])' x",
+                 "ruby -e 'send(:eval, c)'", "ruby -e 'open(ARGV[0])' x", "ruby -e 'ARGV.each(&method(:system))' x",
+                 "ruby -e 'alias_method :run, :system'"],
+    }
+    BENIGN = [
+        "perl -ne 'print if /qx/'", "perl -ne 'print if /^qx\\s/'", "perl -pe 's/qx/QX/g'", "perl -e 'print q(qx)'",
+        "perl -ne 'print if m{qx[0-9]+}'", "ruby -e 'puts %w(a b)'", "perl -e 'print qq(hi)'", "ruby -e 'puts \"qx\"'",
+        "ruby -e 'printf(\"%x\\n\", 255)'", "ruby -e 'printf(\"%x %x\\n\", 1, 2)'", "ruby -e 'puts \"0x%x\" % 255'",
+        "perl -e 'print `ls`'", "ruby -e 'puts `ls`'", "perl -e 'system(\"ls\", \"-l\")'", "perl -e 'print qx(git status)'",
+        "ruby -e 'puts %x(git log -1)'", "perl -e 'print qx/echo \\$HOME/'", "perl -e 'open(F, \"<\", \"a.txt\")'",
+        "perl -e 'open(my $fh, \"<\", $ARGV[0]) or die' a.txt", "ruby -e 'File.open(ARGV[0]) { |f| puts f.read }' a.txt",
+        "ruby -e 'puts File.read(ARGV[0])' a.txt", "perl -le 'print for qw(a b c)'",
+        "perl -e '%h = (qx => 1); $y = 2; print keys %h'", "perl -e 'system q(echo $HOME)'",
+        "perl -e \"print qx'echo \\$HOME'\"", "perl -e 'print(system(\"ls\"), 1)'", "ruby -e 'puts [1].send(:size)'",
+        "perl -e '" + "eval q{" * 14 + "print 1" + "}" * 14 + "'", "perl -e '\"ab\" =~ /b/; print $`; print `ls`'",
+        "perl -e 'eval { 1 }'", "perl -e '$eval = 1; print $eval;'", "perl -e '$qx = \"(\"; $y = 2; print $qx'",
+        "perl -e 'print \"file system ok\\n\"'", "ruby -e 'puts \"system checks passed\"'",
+        "ruby -e '[1].instance_eval do\n p self\nend'", "perl -F'|' -lane 'print $F[0]' a.txt",
+        "ruby -e 'x = 5 % 3; puts x'", "ruby -e 'x = `ls`.split; y = `pwd`'"]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engines = [(pack, backend, Engine(pc.build(os.path.join(PACKS, pack))[0], backend))
+                       for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml") for backend in BACKENDS]
+
+    def test_a_hidden_command_is_decided_as_strictly_as_the_command_alone(self):
+        rank = {"allow": 0, "ask": 1, "deny": 2}
+        for pack, backend, e in self.engines:
+            for form, cases in self.HIDDEN.items():
+                for line, alone in cases:
+                    with self.subTest(pack=pack, backend=backend, form=form, line=line):
+                        d, want = e.decide("Bash", {"command": line}), e.decide("Bash", {"command": alone})
+                        self.assertGreaterEqual(rank[d["verdict"]], rank[want["verdict"]], (d, want))
+                        self.assertTrue(set(want["rule_ids"]) <= set(d["rule_ids"]) or d["verdict"] == "deny", (d, want))
+
+    def test_a_command_the_program_makes_at_run_time_holds(self):
+        for pack, backend, e in self.engines:
+            for line in self.HELD["perl"] + self.HELD["ruby"]:
+                with self.subTest(pack=pack, backend=backend, line=line):
+                    d = e.decide("Bash", {"command": line})
+                    self.assertIn("TK-SHELL-PARSE", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("deny",) if pack == "strict.yaml" else ("ask", "deny"), d)
+        self.assertEqual(self.engines[0][2].decide("Bash", {"command": "perl -e 'system($c)'"}).get("unread"), "code")
+
+    def test_the_benign_twins_stay_allowed(self):
+        for pack, backend, e in self.engines:
+            for line in self.BENIGN:
+                with self.subTest(pack=pack, backend=backend, line=line):
+                    self.assertEqual(e.decide("Bash", {"command": line})["verdict"], "allow")
+
+    def test_quoted_text_reads_as_perl_and_ruby_read_it(self):
+        """Each mirrors what perl 5.34 and ruby 2.6 hand the shell (CORE::GLOBAL::readpipe and Kernel#` redefined to
+        print it): a bracket nests, a backslash takes the delimiter, `\\` alone delimits up to the next one; perl's qx''
+        and q() keep other backslashes, double quotes decode them and a value interpolated there is unknown (None),
+        an escaped `$` text; perl and ruby run every -e; an open's text runs a command with a | in front or behind."""
+        self.assertEqual(shell._delimited("a(b)c) x", 0, "("), ("a(b)c", 6))
+        self.assertEqual(shell._delimited("a\\)b) x", 0, "("), ("a\\)b", 5))
+        self.assertEqual(shell._delimited("a b\\ x", 0, "\\"), ("a b", 4))
+        self.assertIsNone(shell._delimited("a(b", 0, "("))
+        self.assertEqual(shell._quoted("a\\\\b \\' \\q", "'"), "a\\b ' \\q")
+        self.assertEqual(shell._decoded("perl", '"', "echo \\$HOME $x \\q"), ["echo $HOME ", None, " q"])
+        self.assertEqual(shell._decoded("perl", '"', "a $1 @{[ b ]} $ c"), ["a ", None, " ", None, " ", None, ""])
+        self.assertEqual(shell._decoded("ruby", '"', "a #$; #{x} \\#{y}"), ["a ", None, " ", None, " #{y}"])
+        self.assertEqual(shell._string_at("ruby", "%w(a  b)", 0, lambda n: None), (["a b"], 8))
+        self.assertEqual(shell._string_at("ruby", "%Q{a #{x}}", 0, lambda n: None), (["a ", None, ""], 10))
+        self.assertEqual(shell._string_at("perl", "q{a{b}\\}}", 0, lambda n: None), (["a{b}}"], 9))
+        self.assertEqual(shell._string_at("perl", "`ls`", 0, lambda n: None), ([None], 4))
+        self.assertEqual(shell._code_arg("ruby", ["-e", "1", "-e", "2", "--", "-e", "3"]), "1\n2")
+        self.assertEqual(shell._code_arg("perl", ["-le", "1", "-E2"]), "1\n2")
+        self.assertEqual(shell._code_arg("python", ["-c", "1", "-c", "2"]), "1")
+        for pieces, cmd in ((["sudo id |"], ["sudo id "]), (["| x"], [" x"]), (["<x|"], None), (["a.txt"], None),
+                            ([None], False), (["a", None], False), (["|", None], ["", None]), (["<", None], None)):
+            with self.subTest(pieces=pieces):
+                self.assertEqual(shell._pipe_opened(pieces), cmd)
+
+    def test_hostile_programs_parse_in_linear_time(self):
+        def best(cmd):   # the fastest of three parses, so a busy CI runner's pauses don't count
+            times = []
+            for _ in range(3):
+                start = time.perf_counter()
+                try:
+                    shell.parse(cmd)
+                except shell.ParseError:
+                    pass
+                times.append(time.perf_counter() - start)
+            return min(times)
+        def rep(unit, k):
+            return (unit * (k // len(unit)))[:k]
+        n = MAX_SUBJECT - 64
+        for name, kind, build in (
+                ("qx{", "perl", lambda k: rep("qx{", k)), ("qx and blanks", "perl", lambda k: rep("qx ", k)),
+                ("escaped backquotes", "perl", lambda k: rep("\\`", k)), ("backquotes", "ruby", lambda k: rep("`a`;", k)),
+                ("%x and blanks", "ruby", lambda k: rep("%x ", k)), ("system $x", "perl", lambda k: rep("system $x;", k)),
+                ("subscripts in a string", "perl", lambda k: 'system "' + rep("$x[", k) + '"'),
+                ("@{ in a string", "perl", lambda k: 'system "' + rep("@{", k) + '"'),
+                ("evals", "perl", lambda k: rep("eval q{", k)),
+                ("nested evals", "perl", lambda k: "eval q{" * (k // 8) + "}" * (k // 8)),
+                ("send(", "ruby", lambda k: rep("send(", k)), ("%q(", "ruby", lambda k: rep("system %q(", k)),
+                ("open(", "perl", lambda k: rep("open(F, ", k)), ("alias", "ruby", lambda k: rep("alias a ", k))):
+            with self.subTest(name=name):
+                small, big = (best(f"{kind} -e '{build(k)}'") for k in (n // 4, n))
+                self.assertLess(big, 8 * small + 0.01 * SLOWER)   # linear: quadratic would be 16 times
+                self.assertLess(big, 1.5 * SLOWER)
+
+
 class Round15(unittest.TestCase):
     """A copy or link of Tracekit's entry point run under another name, a function variable as a
     command's word, a ref force-updated through GitHub's API, and the lines a harness split, as one call each."""
@@ -4880,7 +5065,7 @@ class HarmlessStops(unittest.TestCase):
                 self.assertEqual(e.decide("Bash", {"command": cmd})["verdict"], "ask")   # the cause is words only
         self.assertNotIn("unread", e.decide("Bash", {"command": "ls"}))
         for cause in ("name", "pattern", "input", "foreign", "syntax", "function", "download", "quote", "readings",
-                      "assigns", "split", "budget"):
+                      "assigns", "split", "budget", "code"):
             entry = pc.ENGINE_REASONS["TK-SHELL-PARSE"]["causes"][cause]
             self.assertLessEqual(len(entry["remedy"]), pc.MAX_REMEDY, cause)
 

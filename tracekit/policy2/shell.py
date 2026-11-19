@@ -586,10 +586,32 @@ def _py_calls(code):
 
 
 # a string literal's opening in interpreter code: Python's prefixes (r, b, u, f and their pairs) and triple quotes,
-# JS's template and Perl's, Ruby's and PHP's command backquote; Perl's q(), qq() and qw() (any bracket or mark)
+# JS's template and Perl's, Ruby's and PHP's command backquote; Perl's q(), qq() and qw() (any bracket or mark), Ruby's
+# %q(), %Q(), %w(), %W() (any mark) and %() (a bracket: after a value, % is its remainder)
 _OPEN = re.compile(r"""([rRbBuUfF]{0,2})('''|\"\"\"|['"`])""")
 _PERL_Q = re.compile(r"q([qw]?)\s*([^\w\s=,;)\]}>])")
+_RUBY_Q = re.compile(r"%(?=[qQwW][^\w\s]|[(\[{<])([qQwW]?)([^\w\s])")
 _PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
+
+
+def _delimited(code, k, opening):
+    """(body, end) of a quote-like operator's text from `k`, just past its opening delimiter, as Perl and Ruby read it:
+    up to the first closing delimiter no backslash escapes, a bracket ((, [, {, <) nesting; None when it never closes."""
+    close, depth = _PAIRS.get(opening, opening), 0
+    if opening == "\\":
+        end = code.find("\\", k)
+        return None if end < 0 else (code[k:end], end + 1)
+    for m in re.compile(r"\\.|[%s]" % re.escape(opening + close), re.S).finditer(code, k):
+        if m.group() == close and not depth:
+            return code[k:m.start()], m.end()
+        if len(m.group()) == 1:
+            depth += 1 if m.group() == opening else -1
+    return None
+
+
+def _quoted(body, opening):
+    """A single-quoted literal's text (Perl's q(), Ruby's %q()): a backslash takes only a backslash or its delimiter."""
+    return re.sub(r"\\([\\%s])" % re.escape(opening + _PAIRS.get(opening, opening)), r"\1", body)
 # a literal's body up to its closing quote, on its line (a template's across lines)
 _BODY = {q: re.compile(r"(?:\\.|[^\\%s\n])*%s" % (q, q), re.S) for q in "'\""}
 _BODY["`"] = re.compile(r"(?:\\.|[^\\`])*`", re.S)
@@ -605,11 +627,16 @@ _C_ESCAPE = re.compile(r"\\(x\{[0-9A-Fa-f]+\}|x[0-9A-Fa-f]{1,2}|u\{[0-9A-Fa-f]+\
                        re.S)
 _C_CONTROLS = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "e": "\x1b", "s": " ",
                "\n": ""}
-# where a double-quoted literal takes a value made at run time: JS's ${…}, Ruby's #{…}, Perl's and PHP's $name and
-# @name (with a subscript or ->), PHP's {$…}
-_INTERPOLATE = {"node": re.compile(r"\$\{[^}]*\}"), "ruby": re.compile(r"#\{(?:[^}]*\}|.*)|#[@$][\w@]+", re.S),
-                "perl": re.compile(r"[$@]\{?[A-Za-z_:][\w:]*\}?(?:->)?(?:\[[^\]]*\]|\{[^}]*\})*"),
-                "php": re.compile(r"\{\$[^}]*\}|\$[A-Za-z_]\w*(?:->\w+|\[[^\]]*\])*")}
+# where a double-quoted literal takes a value made at run time, after an escape (\\.: `\$x` is text): JS's ${…},
+# Ruby's #{…}, #@x and #$x (any global: #$1, #$;), PHP's $name and {$…}, and each of Perl's: $ before anything
+# but its end (a name after blanks, $1, $&, ${…}, ${\ …}), @ before a name, @{…}, @$, @- or @+, each with its
+# subscripts (bounded, so the scan stays linear: `${` or `@{` alone is one when its close is further)
+_PERL_SUBSCRIPTS = r"(?:(?:->)?(?:\[[^\]\n]{0,200}\]|\{[^}\n]{0,200}\}))*"
+_INTERPOLATE = {k: re.compile(r"\\.|" + v, re.S) for k, v in {
+    "node": r"\$\{[^}]*\}", "ruby": r"#\{(?:[^}]*\}|.*)|#@@?\w+|#\$(?:\w+|-\w|[^\w\s])",
+    "perl": r"\$\s*(?:\{[^}\n]{0,200}\}|\{|\^\w|[\w:]+|[^\s\w])" + _PERL_SUBSCRIPTS +
+            r"|@(?:\{[^}\n]{0,200}\}|\{|\$[\w:]*|[\w:]+|[-+])" + _PERL_SUBSCRIPTS,
+    "php": r"\{\$[^}]*\}|\$[A-Za-z_]\w*(?:->\w+|\[[^\]]*\])*"}.items()}
 # what a value the code makes at run time reads as in shell text: a variable no line gives (_Parser reads it as any)
 UNKNOWN = "${_tk_value}"
 
@@ -643,17 +670,21 @@ def _py_value(prefix, quote, body):
 def _string_at(kind, code, k, charge):
     """(pieces, end) of the string literal at `k` in code of `kind`: its text with its escapes decoded as the language
     decodes them, and None for each value it interpolates at run time (an f-string's {…}, a template's ${…}, Ruby's
-    #{…}, Perl's and PHP's $x in double quotes); None when no literal starts there. `charge(n)`: the parse's budget,
-    spent on what a literal that never closes read."""
-    if kind == "perl" and (q := _PERL_Q.match(code, k)) and (k == 0 or not (code[k - 1].isalnum() or code[k - 1] in "_$@%")):
-        close = _PAIRS.get(q.group(2), q.group(2))
-        end = code.find(close, q.end())
-        if end < 0:
+    #{…}, Perl's and PHP's $x in double quotes, a command's output: Perl's, Ruby's and PHP's backquote); None when no
+    literal starts there. `charge(n)`: the parse's budget, spent on what a literal that never closes read."""
+    q = (kind == "perl" and (k == 0 or not (code[k - 1].isalnum() or code[k - 1] in "_$@%")) and _PERL_Q.match(code, k)
+         or kind == "ruby" and _RUBY_Q.match(code, k))
+    if q:
+        letter, opening = q.groups()
+        got = _delimited(code, q.end(), opening)
+        if got is None:
             charge(len(code) - k)
             return None
-        body = code[q.end():end]
-        return ([" ".join(body.split())] if q.group(1) == "w" else _decoded(kind, '"' if q.group(1) else "'", body),
-                end + 1)
+        body, end = got
+        if letter in ("w", "W"):   # (a word list: its words, one blank apart)
+            body = " ".join(body.split())
+        single = letter in ("", "w") if kind == "perl" else letter in ("q", "w")
+        return [_quoted(body, opening)] if single else _decoded(kind, '"', body), end
     m = _OPEN.match(code, k)
     if not m:
         return None
@@ -683,6 +714,8 @@ def _string_at(kind, code, k, charge):
         body, rest = (body[:cut.start()], True) if cut else (body, False)
         return [{"{{": "{", "}}": "}"}.get(p, None if p[:1] == "{" else _py_value(plain, quote, p))
                 for p in re.split(r"(\{\{|\}\}|\{[^{}]*\})", body) if p] + [None] * rest, after
+    if quote == "`" and kind != "node":   # (what the command prints: _Parser.quoted_runs reads the command)
+        return [None], after
     return _decoded(kind, quote, body), after
 
 
@@ -692,8 +725,9 @@ def _decoded(kind, quote, body):
         return [re.sub(r"\\([\\'])", r"\1", body)]
     rx, out, at = _INTERPOLATE.get(kind) if (quote == "`" if kind == "node" else quote != "'") else None, [], 0
     for m in rx.finditer(body) if rx else ():
-        out += [_c_unescape(kind, body[at:m.start()]), None]
-        at = m.end()
+        if m.group()[0] != "\\":
+            out += [_c_unescape(kind, body[at:m.start()]), None]
+            at = m.end()
     return out + [_c_unescape(kind, body[at:])]
 
 
@@ -702,14 +736,15 @@ def _literal_start(kind, code, i, k):
     if code[i] in "'\"`":
         return True
     return (i == k or not (code[i - 1].isalnum() or code[i - 1] == "_")) and (
-        code[i] in "rRbBuUfF" and kind == "python" or code[i] == "q" and kind == "perl")
+        code[i] in "rRbBuUfF" and kind == "python" or code[i] == "q" and kind == "perl" or
+        code[i] == "%" and kind == "ruby")
 
 
 # a run of characters at which no literal starts, and no quote or backslash, which _arg_text and _literals take in one
 # step: a prefix letter after a word character is inside a name (_literal_start; `\w` is isalnum() or `_`), and one
 # not before a quote (after at most one more: _OPEN) starts none
 _NO_LITERAL = {"python": re.compile(r"""(?:[^'"`\\rRbBuUfF]|(?<=\w)[rRbBuUfF]|[rRbBuUfF](?![rRbBuUfF]*['"`]))+"""),
-               "perl": re.compile(r"""(?:[^'"`\\q]|(?<=\w)q)+""")}
+               "perl": re.compile(r"""(?:[^'"`\\q]|(?<=\w)q)+"""), "ruby": re.compile(r"""(?:[^'"`\\%]|(?<=\w)%)+""")}
 _NO_LITERAL_OTHER = re.compile(r"""[^'"`\\]+""")
 _NESTING = re.compile(r"[()\[\]{}]")
 # a run of characters _skip_value passes over: no quote, closing bracket or comma, nor a stop (each is among `)];` and
@@ -776,7 +811,9 @@ def _arg_text(kind, code, k, end, charge):
         nonlocal fmt, saw
         text = "".join(run).strip()
         run.clear()
-        if not text or text == "+" or text == "." and kind in ("perl", "php"):
+        # (Ruby's `*%w(a b)` spreads a literal's words as arguments)
+        if not text or text == "+" or text == "." and kind in ("perl", "php") or \
+                text == "*" and kind == "ruby" and not saw:
             return False
         if saw and (text[0] == "%" or text.startswith(".format(")):
             fmt = text[0] if text[0] == "%" else "{"
@@ -886,7 +923,6 @@ def _literals(kind, code, charge):
 
 
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
-_TICK = re.compile(r"`([^`]*)`")
 _AWK_STRING = re.compile(r'"((?:\\.|[^"\\\n])*)"')
 
 
@@ -901,7 +937,81 @@ def _awk_pipes(code):
             yield m.group(1), True
 
 
-_QX = re.compile(r"(?:%x|\bqx)\s*([({\[<])")
+# Perl's and Ruby's calls that run a command (_Parser.run_words: a shell line, or a program and its words; Perl's
+# `system { "prog" } LIST` takes the program from its block; each argument of Ruby's Open3.pipeline* is one)
+_RUN_NAMES = {"perl": r"system|exec|readpipe",
+              "ruby": r"system|exec|spawn|popen[23]?e?|capture[23]e?|pipeline(?:_rw|_r|_w|_start)?"}
+_RUNS = {k: re.compile(r"\b(%s)\b%s" % (v, r"|\.\s*(`)(?=\s*\()" * (k == "ruby")))
+         for k, v in _RUN_NAMES.items()}   # (and Ruby's Kernel.`(…))
+# a call that runs its argument as the program's own code: Perl's eval of a string (not of a block), Ruby's eval,
+# instance_eval, class_eval, module_eval (not a variable: `print $eval;`); and Ruby's call of a method by its name
+# (send, __send__, public_send)
+_EVALS = {"perl": re.compile(r"(?<![$@\w])eval\b"), "ruby": re.compile(r"\b(?:instance_|class_|module_)?eval\b")}
+_SEND = re.compile(r"\b(?:__send__|public_send|send)\b")
+_SYMBOL = re.compile(r"""\s*(?::(?:(["'])(\w+[?!]?|`)\1|(\w+[?!]?|`))|(["'])(\w+[?!]?|`)\4)\s*""")
+# a command runner taken by reference, which the code may call with anything: Perl's \&CORE::system, Ruby's
+# method(:system), alias_method or alias of one
+_TAKEN = {"perl": re.compile(r"\\\s{0,8}&\s{0,8}(?:CORE::)?(?:system|exec|readpipe)\b"),
+          "ruby": re.compile(r"\b(?:(?:public_|instance_)?method\b|alias_method\b[\s(]{0,8}\S{1,64}[\s,]{1,8}|"
+                             r"alias\s{1,8}\S{1,64}\s{1,8})[\s(]{0,8}:?[\"']?(?:%s|`)(?![\w?!])" % _RUN_NAMES["ruby"])}
+# a here-doc run as a command (Perl's and Ruby's <<`EOC`)
+_HEREDOC_RUN = re.compile(r"<<[-~]?\s*`")
+# where a call's arguments start (_call_open): `name(`; else, after blanks, one that starts a value (a quote, a
+# quote-like literal, a sigil, Perl's block, a here-doc, a list; in Ruby a name the statement ends after, or that a
+# subscript, method or call follows), so a word in prose (`"file system ok"`) is no call
+_PAREN = re.compile(r"\s*\(")
+_ARG_START = {"perl": re.compile(r"""[ \t]+(?=["'`$@\\&{]|<<|q[qwx]?\s*[^\w\s=,;)\]}>])"""),
+              "ruby": re.compile(r"""[ \t]+(?=["'`$@*%:\[]|<<|(?!(?:do|end|if|unless|while|until|then|and|or|not|"""
+                                 r"""rescue)\b)[A-Za-z_]\w*[?!]?[ \t]*(?:$|[;\n)}\].(\[]))""")}
+# Perl's open and IO::File->new; Ruby's open (read as Perl's 2-argument open's text) and IO.read and its kin, whose
+# text with a leading | runs it
+_OPENS = {"perl": re.compile(r"\b(open|IO::File\s*->\s*new)\b\s*(\(?)"),
+          "ruby": re.compile(r"\b(open|IO\s*\.\s*(?:read|readlines|foreach|write|binread|binwrite))\b(?![?!])\s*(\(?)")}
+# (Ruby's opens that may run a command: open, Kernel.open, URI.open and IO's; not File.open: the receiver before it)
+_KERNEL_OPEN = re.compile(r"(?:^|[^\w.:$@]|\b(?:Kernel|URI)\s*\.\s*)$")
+_PERL_QX = re.compile(r"(?<![\w$@])qx(?!\w)")
+_QX_BLANKS = re.compile(r"(?:\s|#[^\n]*)*")   # blanks and comments, between Perl's qx and its delimiter
+
+
+def _quoted_runs(kind, code):
+    """(where its text starts, its opening delimiter) of each quoted command in the code: Perl's qx (any delimiter,
+    after blanks and comments too, not `qx =>`), Ruby's %x (any but a letter or digit: a blank too; not after a word or
+    a quote, where % is the remainder: `"%x" % n`), and each backquote of Perl, Ruby or PHP but `$\\``, a variable
+    (which one opens a command can't be told without the whole tokenizer: each is read)."""
+    for m in _PERL_QX.finditer(code) if kind == "perl" else ():
+        k = _QX_BLANKS.match(code, m.end()).end() if code[m.end():m.end() + 1].isspace() else m.end()
+        if k < len(code) and not code.startswith("=>", k):
+            yield k + 1, code[k]
+    for m in re.finditer(r"(?<![\w'\"`])%x([^A-Za-z0-9\r])", code, re.S) if kind == "ruby" else ():
+        yield m.end(), m.group(1)
+    for m in re.finditer(r"(?<!\$)`", code) if kind in ("perl", "ruby", "php") else ():
+        yield m.end(), "`"
+
+
+def _call_open(kind, code, k):
+    """(where its arguments start, whether in parentheses) of a call whose name ends at `k`, or None where it isn't
+    one (_ARG_START)."""
+    m = _PAREN.match(code, k) or _ARG_START[kind].match(code, k)
+    return (m.end(), m.group().endswith("(")) if m else None
+
+
+def _pipe_opened(pieces):
+    """The command a 2-argument open's text (Perl's, Ruby's) runs: its pieces without the | in front or behind; None for
+    a file (or a mode in front: <, >, +, -); False where a value the code makes there may make it either."""
+    out = [p for p in pieces if p != ""] or [""]
+    if out[0] is None:
+        return False
+    out[0] = out[0].lstrip()
+    if out[0].startswith("|"):
+        return [out[0][1:], *out[1:]]
+    if out[0][:1] in ("<", ">", "+", "-"):
+        return None
+    if out[-1] is None:
+        return False
+    out[-1] = out[-1].rstrip()
+    return [*out[:-1], out[-1][:-1]] if out[-1].endswith("|") else None
+
+
 # a delete of a folder and all it holds, by language
 _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.removedirs\s*\("),
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
@@ -2576,24 +2686,40 @@ def _find_execs(args):
 
 
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None; Perl and Ruby
+    run each -e (-E) as one line of one program."""
     if kind == "awk":
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
-    flags = CODE_FLAGS[kind]
+    lines = [code for _, code in _code_words(kind, args)]
+    return ("\n".join(lines) if kind in ("perl", "ruby") else lines[0]) if lines else None
+
+
+def _code_words(kind, args):
+    """(the word's index, its program text) of each code option on an interpreter's command line, in order (code
+    attached to its flag, -c"..." the word -c..., is that word's); Perl's and Ruby's up to a `--` after one."""
+    flags, found = CODE_FLAGS[kind], False
     for i, a in enumerate(args):
+        if a == "--" and found:
+            return
         if kind == "node" and a in ("--eval", "--print"):
-            return args[i + 1] if i + 1 < len(args) else None
+            yield from [(i + 1, args[i + 1])] if i + 1 < len(args) else []
+            return
         if kind == "node" and a.startswith(("--eval=", "--print=")):
-            return a.split("=", 1)[1]
+            yield i, a.split("=", 1)[1]
+            return
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
-                if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
-                    return a[j + 2:] or (args[i + 1] if i + 1 < len(args) else None)
+                if ch in flags:
+                    if a[j + 2:] or i + 1 < len(args):
+                        yield (i, a[j + 2:]) if a[j + 2:] else (i + 1, args[i + 1])
+                        found = True
+                    if kind not in ("perl", "ruby"):
+                        return
+                    break
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
                     break
-    return None
 
 
 # each interpreter's options that take the rest of their word as their value
@@ -4807,6 +4933,11 @@ class _Parser:
                 elif _kind(name) in CODE_FLAGS and (i := _script_operand(_kind(name), args)) is not None:
                     # a script the line may write
                     self.run_file(args[i], via + [name], cmd, gives=args[i + 1:], unread=unreadable[i + 1])
+                if _kind(name) == "perl":   # a file operand `cmd|` or `|cmd` runs where <> (-n, -p) opens it
+                    code_words = {i for i, _ in _code_words("perl", args)}
+                    for i, a in enumerate(args):
+                        if i not in code_words and not a.startswith("-") and (piped := _pipe_opened([a])):
+                            self.run_text(piped, via + [name + " <>"], cmd)
             break
         return cmds + windows
 
@@ -4825,8 +4956,8 @@ class _Parser:
             return
         calls, loose = _py_calls(code) if kind == "python" else _CALL, False
         for m in calls.finditer(code):
-            if kind == "python" and m.group(1) == "exec":
-                continue   # Python's exec runs Python, not a shell
+            if kind == "python" and m.group(1) == "exec" or kind in _RUNS and re.fullmatch(_RUN_NAMES[kind], m.group(1)):
+                continue   # Python's exec runs Python, not a shell; Perl's and Ruby's runners: runs()
             i = m.end()
             items, end = _call_args(kind, code, i, "(" in m.group(2), self.charge)
             self.charge(end - i)   # overlapping calls read the same text again
@@ -4843,31 +4974,17 @@ class _Parser:
                 self.argv(words, pid, via)
                 if len(words) > 2 and re.match(r"exec|spawn", m.group(1).rsplit(".", 1)[-1]):
                     self.argv(words[1:], pid, via)
-        # Perl's and Ruby's open of a pipe ("|cmd", "cmd|", or "-|" and the command's words); awk's "cmd" | getline and
-        # print | "cmd" (a shell there runs what the program prints: each of its literals); Ruby's %x() and Perl's qx()
-        for m in re.finditer(r"\bopen\s*(\(?)", code) if kind in ("perl", "ruby") else ():
-            items, end = _call_args(kind, code, m.end(), bool(m.group(1)), self.charge)
+        # Perl's and Ruby's open of a pipe ("|cmd", "cmd|", or "-|" and the command's words: open_pipe); awk's "cmd" |
+        # getline and print | "cmd" (a shell there runs what the program prints: each of its literals)
+        for m in _OPENS[kind].finditer(code) if kind in _OPENS else ():
+            items, end = _call_args(kind, code, m.end(), bool(m.group(2)), self.charge)
             self.charge(end - m.end())
-            texts = [it for it in items if isinstance(it, tuple)]
-            for n, it in enumerate(texts):
-                text = _text_of(it).strip()
-                if text in ("-|", "|-") and texts[n + 1:]:   # one word is a shell's line, more a command's words
-                    if len(texts) == n + 2:
-                        self.nested(_text_of(texts[n + 1]), via)
-                    else:
-                        self.argv(texts[n + 1:], pid, via)
-                    break
-                if text.startswith("|") or text.endswith("|"):
-                    self.nested(text.strip("|"), via)
+            self.open_pipe(kind, m, items, pid, via, cmd)
         for body, printed in _awk_pipes(code) if kind == "awk" else ():
             text = _c_unescape("awk", body)
             self.nested(text, via)
             loose |= printed and bool(w := text.split()) and base_name(w[0]) in SHELLS
-        for m in _QX.finditer(code) if kind in ("perl", "ruby") else ():
-            close = code.find(_PAIRS[m.group(1)], m.end())
-            self.charge((len(code) if close < 0 else close) - m.end())
-            if close >= 0:
-                self.nested(code[m.end():close], via)
+        loose |= self.runs(kind, code, pid, via, cmd)
         # a delete of a folder and all it holds (shutil.rmtree, fs.rmSync, File::Path's rmtree, FileUtils.rm_rf): rm -rf
         # of its first argument, so TK-D004 and the other delete rules read it
         for m in _DELETES[kind].finditer(code) if kind in _DELETES else ():
@@ -4897,8 +5014,163 @@ class _Parser:
                 if self.ctx["work"][0] > MAX_WORK or cmd is None:
                     raise
                 self.ctx["depth"], cmd["opaque"] = depth, True
-        for m in _TICK.finditer(code) if kind in ("perl", "ruby", "php") else ():
-            self.nested(m.group(1), via)
+
+    def runs(self, kind, code, pid, via, cmd):
+        """What Perl's and Ruby's code runs: the commands of its calls (_RUNS; Ruby's send of one too) and of its quoted
+        commands (_quoted_runs: qx, %x, backquotes, PHP's too), and the code of its evals, read again as code. A
+        command or code the program makes at run time (an argument that isn't a literal, a value interpolated into a
+        shell line, a method named at run time, a here-doc run as a command) holds `cmd`; so does a runner taken by
+        reference (_TAKEN), which may run any of the code's literals: True then (read loose)."""
+        for k, opening in _quoted_runs(kind, code):
+            got = _delimited(code, k, opening)
+            self.charge((len(code) if got is None else got[1]) - k)
+            if got is not None:   # (one that never closes is no command: the program doesn't compile)
+                self.run_text([_quoted(got[0], "'")] if kind == "perl" and opening == "'" else
+                              _decoded(kind, '"', got[0]), via, cmd)
+        if kind not in _RUNS:
+            return False
+        for m in _RUNS[kind].finditer(code):
+            if opened := _call_open(kind, code, m.end()):
+                self.run_call(kind, m.group(m.lastindex), code, *opened, pid, via, cmd)
+        for m in _SEND.finditer(code) if kind == "ruby" else ():
+            if not (opened := _call_open(kind, code, m.end())):
+                continue
+            name = _SYMBOL.match(code, opened[0])
+            after = name and code[name.end():name.end() + 1]
+            if not name or after not in (",", ")" if opened[1] else ";", "\n", ""):   # a method named at run time
+                self.hold(cmd, "code")
+                continue
+            name, start = name.group(2) or name.group(3) or name.group(5), name.end() + (after == ",")
+            if re.fullmatch(_RUN_NAMES[kind] + "|`", name):
+                self.run_call(kind, name, code, start, opened[1], pid, via, cmd)
+            elif _EVALS[kind].fullmatch(name):
+                self.eval_call(kind, code, start, opened[1], pid, via, cmd)
+        read = 0   # (an eval in another's literal is that one's code: read there, not again here)
+        for m in _EVALS[kind].finditer(code):
+            if m.start() < read:
+                continue
+            opened = _call_open(kind, code, m.end())
+            if opened and not (kind == "perl" and code[opened[0]:opened[0] + 1] == "{" and not opened[1]):   # eval BLOCK
+                read = self.eval_call(kind, code, *opened, pid, via, cmd)
+            elif kind == "perl" and re.match(r"\s*(?:;|\)|$)", code[m.end():m.end() + 64]):   # eval of $_
+                self.hold(cmd, "code")
+        if _HEREDOC_RUN.search(code):
+            self.hold(cmd, "code")
+        if _TAKEN[kind].search(code):
+            self.hold(cmd, "code")
+            return True
+        return False
+
+    def run_call(self, kind, name, code, start, paren, pid, via, cmd):
+        """A runner's call (_RUNS, or Ruby's Kernel#` by name) whose arguments start at `start`: its command read
+        (run_words; readpipe's and Kernel#`'s last argument: Perl's comma operator), each of Ruby's pipeline*'s
+        arguments one; Perl's `system { "prog" } LIST` runs its block's program with LIST's words after their first."""
+        block = kind == "perl" and not paren and code[start:start + 1] == "{"
+        if block:
+            got = _delimited(code, start + 1, "{")
+            if got is None:
+                return
+            self.charge(got[1] - start)
+            prog, start = _arg_text(kind, code, start + 1, got[1] - 1, self.charge) or None, got[1]
+        items, end = _call_args(kind, code, start, paren, self.charge)
+        self.charge(end - start)
+        if block:
+            words = [w for it in items for w in ([it] if isinstance(it, tuple) else it or [])]
+            self.run_words([prog, *words[1:]], pid, via, cmd, argv=True)
+        elif name.startswith("pipeline"):
+            for item in items:
+                self.run_words([item], pid, via, cmd)
+        else:
+            self.run_words(items[-1:] if name in ("readpipe", "`") else items, pid, via, cmd)
+
+    def run_words(self, items, pid, via, cmd, argv=False):
+        """Run a runner's arguments (_call_args's items): one literal is a shell line (run_text), more (or a list, or
+        `argv`) a program and its words. A program the code makes at run time holds `cmd`."""
+        if not items:
+            return
+        if items[0] is None:
+            self.hold(cmd, "code")
+            return
+        if isinstance(items[0], tuple) and not argv and len(items) == 1:
+            self.run_text(items[0], via, cmd)
+            return
+        words = [w for it in items for w in ([it] if isinstance(it, tuple) else it or [])]
+        if words:
+            self.argv(words, pid, via)
+
+    def eval_call(self, kind, code, start, paren, pid, via, cmd):
+        """An eval whose arguments start at `start`: a literal's text read as the program's own code (up to MAX_DEPTH
+        evals deep), any other argument held. Returns where its arguments end."""
+        items, end = _call_args(kind, code, start, paren, self.charge)
+        self.charge(end - start)
+        text = items[0] if items else None
+        if not isinstance(text, tuple) or None in text or self.ctx.get("evals", 0) >= MAX_DEPTH:
+            self.hold(cmd, "code")
+            return end
+        self.ctx["evals"] = self.ctx.get("evals", 0) + 1
+        try:
+            self.scan(kind, _text_of(text), pid, via + ["eval"], cmd)
+        finally:
+            self.ctx["evals"] -= 1
+        return end
+
+    def open_pipe(self, kind, m, items, pid, via, cmd):
+        """Perl's open (`m`: _OPENS's match; a filehandle, then a mode: `-|` or `|-` and the command, as a runner's
+        arguments, or a 2-argument open's text, _pipe_opened; IO::File->new's are open's after its filehandle) and
+        Ruby's (its first argument, read as a 2-argument open's text). A command or a text the code makes at run time
+        holds `cmd` for Perl's and for Ruby's open, Kernel.open, URI.open and IO.read and its kin with parentheses
+        (File.open runs no command, and a word in prose is no call)."""
+        texts = [it for it in items if isinstance(it, tuple)]
+        before = m.string[max(0, m.start() - 64):m.start()]
+        holds = kind == "perl" or bool(m.group(2)) and (m.group(1) != "open" or bool(_KERNEL_OPEN.search(before)))
+        if kind == "ruby" or m.group(1) != "open":
+            items = [None, *items[:1 if kind == "ruby" else None]]
+        for n, it in enumerate(texts):   # (each text a pipe may open, as before: a 3-argument open's file's too)
+            text = _text_of(it).strip()
+            if text in ("-|", "|-") and texts[n + 1:]:   # one word is a shell's line, more a command's words
+                if len(texts) == n + 2:
+                    self.nested(_text_of(texts[n + 1]), via)
+                else:
+                    self.argv(texts[n + 1:], pid, via)
+                break
+            if text.startswith("|") or text.endswith("|"):
+                self.nested(text.strip("|"), via)
+        if len(items) < 2:
+            return
+        mode = items[1]
+        if not isinstance(mode, tuple):
+            if mode is None and holds:
+                self.hold(cmd, "code")
+        elif len(items) > 2:
+            if _text_of(mode).strip() in ("-|", "|-"):
+                self.run_words(items[2:], pid, via, cmd)
+        elif (piped := _pipe_opened(mode)) is False:
+            if holds:
+                self.hold(cmd, "code")
+        elif piped is not None:
+            self.run_text(piped, via, cmd)
+
+    def run_text(self, pieces, via, cmd):
+        """A shell line interpreter code runs (_string_at's pieces), read as its commands; `cmd` held when the parser
+        can't read all of it: a value made at run time (one interpolated into the line may hold any shell syntax:
+        `; rm …`), or text it can't parse."""
+        if None in pieces:
+            self.hold(cmd, "code")
+        depth = self.ctx["depth"]
+        try:
+            self.nested(_text_of(pieces), via)
+        except ParseError as e:
+            if self.ctx["work"][0] > MAX_WORK or cmd is None:
+                raise
+            self.ctx["depth"] = depth
+            self.hold(cmd, e.cause)
+
+    @staticmethod
+    def hold(cmd, cause):
+        """Hold `cmd`: the parser can't read what it runs (engine._unread_cause gives `cause`, the first one found)."""
+        if cmd is None:
+            raise ParseError("interpreter code runs a command the parser can't read")
+        cmd["opaque"], cmd["unread"] = True, cmd.get("unread") or cause
 
     def argv(self, words, pid, via):
         """Run `words` (each _arg_text's pieces) as a command: its literals, or with a value the code makes at run time

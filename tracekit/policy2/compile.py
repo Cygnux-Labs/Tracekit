@@ -51,6 +51,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                        "remedy": "Name the program in full."},
                            "input": {"reason": "a shell or interpreter runs code from a pipe, a file or its input",
                                      "remedy": "Write out the commands it would run."},
+                           "code": {"reason": "an interpreter's program runs a command or code it makes at run time "
+                                              "(a variable, a here-doc, a computed string)",
+                                    "remedy": "Write the command into the program as plain text, or run it directly."},
                            "function": {"reason": "it defines a shell function it doesn't call, or exports one",
                                         "remedy": "Call the function on the same line, or run its commands directly."},
                            "download": {"reason": "it defines a shell function on a line that may download",
