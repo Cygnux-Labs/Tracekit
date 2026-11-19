@@ -559,7 +559,7 @@ class Engine:
             # plugin …` and `node node_modules/.bin/claude plugin …` too
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
-                h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
+                h for c in parsed[0] if (h := _as_harness(c["argv"], c.get("word", "")))] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -865,11 +865,20 @@ _SETS_VARIABLE = ("env", "export", "declare", "typeset", "local", "readonly", "r
                   "readarray")
 
 
-def _harness(argv):
+def _packaged(found):
+    """The harness a _HARNESS_PACKAGE group names (Kilo Code's package is @kilocode/cli)."""
+    return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
+
+
+def _harness(argv, word=""):
     """The harness CLI (_HARNESS_CLIS) an argv starts, by its name, a package's at any version (npx, bunx, pnpm dlx run
     one by it: claude-code@latest), a script under a harness package a JavaScript runtime runs (after any options:
     node -r x …/cli.js), or one it runs by the harness's name (node_modules/.bin/claude, `"$(which claude)"`), or a
-    module python -m runs; else None."""
+    module python -m runs; else None. `word` is the program's word as the line wrote it (a command's "word"): argv
+    names it by its base name only, which for a scoped package (@kilocode/cli) is `cli`, no harness's."""
+    scoped = _HARNESS_PACKAGE.fullmatch(re.sub(r"(?<=.)@[^@]*$", "", word).casefold()) if word.startswith("@") else None
+    if scoped:
+        return _packaged(next(g for g in scoped.groups() if g))
     name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
     name = _HARNESS_NAMES.get(name, name)
     if name in _HARNESS_CLIS:
@@ -878,7 +887,7 @@ def _harness(argv):
         m = next(filter(None, (_HARNESS_PACKAGE.search(a.replace("\\", "/")) for a in argv[1:])), None)
         found = m and next(g for g in m.groups() if g)
         if found:
-            return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
+            return _packaged(found)
         # the script it runs, as a harness installs one: its package's bin link (node_modules/.bin/claude) or the path a
         # name resolves to (`"$(which claude)"`); a file merely named for one (gemini.js) is none
         script = _js_script(argv) or ""
@@ -893,11 +902,11 @@ def _harness(argv):
 
 
 _BIN_LINK = re.compile(r"(?:^|[/\\])node_modules[/\\]\.bin[/\\][^/\\]+$")   # a package's bin link
-def _as_harness(argv):
+def _as_harness(argv, word=""):
     """`<harness> <its own words>` for a harness an argv starts under another name (a package's, at a version, a
     JavaScript runtime's script: _harness; python -m's module with its own options, as the packs read it), else
     None."""
-    h = _harness(argv)
+    h = _harness(argv, word)
     name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
     if not h or name == h:
         return None
@@ -1005,7 +1014,7 @@ def _harness_launches(commands, refs=(), learned=None):
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
-    if not any(_harness(c["argv"]) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
+    if not any(_harness(c["argv"], c.get("word", "")) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
         return []
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
@@ -1027,7 +1036,7 @@ def _harness_launches(commands, refs=(), learned=None):
             if any(re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*|--ignore-environment|-", a) for a in own) or any(
                     _SETTINGS_VARIABLE.fullmatch(n) for n in unset):
                 out.append(f"LAUNCH:{_harness([argv[at]])} env clears its settings")
-        exe = _harness(argv)
+        exe = _harness(argv, command.get("word", ""))
         if not exe:
             continue
         args = argv[1:]
