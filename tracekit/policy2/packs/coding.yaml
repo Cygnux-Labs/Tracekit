@@ -367,7 +367,9 @@ ask:
     # spells it: through a wrapper or runner (uvx, uv run, poetry run, pipx run, env -S …), after assignments, a
     # versioned name (nodejs, perl5.36), a code option the parser names for that interpreter (shell.CODE_FLAGS: python's
     # -c, perl's and ruby's -e, node's -e and -p, php's -r, -B, -R, -E and --run, lua's -e) at the end of a cluster or
-    # with its code attached (python3 -Ic …, perl -ne …, php -r'…'). `python3 -m json.tool` only pretty-prints, so
+    # with its code attached (python3 -Ic …, perl -ne …, php -r'…', php --run='…'). Held, not denied: the inline code
+    # may only parse the downloaded data, so a person decides (an interpreter that reads its program from stdin is
+    # TK-D002's, denied). `python3 -m json.tool` only pretty-prints, so
     # json.tool is no script (the alternatives spell every other word)
     pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node|php[0-9.]*|lua(jit|[0-9.]*))(\s[^\s;&|]*)*?\s((-c|-e|-r|--eval|--execute)(\s|$)|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
     reason: downloaded data passed to an interpreter
