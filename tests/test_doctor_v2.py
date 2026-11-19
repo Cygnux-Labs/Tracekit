@@ -35,7 +35,11 @@ spec.loader.exec_module(e16)
 class E16(unittest.TestCase):
     def test_clean_layout_passes_every_check(self):
         results = e16.run_case(None)
-        self.assertEqual([r for r in results if r["status"] != "ok"], [])
+        # Where google-re2 has no wheel, the regex engine is expected: an info row, not a fault.
+        expected = {} if doctor._google_re2_wheel_expected() else {"D-POLICY-ENGINE": "info"}
+        # a subset: google-re2 installed by hand where no wheel is expected makes the row ok
+        self.assertLessEqual({r["id"]: r["status"] for r in results if r["status"] != "ok"}.items(),
+                             expected.items())
         self.assertEqual({r["id"] for r in results}, {want for _, want, _ in e16.CASES})
 
     def test_every_misconfiguration_is_flagged(self):
@@ -1229,6 +1233,44 @@ class FirstDay(unittest.TestCase):
 
     def rows(self, **kw):
         return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", **kw)}
+
+    def test_policy_engine_warns_when_using_regex_fallback(self):
+        from tracekit.signer import service
+
+        cases = (
+            ("re2@1.0", True, "ok", "", ""),
+            (
+                "regex@2.0",
+                True,
+                "warn",
+                f"{doctor.sys.executable} -m pip install google-re2, then restart the signer "
+                "(tracekit down in dev)",
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)",
+            ),
+            (
+                "regex@2.0",
+                False,
+                "info",
+                "",
+                " (no google-re2 wheel is expected for this Python or platform)",
+            ),
+        )
+
+        for engine_name, wheel_expected, expected_status, expected_fix, detail_suffix in cases:
+            with self.subTest(engine=engine_name, wheel_expected=wheel_expected), \
+                    mock.patch.object(
+                        service, "load_policy",
+                        return_value=types.SimpleNamespace(engine=engine_name)
+                    ), \
+                    mock.patch.object(
+                        doctor, "_google_re2_wheel_expected", return_value=wheel_expected
+                    ):
+                row = self.rows()["D-POLICY-ENGINE"]
+                self.assertEqual(row["status"], expected_status)
+                self.assertIn(engine_name, row["detail"])
+                self.assertTrue(row["detail"].endswith(detail_suffix))
+                self.assertEqual(row["fix"], expected_fix)
 
     def test_no_claude_code_and_no_witness_are_info_in_dev(self):
         nowhere = os.path.join(self.d, "no-claude", "settings.json")
