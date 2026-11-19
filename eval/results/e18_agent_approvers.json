@@ -15,7 +15,7 @@
       "caught": true
     },
     "E18.12 tainted run": {
-      "approved_before_the_read": 0,
+      "approved_before_the_read": 1,
       "caught": true,
       "ran": false
     },

@@ -334,6 +334,26 @@
         "fix": "put data_dir on a local disk"
       }
     },
+    "the AI reviewer runs as the signer's user": {
+      "expect": "D-REVIEWER-USER",
+      "flagged": true,
+      "result": {
+        "id": "D-REVIEWER-USER",
+        "status": "fail",
+        "detail": "approvals.agents: <run> is the signer's own user, which can read its keys: run the reviewer as a user of its own (docs/approvals.md#the-ai-approver)",
+        "fix": "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys readable by the signer's user alone (docs/approvals.md#the-ai-approver)"
+      }
+    },
+    "a key every user may read, with an AI reviewer": {
+      "expect": "D-REVIEWER-USER",
+      "flagged": true,
+      "result": {
+        "id": "D-REVIEWER-USER",
+        "status": "fail",
+        "detail": "approvals.agents: uid:54322 can open <run>/data/keys/log.key: make the signer's data dir its user's alone (chmod -R go-rwx on it, owned by the signer's user), and run the reviewer as a user of its own",
+        "fix": "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys readable by the signer's user alone (docs/approvals.md#the-ai-approver)"
+      }
+    },
     "data dir owned by the agent": {
       "expect": "D-PROCESS-BOUNDARY",
       "skipped": "needs root"
