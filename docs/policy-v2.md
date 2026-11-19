@@ -162,7 +162,7 @@ of `policy_hash`, and a policy that `extends` the laptop default sets it.
 |---|---|
 | `mode` | `enforce`, or `shadow`: answers are recorded as `approval.suggested` and change nothing |
 | `rules` | rule ids from the reviewed list: `TK-SHELL-PARSE`, `TK-A062`, `TK-A025` |
-| `run.clean` | `untrusted_content`, `secrets_access`: while the run carries one, people answer every hold |
+| `run.clean` | `untrusted_content`, `secrets_access`: while the run carries one (read across all of its requester's runs), people answer every hold |
 | `veto_s` | an AI approval runs only after this many seconds, so people may revoke it first |
 
 Lint errors: a rule not on the reviewed list, and by name a deny rule, a `from: untrusted` rule, a credential or secret

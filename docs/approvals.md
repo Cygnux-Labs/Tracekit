@@ -436,15 +436,16 @@ agreement rate per rule so far. Verifiers count approvals by people and by agent
 `tracekit reviewer` is an agent approver you can run as it is: it polls `approval_list {state: requested, for: agent}`
 on every signer replica it is given, and for each approval reads `approval_review` and asks the model through the
 [LLM gateway](gateway.md) or, with `url`, the model's own endpoint with your key, with no batching and no memory across
-approvals. Its fixed system prompt treats the view as data and asks for `{decision: approve|reject|escalate, reason,
-project_rule}` (a reason of 500 characters at most). A yes needs two answers that approve (two keys: `model: [a, b]`,
+approvals. Its fixed system prompt treats the view as data and asks for `{decision: approve|reject|escalate, reason}`
+(a reason of 500 characters at most). A yes needs two answers that approve (two keys: `model: [a, b]`,
 or one model asked twice); a no or an escalation needs one, and the second call is made only after a first yes. An
 error, a timeout, a refusal or a malformed answer escalates (and logs a warning: check the gateway URL or endpoint, the
 run token or key file, and the model), and so does a view in which a condition did not pass: it never asks the model
 about those. When the signer answers `unavailable`
 or `quota_exceeded`, it tries that approval again at the next poll. It takes the conditions from `approval_review` (it
-has no allowlist of its own) and sends `asserted: {model, version, prompt_hash}` and `ai: {answers}`. The signer checks
-every answer again.
+has no allowlist of its own) and sends `asserted: {model, version, prompt_hash}`, `ai: {answers}` and the
+`view_digest` of the view it read. The signer checks every answer again. One approval it can't review (an error it
+didn't expect) is logged and left to people; the poll goes on to the next.
 
 ```yaml
 # reviewer.yaml (relative paths are from this file)
@@ -463,9 +464,9 @@ tracekit reviewer serve --config reviewer.yaml
 
 Per tenant, `token_file` is the bearer token of the identity listed in that tenant's `approvals.agents` (with the
 `authorize` entry above); the reviewer refuses a `tcp://` signer, the dev transport a process of the agent's own user
-can use, takes a Unix socket only as [the AI approver on a laptop](#the-ai-approver) does, and refuses a `gateway` or
-`url` other than https (plain http only to localhost, 127.0.0.1 or ::1), since it sends the run token
-there. `run_token_file` is an ordinary identity that registers the reviewer's runs and calls the gateway (signer.yaml
+can use, takes a Unix socket only as [the AI approver on a laptop](#the-ai-approver) does, and refuses a `signer`,
+`gateway` or `url` other than https (plain http only to localhost, 127.0.0.1 or ::1, as a signer's `insecure_loopback`
+listener serves), since it sends its tokens there. `run_token_file` is an ordinary identity that registers the reviewer's runs and calls the gateway (signer.yaml
 `gateways` lists the gateway as usual). Each review is a run of its own, agent `tracekit-reviewer`, whose first record
 links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
 The reviewer sends the redacted arguments of the tenants it serves to the model provider
@@ -507,20 +508,27 @@ of its own, and `TK-SHELL-PARSE` where `on_parse_error` denies. A call also held
 person's. On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
 `executor: t2` (a warning on a server).
 
-**The run.** While the run carries a label `run.clean` names, people answer every hold. `secrets_access`: a call of the
-run was decided under a rule labelled `secrets_access` (a credentials file, an env file, a key), or the run continues
-an earlier run of its session, whose calls it can't see. `untrusted_content` isn't read by this signer yet: a bound
-that names it sends every hold to people ([limits](limits.md#approvals)).
+**The run.** While the run carries a label `run.clean` names, people answer every hold. The signer reads labels for
+the requester (its user and attested principal) across all of its runs, so a run the agent registers afresh is no way
+around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
+credentials file, an env file, a key), or the signer lost events of one of them; the label holds while that run is
+open and for 24 hours after it closes. A run that continues an earlier run of its session, whose calls it can't see,
+carries it too. `untrusted_content` isn't read by this signer yet: a bound that names it sends every hold to people
+([limits](limits.md#approvals)).
 
-**Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target
-(`TK-A025`: the package index, any package; `TK-A062` and `TK-SHELL-PARSE`: the same command, exactly), the same
-project and the same requesting identity, asked in a clean run in the last 30 days. With no such answer, people answer
+**Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target,
+the same project and the same requesting identity. The target: for `TK-A025`, each package source and how it was
+selected (`pip --index-url`, `pip --extra-index-url`, `pip --find-links`, a config key or a variable are each their
+own), any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
+`TK-SHELL-PARSE`, the same command, exactly. The person's answer counts when the run was clean both when the call was
+asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
-answer it. Only people's answers count: never an agent's, nor a self-approval. A precedent stops counting when a person
-revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in its run, or when a `why`
-finding is written about its run. The project is the folder the agent's client names (the hook sends the nearest folder
-above the session's that holds a `.git`): the agent's own word, so it only narrows a match, and the record says so
-(`asserted: [project]`).
+answer it. Only people's own answers count: never an agent's, a self-approval or a break-glass answer. A precedent
+stops counting when a person revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in
+its run, or when a `why` finding is written about its run. Before an AI-approved call runs, the signer reads its
+precedents again: a person's rejection of a call like it since, or no precedent left, withdraws the approval. The
+project is the folder the agent's client names (the hook sends the nearest folder above the session's that holds a
+`.git`): the agent's own word, so it only narrows a match, and the record says so (`asserted: [project]`).
 
 **Two keys.** A yes needs two answers that approve, from two models or one asked twice; a no needs one. The signer
 escalates a yes that doesn't carry two.
@@ -533,56 +541,86 @@ back on: `tracekit reviewer enable TK-A025`.
 
 **Playbook.** `tracekit reviewer status` lists the rules dropped to shadow, the playbook in force, and entries proposed
 from people's answers of the last week: a kind of call with 3 or more answers, all one way ("TK-A025 by Bash, TK-A025
-https://pypi.internal/simple, in api (1a2b3c4d): approved 4 of 4 (latest reason: our mirror)"). `tracekit reviewer
+pip --index-url https://pypi.internal/…, in api (1a2b3c4d): approved 4 of 4 (latest reason: our mirror)"). Text an
+agent wrote is shown with control and hidden characters escaped, there and in the reviewer's view. `tracekit reviewer
 accept P-…` and `retire P-…` change it, each a signed `playbook.entry` record. The reviewer reads the playbook; it never
 widens a bound.
 
 **What the reviewer sees.** `approval_review` adds `ai`: the precedent key, the run's labels, each precedent (the
-answer, when, the person's reason), the playbook in force, the project, and the run's last 10 calls (tool, decision,
-rules). The reviewer adds the project's own rules, read from the committed HEAD of its git repository and never from
-the working tree, which the agent can write: `AGENTS.md`, `CLAUDE.md`, `CODEOWNERS` (at the root, in `.github/` or
-`docs/`) and the names of its CI workflows. It reads them only from a repository the requesting user owns, opened one
-folder at a time without following a link, through git's object store with no hook, pager or fsmonitor; a folder that
-isn't a git repository isn't read. A rule the model quotes word for word rejects the call; a quote that isn't there
-escalates it. A project rule never approves.
+answer, when, the person's reason), the playbook in force, and the run's last 10 calls (tool, decision, rules). The
+reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
+`approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
+reviewer for that approval.
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
-own salt), the run's labels, whether the run was clean, and the precedents that counted. Each AI answer (`approval`, `approval.suggested`, `approval.escalated`) carries
-`relied_on`: the precedents, the playbook's version and digest, the policy hash, the run's labels, whether it decided
-(`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer, the rule it quoted,
-and the commit the project's rules came from (or why none were read). The verifiers' `AI approvals` line checks each
-AI yes against the precedents its bundle holds ([verdicts](verdicts.md)).
+own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
+source's scheme, host and port only (a path can hold a token), and other commands redacted as the approver's copy is;
+in a run that isn't clean it shows no target at all. A person's answer carries `run_clean`. Each AI answer
+(`approval`, `approval.suggested`, `approval.escalated`) carries `relied_on`: the precedents, the playbook's version
+and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided
+(`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer. The verifiers' `AI
+approvals` line checks each AI yes against the precedents its bundle holds, against any person's rejection of a call
+like it there, and against the run bound of the policy snapshot it names ([verdicts](verdicts.md)).
 
-**On a laptop, in system mode.** The reviewer runs as the signer's user: the agent's user can neither read its key nor
-answer as it. Add these lines to the `signer.yaml` that `tracekit init --v2` wrote (the uids from `id -u`):
+**On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
+own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start
+when a `uid:` in `approvals.agents` is its own user or can open its data dir, its `keys` folder or a key, and
+`tracekit doctor` fails `D-REVIEWER-USER` then. Make the user once, as root.
+
+macOS (an id that `dscl . -list /Users UniqueID` and `dscl . -list /Groups PrimaryGroupID` don't list, in 200-399, as
+`tracekit init` picks the signer's):
+
+```
+sudo dscl . -create /Groups/_tkreviewer
+sudo dscl . -create /Groups/_tkreviewer PrimaryGroupID 398
+sudo dscl . -create /Users/_tkreviewer
+sudo dscl . -create /Users/_tkreviewer UniqueID 398
+sudo dscl . -create /Users/_tkreviewer PrimaryGroupID 398
+sudo dscl . -create /Users/_tkreviewer UserShell /usr/bin/false
+sudo dscl . -create /Users/_tkreviewer NFSHomeDirectory "/Library/Application Support/tracekit-reviewer"
+sudo dscl . -create /Users/_tkreviewer IsHidden 1
+sudo mkdir -m 700 "/Library/Application Support/tracekit-reviewer"
+sudo chown _tkreviewer:_tkreviewer "/Library/Application Support/tracekit-reviewer"
+```
+
+Linux:
+
+```
+sudo useradd --system --create-home --home-dir /var/lib/tracekit-reviewer --shell /usr/sbin/nologin --user-group tracekit-reviewer
+sudo chmod 700 /var/lib/tracekit-reviewer
+```
+
+Add these lines to the `signer.yaml` that `tracekit init --v2` wrote (the reviewer's uid from `id -u _tkreviewer` or
+`id -u tracekit-reviewer`), restart the signer, and run `tracekit doctor`:
 
 ```yaml
 tenants:
-  "uid:<signer>": "<the agent's tenant>"       # the reviewer sees the agent's approvals
+  "uid:<reviewer>": "<the agent's tenant>"     # the reviewer sees the agent's approvals
 approvals:
   persons: {"uid:<approver>": "<your name>"}    # with agents, every approver is a person
-  agents: ["uid:<signer>"]
+  agents: ["uid:<reviewer>"]
 authorize:
-  "uid:<signer>": [approval_list, approval_review, approval_decide, status]
+  "uid:<reviewer>": [approval_list, approval_review, approval_decide, status]
 ```
 
-Then, as the signer's user:
+Then put these files in the reviewer's home, owned by it:
 
 ```yaml
 # reviewer.yaml
 signer: /run/tracekit-signer/signer.sock   # the system signer's socket (macOS: /Library/Application Support/tracekit-signer/signer.sock)
 url: https://api.anthropic.com/v1/messages # or https://api.openai.com/v1/chat/completions, or a local server
-key_file: anthropic.key                    # your own key, chmod 600, owned by the signer's user
+key_file: anthropic.key                    # your own key, chmod 600, owned by the reviewer's user
 model: [claude-opus-5-5, gpt-5]            # two keys from two model families; one name is asked twice
 ```
 
 ```
-tracekit reviewer serve --config reviewer.yaml
+sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config "/Library/Application Support/tracekit-reviewer/reviewer.yaml"
 ```
 
-A local model: `url: http://127.0.0.1:11434/v1/chat/completions` (an OpenAI-compatible server; no key file). The view
-and the project's rules go to that endpoint only. In dev mode the reviewer would run as the agent's own user, whose
-answers to its own runs the signer refuses: the AI approver needs system mode.
+(On Linux: `sudo -u tracekit-reviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config
+/var/lib/tracekit-reviewer/reviewer.yaml`.) A local model: `url: http://127.0.0.1:11434/v1/chat/completions` (an
+OpenAI-compatible server; no key file). The view goes to that endpoint only. In dev mode the signer is the agent's
+own user, which can read its keys: the AI approver needs system mode.
 
 **Before you enforce.** Run a week with `mode: shadow`, then `tracekit reviewer friction --store
 /var/lib/tracekit-signer` (no model call): the holds, how many a precedent let the AI answer, how many a person
@@ -645,6 +683,7 @@ Slack bridge posts; the desk's revoke; the timeline labels and shadow agreement)
 `tests/test_ts_verifier.py` (the verifiers' agent-approval checks, with and without the policy snapshot),
 `tests/test_ts_verifier.py` (a retry's bundle in both verifiers), `tests/test_approver.py` (the AI approver: the
 allowlist and its lint, targets, the run bound, precedents, two keys, the circuit breaker, the playbook, replay, both
-verifiers' `AI approvals` line, project rules from the committed HEAD, your own key and the friction harness) and
+verifiers' `AI approvals` line, the view an answer names, the reviewer's own user, your own key and the friction
+harness) and
 `eval/e18_agent_approvers.py` (a reviewer that approves anything, against every guarantee above, on a server and on a
 laptop in system mode, and the harmful-approvals gate over E17's and E21's harmful calls).
