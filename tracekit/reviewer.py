@@ -10,6 +10,7 @@ reviewer.yaml (relative paths are from this file):
     model: claude-opus-5-5                    # default DEFAULT_MODEL
     poll_s: 5
     timeout_s: 120                            # one model call; past it the reviewer escalates
+    state_file: reviewer-state.json           # optional: remember answered approvals across restarts
     tenants:                                  # the tenants it serves, and no other (opt-in)
       acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
 
@@ -35,12 +36,13 @@ import urllib.request
 
 from tracekit import __version__, yamlmini
 from tracekit.client import no_redirect_opener, remote_url_error
+from tracekit.deploy.files import write_json
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 
 DEFAULT_MODEL = "claude-opus-5-5"
 POLL_S, TIMEOUT_S, MAX_REASON = 5.0, 120.0, 500
-KEYS = {"signer", "gateway", "model", "poll_s", "timeout_s", "tenants"}
+KEYS = {"signer", "gateway", "model", "poll_s", "timeout_s", "tenants", "state_file"}
 DECISIONS = ("approve", "reject", "escalate")
 TRANSIENT = ("unavailable", "quota_exceeded")   # the signer can't write now or rate-limits: tried again next poll
 PROMPT = """You review one tool call that an AI agent asked to run and that a policy held for approval.
@@ -78,6 +80,10 @@ def load(path):
     for t in cfg["tenants"].values():
         for k in t:
             t[k] = os.path.join(base, t[k])
+    if "state_file" in cfg:
+        if not isinstance(cfg["state_file"], str):
+            raise ValueError(f"{path}: state_file: a path relative to this file")
+        cfg["state_file"] = os.path.join(base, cfg["state_file"])
     return cfg
 
 
@@ -139,10 +145,30 @@ class Reviewer:
     """`replicas`: [(tenant, sdk Client of the agent identity)], one per signer replica and tenant; `ask(tenant, view)`
     returns the model's Messages response (Gateway)."""
 
-    def __init__(self, replicas, ask, model=DEFAULT_MODEL):
+    def __init__(self, replicas, ask, model=DEFAULT_MODEL, state_file=None):
         self.replicas, self.ask = replicas, ask
         self.asserted = {"model": model[:128], "version": __version__, "prompt_hash": PROMPT_HASH}
-        self.seen = set()   # approvals answered; a shadow-mode one stays listed
+        self.state_file = state_file
+        self.seen = self._read_seen()   # approvals answered; a shadow-mode one stays listed
+
+    def _read_seen(self):
+        if not self.state_file:
+            return set()
+        try:
+            with open(self.state_file, encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and all(isinstance(x, str) for x in data):
+                return set(data)
+            log.warning("tracekit reviewer: %s: state file has an unexpected shape, starting fresh", self.state_file)
+        except (OSError, ValueError) as e:
+            log.warning("tracekit reviewer: %s: cannot read state file (%s), starting fresh", self.state_file, e)
+        return set()
+
+    def _save_seen(self):
+        try:
+            write_json(self.state_file, sorted(self.seen))
+        except OSError as e:
+            log.warning("tracekit reviewer: %s: cannot save state file (%s)", self.state_file, e)
 
     def review(self, tenant, agent, aid):
         """Answer approval `aid`; False when a transient signer error (TRANSIENT) leaves it for the next poll."""
@@ -163,6 +189,7 @@ class Reviewer:
 
     def poll(self):
         listed, complete = set(), True
+        before = set(self.seen)
         for tenant, agent in self.replicas:
             page = {"next_cursor": None}
             try:   # a replica that can't be reached doesn't stop the others' approvals
@@ -180,6 +207,8 @@ class Reviewer:
                 complete = False
         if complete:   # only a full listing says which answered approvals are gone
             self.seen &= listed
+        if self.state_file and self.seen != before:
+            self._save_seen()
 
 
 def records(store=None, bundle=None):
@@ -247,7 +276,7 @@ def main(argv=None):
         print(json.dumps(out))
         return 0
     rv = Reviewer([(t, Client(s, token_file=v["token_file"])) for s in cfg["signer"] for t, v in cfg["tenants"].items()],
-                  ask, model)
+                  ask, model, state_file=cfg.get("state_file"))
     print(f"tracekit reviewer: serving {', '.join(sorted(cfg['tenants']))} on {len(cfg['signer'])} signer(s)",
           file=sys.stderr)
     while True:

@@ -449,6 +449,7 @@ gateway: https://gateway.internal:8080     # the LLM gateway in front of Anthrop
 model: claude-opus-5-5                      # the default
 poll_s: 5
 timeout_s: 120                              # one model call; past it the reviewer escalates
+state_file: reviewer-state.json             # optional: remember answered approvals across restarts
 tenants:                                    # it serves these tenants and no other
   acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
 ```
@@ -464,7 +465,10 @@ there. `run_token_file` is an ordinary identity that registers the reviewer's ru
 `gateways` lists the gateway as usual). Each review is a run of its own, agent `tracekit-reviewer`, whose first record
 links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
 The reviewer sends the redacted arguments of the tenants it serves to the model provider
-([privacy](privacy.md#what-leaves-the-machine)).
+([privacy](privacy.md#what-leaves-the-machine)). With `state_file`, the ids it answered are written to that file
+(mode 0600, relative to the config file) and read on the next start, so a restart does not review an approval twice.
+Ids no longer listed are dropped from the file. A missing or unreadable file is logged and the reviewer starts as
+usual; without the key, nothing is saved and a restart reviews the still-listed approvals again.
 
 **Before you enforce: eval, then shadow.**
 

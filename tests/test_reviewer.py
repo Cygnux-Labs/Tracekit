@@ -57,8 +57,8 @@ class Model:
 
 
 class Case(aa.Case):
-    def reviewer(self, model, agent=None):
-        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test")
+    def reviewer(self, model, agent=None, state_file=None):
+        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test", state_file=state_file)
 
     def state(self, aid):
         return self.s.log.approvals[aid]
@@ -175,6 +175,35 @@ class TestShadow(Case):
         rv.poll()
         rv.poll()
         self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 1)
+
+    def test_a_state_file_survives_a_restart(self):
+        aid, _ = self.ask()
+        state_file = os.path.join(ts.tmpdir(self), "reviewer-state.json")
+        model = Model(message())
+        self.reviewer(model, state_file=state_file).poll()
+        self.reviewer(model, state_file=state_file).poll()
+        self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 1)
+        self.assertEqual([v["approval_id"] for _, v in model.views], [aid])
+        with open(state_file, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), [aid])
+
+    def test_without_a_state_file_a_restart_suggests_again(self):
+        self.ask()
+        self.reviewer(Model(message())).poll()
+        self.reviewer(Model(message())).poll()
+        self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 2)
+
+    def test_an_unreadable_state_file_starts_fresh(self):
+        aid, _ = self.ask()
+        state_file = os.path.join(ts.tmpdir(self), "reviewer-state.json")
+        with open(state_file, "w", encoding="utf-8") as f:
+            f.write("not json")
+        with self.assertLogs("tracekit.reviewer", "WARNING") as logs:
+            self.reviewer(Model(message()), state_file=state_file).poll()
+        self.assertIn("cannot read state file", logs.output[0])
+        self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 1)
+        with open(state_file, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), [aid])
 
 
 class Gateway(BaseHTTPRequestHandler):
