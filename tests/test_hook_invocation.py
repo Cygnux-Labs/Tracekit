@@ -374,7 +374,7 @@ class PluginShim(unittest.TestCase):
     def test_a_tracekit_python_that_is_gone_counts_as_set_up(self):
         self.assertEqual(self.hook(TRACEKIT_PYTHON=os.path.join(self.d, "gone", "python"))[0], 2)
 
-    def install_tracekit(self, hook_source):
+    def install_tracekit(self, hook_source, version="1.0.0"):
         """A python3 on PATH whose only tracekit is a stub in the user site-packages (`pip install --user`). -> the
         stub package's directory."""
         py = os.path.join(self.bin, "python3")
@@ -384,7 +384,7 @@ class PluginShim(unittest.TestCase):
         site = subprocess.run([py, "-I", "-c", "import site; print(site.getusersitepackages())"], env={"HOME": self.home},
                               capture_output=True, text=True, check=True).stdout.strip()
         os.makedirs(os.path.join(site, "tracekit", "integrations"))
-        for path, text in (("__init__.py", '__version__ = "1.0.0"\n'), ("integrations/__init__.py", ""),
+        for path, text in (("__init__.py", f'__version__ = "{version}"\n'), ("integrations/__init__.py", ""),
                            ("integrations/claude_code.py", hook_source)):
             with open(os.path.join(site, "tracekit", path), "w", encoding="utf-8") as f:
                 f.write(text)
@@ -423,18 +423,58 @@ class PluginShim(unittest.TestCase):
         """The plugin review: with the real tracekit a uv tool on PATH, a tracekit planted in python3's user
         site-packages ran the hook in its place and let every call through. The python of the uv tool or pipx install
         the `tracekit` command is now comes first."""
-        self.install_tracekit("def _entry(event=None):\n    return 0\n")   # python3's: the planted one
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)   # python3's: the planted one
         for venv in ("uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai"):
             with self.subTest(venv=venv):
-                tool_python = self.link_tracekit(os.path.join(self.d, venv), cfg=True)
+                tool_python = self.link_tracekit(os.path.join(self.data, venv), cfg=True)
                 self.assertEqual(self.hook("PreToolUse")[0], 0)
                 self.assertIn(f"{tool_python} -I -c", self.calls())
+                shutil.rmtree(os.path.join(self.data, venv.split("/")[0]))
+
+    def test_a_venv_shaped_folder_the_agent_made_on_path_is_not_a_uv_install(self):
+        """The fourth review: any */uv/tools/tracekit-ai/bin/tracekit the PATH's `tracekit` linked to was the install, so an
+        agent's folder of that shape with its link first on PATH ran the hook. Only where uv or pipx put it counts."""
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        agents = self.link_tracekit(os.path.join(self.d, "work", "x", "uv", "tools", "tracekit-ai"), cfg=True)
+        self.assertEqual(self.hook("PreToolUse")[0], 0)
+        self.assertNotIn(f"{agents} -I -c", self.calls())
+
+    def test_a_broken_uv_install_blocks_the_call_and_runs_no_python3(self):
+        """The fourth review: with the uv tool's interpreter removed the hook fell back to python3's user site-packages,
+        where a planted tracekit ran. The install's folder alone stops it."""
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        os.makedirs(os.path.join(self.data, "uv", "tools", "tracekit-ai", "bin"))
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2, err)
+        self.assertIn("cannot import tracekit", err)
+        self.assertNotIn("python3", self.calls())
+
+    def test_uv_tool_dir_and_pipx_home_name_where_the_install_is(self):
+        os.makedirs(os.path.join(self.d, "tools", "tracekit-ai", "bin"))
+        installed = self.fake_python(os.path.join(self.d, "tools", "tracekit-ai", "bin", "python"))
+        self.assertEqual(self.hook("PreToolUse", UV_TOOL_DIR=os.path.join(self.d, "tools"))[0], 0)
+        self.assertIn(f"{installed} -I -c", self.calls())
+
+    def test_a_tracekit_older_than_the_plugin_blocks_tool_calls(self):
+        """Its packs hold what the plugin's rules need: an older one (here 1.7.1, the plugin's own version moves with
+        each release) is refused with what to run, as one before 1.2 is."""
+        with open(os.path.join(ROOT, "plugin", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            version = json.load(f)["version"]
+        with open(os.path.join(ROOT, "plugin", "scripts", "tracekit-hook"), encoding="utf-8") as f:
+            self.assertIn(f"MIN_TRACEKIT={version} ", f.read())
+        older = ".".join(str(max(int(p) - (i == 2), 0)) for i, p in enumerate(version.split(".")[:3]))
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", older)
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2, err)
+        self.assertIn(f"tracekit {older}", err.splitlines()[0])
+        self.assertIn(f"is older than this plugin, which needs {version}", err)
+        self.assertIn(f"uv tool install tracekit-ai=={version}", err)
 
     def test_a_tracekit_link_the_agent_made_elsewhere_loses_to_python3(self):
         """The second review: any `tracekit` link whose folder had a pyvenv.cfg came before python3, so an agent could
         link one into ~/bin to a folder of its own whose python allows everything. Only a uv tool or pipx install's
         does; any other comes after python3 and python, as before."""
-        self.install_tracekit("def _entry(event=None):\n    return 0\n")   # python3's: here, the real one
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)   # python3's: here, the real one
         tool_python = self.link_tracekit(os.path.join(self.d, "e"), cfg=True)
         self.assertEqual(self.hook("PreToolUse")[0], 0)
         self.assertNotIn(f"{tool_python} -I -c", self.calls())
@@ -456,14 +496,14 @@ class PluginShim(unittest.TestCase):
     def test_a_pth_file_in_the_user_site_packages_does_not_run(self):
         """The third review: the user site-packages was added with site.addsitedir, which runs each .pth file's import
         lines, so a .pth the agent planted ran before tracekit and could end the hook with 0."""
-        package = self.install_tracekit("def _entry(event=None):\n    return 2\n")   # the real one blocks this call
+        package = self.install_tracekit("def _entry(event=None):\n    return 2\n", __version__)   # the real one blocks this call
         with open(os.path.join(os.path.dirname(package), "zz.pth"), "w", encoding="utf-8") as f:
             f.write("import os; os._exit(0)\n")
         self.assertEqual(self.hook("PreToolUse")[0], 2)
 
     def test_a_tracekit_without_the_harness_hook_blocks_tool_calls_and_says_to_upgrade(self):
         """1.6.0 has no Copilot CLI hook: its harness_hooks printed a usage line, and the call was blocked unexplained."""
-        package = self.install_tracekit("def _entry(event=None):\n    return 0\n")
+        package = self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
         for path, text in (("agent_hooks.py", 'HARNESSES = ("codex",)\n'),
                            ("integrations/harness_hooks.py", "def entry(harness, event):\n    return 0\n")):
             with open(os.path.join(package, path), "w", encoding="utf-8") as f:

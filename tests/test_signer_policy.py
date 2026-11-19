@@ -4582,7 +4582,7 @@ class CodingPack(unittest.TestCase):
             "cp --target=~/.claude/hooks /tmp/evil", "install -Dt ~/.claude/hooks /tmp/evil",
             "shopt -s nocaseglob; cp /tmp/evil ~/.CUR?OR/hooks.json", "shopt -s dotglob; cp /tmp/evil ~/*/hooks.json",
             "GLOBIGNORE=x; cp /tmp/evil ~/*/hooks.json", "shopt -s dotglob; cp /tmp/e ~/*/plugins/x.js",
-            "shopt -s dotglob; cp x src/*/plugins/y", "shopt -s nocaseglob; cp /tmp/evil ~/.CLA*/settings.json",
+            "shopt -s nocaseglob; cp /tmp/evil ~/.CLA*/settings.json",
             "setopt nocaseglob; cp /tmp/evil ~/.CUR?OR/hooks.json",
             "setopt extendedglob; cp /tmp/e ~/*/hooks.json", "cp -t /tmp/a -t ~/.claude/hooks /tmp/evil",
             "shopt -s nocaseglob; cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh")]
@@ -4603,7 +4603,7 @@ class CodingPack(unittest.TestCase):
             "shopt -s nocaseglob; ln -sf /tmp/e/tracekit ~/.LOCAL/BIN/TRACE?IT",
             "find ~/.local/share/uv -name '*.log' -delete",   # (a name it may hold inside the Python's own folder)
             "cp /tmp/evil ~/.local/share/uv/python/cpython-3.12/bin/python3.12", "rm -rf ~/.local/share/uv/python",
-            "chmod -R 000 ~/.local/bin", "chmod 755 ~/.local/bin", "rm -rf ~/.local/sh*", "rm -rf ~/.local/share/u?",
+            "chmod -R 000 ~/.local/bin", "chmod 644 ~/.local/bin", "chmod u-x ~/.local/bin", "chmod a=r ~/.local/share/uv", "chown -R root ~/.local", "rm -rf ~/.local/sh*", "rm -rf ~/.local/share/u?",
             "rsync -a --remove-source-files ~/.local/bin/ /tmp/x", "tar --remove-files -cf /tmp/a.tar ~/.local/bin",
             "zip -m /tmp/a.zip ~/.local/bin", "cd ~/.local/bin && find . -name tracekit -delete",
             "cd ~/.local && find bin -name tracekit -delete", "env -C ~/.local find bin -name tracekit -delete")]
@@ -4612,12 +4612,12 @@ class CodingPack(unittest.TestCase):
             "install -m755 -t ~/.local/bin mytool", "cp x ~/.local/bin", "mv ~/.local/bin/other /tmp/o",
             "rm -rf ~/.local/bin/other", "rm -rf ~/.local/share/Trash",
             "rm -rf ./uv", "rm -rf node_modules/uv/tools", "rm -rf build/bin", "rm -rf .local",
-            "rm -rf /tmp/library", "rm -rf /tmp/documents", "find ~/.local/bin -name TRACEKIT -delete",
+            "rm -rf /tmp/library", "rm -rf /tmp/documents",
             "cp /tmp/x ~/.CLA*/settings.json", "rm -rf proj/.local", "cd ~/.local && find bin -name '*.log' -delete",
             "cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh",
             "cp -rt /tmp/d /usr/local/bin/tracekit /tmp/other && /tmp/other approve apr-1",
             "find . -name '*.pyc' -delete", "find ~/.local/bin -name '*.log' -delete",
-            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "chmod 755 ~/.local/bin/mytool", "rm -rf ~/.cache/*", "rm -rf ~/Li*",
+            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "chmod 755 ~/.local/bin/mytool", "chmod 755 ~/.local/bin", "chmod 700 ~/.local", "chmod +x ~/.local/bin/*", "chmod -R u+rwX,go-w ~/.local/share/uv", "chown -R $(whoami) ~/.local", "chgrp staff ~/.local/bin", "find ~/.local/bin -type l -xtype l -delete", "rm -rf ~/.cache/*", "rm -rf ~/Li*",
             "cp x vendor/uv/python/f", "rm -rf ~/.local/sh*/Trash", "cp x src/*/plugins/y", "cp x ~/*/hooks.json",
             "shopt -s nocaseglob; cp x src/PLUG?NS/y")]
         denied.append(("Write", {"path": "/home/u/.local/share/uv/python/cpython-3.12/bin/python3.12"}, "TK-D013"))
@@ -4629,6 +4629,116 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_plugin_review_5_writes_into_a_folder_above_a_root_shell_forms_and_hostile_lengths(self):
+        """The plugin's fifth review: a write into a folder above a trust root (`cp -R evil/tracekit-ai ~/.local/share/uv/tools`,
+        `cp tracekit ~/.local/bin`, tar -C, unzip -d, rsync, git -C) and a folder of a harness's (`cp -R x/.cursor ~/`) wasn't
+        read as touching it; a one-word brace sequence in a redirection, a CDPATH set by export, zsh's `**/`, a target from
+        `command -v tracekit` or `uv tool dir`, and a find's -path test were unread; chmod 755 of a parent, `dotglob` before
+        `build/*` and `find -xtype l` were held; and inputs near the 64 KiB limit took seconds."""
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "cp -R ../evil/tracekit-ai ~/.local/share/uv/tools", "cp -R ../evil/tracekit-ai ~/.local/share/pipx/venvs",
+            "cp /tmp/e/tracekit ~/.local/bin", "cp /tmp/e/tracekit ~/.local/bin/.", "ln -sf /tmp/e/tracekit ~/.local/bin",
+            "install /tmp/e/tracekit ~/.local/bin", "cp -t ~/.local/bin /tmp/e/tracekit",
+            "rsync -a ../evil/tracekit-ai/bin/python ~/.local/share/uv/tools/tracekit-ai/bin/python",
+            "rsync -a ../evil/tracekit-ai ~/.local/share/uv/tools/",
+            "tar -C ~/.local/share/uv/tools -xf ../evil.tar tracekit-ai/bin/python",
+            "unzip -o ../evil.zip tracekit -d ~/.local/bin", "cat x > ~/.local/share/uv/tools/tracekit-a{i..i}/bin/python",
+            "ln -sf /tmp/e/python ~/.local/**/bin/python", "rm -rf ~/.local/**/bin", "chmod -R 000 ~/.local/**/tools", "chmod 000 ~/.local/sh*/uv/tools",
+            "export CDPATH=~/.local/share/uv/tools/tracekit-ai; cd bin && ln -sf /tmp/e/python python",
+            "declare -x CDPATH=~/.local/share/uv/tools/tracekit-ai; cd bin; cp /tmp/e python",
+            "git -C ~/.local/share/uv/tools/tracekit-ai apply /tmp/x.patch",
+            "git --work-tree=$HOME/.local/share/uv/tools/tracekit-ai checkout -- .",
+            "git apply --directory=.local/share/uv/tools/tracekit-ai /tmp/x.patch",
+            "git clone https://example.com/x.git ~/.local/share/uv/tools/tracekit-ai",
+            "shopt -s globstar dotglob; ln -sf /tmp/e/python ~/**/tools/tracekit-ai/bin/python",
+            "ls -d ~/.local/share/uv/tools/* | xargs rm -rf", "ln -s ~/.local/share/uv /tmp/u && rm -rf /tmp/u/tools",
+            "find ~ -path '*uv/tools*' -delete", "find $HOME -wholename '*/uv/python/*' -delete",
+            "python3 -c \"import os; os.remove(os.path.expanduser('~/.local/bin/tracekit'))\"",
+            "ruby -e 'File.delete(\"/Users/u/.local/bin/tracekit\")'")]
+        held = [("Bash", {"command": c}, rid) for c, rid in (
+            ("cp -R /tmp/evil/plugins ~/.cursor", "TK-F015"), ("cp -R /tmp/evil/.cursor ~/", "TK-F015"),
+            ("cp -R evil/hooks .github", "TK-F015"), ("cp -R evil/hooks .clinerules", "TK-F015"),
+            ("cp -R evil/Hooks ~/Documents/Cline", "TK-F015"), ("cp -R /tmp/evil/opencode ~/.config", "TK-F015"),
+            ("cp -R /tmp/evil/.config ~/", "TK-F015"), ("cp -R /tmp/evil/.agents ~/", "TK-F015"),
+            ("tar -C ~/.local/bin -xf ../evil.tar", "TK-F015"), ("unzip -o ../evil.zip -d ~/.local/bin", "TK-F015"),
+            ("tar -xzf x.tar.gz -C ~/.local/share/uv/tools --strip-components=1", "TK-F015"),
+            ("tar -C ~ -xf x.tar", "TK-F015"), ("cp -R /tmp/evil/tools ~/.local/share/uv", "TK-F015"),
+            ("cp -a /tmp/evil/bin ~/.local", "TK-F015"), ("cp /tmp/e ~/.cursor/**/tracekit-hook", "TK-F015"),
+            ("rm -rf ~/.cursor/**/scripts", "TK-F015"),
+            ("export CDPATH=~/.cursor; cd plugins && cp /tmp/e local/tracekit/scripts/tracekit-hook", "TK-F015"),
+            ("ln -sf /tmp/e/tracekit \"$(which tracekit)\"", "TK-F015"),
+            ("T=$(command -v tracekit); ln -sf /tmp/e/tracekit \"$T\"", "TK-F015"),
+            ("cp /tmp/e \"$(uv tool dir)/x\"", "TK-F015"), ("ln -s ~/.cursor/plugins p && cp /tmp/e p/local/x", "TK-F015"),
+            ("uv python uninstall 3.11", "TK-A054"), ("uv -q python uninstall --all", "TK-A054"))]
+        benign = [("Bash", {"command": c}) for c in (
+            "tar -C ~/.local/bin -xzf ripgrep.tar.gz rg", "unzip -o tool.zip -d build", "unzip -o tool.zip rg -d ~/.local/bin",
+            "cp -R src dist", "cp -a build/mytool ~/.local/bin", "cp build/mytool ~/.local/bin", "rsync -a src/ dist/",
+            "install -m755 mytool ~/.local/bin", "git -C ~/proj status", "git -C ~/proj commit -m x",
+            "git clone https://example.com/x.git ~/src/x", "ls -d build/* | xargs rm -rf", "find ~ -name .DS_Store -delete",
+            "shopt -s dotglob; rm -rf build/*", "GLOBIGNORE=.:..; rm -rf build/*", "export CDPATH=~/proj; cd src && cp x y",
+            "echo x > a{b,c}", "touch ~/.local/bin/x", "rm -rf build/*/Clin?", "uv python list", "uv python install 3.12",
+            "find ~/.local/bin -type l -xtype l -delete", "find ~/.local/share/uv/tools -type d -empty -delete")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in denied + held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    ids = e.decide(tool, args)["rule_ids"]
+                    self.assertIn(rid, ids)
+                    if (tool, args, rid) in held:   # held for a person, not denied as a write that names a root is
+                        self.assertNotIn("TK-D007", ids)
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_plugin_review_5_hostile_patterns_are_read_in_bounded_time_the_same_on_both_engines(self):
+        """The new readers took 6 to 58 seconds on inputs near 64 KiB (a thousand forms as long as the path, a `*/` a
+        thousand times): they are read in a bounded number of forms, charged to the decision's work, and an input past
+        it is held (TK-SHELL-PARSE) on both engines."""
+        k = 63 * 1024
+        rows = ["cp x ~/" + "/".join([".*"] * (k // 3)), "cp x ~/" + "/".join(["*"] * (k // 2)),
+                "shopt -s nocaseglob dotglob; cp x ~/" + "/".join(["*?"] * (k // 3 - 20)),
+                "shopt -s globstar dotglob; rm -rf " + "~/**/" * (k // 6 - 20) + "x",
+                "cp " + "-t ~/.local/share/uv " * 3000 + " ".join(["src"] * 2000),
+                "find " + "~/.local/share/uv " * 1800 + "-name '*' " + "-o -name 't?' " * 2000 + "-delete"]
+        engines = {}
+        for pack, engine, e in self.every_pack():
+            if pack == "coding.yaml":
+                engines[engine] = e
+        for row in rows:
+            seen = {}
+            for engine, e in engines.items():
+                t = time.perf_counter()
+                d = e.decide("Bash", {"command": row[:64 * 1024 - 1]})
+                self.assertLess(time.perf_counter() - t, 5 * SLOWER, (engine, row[:40]))
+                seen[engine] = (d["verdict"], d["rule_ids"])
+            self.assertEqual(len(set(map(str, seen.values()))), 1, (row[:40], seen))
+        for row in ("cp x ~/" + "/".join(["*"] * 40), "cp x ~/" + "share/*a*e*/" * 20):   # more forms than are read
+            for engine, e in engines.items():
+                self.assertIn("TK-SHELL-PARSE", e.decide("Bash", {"command": row})["rule_ids"], (engine, row[:40]))
+                self.assertNotIn("TK-SHELL-PARSE", e.decide("Bash", {"command": "rm -rf /tmp/**/**/**/x"})["rule_ids"])
+
+    def test_plugin_review_5_the_readers_charge_their_work_and_read_each_start_and_test_once(self):
+        from tracekit.policy2 import engine as eng, shell as sh
+        for read in (lambda w: eng._protected_forms("~/.cursor/plug?ns/x", (), w), lambda w: eng._pattern_forms("~/trace?it", w),
+                     lambda w: eng._copies(["~/.local/bin"], ["a", "b"], w)):
+            with self.assertRaises(sh.ParseError):
+                read([sh.MAX_WORK])
+        with self.assertRaises(sh.ParseError):   # more paths of Tracekit's than are read
+            eng._pattern_forms("~/" + "share/*a*e*/" * 20, [0])
+        work = [0]
+        eng._find_files(["~/.local"] * 1000 + ["-name", "x", "-o", "-name", "x"], work)
+        self.assertLess(work[0], 1000)   # (each start and test once)
+        forms = eng._protected_forms("~/.cursor/plug?ns/" + "a/" * 3000, (), [0])   # past 4 KiB: up to the protected path
+        self.assertEqual(forms, ["~/.cursor/plugins"])
+
+    def test_plugin_review_5_a_find_from_a_home_reads_its_path_tests_against_the_folders_above_a_root(self):
+        from tracekit.policy2 import engine as eng
+        for tests in (["-path", "*uv/tools*"], ["-ipath", "*UV/TOOLS*"], ["-wholename", "*/.local/share/uv/tools"],
+                      ["-name", "tools"], ["-iname", "TOOLS"]):
+            found = eng._find_files(["~", *tests, "-delete"], [0])
+            self.assertIn("~/.local/share/uv/tools/tracekit-ai", found, tests)   # (what a delete of tools takes of it)
+        self.assertNotIn("~/.local/share/uv/tools/tracekit-ai", eng._find_files(["~", "-path", "*/src/*", "-delete"], [0]))
 
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),

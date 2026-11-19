@@ -3530,6 +3530,9 @@ class _Parser:
                                 self.ctx["more"] |= bool(other)
                                 named += [piece[0]] + other * self.ctx["readings"]
                         self.spliced = was
+                    # a brace expression that makes one word (`a{i..i}`) is that name; one that makes more is an
+                    # ambiguous redirect, which bash doesn't write
+                    named += [b[0] for t in named if (b := _brace(t, self.charge)) and len(b) == 1]
                     made = [c for t in named for c in _unglob(t, self.ctx["globopts"], self.ctx["work"])] \
                         if self.ctx["readings"] and target[2] else []
                     self.ctx["more"] |= bool(made)

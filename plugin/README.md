@@ -156,10 +156,10 @@ runs.
   Re-run system init from a root-owned clone: `sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
   --no-hooks`.
 - **Dev mode**: the hook runs in `TRACEKIT_PYTHON` if that has the `tracekit` package; else in the Python of a `uv
-  tool` or pipx install of Tracekit (the `tracekit` command on `PATH`, or where uv or pipx put it by default), and only
-  there; else in the first of `python3`, `python` and the Python beside any other `tracekit` command that has the
-  package, user site-packages included (their `.pth` files don't run). A tracekit too old for the hook blocks tool
-  calls and says how to upgrade. With no tracekit at all, tool calls are blocked once
+  tool` or pipx install of Tracekit where uv (`UV_TOOL_DIR`) or pipx (`PIPX_HOME`) put it, else by default (never a folder
+  the `tracekit` on `PATH` links into), and only there, even when that install is broken (the call is blocked); else in the first of `python3`, `python` and the Python beside any other `tracekit` command that has the
+  package, user site-packages included (their `.pth` files don't run). A tracekit older than the plugin's version
+  blocks tool calls and says how to upgrade. With no tracekit at all, tool calls are blocked once
   Tracekit is set up for your user: the dev signer's data directory exists (`tracekit init --dev --v2` creates it), or
   `TRACEKIT_PYTHON` or `TRACEKIT_SIGNER` is set. Before that, every event runs, unrecorded, with a notice (Copilot CLI
   and Cursor don't show it: they block a call on any notice that isn't a success).

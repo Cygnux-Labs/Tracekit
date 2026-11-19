@@ -14,15 +14,16 @@
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
 # Otherwise the hook runs in TRACEKIT_PYTHON when it imports tracekit; else in the python of a uv tool or pipx install
-# of Tracekit (the one the `tracekit` command on PATH is, its links followed into */uv/tools/tracekit-ai/bin/ or
-# */pipx/venvs/tracekit-ai/bin/, else one where uv or pipx put it by default: folders TK-D007 and TK-D013 keep the
-# agent from writing), and then only there; else in the first of python3, python and the python beside any other
-# `tracekit` that imports tracekit (user site-packages added back for `pip install --user`, without running its .pth
-# files). A tracekit before 1.2, or one
-# whose hook won't import, blocks the call. With none, the call is blocked once Tracekit is set up for this user (the
+# of Tracekit where uv (UV_TOOL_DIR) or pipx (PIPX_HOME) put it, as this process sees them, else by default (folders
+# TK-D007 and TK-D013 keep the agent from writing), and then only there, even when that install is broken (the call is
+# blocked); never a folder the `tracekit` command on PATH links into. Else the hook runs in the first of python3, python
+# and the python beside any other `tracekit` that imports tracekit (user site-packages added back for `pip install
+# --user`, without running its .pth files). A tracekit before the version below, or one whose hook won't import, blocks
+# the call. With none, the call is blocked once Tracekit is set up for this user (the
 # dev signer's data dir exists, which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is
 # set); before that every event says so and proceeds, unrecorded. hooks/*.json run this with /bin/sh, so it runs
 # without its exec bit (TK-F015 holds a mode change of it, chmod 000 too).
+MIN_TRACEKIT=1.7.2   # the oldest tracekit it runs with, as plugin.json's version (tests/test_hook_invocation.py checks)
 SYSTEM_CONFIG=/etc/tracekit/client.json
 SYSTEM_PYTHON=/opt/tracekit/bin/python
 EV=${1:-}
@@ -76,6 +77,10 @@ try:
         why = "" if inspect.signature(entry).parameters else "is older than 1.2"
 except Exception as e:
     why = "cannot import its hook (%s: %s)" % (type(e).__name__, e)
+if not why:
+    import re, tracekit
+    now = tuple(map(int, re.findall(r"\d+", getattr(tracekit, "__version__", "0"))[:3]))
+    why = "" if now >= tuple(map(int, MIN.split("."))) else "is older than this plugin, which needs %s" % MIN
 if why:
     import tracekit
     print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.7.2 && "
@@ -83,25 +88,25 @@ if why:
                                      "call was blocked" if pre else "event was NOT recorded"), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
 raise SystemExit(entry(*args))'
-# a `tracekit` command installed on its own (uv tool, pipx, a venv) is a link to, or is, its venv's bin/tracekit,
-# beside that venv's python. A uv tool or pipx install's python is the tracekit the person runs: with one, nothing
-# else runs the hook, so a tracekit in python3's user site-packages can't stand in for it. One where uv or pipx put
-# it by default counts too, so a `tracekit` the agent put earlier on PATH can't hide it. Any other goes last, since
-# the agent can make one anywhere (a link in ~/bin to a folder of its own): only those folders are kept from it
+RUN="
+MIN = '$MIN_TRACEKIT'$RUN"
+# A uv tool or pipx install's python is the tracekit the person runs: with one, nothing else runs the hook, so a
+# tracekit in python3's user site-packages can't stand in for it. The install is only where uv or pipx put it: the folders
+# UV_TOOL_DIR and PIPX_HOME name as this process sees them, else the defaults. Never one a `tracekit` on PATH resolves to
+# (the agent can make a folder of that shape anywhere and put its link first on PATH), and the folder alone is enough, so
+# an install that is broken (its interpreter removed) stops the call instead of falling back to python3. Any other
+# `tracekit` command's python goes last.
 tk=$(command -v tracekit 2>/dev/null) n=0
 while [ $n -lt 40 ] && [ -L "$tk" ] && l=$(readlink "$tk"); do
   case $l in /*) tk=$l ;; *) tk=${tk%/*}/$l ;; esac
   n=$((n + 1))
 done
 venv= tool=
-case $tk in
-  */uv/tools/tracekit-ai/bin/tracekit|*/pipx/venvs/tracekit-ai/bin/tracekit) venv=${tk%/*}/python ;;
-  /*) tool=${tk%/*}/python ;;
-esac
+case $tk in /*) tool=${tk%/*}/python ;; esac
 share=${XDG_DATA_HOME:-$HOME/.local/share}
 for v in "${UV_TOOL_DIR:-$share/uv/tools}" "${PIPX_HOME:-$share/pipx}/venvs" "$HOME/.local/pipx/venvs" \
          "$HOME/Library/Application Support/pipx/venvs"; do
-  [ -z "$venv" ] && [ -x "$v/tracekit-ai/bin/python" ] && venv=$v/tracekit-ai/bin/python
+  [ -z "$venv" ] && [ -d "$v/tracekit-ai/bin" ] && venv=$v/tracekit-ai/bin/python
 done
 for py in "${TRACEKIT_PYTHON:-}" "$venv" python3 python "$tool"; do
   [ -n "$py" ] || continue
