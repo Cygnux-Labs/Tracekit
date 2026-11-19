@@ -16,6 +16,7 @@ import hashlib
 import itertools
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -75,6 +76,51 @@ def report(results, as_json=False):
             print(f"{r['status'] if r['status'] in (OK, INFO) else r['status'].upper():<6}{r['detail']}  ({r['id']})"
                   + (f"\n      fix: {r['fix']}" if r["fix"] else ""))
     return 1 if any(r["status"] == FAIL for r in results) else 0
+
+
+def _google_re2_supported(python_version=None, implementation=None, sys_platform=None, machine=None):
+    """Whether google-re2 is declared for this Python and platform.
+
+    Keep these conditions in sync with the google-re2 markers in pyproject.toml.
+    """
+    python_version = python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
+    implementation = implementation or platform.python_implementation()
+    sys_platform = sys_platform or sys.platform
+    machine = machine or platform.machine()
+
+    version = tuple(int(part) for part in python_version.split("."))
+
+    if implementation != "CPython" or not ((3, 10) <= version < (3, 15)):
+        return False
+
+    return (
+        (sys_platform == "win32" and (
+            machine in ("x86", "AMD64") or
+            (version >= (3, 11) and machine == "ARM64")
+        ))
+        or (sys_platform == "linux" and machine in ("x86_64", "aarch64"))
+        or (sys_platform == "darwin" and machine in ("x86_64", "arm64"))
+    )
+
+
+def _google_re2_wheel_expected():
+    """The marker, and what it cannot see: libc and OS version constraints."""
+    if not _google_re2_supported():
+        return False
+
+    if sys.platform == "linux":
+        if sys.maxsize <= 2**32 - 1:
+            return False
+        libc, version = platform.libc_ver()
+        return (
+            libc == "glibc"
+            and tuple(int(p) for p in version.split(".")[:2] if p.isdigit()) >= (2, 28)
+        )
+
+    if sys.platform == "darwin":
+        return int((platform.mac_ver()[0] or "0").split(".")[0]) >= 13
+
+    return True
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
@@ -1570,7 +1616,24 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "root-owned and not group/world-writable, or set policy: in signer.yaml to such a file")
     try:
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
-        add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
+        loaded = service.load_policy(policy)
+        using_re2 = loaded.engine.startswith("re2@")
+        wheel_expected = _google_re2_wheel_expected()
+        detail = f"{policy} loads on {loaded.engine}"
+        if not using_re2:
+            detail += (
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)"
+                if wheel_expected else
+                " (no google-re2 wheel is expected for this Python or platform)"
+            )
+        fix = (
+            f"{sys.executable} -m pip install google-re2, then restart the signer "
+            "(tracekit down in dev)"
+            if wheel_expected and not using_re2 else ""
+        )
+        add("D-POLICY-ENGINE", using_re2, detail, fix,
+            bad=WARN if wheel_expected else INFO)
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
