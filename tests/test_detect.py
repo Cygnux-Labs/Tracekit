@@ -610,6 +610,18 @@ class TestBacktest(unittest.TestCase):
         self.assertIn("limit TK-L002: no call counted (max 30 in 60s)\n", out)
         self.assertTrue(out.rstrip().endswith("0 incident(s) would open"), out)
 
+    def test_a_sum_limit_prints_a_peak_for_each_currency(self):
+        s = Signer(engine(PAY))
+        run = s.register()
+        for cents, cur in ((600, "USD"), (300, "EUR"), (100, "USD")):
+            s.decide(run, ("pay", {"cents": cents, "currency": cur}))
+        s.s.close()
+        self.addCleanup(shutil.rmtree, s.dir, True)
+        with open(self.policy, "w") as f:
+            json.dump(PAY, f)
+        out = self.backtest("--store", os.path.join(s.dir, "store"))[1]
+        self.assertRegex(out, r"limit S: peak 300 EUR of max 1000 .*\nlimit S: peak 700 USD of max 1000 ")
+
     def test_the_peak_line_is_printed_for_a_bundle_too(self):
         store, _ = self.server_store([12])
         records = [json.loads(line) for line in open(os.path.join(store, "records.jsonl"), "rb")]
