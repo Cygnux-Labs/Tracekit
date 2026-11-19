@@ -111,7 +111,8 @@ with the `z` you pass: an object whose properties are strings, numbers, integers
 those. Arguments the schema doesn't declare reach the executor unless it sets `additionalProperties: false`. Any other
 property (a nested object, a union, a number enum), or a `required` argument not in `properties`, throws when the tool
 is built, naming it; write that action's `tool()` yourself, with a handler that returns `action.call(args)`. The
-handler passes the executor the model's tool-use id (`tool_call_id`), which the CLI sends with each call.
+handler passes the executor the model's tool-use id (`tool_call_id`), which the CLI sends with each call as
+`_meta["claudecode/toolUseId"]` (seen in the `tools/call` requests of Claude Code 2.1.328).
 
 ## What is recorded
 
