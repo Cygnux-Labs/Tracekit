@@ -50,7 +50,7 @@ from tracekit.format.canon import event_hash, loads_strict
 from tracekit.integrations import version_check
 from tracekit.integrations.claude_code import _rules, stopped
 from tracekit.integrations.executor_tools import EXECUTOR
-from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, refusal, result_field
+from tracekit.sdk.client import SignerUnavailable, VaultBody, _class_of, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -133,7 +133,7 @@ class TracekitAgents(RunHooks):
         try:
             d = self._decided.pop(call_id, None) or await self._decide(call_id, tool, args)   # resumed elsewhere
         except SignerUnavailable as e:
-            if not fail_open(self.fail_modes):
+            if not fail_open(self.fail_modes, _class_of(tool)):
                 return BLOCKED + f"signer unavailable: {e}"
             _keep(self._passed, call_id, None)
             return None
