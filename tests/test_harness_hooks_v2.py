@@ -351,6 +351,11 @@ class Mapping(HarnessCase):
     def test_opencode(self):
         self.check("opencode")
 
+    def test_kilo(self):
+        # #988: Kilo's browser_open and repo_clone are decided as fetches, kilo_memory_save as a write (built from
+        # Kilo's tool sources: kilocode/tool/browser-open.ts, tool/repo_clone.ts, kilo-memory/src/tool.ts)
+        self.check("kilo")
+
     def test_goose(self):
         self.check("goose")
 
@@ -1015,6 +1020,17 @@ class Mapping(HarnessCase):
                                    "tool.execute.before")
         self.assertEqual((code, out), (2, ""))
         self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
+
+    def test_opencode_image_generate_mixing_urls_and_files_is_denied_before_the_signer(self):
+        # #988: an http(s) image is decided as a fetch and a file as a read, and a call is decided as one tool
+        code, out, err = self.hook("opencode", {"session_id": "oc-9", "hook_event_name": "tool.execute.before",
+                                                "tool_name": "experimental_image_generate", "tool_use_id": "oc-9",
+                                                "tool_input": {"prompt": "p", "images": [
+                                                    "/home/u/.ssh/id_rsa", "https://x.example/cat.png"]}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("separate calls", err)
         self.assertEqual(self.sent, [])
 
     def test_signer_unreachable_is_fail_closed_by_default(self):
