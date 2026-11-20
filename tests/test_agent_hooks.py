@@ -3114,6 +3114,90 @@ class Installer(unittest.TestCase):
                 agent_hooks.install("copilot", d, v2=True)
             self.assertIn(".git/info/exclude", out.getvalue())
             self.assertIn("usually committed", out.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(d, ".git")))   # outside git: advice only, no exclude file
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_keeps_the_file_out_of_git(self):
+        # #1000: in a checkout, init adds the file to the exclude file once, uninstall takes the line out
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            exclude = os.path.join(d, ".git", "info", "exclude")
+            with open(exclude, "a") as f:
+                f.write("*.mine")   # the person's own line, with no newline after it
+
+            def lines():
+                with open(exclude) as f:
+                    return f.read().splitlines()
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_hooks.install("copilot", d, v2=True)
+                agent_hooks.install("copilot", d, v2=True)
+            self.assertEqual(lines().count("/.github/hooks/tracekit.json"), 1)
+            self.assertIn("*.mine", lines())
+            self.assertEqual(out.getvalue().count("added to"), 1)
+            self.assertNotIn("usually committed", out.getvalue())
+            status = subprocess.run(["git", "-C", d, "status", "--porcelain", "--untracked-files=all"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertNotIn("tracekit.json", status)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", d, uninstall=True)
+            self.assertNotIn("/.github/hooks/tracekit.json", lines())
+            self.assertIn("*.mine", lines())
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_in_a_subfolder_and_a_worktree(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, wt = os.path.join(d, "repo"), os.path.join(d, "wt")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo]
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run([*git, "worktree", "add", "-q", wt], check=True)
+            sub = os.path.join(repo, "app")
+            os.makedirs(sub)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", sub, v2=True)
+                agent_hooks.install("copilot", wt, v2=True)
+            for top in (repo, wt):
+                status = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=all"],
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertNotIn("tracekit.json", status)
+            with open(os.path.join(repo, ".git", "info", "exclude")) as f:
+                self.assertIn("/app/.github/hooks/tracekit.json", f.read().splitlines())
+
+    def test_copilot_init_says_when_claude_codes_project_hook_also_runs(self):
+        # #1000: Copilot CLI runs a repository's .claude hooks, so Tracekit's Claude Code hook there decides each call too
+        from tracekit import install
+        with tempfile.TemporaryDirectory() as d:
+            for local in (False, True):
+                with self.subTest(local=local):
+                    shutil.rmtree(os.path.join(d, ".claude"), ignore_errors=True)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertNotIn("recorded twice", out.getvalue())
+                    name = "settings.local.json" if local else "settings.json"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_hooks(os.path.join(d, ".claude", name))
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertIn("recorded twice", out.getvalue())
+                    self.assertIn(name, out.getvalue())
+            patch_env(self, HOME=d, USERPROFILE=d, COPILOT_HOME=None)
+            work = os.path.join(d, "work")
+            os.makedirs(os.path.join(work, ".claude"))
+            shutil.copy(os.path.join(d, ".claude", "settings.local.json"), os.path.join(work, ".claude"))
+            cwd = os.getcwd()
+            try:
+                for where, said in ((work, True), (d, False)):   # a user install reads the working directory's, not ~/.claude
+                    os.chdir(where)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", v2=True)
+                    self.assertEqual("recorded twice" in out.getvalue(), said)
+            finally:
+                os.chdir(cwd)   # out of `d` before it is removed
 
     def test_copilot_user_hooks_follow_copilot_home(self):
         with tempfile.TemporaryDirectory() as d:

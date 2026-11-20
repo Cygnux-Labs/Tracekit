@@ -248,8 +248,11 @@ to approve, and a call whose hook times out goes on through Copilot's normal per
 within 540 s. Copilot's payload names
 no event, so the hook's command does, for the v1 hook too. Copilot denies a call when its hook exits with anything but
 0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `--project`
-writes this machine's Python path into `.github/`, which is usually committed: init says how to keep the file out of
-the commit. `bash`, `apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every
+writes this machine's Python path into `.github/`, which is usually committed: in a git checkout init adds the file
+to the checkout's exclude file (uninstall removes the line), and outside one says how to keep it out of the commit.
+Copilot also runs a repository's `.claude/settings*.json` hooks, so init says when Tracekit's Claude Code hook is
+there: each call would be decided and recorded twice.
+`bash`, `apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every
 file the patch names), `Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_search` as
 `mcp:github-mcp-server/web_search`, the built-in MCP server's tool it is; `create`, `edit`, `str_replace_editor`,
 `grep`, `powershell`, `write_bash`, `write_powershell` and `write_agent`, the tools Copilot gives other models, as
