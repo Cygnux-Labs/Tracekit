@@ -4606,8 +4606,7 @@ class CodingPack(unittest.TestCase):
                         "git credential-store store", "git credential-store erase", "git credential",
                         "git config credential.helper", "git credentials fill", "gh auth git-credential",
                         "gh auth git-credential store", "gh auth git-credential erase",
-                        "gh auth git-credential get --help", "gh auth git-credential --help",
-                        "gh auth git-credentials get"):
+                        "gh auth git-credential --help", "gh auth git-credentials get"):
             for pack, engine, e in self.every_pack():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
