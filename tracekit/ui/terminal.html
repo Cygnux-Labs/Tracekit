@@ -4302,13 +4302,13 @@
       return `<section class="tcard luse"><div class="tsrc">${esc(`${LKIND[x.kind] || x.kind} · ${x.where} · ${x.id}` + (x.approved ? ` · approved ${String(x.approved).slice(0, 10)}` : "") + (x.origin === "you" ? " · your words" : ""))}</div>`
         + `<h3>${esc(x.name)}</h3><div class="${esc(LSIGNED[sg.state] || "s-deny")}">${esc(sg.why)}</div><pre class="ltext">${esc(x.text)}</pre>`
         + `<div class="tsave"><span>GIVEN TO<b>${esc(plural(x.effect.given, "session"))}</b>signed: each session's tracekit:lessons record names it</span>` + lessonEffect(x) + `</div>`
-        + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + lessonCmd(x.retire + " --because RUN:SEQ") + `</section>`;
+        + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + `</section>`;
     }
     function lessonRetired(x) {
-      const rb = x.retired_because, named = rb && rb.run != null && rb.seq != null;
-      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${named
-        ? `Retired: disproved by run ${esc(rb.run)} at seq ${esc(rb.seq)} <a href="#" data-lrec="${esc(rb.run)}" data-lseq="${esc(rb.seq)}" title="${esc(`run ${rb.run} record ${rb.seq}`)}">OPEN</a>`
-        : "Retired"}</span></div>`;
+      const rb = x.retired_because;
+      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${esc(rb ? rb.why : "Retired")}${rb && rb.state === "signed"
+        ? ` <a href="#" data-lrec="${esc(rb.run)}" data-lseq="${esc(rb.seq)}" title="${esc(`run ${rb.run} record ${rb.seq}`)}">OPEN</a>`
+        : ""}</span></div>`;
     }
     function renderLessons(L, days) {
       const head = `<div class="tsrc">LESSONS · what your coding agents keep relearning, from signed records · a person approves each one</div>`;

@@ -942,23 +942,25 @@ class RetireBecause(unittest.TestCase):
         finally:
             s.close()
 
-    def test_a_note_keeps_only_a_retired_because_it_can_read_and_only_that_key_is_json(self):
-        head = "name: n\ndescription: d\n"
-        read = lambda extra: lessons.parse("n.md", f"---\n{head}{extra}\n---\nbody\n")   # noqa: E731
-        self.assertEqual(read('retired_because: {"run": "r-1", "seq": 4}')["retired_because"], {"run": "r-1", "seq": 4})
-        for bad in ('{"run": "r-1"}', '{"seq": 4}', '{"run": "r-1", "seq": "4"}',
-                    '{"run": "r-1", "seq": -1}', '{"run": "r-1", "seq": true}', "[1]", "x"):
-            with self.subTest(bad=bad):
-                self.assertNotIn("retired_because", read(f"retired_because: {bad}"))
-        broken = read('retired_because: {"run": "r-1", "seq": 04}')   # not JSON: a malformed note, refused whole
-        self.assertEqual(broken, ["retired_because is not a value"])
-        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
-        os.makedirs(os.path.join(folder.path, "projects", PROJECT))
-        with open(os.path.join(folder.path, "projects", PROJECT, "n.md"), "w", encoding="utf-8") as f:
-            f.write(f"---\n{head}retired_because: {{\"run\": \"r-1\", \"seq\": 04}}\n---\nbody\n")
-        with self.assertRaises(lessons.Refused):
-            folder.notes()
-        self.assertEqual(read('origin: {"a": 1}')["origin"], '{"a": 1}')   # a bare word, not loaded
+    def test_the_page_links_a_because_only_when_the_signed_retire_carries_it(self):
+        """#928 review: a `retired_because` was read back from the note file, so a hand-written one linked any record
+        as what disproved the lesson."""
+        s, signed = Scene().session("tips", T0), {}
+        for name, v in (("same", {"because": "r-1:4"}), ("other", {"because": "r-1:5"}), ("none", {})):
+            s.prompt({"action": "retire", "id": "L-0badf00d", "sha256": "0" * 64, **v}, source=lessons.PERSON)
+            signed[name] = f"run-tips:{s.seq - 1}"
+        note, rows = {"id": "L-0badf00d", "retired_because": "r-1:4", "signed": signed["same"]}, s.rows()
+        self.assertEqual(lessons.disproved(note, rows), {
+            "run": "r-1", "seq": 4, "state": "signed",
+            "why": f"Disproved by run r-1 at seq 4, a person's word: signed (run run-tips, record {s.seq - 3})."})
+        for why, n in (("another record", dict(note, signed=signed["other"])),
+                       ("no because", dict(note, signed=signed["none"])), ("another lesson", dict(note, id="L-0000beef")),
+                       ("no signed retire", dict(note, signed=None))):
+            with self.subTest(why):
+                self.assertEqual(lessons.disproved(n, rows)["state"], "changed")
+        self.assertEqual(lessons.disproved(dict(note, signed="run-elsewhere:7"), rows)["state"], "not read")
+        for bad in (None, "", {}, {"run": "r-1", "seq": 4}, "r-1:04", "r-1"):   # a hand edit: never read as one
+            self.assertIsNone(lessons.disproved(dict(note, retired_because=bad), rows), bad)
 
     def test_one_grammar_for_the_record_of_an_answer(self):
         from tracekit.signer import service as svc
@@ -967,8 +969,12 @@ class RetireBecause(unittest.TestCase):
             self.assertTrue(lessons.SIGNED.fullmatch(ok), ok)
         for bad in ("r:01", "r:", ":1", "r:-1", f"r:{10**16}", "r\u0663:1", "r:\u0663", "r:1\n"):
             self.assertFalse(lessons.SIGNED.fullmatch(bad), bad)
+        folder = lessons.Folder(os.path.join(tmp(self), "lessons"))
+        lid, _ = folder.add(PROJECT, "Run pytest with -q.")
+        head = folder.head()
         with self.assertRaises(lessons.Refused):
-            lessons.parse_because("r:01")
+            folder.retire(lid, because="r:01")
+        self.assertEqual((folder.head(), folder.notes()[0]["status"]), (head, "active"))
 
     def test_retire_with_missing_or_unverified_because_refuses_and_changes_nothing(self):
         from tracekit import tips

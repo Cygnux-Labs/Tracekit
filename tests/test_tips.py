@@ -1007,19 +1007,25 @@ class Lessons(unittest.TestCase):
             sent.append((source, value))
             return observe(handle, value, source, trust, **fields)
 
+        ref = f"{run.run_id}:{seq}"
         with mock.patch.object(RunHandle, "observe", spy):
-            code, out, err = self.tips("retire", fix["id"], "--because", f"{run.run_id}:{seq}")
+            code, out, err = self.tips("retire", fix["id"], "--because", ref)
         self.assertEqual(code, 0, err)
-        self.assertIn(f"(disproved by {run.run_id}:{seq})", out)
+        self.assertEqual(out.splitlines()[0], f"citing record {seq} of run {run.run_id}: input.observed from "
+                                              "tool.result, in a run of agent claude-code")
+        self.assertIn(f"(disproved by {ref})", out)
         [(_, value)] = [x for x in sent if x[0] == lessons.PERSON]
-        self.assertEqual(value["because"], f"{run.run_id}:{seq}")
+        self.assertEqual(value["because"], ref)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(note["retired_because"], ref)
+        self.assertEqual(subprocess.check_output(["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True),
+                         f"lessons: retire {fix['id']} (because {ref})\n")
         L = json.loads(self.tips("--json")[1])["lessons"]
         [gone] = [x for x in L["earlier"] if x["id"] == fix["id"]]
-        self.assertEqual(gone["retired_because"], {"run": run.run_id, "seq": seq})
-        self.assertIn(f"Retired: disproved by run {run.run_id} at seq {seq}", self.tips()[1])
-        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
-        self.assertIn(f"{run.run_id}:{seq}", subprocess.check_output(
-            ["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True))
+        self.assertEqual((gone["retired_because"]["run"], gone["retired_because"]["seq"],
+                          gone["retired_because"]["state"]), (run.run_id, seq, "signed"))
+        self.assertIn(f"Disproved by run {run.run_id} at seq {seq}, a person's word: signed", self.tips()[1])
         self.assertEqual(self.tips("restore", fix["id"])[0], 0)
         [back] = [n for n in folder.notes() if n["id"] == fix["id"]]
         self.assertEqual(back["status"], "active")
@@ -1034,11 +1040,14 @@ class Lessons(unittest.TestCase):
         path = os.path.join(folder.path, "projects", note["project"], note["file"])
         with open(path, encoding="utf-8") as f:
             text = f.read()
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text.replace("\n---\n", '\nretired_because: {"seq": 3}\n---\n', 1))
-        code, out, err = self.tips()
-        self.assertEqual(code, 0, err)
-        self.assertNotIn("disproved by", out)
+        for hand, said in (('{"seq": 3}', None), ("run-x:3", "which no signed retire of this lesson names")):
+            with self.subTest(hand=hand), open(path, "w", encoding="utf-8") as f:
+                f.write(text.replace("\n---\n", f"\nretired_because: {hand}\n---\n", 1))
+            code, out, err = self.tips()
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("isproved by", out)
+            if said:
+                self.assertIn(said, out)
 
     def test_a_persons_answers_outlive_the_vaults_retention_and_nothing_else_does(self):
         """Past the dev vault's retention, content_get said `erased` for any seq of a run and lessons.verified took that
@@ -1335,20 +1344,23 @@ class Page(unittest.TestCase):
         self.assertIn("NOT PROPOSED 1", out)
         self.assertIn("Seen in 2 sessions on 1 day: a lookup needs 3 sessions on 2 days.", out)
 
-    def test_a_retired_lessons_line_escapes_the_run_and_links_the_record_only_when_it_names_one(self):
-        x = {"id": "L-0badf00d", "name": "n", "status": "retired"}
+    def test_a_retired_lessons_line_escapes_the_run_and_links_the_record_only_when_its_signed(self):
+        x, run = {"id": "L-0badf00d", "name": "n", "status": "retired"}, '"><img src=x onerror=1>'
         line = lambda rb: page_js(self.LESSONS, f"process.stdout.write(lessonRetired({json.dumps({**x, **rb})}))")  # noqa: E731
-        out = line({"retired_because": {"run": "<\"'>", "seq": 7}})
-        self.assertIn("disproved by run &lt;&quot;&#39;&gt; at seq 7", out)
-        self.assertIn('data-lrec="&lt;&quot;&#39;&gt;" data-lseq="7"', out)
-        self.assertNotIn("<\"'>", out)
-        for rb in ({}, {"retired_because": None}, {"retired_because": "r:1"}, {"retired_because": ["r", 1]},
-                   {"retired_because": {"run": "r"}}, {"retired_because": {"seq": 1}}):
+        hostile = "&quot;&gt;&lt;img src=x onerror=1&gt;"
+        out = line({"retired_because": {"run": run, "seq": 7, "state": "signed", "why": f"Disproved by run {run}"}})
+        self.assertIn(f"Disproved by run {hostile}", out)
+        self.assertIn(f'data-lrec="{hostile}" data-lseq="7"', out)
+        self.assertNotIn("<img", out)
+        for rb in ({}, {"retired_because": None},
+                   {"retired_because": {"run": run, "seq": 7, "state": "changed", "why": f"It names {run}"}},
+                   {"retired_because": {"run": run, "seq": 7, "state": "not read", "why": f"It names {run}"}}):
             with self.subTest(rb=rb):
                 out = line(rb)
-                self.assertIn(" · Retired</span>", out)
-                self.assertNotIn("disproved", out)
+                self.assertIn(f" · It names {hostile}</span>" if rb.get("retired_because") else " · Retired</span>",
+                              out)
                 self.assertNotIn("data-lrec", out)
+                self.assertNotIn("<img", out)
 
     def test_an_effect_waits_for_five_sessions_and_a_worse_one_is_in_the_warning_colour(self):
         L = self.lessons_page(approve=True)

@@ -443,13 +443,13 @@ per project, the block a session's first prompt gets with an empty prompt and ho
 A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its
 `MEMORY.md` index; the folder is a git repo, one commit per action, so every change can be read back and undone.
 `tracekit tips retire ID` stops giving it (a waiting one is never proposed again), `restore ID` undoes that, and
-`add TEXT` writes your own. Pass `--because RUN:SEQ` to `retire` to name the record that disproved the lesson: at
-retire time `tracekit tips` checks that the run is in the dev store, verifies, and has a record at SEQ; the signer
-checks only the shape of `RUN:SEQ`. The page's "disproved by" line is read back from the note file, not checked again,
-and that this record disproved the lesson is your word. A `retired_because` in a note that isn't valid JSON refuses
-the note, as any malformed note is refused; valid JSON in the wrong shape is dropped. Proposals are worked out from the
-records each time and never stored. How a session gets them is in
-[coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in [privacy](privacy.md).
+`add TEXT` writes your own. `retire ID --because RUN:SEQ` names the record that disproved the lesson: `tracekit tips`
+first checks that the run is in the dev store, verifies and has a record at SEQ, and says what that record is (its
+type, source and run's agent); the note keeps it as `retired_because` and the signed answer carries it. The page links
+the record only while the signed retire the note names carries the same `RUN:SEQ`, and says so when it doesn't. That
+the record disproved the lesson is your word. Proposals are worked out from the records each time and never stored.
+How a session gets them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds,
+in [privacy](privacy.md).
 
 #### tracekit tips
 
@@ -467,7 +467,8 @@ tracekit tips                  # the last 7 days: LESSONS, then the three tips
 tracekit tips --since 24h      # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
 tracekit tips --json           # the TIPS page's data as one JSON object, for agents and scripts
 tracekit tips approve L-3f2a91c0 [L-...]   # a person: give these waiting lessons to the next sessions
-tracekit tips retire L-3f2a91c0 [--because RUN:SEQ]  # a person: stop giving one (optionally naming the record that disproved it)
+tracekit tips retire L-3f2a91c0            # a person: stop giving one, or never propose a waiting one again
+tracekit tips retire L-3f2a91c0 --because run-7:12   # and name the record that disproved it
 tracekit tips restore L-3f2a91c0           # a person: undo a retire
 tracekit tips add "Docs build with make docs." [--name N] [--description WHEN] [--project DIR]
 tracekit tips --for-agent [--project DIR] [--prompt TEXT | --query WORDS] [--json]

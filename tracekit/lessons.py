@@ -272,15 +272,9 @@ def parse(file, text):
             out.append(f"{m.group(1)} appears twice")
         v = (m.group(2) or "").strip()
         try:
-            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[") or (
-                m.group(1) == "retired_because" and v[:1] == "{") else v
+            fields[m.group(1)] = json.loads(v) if v[:1] in ('"', "[") else v
         except ValueError:
             out.append(f"{m.group(1)} is not a value")
-    if "retired_because" in fields:   # JSON that isn't one: refused above, as any malformed note; another shape: dropped
-        try:
-            fields["retired_because"] = parse_because(fields["retired_because"])
-        except Refused:
-            del fields["retired_because"]
     for k in ("name", "description"):
         if not isinstance(fields.get(k), str) or not fields.get(k):
             out.append(f"{k} is missing")
@@ -294,20 +288,6 @@ def parse(file, text):
             "origin": fields.get("origin", "run"), "body": lf[head.end():]}
 
 
-def parse_because(ref):
-    """Parse a `--because RUN:SEQ` reference into `{"run": RUN, "seq": SEQ}` (non-negative int), or raise Refused."""
-    if isinstance(ref, dict):
-        run, seq = ref.get("run"), ref.get("seq")
-        if isinstance(run, str) and isinstance(seq, int) and not isinstance(seq, bool) and seq >= 0 \
-                and SIGNED.fullmatch(f"{run}:{seq}"):
-            return {"run": run, "seq": seq}
-        raise Refused("because", f"{ref!r} is not RUN:SEQ")
-    if not isinstance(ref, str) or not SIGNED.fullmatch(ref.strip()):
-        raise Refused("because", f"{ref!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
-    run, seq_str = ref.strip().rsplit(":", 1)
-    return {"run": run, "seq": int(seq_str)}
-
-
 def index(notes):
     """MEMORY.md: one line per active note, by file name."""
     return "".join(f"- [{_one(n['name'])}]({n['file']}) — {_one(n['description'])}\n"
@@ -317,9 +297,10 @@ def index(notes):
 class Folder:
     """The lessons folder, <dev data dir>/lessons: one git repo, projects/<project>/ holding a project's notes and its
     MEMORY.md. `tracekit tips`' actions, run by a person, are its only writer; a folder that holds a link, or anything
-    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256, because=None)`: records
-    a person's answer as a signed observe (source PERSON; `because` is the `RUN:SEQ` of the record that disproved a
-    retired lesson) once every check has passed, before anything is written, and gives the record's `run:run_seq`, which the note keeps (`signed`); a note without one is never given to an agent."""
+    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256[, because=RUN:SEQ])`:
+    records a person's answer as a signed observe (source PERSON; a retire's `because` names the record that disproved
+    the lesson) once every check has passed, before anything is written, and gives the record's `run:run_seq`, which
+    the note keeps (`signed`); a note without one is never given to an agent."""
 
     def __init__(self, path, sign=None):
         self.path, self.sign = path, sign
@@ -414,8 +395,7 @@ class Folder:
         for signed in (False, True):   # every check, then the signed record, then every check of what it adds
             if signed and self.sign:
                 args = (action, lid, text_sha(changed[0]))
-                changed[0]["signed"] = (self.sign(*args, because=f"{because['run']}:{because['seq']}")
-                                        if because is not None else self.sign(*args))
+                changed[0]["signed"] = self.sign(*args, because=because) if because else self.sign(*args)
             texts = {n["file"]: render(n) for n in changed}
             for f, text in texts.items():
                 bad = problems(text)
@@ -491,10 +471,10 @@ class Folder:
 
     def retire(self, lid, proposal=None, because=None):
         """Retire the note `lid` (it leaves MEMORY.md and is never given again), or, with the waiting `proposal` of
-        that id, keep it as retired so it is never proposed again. With `because` (`{"run": ..., "seq": ...}` or
-        `RUN:SEQ`), records `retired_because`, names it in the commit message, and includes it in the signed observe."""
-        if because is not None:
-            because = parse_because(because)
+        that id, keep it as retired so it is never proposed again. `because`: the RUN:SEQ of the record that disproved
+        it, kept in the note (`retired_because`), the commit's subject and the signed answer."""
+        if because is not None and not SIGNED.fullmatch(because):
+            raise Refused("because", f"{because!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
         n = self.find(lid)
         if n is None and proposal is None:
             raise Refused("missing", f"no lesson {lid} in use or waiting")
@@ -508,8 +488,8 @@ class Folder:
         else:
             was = "pending" if n["status"] == "pending" else "active"
         n = dict(n, status="retired", retired_from=was, superseded_by=None, retired_because=because)
-        msg = f"retire {lid} (because {because['run']}:{because['seq']})" if because else f"retire {lid}"
-        return self._write(n["project"], [n], msg, lid, "retire", because=because)
+        return self._write(n["project"], [n], f"retire {lid}" + (f" (because {because})" if because else ""), lid,
+                           "retire", because=because)
 
     def restore(self, lid):
         """Give a retired note back the status it was retired from: in use, or proposed again (pending)."""
@@ -1193,6 +1173,29 @@ def signed_state(note, rows, known=None):
                        f"(run {run}, record {seq})."
 
 
+def disproved(note, rows):
+    """A retired note's `retired_because` (RUN:SEQ: the record a person said disproved it) as the page shows it: None
+    when it names none, else {run, seq, state, why}, "signed" only when the signed retire the note names (`signed`, in
+    `rows`) carries this same `because`; "not read" when that record is outside the window read; "changed" else."""
+    ref, sref = note.get("retired_because"), str(note.get("signed") or "")
+    if not isinstance(ref, str) or not SIGNED.fullmatch(ref):
+        return None
+    (run, seq), (srun, _, sseq) = ref.rsplit(":", 1), sref.rpartition(":")
+    out, signed = {"run": run, "seq": int(seq)}, SIGNED.fullmatch(sref)
+    rec = signed and next((r for r in rows if r.get("session_id") == srun and (r.get("v2") or {}).get("run_seq")
+                           == int(sseq) and (r.get("v2") or {}).get("source") == PERSON), None)
+    if signed and rec is None:
+        return dict(out, state="not read", why=f"It names record {seq} of run {run}; the signed retire that would "
+                                               "back it is outside the window read.")
+    v = ((rec or {}).get("v2") or {}).get("value")
+    if not (isinstance(v, dict) and v.get("action") == "retire" and v.get("id") == note.get("id")
+            and v.get("because") == ref):
+        return dict(out, state="changed", why=f"It names record {seq} of run {run}, which no signed retire of this "
+                                              "lesson names: written by hand.")
+    return dict(out, state="signed", why=f"Disproved by run {run} at seq {seq}, a person's word: signed (run {srun}, "
+                                         f"record {sseq}).")
+
+
 def effect(note, idx, occ_sessions, given_to):
     """A lesson in use measured on the detector that found it: `before` as recorded at its approval, `after` over the
     sessions the signed observe proves were given it from then on, for AFTER_S; shown once each side has MIN_EXPOSED
@@ -1271,9 +1274,8 @@ def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None, known=Non
         x["where"] = shown.get(x["project"]) or x["project"]
     return {"ok": True, "folder": folder.path, "commit": folder.head(), "budget": BUDGET, "measure": MEASURE,
             "waiting": waiting, "active": active,
-            "earlier": [{**{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by",
-                                                  "retired_because")},
-                         "where": shown.get(n["project"]) or n["project"]}
+            "earlier": [{**{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by")},
+                         "retired_because": disproved(n, rows), "where": shown.get(n["project"]) or n["project"]}
                         for n in notes if n["status"] in ("retired", "superseded")],
             "not_proposed": sorted(nope, key=lambda x: x["rule"] != "tainted")[:40], "not_proposed_n": len(nope),
             "not_proposed_by": dict(collections.Counter(x["rule"] for x in nope).most_common()),

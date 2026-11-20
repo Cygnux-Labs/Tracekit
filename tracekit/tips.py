@@ -1098,10 +1098,9 @@ def lessons_text(L, days=7):
                       + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
                 f"    {x['retire']}"]
     for x in L.get("earlier") or ():
-        if x.get("status") == "retired" and isinstance(x.get("retired_because"), dict):
-            rb = x["retired_because"]
-            out += ["", f"RETIRED · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x.get('where') or x['project']}",
-                    x["name"], _wrap(f"Retired: disproved by run {rb['run']} at seq {rb['seq']}")]
+        if x["status"] == "retired" and x["retired_because"]:
+            out += ["", f"RETIRED · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']}", x["name"],
+                    _wrap(x["retired_because"]["why"])]
     if nope:
         out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
             [_wrap(f"and {L['not_proposed_n'] - 10} more (--json lists the first 40)")] if L["not_proposed_n"] > 10 else [])
@@ -1205,20 +1204,21 @@ def _signer(client):
     return sign
 
 
-def verify_because(data_dir, ref):
-    """Verify `--because RUN:SEQ` against the signer's store in `data_dir`: returns `{"run": RUN, "seq": SEQ}` only
-    when the run exists, verifies cleanly with the verifier, and contains a record at `seq`; raises lessons.Refused
-    with a plain message otherwise."""
+def cited(data_dir, ref):
+    """`retire --because RUN:SEQ`: the record of the dev store a person says disproved a lesson, checked before
+    anything is signed: the run is in the store, verifies, and holds a record at SEQ. -> what that record is (its
+    type, source and run's agent), said before it is signed; raises lessons.Refused otherwise."""
     import tempfile
 
-    from . import view
-    because = lessons.parse_because(ref)
-    run_id, seq = because["run"], because["seq"]
+    from . import parsers, view
+    if not lessons.SIGNED.fullmatch(ref):
+        raise lessons.Refused("because", f"{ref!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
+    run_id, seq = ref.rsplit(":", 1)
     cfg = {"data_dir": data_dir}
     try:
         vkeys, _ = view.store_trust(cfg)
     except (OSError, ValueError) as e:
-        raise lessons.Refused("because", f"cannot verify {run_id}:{seq} in the signer's store: {e}") from e
+        raise lessons.Refused("because", f"cannot verify {ref} in the signer's store: {e}") from e
     with tempfile.TemporaryDirectory(prefix="tk-because-") as tmp:
         trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
         r = view.reader(cfg)
@@ -1232,9 +1232,14 @@ def verify_because(data_dir, ref):
             r.close()
     if code:
         raise lessons.Refused("because", f"run {run_id} did not verify (exit {code}): refused")
-    if not any((rec.get("event") or {}).get("run_seq") == seq for rec in records):
+    events = [rec.get("event") or {} for rec in records]
+    e = next((e for e in events if e.get("run_seq") == int(seq)), None)
+    if e is None:
         raise lessons.Refused("because", f"run {run_id} has no verified record at seq {seq}")
-    return because
+    agent = next((parsers._get(x, "data", "agent", "name") for x in events if x.get("type") == "run.registered"), None)
+    source = parsers._get(e, "data", "source")
+    return _escaped(f"record {seq} of run {run_id}: {e.get('type')}" + (f" from {source}" if source else "")
+                    + f", in a run of agent {agent or 'unnamed'}")
 
 
 def _scan(folder, since, say):
@@ -1291,7 +1296,9 @@ def act(argv, say):
         sign = _signer(client)
         data_dir = dev_data_dir(create=False)
         folder = lessons.Folder(os.path.join(data_dir, "lessons"), sign=sign)
-        because = verify_because(data_dir, a.because) if a.act == "retire" and a.because else None
+        because = a.because if a.act == "retire" else None
+        if because:
+            print(f"citing {cited(data_dir, because)}")
         if a.act == "add":
             lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
                                    a.name, a.description, a.type)
@@ -1303,8 +1310,8 @@ def act(argv, say):
             return 0
         if a.act == "retire" and folder.find(a.ids[0]):
             note = folder.retire(a.ids[0], because=because)
-            why = f" (disproved by {because['run']}:{because['seq']})" if because else ""
-            print(f"retired {a.ids[0]}: no session is given it from now on{why}" + (f" ({note})" if note else ""))
+            print(f"retired {a.ids[0]}: no session is given it from now on"
+                  + (f" (disproved by {because})" if because else "") + (f" ({note})" if note else ""))
             return 0
         L = _scan(folder, a.since, say)
         if not L.get("ok"):

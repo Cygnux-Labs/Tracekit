@@ -207,13 +207,10 @@ when you approved it, the `run:run_seq` of up to 8 signed records it rests on, a
 answer (an observe whose kept value is the action, the id and the sha256 of the lesson's text, never the text). A
 lesson whose text matches a secret's shape, a bank
 number or a value the signer redacted is refused, never cut. A retire may name the record that disproved the lesson
-(`--because RUN:SEQ`, kept in the note as `retired_because` and in the signed answer): `tracekit tips` checks at retire
-time that the run is in the dev store, verifies, and has a record at SEQ; the signer checks only the shape; the page's
-"disproved by" line is read back from the note file, not checked again; that the record disproved the lesson is the
-person's word. A `retired_because` that isn't valid JSON refuses the note, as any malformed note is refused; valid
-JSON in the wrong shape is dropped. The folder is a git repository: every approve, retire,
-restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
-ids of the lessons it was given and the block's sha256, never their text.
+(`--because RUN:SEQ`, kept in the note as `retired_because` and in the signed answer): its run id and seq, never the
+record's content. The folder is a git repository: every approve, retire, restore and add is a commit, so its history
+keeps what a retired lesson said. A session's run keeps, in the vault, the ids of the lessons it was given and the
+block's sha256, never their text.
 
 The dev data dir is `~/Library/Application Support/tracekit/data` on macOS, `$XDG_DATA_HOME/tracekit` (else
 `~/.local/share/tracekit`) on Linux and `%LOCALAPPDATA%\tracekit` on Windows. To erase the lessons and their history,
