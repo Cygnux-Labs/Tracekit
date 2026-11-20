@@ -729,11 +729,11 @@ class VaultBody:
         self.refusal_warned = False              # a refused status says so once per process, not once per answer
 
     def __call__(self, content, size=None):
-        if self.limit is None or self.asked_at is None or time.monotonic() - self.asked_at >= VAULT_STATUS_TTL_S:
+        if self.asked_at is None or time.monotonic() - self.asked_at >= VAULT_STATUS_TTL_S:
             try:
                 self.limit = min((self.status().get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
                 self.asked_at = time.monotonic()
-            except SignerUnavailable:   # asked again on the next call, keeping the answer there was if there was one
+            except SignerUnavailable:   # asked again on the next call
                 return {}
             except RPCError as e:   # not granted `status`: no body
                 self.limit, self.asked_at = 0, time.monotonic()
