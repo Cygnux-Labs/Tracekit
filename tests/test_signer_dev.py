@@ -401,7 +401,7 @@ class DevSignerEndToEnd(unittest.TestCase):
             run.decide("c1", "Bash", '{"command": "ls"}')
             run.complete("c1")
             said = self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", os.path.join(self.dir, "open.tkb"))
-            self.assertIn(f"run {run.run_id} has no run.final yet: the bundle verifies only TO HEAD n (open); "
+            self.assertIn(f"run {run.run_id} has no run.final yet, so the bundle verifies as open, not VERIFIED: "
                           "export again once the run is final.\n", said)
             info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o",
                                        os.path.join(self.dir, "open2.tkb"), "--json"))
@@ -409,6 +409,7 @@ class DevSignerEndToEnd(unittest.TestCase):
 
     def test_export_of_a_run_that_just_closed_waits_for_run_final(self):
         """No wait in the test: the signer finalises the run during its grace window, and export waits for it."""
+        os.environ["TRACEKIT_DEV_GRACE"] = "2"   # a window the export surely starts in (setUp restores the env)
         c = Client()
         self.addCleanup(c.close)
         with c.run("e2e") as run:
@@ -713,7 +714,7 @@ class DevSignerOverTcp(unittest.TestCase):
             run.complete("c1")
             said = DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id,
                                          "-o", os.path.join(self.dir, "open.tkb"))
-            self.assertIn(f"run {run.run_id} has no run.final yet: the bundle verifies only TO HEAD n (open); "
+            self.assertIn(f"run {run.run_id} has no run.final yet, so the bundle verifies as open, not VERIFIED: "
                           "export again once the run is final.\n", said)
             info = json.loads(DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id, "--json",
                                                     "-o", os.path.join(self.dir, "open2.tkb")))

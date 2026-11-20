@@ -1369,18 +1369,18 @@ def _export_remote(a, show=print):
     return 0
 
 
-def _exported(a, info, what, final=True):
+def _exported(a, info, what, final=None):
     """What `tracekit export --v2` says it wrote (info: bundle_v2.export's summary): the bundle, `what` it holds and
-    the commands that verify it; with --json, info itself plus `final`, for scripts. A run without `run.final` is
-    named as such, so the open-only verification isn't a surprise."""
+    the commands that verify it; with --json, info itself, for scripts. `final` (a single run's export: whether the
+    run has its `run.final`) adds a line for a run without one, and `final` to the JSON."""
     if a.json:
-        return json.dumps({**info, "final": final}, indent=2)
+        return json.dumps(info if final is None else {**info, "final": final}, indent=2)
     where = f" --config {_quote(a.config)}" if a.config else f" --data-dir {_quote(a.data_dir)}" if a.data_dir else ""
     out = _quote(info["bundle"])
     return (f"wrote {info['bundle']}: {what}, {info['records']} records; a verifier needs tracekit "
             f"{info['verifier_min_version']} or newer\n" + (f"spans: {info['otel']}\n" if info.get("otel") else "")
-            + ("" if final else f"{what} has no run.final yet: the bundle verifies only TO HEAD n (open); "
-                                "export again once the run is final.\n")
+            + (f"run {a.run} has no run.final yet, so the bundle verifies as open, not VERIFIED: export again once "
+               "the run is final.\n" if final is False else "")
             + "next, pin the signer's log key and verify the bundle against it:\n"
               f"  tracekit signer trust{where} -o trust.json\n  tracekit verify {out} --trust trust.json")
 
