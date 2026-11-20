@@ -2738,7 +2738,7 @@ _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
-                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
+                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY", "evaluate"}}
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
@@ -2747,13 +2747,19 @@ def _runs_signer(code):
     """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
     other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
-    reached by its full name."""
+    reached by its full name. `evaluate` is a function: code that names it and reaches into one (a dunder attribute,
+    inspect) may get to its module."""
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
-            re.search(r"\btracekit\.signer\.\w+\.\w", code):
+            re.search(r"\btracekit\.signer\.\w+\.\w", code) or \
+            re.search(r"\bevaluate\b", code) and re.search(r"\.\s*__|\binspect\b", code):
         return True
     aliases = {}   # a name the code gives one of the signer's modules -> that module
-    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+\(?([\w\s,*]+)", code):
-        for item in m.group(2).replace("\n", " ").split(","):
+    # an import list ends where its statement does: a parenthesised one at its `)` (a comment in it may hold one), any
+    # other at its line's end unless a backslash goes on
+    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
+                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w ,*\t]|\\\r?\n)+))", code):
+        listed = re.sub(r"#[^\n]*", "", m.group(2) or m.group(3) or "")
+        for item in listed.replace("\\\n", " ").replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))
             if not name:
                 continue
@@ -3038,7 +3044,7 @@ def _tracekit(parsed, finds, work):
     SIGNER_MODULE: an ACT text whose code reaches more of Tracekit's signer than it may read (_runs_signer), or its
     data or lifecycle through the SDK (_reaches_sdk). Each also normalised and casefolded as a path is (_path_forms).
     `work`: the decision's budget, which this reading spends (shell.charge)."""
-    commands, refs, written = parsed[0], parsed[2], set(parsed[3])
+    commands, refs, written = parsed[0], parsed[2], set(parsed[3]) - {"/dev/null"}   # (a redirection there keeps nothing)
     learned = parsed[5] if len(parsed) > 5 else None
     kinds = [_reading(c["argv"]) for c in commands]
     roams = not written and all(k or c["argv"][0] in _NAVIGATE for c, k in zip(commands, kinds))
@@ -3075,7 +3081,7 @@ def _tracekit(parsed, finds, work):
             named += [posixpath.join(s, p) for a, p in zip(c["argv"], c["argv"][1:])
                       if a in ("-path", "-wholename", "-ipath", "-iwholename", "-name", "-iname") for s in starts]
         feeds = feeding.get(c["pipeline"], -1) > c.get("stage", 0) or \
-            bool({"$()", "``", "<()"} & set(c["via"])) or bool(c.get("out"))
+            bool({"$()", "``", "<()"} & set(c["via"])) or bool(set(c.get("out", ())) - {"/dev/null"})
         if c["argv"][0] in _NAVIGATE:
             if roams:
                 deep += at(named)
