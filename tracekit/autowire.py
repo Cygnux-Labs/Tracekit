@@ -369,7 +369,7 @@ def _crewai(run):
 FRAMEWORKS = (
     ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24",
      "quickstarts/openai-agents", _openai_agents),
-    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "quickstarts/langchain",
+    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<2 langgraph>=1.2,<1.3", "quickstarts/langchain",
      _langgraph),
     ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
      "quickstarts/claude-agent-sdk", _claude_agent_sdk),
@@ -377,7 +377,7 @@ FRAMEWORKS = (
     ("Browser Use", "browser-use", (0, 13, 11), (1, 1), "browser-use>=0.13.11,<1.1", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
-    ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",
+    ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 72), "pydantic-ai-slim>=2.57,<2.72", "integrations/pydantic-ai",
      _pydantic_ai),
 )
 

@@ -587,7 +587,11 @@ class RealSigner(unittest.TestCase):
 @unittest.skipUnless(HAVE, "agent_framework not installed")
 class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "agent_framework", "1.22.0"
-    message = "Agent Framework 0.0.1 is wired but untested; Tracekit is tested with agent-framework-core>=1.22,<1.23"
+    message = "Agent Framework 0.0.1 is wired but untested; Tracekit is tested with agent-framework-core>=1.22,<1.27"
+
+    def test_the_tested_range_ends_after_1_26(self):
+        self.assertEqual(self.warnings_for("1.26.3"), [])
+        self.assertEqual(len(self.warnings_for("1.27.0")), 1)
 
 
 if __name__ == "__main__":
