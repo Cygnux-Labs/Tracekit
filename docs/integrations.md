@@ -24,6 +24,7 @@ real library on every push to main and every pull request; each experimental pag
 | LlamaIndex | Experimental | [LlamaIndex](integrations/llamaindex.md) |
 | Haystack | Experimental | [Haystack](integrations/haystack.md) |
 | Microsoft Agent Framework | Experimental | [Microsoft Agent Framework](integrations/microsoft-agent-framework.md) |
+| Inspect AI | Experimental | [Inspect AI](integrations/inspect-ai.md) |
 | Vercel AI SDK (TypeScript) | Experimental | [Vercel AI SDK](integrations/vercel-ai.md), [TypeScript SDK](../sdk/typescript/README.md) |
 
 Another agent: record its calls with the SDK's run handle ([custom agent](quickstarts/custom.md)).
