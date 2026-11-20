@@ -1723,9 +1723,10 @@ class CodingPack(unittest.TestCase):
                     self.assertNotIn("TK-A039", e.decide("Bash", {"command": command})["rule_ids"])
 
     def test_a_destructive_statement_after_an_abbreviated_long_option_asks_in_every_pack(self):
-        """TK-A039 (#978): psql's --command and mysql's or mariadb's --execute by any prefix their option parsers
-        accept as unique (--co, --ex) carry the statement as the full option does; another option that shares the
-        prefix (mysql --comments, --compress) is not the statement flag."""
+        """TK-A039 (#978): psql's --command and mysql's or mariadb's --execute by any prefix (--co, --ex) carry the
+        statement as the full option does, as psql's getopt_long and MariaDB's clients take a unique prefix (Oracle
+        MySQL's mysql takes none: there it only holds more); another option that shares the prefix (mysql
+        --comments, --compress) is not the statement flag."""
         held = [
             "psql --comm 'DROP TABLE users;' mydb",
             "psql --co 'DROP TABLE users;' mydb",
@@ -1733,6 +1734,7 @@ class CodingPack(unittest.TestCase):
             "mysql --exec 'DROP TABLE users;' shop",
             "mariadb --ex='TRUNCATE orders' shop",
             "docker exec db psql --comm 'DROP TABLE users'",
+            'psql --command"DROP TABLE users;"',   # the full name glued to its value, held before the prefixes too
         ]
         routine = [
             "psql --comm 'SELECT 1;' mydb",
