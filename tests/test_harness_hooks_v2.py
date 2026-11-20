@@ -1684,7 +1684,9 @@ class Installer(unittest.TestCase):
                     'const sent = [];\n'
                     'globalThis.Bun = { spawn: ({ cmd, stdin }) => {\n'
                     '  if (fail) throw new Error("no python");\n'
-                    '  sent.push([cmd.at(-1), JSON.parse(new TextDecoder().decode(stdin))]);\n'
+                    # the event is the last argument, or on Windows a quoted literal in the -c code (_literal)
+                    "  const ev = cmd.at(-1).match(/(?:^|')(session[.][a-z]+)(?:'|$)/)?.[1];\n"
+                    '  sent.push([ev, JSON.parse(new TextDecoder().decode(stdin))]);\n'
                     '  return { stderr: "", exited: Promise.resolve(0), exitCode: 0, kill: () => {} };\n} };\n'
                     'let subscribed, aborted = false;\n'
                     'async function* stream({ types, signal }) {\n'
