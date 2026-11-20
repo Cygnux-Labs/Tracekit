@@ -13,14 +13,15 @@ Three tips, each worked out from what the agents' own records show, over the las
    they blocked the agent.
 
 Token counts come from signed records where those carry them (a model.exchange response's `usage`: the LLM gateway's,
-an SDK integration's, the transcript tailer's, signed as each Claude Code turn was read) and from Claude Code's
-transcripts, read-only as `tracekit audit` reads them, where none does. A signed step the transcripts also hold counts
-once, at its signed counts, in the transcript's place (which agent took it, when, and how long each cache write lasts,
-which no signed record says): matched by its message id (the tailer's), a tool_use id, or identical token counts within
-MATCH_S (the gateway signs each exchange under an id of its own, and a message without tool calls has no tool_use id).
-Holds come only from signed records; a transcript adds how long each one blocked the agent and where it ran, joined by
-its tool_use_id. Each tip names every source its figures came from, and each step says its own (`src`). Dollars are
-Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
+an SDK integration's, the transcript tailer's, signed as each Claude Code turn was read) and from Claude
+Code's transcripts and Codex CLI's session files, read-only as `tracekit audit` reads them, where none does. A signed
+step the transcripts also hold counts once, at its signed counts, in the transcript's place (which agent took it, when,
+and how long each cache write lasts, which no signed record says): matched by its message id (the tailer's), a
+tool_use id, or identical token counts within MATCH_S (the gateway signs each exchange under an id of its own, and a
+message without tool calls has no tool_use id). A signed Codex run its session files also hold counts once, from the
+sessions. Holds come only from signed records; a transcript adds how long each one blocked the agent and where it ran,
+joined by its tool_use_id. Each tip names every source its figures came from, and each step says its own (`src`).
+Dollars are Anthropic's and OpenAI's list prices (PRICES), not what a subscription bills. No network, no model.
 """
 import collections
 import json
@@ -46,7 +47,7 @@ from .why import import_v2
 # if Haiku agents with longer prompts show up
 _OPUS4 = {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10}
 _FABLE = {"input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5, "cache_write_1h": 20}
-PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-05", "models": {
+PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-07", "models": {
     "claude-fable-5-1*": {**_FABLE, "cache_read": 0.25}, "claude-mythos-5-1*": {**_FABLE, "cache_read": 0.25},
     "claude-fable-5*": _FABLE, "claude-mythos-5*": _FABLE,
     "claude-opus-5-5*": {"input": 4, "output": 20, "cache_read": 0.2, "cache_write": 5, "cache_write_1h": 8},
@@ -55,6 +56,25 @@ PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-05", "models": 
     "claude-sonnet-4-6*": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6},
     "claude-haiku-5-5*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.2},
     "claude-haiku-4-5*": {"input": 1, "output": 5, "cache_read": 0.1, "cache_write": 1.25, "cache_write_1h": 2}}}
+# OpenAI's list prices, USD per million tokens, as of 2026-11-07: https://developers.openai.com/api/docs/pricing (standard
+# processing; Batch is half). OpenAI's cache lifetimes are 30 minutes and 12 hours: the 30-minute write is priced
+# here as the API's default write (`cache_write`) and the 12-hour one as `cache_write_1h`, so the cache tip's 1-hour
+# replay is a lower bound for a 12-hour write. Cached input is a read at `cache_read`. A model with no row is left
+# out with a note naming it, never given a guessed price.
+# lean: the page doubles input, cached and write prices above 272K input tokens (the long sessions the context tip is
+# about); split the rows by prompt size if such sessions show up. GPT-5.6 Sol's row is its promotional price, which
+# ends 2026-11-30; re-check it after that.
+PRICES["models"].update({
+    "gpt-6-astra*": {"input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5, "cache_write_1h": 25},
+    "gpt-6-rosalind*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 37.5},
+    "gpt-6-cyber*": {"input": 20, "output": 100, "cache_read": 2, "cache_write": 25, "cache_write_1h": 50},
+    "gpt-6.1-sol*": {"input": 2, "output": 10, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-6-sol*": {"input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-5.6-sol*": {"input": 4, "output": 20, "cache_read": 0.4, "cache_write": 5, "cache_write_1h": 10},
+    "gpt-6.1-terra*": {"input": 1, "output": 5, "cache_read": 0.05, "cache_write": 1.25, "cache_write_1h": 2.5},
+    "gpt-5.6-terra*": {"input": 2, "output": 12, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-6-luna*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.25},
+    "gpt-5.6-luna*": {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.25, "cache_write_1h": 0.5}})
 _RATES = Prices(PRICES)
 
 WINDOW_S = 7 * 86400
@@ -248,6 +268,73 @@ def read_transcripts(root, since):
     return agents, calls, files, unreadable
 
 
+def read_codex_sessions(root, since):
+    """Codex CLI's session files under root (~/.codex/sessions), read-only, from `since` on -> (agents, files read,
+    unreadable): one agent per rollout file, keyed by its session_meta's payload.id (the root thread's id is repeated
+    in every subagent's file, so keying on that would merge them), each step a token_usage_record (confirmed from real
+    sessions: payload.usage carries input_tokens, cached_input_tokens, cache_write_input_tokens and output_tokens,
+    the reasoning included; input_tokens already counts the cached and written ones, so a step's own input is the
+    rest). The model is the file's last turn_context. A usage record names no cache lifetime, so its writes are `w`
+    (priced at the API's default write), and no call ids are read yet, nor request latencies, so a Codex agent keeps no
+    call and the holds tip covers none of them."""
+    agents, unreadable, files = {}, [], 0
+    if not root or not os.path.isdir(root):
+        return agents, files, unreadable
+    for path, session in _iter_transcripts(root, unreadable):
+        try:
+            if os.lstat(path).st_mtime < since:   # not written in the window: nothing in it can be
+                continue
+        except OSError:
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        files += 1
+        name, mine, seen, model, sid, sub = os.path.basename(path)[:-len(".jsonl")], [], set(), None, None, False
+        try:
+            for _n, e in transcript_entries(f, final=True):   # a rollout file is JSON lines, but read the safe way
+                if not isinstance(e, dict):
+                    continue
+                p = e.get("payload")
+                if not isinstance(p, dict):
+                    continue
+                if e.get("type") == "session_meta":
+                    sid = p.get("id") if isinstance(p.get("id"), str) else sid
+                    src = p.get("source")   # an object ("subagent": {...}) in real rollouts, a string in old ones
+                    sub = "subagent" in src if isinstance(src, dict) else "subagent" in str(src or "").lower()
+                elif e.get("type") == "turn_context" and isinstance(p.get("model"), str):
+                    model = p["model"]
+                elif e.get("type") == "token_usage_record" and isinstance(p.get("usage"), dict):
+                    at, u = _entry_time(e), p["usage"]
+                    rid = p.get("response_id")
+                    if at is None or at.timestamp() < since:
+                        continue
+                    if isinstance(rid, str):
+                        if rid in seen:   # a resumed file repeats its earlier responses: each counts once
+                            continue
+                        seen.add(rid)
+                    s = _step(at.timestamp(), rid if isinstance(rid, str) else None, model, "codex")
+                    s["in"] = max(0, (_int(u.get("input_tokens")) or 0) - (_int(u.get("cached_input_tokens")) or 0)
+                                   - (_int(u.get("cache_write_input_tokens")) or 0))
+                    s["out"] = max(s["out"], _int(u.get("output_tokens")) or 0)
+                    s["cr"] = max(s["cr"], _int(u.get("cached_input_tokens")) or 0)
+                    s["w"] = max(s["w"], _int(u.get("cache_write_input_tokens")) or 0)
+                    mine.append(s)
+        except OSError as x:
+            unreadable.append({"path": path, "error": f"cannot read: {x}"})
+        finally:
+            f.close()
+        if mine:
+            key = sid or session or name
+            a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "codex",
+                                        "label": f"session {key[:8]}", "steps": []})
+            a["steps"] += mine
+    for a in agents.values():
+        a["steps"].sort(key=lambda s: s["t"])
+    return agents, files, unreadable
+
+
 def held_calls(rows, since):
     """The calls held for a person (signed decisions `ask`) in the viewer's rows, as view.review counts them, each with
     when a person (or an agent approver) first answered its approval request, from the signed approval records:
@@ -381,11 +468,12 @@ def _k(n):
     return f"{n / 1000:,.0f}k"
 
 
-FROM = {"signed": "signed records", "transcripts": "Claude Code's transcripts (read-only)"}
+FROM = {"signed": "signed records", "transcripts": "Claude Code's transcripts (read-only)",
+        "codex": "Codex's session files (read-only)"}
 
 
 def _from(kinds):
-    return " and ".join(FROM[k] for k in ("signed", "transcripts") if k in kinds)
+    return " and ".join(FROM[k] for k in ("signed", "transcripts", "codex") if k in kinds)
 
 
 def context_tip(agents):
@@ -417,7 +505,7 @@ def context_tip(agents):
                      "actual": actual, "replays": {cap: replay(steps, cap, post, r, w_rate) for cap in CAPS
                                                    if cap < max(ctx)}})
     if not rows:
-        tip["why"] = f"No price for {', '.join(sorted(unpriced))}: the tips price Anthropic's models only (tracekit/tips.py)."
+        tip["why"] = f"No price for {', '.join(sorted(unpriced))}: the tips price Anthropic's and OpenAI's models only (tracekit/tips.py)."
         return tip
     saved = {cap: sum(x["actual"] - x["replays"][cap][0] for x in rows if cap in x["replays"]) for cap in CAPS}
     best = max(saved.values())
@@ -474,7 +562,8 @@ def context_tip(agents):
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
                      f"Token counts of the {sum(tiers.values()):,} steps these figures rest on: "
-                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts") if tiers[k])
+                     + " and ".join(f"{tiers[k]:,} from {FROM[k]}" for k in ("signed", "transcripts", "codex")
+                                       if tiers[k])
                      + ".",
                      "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
                      + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
@@ -548,6 +637,10 @@ def cache_tip(agents, calls, held=(), asked=()):
     if not waits:
         tip["why"] = noprice[0] if noprice else \
             "No step records how long its cache lasts: the tip reads that from Claude Code's transcripts (each write " \
+            "says 5 minutes or 1 hour); Codex's session files name no lifetime either (OpenAI writes last 30 minutes " \
+            "or 12 hours, and a session record doesn't say which)." \
+            if unknown and not tip["bins"] and any(a["source"] == "codex" for a in agents) else \
+            "No step records how long its cache lasts: the tip reads that from Claude Code's transcripts (each write " \
             "says 5 minutes or 1 hour)." if unknown and not tip["bins"] else \
             "No wait outlived the prompt cache: no step had to write its whole context again."
         return tip
@@ -593,8 +686,8 @@ def cache_tip(agents, calls, held=(), asked=()):
                    "still writes what it added; a held call nobody answered could fail at once and wait not at all "
                    "(its waiting time is counted in tip 3).",
                    f"Would have saved: {_money(now)} - {_money(alt)} = {_about(now - alt)}, an estimate."] if fix else [])
-               + (["Steps without a recorded cache lifetime (signed records hold none) are left out: "
-                   f"{unknown}."] if unknown else []) + noprice,
+               + (["Steps without a recorded cache lifetime (signed records and Codex's session files hold none) are "
+                   f"left out: {unknown}."] if unknown else []) + noprice,
                fix={"text": "Add a line to the agent's instructions (AGENTS.md or CLAUDE.md):",
                     "copy": f"- Keep each blocking call under {_dur(short - MARGIN, down=True)}: the prompt cache here lasted "
                             f"{seen}, counted from the start of the request that last read or wrote it, and the step "
@@ -769,6 +862,25 @@ def _signed(t, s):
     t.update(src="signed", **{k: s[k] for k in ("in", "out", "cr")})
 
 
+def _same(signed, agents):
+    """{signed run's key: the indexes of its steps Codex's session files also hold}, step by step: a step of a Codex
+    run takes up one step of its own session (the run's key is the session file's session_meta id) with the same
+    token counts within MATCH_S that no other step took, as _join's pass 3 does (a Codex run's records name no call
+    ids), and that session step's `src` becomes `signed` (_signed). A run of another agent, or of another session,
+    joins none of it, and a step with no equal one counts on its own."""
+    held, pools = collections.defaultdict(set), {}
+    for k, a in signed.items():
+        own = agents.get(k.split("/")[0]) if a.get("name") == "codex" else None   # its own session, or none
+        left = pools.setdefault(own["key"], list(own["steps"])) if own is not None else []
+        for i, s in enumerate(a["steps"]):
+            j = next((j for j, t in enumerate(left) if _counts(t) == _counts(s) and abs(t["t"] - s["t"]) <= MATCH_S),
+                     None)
+            if j is not None:
+                held[k].add(i)
+                _signed(left.pop(j), s)
+    return held
+
+
 def _costs(agents):
     """{tool_use id: USD} of the transcripts' `agents`: each step's cost (its input side and its output, at list
     price), shared by the calls it made. A model without a price costs nothing here."""
@@ -789,19 +901,21 @@ def lessons_part(rows, agents, calls, folder, now, since, known=None):
     return lessons.page(rows, calls, folder, _costs(agents), now, since, cwds, known)
 
 
-def build(rows, root=None, now=None, since=None, folder=None, known=None):
+def build(rows, root=None, now=None, since=None, folder=None, known=None, codex=None):
     """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
     price table's date, the lessons (lessons_part; their folder `folder`, None outside the dev store) and the three
     tips. A signed step the transcripts also hold counts once, at its signed counts in the transcript's place
     (`sources.signed.also`); one _join refused counts for nothing (`sources.signed.refused`). The signed records are
     the viewer's live view, its newest rows, so they may span less than the window:
-    `sources.signed.span`."""
+    `sources.signed.span`. Codex CLI's session files are read from `codex` (~/.codex/sessions) when that folder
+    exists."""
     now = time.time() if now is None else now
     since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
+    codex_agents, codex_files, codex_bad = read_codex_sessions(codex, since)
     part = lessons_part([r for r in rows if (r.get("ts") or 0) >= since], agents, calls, folder, now, since, known)
     named = collections.defaultdict(set)
     for r in rows:
@@ -830,18 +944,25 @@ def build(rows, root=None, now=None, since=None, folder=None, known=None):
             refused += 1
     for a in signed.values():
         a["steps"] = [s for s in a["steps"] if id(s) not in drop]
+    cx = _same(signed, codex_agents)   # a signed Codex run its sessions also hold counts once, in the session's place
+    for k, idx in cx.items():
+        signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
+    also["runs"], also["steps"] = also["runs"] + len(cx), also["steps"] + sum(map(len, cx.values()))
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
     holds = held_calls(rows, since)
-    every = list(signed.values()) + list(agents.values())
+    every = list(signed.values()) + list(agents.values()) + list(codex_agents.values())
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
+            "codex_root": _shown(codex) if codex and os.path.isdir(codex) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
                                    "also": also, "refused": refused, "records": len(times),
                                    "span": [min(times), max(times)] if times else None,
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
-                                        "steps": sum(len(a["steps"]) for a in agents.values())}},
+                                        "steps": sum(len(a["steps"]) for a in agents.values())},
+                        "codex": {"files": codex_files, "agents": len(codex_agents), "unreadable": len(codex_bad),
+                                  "steps": sum(len(a["steps"]) for a in codex_agents.values())}},
             "lessons": part,
             "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
                                                    {h["id"] for h in holds if h["answered"] is not None}),
@@ -853,15 +974,16 @@ class Page:
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
     takes seconds to read)."""
 
-    def __init__(self, rows, root, ttl=60, folder=None, known=None):
-        self.rows, self.root, self.ttl, self.folder, self.known = rows, root, ttl, folder, known
+    def __init__(self, rows, root, ttl=60, folder=None, known=None, codex=None):
+        self.rows, self.root, self.ttl, self.folder, self.known, self.codex = rows, root, ttl, folder, known, codex
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
                 self.body = json.dumps(build(self.rows(), self.root, folder=self.folder,
-                                             known=self.known() if self.known else None), ensure_ascii=False)
+                                             known=self.known() if self.known else None, codex=self.codex),
+                                       ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
 
@@ -990,7 +1112,7 @@ def text(t, store, failed=0, root=None):
     """`tracekit tips` in plain words: what it read from `store` (its name) and the transcripts (looked for in `root`),
     then the lessons (lessons_text), then each tip's title, evidence, estimated saving and fix, or why it has none; one
     line when nothing was read."""
-    s, tr = t["sources"]["signed"], t["sources"]["transcripts"]
+    s, tr, cx = t["sources"]["signed"], t["sources"]["transcripts"], t["sources"]["codex"]
     since = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t["window"][0]))
     read = f"{store}: {s['records']:,} signed records" + (
         f", {failed} run{'s' * (failed != 1)} left out: {'they' if failed != 1 else 'it'} didn't verify (tracekit view "
@@ -998,10 +1120,13 @@ def text(t, store, failed=0, root=None):
         f", {s['refused']:,} not taken for a transcript's turn (another run's, or signed outside the turn's time: "
         "the transcript's counts stand)" if s.get("refused") else "") + (
         f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
-        f"; no Claude Code transcripts in {_shown(root)}" if root else "")
-    if not (s["records"] or tr["steps"]):
+        f"; no Claude Code transcripts in {_shown(root)}" if root else "") + (
+        f"; Codex CLI's sessions in {t['codex_root']}: {cx['files']:,} file{'s' * (cx['files'] != 1)}, "
+        f"{cx['steps']:,} step{'s' * (cx['steps'] != 1)}"
+        + (f", {cx['unreadable']} unreadable" if cx["unreadable"] else "") if t["codex_root"] else "")
+    if not (s["records"] or tr["steps"] or cx["steps"]):
         return _escaped(f"tracekit tips: read {read}, since {since}: nothing yet")
-    out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's list prices of {t['prices']}: a "
+    out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's and OpenAI's list prices of {t['prices']}: a "
                  "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
                  "operator-side, not evidence.", ""), ""]
     out += lessons_text(t["lessons"], max(1, round((t["window"][1] - t["window"][0]) / 86400)))
@@ -1236,7 +1361,7 @@ def main(argv=None):
     import argparse
     import sys
 
-    from .audit import default_root
+    from .audit import codex_root, default_root
     from .report import when
     from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
@@ -1281,7 +1406,7 @@ def main(argv=None):
         return 1
     root = None if a.data_dir else default_root()
     t = build(rows, root, now, a.since, None if a.data_dir else lessons.Folder(os.path.join(cfg["data_dir"], "lessons")),
-              known)
+              known, None if a.data_dir else codex_root())
     if a.json and failed:   # the text says it in its first line
         print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",
               file=sys.stderr)
