@@ -189,6 +189,21 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
             out = self.echo(TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "open"}}))
         self.assertEqual((out["ran"], out["seen"], out["continued"]), (["echo"], "hi", True))
 
+    def test_signer_unreachable_follows_the_fail_mode_of_the_tools_class(self):
+        down = Client(os.path.join(ac.tmpdir(self), "none.sock"))
+        self.addCleanup(down.close)
+        tk = TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "closed", "shell": "open"}})
+        a = Agent(name="contract", model=StubModel(),
+                  tools=[tk.tool(t) for t in [*TOOLS, function_tool(ac.terminal, failure_error_function=None)]])
+
+        def call(name, args):
+            ac.RAN.clear()
+            with self.assertWarns(UserWarning):   # the model responses are not recorded either
+                return invoke(a, tk, json.dumps({"name": name, "args": args, "id": "c1"}))[0]
+        out = call("terminal", {"commands": "ls"})   # class shell in the default policy
+        self.assertEqual((out["ran"], out["seen"]), (["terminal"], "ran"))
+        self.refused(call("echo", {"text": "hi"}), "signer unavailable")
+
     def test_closed_run_refuses_the_call(self):
         self.client.close_run(dict(self.d.run()))
         out = self.echo(TracekitAgents(self.d.signer, {**self.d.run(), "fail_modes": {"default": "open"}}))
