@@ -714,8 +714,11 @@ class Routes(unittest.TestCase):
             "codex --profile other exec x", "env -u CODEX_HOME codex exec x",
             "HOME=/tmp/x npx @kilocode/cli", "HOME=/tmp/x npx @kilocode/cli@latest",
             "HOME=/tmp/x bunx @kilocode/cli", "HOME=/tmp/x bunx @kilocode/cli@latest",
-            "HOME=/tmp/x pnpm dlx @kilocode/cli", "HOME=/tmp/x pnpm dlx @kilocode/cli@latest"), "ask", "TK-A070")
-        self.expect(self.bash("npx @kilocode/cli", "HOME=/tmp/x npx some-other/cli"), "allow")
+            "HOME=/tmp/x pnpm dlx @kilocode/cli", "HOME=/tmp/x pnpm dlx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpx @kilocode/cli", "npx @kilocode/cli --config k.json"), "ask", "TK-A070")
+        # a scoped package's word names Kilo Code; a bare `cli`, or another scope's, is no harness
+        self.expect(self.bash("npx @kilocode/cli", "HOME=/tmp/x npx some-other/cli", "HOME=/tmp/x npx @some-other/cli",
+                              "HOME=/tmp/x cli"), "allow")
 
     def test_a_harness_is_read_with_every_way_the_line_sets_its_settings(self):
         # codex's own hooks off (--disable is -c features.<name>=false; features disable saves it), a variable set by
