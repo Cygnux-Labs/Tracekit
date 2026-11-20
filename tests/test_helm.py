@@ -338,8 +338,9 @@ class Central(unittest.TestCase):
         # a NodeLocal DNSCache is added to kube-dns, one address on port 53
         self.assertEqual(self.agent_dns_rules("agentEgress.dns.nodeLocal=169.254.20.10"),
                          [kube_dns, {"to": [{"ipBlock": {"cidr": "169.254.20.10/32"}}], "ports": ports}])
-        self.assertEqual(self.agent_dns_rules("agentEgress.dns.nodeLocal=fd00::10")[1]["to"],
-                         [{"ipBlock": {"cidr": "fd00::10/128"}}])
+        for addr in ("fd00::10", "fd00:0:0:0:0:0:0:10"):
+            self.assertEqual(self.agent_dns_rules(f"agentEgress.dns.nodeLocal={addr}")[1]["to"],
+                             [{"ipBlock": {"cidr": f"{addr}/128"}}])
         # other resolvers replace kube-dns when it is off
         self.assertEqual(self.agent_dns_rules("agentEgress.dns.kubeDns=false", "agentEgress.dns.cidrs={10.0.0.53/32}"),
                          [{"to": [{"ipBlock": {"cidr": "10.0.0.53/32"}}], "ports": ports}])
@@ -351,6 +352,10 @@ class Central(unittest.TestCase):
         for sets, err in ((["agentEgress.dns.nodeLocal=169.254.20.0/24"], "nodeLocal must be one IP address"),
                           (["agentEgress.dns.nodeLocal=169.254.20.1-169.254.20.9"], "nodeLocal must be one IP address"),
                           (["agentEgress.dns.nodeLocal=300.1.1.1"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.nodeLocal=1::2::3"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.nodeLocal=1:2:3"], "nodeLocal must be one IP address"),
+                          (["agentEgress.dns.cidrs={fd00::1::/64}"], "must be a CIDR"),
+                          (["agentEgress.dns.cidrs={0.0.0.0/030}"], "must be a CIDR"),
                           (["agentEgress.dns.cidrs={0.0.0.0/0}"], "too broad"),
                           (["agentEgress.dns.cidrs={::/0}"], "too broad"),
                           (["agentEgress.dns.cidrs={10.0.0.0/16}"], "too broad"),
