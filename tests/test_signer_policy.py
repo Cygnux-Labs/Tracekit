@@ -5716,9 +5716,17 @@ class GuardrailsAndPushes(unittest.TestCase):
             {"statement": "EXPLAIN ANALYZE VERBOSE DROP TABLE users"},
             {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"},
             {"statement": "( ( DROP TABLE users"},
+            {"statement": "EXPLAIN(ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (FORMAT JSON, COSTS OFF, BUFFERS ON, ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (ANALYZE, COSTS OFF, VERBOSE, BUFFERS, FORMAT JSON, SETTINGS, WAL, TIMING, SUMMARY)"
+                          " DELETE FROM users"},
+            {"statement": "EXPLAIN ANALYZE (WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d)"},
             {"sql_query": "DROP TABLE users;"},
             {"stmt": "DROP TABLE users;"},
             {"Stmt": {"text": "TRUNCATE users"}})], "ask", "TK-A062")
+        # an MCP database tool's statements are read the same way (TK-A086), under the new names too
+        self.verdicts([("mcp__postgres__query", args) for args in (
+            {"sql_query": "DROP TABLE users"}, {"stmt": "DELETE FROM users"})], "ask", "TK-A086")
         self.verdicts([("acme_runner", args) for args in (
             {"statement": "EXPLAIN SELECT 1;"},
             {"statement": "EXPLAIN DELETE FROM users"},
@@ -5729,7 +5737,8 @@ class GuardrailsAndPushes(unittest.TestCase):
     def test_a_long_explain_or_paren_lead_decides_in_time(self):
         # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time
         for statement in ("(" * 60000, "( " * 30000, "EXPLAIN (" + "a" * 60000, "EXPLAIN (" + "ANALYZE " * 7000,
-                          "EXPLAIN ANALYZE " * 3500):
+                          "EXPLAIN ANALYZE " * 3500, "EXPLAIN(" + "ANALYZE, " * 6000, "EXPLAIN ANALYZE " + "( " * 30000,
+                          "(" * 8 + "EXPLAIN (" + "ANALYZE " * 7000 + ")"):
             for e in self.engines:
                 with self.subTest(engine=e.engine, statement=statement[:12]):
                     d = e.decide("acme_runner", {"statement": statement})
