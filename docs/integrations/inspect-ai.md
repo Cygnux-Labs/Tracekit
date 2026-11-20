@@ -14,7 +14,9 @@ pip install tracekit-ai "inspect-ai>=0.3.288,<0.4"
 
 Inspect AI 0.3.288 and later need Python 3.11 or newer. Tested in CI with the newest Inspect AI 0.3.x (0.3.291 on
 2026-11-20) on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`) and, for a held call's
-cancelled wait, the real one.
+cancelled wait, the real one. Also run by hand with a local model (Qwen3.5-4B, 4-bit, through mlx-lm's OpenAI-compatible
+server) on a real signer: its `ls` call ran and was signed, its `sudo rm -rf` call was denied with the reason shown to
+it, and `tracekit verify` passed on the run's bundle.
 
 ## Setup
 
