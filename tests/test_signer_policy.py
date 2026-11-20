@@ -3290,7 +3290,11 @@ class CodingPack(unittest.TestCase):
                 # the CI run of #992: the cmdlet after the path ends at a `;`; a name with an expansion bash reads as empty
                 r"time { Get-ChildItem $HOME\.kiro\hooks | Remove-Item; }",
                 r"1 | ForEach-Object { r${X}i $HOME\.kiro\hooks\tracekit.json }",
-                r"cmd /${X}c del %USERPROFILE%\.kiro\hooks\tracekit.json")
+                r"cmd /${X}c del %USERPROFILE%\.kiro\hooks\tracekit.json",
+                # the review of the split: a lone CR ends a statement in PowerShell; `.` runs a command as `&` does
+                "Write-Host hi\rRemove-Item $env:USERPROFILE\\.kiro\\hooks\\tracekit.json",
+                r". Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r". Set-Content -Path $env:USERPROFILE\.claude\settings.json -Value x")
         family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
         denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
                   r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
@@ -3317,7 +3321,7 @@ class CodingPack(unittest.TestCase):
                   "Set-Content -Value @'\nhello\n'@ -Path notes.txt", "if (Test-Path build) { Remove-Item build -Recurse }",
                   r'iex "Remove-Item build\out.txt"', r"Get-Content $HOME\.kiro\hooks\tracekit.json",
                   r"Get-Content ~/.aws\config", r"cp x.json ~/backup\settings.json",
-                  r"cmd /c type %USERPROFILE%\Documents\notes.txt", r"cmd /c del %userprofile%\build\out.txt",
+                  r"cmd /c type %USERPROFILE%\Documents\notes.txt", r"cmd /c del %userprofile%\build\out.txt", ". ./build.ps1",
                   # prose quoting a write and a harness path in bash's `/` form
                   'git commit -m "copy ~/.codex/config.toml into the image"',
                   'echo "move ~/.claude/settings.json later"',
@@ -3331,6 +3335,9 @@ class CodingPack(unittest.TestCase):
                     with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
                         d = svc.evaluate(e, tool, {"command": command})[0]
                         self.assertEqual((d["verdict"], bool(family & set(d["rule_ids"]))), ("ask", True), d)
+                # `& cmd` runs a command too (held; strict denies the line bash can't read)
+                d = svc.evaluate(e, tool, {"command": r"& Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json"})[0]
+                self.assertTrue(family & set(d["rule_ids"]) and d["verdict"] in ("ask", "deny"), d)
                 for command in denied if credentials else ():
                     with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
                         d = svc.evaluate(e, tool, {"command": command})[0]
