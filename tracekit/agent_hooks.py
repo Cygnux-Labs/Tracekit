@@ -787,6 +787,18 @@ def _gptme_tool(name, ti):
     return name, kwargs if kwargs is not None else ti
 
 
+def _jcode_dispatch_name(server, called):
+    """jcode's `dispatch_name` (crates/jcode-base/src/mcp/tool.rs): each character outside [A-Za-z0-9_] becomes `_`; a
+    name over 64 characters is cut to leave room for `_` and the 8 hex digits of the FNV-1a hash of server, NUL, tool."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", f"mcp__{server}__{called}")
+    if len(name) > 64:
+        h = 0x811c9dc5
+        for b in (server + "\0" + called).encode():
+            h = (h ^ b) * 0x01000193 & 0xFFFFFFFF
+        name = f"{name[:55]}_{h:08x}"
+    return name
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
@@ -865,11 +877,9 @@ def tool(harness, name, ti):
             return name, ti
         if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
             # the tool it calls, on its own arguments
-            # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
-            # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
             server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
             if isinstance(server, str) and server and isinstance(called, str) and called:
-                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
+                return _jcode_dispatch_name(server, called), dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
             return name, ti
         if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
             # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would
@@ -1570,11 +1580,20 @@ def _blocked_kiro(tool_name, raw=""):
     return None
 
 
+def _opencode_batch_reason(harness):
+    """Reason for blocking OpenCode's and Kilo Code's experimental batch tool (shared by the plugin and _blocked_tool)."""
+    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
+    return (f"Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, "
+            f"so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.")
+
+
 def _blocked_tool(harness, tool_name, raw=""):
     """The reason a tool call is denied in the hook itself, else None: a tool that runs calls the hook never sees, or
     a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
     is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
+    if harness in ("opencode", "kilo") and tool_name == "batch":
+        return _opencode_batch_reason(harness)
     if harness == "openhands" and tool_name in OPENHANDS_SUBAGENTS:
         return (f"Blocked by Tracekit: OpenHands' {tool_name} runs a sub-agent whose tool calls run no hooks, so "
                 "Tracekit can't decide them; make each call itself instead.")
@@ -2281,7 +2300,7 @@ def _opencode_plugin(python, v2, harness="opencode"):
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
                 _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
-    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
+    batch_error = json.dumps(_opencode_batch_reason(harness))
     return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
@@ -2321,8 +2340,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     if (input.tool === "batch") {{   // OpenCode runs the calls inside a batch with no plugin hooks
-      throw new Error("Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, " +
-        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.");
+      throw new Error({batch_error});
     }}
     const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run

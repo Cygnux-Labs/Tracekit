@@ -66,6 +66,7 @@ command with limits taken from it, for you to edit:
 
 ```text
 call-1 send_payment {"payee": "acct-print-shop", "amount": 3000, "currency": "USD"}: held, apr-37abaca9651b7e8ab87cb0e31016b5d7
+  sending money; moving money
 $ tracekit approvals show apr-37abaca9651b7e8ab87cb0e31016b5d7
 approval    apr-37abaca9651b7e8ab87cb0e31016b5d7 (requested)
 tool        "send_payment"
@@ -116,10 +117,11 @@ the exported bundle after its verify report):
 ## 4. A payment past the limit is held, with the reason
 
 The fourth payment, 40 USD, would take the total to 140 USD. The signer holds it, and signs the reason with the
-decision:
+decision; the example prints the reason at the hold (`context["tracekit"]["reasons"]`), and the bundle keeps it:
 
 ```text
 call-4 send_payment {"payee": "acct-hosting", "amount": 4000, "currency": "USD"}: held, apr-aa10b626fabff3dac9561cf943e5512a
+  grant g-be6e67519621e4e9: 100 of 120 USD used; this call needs 40 USD; sending money; moving money
 ...
   #15 policy.decision {"decision": "ask", "reasons": ["grant g-be6e67519621e4e9: 100 of 120 USD used; this call needs 40 USD"], "rule_ids": ["TK-M001", "TK-M002", "TK-F021"], "tool": "send_payment", "tool_use_id": "call-4"}
 ```
@@ -130,7 +132,9 @@ The person rejects it, and the model gets the refusal as the tool's output:
 $ tracekit approvals reject apr-aa10b626fabff3dac9561cf943e5512a
 rejected: apr-aa10b626fabff3dac9561cf943e5512a, by you, recorded as self-approved (an answer from the call's own requester): the run's assurance stays dev
 ...
-call-4: Tool call rejected in Tracekit
+call-4: [tracekit] NOT APPROVED, nothing ran (TK-M001, TK-M002, TK-F021): rejected.
+Why: grant g-be6e67519621e4e9: 100 of 120 USD used; this call needs 40 USD; sending money; moving money
+Agent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept.
 Paid 100 USD of the bills; the last 40 USD needs your approval.
 ```
 
@@ -153,7 +157,7 @@ $ tracekit verify f4c2f422a5d8119a172a840478b433ae.tkb --trust trust.json --deta
 [PASS] intent grants — 1 grant(s) (1 self-approved: issued by the run's own user, which the agent can be); 2 call(s) released within them (0 at T2, decided and run by an executor or gateway; 2 at T1, on the arguments the harness reported), each re-checked against its grant and its running totals
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/75ed00f44376df026f900962eb38fc42); no witness cosignature; approvals: self; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/k75ed00f44376df026f900962eb38fc420a1b2c3d4e5f60718293a4b5c6d7e8f9); no witness cosignature; approvals: self; key retirements not proven complete.
 ```
 
 Keep the `.tkb` file and `trust.json`: they are your receipt. Anyone with both can check it later, with no network

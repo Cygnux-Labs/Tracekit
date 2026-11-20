@@ -269,6 +269,7 @@ own Deployment (one replica per data volume; the signer holds its storage lock) 
 (Kubernetes TokenReview, a SPIFFE CA for mTLS, or named tokens), and optionally Postgres
 (`storage: {postgres: {dsn_file}}`), an AWS KMS log key (`log_key: {aws_kms: {key_id, region}}`) and a
 [record-key issuer](issuer.md).
+The requests the signer accepts, and the answers it gives, are in the [signer API reference](api.md).
 
 ```yaml
 # signer.yaml: central, agents identified by their Kubernetes service account
