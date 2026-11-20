@@ -1691,6 +1691,23 @@ _INSTALLERS = {
 _NPM_GITHUB = re.compile(r"[\w-][\w.-]*/[\w.-]+(?:#\S*)?")
 
 
+def _verb_end(args, i, verb, before):
+    """Where the verb (its words, None for any one) that starts at args[i] ends, its words apart by options (`uv pip
+    --quiet install`, `uv tool -q install`), each with its value where `before` names it, and where one it doesn't
+    may take the next word, after that word too; 0 if it isn't there."""
+    j = i
+    for k, w in enumerate(verb):
+        maybe = False
+        while k and w is not None and j < len(args) and args[j].startswith("-") and args[j] != "-":
+            j, maybe = (j + 2, False) if args[j] in before else (j + 1, "=" not in args[j])
+        if w is not None and args[j:j + 1] != [w]:
+            if not (maybe and args[j + 1:j + 2] == [w]):
+                return 0
+            j += 1
+        j += 1
+    return j
+
+
 def _install_sources(argv):
     """`<installer> install <operand>` for each operand of a package install (_INSTALLERS), without its options and the
     values of the ones that name an index, registry or proxy: TK-D021 reads a URL source whatever options come before
@@ -1711,8 +1728,7 @@ def _install_sources(argv):
         if a.startswith("-") and a != "-":
             i, maybe = (i + 2, False) if a in before else (i + 1, "=" not in a)
             continue
-        at = next((i + len(v) for v in verbs if all(w is None or args[i + k:i + k + 1] == [w] for k, w in
-                                                      enumerate(v))), None)
+        at = next(filter(None, (_verb_end(args, i, v, before) for v in verbs)), None)
         if at is None and not maybe:
             return []
         i, maybe = i + 1, False
@@ -1723,6 +1739,10 @@ def _install_sources(argv):
             skip = None
         elif a.startswith("-"):   # (pip's optparse takes a long option's unique prefix: --index-u is --index-url)
             name, eq, value = a.partition("=")
+            if len(a) > 2 and a[1] != "-":   # -rURL, -eURL, -qrURL: pip's optparse reads the rest as the value
+                k = next((k for k in range(1, len(a)) if a[k] in "re" or "-" + a[k] in valued), 0)
+                if k and a[k] in "re" and "-" + a[k] not in valued and a[k + 1:]:
+                    out.append(f"{prog} install {a[k + 1:]}")
             source = "git+" if prog == "cargo" and name == "--git" else None if name in valued or (
                 name.startswith("--@") and name.endswith(":registry")) or prog == "pip" and len(name) > 2 and \
                 name.startswith("--") and any(o.startswith(name) for o in valued) else ""
@@ -1741,6 +1761,20 @@ _GO_EXEMPT = {"GONOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE
 _GO_INSECURE = re.compile(r"--?insecure(?:=\S*)?")
 
 
+# go run's options that take a value as the next word (`-tags x`; `-tags=x` is one word)
+_GO_RUN_VALUED = {"C", "p", "asmflags", "gcflags", "gccgoflags", "ldflags", "mod", "modfile", "overlay", "pgo", "pkgdir",
+                  "tags", "toolexec", "exec", "installsuffix", "covermode", "coverpkg"}
+
+
+def _go_run_module(args):
+    """Whether go run's package (the first word after its options and their values) is a module at a version, `x@v`,
+    which go run fetches and runs as go install fetches and installs it; not a local `.` or `./cmd/x`."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 1 + (args[i].lstrip("-") in _GO_RUN_VALUED)
+    return "@" in args[i] if i < len(args) else False
+
+
 def _go_unchecked(commands, refs=()):
     """`go <install or get> git+https://<its operands>` for each go install or go get on a line that turns off what
     checks the modules it fetches (dependencies too): Go's module proxy (GOPROXY direct or off, GONOPROXY), its checksum
@@ -1748,7 +1782,8 @@ def _go_unchecked(commands, refs=()):
     option), set before a command (`refs`), through env or export, or saved by `go env -w`. Read as the direct
     version-control fetch it is then, which TK-A028 holds; through the proxy and the checksum database, a registry with
     integrity checks, `go install x@v` is no such fetch. [] for anything else."""
-    gets = [c["argv"] for c in commands if _program(c["argv"]) == "go" and c["argv"][1:2] in (["install"], ["get"])]
+    gets = [c["argv"] for c in commands if _program(c["argv"]) == "go" and (
+        c["argv"][1:2] in (["install"], ["get"]) or c["argv"][1:2] == ["run"] and _go_run_module(c["argv"][2:]))]
     if not gets:
         return []
     words = list(refs) + [a for c in commands for a in (
@@ -1757,7 +1792,8 @@ def _go_unchecked(commands, refs=()):
     off = any(name in _GO_EXEMPT or name == "GOSUMDB" and value == "off" or name == "GOPROXY" and re.split(
         r"[,|]", value)[0] in ("direct", "off") or name == "GOFLAGS" and any(map(_GO_INSECURE.fullmatch, value.split()))
               for name, eq, value in (w.partition("=") for w in words) if eq)
-    return [f"go {argv[1]} git+https://" + " ".join(a for a in argv[2:] if not a.startswith("-")) for argv in gets
+    return [f"go {argv[1] if argv[1] != 'run' else 'install'} git+https://" + " ".join(
+        a for a in argv[2:] if not a.startswith("-")) for argv in gets
             if off or any(map(_GO_INSECURE.fullmatch, argv[2:]))]
 
 
