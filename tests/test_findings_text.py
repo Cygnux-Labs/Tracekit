@@ -10,6 +10,8 @@ import tempfile
 import time
 import unittest
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
@@ -755,6 +757,7 @@ class Evasions(Base):   # round-2 review: ordinary words that silenced a check, 
                 self.assertEqual(len(found(self.analyze(t), "TK-X113")), 1)
 
 
+@pytest.mark.serial
 class Linear(unittest.TestCase):
     """R3: every text a check reads is read in time linear in its length (v1's RISKY pattern at findings.py:64 is
     cubic: 18 KB takes 49 s). 64 KiB of the inputs that make backtracking patterns blow up, each under a second."""
