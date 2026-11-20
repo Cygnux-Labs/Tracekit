@@ -565,7 +565,9 @@ with `tracekit signer incidents` ([incidents](incidents.md)).
 
 **Backtest.** `tracekit policy backtest --policy P --store DIR` (a signer's `data_dir/store`, read-only, safe while it
 runs) or `--bundle B...` runs the policy's detection over recorded runs and prints the incidents it would open. It
-reads the rule ids each decision recorded (arguments are not stored), so for decisions made under another policy, rules
+also prints, for each limit, the highest count (or sum, per currency) any one window reached, with its scope and the
+run, so a limit that opened nothing still shows how close it came; windows are fixed, so a burst across two reads lower
+than its true peak. It reads the rule ids each decision recorded (arguments are not stored), so for decisions made under another policy, rules
 and labels the new one adds or changes are not applied; it warns with their count. Backtest changes to sequences,
 limits and `respond` this way; measure a new rule by adding it under `flag` and watching new runs, then moving it to
 `ask` or `deny` ([your own policy](policy-guide.md#4-roll-it-out-as-flag-first)).

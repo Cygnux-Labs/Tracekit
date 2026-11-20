@@ -95,6 +95,7 @@ class TracekitMiddleware(AgentMiddleware):
         # lean: a task never run again (a thread left paused, a node that raised for good) keeps its entries for the
         # middleware's life; drop them by age if agents leave many threads that way
         self._plans = {}
+        self._grants = set()   # the RPCs this gate warned about (call_state, call_claim): one warning each
         self.said = said.Said(lambda **f: self._send("model_event", **f), lambda: signer.status({}))
 
     def _send(self, method, **kw):
@@ -167,6 +168,16 @@ class TracekitMiddleware(AgentMiddleware):
         p["state"] = "run"
         return p
 
+    def _warn_grant(self, rpc, why):
+        """Say once, per gate, that the signer has no `rpc` or refuses it: an explicit `authorize` list grants only what
+        it names, so an identity written before these RPCs existed runs calls again or refuses them and no line says
+        which grant is missing. The wording follows the `status` warning (sdk/client.py)."""
+        if rpc in self._grants:
+            return
+        self._grants.add(rpc)
+        warnings.warn(f"tracekit: {why}: grant this identity {rpc} in signer.yaml authorize, beside decide and "
+                      "approval_consume", stacklevel=3)
+
     def _recorded(self, call):
         """The plan of a call as the signer recorded its latest attempt (call_state), for its node task run again after
         a resume, in this process or another; None when the signer never decided it, can't say, or the call raised (a
@@ -174,9 +185,15 @@ class TracekitMiddleware(AgentMiddleware):
         the result."""
         digest = event_hash({"tool": call["name"], "args": call["args"]})
         state = getattr(self.signer, "call_state", None)   # a SignerAPI of the app's own may have none
+        if state is None:
+            self._warn_grant("call_state", "the signer has no call_state")
         try:
             s = state({**self.run, "tool_call_id": call["id"], "args_digest": digest}) if state else {}
-        except (RPCError, SignerUnavailable):   # decided again (_new), and judged by the signer then
+        except SignerUnavailable:   # decided again (_new), and judged by the signer then
+            return None
+        except RPCError as e:   # decided again too; a refusal of the grant is what an authorize list leaves out
+            if e.code == "forbidden":
+                self._warn_grant("call_state", f"the signer refused call_state ({e.message})")
             return None
         if "attempt" not in s:
             return None
@@ -295,11 +312,17 @@ class TracekitMiddleware(AgentMiddleware):
         if not goes_on:
             return None
         claim = getattr(self.signer, "call_claim", None)   # a SignerAPI of the app's own may have none
+        if claim is None:
+            self._warn_grant("call_claim", "the signer has no call_claim")
         req = {"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"], "attempt": p["attempt"],
                "answers": _answered(config)}
         try:
             c = claim(req) if claim else {"ok": False, "reason": "the signer has no call_claim"}
-        except (RPCError, SignerUnavailable) as e:
+        except SignerUnavailable as e:
+            c = {"ok": False, "reason": str(e)}
+        except RPCError as e:   # a refusal of the grant is what an authorize list leaves out
+            if e.code == "forbidden":
+                self._warn_grant("call_claim", f"the signer refused call_claim ({e.message})")
             c = {"ok": False, "reason": str(e)}
         return None if c["ok"] else _done(p, self._refusal(call, c.get("reason") or "not claimed"))["out"]
 
