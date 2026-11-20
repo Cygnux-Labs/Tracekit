@@ -2757,7 +2757,7 @@ def _runs_signer(code):
     # an import list ends where its statement does: a parenthesised one at its `)` (a comment in it may hold one), any
     # other at its line's end unless a backslash goes on
     for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
-                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w ,*\t]|\\\r?\n)+))", code):
+                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w,*]|[^\S\r\n]|\\\r?\n)+))", code):
         listed = re.sub(r"#[^\n]*", "", m.group(2) or m.group(3) or "")
         for item in listed.replace("\\\n", " ").replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))

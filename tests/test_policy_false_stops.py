@@ -69,6 +69,14 @@ class FalseStops(unittest.TestCase):
             "from tracekit.policy2 import compile; e = Engine(compile.build('p.yaml')[0]); "
             "print(evaluate(e, 'Bash', {'command': 'ls'}))\"")
 
+    def test_any_whitespace_between_import_names_still_separates_them(self):
+        # main read `\s` there: a form feed, tab or vertical tab between names must not hide the second one
+        for sep in ("\f", "\t", "\v", " \f "):
+            self.assert_denied(
+                "TK-D007",
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate,{sep}SignerService\nEOF",
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate{sep}SignerService\nEOF")
+
     def test_an_import_of_more_of_the_signer_stays_stopped(self):
         self.assert_denied(
             "TK-D007",
@@ -109,9 +117,13 @@ class FalseStops(unittest.TestCase):
 
     def test_help_of_a_held_command_runs_nothing(self):
         # --help right after the command's own words prints help and exits
-        self.assert_open("tracekit uninstall --help", "tracekit init --help", "tracekit grant --help",
-                         "tracekit approvals approve --help", "gh pr merge --help",
+        self.assert_open("tracekit uninstall --help", "tracekit init --help", "tracekit down --help",
                          "python -m tracekit uninstall --help")
+
+    def test_help_stays_held_where_a_rule_holds_every_form(self):
+        # #642: every `tracekit grant` the agent runs is denied; gh and glab take --help as an option's value
+        self.assert_held("TK-D012", "tracekit grant --help", "tracekit approvals approve --help")
+        self.assert_held("TK-A033", "gh pr merge --help", "glab mr merge --help")
 
     def test_help_that_is_no_option_keeps_the_command_held(self):
         # after --, or as the value of another option, --help is an argument, and the command runs
@@ -119,10 +131,7 @@ class FalseStops(unittest.TestCase):
                          "tracekit uninstall --help && tracekit uninstall", "tracekit down",
                          "tracekit uninstall --keep-data --help", "tracekit uninstall \"x --help\"")
         self.assert_held("TK-A057", "tracekit init -- --help", "tracekit init --dir --help", "tracekit init \"x --help\"")
-        self.assert_held("TK-D012", "tracekit grant -- --help", "tracekit approvals approve -- --help",
-                         "tracekit approvals approve \"x --help\"")
-        self.assert_held("TK-A033", "gh pr merge 42 --body --help", "gh pr merge -- --help",
-                         "gh pr merge \"42 --help\"", "gh pr merge --help; gh pr merge 42")
+        self.assert_held("TK-A033", "gh pr merge 42 --body --help", "gh pr merge -- --help")
 
     def test_a_git_editor_that_does_nothing_is_no_command(self):
         self.assert_open("git -c core.editor=true commit -q -m merge", "git -c core.editor=true rebase --continue",

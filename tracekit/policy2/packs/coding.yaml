@@ -313,7 +313,6 @@ deny:
     # in a b; do tracekit $c; done; echo $c`: the parser's unresolved names are the line's); use a literal path, or a
     # person runs it
     pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? ((approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant|tips (approve|retire|restore|add))( |$)|(approvals( --[\w\W]*?)? |tips )?([^ -][^ ]*)?(\$\{?[0-9@*]|\$\{!|\$\(|`|[*?\[]|\$\{[\w@*#?$!-]+(\[[^] ]*\])?:?[-=+/])|(approvals |tips )?\$\x7f( |$))'
-    unless: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)? (approve|reject|approvals (approve|reject)|grant|tips (approve|retire|restore|add)) --help$'
     reason: answering an approval, a lesson or a grant from the agent's session
     remedy: Leave answering held calls, lessons and granting calls to a person at their own terminal; `tracekit approvals list` and `show`, `tracekit tips` and `tracekit tips --for-agent` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
@@ -433,7 +432,7 @@ ask:
     # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
     # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings)
     # `--help` right after `init` prints help; anywhere else (after `--`, a quoted value ending in ` --help`, the value
-    # of another option) init still runs, so only that exact line is exempt (as in TK-A054, TK-D012, TK-A033)
+    # of another option) init still runs, so only that exact line is exempt (as in TK-A054)
     pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
     unless: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)? init --help$'
     reason: running Tracekit's setup from the agent's session
@@ -830,13 +829,11 @@ ask:
     # identity. Held: gh pr merge (--auto and --admin too) and glab mr merge or accept, with up to four options before
     # each word; a merge endpoint (GitHub's pulls/N/merge, GitLab's merge_requests/N/merge, the number possibly a
     # variable) or GitHub's GraphQL merge, auto-merge or merge-queue mutation, or GitLab's mergeRequestAccept, through
-    # gh, glab or hub api, curl, wget, HTTPie or xh. A local `git merge` isn't held. Only `gh pr merge --help` and
-    # `glab mr merge --help`, `--help` right after the words, is exempt: gh and glab take the next word as an option's
-    # value, so `gh pr merge 42 --body --help` merges. `[\w\W]*?` crosses a newline
+    # gh, glab or hub api, curl, wget, HTTPie or xh. A local `git merge` isn't held. No --help exemption: gh and glab
+    # take the next word as an option's value, so `gh pr merge 42 --body --help` merges. `[\w\W]*?` crosses a newline
     # inside an argument (a multi-line GraphQL query); lazy, so the fallback engine stays linear
     # lean: any request to a merge endpoint is held, a status check (GET) too; match the method when one gets in the way
     pattern: '^(?:gh (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}pr (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}merge(?: |$)|glab (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}mr (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:merge|accept)(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:/(?:pulls|merge_requests)/[^/ ]+/merge(?:[ ?#/]|$)|(?:mergePullRequest|enablePullRequestAutoMerge|enqueuePullRequest|mergeRequestAccept)\b))'
-    unless: '^(gh pr merge|glab mr (merge|accept)) --help$'
     reason: merging a pull request
     remedy: Have a person approve the held call, or leave the pull request open for a person to review and merge.
     rationale: A merge lands code on a shared branch, often with a deploy behind it; a person confirms it.
