@@ -3,11 +3,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { EXECUTOR, ExecutorRefused, executorActions, openaiAgentsTool, vercelTool } from "../dist/v2/executor.js";
+import { EXECUTOR, ExecutorRefused, SERVER, claudeAgentSdkTool, executorActions, openaiAgentsTool, vercelTool } from "../dist/v2/executor.js";
 import { tracekitAI } from "../dist/v2/adapters/vercel-ai.js";
 import { tracekitHooks } from "../dist/v2/adapters/claude-agent-sdk.js";
 
 const ARGS = { type: "object", required: ["to"], properties: { to: { type: "string" } } };
+// a minimal zod and the Claude Agent SDK's tool(), standing in for the app's
+const zt = (t) => ({ t, int: () => zt(`${t}.int`), optional() { return { ...this, opt: true }; }, describe(d) { return { ...this, d }; } });
+const z = { string: () => zt("string"), number: () => zt("number"), boolean: () => zt("boolean"), enum: (v) => zt(`enum:${v}`), array: (i) => zt(`array:${i.t}`),
+  object: (shape) => ({ passthrough: () => ({ shape, mode: "passthrough" }), strict: () => ({ shape, mode: "strict" }) }) };
+const sdkTool = (name, description, schema, handler) => ({ name, description, schema, handler });
+const plain = (shape) => Object.fromEntries(Object.entries(shape).map(([k, { t, opt, d }]) => [k, [t, !!opt, d]]));
 
 test("executor actions: listed, called for the run, refusals thrown, as OpenAI Agents and Vercel AI tools", async (t) => {
   const seen = [];
@@ -44,6 +50,35 @@ test("executor actions: listed, called for the run, refusals thrown, as OpenAI A
   assert.deepEqual(ai.inputSchema, { wrapped: ARGS });
   await ai.execute({ to: "c" }, { toolCallId: "call-3" });
   assert.equal(seen.at(-1).body.tool_call_id, "call-3");
+
+  const flat = { ...pay, args: { type: "object", required: ["to", "amount"], properties: { to: { type: "string", description: "payee" },
+    amount: { type: "integer" }, rate: { type: "number" }, urgent: { type: "boolean" }, tags: { type: "array", items: { type: "string" } },
+    kind: { enum: ["card", "wire"] } } } };
+  const ca = claudeAgentSdkTool(sdkTool, z, flat);
+  assert.deepEqual([ca.name, ca.description], ["pay", "Pay"]);
+  assert.equal(ca.schema.mode, "passthrough");   // undeclared arguments reach the executor, which checks them
+  assert.deepEqual(plain(ca.schema.shape), { to: ["string", false, "payee"], amount: ["number.int", false, undefined], rate: ["number", true, undefined],
+    urgent: ["boolean", true, undefined], tags: ["array:string", true, undefined], kind: ["enum:card,wire", true, undefined] });
+  const extra = { _meta: { "claudecode/toolUseId": "toolu_1" } };   // as the CLI sends the model's id
+  assert.deepEqual(await ca.handler({ to: "d", amount: 5, memo: "x" }, extra), { content: [{ type: "text", text: JSON.stringify({ status: 201, result: { ok: true } }) }] });
+  assert.deepEqual(seen.at(-1).body, { args: { to: "d", amount: 5, memo: "x" }, tool_call_id: "toolu_1" });
+  assert.equal(claudeAgentSdkTool(sdkTool, z, { ...flat, args: { ...flat.args, additionalProperties: false } }).schema.mode, "strict");
+  const refused = await claudeAgentSdkTool(sdkTool, z, wipe).handler({ to: "e" });
+  assert.equal(refused.isError, true);
+  assert.match(refused.content[0].text, /R-WIPE/);
+});
+
+test("a Claude Agent SDK tool isn't built from a schema it can't express as a zod shape: the error names the property", () => {
+  const a = (properties) => ({ name: "pay", description: "", args: { type: "object", properties }, call: async () => ({}) });
+  for (const [k, s] of [["to", { type: "object", properties: { iban: { type: "string" } } }], ["to", { type: ["string", "null"] }],
+    ["ids", { type: "array", items: { type: "object" } }], ["ids", { type: "array" }], ["n", { enum: [1, 2] }], ["n", { type: "constructor" }]]) {
+    assert.throws(() => claudeAgentSdkTool(sdkTool, z, a({ ok: { type: "string" }, [k]: s })), new RegExp(`^Error: pay: argument "${k}": unsupported`));
+  }
+  // the executor takes a required argument without a schema; zod would drop it, so the tool would never run
+  assert.throws(() => claudeAgentSdkTool(sdkTool, z, { ...a({ ok: { type: "string" } }), args: { type: "object", required: ["owner"], properties: { ok: { type: "string" } } } }),
+    /^Error: pay: argument "owner": required but not in properties/);
+  assert.throws(() => claudeAgentSdkTool(sdkTool, z, { ...a({}), args: { type: "object", required: ["owner"] } }), /argument "owner": required but not in properties/);
+  assert.throws(() => claudeAgentSdkTool(sdkTool, z, { ...a({}), args: { type: "array" } }), /pay: the arguments' schema must be an object/);
 });
 
 test("the Vercel AI adapter leaves executor tools to the executor: no decide on the call id the executor gets", async () => {
@@ -60,6 +95,11 @@ test("the Vercel AI adapter leaves executor tools to the executor: no decide on 
   const mcpServers = { "tracekit-executor": { type: "sdk", name: "tracekit-executor", instance: {} } };
   const [pre] = tracekitHooks(run, { mcpServers, executorActions: [a] }).PreToolUse[0].hooks;
   assert.deepEqual(await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: "tu-1", tool_input: {} }), {});
+  // and the tool claudeAgentSdkTool builds, in the server the app makes of it
+  const built = claudeAgentSdkTool(sdkTool, z, a);
+  const servers = { [SERVER]: { type: "sdk", name: SERVER, instance: { tools: [built] } } };
+  const [pre2] = tracekitHooks(run, { mcpServers: servers, executorActions: [a] }).PreToolUse[0].hooks;
+  assert.deepEqual(await pre2({ tool_name: `mcp__${SERVER}__${built.name}`, tool_use_id: "tu-2", tool_input: { to: "a" } }), {});
 });
 
 test("the Claude Agent SDK hooks gate every tool but the app's executor actions, by exact name (#588)", async () => {

@@ -276,6 +276,17 @@ class Mapping(unittest.TestCase):
         names = [e["data"]["name"] for e in evs if e["type"] == "tool.call"]
         self.assertEqual(names, ["search", "lookup"])
 
+    def test_docker_mcp_gateway_tool_call_spans(self):
+        doc = payload(
+            span("2222222222222222", "mcp.tool.call", {"mcp.tool.name": "fetch", "mcp.server.name": "curl", "mcp.server.type": "docker"}),
+            span("3333333333333333", "mcp.tool.call", {"mcp.tool.name": "fetch"}),
+            span("4444444444444444", "mcp.tool.call", {"mcp.server.name": "curl"}),
+            span("5555555555555555", "tools/call", {"mcp.method.name": "tools/call", "mcp.target": "everything", "gen_ai.tool.name": "echo"}))
+        evs, skipped, _ = self.plan(doc)
+        self.assertEqual(skipped, 1)
+        calls = [e["data"] for e in evs if e["type"] == "tool.call"]
+        self.assertEqual([(c["name"], c["input"]) for c in calls], [("mcp:curl/fetch", {}), ("fetch", {}), ("mcp:everything/echo", {})])
+
     def test_run_start_once_per_trace_across_batches_and_policy_reattached_on_change(self):
         m = mapper()
         doc = agent_trace()

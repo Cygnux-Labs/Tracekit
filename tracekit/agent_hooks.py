@@ -8,7 +8,7 @@ Interpreter, on the Claude Code pipeline.
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
     tracekit init --dev --agent kilo         # ~/.config/kilo/plugin/tracekit.js (project: .kilo/plugin/tracekit.js)
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
-    tracekit init --dev --agent qwen         # ~/.qwen/settings.json
+    tracekit init --dev --agent qwen         # ~/.qwen/settings.json ($QWEN_HOME/settings.json)
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
@@ -2157,6 +2157,10 @@ def config_path(harness, project=None, home=None):
     # Open Interpreter, a Codex fork, reads $INTERPRETER_HOME in place of ~/.openinterpreter, and never CODEX_HOME
     oi = os.path.realpath(os.environ["INTERPRETER_HOME"]) \
         if not (project or home) and os.environ.get("INTERPRETER_HOME") else os.path.join(base, ".openinterpreter")
+    # Qwen Code reads a user's settings from $QWEN_HOME, ~ expanded, in place of ~/.qwen (qwen-code 0.28.0
+    # getGlobalQwenDirLite)
+    qwen = os.path.abspath(os.path.expanduser(os.environ["QWEN_HOME"])) \
+        if not (project or home) and os.environ.get("QWEN_HOME") else os.path.join(base, ".qwen")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
     # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
@@ -2168,7 +2172,7 @@ def config_path(harness, project=None, home=None):
             "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
-            "qwen": os.path.join(base, ".qwen", "settings.json"),
+            "qwen": os.path.join(qwen, "settings.json"),
             "droid": os.path.join(base, ".factory", "hooks.json"),
             "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
                            os.path.join(base, ".gemini", "config", "hooks.json"),
