@@ -3180,7 +3180,7 @@ class Installer(unittest.TestCase):
             subprocess.run(["git", "init", "-q", repo], check=True)
             subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
             subprocess.run([*git, "worktree", "add", "-q", wt], check=True)
-            sub = os.path.join(repo, "app")
+            sub = os.path.join(repo, "app[1]")   # a pattern character in the path: matched as written
             os.makedirs(sub)
             with contextlib.redirect_stdout(io.StringIO()):
                 agent_hooks.install("copilot", sub, v2=True)
@@ -3190,7 +3190,7 @@ class Installer(unittest.TestCase):
                                         capture_output=True, text=True, check=True).stdout
                 self.assertNotIn("tracekit.json", status)
             with open(os.path.join(repo, ".git", "info", "exclude")) as f:
-                self.assertIn("/app/.github/hooks/tracekit.json", f.read().splitlines())
+                self.assertIn("/app\\[1]/.github/hooks/tracekit.json", f.read().splitlines())
 
     def test_copilot_init_says_when_claude_codes_project_hook_also_runs(self):
         # #1000: Copilot CLI runs a repository's .claude hooks, so Tracekit's Claude Code hook there decides each call too

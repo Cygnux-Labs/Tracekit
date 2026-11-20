@@ -3206,8 +3206,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
 
 def _copilot_exclude(path, project, uninstall, changed):
     """Keep `path`, a project's Copilot hooks file (it names this machine's Python, and .github/ is usually committed),
-    out of git: init adds its line to the checkout's exclude file (a worktree's too), uninstall removes it. Outside a
-    git checkout init says how."""
+    out of git: init adds its line to the checkout's exclude file (which its worktrees share), uninstall removes it.
+    Outside a git checkout init says how."""
     import subprocess
     try:
         top, exclude = subprocess.run(["git", "-C", project, "rev-parse", "--show-toplevel", "--git-path", "info/exclude"],
@@ -3221,7 +3221,7 @@ def _copilot_exclude(path, project, uninstall, changed):
         return
     exclude = os.path.join(project, exclude)   # --git-path is relative to the directory git ran in
     rel = os.path.relpath(os.path.join(os.path.realpath(project), os.path.relpath(path, project)), os.path.realpath(top))
-    line = "/" + rel.replace(os.sep, "/")
+    line = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.replace(os.sep, "/"))   # a pattern: a folder's `[1]` as written
     try:
         with open(exclude, encoding="utf-8", errors="surrogateescape", newline="") as f:
             text = f.read()
