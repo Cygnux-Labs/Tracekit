@@ -296,9 +296,10 @@ and each change as `OPENSHELL POLICY · <change>` on the run's tape.
   text or is over 512 KiB isn't read either, so the request is denied (`tracekit_body_unreadable`).
 - **Doesn't check without `gateway_jwt`:** who calls it. Any caller that reaches its address is taken for OpenShell
   ([who may call it](#who-may-call-it)).
-- **Doesn't take more than 64 responses at once:** each response stream holds a thread, and the threads that decide
-  requests stay free; one more response is refused, which OpenShell handles by the entry's `on_error`, and its call
-  ends as a `held_call_unresolved` gap.
+- **Doesn't take more than 64 responses at once, nor more than 16 per sandbox:** each response stream holds a
+  thread, and the threads that decide requests stay free; one more response, or one more for a sandbox past its
+  quarter share, is refused naming the sandbox and its share, which OpenShell handles by the entry's `on_error`, and
+  its call ends as a `held_call_unresolved` gap.
 ## Limits
 
 [Limits](../limits.md#custody-12) lists these with what to do.

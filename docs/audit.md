@@ -41,7 +41,7 @@ denied and held calls (--all for every call):
   follows none), or another file that isn't regular, such as `/dev/null`.
 - `--agent NAME` takes an agent's name as `tracekit init --agent` does (`claude`, `codex`, `cursor`, `gemini`,
   `qwen`, `opencode`, ...). With `--calls`, each call is decided as that agent's Tracekit hook would decide it: a call the hook
-  denies before it maps it (Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent`, `agentic_fetch`, `agent_dispatch` and `agent_send`, a Devin
+  denies before it maps it (OpenCode's and Kilo's `batch`, Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent`, `agentic_fetch`, `agent_dispatch` and `agent_send`, a Devin
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,

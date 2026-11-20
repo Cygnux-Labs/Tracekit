@@ -847,7 +847,7 @@ class TestAudit(unittest.TestCase):
 
     def test_agent_denies_what_its_hook_denies_before_mapping(self):
         """#730 review: Kilo's notebook_execute, Crush's sub-agents and a Devin call missing its argument are denied in
-        the hook before mapping."""
+        the hook before mapping; #929: so are OpenCode's and Kilo's batch."""
         _write_jsonl(self.root / "calls.jsonl", [_line("notebook_execute", {"cell": "print(1)"})])
         report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")
         self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
@@ -860,6 +860,12 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="crush")["counts"]["deny"], 1)
         _write_jsonl(self.root / "calls.jsonl", [_line("read", {"path_name": "notes.txt"})])   # no file_path
         self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="devin")["counts"]["deny"], 1)
+        for harness in ("opencode", "kilo"):
+            _write_jsonl(self.root / "calls.jsonl", [_line("batch", {"tool_calls": []})])
+            batch_report = audit.audit(calls=str(self.root / "calls.jsonl"), agent=harness)
+            self.assertEqual((batch_report["calls"][0]["verdict"], batch_report["calls"][0]["rule_ids"]),
+                             ("deny", ["TK-HOOK-BLOCKED"]), harness)
+            self.assertEqual(batch_report["counts"]["ask"], 0, harness)
 
     def test_what_a_calls_file_option_cant_read_exits_2_with_the_reason(self):
         code, _, err = _run("--calls", str(self.root / "missing.jsonl"))
