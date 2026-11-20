@@ -338,3 +338,14 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
+{"tool": "Bash", "args": {"command": "python3 -c \"from pathlib import Path; Path('.env').open()\""}, "expect": "allow", "note": "read-only Path.open on .env (#980)"}
+{"tool": "Bash", "args": {"command": "python3 -c \"import os; os.open('.env', os.O_RDONLY)\""}, "expect": "allow", "note": "read-only os.open on .env (#980)"}
+{"tool": "Bash", "args": {"command": "python3 -c \"open(file='.env', mode='r')\""}, "expect": "allow", "note": "read-only open(file=) on .env (#980)"}
+{"tool": "Bash", "args": {"command": "node -e \"require('fs').openSync('.env', 'r')\""}, "expect": "allow", "note": "read-only fs.openSync on .env (#980)"}
+{"tool": "Bash", "args": {"command": "bun -e \"Bun.write('out.txt', 'x')\""}, "expect": "allow", "note": "Bun.write to ordinary file (#980)"}
+{"tool": "Bash", "args": {"command": "deno eval \"Deno.writeTextFileSync('out.txt', 'x')\""}, "expect": "allow", "note": "Deno.writeTextFileSync to ordinary file (#980)"}
+{"tool": "Bash", "args": {"command": "perl -e 'sysopen(F, \".env\", 0)'"}, "expect": "allow", "note": "read-only Perl sysopen on .env (#980)"}
+{"tool": "Bash", "args": {"command": "ruby -e 'File.new(\".env\", \"r\")'"}, "expect": "allow", "note": "read-only Ruby File.new on .env (#980)"}
+{"tool": "Bash", "args": {"command": "lua -e 'io.output()'"}, "expect": "allow", "note": "Lua io.output query (#980)"}
+{"tool": "Bash", "args": {"command": "{ echo src/a.txt; } | xargs sed -i 's/a/b/'"}, "expect": "allow", "note": "xargs fed by a { } group on ordinary file (#980)"}
+{"tool": "Bash", "args": {"command": "( echo src/a.txt ) | xargs sed -i 's/a/b/'"}, "expect": "allow", "note": "xargs fed by a subshell on ordinary file (#980)"}

@@ -216,13 +216,15 @@ class Routes(unittest.TestCase):
                     "ask", "TK-A083")
         self.expect(self.bash("python3 -c \"open('out.txt','w').write('x')\"",
                               "node -e \"require('fs').writeFileSync('dist/x.json','{}')\""), "allow")
-        # a read is no write: an open in no writing mode, Perl's `<` or a pipe; a call with only keyword arguments
-        # (open(file=…)) isn't read (docs/limits.md), and decides without an error
+        # a read is no write: an open in no writing mode, Perl's `<` or a pipe; keyword `file=` with a write mode is
+        # denied while read-only `file=` stays a read
         self.spare(self.bash("python3 -c \"print(open('.env').read())\"",
-                             "python3 -c \"print(open('.env', mode='r').read())\"", "perl -e 'open(F, \"<\", \".env\")'",
+                             "python3 -c \"print(open('.env', mode='r').read())\"",
+                             "python3 -c \"print(open(file='.env').read())\"",
+                             "python3 -c \"print(open(file='.env', mode='r').read())\"",
+                             "perl -e 'open(F, \"<\", \".env\")'",
                              "perl -e 'open(F, \".env\")'", "perl -e 'open(F, \"-|\", \"cat\", \".env\")'"), "TK-D023")
-        for e in self.engines.values():
-            e.decide("Bash", {"command": "python3 -c \"open(file='.env', mode='a').write('x')\""})
+        self.expect(self.bash("python3 -c \"open(file='.env', mode='a').write('x')\""), "deny", "TK-D023")
 
     def test_a_host_key_appended_to_known_hosts_is_its_only_write_not_denied(self):
         # an append (`>>`, after a cd too; tee -a) adds a host key, and ssh-keygen -R removes one, as CI setups do; a
@@ -446,6 +448,60 @@ class Routes(unittest.TestCase):
                               "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
                               "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
                     "allow")
+        # #980: interpreter open/write calls (Python Path.open, os.open, open(file=...), Node fs.open/openSync,
+        # bun -e, deno eval, Perl sysopen, Ruby File.new/open, Lua io.output) and xargs fed by a { } group or subshell
+        self.expect(self.bash(
+            "python3 -c \"from pathlib import Path; Path('.env').open('w').write('x')\"",
+            "python3 -c \"from pathlib import Path; Path('.env').open(mode='a')\"",
+            "python3 -c \"import os; os.open('.env', os.O_WRONLY)\"",
+            "python3 -c \"import os; os.open('.env', os.O_RDWR | os.O_CREAT)\"",
+            "python3 -c \"import os; os.open('.env', 1)\"",
+            "python3 -c \"open(file='.env', mode='a').write('x')\"",
+            "python3 -c \"open(mode='w', file='.env')\"",
+            "node -e \"require('fs').openSync('.env', 'w')\"",
+            "node -e \"require('fs').open('.env', 'a', ()=>{})\"",
+            "bun -e \"Bun.write('.env', 'x')\"",
+            "deno eval \"Deno.writeTextFileSync('.env', 'x')\"",
+            "deno eval \"Deno.writeFileSync('.env', new Uint8Array())\"",
+            "deno eval \"Deno.openSync('.env', { write: true })\"",
+            "perl -e 'sysopen(F, \".env\", 1)'",
+            "perl -e 'use Fcntl; sysopen(F, \".env\", O_WRONLY | O_CREAT)'",
+            "ruby -e 'File.new(\".env\", \"w\")'",
+            "ruby -e 'open(\".env\", \"w\")'",
+            "lua -e 'io.output(\".env\")'",
+            "{ echo .env; } | xargs sed -i 's/a/b/'",
+            "( echo .env ) | xargs sed -i 's/a/b/'",
+            "{ printf '.e%s' nv; } | xargs sed -i 's/a/b/'",
+            "( echo a; echo .env ) | xargs sed -i 's/a/b/'",
+            "{ find . -name .env; } | xargs sed -i 's/a/b/'",
+        ), "deny", "TK-D023")
+        readonly_env = self.bash(
+            "python3 -c \"from pathlib import Path; Path('.env').open()\"",
+            "python3 -c \"from pathlib import Path; Path('.env').open('r')\"",
+            "python3 -c \"import os; os.open('.env', os.O_RDONLY)\"",
+            "python3 -c \"import os; os.open('.env', 0)\"",
+            "python3 -c \"open(file='.env')\"",
+            "python3 -c \"open(file='.env', mode='r')\"",
+            "node -e \"require('fs').openSync('.env', 'r')\"",
+            "node -e \"require('fs').openSync('.env')\"",
+            "deno eval \"Deno.openSync('.env')\"",
+            "deno eval \"Deno.openSync('.env', { read: true })\"",
+            "perl -e 'sysopen(F, \".env\", 0)'",
+            "ruby -e 'File.new(\".env\", \"r\")'",
+            "ruby -e 'File.new(\".env\")'",
+        )
+        self.expect(readonly_env, "flag")
+        self.spare(readonly_env, "TK-D023")
+        self.expect(self.bash(
+            "python3 -c \"from pathlib import Path; Path('out.txt').open('w')\"",
+            "bun -e \"Bun.write('out.txt', 'x')\"",
+            "deno eval \"Deno.writeTextFileSync('out.txt', 'x')\"",
+            "lua -e 'io.output()'",
+            "lua -e 'io.output(\"out.txt\")'",
+            "{ echo src/a.txt; } | xargs sed -i 's/a/b/'",
+            "( echo src/a.txt ) | xargs sed -i 's/a/b/'",
+        ), "allow")
+        self.spare(self.bash("{ echo .env; } && echo src/a.txt | xargs sed -i 's/a/b/'"), "TK-D023")
 
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}

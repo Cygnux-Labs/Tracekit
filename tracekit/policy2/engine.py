@@ -1108,9 +1108,10 @@ def _environment_dump(command, files=()):
         return all(a.startswith("-") for a in args) and not any(re.fullmatch(r"-[a-zA-Z]*[fF][a-zA-Z]*", a) for a in args)
     if prog == "ps":
         return any(re.fullmatch(r"[A-Za-z]*e[A-Za-z]*|-[A-Za-z]*E[A-Za-z]*", a) for a in args)
-    kind = "jq" if prog in ("jq", "gojq", "jaq") else shell._kind(prog)
+    raw_kind = "jq" if prog in ("jq", "gojq", "jaq") else shell._kind(prog)
+    kind = shell._JS_KIND.get(raw_kind, raw_kind)
     if kind in _ENVIRON_CODE:
-        code = [a for a in args if not a.startswith("-")][:1] if kind == "jq" else [shell._code_arg(kind, args)]
+        code = [a for a in args if not a.startswith("-")][:1] if kind == "jq" else [shell._code_arg(raw_kind, args)]
         return any(t and _ENVIRON_CODE[kind].search(t) for t in code + list(command.get("stdin", ())))
     return prog == "set" and not args
 
@@ -2497,18 +2498,21 @@ def _command_effects(commands):
     # what the line doesn't name (ls, grep, cat) may print each protected name one of its words is part of (`ls -a |
     # grep env` prints .env)
     prints = {}
-    for c in commands if any(c.get("via", [])[-1:] == ["xargs"] for c in commands) else ():
-        prog, words = _program(c["argv"]), [w for w in c["argv"][1:] if not w.startswith("-")]
-        if prog == "find":
-            found = _find_files(c["argv"][1:])
-        elif prog in ("echo", "printf"):
-            found = words + (_printf_words(words) if prog == "printf" else [])
-        elif prog not in ("xargs", "gxargs") and c.get("via", [])[-1:] != ["xargs"]:
-            parts = {p for w in words if len(p := re.sub(r"[\\^$.*+?()[\]{}|]", "", w).casefold()) > 1}
-            found = [n for n in shell.GLOB_NAMES if any(p in n for p in parts)]
-        else:
-            continue
-        prints.setdefault(c.get("pipeline"), []).extend(found)
+    if any(c.get("via", [])[-1:] in (["xargs"], ["gxargs"]) for c in commands):
+        for c in commands:
+            prog, words = _program(c["argv"]), [w for w in c["argv"][1:] if not w.startswith("-")]
+            if prog == "find":
+                found = _find_files(c["argv"][1:])
+            elif prog in ("echo", "printf"):
+                found = words + (_printf_words(words) if prog == "printf" else [])
+            elif prog not in ("xargs", "gxargs") and c.get("via", [])[-1:] not in (["xargs"], ["gxargs"]):
+                parts = {p for w in words if len(p := re.sub(r"[\\^$.*+?()[\]{}|]", "", w).casefold()) > 1}
+                found = [n for n in shell.GLOB_NAMES if any(p in n for p in parts)]
+            else:
+                continue
+            if found:
+                for p, s in dict.fromkeys([(c.get("pipeline"), c.get("stage", 0)), *(c.get("reaches") or ())]):
+                    prints.setdefault(p, []).append((s, found))
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -2526,7 +2530,12 @@ def _command_effects(commands):
                 elif a.startswith("-o") and not a.startswith("--"):
                     out.append("WRITE_TARGET:" + (a[2:].removeprefix("=") or w))
             continue
-        printed = prints.get(command.get("pipeline"), []) if command.get("via", [])[-1:] == ["xargs"] else []
+        if command.get("via", [])[-1:] in (["xargs"], ["gxargs"]):
+            spots = dict.fromkeys([(command.get("pipeline"), command.get("stage", 0)), *(command.get("reaches") or ())])
+            printed = list(dict.fromkeys(path for p, s in spots for ps, paths in prints.get(p, ()) if ps < s
+                                         for path in paths))
+        else:
+            printed = []
         if printed:
             out.extend(kind + ":" + path for t in _command_effects([{"argv": argv + ["{}"]}])
                        for kind, _, target in [t.partition(":")] if target == "{}" and kind != "MAY_WRITE"

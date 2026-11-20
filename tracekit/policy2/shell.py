@@ -248,13 +248,16 @@ KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", 
 # bash's reserved words: an alias of one is expanded where the word is one (`alias do='do cmd;'`)
 _RESERVED = KEYWORDS | {"for", "select", "case", "esac", "in", "function", "coproc", "time", "[[", "]]"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
-KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
+KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")),
+         ("bun", re.compile(r"bun")), ("deno", re.compile(r"deno")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r", "lua": "e"}
+CODE_FLAGS = {"python": "c", "node": "ep", "bun": "ep", "deno": "", "perl": "eE", "ruby": "e", "php": "r", "lua": "e"}
+_JS_KIND = {"bun": "node", "deno": "node"}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
-                     "--experimental-loader"}
+                     "--experimental-loader", "--cwd", "--config", "--preload", "--env-file", "--import-map",
+                     "--ext", "--lock", "--conditions", "--tsconfig", "--tsconfig-override", "--define", "-l"}
 _ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
 _COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
 # variables whose value bash runs: a prompt (PS0, PS1 and PS2 in an interactive shell, PS4 under xtrace, any with
@@ -907,30 +910,74 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
-# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text/open
 _WRITES = {
-    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.(?:write_(?:text|bytes)|(?P<open>open))\s*\(|"""
                          r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
-                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+                         r"os\.(?:open|rename|replace|link|symlink))\s*\("),
     "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
-                       r"cp|link|symlink)(?:Sync)?\s*\("),
-    "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
-    "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
-                       r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
+                       r"cp|link|symlink|open|Bun\.write|Deno\.(?:writeTextFile|writeFile|create|truncate))(?:Sync)?\s*\("),
+    "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|sysopen|copy|move|rename|symlink|link)\b\s*\(?"),
+    "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>File\.new|(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
+                       r"(?<![\w.])open|FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
     "php": re.compile(r"(?P<path>(?!))?\b(?P<call>file_put_contents|fopen|copy|rename|symlink|link|touch)\s*\("),
-    "lua": re.compile(r"(?P<path>(?!))?\b(?P<call>io\.open|os\.rename)\s*\(")}
+    "lua": re.compile(r"(?P<path>(?!))?\b(?P<call>io\.(?:open|output)|os\.rename)\s*\(")}
 _SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln")   # calls that write their second
 
 
 _PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
 _MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+_NODE_WRITE_MODE = re.compile(r"(?:[wax][rwasx+]*|r[s]*\+[rwasx+]*)")
+_DENO_WRITE_OPT = re.compile(r"\b(?:write|append|create|createNew|truncate)\s*:\s*true\b")
+_WRITE_FLAG_NAME = re.compile(r"\b(?:O_)?(?:WRONLY|RDWR|APPEND|CREAT|TRUNC|TMPFILE)\b")
+_INT_FLAG_EXPR = re.compile(r"\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+)(?:\s*[|+]\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+))*\s*")
+
+
+def _arg_slices(kind, text):
+    """(start, end) character spans of each top-level argument in `text` (inside a call's argument list)."""
+    slices, k = [], 0
+    while k < len(text):
+        k = _blank_end(text, k, ",)")
+        if k >= len(text) or text[k] == ")":
+            break
+        if text[k] == ",":
+            k += 1
+            continue
+        end = _skip_value(kind, text, k, ",)", lambda _: None)
+        slices.append((k, end))
+        k = end + (text[end:end + 1] == ",")
+    return slices
+
+
+def _kw_arg(kind, text, name):
+    """(_arg_text pieces, raw RHS) of keyword argument `name=...` in `text`, else (None, None)."""
+    rx = re.compile(rf"{name}\s*=(?!=)\s*")
+    for start, end in _arg_slices(kind, text):
+        if m := rx.match(text, start, end):
+            return _arg_text(kind, text, m.end(), end, lambda _: None) or None, text[m.end():end].strip()
+    return None, None
+
+
+def _is_write_flags(expr):
+    """Whether an open/sysopen numeric or symbolic flags expression writes (O_WRONLY/O_RDWR/O_CREAT/..., or bits 1/2)."""
+    if not expr:
+        return False
+    if _WRITE_FLAG_NAME.search(expr):
+        return True
+    if _INT_FLAG_EXPR.fullmatch(expr):
+        val = 0
+        for tok in re.split(r"\s*[|+]\s*", expr.strip()):
+            val |= int(tok, 0)
+        return (val & 3) in (1, 2)
+    return False
 
 
 def _written(kind, call, items, text=""):
     """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
-    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
-    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
-    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    keyword argument or numeric/symbolic flags), or None: an open's only in a writing mode (Python's, Ruby's, PHP's
+    and Lua's mode argument with w, a, x, c or +, Python's `file=` and `mode=`, Python's `os.open` flags, Perl's `>`,
+    `>>`, `+<` or `sysopen`'s mode, Node's/Deno's `open`/`openSync` mode or options, Ruby's `File.new` and `open`),
+    a copy's, move's, rename's or link's target, else its first argument."""
     name = call.rsplit(".", 1)[-1]
     if kind == "perl" and name == "open":
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
@@ -942,10 +989,37 @@ def _written(kind, call, items, text=""):
             target = items[2] if len(items) > 2 else None
         else:   # open(FH, ">file")
             target = (rest,)
-    elif name in ("open", "fopen"):
+    elif kind == "perl" and name == "sysopen":
+        slices = _arg_slices(kind, text)
+        flag_text = text[slices[2][0]:slices[2][1]].strip() if len(slices) > 2 else ""
+        target = items[1] if len(items) > 1 and _is_write_flags(flag_text) else None
+    elif kind == "python" and call == "os.open":
+        slices = _arg_slices(kind, text)
+        if items:
+            target = items[0]
+            flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else _kw_arg(kind, text, "flags")[1]
+        else:
+            target, _ = _kw_arg(kind, text, "path")
+            _, flag_text = _kw_arg(kind, text, "flags")
+        target = target if _is_write_flags(flag_text) else None
+    elif kind == "node" and name in ("open", "openSync"):
+        slices = _arg_slices(kind, text)
+        mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else None
+        flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else ""
+        writing = (bool(mode and _NODE_WRITE_MODE.fullmatch(mode))
+                   or _is_write_flags(flag_text)
+                   or bool(_DENO_WRITE_OPT.search(flag_text)))
+        target = items[0] if items and writing else None
+    elif name in ("open", "fopen", "new"):
+        target = items[0] if items else None
+        if target is None and kind == "python":
+            target, _ = _kw_arg(kind, text, "file")
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
             (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
-        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
+        slices = _arg_slices(kind, text) if mode is None and kind == "ruby" else ()
+        flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else ""
+        writing = bool(mode and re.search(r"[waxc+]", mode)) or (kind == "ruby" and _is_write_flags(flag_text))
+        target = target if writing else None
     else:
         target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
     return target if isinstance(target, tuple) else None
@@ -1547,9 +1621,13 @@ def _home_readings(ctx):
                 re.fullmatch(r"-\w*s\w*|--symbolic", a) for a in argv[1:]):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
-            printed[c["pipeline"]] = (c.get("stage", 0), ops)
-        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
-            argv = argv + printed[c["pipeline"]][1]
+            for p, s in dict.fromkeys([(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]):
+                printed.setdefault(p, []).append((s, ops))
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
+            extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
+            if extra:
+                argv = argv + extra
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -2571,29 +2649,63 @@ def _find_execs(args):
     return out
 
 
+_DENO_EVAL_VALUED = {"--ext", "-c", "--config", "--import-map", "--lock", "--inspect", "--inspect-brk", "--v8-flags",
+                     "--cert", "--seed", "--location", "--env-file", "--conditions"}
+_DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
+                     "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
+                     "repl", "init", "coverage", "publish", "outdated", "clean"}
+
+
+def _skip_interp_opts(args, i=0, valued=INTERP_VALUE_OPTS):
+    """Advance `i` past interpreter options (including `--opt val`); stops at `--`, `-`, or first non-option word."""
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "--":
+            return i + 1, True
+        i += 2 if args[i] in valued else 1
+    return i, False
+
+
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or None."""
     if kind == "awk":
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
+    if kind == "deno":
+        i, ended = _skip_interp_opts(args, 0, _DENO_EVAL_VALUED)
+        if ended or i >= len(args) or args[i] != "eval":
+            return None
+        i, _ = _skip_interp_opts(args, i + 1, _DENO_EVAL_VALUED)
+        rest = args[i:]
+        return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
     flags = CODE_FLAGS[kind]
-    for i, a in enumerate(args):
-        if kind == "node" and a in ("--eval", "--print"):
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if kind == "bun" and (a == "--" or not a.startswith("-")):
+            break
+        if kind in ("node", "bun") and a in ("--eval", "--print"):
             return args[i + 1] if i + 1 < len(args) else None
-        if kind == "node" and a.startswith(("--eval=", "--print=")):
+        if kind in ("node", "bun") and a.startswith(("--eval=", "--print=")):
             return a.split("=", 1)[1]
+        if kind == "bun" and a in INTERP_VALUE_OPTS:
+            i += 2
+            continue
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
                 if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
                     return a[j + 2:] or (args[i + 1] if i + 1 < len(args) else None)
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
+                    if not a[j + 2:]:
+                        i += 1
                     break
+        i += 1
     return None
 
 
 # each interpreter's options that take the rest of their word as their value
-_VALUED = {"python": "WXm", "node": "r", "perl": "MmIxdD", "ruby": "rIxCEFKT", "php": "dcz", "lua": "l"}
+_VALUED = {"python": "WXm", "node": "r", "bun": "rcdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
+           "php": "dcz", "lua": "l"}
 
 
 def _loaded(kind, args):
@@ -2606,9 +2718,11 @@ def _loaded(kind, args):
         nxt = args[i + 1] if i + 1 < len(args) else ""
         if kind == "perl" and re.match(r"-[mM].", a, re.S):
             yield "code", a[2:].lstrip("-")
-        elif kind == "node" and a in ("--import", "--require", "-r", "--loader", "--experimental-loader"):
+        elif kind in ("node", "bun") and a in ("--import", "--require", "-r", "--loader", "--experimental-loader",
+                                               "--preload"):
             yield "module", nxt
-        elif kind == "node" and a.startswith(("--import=", "--require=", "--loader=", "--experimental-loader=")):
+        elif kind in ("node", "bun") and a.startswith(("--import=", "--require=", "--loader=", "--experimental-loader=",
+                                                       "--preload=")):
             yield "module", a.split("=", 1)[1]
         elif kind == "ruby" and (a == "-r" or re.match(r"-r.", a, re.S)):
             yield "module", a[2:] or nxt
@@ -2687,6 +2801,15 @@ def _reads_stdin(kind, args):
     if kind in ("awk", "sed"):
         return any(_stream_name(f) for f in _program_files(args))
     if _code_arg(kind, args) is not None:
+        return False
+    if kind in ("bun", "deno"):
+        i, ended = _skip_interp_opts(args)
+        if ended or i >= len(args):
+            return i >= len(args) or _stream_name(args[i])
+        if kind == "bun" and args[i] == "run" or kind == "deno" and args[i] in ("run", "eval", "repl"):
+            sub = args[i]
+            i, _ = _skip_interp_opts(args, i + 1)
+            return i >= len(args) and sub != "run" or i < len(args) and _stream_name(args[i])
         return False
     i = 0
     while i < len(args):
@@ -4292,7 +4415,8 @@ class _Parser:
                 first, kept = len(self.ctx["cmds"]), {k: type(self.ctx[k])(self.ctx[k]) for k in
                                                       ("unread_values", "arith_names", "code_names", "depth")}
                 try:
-                    self.emit([program, "-" + CODE_FLAGS[_kind(program)][0], text, *gives], cmd["pipeline"], inside)
+                    flag = ["eval"] if _kind(program) == "deno" else ["-" + CODE_FLAGS[_kind(program)][0]]
+                    self.emit([program, *flag, text, *gives], cmd["pipeline"], inside)
                 except ParseError:   # (a literal it runs that isn't shell)
                     if self.ctx["work"][0] > MAX_WORK:
                         raise
@@ -4808,6 +4932,7 @@ class _Parser:
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
         `cmd` opaque."""
+        kind = _JS_KIND.get(kind, kind)
         if kind == "sed":
             for m in _SED_E.finditer(code):
                 if m.group(1).strip():
@@ -4869,16 +4994,22 @@ class _Parser:
             self.charge(end - m.end())
             if items and isinstance(items[0], tuple):
                 self.argv([("rm",), ("-rf",), items[0]], pid, via)
-        # a write of a file (Python's open in a writing mode, Path(…).write_text, fs.writeFileSync, File.write, a copy or
-        # rename's target): tee of it, so the file rules read it as the shell's writes are (an append to known_hosts
-        # too: only the shell's `>>` and tee -a are read as appends)
+        # a write of a file (Python's open in a writing mode, Path(…).write_text/open, fs.writeFileSync/openSync,
+        # Bun.write, Deno.writeTextFileSync, File.write/new, a copy or rename's target): tee of it, so the file rules
+        # read it as the shell's writes are (an append to known_hosts too: only the shell's `>>` and tee -a are
+        # read as appends)
         for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
-            if m.group("path"):   # Path("…").write_text(…): its literal
+            if m.group("path") and not ("open" in m.re.groupindex and m.group("open")):
                 self.argv([("tee",), (m.group("path"),)], pid, via)
                 continue
             items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
             self.charge(end - m.end())
-            target = _written(kind, m.group("call"), items, code[m.end():end])
+            if "open" in m.re.groupindex and m.group("open"):
+                mode = _text_of(items[0]) if items and isinstance(items[0], tuple) else \
+                    (k.group(2) if (k := _MODE_KEYWORD.search(code[m.end():end])) else None)
+                target = (m.group("path"),) if mode and re.search(r"[wax+]", mode) else None
+            else:
+                target = _written(kind, m.group("call"), items, code[m.end():end])
             if target is not None:
                 self.argv([("tee",), target], pid, via)
         # a spawner given a name, not a literal: what it runs may be any of the code's literals, each read as shell (one
@@ -5705,6 +5836,14 @@ def _python_runs(args, copies=frozenset()):
 def _script_operand(kind, args):
     """The index in `args` of the script file an interpreter of `kind` (one of CODE_FLAGS') runs: its first operand
     after its options (and their values); None for a module (python -m), stdin (-, a stream) or no operand."""
+    if kind in ("bun", "deno"):
+        i, ended = _skip_interp_opts(args)
+        if not ended and i < len(args):
+            if args[i] == "run":
+                i, _ = _skip_interp_opts(args, i + 1)
+            elif kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
+                return None
+        return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "-":
         if args[i] == "--":

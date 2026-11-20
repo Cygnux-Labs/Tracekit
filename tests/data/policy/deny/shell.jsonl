@@ -454,3 +454,14 @@
 {"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
 {"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
 {"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
+{"tool": "Bash", "args": {"command": "python3 -c \"from pathlib import Path; Path('.env').open('w').write('x')\""}, "expect": "deny", "note": "Python Path.open write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "python3 -c \"import os; os.open('.env', os.O_WRONLY)\""}, "expect": "deny", "note": "Python os.open write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "python3 -c \"open(file='.env', mode='a').write('x')\""}, "expect": "deny", "note": "Python open keyword file= write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "node -e \"require('fs').openSync('.env', 'w')\""}, "expect": "deny", "note": "Node fs.openSync write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "bun -e \"Bun.write('.env', 'x')\""}, "expect": "deny", "note": "Bun.write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "deno eval \"Deno.writeTextFileSync('.env', 'x')\""}, "expect": "deny", "note": "Deno.writeTextFileSync to .env (#980)"}
+{"tool": "Bash", "args": {"command": "perl -e 'sysopen(F, \".env\", 1)'"}, "expect": "deny", "note": "Perl sysopen write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "ruby -e 'File.new(\".env\", \"w\")'"}, "expect": "deny", "note": "Ruby File.new write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "lua -e 'io.output(\".env\")'"}, "expect": "deny", "note": "Lua io.output write to .env (#980)"}
+{"tool": "Bash", "args": {"command": "{ echo .env; } | xargs sed -i 's/a/b/'"}, "expect": "deny", "note": "xargs fed by a { } group writing .env (#980)"}
+{"tool": "Bash", "args": {"command": "( echo .env ) | xargs sed -i 's/a/b/'"}, "expect": "deny", "note": "xargs fed by a subshell writing .env (#980)"}
