@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-87'
+version: '2026.11-v2-99'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -123,7 +123,7 @@ deny:
     # whose DESTINATION is a system folder (may remove its unmatched contents).
     # Do not deny chattr -R -i (unlocking), an rsync using /etc as SOURCE, or
     # mv of a child under /etc: those are not these system-folder operations.
-    pattern: '^rm(( [^ ]+){0,16}?| [-A-QS-Za-qs-z ]*?) (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)(( [^ ]+){0,16}?| [-A-Za-z ]*?) (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^rm( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ |-i?(name|path|wholename) \* |-i?regex \.\* |-size \+0[bckwMG]? |(!|-not) -i?(name|path|wholename|regex) [^ ]+ )*-delete( |$)|^git( [^ ]+){0,8}? (-C |--work-tree[= ])(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,8}? clean( |$)|^git( [^ ]+){0,8}? clean( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(?:(?:(?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)|\( (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)(?: (?:-o|-or|-a|-and) (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)){0,6} \)) ){0,12}-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(?:(?:(?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)|\( (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)(?: (?:-o|-or|-a|-and) (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)){0,6} \)) ){0,12}-exec(?:dir)? (?:(?:/(?:[A-Za-z0-9_.-]+/){1,4})?rm(?: -[A-Za-z-]+){0,4} \{\}(?: \+| ;)|(?:/(?:[A-Za-z0-9_.-]+/){1,4})?ch(?:mod|own|grp)(?: -[A-Za-z]*R[A-Za-z]*| --rec[a-z]*)(?: [^ ]+){1,3} \{\}(?: \+| ;)|(?:/(?:[A-Za-z0-9_.-]+/){1,4})?chattr(?: -[A-Za-z]*R[A-Za-z]*| --recursive) [+=][A-Za-z]*[ia][A-Za-z]* \{\}(?: \+| ;))( |$)|^chgrp( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,16}? (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^chgrp( [^ ]+){0,16}? (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( |$)|^chattr( [^ ]+){0,8}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,8}? [+=][A-Za-z]*[ia][A-Za-z]* (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^chattr( [^ ]+){0,8}? [+=][A-Za-z]*[ia][A-Za-z]*( [^ ]+){0,8}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*) (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^mv( -[A-Za-z-]+){0,8} (?:-- )?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) [^ ]+( |$)|^rsync( [^ ]+){0,16}? --delete(-[a-z-]+)?( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)$|^rsync( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+[Cc]|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) --delete(-[a-z-]+)?$'
+    pattern: '^rm(( [^ ]+){0,16}?| [-A-QS-Za-qs-z ]*?) (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)(( [^ ]+){0,16}?| [-A-Za-z ]*?) (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^rm( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*[rR][A-Za-z]*|--rec[a-z]*)( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ |-i?(name|path|wholename) \* |-i?regex \.\* |-size \+0[bckwMG]? |(!|-not) -i?(name|path|wholename|regex) [^ ]+ )*-delete( |$)|^git( [^ ]+){0,8}? (-C |--work-tree[= ])(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,8}? clean( |$)|^git( [^ ]+){0,8}? clean( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( |$)|^ch(mod|own)( [^ ]+){0,16}? (/([/.]*|[/.?]*\*[/.?*]*)|/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(?:(?:(?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)|\( (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)(?: (?:-o|-or|-a|-and) (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)){0,6} \)) ){0,12}-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(?:(?:(?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)|\( (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)(?: (?:-o|-or|-a|-and) (?:-(?:mindepth|maxdepth) [0-9]+|-(?:depth|d|xdev|mount|true|print0?)|-type [a-z,]+|-i?(?:name|path|wholename) \*|-i?regex \.\*|-size \+0[bckwMG]?|(?:!|-not) -i?(?:name|path|wholename|regex) [^ ]+)){0,6} \)) ){0,12}-exec(?:dir)? (?:(?:/(?:[A-Za-z0-9_.-]+/){1,4})?rm(?: -[A-Za-z-]+){0,4} \{\}(?: \+| ;)|(?:/(?:[A-Za-z0-9_.-]+/){1,4})?ch(?:mod|own|grp)(?: -[A-Za-z]*R[A-Za-z]*| --rec[a-z]*)(?: [^ ]+){1,3} \{\}(?: \+| ;)|(?:/(?:[A-Za-z0-9_.-]+/){1,4})?chattr(?: -[A-Za-z]*R[A-Za-z]*| --recursive) [+=][A-Za-z]*[ia][A-Za-z]* \{\}(?: \+| ;))( |$)|^chgrp( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,16}? (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^chgrp( [^ ]+){0,16}? (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( [^ ]+){0,16}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( |$)|^chattr( [^ ]+){0,8}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*)( [^ ]+){0,8}? [+=][A-Za-z]*[ia][A-Za-z]* (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^chattr( [^ ]+){0,8}? [+=][A-Za-z]*[ia][A-Za-z]*( [^ ]+){0,8}? (-[A-Za-z]*R[A-Za-z]*|--rec[a-z]*) (?:/([/.]*|[/.?]*\*[/.?*]*)|(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?))( |$)|^mv( -[A-Za-z-]+){0,8} (?:-- )?(/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) [^ ]+( |$)|^rsync( [^ ]+){0,16}? --delete(-[a-z-]+)?( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?)$|^rsync( [^ ]+){0,16}? (/(([/.]*?/)?|([/.]*?/)?[^/ .][^/ ]*/+\.\./([/.]*?/)?)(([Pp][Rr][Ii][Vv][Aa][Tt][Ee]/+)?([Ee][Tt][Cc]|[Vv][Aa][Rr])|[Uu][Ss][Rr]|[Ss]?[Bb][Ii][Nn]|[Ll][Ii][Bb](64)?|[Bb][Oo][Oo][Tt]|[Oo][Pp][Tt]|[Ss][Rr][Vv]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Ll][Ii][Bb][Rr][Aa][Rr][Yy]|[Aa][Pp][Pp][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn][Ss])(/[/.]*|/(?:[.][^/. ][^/ ]*|[^/ .][^/ ]*)/+\.\.(?:/[/.]*|[/.?]*\*[/.?*]*)?|[/.?]*\*[/.?*]*)?|((/+([Mm][Nn][Tt]/+[Cc]|[Cc][Yy][Gg][Dd][Rr][Ii][Vv][Ee]/+[Cc]|[Cc])|[Cc]:)[\\/]+)[Ww][Ii][Nn][Dd][Oo][Ww][Ss]([\\/][\\/.]*|[\\/](?:[.][^\\/. ][^\\/ ]*|[^\\/. ][^\\/ ]*)[\\/]+\.\.(?:[\\/][\\/.]*|[\\/.?]*\*[\\/.?*]*)?|[\\/.?]*\*[\\/.?*]*)?) --delete(-[a-z-]+)?$'
     reason: recursive delete or permission change of a system folder
     remedy: Delete or change only the project's own paths, named in full; a person changes system folders themselves.
     rationale: A system folder holds the operating system and its configuration; deleting it or locking it breaks the machine, as deleting root does.
@@ -139,6 +139,21 @@ deny:
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
+  - id: TK-D023
+    class: shell
+    field: effects
+    # every file a command writes (engine._effects: redirections, tee, cp, mv, install, dd of=, truncate, sed -i,
+    # perl -i, awk's print >, find -exec, and each name a pattern there may stand for), as TK-D005 reads a path, so an
+    # in-place editor reaches no credentials file TK-D010's list of writers leaves out: any file in or under .ssh/ or
+    # .aws/ (the folder itself too, which an archive or a folder copy writes into), as TK-D005 holds a file tool's. An
+    # .env template is exempt, as in TK-D005; a host key appended to known_hosts by the shell (`ssh-keyscan >>`,
+    # `tee -a`, which CI setups run; a Windows spelling too) is an APPEND_TARGET, which this rule doesn't read, where a
+    # copy, link, in-place edit or plain write of it is denied
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:[^/]*?(?:\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|credentials|\.(?:aws|ssh)(?:/[\w\W]*)?)$'
+    unless: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt]))$'
+    reason: writing to a credentials file from the shell
+    remedy: Write a template (.env.example) with the file-editing tool and let a person fill in credentials; remove a stale host key with ssh-keygen -R HOST, add one with ssh-keyscan HOST >> ~/.ssh/known_hosts.
+    rationale: TK-D010 for every way the shell writes a file, so sed -i or truncate is no second route to what TK-D005 blocks.
   - id: TK-D011
     class: shell
     field: line
@@ -163,6 +178,17 @@ deny:
     reason: uploading a secrets file or the environment
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
+  - id: TK-D015
+    class: shell
+    field: environment
+    # the whole environment (env or printenv alone, export, set, declare -p or typeset -p with no name, a read of a
+    # process's environ file) printed into a program that sends it off the machine (curl, wget, nc, ssh, scp, rsync,
+    # a gist): a later stage of its pipeline, or that program's own words or herestring (`$(env)`, `<(env)`), also
+    # from a block or subshell (engine._environment_sent); not through a stage that only counts or hashes it
+    pattern: '^SENT:'
+    reason: uploading the whole environment
+    remedy: Send only the values the request needs; a person shares secrets through the deployment's secret store.
+    rationale: The environment holds the session's tokens and keys; sending all of it off the machine is exfiltration.
   - id: TK-D022
     class: fs
     tool: LibraryUpload
@@ -304,8 +330,8 @@ deny:
     field: argv
     # security's global options (-q, -v, -p prompt …) may come before its command; `security export` exports every
     # item but with -t certs or pubKeys (unless), which hold no secret; `pass grep` and `gopass grep` decrypt every
-    # entry
-    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b'
+    # entry; keepassxc-cli export dumps the whole database
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+export\b'
     unless: '^security( -[hilqv]+| -p [^-\s]\S*)* export( [^\n]*)? -t ?(certs|pubKeys)( |$)'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
@@ -356,13 +382,59 @@ ask:
     class: shell
     # each command's argv: removing or stopping Tracekit as a person would, `tracekit uninstall`, `down` or `up
     # --replace`, which stops the running signer first (also as `python -m tracekit`, as TK-D012 reads it), uninstalling
-    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's uninstall or
-    # disable, and a user service's stop, after any number of options. Held, not denied, so a person who means it
-    # approves it; TK-D007 denies touching the signer's files or process directly
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
+    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's or Hermes
+    # Agent plugin's uninstall or disable, and a user service's stop, after any number of options. A plugin is named in
+    # any case, by a path (`./tracekit`, `tracekit/`) or with a version, or all of them (`--all`, `-a`). Hermes's also
+    # as hermes-agent or `python -m hermes_cli[.main]`, and with the plugin's name built at run time (`$(echo
+    # tracekit)`) or none (`echo tracekit | xargs hermes plugins disable` gives it from xargs's input). Held, not denied, so a
+    # person who means it approves it; TK-D007 denies touching the signer's files or process directly
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +([^- ][^ ]* +)?)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? (([^ ]*/)?[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt](@[^ ]*)?/*|--all|-[A-Za-z]*a[A-Za-z]*)( |$)|^(hermes|hermes-agent|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?hermes_cli(\.main)?) (-[^ ]+ +([^- ][^ ]* +)?)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)(( [\w\W]*?)? ([^ ]*/)?[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt](@[^ ]*)?/*( |$)|( [\w\W]*?)? ([^ ]*[$`][^ ]*|--all|-[A-Za-z]*a[A-Za-z]*)( |$)| *$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
+  - id: TK-A069
+    class: shell
+    # each command's argv: a harness's own command that changes its settings, as TK-F015 holds a write to its files:
+    # Hermes Agent's `config set`, `unset`, `edit` or `migrate` (approvals.mode, plugins.disabled, its hook timeout)
+    # and `profile use`, which makes another profile's settings the default, after any number of options; as hermes,
+    # hermes-agent or `python -m hermes_cli[.main]`, as TK-A054 reads them
+    pattern: '^(hermes|hermes-agent|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?hermes_cli(\.main)?) (-[^ ]+ +([^- ][^ ]* +)?)*(config (-[^ ]+ +)*(set|unset|edit|migrate)|profile (-[^ ]+ +)*use)( |$)'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: Hermes's settings decide which plugins run, Tracekit's among them, and what Hermes asks a person first.
+  - id: TK-A070
+    class: shell
+    field: harness_launch
+    # an agent harness's CLI (also through npx, bunx, pnpx, pnpm dlx, a JavaScript runtime on its package's script or
+    # its bin link, node_modules/.bin/claude, or `"$(which claude)"`, a program word `"$(command -v claude)"`, python
+    # -m hermes_cli or gptme, hermes-agent) started with settings the line chooses (engine._harness_launches): HOME,
+    # XDG_CONFIG_HOME, Windows' APPDATA or LOCALAPPDATA, or the harness's own home, config or data variable set or
+    # unset in any way bash does (a loop's too), env -i or -u of them, a settings option (claude --settings,
+    # --setting-sources or --bare, --config,
+    # copilot's --config-dir, --profile but gptme's, codex -p, hermes -p, codex -c with its hooks, notify, sandbox,
+    # approvals or profiles in its value, and
+    # codex --disable of such a feature), words xargs gives it, or a word set at run time; and codex's `features
+    # disable` of such a feature. Such a run reads none of the person's settings, and so runs none of the hooks that
+    # would record it. A model, effort or MCP option (-c model_reasoning_effort=high, --mcp-config) and AWS_PROFILE,
+    # KUBECONFIG or JAVA_HOME change none of them, and a harness started as the person set it up runs those hooks: neither is held
+    pattern: '^LAUNCH:'
+    label: harness_config
+    reason: starting an agent harness with settings the agent chose
+    remedy: Have a person approve the held call, or start the harness with the person's own settings, which record its calls.
+    rationale: A nested agent run under another home or settings skips Tracekit's hooks, so none of its calls would be decided or recorded.
+  - id: TK-A084
+    class: shell
+    field: gh_runs
+    # gh running what its own commands don't say (engine._gh_runs): an alias set or imported (a --shell one runs a
+    # shell; a plain one any gh command, `pr merge --admin` or an API write), an extension installed, upgraded, browsed
+    # for or run by `gh extension exec`, a command that is none of gh's own (an alias's or an extension's: `gh m 1`,
+    # `gh x`), and the editor, pager or browser `gh config set` names. Held, as the alias's or extension's own words
+    # aren't on the line that runs them
+    pattern: '^GH:'
+    reason: a gh alias or extension, which runs what its definition says
+    remedy: Run the gh command or program itself, or have a person approve the held call.
+    rationale: An alias or extension runs words the call doesn't show (an admin merge, an API write, any program), so the policy can't decide what it does.
   - id: TK-A057
     class: shell
     # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
@@ -378,7 +450,7 @@ ask:
     tool: Read|Grep
     field: path
     # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
-    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)\.config/opera/([^/]+/)?(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/com\.operasoftware\.opera(gx)?/([^/]+/)?(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (gx )?stable/([^/]+/)?(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
@@ -389,10 +461,15 @@ ask:
     # the compatible rewrite, reads the same stores), so every pass or gopass command but those that don't decrypt an
     # entry (`unless`; grep is TK-D020's). `pass find` only lists names; gopass's find/search showed the secret itself
     # on a match until gopass stopped it, so they stay held there. ssh-add's -L anywhere in a cluster (-qL, -Lq).
+    # keepassxc-cli show, clip and attachment-export extract passwords or key files; hold them for approval.
+    # `gh auth token` prints the stored GitHub token outright; `gh auth status` masks it unless `-t`/`--show-token`
+    # (a short cluster with t too, -ht), so only a status carrying one is held (`--help` prints help, not a token:
+    # `unless`). `git credential fill` and each helper's own `get` print the stored username and password
+    # (approve/store and reject/erase don't read them, so they aren't held).
     # Paths in lower case: the target is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
-    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)|^gopass\s+(init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)(\s|$)'
-    reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b))|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
+    unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)|^gopass\s+(init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)(\s|$)|^gh\s+auth\s+(token|status)\b[\w\W]*?--help(\s|$)'
+    reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
     rationale: These commands can read saved credentials or list the keys an SSH agent holds; a person confirms the access.
   - id: TK-A022
@@ -535,7 +612,7 @@ ask:
     # only prints SQL) and text that names a command aren't held, nor is a command that only asks for help: --help or -h
     # as the last word after the program and at most two short words
     pattern: '^(?:(?:(?:npx|bunx|bun x|pnpm dlx|pnpm exec|pnpm|yarn dlx|yarn|npm exec) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?(?:prisma(?:@[^ ]+)? (?:migrate reset|db push(?: [^ ]+){0,8}? --force-reset)|sequelize(?:-cli)?(?:@[^ ]+)? db:drop|supabase(?:@[^ ]+)? db reset|typeorm(?:-ts-node-(?:commonjs|esm))?(?:@[^ ]+)? schema:drop)|(?:bundle exec (?:[^ ]*/)?)?(?:rails|rake) db:(?:drop|reset|purge|truncate_all|migrate:reset|seed:replant)(?::\w+)*|(?:(?:python[\d.]*|py) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:(?:[^ ]*/)?manage\.py|-m django)|django-admin|manage\.py) flush|(?:(?:php[\d.]*|sail) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?artisan (?:migrate:(?:fresh|reset|refresh)|db:wipe)|mix ecto\.(?:drop|reset)|dotnet(?: ef|-ef) database drop)(?: |$)'
-    unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} (--help|-h)$'
+    unless: '^[a-z0-9-]{1,16}( [a-z:]{1,32}){0,2} (--help|-h)$'
     reason: dropping or resetting a database through a framework command
     remedy: Wait for a person to approve the held call, or reset a disposable copy of the database and leave the real one.
     rationale: A framework's reset or drop command wipes the database its configuration points at, which may not be a throwaway one; a person confirms it.
@@ -710,6 +787,20 @@ ask:
     reason: a destructive SQL statement through an MCP database tool
     remedy: Have a person approve the held call, or run the change as a reviewed migration.
     rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
+  - id: TK-A086
+    class: mcp
+    tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
+    field: run
+    # TK-A041's statements as every SQL dialect lexes them, as TK-DB001..003 read a SQL tool's (engine._runs: comments
+    # and literals blanked, a blank run one space, `SQL;` before a statement a `;` ends and `SQL:` before the last), so
+    # a comment that one database reads otherwise than TK-A041's one reading does (a nested /* */, a -- before a
+    # control character, a CR that ends a comment) doesn't hide the statement after it. A tool a pack maps to class sql
+    # is read by TK-DB001..003 instead. Words are one blank apart there, so the DELETE's words are read lazily, one at a
+    # time, and the fallback engine stays linear
+    pattern: '^SQL[:;][Dd][Rr][Oo][Pp] (?:[Tt][Ee][Mm][Pp](?:[Oo][Rr][Aa][Rr][Yy])? )?(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Rr][Oo][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd] [Vv][Ii][Ee][Ww]|[Ff][Oo][Rr][Ee][Ii][Gg][Nn] [Tt][Aa][Bb][Ll][Ee]|[Dd][Oo][Mm][Aa][Ii][Nn]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Pp][Uu][Bb][Ll][Ii][Cc][Aa][Tt][Ii][Oo][Nn]|[Ss][Uu][Bb][Ss][Cc][Rr][Ii][Pp][Tt][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Aa][Ss][Tt]|[Cc][Oo][Ll][Ll][Aa][Tt][Ii][Oo][Nn]|[Oo][Ww][Nn][Ee][Dd] [Bb][Yy])\b|^SQL[:;][Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\b|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm] [^ ]+(?: (?:[Aa][Ss] )?[A-Za-z_][A-Za-z0-9_]*)?(?: [Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg] .*)?$|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee] [Ff][Rr][Oo][Mm](?: [^ ]+)+? [Ww][Hh][Ee][Rr][Ee] (?:1 ?= ?1|'''' ?= ?''''|[Tt][Rr][Uu][Ee]|1)$'
+    reason: a destructive SQL statement through an MCP database tool
+    remedy: Have a person approve the held call, or run the change as a reviewed migration.
+    rationale: An MCP tool whose sql, query or statement argument drops, truncates or deletes without a WHERE destroys data the same way a SQL tool call does; a person confirms it.
   - id: TK-A031
     class: shell
     # each command's argv: a version purge (gsutil rm -a, gcloud storage rm --all-versions, an S3 object version), a
@@ -804,6 +895,21 @@ ask:
     reason: removing a repository's secrets, branch protection, rulesets or security features through GitHub
     remedy: Have a person approve the held call, or leave the change to a person in the repository's settings.
     rationale: Deleting secrets or branch protection, or turning secret scanning off, removes what guards a repository's code and deploys; a person confirms it.
+  - id: TK-A087
+    class: shell
+    # taking a GitLab project's protections apart through glab or its API, as TK-A047 does for GitHub (#897): glab
+    # variable delete (or remove, rm), with up to four options before each word as TK-A047 reads them; a DELETE
+    # through glab api or curl, the method flag before or after the path (after -X ending a cluster of short options
+    # too: -iX), on a project's protected_branches/<name> (to 250 characters), protected_tags/<name>, variables/<key>
+    # or push_rule, or a group's variables/<key>; each path bare, after /api/v4/ or after a host, with or without a
+    # scheme in any case; the project or group id numeric or URL-encoded (group%2Fproj); up to sixteen words (empty
+    # ones too) before the method flag or the path and sixteen between them; the method in any case. A GET of the same
+    # paths, glab variable list, get and set aren't held; a PUT or PATCH that loosens a protection isn't read, nor is
+    # a method or path set at run time. Every gap is bounded, so the fallback engine stays linear
+    pattern: '^(?:glab +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}variable +(?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,4}(?:delete|remove|rm)(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#/]{1,250}|protected_tags/[^ ?#/]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)|(?:glab api|curl) (?:[^ ]* ){0,16}(?:/?(?:api/v4/)?|(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v4)?/)(?:projects/[^/ ?#]+/(?:protected_branches/[^ ?#/]{1,250}|protected_tags/[^ ?#/]{1,250}|variables/[^/ ?#]+|push_rule)|groups/[^/ ?#]+/variables/[^/ ?#]+)(?:[/?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)[ =]?[Dd][Ee][Ll][Ee][Tt][Ee](?: |$))'
+    reason: removing a GitLab project's protected branches, protected tags, push rule or CI/CD variables, or a group's variables
+    remedy: Have a person approve the held call, or leave the change to a person in the project's settings.
+    rationale: Deleting a protected branch or the CI/CD variables that hold deploy credentials removes what guards a project's code and deploys; a person confirms it, as for GitHub's (TK-A047).
   - id: TK-A043
     class: shell
     # moving money through Stripe, PayPal or Square from the shell, each command's argv: the Stripe CLI's refunds,
@@ -875,25 +981,37 @@ ask:
   - id: TK-A035
     class: shell
     # each command's argv: AWS Secrets Manager's get-secret-value, SSM Parameter Store's reads with --with-decryption
-    # (a word of its own or any prefix of it: --no-with-decryption is not it), gcloud's `secrets versions access` and
-    # az's `keyvault secret show`. Up to eight options (with a value) before the service and again before each word
-    pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$))'
-    reason: reading a secret's value from a cloud secret store
+    # (a word of its own or any prefix of it: --no-with-decryption is not it), gcloud's `secrets versions access`,
+    # az's `keyvault secret show`, and value-reading commands for 1Password, Bitwarden, Doppler, Infisical and LastPass.
+    # Doppler's secrets set prints the values it sets, and delete and upload print every value, so they stay held.
+    # Up to eight options (with a value) before the service and again before each word. `unless`: help only as
+    # `--help` right after a held command's own words (`op read --help`, `doppler secrets get --help`): a quoted last
+    # word reads as two (`op document get "k --help"`), so any other word before it could be a renamed item or a
+    # file to write; with only command words, a quoted `"get --help"` reaches the CLI as a command it refuses
+    # (doppler's and infisical's `secrets` take no argument). Also doppler's and infisical's `--help` before plain
+    # words; doppler's `--only-names` among its own flags only, a project or config given as a name (a path value,
+    # `--scope "/a --only-names"`, could hide it); infisical's commands that print no stored value
+    pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}(read|inject)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}item (-[^ ]+ +([^- ][^ ]* +)?){0,8}get .*(--reveal|--fields(=| )[^ ]+|--otp|--format(=| )json)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}document (-[^ ]+ +([^- ][^ ]* +)?){0,8}get(["]| |$)|bw (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get (password|item|notes|totp|attachment)|list items|export)(["]| |$)|doppler (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets(["]| |$)|infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secrets|export)(["]| |$)|lpass (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|export)(["]| |$))'
+    unless: '^(aws secretsmanager (batch-)?get-secret-value|gcloud( alpha| beta)? secrets versions access|az keyvault secret (show|show-deleted|download)|op (read|inject|item get|document get)|bw (get (password|item|notes|totp|attachment)|list items|export)|doppler secrets( [a-z][a-z-]{0,20})?|infisical (secrets( [a-z][a-z-]{0,30})?|export)|lpass (show|export)) --help$|^(doppler|infisical) --help( [a-z][a-z0-9-]{0,40}){1,3}$|^doppler secrets( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8} --only-names( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8}$|^infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets +(set|delete|folders +(create|get)|generate-example-env)([ \t]|$)'
+    reason: reading a secret's value from a secret store
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
-    rationale: An agent that can read a live password or key can use it or send it anywhere; listing secrets, describing one and reading a parameter without decryption stay allowed.
+    rationale: An agent that can read a live password or key can use it or send it anywhere; commands that only list names or metadata stay allowed.
   - id: TK-A036
     class: mcp
     # TK-A035's commands as the cli_command, command or cmd argument of an MCP tool (the AWS API MCP server's
     # call_aws), starting with the program. The argument is JSON text, so any run of spaces, or of escaped tabs,
     # newlines or returns, separates its words, and an escaped quote stays in its word: a word can't hold a
-    # separator, so each text reads one way. The scan for the decryption flag
-    # stops at the end of that value, so each occurrence rescans only it. Only for a tool named for running a
-    # command: a rule on every MCP call makes each call over 64 KiB ask (TK-OVERSIZE)
+    # separator, so each text reads one way. A raw quote isn't a word character either — it ends the JSON value
+    # (the word classes once let `op -a ` copies chain option scans past each closing quote). The scan for the
+    # decryption flag stops at the end of that value, so each occurrence rescans only it. Only for a tool named for
+    # running a command: a rule on every MCP call makes each call over 64 KiB ask (TK-OVERSIZE). No `unless`: the
+    # call is one subject, so an exemption could be read from another argument (`"cmd": "--help"` beside the read), and
+    # TK-A035's help and names-only forms are held here too
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Aa]ws|[Cc]li|[Cc]ommand|[Cc]md|[Ee]xec(ute)?|[Rr]un|[Ss]hell|[Bb]ash|[Tt]erminal)|mcp(:[^/]+/|__).*(Aws|Cli|Command|Cmd|Exec|Execute|Run|Shell|Bash|Terminal)'
-    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(aws(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(secretsmanager(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-secret-value|batch-get-secret-value)(?:["]| |\\[tnr]|$)|ssm(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:["]| |\\[tnr]|$))|gcloud(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}((alpha|beta)(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8})?secrets(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}versions(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}access(?:["]| |\\[tnr]|$)|az(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}keyvault(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secret(?: |\\[tnr])+?(?:-(?:[^ \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^- \\]|\\[^tnr])(?:[^ \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(show|show-deleted|download)(?:["]| |\\[tnr]|$))'
-    reason: reading a secret's value from a cloud secret store through an MCP tool
+    pattern: '"(cli[_-]?[Cc]ommand|command|cmd)":"(?: |\\[tnr])*?(aws(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(secretsmanager(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-secret-value|batch-get-secret-value)(?:["]| |\\[tnr]|$)|ssm(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)(?:(?: |\\[tnr])(?:[^"\\]|\\.)*?)?(?: |\\[tnr])--w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(?:["]| |\\[tnr]|$))|gcloud(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}((alpha|beta)(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8})?secrets(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}versions(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}access(?:["]| |\\[tnr]|$)|az(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}keyvault(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secret(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(show|show-deleted|download)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(read|inject)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}item(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:[^"\\]|\\.)*?--(reveal|fields(?:=[^"\\ ]+|(?: |\\[tnr])+[^"\\ ]+)|otp|format(?:=|(?: |\\[tnr])+?)json)(?:["]| |\\[tnr]|$)|op(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}document(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}get(?:["]| |\\[tnr]|$)|bw(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:get(?: |\\[tnr])+?(password|item|notes|totp|attachment)|list(?: |\\[tnr])+?items|export)(?:["]| |\\[tnr]|$)|doppler(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}secrets(?:["]| |\\[tnr]|$)|infisical(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:secrets|export)(?:["]| |\\[tnr]|$)|lpass(?: |\\[tnr])+?(?:-(?:[^" \\]|\\[^tnr])+(?: |\\[tnr])+?(?:(?:[^-" \\]|\\[^tnr])(?:[^" \\]|\\[^tnr])*(?: |\\[tnr])+?)?){0,8}(?:show|export)(?:["]| |\\[tnr]|$))'
+    reason: reading a secret's value from a secret store through an MCP tool
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
-    rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same commands are held, listing and describing stay allowed.
+    rationale: The MCP twin of TK-A035 for a tool that runs a CLI command; the same value-reading commands are held.
   - id: TK-A037
     class: mcp
     # a tool whose name ends in a word for reading a secret, as `mcp__<server>__<tool>` or `mcp:<server>/<tool>`, with
@@ -988,6 +1106,16 @@ ask:
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+  - id: TK-A082
+    class: shell
+    field: effects
+    # TK-A010's places as every file a command writes (engine._effects, as TK-D023 reads them), so sed -i, perl -i
+    # and the other writers TK-A011's list leaves out are held too; a home's shell startup files are TK-F025's, as
+    # TK-F011 flags a redirection into one
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:library/launch(?:agents|daemons)/|\.config/(?:systemd/user|autostart)/|etc/(?:systemd/system|init(?:\.d)?|rc\.local|xdg/autostart|profile\.d)(?:/|$)|etc/(?:cron[^/]*|profile|bash\.bashrc|bashrc|zshenv|zshrc|zprofile|zlogin|zlogout|zsh|rc[^/]*\.d)(?:/|$)|var/spool/cron(?:/|$)|(?:\.config|etc)/fish/(?:config\.fish$|conf\.d/)|(?:usr/)?lib/systemd/(?:system|user)/)'
+    reason: adding something that runs at every login or boot
+    remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
+    rationale: TK-A010 for every way the shell writes a file.
 
   # --- Git hooks: code that runs on every commit, checkout or push in the repository (a submodule's under
   # .git/modules/<name>/hooks/). lean: a submodule's name and nesting of up to eight parts, so the fallback engine
@@ -1010,6 +1138,15 @@ ask:
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+  - id: TK-A083
+    class: shell
+    field: effects
+    # TK-A012's hooks folders as every file a command writes (engine._effects, as TK-D023 reads them): perl -i and
+    # the other writers TK-A013's list leaves out
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.git/(?:modules/(?:[^/]+/){1,8})?hooks/'
+    reason: writing a Git hook
+    remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: TK-A012 for every way the shell writes a file.
 
   # --- logins, setuid bits and network shells that outlive the session: held, as a person adds them (#750)
   - id: TK-A075
@@ -1072,9 +1209,11 @@ ask:
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
-    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
-    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
-    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
+    # are .agents/hooks.json; goose's plugins are under .agents/plugins/, and its recipes and sub-agents, whose stdio
+    # extensions (cmd and args) goose starts with no hook when one runs, under .agents/ or .goose/, recipes/ and
+    # agents/, in a project or the home folder (the folder's skills/ is ordinary work, but for an OpenHands skill that
+    # runs a command: TK-A085); Factory Droid keeps its hooks and settings in .factory/, goose its settings in
+    # ~/.config/goose (on Windows AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
     # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
     # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin), and OpenHands
     # .openhands/ (its hooks.json, agent_settings.json and mcp.json) in a project and the home folder. Claude Code
@@ -1082,6 +1221,7 @@ ask:
     # commands with `!` lines) under .claude/ (held, as the rest of .claude/ is); Cursor its MCP servers in
     # .cursor/mcp.json. Cline runs every hook file in Documents/Cline/Hooks (wherever Documents is), ~/.cline/hooks and
     # a workspace's .cline/hooks and .clinerules/hooks, and keeps its settings, hooksEnabled among them, in ~/.cline/.
+    # Hermes Agent keeps its config, plugins (Tracekit's too) and profiles in ~/.hermes.
     # Copilot CLI keeps its hooks and settings in ~/.copilot, reads a repository's .github/hooks/ and
     # .github/copilot/settings*.json (whose disableAllHooks turns every hook off), and the machine's
     # /etc/github-copilot/policy.d/*.json hooks.
@@ -1103,7 +1243,7 @@ ask:
     # worktree's own .claude, .codebuddy, .codex, .mcp.json and the rest are. The .claude and .codebuddy branch spells
     # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
     # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|openhands|copilot|jcode|kiro|openinterpreter)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.github/(hooks(/|$)|copilot/settings[^/]*\.json$)|(^|/)etc/github-copilot(/|$)|(^|/)\.(claude|codebuddy)($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|\.config/gptme|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)gptme(\.local)?\.toml$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes|openhands|copilot|jcode|kiro|openinterpreter)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.github/(hooks(/|$)|copilot/settings[^/]*\.json$)|(^|/)etc/github-copilot(/|$)|(^|/)\.(claude|codebuddy)($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|(plugins|recipes|agents)(/|$))|(^|/)\.goose/(recipes|agents)(/|$)|(^|/)(\.config/goose|\.config/kilo|\.config/devin|\.config/gptme|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)gptme(\.local)?\.toml$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -1114,16 +1254,18 @@ ask:
     class: shell
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME, CodeBuddy Code's
-    # CODEBUDDY_CONFIG_DIR and CODEBUDDY_PROJECT_CONFIG_DIR, jcode's JCODE_HOME and Open Interpreter's INTERPRETER_HOME
-    # are matched by name. OpenCode's user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is
-    # ~/.config/crush, and its project or home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are
-    # OpenCode's under its own names
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME, Hermes's HERMES_HOME, CodeBuddy
+    # Code's CODEBUDDY_CONFIG_DIR and CODEBUDDY_PROJECT_CONFIG_DIR, jcode's JCODE_HOME and Open Interpreter's
+    # INTERPRETER_HOME are matched by name. OpenCode's user config (its plugins, Tracekit's too) is ~/.config/opencode;
+    # Crush's is ~/.config/crush, and its project or home config is crush.json, .crush.json, crushrc or .crushrc; Kilo
+    # Code's are OpenCode's under its own names
     # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
     # .clinerules/hooks and Documents/Cline/Hooks; Kiro CLI's are .kiro (a project's and ~/.kiro).
     # $XDG_CONFIG_HOME/opencode and /kilo, and the folder
     # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
     # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
+    # So is .agents/skills/ (a project's or the home's), whose skills OpenHands runs each !`cmd` line of: a shell write's
+    # text isn't read, so every one there is held (a file tool's only with a !`cmd`: TK-A085).
     # PowerShell's profiles are TK-F009's, and
     # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
     # three), in any case.
@@ -1134,7 +1276,7 @@ ask:
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|openhands|copilot|jcode|kiro|openinterpreter)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\.github[/\\](?:hooks(?:[/\\]|$)|copilot[/\\]settings[^/\\]*\.json$)|etc[/\\]github-copilot(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin|gptme)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|gptme(\.local)?\.toml$|\.claude\.json$|\$\{?(?:QWEN_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR|JCODE_HOME|INTERPRETER_HOME)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes|openhands|copilot|jcode|kiro|openinterpreter)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\.github[/\\](?:hooks(?:[/\\]|$)|copilot[/\\]settings[^/\\]*\.json$)|etc[/\\]github-copilot(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|(?:plugins|recipes|agents|skills)(?:[/\\]|$))|\.goose[/\\](?:recipes|agents)(?:[/\\]|$)|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin|gptme)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|gptme(\.local)?\.toml$|\.claude\.json$|\$\{?(?:QWEN_HOME|HERMES_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR|JCODE_HOME|INTERPRETER_HOME)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
@@ -1165,6 +1307,21 @@ ask:
     reason: wiping a disk or filesystem
     remedy: Have a person approve the held call, or work on a disk image file instead.
     rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.
+
+  # --- a skill that runs commands, written: the commands a harness runs from a file it loads are held when the file is
+  # written (goose's recipes, TK-F009 and TK-F015; an OpenHands skill, TK-F015 and this rule), and running one is
+  # flagged (TK-F026, TK-F027), as running a script the repository already has isn't held
+  - id: TK-A085
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: agent_skill
+    # a call on a .md file under .agents/skills/ (OpenHands loads each, in a project or the home folder) whose text
+    # holds an inline command, !`cmd`, which OpenHands' invoke_skill runs with shell=True; \!`cmd` is kept as text.
+    # Skill text without one stays unheld, as do other agents' skill folders' files (.claude/ is TK-F009's)
+    pattern: '(?:^|[^\\])!`[^`]+`'
+    reason: writing an agent skill that runs a shell command when it is invoked
+    remedy: Have a person read the skill's !`cmd` lines and approve the held call, or write the skill without them.
+    rationale: OpenHands runs a skill's inline commands with no hook when the skill is invoked; a person confirms them.
 
   - id: TK-A061
     class: fs
@@ -1222,11 +1379,15 @@ flag:
     class: shell
     field: line
     # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
-    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, pip of any version, uv, pipx, poetry, conda, cargo, gem,
-    # bundle, go, brew, apt, dnf, yum, apk, twine), a docker or podman run or push (container run, image push, after
-    # up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and kubectl apply or
-    # delete (both after up to eight options). The strict pack holds it, so its list is what "every install" means there
-    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ or publi, which
+    # it runs as publish, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publi too, also after up to eight options, as
+    # TK-A056 reads one: npm --dry-run publish as npm publish --dry-run), a docker or podman run or push (container
+    # run, image push, after up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and
+    # kubectl apply or delete (both after up to eight options). The strict pack holds it, so its list is what "every
+    # install" means there
+    # lean: an install after options (npm --prefix x install) isn't read; add it as publish is if one is in use
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|(npm|pnpm|yarn|bun|uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+pu(b(li?)?)?|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
@@ -1313,6 +1474,13 @@ flag:
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b|^~?/?[^\s>]*?\.(?:bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
     unless: '^(?:PATH|PYTHONPATH)\+?=(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?)(?::(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?))*$'
     label: env_tamper
+  - id: TK-F025
+    class: shell
+    field: effects
+    # a bash or zsh startup file as every file a command writes (engine._effects, as TK-D023 reads them: sed -i, cp,
+    # a pattern that may name one), as TK-F011 reads a redirection into one; the strict pack holds it
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.(?:bashrc|bash_profile|bash_login|bash_logout|profile|zshenv|zshrc|zprofile|zlogin|zlogout)$'
+    label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
     # a query string sends data too, so egress is not only what TK-P003's sends_to reads. Not flagged: a subject whose
@@ -1357,3 +1525,17 @@ flag:
     tool: LibraryUpload
     pattern: '^'
     label: egress
+  - id: TK-F026
+    tool: delegate
+    field: source
+    # goose's delegate with a `source` runs that recipe or sub-agent, first starting the stdio extensions it names (a
+    # recipe's `extensions:` cmd and args), commands goose runs with no hook (platform_extensions/summon.rs); a
+    # delegate with only `instructions` names none. Writing a recipe where goose loads it is held (TK-F009, TK-F015)
+    pattern: '^'
+    label: recipe_run
+  - id: TK-F027
+    tool: invoke_skill
+    # OpenHands' invoke_skill renders a loaded skill, running each !`cmd` in it with shell=True (openhands-sdk
+    # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
+    pattern: '^'
+    label: skill_run

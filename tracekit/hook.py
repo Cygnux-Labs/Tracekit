@@ -9,10 +9,12 @@ A policy deny always blocks, whether or not the signer is reachable.
 
     python -I -m tracekit.hook   (wired by `tracekit init`)
 """
+import functools
 import getpass
 import hashlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -28,6 +30,11 @@ AGENT_NAME = "claude-code"
 # seconds a held call may wait for its answer, under a harness that runs the call once its hook takes longer (None: the
 # policy's approval_timeout_s)
 APPROVAL_CAP_S = None
+STATE_KEEP_S = 30 * 86400   # a run's client state no hook has written for this long goes when another run starts
+# a run's client files (<state_name>.*), and a harness's call-id queue or a terminal's typed input (agent_hooks)
+STATE_FILE = re.compile(r"([0-9a-f]{64})\..+|([a-z]+-[0-9a-f]{16}\.json)(?:\.lock|\.tmp)?")
+# runs tracekitd never forgets, with the analyzer's findings: runs: a counter of theirs that starts over is signed as a gap
+KEPT_RUNS = ("_unattributed", "_proxy")
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
 
@@ -160,13 +167,16 @@ def _load_acks():
 def save_ack(path, length):
     if length is None:
         return
+    _change_acks(lambda acks: {**acks, path: length})
+
+
+def _change_acks(change):
     lk = open(_acks_path() + ".lock", "a")
     locked = False
     try:
         lock_file(lk)
         locked = True
-        acks = _load_acks()   # the signer is the authority on what it has seen (it also keeps a history for races)
-        acks[path] = length
+        acks = change(_load_acks())   # the signer is the authority on what it has seen (it keeps a history for races)
         tmp = _acks_path() + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(acks, f)
@@ -177,6 +187,44 @@ def save_ack(path, length):
                 unlock_file(lk)
         finally:
             lk.close()
+
+
+def _held(lock):
+    with open(lock, "a") as f:
+        try:
+            lock_file(f, blocking=False)
+        except BlockingIOError:
+            return True
+        unlock_file(f)
+    return False
+
+
+def _prune(run_id):
+    """Removes the client files in runs/ of each run that no hook has written for STATE_KEEP_S, all of a run's files
+    together and none while one of its locks is held, never run_id's or KEPT_RUNS', and drops the acks of transcripts
+    that are gone."""
+    runs = os.path.join(client.client_dir(), "runs")
+    keep = {client.state_name(r) for r in (run_id,) + KEPT_RUNS}
+    groups = {}
+    for name in os.listdir(runs):
+        m = STATE_FILE.fullmatch(name)
+        if m:
+            groups.setdefault(m.group(1) or m.group(2), []).append(name)
+    old = time.time() - STATE_KEEP_S
+    for key, names in groups.items():
+        if key in keep or any(".analyzer." in n for n in names):
+            continue
+        paths = [os.path.join(runs, n) for n in names]
+        try:
+            # lean: a hook that takes a lock just as it is removed holds a file no later hook opens; rare after a month
+            # idle, upgrade if counter gaps show up on resumed runs
+            if max(map(os.path.getmtime, paths)) >= old or any(_held(p) for p in paths if p.endswith(".lock")):
+                continue
+            for p in paths:
+                os.remove(p)
+        except OSError:   # removed by a parallel hook, or not ours to remove
+            pass
+    _change_acks(lambda a: {p: n for p, n in a.items() if os.path.exists(p)} if isinstance(a, dict) else {})
 
 
 def transcript_mark(path):
@@ -220,10 +268,11 @@ def wait_for_approval(ev_call, decision, pol):
     Returns (approved: bool, message)."""
     d = ev_call["data"]
     shown = ""
-    for k in ("command", "file_path", "url"):
-        v = (d["input"].get(k) or {}).get("value")
+    for one, many in (("command", "commands"), ("file_path", "paths"), ("url", "urls")):
+        each = (d["input"].get(many) or {}).get("value")   # a call on several, each decided: the approver sees all
+        v = each if isinstance(each, list) and len(each) > 1 else (d["input"].get(one) or {}).get("value")
         if v:
-            shown = f"{k}={v}"
+            shown = f"{len(v)} {many}={json.dumps(v)}" if isinstance(v, list) else f"{one}={v}"
             break
     timeout = float(pol.get("approval_timeout_s", 120))
     if APPROVAL_CAP_S is not None:
@@ -267,6 +316,10 @@ def build_events(p, pol, reasoning=True):
     flag = _started_flag(b["run_id"])
     phash = policy_mod.policy_hash(pol)
     if name == "SessionStart" or not os.path.exists(flag):
+        try:
+            _prune(b["run_id"])
+        except OSError:
+            pass  # what it couldn't remove waits for the next run's start
         evs.append(run_start_event(p, pol, cwd, reasoning))
         try:
             os.makedirs(os.path.dirname(flag), exist_ok=True)
@@ -312,9 +365,8 @@ def build_events(p, pol, reasoning=True):
             pass
     if pol.get("transcript_hashing", True) and evs:
         tp = transcript_path_for(p)
-        mark = transcript_mark(tp) if tp else None
-        if mark:
-            evs[-1]["transcript"] = mark   # checked by the signer against the previous mark (C2)
+        if tp:   # its mark is read as main sends the event, and checked by the signer against the previous mark (C2)
+            evs[-1]["_transcript"] = tp
     return evs, deny
 
 
@@ -353,7 +405,9 @@ def main(harness_reasoning=True, raw=None):
     for ev in evs:
         try:
             attach_pol = ev.pop("_attach_policy", False) or ev["type"] == "run.start"
-            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None)
+            tp = ev.pop("_transcript", None)
+            resp = client.send(ev, {"policy": pol_raw} if attach_pol else None,
+                               mark=functools.partial(transcript_mark, tp) if tp else None)
             if not resp.get("ok"):
                 print(f"[tracekit] signer rejected event: {resp.get('error')}", file=sys.stderr)
                 if ev["type"] == "tool.call":

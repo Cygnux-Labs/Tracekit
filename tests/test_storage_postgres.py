@@ -19,6 +19,7 @@ from unittest import mock
 
 import test_format_bridge
 import test_monitor
+import test_signer_checkpoints
 import test_signer_lifecycle
 import test_witness_publish
 from factories import wait_for
@@ -430,6 +431,24 @@ class TestBundleOnPostgres(OnPostgres, test_signer_lifecycle.TestBundle):
 
 class TestWitnessQueueOnPostgres(OnPostgres, test_witness_publish.Publisher):
     suite = test_witness_publish
+
+
+class TestOriginsOnPostgres(test_signer_checkpoints.Origins):
+    def setUp(self):
+        super().setUp()
+        self.admin, dsn = new_log(self)
+        path = os.path.join(tmpdir(self), "pg.dsn")
+        with open(path, "w") as f:
+            f.write(dsn)
+        self.storage = {"postgres": {"dsn_file": path}}
+
+    def as_older_tracekit_left_it(self, note=True):
+        sql(self.admin, "DELETE FROM tracekit_meta WHERE key = 'origin'")
+        if not note:
+            self.drop_notes()
+
+    def drop_notes(self):
+        sql(self.admin, "DELETE FROM tracekit_notes")
 
 
 class TestSignerOnPostgres(OnPostgres, unittest.TestCase):

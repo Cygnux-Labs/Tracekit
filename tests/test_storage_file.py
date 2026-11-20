@@ -63,6 +63,21 @@ class TestFileStorage(FileCase):
         problems = fsck(self.root)
         self.assertTrue(problems[0].startswith("records.jsonl line 2: unreadable"), problems)
 
+    def test_a_damaged_meta_json_says_what_to_do(self):
+        for text in (b"{", b"[]", b'"x"'):   # not JSON, or JSON but not an object
+            with self.subTest(text):
+                s = self.open()
+                s.meta_put("origin", "tracekit.example.org/log/1")
+                s.close()
+                with open(os.path.join(self.root, file_storage.META), "wb") as f:
+                    f.write(text)
+                s = self.open()
+                with self.assertRaisesRegex(StorageCorrupt, "meta.json is damaged: restore it from a backup, or "
+                                                            "remove it and the log takes the origin of its latest note"):
+                    s.meta("origin")
+                s.close()
+                os.remove(os.path.join(self.root, file_storage.META))
+
     def test_unreadable_witness_queue_is_corrupt(self):
         s = self.open()
         s.witness_queue_put({})

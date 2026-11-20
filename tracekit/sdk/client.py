@@ -35,6 +35,7 @@ import os
 import queue
 import random
 import re
+import select
 import socket
 import ssl
 import threading
@@ -46,7 +47,7 @@ import weakref
 
 import rfc8785
 
-from tracekit import __version__
+from tracekit import __version__, provenance
 from tracekit.core import jsonable
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
@@ -67,8 +68,23 @@ _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["p
 current_run = contextvars.ContextVar("tracekit_current_run", default=None)   # set inside `with client.run(...)`
 
 
+def _readable(sock):
+    """Whether `sock` has bytes or an EOF waiting, without blocking. poll() takes any fd; select() fails on one past
+    FD_SETSIZE, which is only a count on Windows, where poll() is missing."""
+    if hasattr(select, "poll"):
+        p = select.poll()
+        p.register(sock, select.POLLIN)
+        return bool(p.poll(0))
+    return bool(select.select([sock], [], [], 0)[0])
+
+
 class SignerUnavailable(Exception):
-    pass
+    recorded = False   # a write call's error: False, None (a try may have been recorded) or True
+
+
+# added to the message of a write call's error when a try of it may have been recorded (`recorded` None)
+UNKNOWN = (". It may have been recorded: once the run closes, its bundle shows whether it was. Don't send it again "
+           "as a new call: if it was recorded, it would be recorded twice")
 
 
 class Refused(PermissionError):
@@ -87,11 +103,20 @@ class Incompatible(Exception):
 
 
 class _ConnectionLost(Exception):
-    """The request may not have arrived; its message says why."""
+    """The request may not have arrived; its message says why. `sent` False: it never connected, so nothing went out."""
+    sent = True
+
+
+def _unanswered(timeout, cls=SignerUnavailable):
+    """The error of a request that went out and got no answer in time: it may have been recorded."""
+    e = cls(f"no answer from the signer within {timeout:g}s")
+    e.recorded = None
+    return e
 
 
 class _TimeoutUnavailable(SignerUnavailable):
     """Timed out waiting on a transport/call deadline; Client.call re-raises with the call's timeout."""
+    what = "no answer from the signer"   # the re-raised message, before " within {timeout}s"
 
 
 def _new_id():
@@ -217,7 +242,7 @@ class _Https:
 
     def post(self, body, timeout, host=None):
         """The answer frame to `body` from `host` (default the signer's); _ConnectionLost when the request may not have
-        arrived, SignerUnavailable on a timeout."""
+        arrived, SignerUnavailable on a timeout (`recorded` False when it timed out connecting: nothing went out)."""
         headers, key = {"Content-Type": "application/json"}, os.environ.get("TRACEKIT_API_KEY", "").strip()
         if self.token_file:   # wins over an API key: it is re-read per call, so a rotated token is picked up
             try:
@@ -238,21 +263,33 @@ class _Https:
                                              http.client.HTTPSConnection(host, self.port, context=self.ctx))
             self.conns.add(conn)
         conn.timeout = timeout
+        if conn.sock and _readable(conn.sock):
+            conn.close()   # a kept connection the signer closed (or sent unasked bytes on): written into, it looks sent
         if conn.sock:
             conn.sock.settimeout(timeout)
+        connecting = conn.sock is None
         try:
+            if connecting:   # nothing goes out until it connects (and the TLS handshake is done)
+                conn.connect()
+                connecting = False
             conn.request("POST", "/v2/rpc", body, headers)
             return parse_frame(conn.getresponse().read())
         except socket.timeout:
             conn.close()   # reopened by the next request
-            raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s") from None
+            if connecting:   # nothing went out
+                e = _TimeoutUnavailable(f"could not connect to the signer at {self.url} within {timeout:g}s")
+                e.what = f"could not connect to the signer at {self.url}"
+                raise e from None
+            raise _unanswered(timeout, _TimeoutUnavailable) from None
         except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
             raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify "
                                     f"({e.verify_message}); set TRACEKIT_SIGNER_CA to the CA that issued it") from None
         except (OSError, http.client.HTTPException, RPCError) as e:
             conn.close()
-            raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
+            lost = _ConnectionLost(f"{type(e).__name__}: {e}")
+            lost.sent = not connecting
+            raise lost from None
 
     def rpc(self, req, body, timeout):
         if self.plain and not loopback(self.host):   # the token and the frames would cross the network in clear
@@ -260,7 +297,11 @@ class _Https:
                                     "::1); use https:// for any other")
         deadline = time.monotonic() + timeout
         if self.hello is None:
-            hello = self.post(_encode("hello", {}), timeout)
+            try:
+                hello = self.post(_encode("hello", {}), timeout)
+            except SignerUnavailable as e:
+                e.recorded = False   # only the hello went out
+                raise
             if "error" in hello:
                 e = hello["error"]
                 raise RPCError(e.get("code"), e.get("message", ""))
@@ -331,13 +372,17 @@ if hasattr(os, "register_at_fork"):
 
 class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
-    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
+    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. The error of a
+    write call (one with a `request_id`) has `recorded`: False, it was not; None, a try of it may have been (its message
+    says so); True, it was and only its answer was lost (an event's retry refused client_seq_reused). `token_file`:
     an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE; `token`: a tcp:// signer's token,
-    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read)."""
+    in place of $TRACEKIT_SIGNER_TOKEN ("": none, the environment's is not read); `answer_by`: a time.monotonic() by
+    which a connection to the dev signer has answered or failed, a starting one included (autospawn.ensure's
+    `start_wait`, at most its default; None: no such time)."""
 
-    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None):
+    def __init__(self, signer=None, timeout=30.0, token_file=None, token=None, answer_by=None):
         self.signer = signer or _default_signer()
-        self.timeout, self.hello, self.token = timeout, None, token
+        self.timeout, self.hello, self.token, self.answer_by = timeout, None, token, answer_by
         http = (self.signer or "").startswith(("https://", "http://"))
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
@@ -405,52 +450,70 @@ class Client:
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         deadline = time.monotonic() + timeout   # for the whole call: its turn, every retry
         lost, losses, tries, outage = None, 0, 0, None   # tries: the signer's refusals of an event call (_retry_wait)
-        with self._turn(method, req, deadline):
-            while losses < RETRIES:
-                left = deadline - time.monotonic()
-                if left <= 0:
-                    with self._lock:
-                        self._prepare(method, req)
-                    raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from lost
-                try:
-                    if self._https:
+        # sent: a try may have been recorded (no answer, or unavailable); recorded: one was (see the class docstring)
+        assigned, sent, recorded = method in _EVENT_METHODS and "client_seq" not in req, False, False
+        try:
+            with self._turn(method, req, deadline):
+                while losses < RETRIES:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
                         with self._lock:
-                            body = self._prepare(method, req)
-                        reply = self._https.rpc(req, body, left)
-                        self.hello = self._https.hello
-                    elif method in _LONG_POLLS:
-                        reply = self._poll(method, req, left)
-                    else:
-                        reply = self._send(method, req, left, deadline).result(max(deadline - time.monotonic(), 0))
-                except _ConnectionLost as e:
-                    lost, losses = e, losses + 1
-                    continue
-                except _TimeoutUnavailable:
-                    raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
-                except concurrent.futures.TimeoutError:
-                    self.close()
-                    raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
-                if "error" in reply:
-                    e = reply["error"]
-                    if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
-                        with self._lock:
-                            self._seqs.pop(req.get("run_id"), None)
-                            self._order.pop(req.get("run_id"), None)
-                    err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
-                    if outage and err.code == "client_seq_reused":
-                        # the try the signer answered unavailable was written after all: that answer stands, so the
-                        # caller takes its outage path (a fail mode), as without the retry
-                        raise outage
-                    tries += 1
-                    wait = _retry_wait(method, err, tries)
-                    if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
-                        raise err
-                    outage = err if err.code == "unavailable" else outage
-                    time.sleep(wait)   # then the same request: its request_id, stream and client_seq
-                    continue
-                return reply
-            last = f" (last: {lost})" if str(lost) else ""
-            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
+                            self._prepare(method, req)
+                        raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from lost
+                    try:
+                        if self._https:
+                            with self._lock:
+                                body = self._prepare(method, req)
+                            reply = self._https.rpc(req, body, left)
+                            self.hello = self._https.hello
+                        elif method in _LONG_POLLS:
+                            reply = self._poll(method, req, left)
+                        else:
+                            reply = self._send(method, req, left, deadline).result(max(deadline - time.monotonic(), 0))
+                    except _ConnectionLost as e:
+                        # a lost hello, or a connect that failed, sent nothing; past both, the request may have gone out
+                        lost, losses = e, losses + 1
+                        sent = sent or e.sent and (self._https is None or self._https.hello is not None)
+                        continue
+                    except _TimeoutUnavailable as e:   # worded with the call's timeout; keeps whether the try went out
+                        err = SignerUnavailable(f"{e.what} within {timeout:g}s")
+                        err.recorded = e.recorded
+                        raise err from None
+                    except concurrent.futures.TimeoutError:
+                        self.close()
+                        raise _unanswered(timeout) from None
+                    if "error" in reply:
+                        e = reply["error"]
+                        if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
+                            with self._lock:
+                                self._seqs.pop(req.get("run_id"), None)
+                                self._order.pop(req.get("run_id"), None)
+                        err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                        if sent and err.code == "client_seq_reused":
+                            # a try that may have been written was, if this client gave it its client_seq; a try the
+                            # signer answered unavailable: that answer stands, so the caller takes its outage path (a
+                            # fail mode), as without the retry
+                            recorded = assigned
+                            raise outage or err
+                        sent = sent or err.code == "unavailable"
+                        tries += 1
+                        wait = _retry_wait(method, err, tries)
+                        if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
+                            raise err
+                        outage = err if err.code == "unavailable" else outage
+                        time.sleep(wait)   # then the same request: its request_id, stream and client_seq
+                        continue
+                    return reply
+                last = f" (last: {lost})" if str(lost) else ""
+                raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
+        except (SignerUnavailable, RPCError) as e:
+            if "request_id" not in req:   # not a write: None means a write's unknown outcome only
+                e.recorded = False
+            else:
+                e.recorded = True if recorded else None if sent or getattr(e, "recorded", False) is None else False
+                if e.recorded is None:
+                    e.args = (str(e) + UNKNOWN,)
+            raise
 
     def close(self):
         with self._lock:
@@ -483,10 +546,7 @@ class Client:
         """-> the frame to send. Fills in `stream` and `client_seq` and validates `req`; counts the event even when
         `connect()` raises, so the signer's client_counter_gap covers a call it never saw (one a caller then ran with
         its fail mode open). Call under self._lock."""
-        if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
-            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
-            # without either keeps its entries for the client's life
-            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
+        self._own()
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
@@ -509,6 +569,13 @@ class Client:
             self._seqs.pop(run_id, None)
             self._order.pop(run_id, None)
         return data
+
+    def _own(self):
+        """A new client, or a forked child: its own stream and connection. Call under self._lock."""
+        if self._pid != os.getpid():
+            # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
+            # without either keeps its entries for the client's life
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
 
     def _send(self, method, req, timeout=CONNECT_TIMEOUT_S, deadline=None):
         with self._lock:
@@ -558,7 +625,8 @@ class Client:
             sock, rfile, self.hello = connect(self.signer, timeout=min(CONNECT_TIMEOUT_S, timeout), token=self.token)
         else:
             from tracekit.sdk import autospawn
-            sock, rfile, self.hello = autospawn.ensure()
+            sock, rfile, self.hello = autospawn.ensure(**({} if self.answer_by is None else {"start_wait": min(
+                autospawn.START_WAIT_S, max(self.answer_by - time.monotonic(), 0.0))}))
         return sock, rfile
 
     def _connect(self, timeout=CONNECT_TIMEOUT_S):
@@ -609,6 +677,39 @@ def sendable(out):
         return len(canonical(out)) <= MAX_LINE // 2
     except rfc8785.CanonicalizationError:
         return False
+
+
+def parts(value, key=None):
+    """The values to observe for `value`, a list or dict of items (or a page holding one at `key`): runs of whole
+    items, each in a copy of the page, that one observe carries and the signer indexes whole: sendable, with at most
+    provenance.MAX_VALUES values (counted per item, so a part never holds more). An item too large alone is a part of
+    its own; sent as its digest (result_field) or read past MAX_VALUES, it makes the run's index partial or truncated."""
+    items = value if key is None else value.get(key)
+    if not isinstance(items, (list, dict)):
+        yield value
+        return
+    entries = [{k: v} for k, v in items.items()] if isinstance(items, dict) else [[v] for v in items]
+    put = (lambda part: part) if key is None else (lambda part: {**value, key: part})
+
+    def measure(v):   # (bytes, values) of v, (MAX_LINE, 0) when it is not canonical JSON (sent as its digest)
+        try:
+            return len(canonical(v)), len(provenance.values(v)[0])
+        except (rfc8785.CanonicalizationError, ValueError):
+            return MAX_LINE, 0
+    room = measure(put(type(items)()))
+    part, size, count = type(items)(), *room
+    for entry in entries:
+        s, n = measure(entry)
+        if part and (size + s > MAX_LINE // 2 or count + n > provenance.MAX_VALUES):
+            yield put(part)
+            part, size, count = type(items)(), *room
+        if isinstance(part, list):
+            part += entry
+        else:
+            part |= entry
+        size, count = size + s, count + n
+    if part or not entries:
+        yield put(part)
 
 
 class VaultBody:
@@ -700,12 +801,14 @@ def _close_at_exit(run, failed):
     try:
         run.close()
     except SignerUnavailable as e:
-        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({e}); it closes the "
+        why, was = str(e).removesuffix(UNKNOWN), "may not have been" if e.recorded is None else "was not"
+        warnings.warn(f"tracekit: run {run.run_id} {was} closed: the signer can't be reached ({why}); it closes the "
                       "run after its idle timeout", stacklevel=3)
     except Exception as e:
         if not failed:
             raise
-        warnings.warn(f"tracekit: run {run.run_id} was not closed: {e}", stacklevel=3)
+        was = "may not have been" if getattr(e, "recorded", False) is None else "was not"
+        warnings.warn(f"tracekit: run {run.run_id} {was} closed: {str(e).removesuffix(UNKNOWN)}", stacklevel=3)
 
 
 def _class_of(tool):
@@ -760,10 +863,11 @@ class RunHandle:
                           **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
         except SignerUnavailable as e:
             ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint") or _class_of(tool))
-            warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: {e}",
-                          stacklevel=2)
+            why = str(e).removesuffix(UNKNOWN)   # the outage path, worded as before: `recorded` stays on the error
+            warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: "
+                          f"{why}", stacklevel=2)
             return {"decision": "allow" if ok else "deny", "rule_ids": [], "unavailable": True,
-                    "reason": f"signer unavailable: {e}"[:1024]}
+                    "reason": f"signer unavailable: {why}"[:1024]}
         try:
             digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
@@ -783,9 +887,11 @@ class RunHandle:
 
     def complete(self, tool_call_id, status="ok", **fields):
         """Defaults decision_id and args_digest to those of the last `decide` for this tool call. Never raises: the
-        call already ran, so a result the signer can't take is a warning (None), and the signer records the call as
-        decided and not completed when the run closes. A tool the policy marks untrusted should send its `result`
-        (result_field): without it the run's provenance index goes partial, so a warning says so."""
+        call already ran, so a result the signer can't take returns None and warns that it was not recorded (the run's
+        bundle shows the call as decided and not completed) or that it may not have been (no answer to a try that went
+        out: the bundle has its tool.result or a decided_not_completed gap). A retry the signer refuses as already
+        recorded (client_seq_reused) was recorded: None, no warning. A tool the policy marks untrusted should send its
+        `result` (result_field): without it the run's provenance index goes partial, so a warning says so."""
         if tool_call_id in self._untrusted and "result" not in fields and status == "ok":
             warnings.warn(f"tracekit: {tool_call_id} completed without its result, which the policy reads for "
                           "provenance (an untrusted tool): pass result=result_field(d.get('send_result'), result)",
@@ -795,7 +901,14 @@ class RunHandle:
             return self.call("complete", tool_call_id=tool_call_id, status=status,
                              **{**self._decided.pop(tool_call_id, {}), **fields})
         except (SignerUnavailable, RPCError) as e:
-            warnings.warn(f"tracekit: the result of {tool_call_id} was not recorded: {e}", stacklevel=2)
+            recorded = getattr(e, "recorded", False)
+            if recorded is None:
+                warnings.warn(f"tracekit: the result of {tool_call_id} may not have been recorded "
+                              f"({str(e).removesuffix(UNKNOWN)}). Once the run closes, its bundle has {tool_call_id}'s "
+                              "tool.result if it was, or a decided_not_completed gap if it wasn't.", stacklevel=2)
+            elif not recorded:
+                warnings.warn(f"tracekit: the result of {tool_call_id} was not recorded: {e}. Once the run closes, its "
+                              f"bundle shows {tool_call_id} as decided and not completed.", stacklevel=2)
             return None
 
     def observe(self, value, source, trust="untrusted", **fields):
@@ -872,8 +985,9 @@ class RunHandle:
             return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
                              **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
         except (SignerUnavailable, RPCError) as e:
-            warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {e}", stacklevel=2)
-            return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {e}"[:1024]}
+            why = str(e).removesuffix(UNKNOWN)   # handed to the model: `recorded` stays on the error
+            warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {why}", stacklevel=2)
+            return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {why}"[:1024]}
 
     def pcm_send(self, to, intent, args, claims=(), grants=(), payload=None):
         """A proof-carrying message (experimental, tracekit.pcm) to agent `to` ("scheme:subject"), signed by the signer

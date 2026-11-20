@@ -5,12 +5,13 @@ strings, substitutions, heredocs into a shell, at or batch, trap's action and in
 `{"argv": [...], "word": str, "via": [...], "pipeline": n, "glob": bool, "opaque": bool, "stdin": [...]}`. argv[0] is
 a basename, the part after any `\\` casefolded and without a `.exe` (the agent's file system may ignore case: macOS
 runs git for `Git`; Windows runs git.exe for git); `word` is that first word as written (a path, or the text of a name
-an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
-are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
-expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
-a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes). A command
-of the line itself also has `out` and `in`, the files its redirections write and read, and `stage`, its place in its
-pipeline (0 first). `moved`: the stdin it inherits may be one the line moved (_reads_only). `background`: True when the
+an expansion builds); a first word with a `\\` is also read as Windows runs it, as a command of its own with that `\\`
+as `/` (Git Bash runs 'C:\\x\\bash' as bash). `via` says how the command was reached (empty at top level); commands
+with the same `pipeline` are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the
+line (a glob, brace or expansion in its name, a shell or interpreter reading its script from a pipe, a file or
+inherited stdin, `source` of a stream). `stdin`: the herestring and heredoc text the command reads (the names
+`xargs rm <<< x` deletes). A command of the line itself also has `out` and `in`, the files its redirections write
+and read, and `stage`, its place in its pipeline (0 first). `moved`: the stdin it inherits may be one the line moved (_reads_only). `background`: True when the
 and-or list it is in ends in `&` (`a && b &` sends both), when it is in a block whose closing word that `&` follows
 (`{ a; } &`, `while …; do a; done &`, if, for, select, case: from the and-or list the block opened in), or when one it
 runs in does (a subshell, an `sh -c` string); absent otherwise.
@@ -29,6 +30,7 @@ out of the command, only the top level's is cut).
 import ast
 import base64
 import collections
+import functools
 import itertools
 import json
 import math
@@ -154,6 +156,11 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
+            "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
+            # cmd.exe's switches start with / (// where MSYS rewrites one: cmd //c); wsl runs its words in its distro's
+            # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
+            "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
+                                     "--shell-type"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
@@ -218,13 +225,12 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
-           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0)}
+           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
                  "--colsep", "--joblog", "--results", "--tmpdir", "--workdir", "--wd", "--timeout", "--retries", "--delay",
                  "--env", "--tag-string", "--transfer-file", "--return", "--basefile", "--bf"}
-SHELL_VALUE_OPTS = {"-o", "+o", "-O", "+O", "--rcfile", "--init-file"}
 # commands that run a string through a shell: -c anywhere in their arguments (getopt permutes)
 DASH_C = {"su", "script"}
 _STREAM = re.compile(r"/dev/(?:stdin|fd/)|/proc/[^/]+/(?:task/[^/]+/)?fd/")
@@ -266,6 +272,13 @@ _NAME_BUILTINS = {"read", "unset", "declare", "typeset", "local", "readonly", "e
                   "getopts", "wait", "test", "[", "[[", "printf"}
 _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
                              "let", "eval", "unset"}
+# bash's builtins (enable -a)
+_BASH_BUILTINS = frozenset((
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete", "compopt",
+    "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg",
+    "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd",
+    "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test", "times",
+    "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"))
 # what may set any variable of the shell, now or later (a DEBUG trap, an alias with expand_aliases on, a sourced file)
 _SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable",
                                           "compgen"}   # compgen -V NAME (bash 5.3)
@@ -396,7 +409,7 @@ def _reads_only(cmds, ctx):
                     _ECHO_OPTIONS.fullmatch(a) or (v := _PLAIN_VARIABLE.fullmatch(a)) and not v.group(1).isdigit()
                     and v.group(1) not in ctx["unread_values"] | ctx["opaque_values"] for a in argv[1:])) or \
                 c["stdin"] or "*" in made or c["glob"] and made or \
-                any(w.rsplit("/", 1)[-1].casefold() in made for w in given) or \
+                any(base_name(w) in made for w in given) or \
                 any(re.fullmatch(r"\d+|-", f) or _stream(f) or made and re.search(r"[$`]", f) for f in given) or \
                 argv[0] in _READERS and argv[0] not in ("nproc", "ls") and not c.get("stage") and not c.get("in") and \
                 len(operands) <= (argv[0] in ("grep", "egrep", "fgrep", "rg")) and \
@@ -428,7 +441,15 @@ def _assignments(ways):
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
 # $NAME or ${NAME}, fully matched, and a function's positional parameter $1 to $9 (_Parser.call)
-_PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[1-9])\}?")
+_PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9])\}?")
+
+
+class _Every:
+    def __contains__(self, name):
+        return True
+
+
+_EVERY = _Every()   # _Parser.set_names once a command that may set any variable ran
 # what bash splits or globs in an unquoted expansion's value (IFS as bash sets it)
 _SPLIT_OR_GLOB = re.compile(r"[ \t\n*?[]")
 # variables bash itself sets as the line runs, whatever the line gives them: never known (track_values). $_ is the
@@ -471,6 +492,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 # a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
 _GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
+_HOME_VARIABLE = re.compile(r"\$(?:HOME(?!\w)|\{HOME\})")   # one in a word's text
 _DEFAULT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=?][^{}]*\}")   # a variable with a default, assignment or check
 # arithmetic, a subscript, an indirect name or an offset (of a special parameter too: ${@:x}, ${1:x}): bash may
 # evaluate a value of the line there (_Parser.word)
@@ -885,6 +907,48 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+_WRITES = {
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+                         r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
+                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+    "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
+                       r"cp|link|symlink)(?:Sync)?\s*\("),
+    "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
+    "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
+                       r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
+    "php": re.compile(r"(?P<path>(?!))?\b(?P<call>file_put_contents|fopen|copy|rename|symlink|link|touch)\s*\("),
+    "lua": re.compile(r"(?P<path>(?!))?\b(?P<call>io\.open|os\.rename)\s*\(")}
+_SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln")   # calls that write their second
+
+
+_PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
+_MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+
+
+def _written(kind, call, items, text=""):
+    """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
+    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
+    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
+    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    name = call.rsplit(".", 1)[-1]
+    if kind == "perl" and name == "open":
+        mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
+        m = _PERL_MODE.match(mode)
+        rest = mode[m.end():].strip() if m else None
+        if rest is None:
+            target = None
+        elif not rest or rest.startswith(":"):   # open(FH, '>', file), '>>:utf8'
+            target = items[2] if len(items) > 2 else None
+        else:   # open(FH, ">file")
+            target = (rest,)
+    elif name in ("open", "fopen"):
+        mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
+            (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
+        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
+    else:
+        target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
+    return target if isinstance(target, tuple) else None
 # git's config keys whose value it runs as a shell command (an alias's only with a leading !), and its value if given
 _GIT_RUNS_KEY = (r"alias\.[^=\s]+|core\.(?:editor|pager|sshcommand|fsmonitor|askpass|gitproxy|alternaterefscommand)|"
                  r"sequence\.editor|credential\.(?:[^=\s]*\.)?helper|diff\.(?:external|[^=\s]*\.(?:textconv|command))|"
@@ -914,14 +978,22 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None):
+def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, globs=frozenset(),
+            pieces=True, located=True):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
     `downloads`: the line may download (_may_download), so a function on it isn't read (_Parser.define). `aliases`:
     the aliases the line defines ({name: [values]}), read wherever a command has the name (_Parser.emit): bash may
     parse a use after its definition runs (a trap's action, a later line), so the line is read again with them until
-    it defines no more."""
+    it defines no more; `globs`: the glob options its commands set (_globs_set), read again with them until it sets no
+    more. `pieces`: False reads no loop value's own reading (_Parser.pieces). `located`: False reads no program word as
+    the program a quoted `"$(which X)"` locates (LOCATED): the line is read again so when it defines a function or runs
+    eval, source, `.` or enable (as the parse reads them, whatever the text), since what which, command or type print
+    is then its. A line with a NUL is unread: no shell reads one (bash's strings end there; a spawn refuses one), and a
+    terminal's typed text holds one where keys put text in it the hook can't read (agent_hooks.UNKNOWN)."""
+    if "\x00" in command:
+        raise ParseError("a NUL character")
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "uncalled": {}, "exported": set(), "ifs_named": _names_ifs(command),
@@ -938,7 +1010,12 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # a ${F=w} may have given its word w, and those words (dollar, ways); each value the line gives IFS (None:
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
            # expansions may expand to and the variables they read whose literals it doesn't know there (_made_text)
-           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set()}
+           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set(),
+           "globopts": _glob_options(command, globs),
+           # each loop value's own reading (_Parser.pieces): its lines and code, what they cost, and whether the budget
+           # left them out
+           "pieces": pieces, "piece_lines": [], "piece_batches": [], "piece_work": 0, "pieces_cut": False,
+           "located": located, "located_read": False}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1008,17 +1085,31 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         e.cmds = ctx["cmds"]   # and the commands it read before (a substitution in a subscript: let 'x[$(cmd)]')
         raise
     again = None
-    if ctx["aliases"] != (aliases or {}):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"])
+    if ctx["located_read"] and (ctx["functions"] or any(c["argv"][0] in ("eval", "source", ".", "enable")
+                                                         for c in ctx["cmds"])):
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, globs, pieces, False)
+    elif ctx["aliases"] != (aliases or {}):
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs, pieces,
+                        located)
     elif ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases, globs=globs,
+                        pieces=pieces, located=located)
+    elif not (more := _globs_set(ctx["cmds"])) <= ctx["globopts"]:
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, ctx["globopts"] | more,
+                        pieces, located)
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
+    # a download that writes a file the line can't name (download_writes, _unnamed_write) may write any: held
+    for c in ctx["cmds"]:
+        if c["argv"][0] in ("curl", "wget"):
+            writes, unnamed = download_writes(c["argv"])
+            if unnamed or any(_unnamed_write(w, ctx) for w in writes):
+                c["opaque"], c["unread"] = True, "output"
     ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
-        if not ctx["command_names_mutable"] and not active:
+        if not ctx["command_names_mutable"] and (not active or _data_write(step, ctx["cmds"])):
             ctx["cut"] += step["marks"]
             step["cut"] = bool(step["marks"])
         active |= not step["inert"]
@@ -1033,6 +1124,16 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         words = ["" if i in blank else w for i, w in enumerate(words)]
         ctx["kept"] += _lines(words, progs) + [x for gone in gones for x in _lines_without(
             words, progs, {i: t for i, t in gone.items() if i not in blank})]
+    # each loop value's own reading (_Parser.pieces), read after the line as it was, in what its budget leaves: past
+    # it, none is, and the line as it was is held (pieces_cut: TK-SHELL-PARSE), never looser than it
+    ctx["pieces_cut"] |= ctx["work"][0] + ctx["piece_work"] > MAX_WORK
+    if not ctx["pieces_cut"]:
+        ctx["work"][0] += ctx["piece_work"]
+        ctx["lines"] += ctx["piece_lines"]
+        for words, progs, data_steps, gone in ctx["piece_batches"]:
+            blank = {i for indexes, step in data_steps if step.get("cut") for i in indexes}
+            ctx["kept"] += _lines_without(["" if i in blank else w for i, w in enumerate(words)], progs,
+                                          {i: t for i, t in gone.items() if i not in blank})
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -1087,6 +1188,21 @@ def _made_text(ctx):
 
 # a home or root as a word names it: ~ (~user too), $HOME, /home/<u>, /Users/<u>, /root or /
 _HOME_OR_ROOT = re.compile(r"(?:~[\w.-]*|\$HOME|\$\{HOME\}|/+(?:home|Users)(?:/+[^/]+)?|/+root)?/*")
+# the start of a word that names a Windows drive's root (C:\, c:/; Git Bash's /c/ and /cygdrive/c/, WSL's /mnt/c/),
+# with its Users folder (Windows reads names in any case), or the home's variable (%USERPROFILE%, $USERPROFILE,
+# PowerShell's $env:USERPROFILE): _windows_home
+_WINDOWS_HOME = re.compile(r"(?i)(?:[a-z]:(?=[/\\])|/(?:cygdrive/|mnt/)?[a-z](?![^/\\]))([/\\]+users(?![^/\\]))?|"
+                           r"(%userprofile%|\$\{userprofile\}|\$userprofile\b|\$env:userprofile\b)")
+
+
+def _windows_home(word):
+    """`word` read as / , /Users/… or ~ where it names a Windows root or home (_WINDOWS_HOME) and is a root or home
+    so (_HOME_OR_ROOT, before any trailing pattern: C:\\Users\\u\\* is /Users/u/*), its \\ as /; else `word`."""
+    m = _WINDOWS_HOME.match(word)
+    if not m:
+        return word
+    read = ("~" if m.group(2) else "/Users" if m.group(1) else "") + word[m.end():].replace("\\", "/")
+    return read if _HOME_OR_ROOT.fullmatch(read.rstrip("/*?.")) else word
 
 
 def _function_variable(word):
@@ -1113,16 +1229,230 @@ _CURL_FLAGS = "012346aBfgGhiIjJklLMnNOpqRsSvVZ#:"   # curl's short options with 
 def _ref_update(name, args):
     """How an API call (gh api, curl, wget, HTTPie, xh) updates a GitHub ref: "force" with a field or body naming force
     (any value but a literal false or 0) to /repos/<owner>/<repo>/git/refs/…, or in a GraphQL updateRef or updateRefs;
-    "unread" for a call to a ref with a body the parser can't read (_unread_body), which may force; else None. A PATCH
-    without force only fast-forwards the ref, as a plain push does.
-    lean: a GraphQL query from a file or a variable, and a body from stdin through a pipe or redirect (`… | http PATCH
-    …`), aren't read; read them if an agent sends one"""
-    refs = any(_GIT_REFS.search(a) for a in args)
-    if not refs and not (any(_GRAPHQL.search(a) for a in args) and any(re.search(r"updateRefs?\b", a) for a in args)):
-        return None
-    if any(_FORCE_FIELD.search(a) for a in args):
+    "unread" for a call to a ref with a body the parser can't read (_unread_body), which may force, and for a GraphQL
+    call whose query it can't read (from a file or input, `-F query=@m.graphql`, `--input q.json`, or built at run
+    time), which may be any write an inline one is held for; else None. A PATCH without force only fast-forwards the
+    ref, as a plain push does.
+    lean: a body from stdin through a pipe or redirect (`… | http PATCH …`) isn't read; read it if an agent sends one"""
+    refs, graphql = any(_GIT_REFS.search(a) for a in args), any(_GRAPHQL.search(a) for a in args)
+    if (refs or graphql and any(re.search(r"updateRefs?\b", a) for a in args)) and any(
+            _FORCE_FIELD.search(a) for a in args):
         return "force"
+    if graphql and (_unread_body(name, args) or name == "gh" and _unread_query(args)):
+        return "unread"
     return "unread" if refs and _unread_body(name, args) else None
+
+
+def _unread_query(args):
+    """Whether gh api's GraphQL query is one the parser can't read: a field's value from a file (`-F query=@f`, which
+    -F reads), a substitution (`-f query="$(cat f)"`) or a variable the line doesn't give (`-f query="$Q"`; a query's
+    own `$f` is GraphQL's variable)."""
+    for i, a in enumerate(args):
+        if a in ("-f", "-F", "--field", "--raw-field"):
+            opt, value = a, args[i + 1] if i + 1 < len(args) else ""
+        elif re.match(r"-[fF].", a) or a.startswith(("--field=", "--raw-field=")):
+            opt, value = (a.split("=", 1) if a.startswith("--") else (a[:2], a[2:]))
+        else:
+            continue
+        key, _, v = value.partition("=")
+        if key == "query" and (re.search(r"\$\(|`", v) or re.fullmatch(r"\$\{?\w+\}?", v) or
+                               opt in ("-F", "--field") and v.startswith("@")):
+            return True
+    return False
+
+
+# curl's options, long names: those that take a value (an --expand- one too, as its option), the flags (a --no- one
+# is its flag), and its short letters as long ones; the options whose value is a file it writes. They are curl 8.7.1's
+# own list (`curl --help all`, kept in tests/data and compared with these) and _CURL_NEWER's, each with the release
+# that added it. A long option the tables don't hold is one the reader can't place (download_writes)
+_CURL_NEWER = {"ech": "8.8.0", "ip-tos": "8.9.0", "vlan-priority": "8.9.0", "keepalive-cnt": "8.9.0", "mptcp": "8.9.0",
+               "show-headers": "8.10.0", "skip-existing": "8.10.0", "ssl-sessions": "8.12.0", "upload-flags": "8.13.0"}
+_CURL_VALUED = frozenset((
+    "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
+    "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
+    "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
+    "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
+    "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
+    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type krb libcurl limit-rate "
+    "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
+    "oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default "
+    "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
+    "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
+    "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name "
+    "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
+    "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
+    "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
+    "write-out").split())
+_CURL_BARE = frozenset((
+    "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
+    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
+    "fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
+    "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
+    "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel "
+    "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
+    "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
+    "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
+    "remote-time remove-on-error retry-all-errors retry-connrefused sasl-ir show-error show-headers silent "
+    "skip-existing socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert "
+    "ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen "
+    "tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
+    "verbose version xattr").split())
+_CURL_SHORT = {
+    "0": "http1.0", "1": "tlsv1", "2": "sslv2", "3": "sslv3", "4": "ipv4", "6": "ipv6", ":": "next", "#": "progress-bar",
+    "a": "append", "A": "user-agent", "B": "use-ascii", "b": "cookie", "c": "cookie-jar", "C": "continue-at",
+    "d": "data", "D": "dump-header", "e": "referer", "E": "cert", "f": "fail", "F": "form", "g": "globoff",
+    "G": "get", "h": "help", "H": "header", "i": "include", "I": "head", "j": "junk-session-cookies",
+    "J": "remote-header-name", "k": "insecure", "K": "config", "l": "list-only", "L": "location", "m": "max-time",
+    "M": "manual", "n": "netrc", "N": "no-buffer", "o": "output", "O": "remote-name", "p": "proxytunnel",
+    "P": "ftp-port", "q": "disable", "Q": "quote", "r": "range", "R": "remote-time", "s": "silent", "S": "show-error",
+    "t": "telnet-option", "T": "upload-file", "u": "user", "U": "proxy-user", "v": "verbose", "V": "version",
+    "w": "write-out", "x": "proxy", "X": "request", "y": "speed-time", "Y": "speed-limit", "z": "time-cond",
+    "Z": "parallel"}
+_CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
+                "hsts", "alt-svc", "ssl-sessions"}
+# wget's, as GNU wget 1.21's manual lists them (its option index; no binary here checked them), read as getopt_long
+# reads them: a long option by any unique prefix, with its value after `=` or as the next word; the short letters as
+# long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value is a file it writes, and those
+# that make it write files the reader can't name (a URL list or metalink file, a wgetrc command or file, a name the
+# server picks, a recursive fetch, host and path folders)
+_WGET_VALUED = frozenset((
+    "output-file append-output execute config input-file base bind-address bind-dns-address dns-servers tries "
+    "retry-on-http-error output-document backups quota limit-rate wait waitretry timeout dns-timeout "
+    "connect-timeout read-timeout user password use-askpass local-encoding remote-encoding directory-prefix "
+    "cut-dirs default-page http-user http-password header compression max-redirect proxy-user proxy-password "
+    "referer save-cookies load-cookies post-data post-file method body-data body-file secure-protocol certificate "
+    "certificate-type private-key private-key-type ca-certificate ca-directory crl-file pinnedpubkey random-file "
+    "egd-file ciphers hsts-file ftp-user ftp-password level accept reject accept-regex reject-regex regex-type "
+    "domains exclude-domains include-directories exclude-directories user-agent restrict-file-names "
+    "prefer-family progress report-speed rejected-log warc-file warc-header warc-max-size warc-dedup "
+    "warc-tempdir follow-tags ignore-tags start-pos input-metalink metalink-index preferred-location").split())
+_WGET_BARE = frozenset((
+    "version help background debug quiet verbose no-verbose server-response spider continue timestamping "
+    "no-clobber show-progress inet4-only inet6-only no-check-certificate check-certificate ignore-case "
+    "keep-session-cookies no-cookies ignore-length no-cache no-proxy no-dns-cache no-glob no-netrc no-iri iri "
+    "unlink https-only no-hsts hsts auth-no-challenge content-on-error retry-connrefused retry-on-host-error "
+    "no-http-keep-alive save-headers trust-server-names content-disposition adjust-extension convert-links "
+    "convert-file-only backup-converted mirror page-requisites strict-comments follow-ftp span-hosts relative "
+    "no-parent no-directories force-directories no-host-directories protocol-directories recursive xattr "
+    "no-config retr-symlinks preserve-permissions no-remove-listing passive-ftp no-passive-ftp ftps-implicit "
+    "ftps-resume-ssl ftps-clear-data-connection ftps-fallback-to-ftp delete-after force-html "
+    "metalink-over-http no-warc-compression no-warc-digests no-warc-keep-log warc-cdx ask-password "
+    "no-if-modified-since no-use-server-timestamps random-wait keep-badhash").split())
+_WGET_SHORT = {
+    "o": "output-file", "a": "append-output", "e": "execute", "i": "input-file", "B": "base", "t": "tries",
+    "O": "output-document", "Q": "quota", "w": "wait", "T": "timeout", "P": "directory-prefix", "l": "level",
+    "A": "accept", "R": "reject", "D": "domains", "I": "include-directories", "X": "exclude-directories",
+    "U": "user-agent", "V": "version", "h": "help", "b": "background", "d": "debug", "q": "quiet", "v": "verbose",
+    "S": "server-response", "N": "timestamping", "c": "continue", "x": "force-directories", "r": "recursive",
+    "m": "mirror", "p": "page-requisites", "k": "convert-links", "K": "backup-converted", "E": "adjust-extension",
+    "H": "span-hosts", "L": "relative", "F": "force-html", "4": "inet4-only", "6": "inet6-only"}
+_WGET_N = {"d": "no-directories", "H": "no-host-directories", "c": "no-clobber", "p": "no-parent", "v": "no-verbose"}
+_WGET_WRITES = {"output-document", "output-file", "append-output", "save-cookies", "hsts-file", "rejected-log",
+                "warc-file"}
+_WGET_UNNAMED = {"execute", "config", "input-file", "input-metalink", "trust-server-names", "content-disposition",
+                 "recursive", "mirror", "page-requisites", "force-directories", "protocol-directories", "level", "base"}
+
+
+def _url_basename(url, query=False):
+    """The name a URL's path ends in (wget's with its query, which it keeps in the name). One urllib can't split (a
+    bracket that is no IPv6 host: curl's glob `http://10.0.0.[1-2]/.env`) is read from its raw path, after the scheme
+    and the host's first `/`; None when it has no path there, whose name the line can't tell. Any host with a bracket is
+    read so (an IPv6 one to the same name), since urlsplit refuses a bracket that is no IPv6 host only from Python
+    3.9.21 and 3.11.4 on."""
+    try:
+        parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+        if re.search(r"[][]", parts.netloc):
+            raise ValueError("a bracket in the host")
+    except ValueError:
+        rest = re.sub(r"^[A-Za-z][\w+.-]*://", "", url)
+        if "/" not in rest:
+            return None
+        path, _, q = rest.partition("/")[2].partition("#")[0].partition("?")
+        parts = urllib.parse.SplitResult("", "", path, q, "")
+    return posixpath.basename(parts.path) + ("?" + parts.query if query and parts.query else "")
+
+
+def download_writes(argv):
+    """(the files a curl or wget command writes, as its words name them; whether it may write a file the reader can't
+    name), read on an allow-list of each program's options: one the table doesn't hold is unplaceable, and so is a
+    config file (-K, --config, wget's -e), a list of URLs, a name the server picks (-J, --content-disposition), a
+    recursive fetch or host folders. curl writes each -o, each URL's name with -O or --remote-name-all (in
+    --output-dir), and the headers, cookies, trace, error output and caches its options name; wget its -O, or else each
+    URL's name (in -P), and its log, cookies and caches. Stdout (`-`) and /dev/null are no file."""
+    curl, args = argv[0] == "curl", argv[1:]
+    valued, flags, short = (_CURL_VALUED, _CURL_BARE, _CURL_SHORT) if curl else (_WGET_VALUED, _WGET_BARE, _WGET_SHORT)
+    given, urls, unread, i = [], [], False, 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            urls += args[i:]
+            break
+        if a.startswith("--"):
+            name, eq, value = a[2:].partition("=")
+            if curl:
+                name, eq, value = a[2:], "", ""   # (curl takes no `=`: the whole word names the option)
+                base = name[7:] if name.startswith("expand-") else name[3:] if name.startswith("no-") else name
+                if name not in valued and name not in flags and base in valued | flags:
+                    name = base if base in flags else name if name in valued else base
+            elif name not in valued and name not in flags:   # getopt_long: a unique prefix
+                hits = [o for o in valued | flags if o.startswith(name)]
+                name = hits[0] if len(hits) == 1 else name
+            if name in valued:
+                if not eq:
+                    value, i = (args[i], i + 1) if i < len(args) else ("", i)
+                given.append((name, value))
+            elif name in flags and not eq:
+                given.append((name, None))
+            else:
+                unread = True
+        elif a.startswith("-") and len(a) > 1:
+            if not curl and a[1] == "n" and len(a) == 3 and a[2] in _WGET_N:
+                given.append((_WGET_N[a[2]], None))
+                continue
+            for j in range(1, len(a)):
+                name = short.get(a[j])
+                if name is None:
+                    unread = True
+                    break
+                if name in valued:
+                    value = a[j + 1:]
+                    if not value:
+                        value, i = (args[i], i + 1) if i < len(args) else ("", i)
+                    given.append((name, value))
+                    break
+                given.append((name, None))
+        else:
+            urls.append(a)
+    names = {n for n, _ in given}
+    writes = [v for n, v in given if n in (_CURL_WRITES if curl else _WGET_WRITES)]
+    urls += [v for n, v in given if n == "url"]
+    if curl:
+        folder = next((v for n, v in reversed(given) if n == "output-dir"), "")
+        named = [v for n, v in given if n == "output"]
+        if names & {"remote-name", "remote-name-all"}:
+            named += [_url_basename(u) for u in urls]
+        writes += [posixpath.join(folder, w) if folder and w not in ("-", "/dev/null") else w
+                   for w in named if w is not None]
+        unread |= None in named or bool(names & {"config", "remote-header-name"})
+    else:
+        folder = next((v for n, v in reversed(given) if n == "directory-prefix"), "")
+        if "output-document" not in names and "spider" not in names:
+            bases = [_url_basename(u, True) for u in urls]
+            writes += [posixpath.join(folder, n) if folder else n for n in bases if n is not None]
+            unread |= None in bases
+        unread |= bool(names & _WGET_UNNAMED)
+    return [w for w in writes if w not in ("-", "/dev/null", "")], unread
+
+
+def _unnamed_write(path, ctx):
+    """Whether a file a download writes is named in a way the line can't tell: a substitution, a pattern, curl's #1
+    (a glob's part) or {{name}} (its variable), or a variable the line gives no value."""
+    return bool(re.search(r"\$\(|`|[*?[]|#\d|\{\{", path)) or any(
+        n not in ctx["given"] for n in re.findall(r"\$\{?([A-Za-z_]\w*|\d)", path))
 
 
 def _unread_body(name, args):
@@ -1174,8 +1504,8 @@ def _copy_operands(args):
 
 
 def _base(path):
-    """The name a path's last part gives: //tmp/tk, ./tk and sub/tk/ are all tk."""
-    return posixpath.basename(posixpath.normpath(path))
+    """The name a path's last part gives: //tmp/tk, ./tk, sub/tk/ and .\\tk (Windows reads \\ as /) are all tk."""
+    return posixpath.basename(posixpath.normpath(path.replace("\\", "/")))
 
 
 def _tracekit_copies(ctx):
@@ -1203,11 +1533,14 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
+    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed = None, {}, {}
     for c in list(ctx["cmds"]):
-        argv = c["argv"]
+        argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
+        if argv[0] in ("find", "rsync") and argv != c["argv"]:
+            ctx["cmds"].append({**c, "argv": argv, "via": c["via"] + ["read at home"]})
         ops = [a for a in argv[1:] if not a.startswith("-")]
         if argv[0] in ("cd", "pushd"):
             where = "~" if not ops else ops[0] if ops[0] and _HOME_OR_ROOT.fullmatch(ops[0]) else None
@@ -1311,8 +1644,10 @@ def _searches(argv):
     if argv[0] == "git":
         sub = _git_sub(argv[1:])
         return sub is not None and argv[1 + sub] == "grep"
-    return argv[0] in ("grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "pgrep") and not any(
-        a == "--pre" or a.startswith("--pre=") for a in argv[1:])
+    return argv[0] in _SEARCHERS and not any(a == "--pre" or a.startswith("--pre=") for a in argv[1:])
+
+
+_SEARCHERS = frozenset(("grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "pgrep"))
 
 
 def charge(work, n):
@@ -1329,10 +1664,14 @@ def _learned(ctx):
     without a value the line gives it ("*": an indirect ${!x}, which may be any); whether a command may have set any
     variable (or exported one: set, read, declare …), and the names an export of literal names exported; whether a
     second reading (`readings`) read anything the line as written doesn't (more: without it,
-    analyse(readings=False) is the same parse); the names of the functions it defines."""
+    analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
+    value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
+    read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
-            "functions": list(ctx["functions"])}
+            "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
+            "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
+            "appended": list(ctx.get("appended", ()))}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1348,7 +1687,7 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
            "code_names": [], "made_files": set(), "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
            "stdin_moved": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
            "split_values": [],
-           "exports": set()}
+           "exports": set(), "globopts": ()}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     _made_text(ctx)
@@ -1389,6 +1728,91 @@ def _sed_prints(script):
     """Whether a sed script only picks and prints lines: with its /pattern/ addresses left out, nothing but line
     numbers, ranges, braces and the commands that read, write and run nothing."""
     return bool(re.fullmatch(r"[\s\d,$~!;{}+pPlqQnNdDhHgGxz=]*", re.sub(r"/(?:[^/\\\n]|\\.)*/[IM]{0,2}", "", script)))
+
+
+# files whose text is data: notes, logs and data formats, and anything in a memory, notes or reports folder
+_DATA_FILE = re.compile(r"\.(?:md|markdown|txt|text|log|json|jsonl|ndjson|csv|tsv)$|(?:^|/)(?:memory|notes|reports?)/",
+                        re.I)
+# programs that only read and print what they're given: none runs, copies or writes it, without an option that does
+# (rg's --pre, yq's in-place edit, any of less's: + commands, a log file); text filters that read only their input and
+# print it (sort and uniq may write a file); commands that read no file. The only company data keeps on a line that
+# reads it as data (a download's bytes, text written into a notes file)
+PURE_READERS = re.compile(r"cat|head|tail|less|wc|grep|rg|jq|yq|sha(?:1|224|256|384|512)?sum|md5sum|file|stat|ls|diff|"
+                          r"cmp")
+_READER_RUNS = {"rg": re.compile(r"--pre\b.*"), "yq": re.compile(r"-[A-Za-z]*[is][A-Za-z]*|--in-?place|--split-exp.*"),
+                "less": re.compile(r"[-+].*")}
+_TEXT_FILTERS = {"cut", "tr", "nl", "fold", "fmt", "column", "tac", "rev", "paste", "comm", "expand", "unexpand"}
+NO_FILES = {"cd", "mkdir", "echo", "printf", "true", "false", ":", "sleep", "pwd", "test", "[", "[[", "date"}
+
+
+def reads_only(c, filters=False):
+    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too) or reads no file
+    (NO_FILES), writing nowhere but /dev/null or stderr."""
+    name = c["argv"][0]
+    return (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
+        _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
+        name in _TEXT_FILTERS) and all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+
+
+# what else may run on a line whose text written into a data file stays data: commands that only read and print, or
+# read no file (reads_only), sort and uniq, ones that write text (echo, printf, cat, tee: steps of their own), remove
+# or touch files, sed (one the parser reads: its e runs what it names, else it is unread), and gh's and git's (gh
+# posts a file's text, git commits it; their aliases, extensions and git's mv are read below). Nothing that runs code:
+# a shell, an interpreter, a project script, make, an agent
+_DATA_COMPANY = {"echo", "printf", "cat", "tee", "sort", "uniq", "rm", "touch", "gh", "git", "sed", "gsed"}
+# gh's own commands (cobra's names and aliases: any other word runs an alias or an extension, a program of its own)
+GH_COMMANDS = frozenset((
+    "accessibility", "a11y", "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace", "cs",
+    "completion", "config", "extension", "ext", "extensions", "gist", "gpg-key", "help", "issue", "label", "org", "pr",
+    "preview", "project", "release", "repo", "ruleset", "rs", "run", "search", "secret", "ssh-key", "status",
+    "variable", "version", "workflow"))
+# what gh and git may do with the data file itself: post it (gh's own commands), commit or stage it (not git mv)
+_GIT_DATA = {"add", "commit", "merge", "tag", "diff", "status", "log"}
+
+
+def _data_write(step, cmds):
+    """Whether a step that only copies text into files (cat, tee, echo or printf: `data`) writes data a line can't run
+    whatever runs after it, on an allow-list: every file it writes is a data file (_DATA_FILE), the text goes on down
+    no pipe, every other command on the line is one that runs no code (_DATA_COMPANY, reads_only), and each that names
+    one of those files (a word the line builds, or a pattern, may name it) only reads and prints it to the terminal or
+    down a pipe of readers and text filters, writes text into it (tee), posts it (gh) or commits it (git add or
+    commit). Anything else keeps main's reading: a copy, move or link (cp, mv, ln, install, rsync, dd, git mv), its
+    text redirected or appended anywhere (`cat notes/a.md >> ~/.bashrc`), and a command that runs it or may."""
+    to = step.get("to")
+    if not to or step.get("piped_on") or not all(_DATA_FILE.search(t) and not t.startswith("/dev/") for t in to):
+        return False
+    names = {n for t in to for n in (posixpath.basename(t), base_name(t))}
+    mention = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)))
+    after = {}   # each pipeline's last stage that doesn't only read and print
+    for c in cmds:
+        if c is not step.get("writer") and not reads_only(c, True):
+            after[c["pipeline"]] = max(after.get(c["pipeline"], -1), (c.get("stage") or 0))
+    for c in cmds:
+        name, args = c["argv"][0], c["argv"][1:]
+        if c is step.get("writer"):
+            continue
+        if not reads_only(c, True) and name not in _DATA_COMPANY or c["opaque"] or \
+                names & {posixpath.basename(c["word"]), base_name(c["word"])} or re.search(r"[$`*?[]", c["word"]) or \
+                name == "gh" and (args[0] if args else "") not in GH_COMMANDS:
+            return False
+        if not any(mention.search(w) or re.search(r"[$`*?[]", w) for w in args + list(c.get("in", ())) + list(
+                c.get("stdin", ()))):
+            continue
+        if name == "tee" and all(_DATA_FILE.search(a) for a in args if not a.startswith("-")) and not c["via"] or \
+                name == "gh" or name in NO_FILES and reads_only(c) and not c["via"]:
+            continue
+        if name == "git" and (k := _git_sub(args)) is not None and args[k] in _GIT_DATA and not c.get("out") and \
+                not c["via"]:
+            continue
+        # sed naming it only in its script's text (a link in another note), not as a file it edits or reads, nor
+        # after r, R, w or W (a file its script reads or writes)
+        script = _sed_scripts([a for a in args if a]) if name in ("sed", "gsed") else None   # (BSD's -i '')
+        if script is not None and not c["via"] and all(w in script for w in args if mention.search(w)) and \
+                not re.search(r"[rRwW][ \t]*[^\s;]*?(?:%s)" % "|".join(map(re.escape, names)), script):
+            continue
+        if not reads_only(c, True) or c["via"] or after.get(c["pipeline"], -1) > (c.get("stage") or 0):
+            return False
+    return True
 
 
 def data_words(argv):
@@ -1480,6 +1904,15 @@ def _git_stdin_message(argv):
     args = argv[i + 1:]
     return any((args[j] == "-F" and j + 1 < len(args) and args[j + 1] == "-") or args[j] == "--file=-"
                for j in range(len(args)))
+
+
+# a word that is only the path of a program its name names, as bash finds it on PATH, quoted as a whole word:
+# `"$(which NAME)"`, `"$(command -v NAME)"`, `"$(type -p NAME)"` (or -P). Unquoted, one that prints nothing (a name
+# not found; type -p of a builtin or function) vanishes and the next word runs, so only the quoted word, which runs
+# nothing when empty, is read as NAME (the engine also reads the text, quotes gone, in backquotes too, as the script
+# a JavaScript runtime runs: only more held)
+LOCATED = re.compile(r'"\$\([ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*\)"')
+LOCATED_TEXT = re.compile(r'(?:\$\(|`)[ \t]*(?:which|command[ \t]+-v|type[ \t]+-[pP])[ \t]+([A-Za-z0-9_.+-]+)[ \t]*[)`]')
 
 
 def _name_unreadable(text):
@@ -1627,12 +2060,249 @@ def _brace(word, charge, room=MAX_BRACE, depth=0):
     return [w + rest for w in words]
 
 
-def _unglob(text):
+# the names the shipped rules protect that a pattern may stand for (`~/.bashr?`, `authorized_key?`, `.git/hook?/x`,
+# `id_*`)
+GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshenv", ".zshrc", ".zprofile",
+              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "id_rsa", "id_ed25519",
+              "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc", ".netrc",
+              ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini", ".hermes",
+              "docker.sock")
+_PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
+
+
+def _bare(part):
+    """`part` without its pattern syntax (_PATTERN_SYNTAX), in linear time: every bracket expression ends by its last
+    `]`, so the regex reads only up to there (from each unclosed `[` to the end is quadratic: 40,000 took minutes)."""
+    cut = part.rfind("]") + 1
+    return _PATTERN_SYNTAX.sub("", part[:cut]) + re.sub(r"[*?]", "", part[cut:])
+
+
+# a bracket expression's POSIX classes, as bash reads them
+_POSIX_CLASSES = {"alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isalnum, "upper": str.isupper,
+                  "lower": str.islower, "space": str.isspace, "blank": lambda c: c in " \t",
+                  "word": lambda c: c.isalnum() or c == "_", "xdigit": lambda c: c in "0123456789abcdefABCDEF",
+                  "punct": lambda c: c.isprintable() and not c.isalnum() and not c.isspace(),
+                  "graph": lambda c: c.isprintable() and not c.isspace(), "print": str.isprintable,
+                  "cntrl": lambda c: not c.isprintable()}
+# the collating symbols bash's [.name.] reads (its collsyms.h: POSIX's names of the portable characters)
+_COLLATING = dict(zip(
+    "space exclamation-mark quotation-mark number-sign dollar-sign percent-sign ampersand apostrophe left-parenthesis "
+    "right-parenthesis asterisk plus-sign comma hyphen hyphen-minus period full-stop slash solidus zero one two three "
+    "four five six seven eight nine colon semicolon less-than-sign equals-sign greater-than-sign question-mark "
+    "commercial-at left-square-bracket backslash reverse-solidus right-square-bracket circumflex circumflex-accent "
+    "underscore low-line grave-accent left-brace left-curly-bracket vertical-line right-brace right-curly-bracket "
+    "tilde".split(), " !\"#$%&'()*+,--..//0123456789:;<=>?@[\\\\]^^__`{{|}}~")) | {"tab": "\t", "newline": "\n"}
+_STAR, _ANY = object(), object()
+
+
+def _glob_tokens(part):
+    """One component of a pathname pattern as bash matches it: _STAR for a run of `*` (one, so matching stays
+    linear), _ANY for `?`, a character, or a bracket expression as (characters, ranges, POSIX classes, negated): `!`
+    or `^` negates it; `[=x=]` is x (one character: `[=ab=]` is no equivalence class, so its `[` is one of the set's
+    characters and its `]` ends the set), `[.x.]` x or the character a collating symbol names (`[.underscore.]` is
+    `_`; an unknown one none); a backslash escapes the next. One without its `]` is a `[`. Linear: where a set read
+    from each place would end is found once for all (`shut`), so an unclosed `[` isn't read to the end for each."""
+    n = len(part)
+    if "[" not in part:
+        return _plain_tokens(part)
+    # after[c][k]: the first place from k where `c]` starts (c is `:` or `.`), n where none
+    after = {}
+    for c in ":.":
+        at, nxt = n, [n] * (n + 2)
+        for k in range(n - 2, -1, -1):
+            if part[k] == c and part[k + 1] == "]":
+                at = k
+            nxt[k] = at
+        after[c] = nxt
+
+    def step(j):   # (what the set's member at j is: a kind and its value, where the next one starts); None: no end
+        c, nxt = part[j], part[j + 1:j + 2]
+        if c == "\\" and nxt:
+            return ("char", nxt), j + 2
+        if c == "[" and nxt == ":" and (end := after[":"][j + 2]) < n:   # (a name longer than any is none: unread)
+            return ("class", part[j + 2:end] if end - j < 12 else ""), end + 2
+        if c == "[" and nxt == "=" and part[j + 3:j + 5] == "=]" and j + 2 < n:
+            return ("char", part[j + 2]), j + 5
+        if c == "[" and nxt == ".":
+            end = after["."][j + 2]
+            if end == n:
+                return None   # bash reads the symbol to the pattern's end: the set has none
+            name = part[j + 2:end] if end - j < 32 else ""
+            return ("char", name if len(name) == 1 else _COLLATING.get(name, "")), end + 2
+        if nxt == "-" and part[j + 2:j + 3] not in ("", "]"):
+            return ("range", (c, part[j + 2])), j + 3
+        return ("char", c), j + 1
+
+    shut = [None] * (n + 6)   # shut[j]: where a set read from j (past its first member) ends, None if it doesn't
+    for j in range(n - 1, -1, -1):
+        if part[j] == "]":
+            shut[j] = j
+        elif (s := step(j)) is not None:
+            shut[j] = shut[s[1]]
+    out, i = [], 0
+    while i < n:
+        c = part[i]
+        if c == "[":
+            neg = part[i + 1:i + 2] in ("!", "^")
+            start = i + 1 + neg
+            first = step(start) if start < n else None
+            end = first and (shut[first[1]] if part[start] == "]" else shut[start])
+            if end is not None:
+                chars, ranges, classes, j = set(), [], [], start
+                while j == start or j < end:
+                    (kind, value), j = step(j)
+                    if kind == "class":
+                        classes.append(_POSIX_CLASSES.get(value, lambda c: False))
+                    elif kind == "range":
+                        ranges.append(value)
+                    else:
+                        chars.update(value)
+                out.append((frozenset(chars), tuple(ranges), tuple(classes), neg))
+                i = end + 1
+                continue
+        if c != "*" or not out or out[-1] is not _STAR:
+            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
+        i += 1
+    return out
+
+
+def _plain_tokens(part):
+    out = []
+    for c in part:
+        if c != "*" or not out or out[-1] is not _STAR:
+            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
+    return out
+
+
+def _glob_fits(tokens, name, nocase=False):
+    """Whether `name` matches a component's tokens (_glob_tokens): one pass over the name, keeping each token it may
+    stand at, so time grows with the name times the tokens (_unglob tries only names as long as its fixed tokens)."""
+
+    def one(t, c):
+        if t is _ANY:
+            return True
+        if isinstance(t, str):
+            return t == c or nocase and t.casefold() == c.casefold()
+        chars, ranges, classes, neg = t
+        hit = c in chars or any(lo <= c <= hi for lo, hi in ranges) or any(f(c) for f in classes) or nocase and (
+            c.casefold() in {x.casefold() for x in chars} or any(lo <= c.swapcase() <= hi for lo, hi in ranges))
+        return hit != neg
+
+    def close(states):   # a star may stand for nothing
+        out = set(states)
+        for k in sorted(states):
+            while k < len(tokens) and tokens[k] is _STAR:
+                k += 1
+                out.add(k)
+        return out
+    states = close({0})
+    for c in name:
+        states = close({k if tokens[k] is _STAR else k + 1 for k in states if k < len(tokens) and
+                        (tokens[k] is _STAR or one(tokens[k], c))})
+        if not states:
+            return False
+    return len(tokens) in states
+
+
+# a line's shell options that change what a pattern matches: shopt -s dotglob, nocaseglob or extglob, and a GLOBIGNORE
+# it sets (which turns dotglob on)
+# commands that list or change a file's metadata, not its text: a pattern's names among their words are only its
+# bracket sets' (`ls ~/.ssh/id_*` reads no key)
+_METADATA = {"ls", "stat", "du", "chmod", "chown", "chgrp"}
+_SHOPT = re.compile(r"\bshopt\b([^;&|\n]*)")
+_EXTGLOB = re.compile(r"[?*+@!]\(")
+_GLOB_OPTIONS = {"dotglob", "nocaseglob", "extglob"}
+# zsh's setopt, unsetopt and emulate, and a zsh started with options (-o x, --globdots, its letters: -4 is GLOB_DOTS),
+# in at most 16 words after the shell's name, so each search stays linear: a line that may set any, which writes a
+# pattern of zsh's syntax, is unreadable (_glob_options; _globs_set reads them and bash -O, as the parse finds them)
+_ZSH_OPTIONS = re.compile(r"\b(?:un)?setopt\b|\bemulate\b|(?<![^\s;&|(`/])zsh\s+(?:[^\s;&|]+[ \t]+){0,16}?(?:[-+]o|--\w|"
+                          r"[-+]\w*[^cilsxvefdnu\s])")
+_BASHOPTS = re.compile(r"\bBASHOPTS\b(?:\+?=([\w:]*)(?=[\s;&|)]|$))?")
+# the text one of _SHOPT and _BASHOPTS, or GLOBIGNORE, needs (a quote or `\` dropped)
+_GLOB_WORDS = ("shopt", "BASHOPTS", "GLOBIGNORE")
+_UNQUOTED = str.maketrans("", "", "'\"\\")   # a text without its quotes and backslashes
+
+
+def _glob_options(command, more=frozenset()):
+    """The shell options `command` sets that change what its patterns match (dotglob, nocaseglob, extglob), read
+    anywhere on it, as written and with its quotes and escapes gone (`shopt -s dot''glob` is dotglob): shopt -s and
+    BASHOPTS by name, a GLOBIGNORE in any form (set, it turns dotglob on); with `more`, the ones its commands set
+    (_globs_set: shopt -s, bash -O, zsh's). One set in a way the parser can't read (a name in a variable, zsh's setopt or options) is
+    "unread", so its patterns are read with every option (_unglob). A line that may set extglob and writes a pattern
+    of its syntax (`@(…)`, `!(…)`), or zsh's (`^x`, `x~y`, `x#`), is unreadable (ParseError): its patterns match more
+    than these read."""
+    found = set(more)
+    plain = command.translate(_UNQUOTED)   # (each search below needs one of _GLOB_WORDS in it)
+    for text in (command, plain) if any(w in plain for w in _GLOB_WORDS) else ():
+        for m in _SHOPT.finditer(text):
+            words = m.group(1).split()
+            if any(re.fullmatch(r"-[a-z]*s[a-z]*", w) for w in words):
+                found |= {w if re.fullmatch(r"[A-Za-z_]\w*", w) else "unread" for w in words if not w.startswith("-")}
+        found |= {n for m in _BASHOPTS.finditer(text) for n in (m.group(1).split(":") if m.group(1) is not None
+                                                                 else ["unread"])}
+        if "GLOBIGNORE" in text:
+            found.add("dotglob")
+    found &= _GLOB_OPTIONS | {"unread"}
+    if found & {"extglob", "unread"} and _EXTGLOB.search(command) or "unread" in found and _ZSH_OPTIONS.search(
+            command) and re.search(r"(?:^|[\s/])\^|\w~|\S#", command):
+        raise ParseError("a pattern of extglob's syntax is not supported")
+    return frozenset(found)
+
+
+def _globs_set(cmds):
+    """The glob options the parsed commands set, their names read as the parser resolved them (`$'\\x73hopt' -s
+    dotglob`, `o=dotglob; shopt -s $o`): shopt -s's, bash -O's, and "unread" for a name still unread, zsh's setopt,
+    unsetopt or emulate, or a zsh started with options."""
+    found = set()
+    for c in cmds:
+        name, args = c["argv"][0], c["argv"][1:]
+        if name == "shopt" and any(re.fullmatch(r"-[a-z]*s[a-z]*", a) for a in args):
+            found |= {a if re.fullmatch(r"[A-Za-z_]\w*", a) else "unread" for a in args if not a.startswith("-")}
+        elif name in SHELLS:
+            found |= {(a[2:] or b) if re.fullmatch(r"[A-Za-z_]\w*", a[2:] or b) else "unread"
+                      for a, b in zip(args, args[1:] + [""]) if a[:2] in ("-O", "+O")}
+        if name in ("setopt", "unsetopt", "emulate") or name == "zsh" and any(
+                re.fullmatch(r"[-+]o|--\w.*|[-+]\w*[^cilsxvefdnu]\w*", a) for a in args):
+            found.add("unread")
+    return frozenset(found & (_GLOB_OPTIONS | {"unread"}))
+
+
+def _unglob(text, options=(), work=None):
+    """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and with each of
+    its components that has two characters of its own read as each name of GLOB_NAMES it matches, all at once
+    (`~/.ss?/conf?g` is ~/.ssh/config; bash matches a leading dot only with a dot, so `*rc` isn't .bashrc, unless
+    the line's `options`, shell options it sets, hold dotglob; nocaseglob matches in any case), at most 64 of them;
+    [] when it makes none it can list.
+    lean: a pattern of fewer characters of its own (`~/.ssh/*`), or one that stands for a name outside GLOB_NAMES, is
+    no name here; list more names when a rule protects them. Linear in the pattern, charged to `work` (charge). With
+    glob options the line sets in a way the parser can't read ("unread": _glob_options), a pattern that makes a name
+    under some option it doesn't under the ones read is unreadable (ParseError)."""
+    if work is not None:
+        charge(work, len(text))
+    if "unread" in options:
+        read = _unglob(text, frozenset(options) - {"unread"}, work)
+        if set(_unglob(text, ("dotglob", "nocaseglob"), work)) - set(read):
+            raise ParseError("a pattern under a glob option the line sets in a way the parser can't read")
+        return read
+    made = _brackets(text)
+    named = []
+    for t in made + [text]:   # (and as a whole: a set _brackets reads otherwise, `[\\]_]`)
+        parts = t.split("/")
+        choices = [[p] + [n for n in GLOB_NAMES if (p[0] == "." or n[0] != "." or "dotglob" in options) and
+                          len(n) >= fixed and _glob_fits(tokens, n, "nocaseglob" in options)]
+                   if (bare := _bare(p)) != p and len(bare) > 1 and (tokens := _glob_tokens(p)) and
+                   (fixed := sum(t is not _STAR for t in tokens)) > 1
+                   else [p] for p in parts]
+        named += ["/".join(c) for c in itertools.islice(itertools.product(*choices), 1, 64)]
+    return list(dict.fromkeys(made + named))
+
+
+def _brackets(text):
     """The names the bracket expressions of a pathname pattern can make, at most 16 (`authorized_key[s]` is
     authorized_keys, `[ab]` makes two), its other pattern characters kept; [] when it has none it can list (a negated
     set, a class such as [:alpha:], a range or a product of more)."""
     segments, sets, at = [], [], 0
-    for m in _BRACKET.finditer(text):
+    for m in _BRACKET.finditer(text, 0, text.rfind("]") + 1):   # (linear: past the last `]` none ends)
         if m.group(1) or "[" in m.group(2):
             return []
         chars = []
@@ -1675,6 +2345,49 @@ def _takes(a, opts, flags):
     return (1, 2)
 
 
+def _gh_order(args):
+    """The order of gh's words as cobra reads them, as indexes into `args`: gh takes its options anywhere, so options
+    before its command (`gh -X PUT api …`, `gh -R o/r pr merge 1`) are read after the words that name it and its
+    first arguments (`gh api … -X PUT`, `gh pr merge 1 -R o/r`). Before it, cobra reads an option with no `=` (but
+    --help and --version) as taking the next word."""
+    i, lead = 0, []
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        takes = "=" not in args[i] and args[i] not in ("-h", "--help", "--version") and (
+            args[i].startswith("--") or len(args[i]) == 2)
+        lead += [i, i + 1][:1 + takes]
+        i += 1 + takes
+    if i >= len(args) or args[i] == "--":
+        return list(range(len(args)))
+    j = next((k for k in range(i, len(args)) if args[k].startswith("-")), len(args))
+    return list(range(i, j)) + [k for k in lead if k < len(args)] + list(range(j, len(args)))
+
+
+def runner_at(name, args):
+    """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
+    exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
+    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`; one that may be an option's
+    value is read both ways (`uv --directory run run x`). Each word read once: linear; [] for none (`npm test`)."""
+    at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
+    while i < len(args):
+        a = args[i]
+        if a in RUNNERS[name][0]:
+            at.append(i)
+            if not valued:
+                return at
+            i, valued = i + 1, False
+            continue
+        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") else \
+            1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
+        if skip:
+            i, valued = i + skip, False
+            continue
+        if not a.startswith("-") and not valued:
+            return at
+        valued = a.startswith("-") and a != "--"
+        i += 1
+    return at
+
+
 def _unwrap(name, args):
     """What a wrapper, or a runner's subcommand (args[0]: `uv run`), may run: each command, one at a time, the reading
     as flags first. An option neither its table nor WRAPPER_FLAGS names may take a value (`strace --user bob cmd`), so
@@ -1704,7 +2417,7 @@ def _unwrap(name, args):
             starts.append(i)
         elif a is None or name == "command" and a in ("-v", "-V"):   # the end, or a lookup, not a run
             starts.append(None)
-        elif a.startswith("-"):   # a bare `-` too (env - cmd: an empty environment)
+        elif a.startswith("-") or name == "cmd" and a.startswith("/"):   # a bare `-` too (env - cmd: an empty environment)
             todo += [i + n for n in reversed(_takes(a, opts, WRAPPER_FLAGS.get(name, ())))]
         elif assigns(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
             todo.append(i + 1)
@@ -1712,21 +2425,20 @@ def _unwrap(name, args):
             starts.append(i)
     for i in dict.fromkeys(starts):   # one at a time: the caller charges each before the next is copied
         inner = [] if i is None else args[i + positional:]
+        if positional and inner[:1] == ["--"]:   # (getopt takes a `--` after the operands: `rustup run stable -- cargo`)
+            inner = inner[1:]
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
         yield inner
 
 
-def _shell_mode(args):
+def _shell_mode(args, shell=""):
     """('c', script) for sh -c, ('stdin', None) when the shell reads its script from stdin (or a stream such as
     /dev/stdin or <( ), or -c without a script, as xargs bash -c runs it), else (None, its script file). Options after
-    -c are skipped as the shell does: the script is the first operand."""
+    -c are skipped as the shell does: the script is the first operand. `shell`: the shell's name (_shell_takes)."""
     i, flags = 0, ""
     while i < len(args):
         a = args[i]
-        if a in SHELL_VALUE_OPTS:
-            i += 2
-            continue
         if a in ("--", "-"):
             i += 1
             break
@@ -1734,7 +2446,7 @@ def _shell_mode(args):
             break
         if a[0] == "-" and not a.startswith("--"):
             flags += a[1:]
-        i += 1
+        i += 1 + _shell_takes(a, shell)
     if "c" in flags:
         return ("c", args[i]) if i < len(args) else ("stdin", None)
     if "s" in flags or i >= len(args) or _stream(args[i]):
@@ -1742,16 +2454,26 @@ def _shell_mode(args):
     return None, args[i]   # a script file
 
 
-def _interactive(args):
+def _shell_takes(a, shell=""):
+    """How many words after option word `a` of the shell named `shell` are its values: one for --rcfile, --init-file
+    or zsh's --emulate, and one for each o or O in a cluster (`-o pipefail`, `-euo pipefail`, `-oc pipefail 'cmd'`,
+    `+O extglob`), as bash reads them, and each T of mksh's (`-T /dev/tty`)."""
+    if a in ("--rcfile", "--init-file", "--emulate"):
+        return 1
+    return sum(ch in "oO" or ch == "T" and shell in ("mksh", "lksh") for ch in a[1:]) if \
+        a[:1] in ("-", "+") and not a.startswith("--") else 0
+
+
+def _interactive(args, shell=""):
     """Whether a shell given `args` starts interactive, and so reads ENV: -i among its options (also bundled, -ic),
     or zsh's -o interactive and --interactive."""
     i = 0
     while i < len(args) and args[i][:1] in ("-", "+") and args[i] not in ("-", "--"):
         a = args[i]
-        named = args[i + 1] if a in SHELL_VALUE_OPTS and i + 1 < len(args) else a
+        named = args[i + 1] if _shell_takes(a, shell) and i + 1 < len(args) else a
         if re.match(r"-[^-]*i", a) or a[0] == "-" and re.sub(r"[-_]", "", named).lower() == "interactive":
             return True
-        i += 2 if a in SHELL_VALUE_OPTS else 1
+        i += 1 + _shell_takes(a, shell)
     return False
 
 
@@ -2147,6 +2869,7 @@ class _Parser:
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
         self.gone = [{} for _ in range(12)]   # each second reading's text of the words in self.out it changes (None: gone)
+        self.pieces = []   # (a command's start and end in self.out, the loop values a reading of it is, gone's: flush)
         self.unwrapped = set()   # emit(): (pipeline, wrapper, what it may run) read where an option may take a value
         # the variables bash expands to a non-empty value here, which no second reading empties: $PWD (bash sets it),
         # one the line gave a literal (`D=build; rm -rf "$D"/`) and a for loop's over literal words, in its body;
@@ -2155,6 +2878,7 @@ class _Parser:
         # what follows it. Each known one maps to the literals it may hold ([]: not known; IFS: bash's default, which
         # no assignment gives back)
         self.known, self.blocks = {"PWD": [], "IFS": []}, []
+        self.opened = []   # per block, where in ctx["cmds"] its commands start
         self.list_start = self.closed = 0   # list(): the and-or list being read, a block's opening a pipeline closed
         self.called = False   # simple(): the command calls a function (_Parser.call)
         self.said = {}   # (pipeline, stage) -> the text that stage prints, when the line gives it (simple)
@@ -2171,6 +2895,45 @@ class _Parser:
 
     def charge(self, n):
         charge(self.ctx["work"], n)
+
+    def reading_pieces(self):
+        """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
+        return bool(self.ctx.get("pieces")) and not self.ctx["pieces_cut"]
+
+    def piece_charge(self, n):
+        """Spend `n` on loop values' own readings (pieces), apart from the line's budget: whether any is still read
+        (False once they would take the line past MAX_WORK, and none is: analyse)."""
+        ctx = self.ctx
+        if self.reading_pieces():
+            ctx["piece_work"] += n
+            ctx["pieces_cut"] = ctx["work"][0] + ctx["piece_work"] > MAX_WORK
+            return not ctx["pieces_cut"]
+        return False
+
+    def list_at(self, at):
+        """Where the and-or list holding self.out's word `at` starts (after _LIST_ENDS' word before it)."""
+        while at and self.out[at - 1] not in _LIST_ENDS:
+            at -= 1
+        return at
+
+    def stages(self, at, step):
+        """Where a loop value's line (pieces) starts (step -1, from a command's start `at` in self.out) or ends (1,
+        from its end): the words before or after it in its pipeline stage, and the whole stages next to it within
+        PIECE_ROOM characters, in its and-or list (_LIST_ENDS)."""
+        out, room, ends = self.out, PIECE_ROOM, _LIST_ENDS | {"|", "|&"}
+
+        def edge(i):   # from a boundary `i` (a slice index), past the words of the stage there to its pipe or list end
+            while (0 < i if step < 0 else i < len(out)) and out[i - 1 if step < 0 else i] not in ends:
+                i += step
+            return i
+        at = edge(at)
+        while (0 < at if step < 0 else at < len(out)) and out[at - 1 if step < 0 else at] in ("|", "|&"):
+            nxt = edge(at + step)   # the next stage, with its pipe
+            room -= sum(len(w) + 1 for w in (out[nxt:at] if step < 0 else out[at:nxt]))
+            if room < 0:
+                break
+            at = nxt
+        return at
 
     def line_substitutes(self):
         """Whether the line of the text that self.i is on holds a `$(` or a backquote (dollar's arithmetic check),
@@ -2339,17 +3102,32 @@ class _Parser:
     def leave(self):
         self.ctx["depth"] -= 1
 
+    def open_block(self, block, at=()):
+        """`at`: the pipeline stage (pid, stage) the block's opening word is in, whose input its commands read."""
+        self.blocks.append(block)
+        self.opened.append((len(self.ctx["cmds"]), at))
+
     def close_block(self):
         """The innermost block ends: what it made known is forgotten, and where its and-or list began goes back to
-        list() (a block sent to the background runs from its opening)."""
+        list() (a block sent to the background runs from its opening). -> (where in ctx["cmds"] its commands start,
+        open_block's `at`)."""
         _, names, opened = self.blocks.pop()
         for name in names:
             self.known.pop(name, None)
         self.closed = min(self.closed, opened)
+        return self.opened.pop()
 
-    def nested(self, text, via, args=()):
+    def reach(self, start, pid, stage):
+        """The commands from ctx["cmds"][start] on print into the pipeline stage (pid, stage), or read its input
+        (`reaches`): a block's or subshell's that stage is (a { } group's or a loop's opening word and its closing word
+        are each in one: `env | { x; curl …; } | y`), or a substitution's in a word of it."""
+        for c in self.ctx["cmds"][start:]:
+            c.setdefault("reaches", []).append((pid, stage))
+
+    def nested(self, text, via, args=(), zero=()):
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
-        # literal `args` has them as $1 to $9 and "$@", as call() gives a function's. Code a shell of another grammar
+        # literal `args` has them as $1 to $9 and "$@", as call() gives a function's, and sh -c's literal `zero` (the word
+        # after its script) as $0. Code a shell of another grammar
         # reads (sh, dash, ksh: the nearest shell in `via`) is read as bash's only where it uses no operator bash alone
         # has (`&>` is a background job and a redirection in dash)
         if next((w for v in reversed(via) for w in [v.split(" ", 1)[0]] if w in SHELLS), None) in _POSIX_SHELLS and \
@@ -2358,8 +3136,10 @@ class _Parser:
         known = {k: v for k, v in self.known.items() if k in (("IFS",) if via[-1:] == ["trap"] else ("PWD", "IFS"))}
         if args and not any("$" in a or "`" in a for a in args):
             known.update({str(i): [a] for i, a in enumerate(args[:9], 1)}, **{"@": list(args)})
+        if zero and not any("$" in a or "`" in a for a in zero):
+            known["0"] = list(zero)
         self.positional(args)
-        key = (text, tuple(via), frozenset(known), tuple(args))
+        key = (text, tuple(via), frozenset(known), tuple(args), tuple(zero))
         if key in self.ctx["nested"]:   # the same text read the same way again (each reading's eval): the same commands
             return
         self.ctx["nested"].add(key)
@@ -2396,6 +3176,23 @@ class _Parser:
             more += _lines_without(self.out, self.progs, gone)
         self.ctx["lines"] += _lines(self.out, self.progs) + more
         self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy(), gones))
+        # each loop value's reading (pieces): in each and-or list, one line of what its commands' readings change, with
+        # their pipeline's stages around them (stages), read only in what the budget leaves (piece_charge)
+        progs, values = set(self.progs), {}
+        for at, begin, end, key, gone in self.pieces:
+            v = values.setdefault((at, key), [begin, end, {}])
+            v[0], v[1] = min(v[0], begin), max(v[1], end)
+            v[2].update(gone)
+        for begin, end, gone in values.values():
+            begin, end = self.stages(begin, -1), self.stages(end, 1)
+            words = self.out[begin:end]
+            if not self.piece_charge(2 * sum(map(len, words))):   # (here and again for the code: analyse)
+                break
+            at = [i - begin for i in range(begin, end) if i in progs]
+            gone = {i - begin: t for i, t in gone.items()}
+            self.ctx["piece_lines"] += _lines_without(words, at, gone)
+            self.ctx["piece_batches"].append((words, at, [({i - begin for i in indexes if begin <= i < end}, step)
+                                                          for indexes, step in self.data_steps], gone))
 
     def blank(self):
         s = self.s
@@ -2477,7 +3274,7 @@ class _Parser:
         self.gap()
         if (self.word() or (None, None))[1] != "in":
             raise ParseError("case without in")
-        self.blocks.append(("case", [], self.list_start))
+        self.open_block(("case", [], self.list_start))
         while True:
             self.gap()
             if _ESAC.match(self.s, self.i):
@@ -2496,8 +3293,9 @@ class _Parser:
                     break
             self.list("esac")
             self.i += next((len(op) for op in (";;&", ";;", ";&") if self.at(op)), 0)
-        self.close_block()
+        start, _ = self.close_block()
         self.leave()
+        return start
 
     def define(self, name, at):
         """A function definition: `name() BODY` or `function name [()] BODY`, BODY a { } or ( ) group, read to its end
@@ -2600,8 +3398,12 @@ class _Parser:
                 return
             self.out.append("|")
             self.gap()
+            if self.ctx["steps"]:   # what that stage writes goes on to the next (_data_write)
+                self.ctx["steps"][-1]["piped_on"] = True
 
     def simple(self, pid, piped=False, stage=0):
+        # where it starts in self.out, and its and-or list (list_at); (where a redirection's target is, its slots)
+        begin, seg, targets = len(self.out), None, []
         words, globs, names, strings, docs, idx, spans, here, exps = [], [], [], [], [], [], [], [], []
         first = len(self.ctx["cmds"])   # the commands its substitutions run, then its own, follow
         self.piped = piped
@@ -2728,6 +3530,8 @@ class _Parser:
                     self.ctx["more"] |= bool(other)
                     named = [target[0]] + other * self.ctx["readings"] + [t for texts in self.fill([self.slots])
                                                                           for t in texts]
+                    if self.slots:   # (each literal a known variable in it may hold: its line too, below)
+                        targets.append((len(self.out) - 1, self.slots))
                     if self.ifs:   # bash splits an unquoted $IFS's value out of the name: `>${IFS}f` writes f
                         at, was = [start] + [i for span in self.ifs for i in span] + [self.i], self.spliced
                         for a, b in zip(at[::2], at[1::2]):   # each piece, and with its expansions empty
@@ -2736,7 +3540,8 @@ class _Parser:
                                 self.ctx["more"] |= bool(other)
                                 named += [piece[0]] + other * self.ctx["readings"]
                         self.spliced = was
-                    made = [c for t in named for c in _unglob(t)] if self.ctx["readings"] and target[2] else []
+                    made = [c for t in named for c in _unglob(t, self.ctx["globopts"], self.ctx["work"])] \
+                        if self.ctx["readings"] and target[2] else []
                     self.ctx["more"] |= bool(made)
                     self.charge(sum(map(len, made)))   # each name its pattern may make
                     named = list(dict.fromkeys(named + made))
@@ -2746,6 +3551,8 @@ class _Parser:
                         m.group(2) == ">&" and re.fullmatch(r"\d*-?", target[0]))
                     if writes:
                         self.ctx["written"] += named
+                        if m.group(2) in (">>", "&>>"):   # appended to (engine._write_effects)
+                            self.ctx.setdefault("appended", []).extend(named)
                         outs += named
                         stdout = m.group(2) in ("&>", "&>>") or \
                             m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&")
@@ -2759,8 +3566,9 @@ class _Parser:
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
                         stdout_redirect = True
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
-                        to_file = writes and not target[2] and not target[3] and \
-                            (target[0].startswith("/") or not self.cwd_changed) and \
+                        # (a data file's name is one wherever the line is and whatever its folder: _data_write)
+                        to_file = writes and not target[2] and (not target[3] or _DATA_FILE.search(target[0])) and \
+                            (target[0].startswith("/") or not self.cwd_changed or _DATA_FILE.search(target[0])) and \
                             (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0])) and \
                             not (self.ctx.get("persistent_target") and self.ctx["persistent_target"](target[0]))
                 continue
@@ -2774,6 +3582,23 @@ class _Parser:
                 raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
             if loop_header:
+                # a word bash brace-expands is the words it makes (`for k in id_{rsa,x}`, `~/{.ssh,.aws}/*`), each a
+                # literal or a pattern (below); one with $HOME or a variable the line gives one literal is read with
+                # those in: as bash expands it, each word its braces make then read (`$HOME/{.ssh,"a b"}/*`), else,
+                # where a word made so is a variable the line doesn't give (`d=/; $d{tmp,}` makes $dtmp), its text
+                # expanded, where that has no blank or quote to misread (`$d/.{s,x}sh/*`)
+                made = None if not g or "{" not in self.bare else self.header_braces(raw) if not re.search(
+                    r"[$`]", raw) else self.header_braces(raw, True) or (self.header_braces(text, True) if not re.search(
+                        r"[$`\s'\"\\]", _HOME_VARIABLE.sub("", text)) else None)
+                if made is not None:
+                    for piece, pattern in made:
+                        header += self.header_pattern(piece) if pattern else [piece]
+                    continue
+                # a pattern, as written or with only $HOME and the variables the line gives one literal (word():
+                # given) in it, is each name it matches (header_pattern)
+                if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
+                    header += self.header_pattern(text)
+                    continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal
                 header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
                               else text)
@@ -2793,15 +3618,17 @@ class _Parser:
                 if text in ("while", "until"):   # its condition and body run again after the body's later commands
                     self.known = self.stable()
                 if text in ("if", "while", "until", "{"):
-                    self.blocks.append((text, [], self.list_start))
+                    self.open_block((text, [], self.list_start), (pid, stage))
                 elif text in ("fi", "done", "}") and self.blocks and self.blocks[-1][0] != "case":   # case() ends its own
-                    self.close_block()
+                    start, at = self.close_block()
+                    self.reach(start, pid, stage)
+                    self.reach(start, *at)
                 continue
             if not words and raw == text and text in ("for", "select"):
                 loop_header = text   # the loop words are not run; `do` starts the body
                 continue
             if not words and raw == text and text == "case":
-                self.case()
+                self.reach(self.case(), pid, stage)
                 continue
             if not words and raw == text and text in ("function", "coproc"):
                 raise ParseError(f"{text} is not supported")
@@ -2831,10 +3658,16 @@ class _Parser:
                                                                  [v for v in elements if v is not None])
                 elif _GIT_ENV_KEY.fullmatch(var):   # a git config key an expansion makes: as written, as -c reads one
                     self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
-                elif not m.group(1) and self.readings:   # one an expansion joins: each literal reading with a blank
-                    self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
-                        v for r in self.readings for v in [r.partition("=")[2]]
-                        if re.search(r"[ \t\n]", v) and not any(e in v for e in self.exps))
+                elif not m.group(1):
+                    # its expansions all variables the line doesn't set (s=$HOME/.claude): as written, so a word that
+                    # reads it reads what the direct form ($HOME/.claude/…) does
+                    if self.exps and all((v := _PLAIN_VARIABLE.fullmatch(e)) and not v.group(1).isdigit()
+                                         and v.group(1) not in self.set_names(assigned) for e in self.exps):
+                        self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
+                    if self.readings:   # one an expansion joins: each literal reading with a blank
+                        self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
+                            v for r in self.readings for v in [r.partition("=")[2]]
+                            if re.search(r"[ \t\n]", v) and not any(e in v for e in self.exps))
                 if self.ctx["namerefs"].get(var, 1) is None:   # the first assignment names its target
                     raise ParseError(f"an assignment through the nameref {var}, which has no target, is not supported")
                 # what the variable now holds: text the line makes, or a value the parser can't name; and whether it
@@ -2887,12 +3720,22 @@ class _Parser:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
                     filter(None, map(self.relex, pieces)):
-                if pieces is None and text == "" and self.alone:
+                # `"$(command -v python)"`, `"$(which python3)"`: the path of the program it names, which runs it
+                located = not words and pieces is None and self.ctx.get("located") and LOCATED.fullmatch(raw)
+                if located:   # its one reading, a plain word's
+                    self.ctx["located_read"] = True
+                    text = located.group(1)
+                    g = expanded = self.vanish = self.alone = self.spliced = self.unknown = self.joined = False
+                    self.readings, self.parts, self.ways_, self.slots, self.full = (text,), [text], {}, None, True
+                    self.expanded, self.splits, self.cut, self.given = frozenset(), False, (text,) * 6, False
+                elif pieces is None and text == "" and self.alone:
                     self.out.pop()
                     continue
                 if pieces is not None:
                     self.out.append(text)
-                if self.spliced or self.expanded or self.unknown or g:
+                if located:
+                    pass
+                elif self.spliced or self.expanded or self.unknown or g:
                     text = (_Spliced if self.spliced else _Expanded)(text)
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
                 words.append(text)
@@ -2943,8 +3786,13 @@ class _Parser:
         # (and its heredoc, read_heredocs) are data, which the code leaves out.
         # lean: a later, separate call can still consume a file whose copied text this call cut; that later call is
         # evaluated as its own policy input.
-        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
-            not _redefined(self.ctx["redefined"], words[0])
+        # (tee also when it copies a heredoc or herestring into data files with no redirection, none of them a
+        # persistent target: what it prints on is read unless the pipeline goes on, `piped_on`)
+        persistent = self.ctx.get("persistent_target") or (lambda t: False)
+        copies = [a for a in words[1:] if not a.startswith("-")] if words[:1] == ["tee"] else []
+        data = (to_file or bool(strings or docs) and bool(copies) and all(
+            _DATA_FILE.search(a) and not persistent(a) for a in copies)) and bool(words) and \
+            words[0] in ("cat", "tee", "echo", "printf") and not _redefined(self.ctx["redefined"], words[0])
         # bash drops a word made only of expansions when they expand to nothing (an unset $X), joins an empty one into
         # the rest of its word ($X-rf is -rf), and under nullglob drops a pattern that matches nothing: read the command
         # in each of word()'s readings, and again without the patterns (self.cut). Its commands are also the ones that
@@ -3005,13 +3853,14 @@ class _Parser:
         # and with each name a bracket pattern can make (possible, as the empty readings: `cat key[s]` may be `cat keys`)
         self.ctx["more"] |= self.ctx["readings"] and any(patterns)   # (a name a pattern makes, below)
         extra = itertools.chain(  # built one at a time, each charged (below) before the next; None: a word gone
-            combos,
-            ([w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)]
-             for texts in self.fill(slots, True)),
-            (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
-             for c in _unglob(words[i])))
+            ((None, texts) for texts in combos),   # (each with the loop values it reads, None for no value's)
+            ((env, [w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)])
+             for env, texts in self.fill(slots, True, True)),
+            ((None, words[:i] + [c] + words[i + 1:]) for i, p in enumerate(patterns) if p and self.ctx["readings"]
+             for c in (_brackets(words[i]) if words[0] in _METADATA else
+                       _unglob(words[i], self.ctx["globopts"], self.ctx["work"]))))
         glob = any(globs)
-        for k, texts in enumerate(extra, 12):
+        for k, (env, texts) in enumerate(extra, 12):
             self.charge(len(texts))
             # each word's words in alt (kept: the word each is of): none for a word gone, the words bash splits a word
             # into (a tuple: fill's)
@@ -3020,13 +3869,15 @@ class _Parser:
                 alt = [f for t in texts if t is not None for f in ((t,) if isinstance(t, str) else t)]
             else:
                 kept, alt = range(len(texts)), texts
-            # lean: past the 4th, a literal's or a pattern's reading makes a command, not a line: a rule on the line
-            # or code (TK-D011) reads the first 4 (a loop over hundreds of words would read its whole script again for
-            # each); line all if needed
+            # past the 4th, a literal's or a pattern's reading is the line of its values alone (flush's pieces), so a
+            # loop over hundreds of words doesn't read its whole script again for each
+            read = {idx[i]: " ".join(t) if isinstance(t, tuple) else t for i, t in enumerate(texts) if t != words[i]}
             if k < 16 + len(combos):
                 self.gone += [{} for _ in range(k + 1 - len(self.gone))]
-                self.gone[k].update((idx[i], " ".join(t) if isinstance(t, tuple) else t) for i, t in enumerate(texts)
-                                    if t != words[i])
+                self.gone[k].update(read)
+            elif self.reading_pieces():
+                seg = self.list_at(begin) if seg is None else seg
+                self.pieces.append((seg, begin, len(self.out), (begin, k) if env is None else env, read))
             if alt and (key := tuple(alt)) not in seen and not data:
                 seen.add(key)
                 self.charge(sum(map(len, alt)))
@@ -3035,6 +3886,25 @@ class _Parser:
                                                             for f, i in zip(alt, kept)])
                 cmds += more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
+        # and a redirection's target as bash opens it with each literal a known variable in it may hold, with the words
+        # that read only those variables in the same reading (`for f in a ~/.bashrc; do echo … >> "$f"; done` writes
+        # ~/.bashrc): one reading a value, joined with the other commands' readings of it (flush's pieces), not each
+        # way the line's variables combine
+        # lean: a word that also reads another loop's variable is read as written there (`echo "$p" >> "$f"` over two
+        # loops is not read with both values at once); read them together if a rule needs both
+        for place, s in targets if self.reading_pieces() else ():
+            names = sorted({p[0] for p in s if isinstance(p, tuple)})
+            for values in itertools.product(*(self.known.get(n, ()) for n in names)):
+                env = dict(zip(names, values))
+                read = {place: "".join(env[p[0]] if isinstance(p, tuple) else p for p in s)}
+                for i, w in enumerate(slots):
+                    if w and {p[0] for p in w if isinstance(p, tuple)} <= env.keys():
+                        t = _fields([(env[p[0]], not p[1]) if isinstance(p, tuple) else (p, False) for p in w])
+                        read[idx[i]] = None if not t and alones[i] else " ".join(t) if isinstance(t, tuple) else t
+                if not self.reading_pieces():
+                    break
+                seg = self.list_at(begin) if seg is None else seg
+                self.pieces.append((seg, begin, len(self.out), frozenset(env.items()), read))
         self.known = outer
         # bash sets $_ to the last word of each simple command it runs, OPTARG to an option's value getopts reads: each
         # literal one may be the value later on the line (given), where TK-D012 also denies one in the action position
@@ -3047,7 +3917,7 @@ class _Parser:
         bare = [] if timed and timed == len(words) else words
         self.track_values(bare, cmds, assigns, loop_header and (loop_header, header, header_unknown, header_spliced,
                                                                 header_joined, header_blank),
-                          sure and not dynamic, raws)
+                          sure and not dynamic, raws, (pid, stage))
         if not bare:   # assignments alone set the shell's own variables, not a command's environment
             self.ctx["assigned"] += assigned
         if self.called:   # a function may set any variable, IFS or the directory
@@ -3065,6 +3935,9 @@ class _Parser:
         step = {"inert": (data and not dynamic) or
                          (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
                 "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        if data:   # the files it writes and its command, for a data file's text (_data_write)
+            step["to"] = [n for n, _ in into] + [a for a in words[1:] if words[0] == "tee" and not a.startswith("-")]
+            step["writer"] = cmds[0] if cmds else None
         if git_stdin_message:
             step["inert"] = False
             for cmd in cmds:
@@ -3114,16 +3987,20 @@ class _Parser:
         made = self.ctx["made_files"]
         crafted = text is not None or not words or not (
             words[0] in _READERS or words[0] in _ECHOERS or words[0] == "git") or "*" in made or any(globs) and made or \
-            any(w.rsplit("/", 1)[-1].casefold() in made for w in list(words[1:]) + ins)
+            any(base_name(w) in made for w in list(words[1:]) + ins)
         for (name, append), made in [(f, text) for f in files] + [(f, None) for f in others]:
             if not name.startswith(("/dev/", "/proc/")):   # a device keeps nothing to run
-                key = name.rsplit("/", 1)[-1].casefold()
+                key = base_name(name)
                 self.ctx["files"].setdefault(key, []).append((made, append, crafted))
                 if crafted:
                     self.ctx["made_files"].add(key)
         for c in cmds:
             c["stdin"] += strings
             c["out"], c["in"], c["stage"] = outs, ins, stage
+        own = {id(c) for c in cmds}   # what its substitutions and subshells run prints into it
+        for c in self.ctx["cmds"][first:]:
+            if id(c) not in own:
+                c.setdefault("reaches", []).append((pid, stage))
         if (stdin_redirect or strings or docs) and "exec" in words[:1] + [c["argv"][0] for c in cmds]:
             self.ctx["stdin_moved"] = True   # what reads the shell's stdin after it reads that (_reads_only)
         shell = _stdin_shell(cmds)
@@ -3150,11 +4027,12 @@ class _Parser:
         self.track_redefinitions(cmds)
         return consumed
 
-    def fill(self, slots, split=False):
+    def fill(self, slots, split=False, keyed=False):
         """Each way the known variables word() found in the words' `slots` (None: a word with none) may be set at
         once, as the words' texts (None for a word with none): `for f in a b` sets $f to a, then to b. Values alike
         (`for f in a a`) give one list, made once and charged each time. With `split`, a word an unquoted literal
-        with a blank splits is the tuple of words bash makes of it (_fields)."""
+        with a blank splits is the tuple of words bash makes of it (_fields). `keyed`: each as (the values it gives,
+        as a frozenset of (name, value), its texts)."""
         names = sorted({p[0] for s in slots if s for p in s if isinstance(p, tuple)})
         if not names:
             return []
@@ -3166,11 +4044,22 @@ class _Parser:
                                 if split else "".join(env[p[0]] if isinstance(p, tuple) else p for p in s)) for s in slots]
                 made[values] = texts, sum(len(t) if isinstance(t, str) else sum(map(len, t)) for t in texts if t)
             texts, n = made[values]
-            out.append(texts)
+            out.append((frozenset(zip(names, values)), texts) if keyed else texts)
             self.charge(n)
         return out
 
-    def track_values(self, words, cmds, assigns, loop, sure, raws=()):
+    def set_names(self, assigned=()):
+        """The variables the line has set so far (assigned, the current command's `assigned` among them, a loop's, one
+        it reads into, the directory a cd moved), or every one once a command that may set any ran (track_values)."""
+        if self.ctx["any_set"]:
+            return _EVERY
+        moved = any(c["argv"][:1] in (["cd"], ["pushd"], ["popd"]) for c in self.ctx["cmds"])
+        return {*self.ctx["given"], *(k for k, v in self.known.items() if v), *self.ctx["namerefs"],
+                *self.ctx["opaque_values"],
+                *self.ctx["unread_values"], *self.ctx["joined_values"], *(n for n, _ in self.ctx["assigned"]),
+                *(n for n, _ in assigned), *(("PWD", "OLDPWD") if moved else ())}
+
+    def track_values(self, words, cmds, assigns, loop, sure, raws=(), at=()):
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with
         `export` (`export D=build`), is known when that surely runs (`sure`) before what follows it (`;`, a newline, `&&`
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
@@ -3178,9 +4067,12 @@ class _Parser:
         name the parser can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
         (the loop's words; [""]: certainly empty, after `X=` or `unset X`), [] when unknown. `loop`: (for or select,
         the words after it); `assigns`: (name, the literal it gets or None, whether it is appended to: +=); `raws`: the
-        words as written (an export's names must be, to set those alone)."""
+        words as written (an export's names must be, to set those alone); `at`: its pipeline stage, whose input a loop
+        it opens reads."""
         if loop:
             kind, (name, *rest) = loop[0], loop[1] or [None]
+            if kind == "for" and rest[:1] != ["in"] and self.known.get("@") and not self.ctx["any_set"]:
+                rest = ["in", *self.known["@"]]   # `for x; do` over the literal arguments a script was given
             literal = kind == "for" and rest[:1] == ["in"] and len(rest) > 1 and None not in rest[1:]
             if name == "IFS":
                 self.ctx["ifs_values"] += rest[1:] if literal else [None]
@@ -3198,8 +4090,8 @@ class _Parser:
             if name in self.ctx["namerefs"] and self.ctx["namerefs"][name] is None:   # each word is its target
                 raise ParseError(f"a loop over the nameref {name}, which has no target, is not supported")
             # what it holds: text the line makes (`for x in $(printf …)`, `for y in $x` of such an x); a value the
-            # parser can't name (an expansion it can't, the parameters, a reply, a pattern on a line that makes files);
-            # else readers' or literals
+            # parser can't name (an expansion it can't, the parameters, a reply, a word not read on a line that makes
+            # files); else readers' or literals
             parameters = kind == "for" and rest[:1] != ["in"]   # `for x; do`: "$@"
             if not literal and (self.feeding or loop[3] or parameters and "@" in self.ctx["unread_values"]):
                 self.ctx["unread_values"].add(name)
@@ -3209,7 +4101,7 @@ class _Parser:
                 self.ctx["joined_values"].add(name)
             for word in (rest[1:] if rest[:1] == ["in"] else [None]) if name in _CODE_VARIABLES else ():
                 self.code_variable(name, word, self.via)   # (None: a word or reply the parser can't read)
-            self.blocks.append((kind, [name], self.list_start))
+            self.open_block((kind, [name], self.list_start), at)
             return
         # a function's or script's arguments may move or be replaced (set and shift through command or builtin too)
         for a in [words, *(c["argv"] for c in cmds)]:
@@ -3368,7 +4260,7 @@ class _Parser:
         lean: a name the line builds, with text it doesn't give, isn't counted for a path from / or ~ (a program run
         by its full path); count it if a crafted one is seen"""
         out, joined = [], None
-        for made, append, _ in self.ctx["files"].get(path.rsplit("/", 1)[-1].casefold(), []) + [
+        for made, append, _ in self.ctx["files"].get(base_name(path), []) + [
                 w for w in self.ctx["files"].get("*", []) if w[0] is not None or not path.startswith(("/", "~"))]:
             texts = None if made is None else [t if isinstance(t, str) else None if t.get("unknown") else
                                                t.get("text", "") + "\n" * ("text" in t) for t in made]
@@ -3420,9 +4312,12 @@ class _Parser:
                 continue
             self.ctx["nested"].add(key)
             program = _reader(text, cmd["argv"][0], direct)
-            if program is None:
+            if program is None:   # held, and read as Windows reads a #! path with \ (#!C:\x\bash.exe is bash)
                 cmd["opaque"] = True
-            elif program in SHELLS:   # (run by its path: its #! names the shell, for nested's grammar)
+                program = _reader(text, cmd["argv"][0], direct, base_name)
+            if program is None:
+                continue
+            if program in SHELLS:   # (run by its path: its #! names the shell, for nested's grammar)
                 self.nested(text, via + [program] + inside[len(via):] if direct else inside, gives)
             else:   # read as the inline code of its interpreter (python3 -c, node -e), for what it runs and writes
                 # lean: code it can't read there (a spawner given a name) isn't held, as before; hold it if one hides
@@ -3444,7 +4339,7 @@ class _Parser:
         a line that runs one (here, or where emit reaches it)."""
         kind = _CODE_VARIABLES[name]
         if value is None or kind is None or kind == "file" and _stream(value):
-            if name == "ENV" and not any(c["argv"][0] in SHELLS and _interactive(c["argv"][1:])
+            if name == "ENV" and not any(c["argv"][0] in SHELLS and _interactive(c["argv"][1:], c["argv"][0])
                                          for c in self.ctx["cmds"]):
                 self.ctx["env_unread"] = True
                 return
@@ -3530,7 +4425,7 @@ class _Parser:
         else:
             return
         for path, kind in files.items():
-            if path and path.rsplit("/", 1)[-1].casefold() in self.ctx["files"]:
+            if path and base_name(path) in self.ctx["files"]:
                 if kind is None:
                     cmd["opaque"] = True
                 else:
@@ -3539,11 +4434,16 @@ class _Parser:
     def emit(self, argv, pid, via, glob=False, unreadable=None):
         """`unreadable[i]`: argv[i] is not a literal name (an unquoted glob or brace, or an expansion; only words of
         the line itself have one)."""
-        cmds, unreadable, repl = [], unreadable or [False] * len(argv), None
+        cmds, unreadable, repl, windows = [], unreadable or [False] * len(argv), None, []
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
             name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
+            if name == "gh" and args[:1] and args[0].startswith("-"):   # options before its command, as cobra reads them
+                order = _gh_order(args)
+                argv, unreadable = [argv[0]] + [args[i] for i in order], [unreadable[0]] + [unreadable[i + 1]
+                                                                                           for i in order]
+                args = argv[1:]
             if _function_variable(argv[0]):   # a word bash can't assign, which a program it runs may import, as env's
                 raise ParseError("a function given through the environment is not supported")
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
@@ -3554,6 +4454,8 @@ class _Parser:
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
             self.charge(COMMAND_COST)
+            if "\\" in argv[0] and not unreadable[0]:   # and as Windows runs a path with \ (C:\x\bash is C:/x/bash)
+                windows += self.emit([argv[0].replace("\\", "/"), *argv[1:]], pid, via, glob, unreadable)
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
@@ -3614,10 +4516,15 @@ class _Parser:
                 argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
                 self.charge(len(argv))
                 continue
-            elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
+            # (a runner at a version npx or corepack names, pnpm@9, is that runner; its subcommand comes after its own
+            # options, `pnpm -r exec`, `yarn workspaces foreach -A exec`, each place it may be read in turn)
+            elif name in WRAPPERS or (runner := name.partition("@")[0]) in RUNNERS and (at := runner_at(runner, args)):
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(self.code(cmd, [_dash_c(args)]), via + ["runuser -c"])
-                more = _unwrap(name, args)
+                if name not in WRAPPERS:
+                    self.charge(at[-1])
+                more = _unwrap(name, args) if name in WRAPPERS else \
+                    itertools.chain.from_iterable(_unwrap(runner, args[k:]) for k in at)
                 inner = next(more)
                 for other in more:   # what it may run where an option it doesn't know takes a value, each read once
                     if (key := (pid, name, tuple(other))) not in self.unwrapped:
@@ -3668,15 +4575,16 @@ class _Parser:
                 self.charge(len(argv))   # each wrapper level copies the words after it
                 continue
             elif name in SHELLS:
-                if self.ctx.get("env_unread") and _interactive(args):
+                if self.ctx.get("env_unread") and _interactive(args, name):
                     raise ParseError("ENV set to a value the parser can't read is not supported")
                 for k, a in enumerate(args[:-1]):   # the file an interactive shell sources first
                     if a in ("--rcfile", "--init-file") and not any(b == "--" for b in args[:k]):
                         self.run_file(args[k + 1], via + [name], cmd, unread=unreadable[k + 2])
-                mode, script = _shell_mode(args)
+                mode, script = _shell_mode(args, name)
                 if mode == "c":
-                    self.positional(args[args.index(script) + 1:] if script in args else args)
-                    self.nested(self.code(cmd, [script]), via + [name + " -c"])
+                    given = args[args.index(script) + 1:] if script in args else []
+                    self.positional(given if script in args else args)
+                    self.nested(self.code(cmd, [script]), via + [name + " -c"], given[1:], given[:1])
                 elif mode is None:
                     k = args.index(script)
                     self.run_file(script, via + [name], cmd, gives=args[k + 1:], unread=unreadable[k + 1])
@@ -3694,8 +4602,8 @@ class _Parser:
                 cmd["opaque"] = True   # fc runs history or an editor it names; history -s, -r, -n put commands in it
             elif name == "history" and any(re.fullmatch(r"-\w*[wa]\w*", a) for a in args):
                 for a in (a for a in args if not a.startswith("-")):   # it writes the history into the file
-                    self.ctx["files"].setdefault(a.rsplit("/", 1)[-1].casefold(), []).append((None, False, True))
-                    self.ctx["made_files"].add(a.rsplit("/", 1)[-1].casefold())
+                    self.ctx["files"].setdefault(base_name(a), []).append((None, False, True))
+                    self.ctx["made_files"].add(base_name(a))
             elif name == "compgen":   # -C runs a command, -W's words are expanded again, -F calls a function
                 for k, a in enumerate(args):
                     if m := re.fullmatch(r"-[A-Za-z]*?([CWF])(.*)", a, re.S):
@@ -3845,7 +4753,7 @@ class _Parser:
                     if v and ":" in v and (src := v.split(":")[0]) and _HOME_OR_ROOT.fullmatch(src):
                         mounts[v.split(":")[1].rstrip("/") or "/"] = src
                 for k, a in enumerate(args):
-                    if a.rsplit("/", 1)[-1] == "rm" and mounts:
+                    if base_name(a) == "rm" and mounts:
                         ops = [next((src.rstrip("/") + w[len(dst):] or "/" for dst, src in mounts.items()
                                      if w.rstrip("/") == dst or w.startswith(dst.rstrip("/") + "/")), w) for w in args[k + 1:]]
                         if ops != args[k + 1:]:
@@ -3927,7 +4835,7 @@ class _Parser:
                     # a script the line may write
                     self.run_file(args[i], via + [name], cmd, gives=args[i + 1:], unread=unreadable[i + 1])
             break
-        return cmds
+        return cmds + windows
 
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
@@ -3980,7 +4888,7 @@ class _Parser:
         for body, printed in _awk_pipes(code) if kind == "awk" else ():
             text = _c_unescape("awk", body)
             self.nested(text, via)
-            loose |= printed and bool(w := text.split()) and w[0].rsplit("/", 1)[-1] in SHELLS
+            loose |= printed and bool(w := text.split()) and base_name(w[0]) in SHELLS
         for m in _QX.finditer(code) if kind in ("perl", "ruby") else ():
             close = code.find(_PAIRS[m.group(1)], m.end())
             self.charge((len(code) if close < 0 else close) - m.end())
@@ -3993,6 +4901,18 @@ class _Parser:
             self.charge(end - m.end())
             if items and isinstance(items[0], tuple):
                 self.argv([("rm",), ("-rf",), items[0]], pid, via)
+        # a write of a file (Python's open in a writing mode, Path(…).write_text, fs.writeFileSync, File.write, a copy or
+        # rename's target): tee of it, so the file rules read it as the shell's writes are (an append to known_hosts
+        # too: only the shell's `>>` and tee -a are read as appends)
+        for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
+            if m.group("path"):   # Path("…").write_text(…): its literal
+                self.argv([("tee",), (m.group("path"),)], pid, via)
+                continue
+            items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
+            self.charge(end - m.end())
+            target = _written(kind, m.group("call"), items, code[m.end():end])
+            if target is not None:
+                self.argv([("tee",), target], pid, via)
         # a spawner given a name, not a literal: what it runs may be any of the code's literals, each read as shell (one
         # that isn't shell leaves the program unreadable)
         for text in _literals(kind, code, self.charge) if loose else ():
@@ -4070,6 +4990,30 @@ class _Parser:
                     self.nested(code, shell["via"] + [shell["argv"][0] + " <<"])
             elif interp:
                 self.program(interp, text, " <<")
+
+    def header_braces(self, raw, home=False):
+        """The words bash's brace expansion makes of a loop header's word `raw`, each (its text, whether it is a
+        pattern bash then globs), or None when it makes none or one it makes isn't readable (with `home`, an expansion
+        in it but $HOME's): the loop's values are then unknown, as before."""
+        try:
+            pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
+        except ParseError:
+            return None
+        made = [w for w in map(self.relex, pieces or ()) if w]
+        if not made or any(expanded and not (home and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)))
+                           for text, _, _, expanded in made):
+            return None
+        self.ctx["brace"] -= sum(len(p) + 1 for p in pieces) - 1 - len(raw)
+        return [(text, g) for text, _, g, _ in made]
+
+    def header_pattern(self, text):
+        """The values a loop header's pattern `text` gives the loop's variable: the pattern as the body would read it
+        written in, each name it may make (_unglob), and empty, as a value the line can't name is (second readings, as
+        the pattern's own names are). On a line that makes files the pattern may name one: a reading that runs the
+        pattern as a script or code holds it (emit's unreadable word)."""
+        made = _unglob(text, self.ctx["globopts"], self.ctx["work"]) + [""] if self.ctx["readings"] else []
+        self.ctx["more"] |= bool(made)
+        return [text] + made
 
     def relex(self, piece):
         """word() over one word a brace expansion or $IFS made (_brace refuses a substitution in it), or None for an
@@ -4247,15 +5191,15 @@ class _Parser:
         return text, raw, bool(glob) or vglob, self.ctx["exp"] != exp
 
     def sub(self, label):
-        saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone, dict(self.known), self.inherit, \
-            self.piped
+        saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.pieces, dict(self.known), \
+            self.inherit, self.piped
         self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
-        self.gone = [{} for _ in range(12)]
+        self.gone, self.pieces = [{} for _ in range(12)], []
         self.inherit = self.inherit or self.piped or bool(self.blocks)   # the stdin of the command it is in
         self.list(")")
         self.flush()
-        self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.known, self.inherit, self.piped = \
-            saved   # a subshell's own
+        self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.pieces, self.known, self.inherit, \
+            self.piped = saved   # a subshell's own
 
     def arith(self):
         """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
@@ -4575,12 +5519,43 @@ class _Parser:
         return _Expansion(self.s[start:self.i])
 
 
+# programs that only read, print, check or reformat their input (a pager, a hash, a filter, jq's language): what a
+# download piped into one can't run (Engine's _may_run_input)
+DATA_ONLY = frozenset((
+    "jq", "yq", "gojq", "jaq", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "tee", "cat", "less", "more", "most", "bat",
+    "head", "tail", "wc", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "shasum", "md5sum", "md5",
+    "b2sum", "cksum", "sort", "uniq", "cut", "tr", "column", "nl", "fold", "fmt", "od", "xxd", "hexdump", "base64",
+    "strings", "file", "diff", "cmp", "comm", "paste", "rev", "tac", "gunzip", "zcat", "gzip", "bzip2", "bunzip2", "xz",
+    "unxz", "zstd", "unzstd", "xmllint", "pbcopy", "wl-copy", "xclip", "true", ":", "read", "mapfile", "readarray",
+    "awk", "gawk", "mawk", "nawk", "sed", "gsed", "iconv", "dos2unix", "pv", "ts", "jless", "fx", "html2text", "openssl",
+    "echo", "printf"))
+# names a script given a .cmd, .bat or .ps1 keeps (_lower_name): bash's builtins, a shell, and the programs whose
+# words or input the rules read as data, files or patterns (a reader, a search, echo and printf, DATA_ONLY). No
+# Windows install makes a shim of one, and bash never runs echo.bat as its echo: it is a script of its own, run by
+# cmd.exe or PowerShell, whose words may be a command (hidden_commands). (_ECHOERS' words aren't data: whoami.cmd read
+# as whoami decides as the script does)
+_NOT_SHIMS = _BASH_BUILTINS | SHELLS | _READERS | _DATA_COMMANDS | NO_FILES | _TEXT_FILTERS | _SEARCHERS | DATA_ONLY
+
+
 def _lower_name(word):
-    """`word` with the name after its last / or \\ casefolded and without a `.exe` (Windows runs git.exe for git; macOS
-    runs /bin/sh for `ſh`, its file system folding case as casefold does): the directories keep their case."""
+    """`word` with the name after its last / or \\ casefolded and without a `.exe`, or a `.cmd`, `.bat` or `.ps1` but
+    on a name of _NOT_SHIMS or PURE_READERS (Windows runs git.exe for git, and npm's npm.cmd or npm.ps1 shim for npm,
+    as a package's other commands; macOS runs /bin/sh for `ſh`, its file system folding case as casefold does): the
+    directories keep their case."""
     i = max(word.rfind("/"), word.rfind("\\")) + 1
-    name = word[i:].casefold()
-    return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
+    stem, _, ext = (name := word[i:].casefold()).rpartition(".")
+    if stem and (ext == "exe" or ext in ("cmd", "bat", "ps1") and stem not in _NOT_SHIMS and
+                 not PURE_READERS.fullmatch(stem)):
+        name = stem
+    return word[:i] + name
+
+
+@functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
+def base_name(word):
+    """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
+    casefolded and without a Windows program's extension (as _lower_name). A name bash's reading (after the last /)
+    gives, it gives too."""
+    return _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
 
 
 def _programs(words, cmds):
@@ -4596,12 +5571,94 @@ def _programs(words, cmds):
     return out
 
 
+_LIST_ENDS = frozenset((";", "&", "&&", "||", "(", ")"))   # the words of a line between its and-or lists (flush)
+# how far around a loop value's commands its own line reads their pipeline's other stages (_Parser.stages)
+# lean: a rule that needs a stage further off reads it in the line's first four readings only; read the whole pipeline
+# if one does (each value's line then costs that whole pipeline)
+PIECE_ROOM = 128
+
+
 def _lines(words, progs):
-    """The line `words` make, and again with the program names at indexes `progs` casefolded when that differs."""
+    """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
+    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), so a
+    rule that reads the command after a pipe, or where one starts, reads what the wrapper runs."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
-    return [" ".join(words)] + ([" ".join(low)] if low != words else [])
+    at = sorted(set(progs))
+    cut = {i for p, q in zip(at, at[1:]) if base_name(words[p]) in WRAPPERS and
+           not _STAGE_ENDS.intersection(words[p + 1:q]) for i in range(p, q)}
+    return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
+        [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
+
+
+_STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
+# where a command may start in a file's text the parser doesn't read as a script (unwrapped): a word that is one of
+# these or ends in one of their characters (`run:`, `x;`), or a YAML list's `-`
+_STARTS = _STAGE_ENDS | KEYWORDS | {"-", "if", "while", "until", "elif", "!", "{"}
+# what a command's first word may start in: quotes, `$(`, a backquote or a brace, after an assignment of a
+# substitution (`x="$(bash -c …)"`)
+_TEXT_PREFIX = re.compile(r"(?:[A-Za-z_]\w*=(?=[\x27\"]?(?:\$\(|`)))?[\x27\"$(`{!]*")
+# a word of such text: its quoted runs and backslash pairs kept in it (`env A='x;y'`, `a\;b`), between blanks and `|`,
+# `&` or `;` (`"$T"|sudo curl` is three words), or one of those, or a quote or backslash with no end
+_QUOTED_RUN = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+_TEXT_WORD = re.compile(r"\|\||&&|;;|[|&;]|(?:" + _QUOTED_RUN.pattern + r"|\\.|[^\s|&;'\"\\])+|['\"\\]")
+_BLANK_WORD = re.compile(r"\|\||&&|;;|[|&;]|[^\s|&;]+")   # one between blanks and `|`, `&` or `;`, quotes or none
+
+
+def unwrapped(text):
+    """`text` (a file's shell commands the parser doesn't read as a script: a CI workflow's steps, TK-A061) with each
+    wrapper where a command may start (_STARTS: a line's start, after `|`, `;`, `&`, `(`, a YAML key's `:` or list's
+    `-`) read as what it runs (_unwrap's first reading, its words without their quotes and backslashes; one named by
+    its path, quoted or escaped too: base_name, `s\\udo`), and a shell's `-c '…'` as its script (after its other
+    options, each o in a cluster taking a value, and a `--`), each command's first word without the quote, `(`, `$(` or
+    backquote it starts in (_TEXT_PREFIX), each line's words joined by a space: a rule reads `echo $T | sudo curl -d
+    @- …` and `echo $T | (curl -d @- …)` as `echo $T | curl -d @- …`, as the shell's own lines are read (_lines).
+    Two readings, the engine reads both: words split at blanks and `|`, `&` and `;` outside quotes (_TEXT_WORD: `env
+    A='x;y' curl` is three), and split so wherever they are (_BLANK_WORD: a quoted run that holds a command, `- run:
+    "echo $T | sudo curl …"`, `bash -c 'a | '"b"`, is its words), read again only for a line the two split apart.
+    lean: words split so, not as the shell reads them; a wrapper's own words read up to 64 and a script in a script 8
+    deep; read the steps with the parser if a rule needs more"""
+    quoted, blind = [], []
+    for line in text.split("\n"):
+        words, loose = _TEXT_WORD.findall(line), _BLANK_WORD.findall(line)
+        quoted.append(" ".join(_unwrapped_words(list(words), _TEXT_WORD.findall)))
+        blind.append(quoted[-1] if loose == words else " ".join(_unwrapped_words(loose, _BLANK_WORD.findall)))
+    return "\n".join(quoted), "\n".join(blind)
+
+
+def _unwrapped_words(words, split, depth=0):
+    """unwrapped()'s reading of one line's words (`split`), a quoted -c script's in turn (`depth`)."""
+    kept, i, start = [], 0, True
+    while i < len(words):
+        w = words[i]
+        bare = w[_TEXT_PREFIX.match(w).end():] if start else w   # (a command's word without what it starts in)
+        name = next((n for n in (base_name(bare), base_name(bare.translate(_UNQUOTED)))
+                     if n in WRAPPERS or n in SHELLS), "") if start else ""
+        if name in WRAPPERS:
+            rest = list(itertools.takewhile(lambda x: x not in _STAGE_ENDS, words[i + 1:i + 65]))
+            inner = next(_unwrap(name, [x.translate(_UNQUOTED) for x in rest]), [])
+            if inner:   # (a wrapper alone, env or command -v, runs nothing: kept)
+                i += 1 + len(rest) - len(inner)
+                continue
+        if name in SHELLS:
+            j, script = i + 1, False   # its options, -c among them, then a `--` and the script
+            while j < len(words) and (o := words[j].translate(_UNQUOTED))[:1] in ("-", "+") and o != "--":
+                script |= bool(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", o))
+                j += 1 + _shell_takes(o, name)
+            j += j < len(words) and words[j].translate(_UNQUOTED) == "--"
+            if script and j < len(words):
+                if depth < 8 and _QUOTED_RUN.fullmatch(words[j]):   # the script's own words, read so too
+                    kept += _unwrapped_words(split(words[j][1:-1]), split, depth + 1)
+                    i, start = j + 1, False
+                    continue
+                words[j] = words[j].lstrip("\x27\"")
+                i = j + (not words[j])   # (a quote alone: the script starts at the next word or line)
+                continue
+        kept.append(bare or w)
+        start = w in _STARTS or w[-1] in ";&|(:"
+        i += 1
+    return kept
 
 
 def _lines_without(words, progs, gone):
@@ -4691,19 +5748,19 @@ def _script_operand(kind, args):
     return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
 
 
-def _reader(text, runner, direct):
+def _reader(text, runner, direct, name=lambda word: word.rsplit("/", 1)[-1]):
     """The program that reads a script file `runner` runs (a shell or one of CODE_FLAGS' interpreters), else None (no
     program this parser reads): run by its path (`direct`), the one its #! line names (an env one's command, with no
-    option: env -S splits and -i empties what follows), or bash for a file without one; else `runner` itself
-    (source and . are the shell's)."""
+    option: env -S splits and -i empties what follows; by its file name, `name`: base_name reads it as Windows does),
+    or bash for a file without one; else `runner` itself (source and . are the shell's)."""
     if not direct:
         return "sh" if runner in ("source", ".") else runner
     if not text.startswith("#!"):
         return "sh"
     words = text[2:].split("\n", 1)[0].split()
-    if words and words[0].rsplit("/", 1)[-1] == "env":
+    if words and name(words[0]) == "env":
         words = [w for w in words[1:] if "=" not in w]
-    program = words[0].rsplit("/", 1)[-1] if words and not words[0].startswith("-") else None
+    program = name(words[0]) if words and not words[0].startswith("-") else None
     return program if program in SHELLS or _kind(program or "") in CODE_FLAGS else None
 
 
@@ -4799,7 +5856,7 @@ def _git_config_env(given):
 
 def _stdin_shell(cmds):
     """A shell reading its script from stdin, or at or batch, which read from it the commands they schedule."""
-    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"
+    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:], c["argv"][0])[0] == "stdin"
                  or c["argv"][0] in ("at", "batch")), None)
 
 

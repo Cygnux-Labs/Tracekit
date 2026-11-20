@@ -11,7 +11,9 @@ import hashlib
 import json
 import math
 import os
+import pathlib
 import shutil
+import sqlite3
 import stat
 import sys
 import time
@@ -586,6 +588,115 @@ def _qwen_calls(entry: dict):
                 yield (c["id"] if isinstance(c.get("id"), str) else None), c
 
 
+def opencode_root():
+    """OpenCode's data folder: opencode in $XDG_DATA_HOME when set, else ~/.local/share (also on Windows)."""
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"),
+                        "opencode")
+
+
+def _opencode_db(real: str) -> str:
+    """The database in the folder a ROOT names, OpenCode's data folder; else a ValueError naming what to give (a
+    folder that holds OpenCode's folder, or one without a database, is not read as a clean zero)."""
+    try:
+        names = sorted(n for n in os.listdir(real) if n.startswith("opencode") and n.endswith(".db"))
+    except OSError as e:   # a folder that can't be listed (mode 000): an unreadable default, an error as a ROOT
+        raise ValueError(f"cannot list {real}: {e.strerror or e}") from None
+    if "opencode.db" in names:
+        return os.path.join(real, "opencode.db")
+    if names:   # another channel's (opencode-<channel>.db), when it is the only one
+        if len(names) == 1:
+            return os.path.join(real, names[0])
+        raise ValueError(f"{real} holds {len(names)} OpenCode databases ({', '.join(names)}): give the one to read")
+    raise ValueError(f"{real} is not OpenCode's data folder: give the folder that holds opencode.db "
+                     f"(~/.local/share/opencode)")
+
+
+def _opencode_errors(db: str, e: sqlite3.Error) -> ValueError:
+    """What a sqlite3 error means for OpenCode's database: not one (a file that isn't SQLite, or has no session and
+    part tables), or one that can't be read now (locked, no permission), said as it is."""
+    msg = str(e)
+    if "not a database" in msg or "no such table" in msg:
+        return ValueError(f"{db} is not an OpenCode database ({msg})")
+    return ValueError(f"cannot read {db}: {msg}" + ("; try again" if "locked" in msg or "busy" in msg else ""))
+
+
+def _opencode(root: str, since_ts: float, unreadable: list):
+    """OpenCode's reader: (time, session, tool, args) for each tool call in the `part` table of its database
+    (ROOT: its data folder), as OpenCode 1.x writes it. A call counts under its session's root (a subagent's session
+    has a parent_id), at the time it started; a part still pending is not a call yet. A call counts once by its call
+    id, tool, arguments and start time, not by its session (a forked session copies every part of its parent, with
+    the same call id): in the first session that holds it; a part without a call id is always counted. None for a
+    part whose JSON has "type":"tool" and isn't a tool call's shape. OpenCode 2.x's database (session_v2 or session_part) is
+    refused."""
+    db = _opencode_db(os.path.realpath(root))
+    err = _not_regular(db)
+    if err:
+        unreadable.append({"path": db, "error": f"cannot read: {err}"})
+        return
+    try:   # read only: OpenCode may be running, and its -wal file is read with the database
+        con = sqlite3.connect(pathlib.Path(db).as_uri() + "?mode=ro", uri=True)   # as_uri escapes # ? and %
+    except sqlite3.Error as e:
+        raise _opencode_errors(db, e) from None
+    seen: set[bytes] = set()
+    try:
+        kinds = dict(con.execute("SELECT name, type FROM sqlite_master"))
+        if {"session_v2", "session_part"} & set(kinds):   # 2.0 to 2.2 have session_v2 only
+            raise ValueError(f"{db} is OpenCode 2.x's database, which isn't read yet: turn its sessions into a "
+                             f"calls file and use --calls FILE --agent opencode")
+        if kinds.get("session") != "table" or kinds.get("part") != "table":   # a view can make the read run forever
+            raise ValueError(f"{db} is not an OpenCode database (it has no session and part tables)")
+        parent = dict(con.execute("SELECT id, parent_id FROM session"))
+        for session, created, data in con.execute(
+                "SELECT session_id, time_created, data FROM part WHERE data LIKE '%\"type\":\"tool\"%'"):
+            try:
+                part = json.loads(data)
+            except (TypeError, ValueError, RecursionError):
+                part = None
+            state = part.get("state") if isinstance(part, dict) else None
+            if (not isinstance(part, dict) or part.get("type") != "tool" or not isinstance(part.get("tool"), str)
+                    or not isinstance(state, dict) or not isinstance(state.get("input"), dict)
+                    or not isinstance(session, str)):
+                yield None
+                continue
+            if state.get("status") == "pending":
+                continue
+            start = state["time"].get("start") if isinstance(state.get("time"), dict) else None
+            ms = start if isinstance(start, (int, float)) and not isinstance(start, bool) else created
+            try:
+                at = datetime.fromtimestamp(ms / 1000, timezone.utc)
+            except (TypeError, ValueError, OverflowError, OSError):
+                at = None
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            if isinstance(part.get("callID"), str):
+                try:
+                    key = hashlib.sha256(json.dumps([part["callID"], part["tool"], state["input"], ms],
+                                                    sort_keys=True, default=str).encode()).digest()
+                except (RecursionError, ValueError):
+                    key = None
+                if key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+            top, hops = session, 0
+            while parent.get(top) and hops < 100:   # the session at the top of the chain (a cycle ends at the cap)
+                top, hops = parent[top], hops + 1
+            yield at, top, part["tool"], state["input"]
+    except sqlite3.Error as e:
+        raise _opencode_errors(db, e) from None
+    finally:
+        con.close()
+
+
+def _lenient(read, folder: str, unreadable: list):
+    """A default folder's reader: a folder it refuses (an agent's folder that holds no sessions yet) is unreadable, and
+    the other agents' folders are still read; an explicit ROOT it refuses is an error."""
+    try:
+        yield from read
+    except ValueError as e:
+        unreadable.append({"path": folder, "error": str(e)})
+
+
 # one entry per agent: its name, its default folder or folders (read when audit runs, so the env var that moves one
 # counts), where they are as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
@@ -597,6 +708,8 @@ READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set,
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
                      "in VS Code's global storage", _cline),
            "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini),
+           "opencode": (opencode_root, "$XDG_DATA_HOME/opencode when it is set, else ~/.local/share/opencode "
+                        "(opencode.db)", _opencode),
            "qwen": (qwen_root, "$QWEN_RUNTIME_DIR/projects when it is set, else $QWEN_HOME/projects, else "
                     "~/.qwen/projects", _qwen)}
 
@@ -683,7 +796,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         name = agent or "claude"
         sources = [(name, root, READERS[name][2](root, since_ts, unreadable))]
     else:
-        sources = [(name, folder, read(folder, since_ts, unreadable))
+        sources = [(name, folder, _lenient(read(folder, since_ts, unreadable), folder, unreadable))
                    for name, (default, _, read) in READERS.items() for folder in _defaults(default)]
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
@@ -839,12 +952,17 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         if report["since"] else "calls file" if report["calls_file"] else "transcripts"
     agent = next(iter(report["agents"])) if len(report["agents"]) == 1 else None
     init = "tracekit init --dev --v2" + (f" --agent {agent}" if agent in AGENT_NAMES else "")   # claude: init's default
+    from . import install   # local: view and tips import audit, so keep this off the module's import path
+    live = set(report["agents"]) == {"claude"} and any(install._v2_hooks_in(p) for p in install.user_settings_all())
+    last = ("  Tracekit's hooks are installed, so new calls are decided as they run" if live
+            else "  to have Tracekit decide these calls as they run: " + (init if shutil.which("tracekit")
+                 else f"pip install tracekit-ai, then {init}"))
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
               f"{n.get('ask', 0):,} and blocked {n.get('deny', 0):,}",
               *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
                                        for r, k in sorted(stopped.items(), key=lambda x: (-x[1], x[0]))[:3])]
                 if stopped else []),
-              "  to guard from now on: " + (init if shutil.which("tracekit") else f"pip install tracekit-ai, then {init}")]
+              last]
     # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
     return "\n".join(_escaped(line) for line in lines) + "\n"
 

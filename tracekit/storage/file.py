@@ -7,6 +7,8 @@
     registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
                          the same size is that note cosigned, and replaces it); indexed by line, read on demand
     witness-queue.json   the witness publisher's state, replaced whole
+    meta.json            {key: value} the signer keeps with its store (the log's checkpoint origin and vkey), replaced
+                         whole
     anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
                          line of the same size is that note cosigned, and replaces it)
     snapshots/<size>.json  the indexes at a record tree size, the logs' line offsets, and the signer's state; the
@@ -54,6 +56,7 @@ _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
 _BINARY = getattr(os, "O_BINARY", 0)
 NOTE = "checkpoint.note"
 QUEUE = "witness-queue.json"
+META = "meta.json"
 ANCHORS = "anchors.jsonl"
 LOGS = ("records.jsonl", "registry.jsonl", "registry-notes.jsonl")
 SNAPSHOTS = "snapshots"
@@ -615,6 +618,27 @@ class FileStorage(_Records, Storage):
     def witness_queue_put(self, state):
         with self._disk():
             _write_new(os.path.join(self.root, QUEUE), json.dumps(state, sort_keys=True).encode("utf-8"))
+
+    def _meta(self):
+        try:
+            with open(os.path.join(self.root, META), "rb") as f:
+                meta = json.loads(f.read())
+        except FileNotFoundError:
+            return {}
+        except ValueError:
+            meta = None
+        if not isinstance(meta, dict):
+            raise StorageCorrupt(f"{META} is damaged: restore it from a backup, or remove it and the log takes the "
+                                 "origin of its latest note (tracekit.local/<log id> if it has none)")
+        return meta
+
+    def meta(self, key):
+        return self._meta().get(key)
+
+    def meta_put(self, key, value):
+        with self._disk():
+            _write_new(os.path.join(self.root, META), json.dumps({**self._meta(), key: value},
+                                                                 sort_keys=True).encode("utf-8"))
 
     def anchor_put(self, size, anchor):
         line = json.dumps({"size": size, **anchor}, sort_keys=True).encode("utf-8") + b"\n"

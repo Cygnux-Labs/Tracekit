@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.6.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.6.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.6.0
-cd /usr/local/src/tracekit-1.6.0
+# v1.7.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.7.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.2
+cd /usr/local/src/tracekit-1.7.2
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -269,6 +269,7 @@ own Deployment (one replica per data volume; the signer holds its storage lock) 
 (Kubernetes TokenReview, a SPIFFE CA for mTLS, or named tokens), and optionally Postgres
 (`storage: {postgres: {dsn_file}}`), an AWS KMS log key (`log_key: {aws_kms: {key_id, region}}`) and a
 [record-key issuer](issuer.md).
+The requests the signer accepts, and the answers it gives, are in the [signer API reference](api.md).
 
 ```yaml
 # signer.yaml: central, agents identified by their Kubernetes service account

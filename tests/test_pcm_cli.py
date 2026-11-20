@@ -107,6 +107,10 @@ class TestVerify(Case):
         self.assertEqual((code, err.getvalue()), (2, f"tracekit pcm verify: {path}: non_finite: 1e400\n"))
 
     def test_two_keys_of_one_log_exit_2(self):
+        # a configured origin: under the key-derived default, a second key is refused first, as named after another
+        # key's fingerprint (format-v2 §10)
+        self.s.close()
+        self.s = self.open(origin="tracekit.example.org/pcm")
         msg = self.call("pcm_sign", message=self.body())["message"]
         name = checkpoint.parse_vkey(self.s.vkey)[0]
         twin = checkpoint.vkey(name, checkpoint.ED25519, logkey.FileKey(os.urandom(32)).public)
