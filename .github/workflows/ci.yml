@@ -14,7 +14,9 @@ concurrency:   # a new push to a pull request cancels its older run; runs on mai
 jobs:
   test:
     name: py${{ matrix.python }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest became Ubuntu 26.04 on 2026-11-19, which has no Python 3.9 build: 3.9 runs on 24.04, under the
+    # same job name, so the required checks keep their names
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os }}
     # a hung test must fail the job, not hold a runner for six hours
     timeout-minutes: 120
     env:
@@ -55,7 +57,9 @@ jobs:
     # pool (#722). It took 3-6 minutes of each test job, so its own job, alongside the test job, takes that off the
     # test job's time. Every Python and OS of the test job, since each installs its own `regex` build
     name: Speed py${{ matrix.python }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest became Ubuntu 26.04 on 2026-11-19, which has no Python 3.9 build: 3.9 runs on 24.04, under the
+    # same job name, so the required checks keep their names
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os }}
     # about twice the slowest job measured (7.7 min): a pattern that starts backtracking fails in minutes, not at 90
     timeout-minutes: 15
     env:

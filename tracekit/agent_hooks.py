@@ -787,6 +787,18 @@ def _gptme_tool(name, ti):
     return name, kwargs if kwargs is not None else ti
 
 
+def _jcode_dispatch_name(server, called):
+    """jcode's `dispatch_name` (crates/jcode-base/src/mcp/tool.rs): each character outside [A-Za-z0-9_] becomes `_`; a
+    name over 64 characters is cut to leave room for `_` and the 8 hex digits of the FNV-1a hash of server, NUL, tool."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", f"mcp__{server}__{called}")
+    if len(name) > 64:
+        h = 0x811c9dc5
+        for b in (server + "\0" + called).encode():
+            h = (h ^ b) * 0x01000193 & 0xFFFFFFFF
+        name = f"{name[:55]}_{h:08x}"
+    return name
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
@@ -865,11 +877,9 @@ def tool(harness, name, ti):
             return name, ti
         if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
             # the tool it calls, on its own arguments
-            # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
-            # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
             server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
             if isinstance(server, str) and server and isinstance(called, str) and called:
-                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
+                return _jcode_dispatch_name(server, called), dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
             return name, ti
         if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
             # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would

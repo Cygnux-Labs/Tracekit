@@ -122,8 +122,10 @@ def classify(sp):
     if op in AGENT_OPS:
         return "agent"
     # an MCP tools/call span without execute_tool: agentgateway's request span (its outbound and guardrail child spans,
-    # agentgateway.outbound.*, repeat the call)
+    # agentgateway.outbound.*, repeat the call), or Docker MCP Gateway's mcp.tool.call span
     if a.get("mcp.method.name") == "tools/call" and "agentgateway.outbound.subtype" not in a:
+        return "tool"
+    if sp["name"] == "mcp.tool.call" and a.get("mcp.tool.name"):
         return "tool"
     # Vercel AI SDK (experimental_telemetry): provider calls are ai.*.doGenerate / doStream, tools are ai.toolCall
     if sp["name"] == "ai.toolCall" or a.get("ai.toolCall.name"):
@@ -258,8 +260,11 @@ def _error(sp):
 def _tool_name(a, sp):
     if a.get("mcp.target") and a.get("gen_ai.tool.name"):   # agentgateway: the name Tracekit's MCP layers decide it as
         return f"mcp:{a['mcp.target']}/{a['gen_ai.tool.name']}"[:200]
-    return str(a.get("gen_ai.tool.name") or a.get("tool.name") or a.get("ai.toolCall.name") or a.get("traceloop.entity.name") or
-               (sp["name"][len("execute_tool "):] if sp["name"].startswith("execute_tool ") else sp["name"]) or "tool")[:200]
+    if a.get("mcp.server.name") and a.get("mcp.tool.name"):  # Docker MCP Gateway: mcp:<mcp.server.name>/<mcp.tool.name>
+        return f"mcp:{a['mcp.server.name']}/{a['mcp.tool.name']}"[:200]
+    return str(a.get("gen_ai.tool.name") or a.get("mcp.tool.name") or a.get("tool.name") or a.get("ai.toolCall.name")
+               or a.get("traceloop.entity.name")
+               or (sp["name"][len("execute_tool "):] if sp["name"].startswith("execute_tool ") else sp["name"]) or "tool")[:200]
 
 
 def _tool_args(a):
