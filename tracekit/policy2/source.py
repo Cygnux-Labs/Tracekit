@@ -2,8 +2,8 @@
 
 The signer decides one call per cell. This module reads the source with `ast.parse` (never compile or exec), maps
 each literal helper or command call to the action it stands for, and leaves the engine to decide each and take the
-strictest. A source it cannot follow, a name the cell can rebind or reach indirectly, a function body it reads, and an
-unmapped network, process or FFI import are held as TK-SOURCE-PARSE. Ordinary Python the policy has no action for
+strictest; a function or lambda body is read where it is defined. A source it cannot follow, a name the cell can rebind
+or reach indirectly, and an unmapped network, process or FFI import are held as TK-SOURCE-PARSE. Ordinary Python the policy has no action for
 (`open`, a plain stdlib call) is left unread; docs/limits.md says what that leaves out.
 """
 import ast
