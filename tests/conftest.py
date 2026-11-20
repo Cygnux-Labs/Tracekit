@@ -53,8 +53,12 @@ def pytest_configure(config):
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
+@pytest.hookimpl(tryfirst=True)   # before -m selects: it reads the marker
 def pytest_collection_modifyitems(config, items):
-    """perf tests run only when asked for: `pytest -m perf`."""
+    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`."""
+    for item in items:
+        if getattr(getattr(item, "function", None), "serial", False):
+            item.add_marker(pytest.mark.serial)
     if "perf" in (config.getoption("-m") or ""):
         return
     for item in items:

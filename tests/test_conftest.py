@@ -51,5 +51,33 @@ class SessionEnd(unittest.TestCase):
                 self.assertIn("it would not stop", p.stderr)
 
 
+class WithoutPytest(unittest.TestCase):
+    def test_the_modules_the_typescript_suite_imports_need_no_pytest(self):
+        # its CI job installs the signer extra only (#1034's TypeScript job failed on an `import pytest`): the modules
+        # test_ts_verifier.py and v2.test.mjs import
+        code = ("import sys; sys.modules['pytest'] = None; sys.path[:0] = [sys.argv[1], sys.argv[2]]; "
+                "import test_ts_verifier, test_constraints, test_identity_mtls")
+        p = subprocess.run([sys.executable, "-c", code, TESTS, ROOT], cwd=ROOT, capture_output=True, text=True,
+                           timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr)
+
+    def test_factories_serial_is_selected_by_the_serial_marker(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        shutil.copy(os.path.join(TESTS, "conftest.py"), d)
+        shutil.copy(os.path.join(TESTS, "factories.py"), d)
+        with open(os.path.join(d, "test_marked.py"), "w", encoding="utf-8") as f:
+            f.write("import unittest\nfrom factories import serial\n\n\nclass T(unittest.TestCase):\n"
+                    "    @serial\n    def test_alone(self):\n        pass\n\n    def test_shared(self):\n        pass\n")
+        env = dict(os.environ, HOME=d, PYTHONPATH=os.pathsep.join(filter(None, [ROOT, os.environ.get("PYTHONPATH")])))
+        for marks, ran in (("serial", "test_alone"), ("not serial", "test_shared")):
+            with self.subTest(marks=marks):
+                p = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--collect-only",
+                                    "-m", marks, d], cwd=d, env=env, capture_output=True, text=True, timeout=120)
+                self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+                self.assertIn(ran, p.stdout)
+                self.assertIn("1/2 tests collected (1 deselected)", p.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
