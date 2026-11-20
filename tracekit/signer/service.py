@@ -356,7 +356,7 @@ from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webh
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, SECRETS_S, RecordLog, approval,
                                       constraint_state, cooldown_key, degrade, epoch, final_run, owner,
-                                      person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
+                                      person_only_keys, pinned, ran, requesters, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -2420,16 +2420,17 @@ class SignerService:
 
     def _run_labels(self, run):
         """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ), read for
-        the run's requester (its owner, as precedents match) across all of its runs, in every tenant it asserts and
-        whatever principal each attested, never from what a client says:
-        secrets_access while one of them that had a call decided under a rule labelled secrets_access (TK-F005 and its
-        kin, as detection counts the label; a denied or held call too) or lost events the signer never got (a
-        client_counter_gap: what they held is unknown) is open, and for SECRETS_S after it closed; and for a run
-        registered as continuing an earlier one. A run the agent registers afresh is no way around it.
-        untrusted_content is not read yet: a bound that names it sends every hold to people (_unclean)."""
+        each of its requesters (pipeline.requesters: its owner and the identities it was delegated to, as precedents
+        match them) across all of the runs each spoke in, delegated ones too, in every tenant it asserts and whatever
+        principal each attested, never from what a client says: secrets_access while one of them that had a call
+        decided under a rule labelled secrets_access (TK-F005 and its kin, as detection counts the label; a denied or
+        held call too) or lost events the signer never got (a client_counter_gap: what they held is unknown) is open,
+        and for SECRETS_S after it closed; and for a run registered as continuing an earlier one. A run the agent
+        registers afresh or is handed is no way around it. untrusted_content is not read yet: a bound that names it
+        sends every hold to people (_unclean)."""
         # lean: untrusted_content is unread until run labels are signed records (1.8 A's run.label); read it here then
         since = time.time() - SECRETS_S
-        ends = (self.log.agent["tainted"].get(run["owner"]) or {}).values()
+        ends = [t for k in requesters(run) for t in (self.log.agent["tainted"].get(k) or {}).values()]
         return ["secrets_access"] if run.get("partial_start") or any(t is None or t > since for t in ends) else []
 
     def _unclean(self, run):

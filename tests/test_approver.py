@@ -545,6 +545,46 @@ class TestTenantsAnAppAsserts(Case):
                 r = self.s.call(AGENT, "register_run", {"request_id": rid(), "agent": {"name": "x"}, "tenant": tenant})
                 self.assertEqual(self.s._run_labels(self.s.log.runs[(tenant, r["run_id"])]), ["secrets_access"])
 
+
+class TestDelegatedRuns(Case):
+    """A run another identity registers and delegates to the agent: the agent is one of its requesters."""
+    OTHER = CallerIdentity("uid", "990777", True)
+
+    def open(self):
+        s = svc.SignerService(self.dir, policy=engine(**self.policy), identity=AGENT, approvals=self.approvals,
+                              authorize={f"uid:{REVIEWER.subject}": sorted(svc.AGENT_METHODS),
+                                         f"uid:{AGENT.subject}": sorted(svc.DEFAULT_GRANTS)})
+        self.addCleanup(s.close)
+        return s
+
+    def delegated(self):
+        r = self.s.call(self.OTHER, "register_run", {"request_id": rid(), "agent": {"name": "app"}})
+        tok = self.s.call(self.OTHER, "delegate_run", {"run_id": r["run_id"], "run_token": r["run_token"],
+                                                       "identity": f"uid:{AGENT.subject}"})
+        return {"run_id": r["run_id"], "run_token": tok["run_token"]}, itertools.count()
+
+    def test_a_secret_read_in_a_run_handed_to_the_agent_holds_the_agents_own_runs(self):
+        self.precedent()
+        handed = self.delegated()
+        self.ask("cat ~/.aws/credentials", run=handed)   # the agent reads a secret in the run it was handed
+        _, a = self.ask()   # and asks in its own run
+        self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
+                         (f"uid:{AGENT.subject}", False, ["secrets_access"]))
+
+    def test_a_runs_requesters_are_its_owner_and_its_writers(self):
+        self.assertEqual(pipeline.requesters({"owner": "uid:1", "writers": {"s": "uid:2", "g": "uid:3 through a gateway"}}),
+                         {"uid:1", "uid:2", "uid:3"})   # a gateway's caller as the identity it calls for
+        self.assertEqual(pipeline.requesters({"owner": None, "writers": {}}), set())
+
+    def test_a_secret_the_agent_read_holds_a_run_handed_to_it(self):
+        self.precedent()
+        handed = self.delegated()
+        self.ask("cat ~/.aws/credentials")   # in its own run
+        _, a = self.ask(run=handed)   # then asks in the run it was handed, owned by another identity
+        self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
+                         (f"uid:{AGENT.subject}", False, ["secrets_access"]))
+
+
 class TestUntrustedUnread(Case):
     policy = {"run": {"clean": ["untrusted_content", "secrets_access"]}}
 

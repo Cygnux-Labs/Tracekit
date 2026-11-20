@@ -220,15 +220,16 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (run owner, the requester precedents
-    match by -> {run id: None while open, else when it closed} of its runs that had a call decided under a rule
-    labelled secrets_access, `log.secret_rules`, or lost events the signer never got, for SECRETS_S after each closed:
-    the run bound reads it across all of the requester's runs, in every tenant it asserts (multi_tenant_apps) and
-    whatever principal each attested, so a run it registers afresh is no way around it). A precedent goes bad when a
-    person revokes it (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a
-    rule is demoted when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under
-    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, version, prompt or playbook
-    than its pin; a person's approver.enabled restores it (the pin stays the answer's that changed it)."""
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (each of requesters(run), as
+    precedents match them -> {run id: None while open, else when it closed} of the runs it spoke in that had a call
+    decided under a rule labelled secrets_access, `log.secret_rules`, or lost events the signer never got, for
+    SECRETS_S after each closed: the run bound reads it across all of the requester's runs, delegated ones too, in
+    every tenant it asserts (multi_tenant_apps) and whatever principal each attested, so a run it registers afresh or
+    is handed is no way around it). A precedent goes bad when a person revokes it (precedent.revoked), an incident
+    opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
+    of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an
+    answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled restores it
+    (the pin stays the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):
@@ -243,15 +244,16 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
-    # lean: a stand-in for 1.8 A's requester labels (`labels_for`, same window); swap it in once A lands, read for the
-    # owner across all its principals as here
-    k = run.get("owner")
-    if k and (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
-              or typ == "capture.gap" and d.get("kind") == "client_counter_gap"
-              or typ == "run.closing" and (ag["tainted"].get(k) or {}).get(e["run_id"], 0) is None):
-        now = epoch(e["ts"])
-        live = {r: t for r, t in (ag["tainted"].get(k) or {}).items() if t is None or t > now - SECRETS_S}
-        set_(ag["tainted"], k, {**live, e["run_id"]: now if run.get("closed") else None})
+    # lean: a stand-in for 1.8 A's requester labels (`labels_for`, same window); swap it in once A lands, read for
+    # every requester of the run across all its principals as here
+    labelled = (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
+                or typ == "capture.gap" and d.get("kind") == "client_counter_gap")
+    for k in sorted(requesters(run)):
+        held = ag["tainted"].get(k) or {}
+        if labelled or typ == "run.closing" and held.get(e["run_id"], 0) is None:
+            now = epoch(e["ts"])
+            live = {r: t for r, t in held.items() if t is None or t > now - SECRETS_S}
+            set_(ag["tainted"], k, {**live, e["run_id"]: now if run.get("closed") else None})
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
             k, now = f"{tenant}\0{r}", pinned(d)
@@ -313,6 +315,16 @@ def pinned(d):
 
 def new_contain():
     return {"incidents": {}, "cooldown": {}, "paused": {}, "enforcing": {}}
+
+
+def requesters(run):
+    """Who may request an approval in `run`, as precedents name a requester: its owner and each stream's writer (an
+    identity the run was delegated to, a gateway's caller). The AI approver's run bound taints and reads each."""
+    # lean: writers are run state (memory and snapshot), as quotas' are: a run replayed from the log after the last
+    # snapshot has its owner alone until its writers write again on a new stream; record the writer of each stream in
+    # the records if delegated runs must count exactly across a crash
+    return {w.removesuffix(" through a gateway") for w in (run.get("writers") or {}).values()} | (
+        {run["owner"]} if run.get("owner") else set())
 
 
 def cooldown_key(tenant, run):
