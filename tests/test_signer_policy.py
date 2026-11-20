@@ -5735,10 +5735,15 @@ class GuardrailsAndPushes(unittest.TestCase):
             {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
 
     def test_a_long_explain_or_paren_lead_decides_in_time(self):
-        # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time
+        # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time.
+        # The later statements hold the words a held statement needs (DELETE FROM), so the engine's prefilter
+        # (compile.requirements) doesn't skip the search: with `[^;)]*` around ANALYZE the last two took the fallback's
+        # whole second
         for statement in ("(" * 60000, "( " * 30000, "EXPLAIN (" + "a" * 60000, "EXPLAIN (" + "ANALYZE " * 7000,
-                          "EXPLAIN ANALYZE " * 3500, "EXPLAIN(" + "ANALYZE, " * 6000, "EXPLAIN ANALYZE " + "( " * 30000,
-                          "(" * 8 + "EXPLAIN (" + "ANALYZE " * 7000 + ")"):
+                          "EXPLAIN ANALYZE " * 3500, "(" * 60000 + " DELETE FROM x",
+                          "EXPLAIN ANALYZE " + "( " * 30000 + "DELETE FROM x", "EXPLAIN(" + "ANALYZE, DELETE FROM " * 2700,
+                          "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800,
+                          "(" * 8 + "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800 + ")"):
             for e in self.engines:
                 with self.subTest(engine=e.engine, statement=statement[:12]):
                     d = e.decide("acme_runner", {"statement": statement})

@@ -1334,6 +1334,7 @@ class WindowsPrograms(unittest.TestCase):
         for backend in BACKENDS:
             e = self.engines[("dev", backend)]
             for args in ({"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"}, {"stmt": "DROP TABLE users;"},
+                         {"sql_query": "DROP TABLE users;"},
                          {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"}):
                 with self.subTest(engine=backend, args=args):
                     got = svc.evaluate(e, "acme_runner", args)[0]
