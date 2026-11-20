@@ -287,9 +287,55 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual(self.ran, [])                            # paused: nothing applied before the person decided
         res = Runner.run_sync(a, state, hooks=self.tk)
         self.assertEqual((self.ran, res.final_output), (["a.txt"], "done"))
-        self.assertEqual(self.tk._patch_calls, [])                # the entry was consumed with the operation it named
+        self.assertEqual(self.tk._patch_calls, {})                # the entry was consumed with the operation it named
         types = [e["type"] for e in self.events(self.run_)]
         self.assertEqual((types.count("approval.consumed"), types.count("tool.result")), (1, 1))
+
+    def test_a_patch_applies_when_its_decisions_were_applied_more_than_once(self):
+        """An app polling apply_decisions until nothing waits approves the same paused call again each time."""
+        a, state = self._paused_patch()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual(self.ran, ["a.txt"])
+
+    def test_the_signer_refuses_a_patch_the_person_did_not_approve(self):
+        """The record only names the call: an operation that changed on its way (a saved run state is not
+        authenticated) still meets approval_consume, which binds the arguments the person approved."""
+        self._paused_patch()                                      # approved: +hi
+        raw = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                         operation={"type": "create_file", "path": "a.txt", "diff": "+ho"})
+        self.tk._remember_approved_patch(raw, "ap-1")
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+
+        res = asyncio.run(self.tk._patch("pay", fn, ApplyPatchOperation(type="create_file", path="a.txt",
+                                                                       diff="+ho")))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("TK-APPROVAL-MISMATCH", res.output)   # refused by the signer, not by the record
+
+    def test_a_patch_call_with_several_operations(self):
+        """Allowed, each operation is decided and applied, as before #985; held, an approval binds one operation's
+        arguments, so none of the call's operations is applied."""
+        class Editor:
+            def create_file(_, op):
+                self.ran.append(op.path)
+                return "created"
+        ops = [{"type": "create_file", "path": p, "diff": "+hi"} for p in ("a.txt", "b.txt")]
+        call = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                          operation=ops[0], operations=ops)   # the SDK reads the list
+        self.go(call, ApplyPatchTool(editor=Editor()))
+        self.assertEqual(self.ran, ["a.txt", "b.txt"])
+        self.ran.clear()
+        a, res = self.go(call.model_copy(update={"id": "ap_2", "call_id": "ap-2"}), ApplyPatchTool(name="pay", editor=Editor()))
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["ap-2"],
+                                     "decision": "approve"})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual(self.ran, [])
+        self.assertIn("several operations", _output(res))
 
     def test_a_rejected_patch_is_not_applied(self):
         a, state = self._paused_patch(decision="reject")

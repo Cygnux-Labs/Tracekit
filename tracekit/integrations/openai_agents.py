@@ -23,10 +23,9 @@ approval, so an `ask` for it is refused: the SDK has no approval hook for it. An
 opens the approval and the run pauses, and on resume — where the SDK skips `needs_approval` (`ApplyPatchAction.execute`,
 agents 0.23.1) and hands the editor an operation with no call id — the adapter finds the call from the approval a person
 gave, exactly on the operation's four fields, and consumes it once. Refused: an operation whose call has no approval of
-its own (the SDK resumed on a tool-wide one) and two approved calls carrying the same patch. Not gated: hosted tools
-(web and file search, code
-interpreter, hosted MCP, hosted shell),
-ComputerTool and handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
+its own (the SDK resumed on a tool-wide one, or the call carries several operations) and two approved calls carrying the
+same patch. Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell), ComputerTool and
+handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
 `hooks=tk` records for each model response.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
@@ -106,7 +105,7 @@ class TracekitAgents(RunHooks):
         self._decided = {}   # tool_call_id -> its decision, from needs_approval to the gate in this process
         self._passed = {}    # tool_call_id -> (decision, tool, args) of a call the gate let run (None: unrecorded)
         self._patches = {}   # id(operation) -> (operation, call_id): the SDK does not tell the editor the call id
-        self._patch_calls = []   # (signature, call_id) of an apply_patch call approved by a person: the editor's only
+        self._patch_calls = {}   # call_id -> signature of an apply_patch call a person approved: the editor's only
         #                          way to that call id on resume, where the SDK skips needs_approval (#985)
         self._vault = VaultBody(lambda: signer.status({}))   # a response's body, when the signer keeps content
 
@@ -268,14 +267,20 @@ class TracekitAgents(RunHooks):
     async def _patch(self, tool, fn, op):
         args = _patch_args(op)
         op_, call_id = self._patches.pop(id(op), (None, None))
-        if op_ is not op:   # approved earlier: the SDK skipped needs_approval, so the call id comes from the approval
-            found = [i for i, (sig, _) in enumerate(self._patch_calls) if sig == _patch_sig(args)]
+        if op_ is op and any(c == call_id for _, c in self._patches.values()):
+            # a call with several operations: needs_approval decided them all under its one call id, so the gate
+            # decides this one again just before its consume
+            self._decided.pop(call_id, None)
+        elif op_ is not op:   # approved earlier: the SDK skipped needs_approval, so the call id comes from the approval
+            found = [c for c, sig in self._patch_calls.items() if sig == _patch_sig(args)]
             if len(found) != 1:
                 why = ("two approved calls carry this same patch, so this operation cannot be told from the other; "
                        "approve the call itself again" if len(found) > 1 else
-                       "no approval for this call: approve the call itself, not the tool")
+                       "no approval for this call: approve the call itself, not the tool; a call with several "
+                       "operations can't be approved")
                 return ApplyPatchResult(status="failed", output=BLOCKED + why)
-            call_id = self._patch_calls.pop(found[0])[1]   # consumed: one approval, one operation
+            call_id = found[0]
+            del self._patch_calls[call_id]   # consumed: one approval, one operation
         why = await self._gate(op.ctx_wrapper, call_id, tool, args)
         return ApplyPatchResult(status="failed", output=why) if why is not None else await self._body(call_id, fn, op)
 
@@ -288,11 +293,12 @@ class TracekitAgents(RunHooks):
 
         if not call_id or field("type") != "apply_patch_call":
             return
-        operation = field("operation")
-        if operation is None:
+        ops = field("operations")   # as the SDK reads a call (coerce_apply_patch_operations): a list wins
+        ops = ops if isinstance(ops, list) else [field("operation")]
+        if len(ops) != 1 or ops[0] is None:   # an approval binds one operation's arguments
             return
-        d = operation if isinstance(operation, dict) else operation.model_dump(mode="json")
-        self._patch_calls.append((_patch_sig(d), call_id))
+        d = ops[0] if isinstance(ops[0], dict) else ops[0].model_dump(mode="json")
+        _keep(self._patch_calls, call_id, _patch_sig(d))
 
     async def apply_decisions(self, state):
         """Approve or reject the paused calls in a RunState as the signer's approvers decided; returns the calls

@@ -107,7 +107,8 @@ failure policy as without Tracekit.
 - **`ApplyPatchTool` waits, but only for an approval of that call.** The adapter records what an approved patch call
   will ask the editor to do, and consumes that record once, exactly on the operation's `type`, `path`, `diff` and
   `move_to`. Refused, and the model is told why: an operation whose call has no approval of its own — the SDK resumed on
-  a tool-wide approval (`approve_tool(..., always_approve=True)`), or two approved calls carry the same patch — and any
-  operation that differs from the approved one by a single character. Approve the call itself, not the tool
+  a tool-wide approval (`approve_tool(..., always_approve=True)`), or two approved calls carry the same patch — every
+  operation of an approved call that carries several (an approval binds one operation's arguments), and any operation
+  that differs from the approved one by a single character. Approve the call itself, not the tool
   ([#985](https://github.com/Cygnux-Labs/Tracekit/issues/985)).
 - The SDK runs each tool call id once, so every call is attempt 0.
