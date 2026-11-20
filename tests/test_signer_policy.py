@@ -3286,7 +3286,12 @@ class CodingPack(unittest.TestCase):
                 # the third review: options before the path are words, not characters
                 'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $env:USERPROFILE\\.kiro\\hooks',
                 'Set-Content -Encoding UTF8 -Force -NoNewline -Confirm:$false -Path $env:USERPROFILE\\.claude\\settings.json -Value x',
-                'Copy-Item -Path C:\\Users\\dev\\projects\\myrepo\\config\\settings.json -Destination $env:USERPROFILE\\.claude\\settings.json -Force')
+                'Copy-Item -Path C:\\Users\\dev\\projects\\myrepo\\config\\settings.json -Destination $env:USERPROFILE\\.claude\\settings.json -Force',
+                # the CI run of #992: the cmdlet after the path ends at a `;`; a name with an expansion bash reads as empty
+                r"time { Get-ChildItem $HOME\.kiro\hooks | Remove-Item; }",
+                r"1 | ForEach-Object { r${X}i $HOME\.kiro\hooks\tracekit.json }",
+                r"cmd /${X}c del %USERPROFILE%\.kiro\hooks\tracekit.json")
+        family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
         denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
                   r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
                   r"cat ${env:USERPROFILE}\.git-credentials",
@@ -3325,7 +3330,7 @@ class CodingPack(unittest.TestCase):
                 for command in held:
                     with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
                         d = svc.evaluate(e, tool, {"command": command})[0]
-                        self.assertEqual((d["verdict"], "TK-A088" in d["rule_ids"]), ("ask", True), d)
+                        self.assertEqual((d["verdict"], bool(family & set(d["rule_ids"]))), ("ask", True), d)
                 for command in denied if credentials else ():
                     with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
                         d = svc.evaluate(e, tool, {"command": command})[0]
@@ -3333,7 +3338,7 @@ class CodingPack(unittest.TestCase):
                 for command in benign:
                     with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
                         d = svc.evaluate(e, tool, {"command": command})[0]
-                        self.assertFalse({"TK-A088", "TK-S007"} & set(d["rule_ids"]), d)
+                        self.assertFalse((family | {"TK-S007"}) & set(d["rule_ids"]), d)
                         if tool == "Bash" and command in benign[:3]:
                             self.assertNotIn(d["verdict"], ("ask", "deny"), d)
 

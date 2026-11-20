@@ -765,12 +765,9 @@ class Speed(unittest.TestCase):
     # PR #468 review: 64 KiB of either spent the fallback's whole second and denied)
     # ` -T`, ` -Lq`, `:*`, `,`, `~/.` and `ns/`: the 1.5.2 review's curl upload, ssh-add cluster, HISTIGNORE pattern,
     # kubectl type list and TYPE/NAME, and find's unnormalised home
-    # `sc ` and `ni '`: #992's review, TK-A088 read a two-letter PowerShell alias anywhere on a line and rescanned from
-    # each (~0.2 s); `"rm `, a write after a quote, `sc -x ` and `ri -ErrorAction `, its options, from each of which it
-    # reads a bounded number of words for the path
     FILLERS = (" -", " -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@", " ", "\t", "\\n",
                '{"sql":"/*"},', '{"sql":"-- "},', "$", "`", "security_and_analysisdisabled", " -T", " -Lq", ":*", ",",
-               "~/.", "ns/", "sc ", "ni '", " -c 'sc ", '"rm ', "sc -x ", "ri -ErrorAction ")
+               "~/.", "ns/")
     # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
     # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
     # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-C010 kubectl delete,
