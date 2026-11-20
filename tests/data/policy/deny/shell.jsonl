@@ -454,3 +454,6 @@
 {"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
 {"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
 {"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
+{"tool": "Bash", "args": {"command": "jj git push -r @"}, "expect": "ask", "note": "Jujutsu pushing the bookmarks on @, which can be main's: a branch the line can't tell (#990)"}
+{"tool": "Bash", "args": {"command": "jj git push --revisions=@-"}, "expect": "ask", "note": "Jujutsu pushing by revision in its long form (#990)"}
+{"tool": "Bash", "args": {"command": "sl push --to=refs/heads/main"}, "expect": "ask", "note": "Sapling pushing to main spelled as a Git ref (#990)"}
