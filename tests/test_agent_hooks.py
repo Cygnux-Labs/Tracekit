@@ -3046,6 +3046,33 @@ class HarnessList(unittest.TestCase):
                 self.assertIn(ok, [r[0] for r in rows if r[1].startswith("PowerShell's execution policy")])
 
 
+class QwenHome(unittest.TestCase):
+    """#973: Qwen Code reads a user's settings from $QWEN_HOME in place of ~/.qwen (qwen-code 0.28.0
+    getGlobalQwenDirLite): init wrote ~/.qwen/settings.json, which that Qwen Code never reads, so no hook ran."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.qwen = os.path.join(self.d, "x")
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
+
+    def test_init_and_uninstall_write_qwen_home(self):
+        from tracekit import cli, install
+        path = os.path.join(self.qwen, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(install, "init_dev",
+                                                                         return_value={"socket": "s"}):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIn("PreToolUse", json.load(f)["hooks"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".qwen")))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIsNone(agent_hooks._version(f.read()))
+        # a project's, and another user's, are where they were
+        self.assertEqual(agent_hooks.config_path("qwen", "/repo"), os.path.join("/repo", ".qwen", "settings.json"))
+        self.assertEqual(agent_hooks.config_path("qwen", home="/h"), os.path.join("/h", ".qwen", "settings.json"))
+
+
 class Installer(unittest.TestCase):
     def test_openhands_hooks_json_keeps_the_form_it_is_written_in(self):
         # #563 review: OpenHands reads hooks.json as {"hooks": {...}}, or the event map itself with Claude Code's names
