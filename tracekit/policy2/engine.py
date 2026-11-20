@@ -2225,7 +2225,16 @@ def _awk_outputs(args):
 # options of theirs that take a value, which is no operand
 _OUTPUT_OPTION = {"sort": ("-o", "--output"), "iconv": ("-o", "--output"), "gpg": ("-o", "--output"),
                   "gpg2": ("-o", "--output"), "openssl": ("-out",), "patch": ("-o", "--output"),
-                  "base64": ("-o", "--output"), "uudecode": ("-o", "--output-file")}
+                  "base64": ("-o", "--output"), "uudecode": ("-o", "--output-file"),
+                  "ssh-keygen": ("-f",)}
+# ssh-keygen's modes that do not make -f a file the write rules read. Reading: -i and -e export to stdout, -y prints
+# the public key, -l and -B a fingerprint, -F finds a host in known_hosts, -r prints a fingerprint resource, -L shows a
+# certificate, -Q checks a KRL. -R is here because removing a host from known_hosts is not a write the rules read: the
+# row at docs/limits.md and test_a_host_key_appended_to_known_hosts_is_its_only_write_not_denied record known_hosts as
+# the exception (appending a host key there is ordinary work, so naming it is not a write). Every other mode writes what
+# -f names (no mode at all: a new key pair; -p and -c rewrite the key in place; -H rewrites known_hosts; -G, -T, -k, -A
+# and signing with -s write a new file), and a mode this list does not name is read as writing.
+_SSH_KEYGEN_READS = frozenset("ieylBFrLQR")
 _OUTPUT_OPERAND = {"uniq": 1, "xxd": 1, "sponge": 0, "patch": 0, "ed": 0, "red": 0, "ex": 0, "vim": 0, "vi": 0,
                    "nvim": 0, "emacs": 0}
 _EDITS_ALL = ("ed", "red", "ex", "vim", "vi", "nvim", "emacs")   # an editor: every file it is given
@@ -2673,7 +2682,12 @@ def _command_effects(commands):
                                if not a.startswith("-") and "=" not in a)
         elif exe in ("curl", "wget"):   # each file a download writes, by all its options (shell.download_writes)
             out.extend("WRITE_TARGET:" + path for path in shell.download_writes([exe, *args])[0])
-        elif exe in _OUTPUT_OPTION or exe in _OUTPUT_OPERAND:
+        elif exe == "ssh-keygen" and not any(_SSH_KEYGEN_READS & set(a[1:]) for a in args
+                                             if re.fullmatch(r"-[A-Za-z]+", a)):
+            # -f names what a writing mode creates or rewrites, and what a reading mode only reads (above); a mode the
+            # list doesn't name is read as writing, so a form nobody checked is denied rather than waved through
+            out.extend("WRITE_TARGET:" + path for path in _outputs(exe, args))
+        elif exe != "ssh-keygen" and (exe in _OUTPUT_OPTION or exe in _OUTPUT_OPERAND):
             out.extend("WRITE_TARGET:" + path for path in _outputs(exe, args))
         elif exe in ("sqlite3", "sqlite"):
             # every operand (the database among them), when its SQL (the operands and a heredoc or herestring) writes
