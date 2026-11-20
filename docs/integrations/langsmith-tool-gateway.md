@@ -61,23 +61,40 @@ If the agent is a LangChain `create_agent` agent that loads the kit with `langch
 [`TracekitMiddleware`](langchain.md) and the call is decided and signed in the agent's process:
 
 ```python
+import asyncio
+import os
+
 from langchain.agents import create_agent
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from tracekit.integrations.langchain import TracekitMiddleware
+from tracekit.sdk.client import Client
 
-client = MultiServerMCPClient({"langsmith": {
-    "transport": "streamable_http",
-    "url": "https://api.smith.langchain.com/v1/managed-tools/kits/<kit-id>/mcp",
-    "headers": {"X-Api-Key": os.environ["LANGSMITH_API_KEY"], "X-Tenant-Id": os.environ["LANGSMITH_WORKSPACE_ID"]},
-}})
-tools = await client.get_tools()
-run = signer.register_run({"request_id": "run-start-1", "agent": {"name": "support-agent"}})
-agent = create_agent(model, tools, middleware=[TracekitMiddleware(signer, run["run_id"], run["run_token"])])
+async def main():
+    kit = MultiServerMCPClient({"langsmith": {
+        "transport": "streamable_http",
+        "url": "https://api.smith.langchain.com/v1/managed-tools/kits/<kit-id>/mcp",
+        "headers": {"X-Api-Key": os.environ["LANGSMITH_API_KEY"], "X-Tenant-Id": os.environ["LANGSMITH_WORKSPACE_ID"]},
+    }})
+    tools = await kit.get_tools()
+    with Client().run(agent="support-agent") as run:   # the client and run, as in the LangChain page
+        agent = create_agent("anthropic:claude-sonnet-5-5", tools,
+                             middleware=[TracekitMiddleware(run.client, run.run_id, run.run_token)])
+        out = await agent.ainvoke({"messages": [("user", "file a ticket for the printer")]})
+        print(out["messages"][-1].content)
+
+asyncio.run(main())
 ```
 
-Here the agent's process holds the API key (the middleware is inside the agent), so this path gives the decision and
-the signed record but not custody of the key. The tool is decided under the name LangChain gives it (`create_ticket`),
-not `mcp:langsmith/create_ticket`, so write rules for it by that name. Use path 1 when the agent mustn't hold the key.
+(`X-Tenant-Id` is only for an organization-scoped key.) Here the agent's process holds the API key (the middleware is
+inside the agent), so this path gives the decision and the signed record but not custody of the key. With the dev
+signer that `Client()` starts, the agent can also reach the signing key, so `tracekit verify` says the record is not
+proof against the agent; point `Client` at a signer the agent can't reach ([deploy](../deploy-kubernetes.md)). The
+tool is decided under the name LangChain gives it (`create_ticket`), not `mcp:langsmith/create_ticket`, so a rule for
+it names the tool that way (`^create_ticket$`). Use path 1 when the agent mustn't hold the key.
+
+`langchain-mcp-adapters` needs `mcp` 1.x (0.3.2 installs 1.30.0; 0.3.1 fails to import against `mcp` 2.3). The MCP
+gateway of path 1 needs `mcp>=2.3,<2.4`. They don't share an environment: install the adapters where the agent runs
+and the gateway where it runs.
 
 ## What each party does
 
@@ -98,8 +115,12 @@ Confirmed from LangSmith's docs (beta, Plus and Enterprise plans): the kit URL i
   `X-Tenant-Id` and records what it receives (`tests/test_langsmith_tool_gateway.py`): an allowed call reaches it with
   the headers and is signed and completed (tier T2), a denied call never reaches it, the key is in no record, no
   bundle and nothing the agent sees, and the exported bundle verifies.
-- **Not tested:** LangSmith's real Tool Gateway (it needs an account and key); path 2 with `langchain-mcp-adapters`
-  (it is the LangChain middleware, tested on its own, around tools that happen to come from MCP); `?mode=search`,
+- **Tested, by hand:** path 2 in a scratch environment (`langchain` 1.4.10, `langgraph` 1.2.24, `langchain-core` 1.8.4,
+  `langchain-mcp-adapters` 0.3.2, `mcp` 1.30.0) against the same stand-in kit, with a fake chat model that asks for
+  `create_ticket` and `delete_ticket`: the stand-in received `create_ticket` with the key, a deny rule on
+  `delete_ticket` kept that call from it, and the record, signed through the middleware, verified. This isn't a
+  test in the suite: the adapters and the `mcp` 2.3 the suite pins can't be installed together.
+- **Not tested:** LangSmith's real Tool Gateway (it needs an account and key); `?mode=search`,
   `kits/me` and `servers/<id>` URLs; LangSmith's OAuth-based and `"auth": "langsmith"` setups (Managed Deep Agents),
   which don't send an `X-Api-Key` the gateway could hold; approval policies on LangSmith's side (an approval LangSmith
   asks the client for isn't something the MCP gateway relays).
