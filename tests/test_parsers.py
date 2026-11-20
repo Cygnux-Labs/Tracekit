@@ -8,6 +8,8 @@ import json
 import os
 import unittest
 
+import pytest
+
 from tracekit import parsers
 from tracekit.format.canon import event_hash
 from tracekit.signer import rpc_schema
@@ -115,6 +117,7 @@ class HostileStreams(unittest.TestCase):
         body = g.content()
         self.assertEqual((len(body["candidates"][0]["content"]["parts"]), body["truncated"]), (parsers.MAX_INDEX, True))
 
+    @pytest.mark.serial
     def test_streamed_arguments_accumulate_in_linear_time(self):
         import time
         piece = '"abcdefghijklmn",'
