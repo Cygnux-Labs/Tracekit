@@ -12,8 +12,8 @@ a decision before each call (an `ask` waits for a person), and a hook records th
 pip install tracekit-ai "inspect-ai>=0.3.288,<0.4"
 ```
 
-Inspect AI 0.3.288 and later need Python 3.11 or newer. Tested in CI with the newest Inspect AI 0.3.x (0.3.290 on
-2026-11-17) on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`) and, for a held call's
+Inspect AI 0.3.288 and later need Python 3.11 or newer. Tested in CI with the newest Inspect AI 0.3.x (0.3.291 on
+2026-11-20) on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`) and, for a held call's
 cancelled wait, the real one.
 
 ## Setup
