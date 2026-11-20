@@ -5536,6 +5536,11 @@ class SourceReader(unittest.TestCase):
                 ('import os\nos.posix_spawnp("sh", ["sh", "-c", "id"], {})',
                  [("shell", {"command": ["sh", "-c", "id"]})], None),
                 ('import pty\npty.spawn(["sh", "-c", "id"])', [("shell", {"command": ["sh", "-c", "id"]})], None),
+                # the os.execl family takes its argv inline: it was an ordinary library call, left unread
+                ('import os\nos.execl("/bin/sh", "sh", "-c", "id")', [("shell", {"command": ["/bin/sh", "-c", "id"]})],
+                 None),
+                ('import os\nos.execlp("sh", "sh", "-c", "id")', [("shell", {"command": ["sh", "-c", "id"]})], None),
+                ('import os\nos.execle("/bin/sh", "sh", "-c", "id", {})', [], "argv"),
                 ('import os\nos.execvp(name, ["sh"])', [], "argv"),
                 ('subprocess.run("id", shell=flag)', [], "arg")]:
             with self.subTest(code=code):
@@ -5566,6 +5571,13 @@ class SourceReader(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 2)
         self.assertEqual((state.count, r.held), (source.MAX_CALLS + 1, "calls"))
         self.assertLessEqual(len(r.calls), source.MAX_CALLS)
+        names = "".join(f"v{i} = 'x'\n" for i in range(3500))
+        for scope in ("lambda: 0", "class C: 0", "[0 for _ in ()]"):   # each scope copies every name the cell has
+            with self.subTest(scope=scope):
+                start = time.monotonic()
+                r = source.read(names + f"{scope}\n" * 1500)
+                self.assertLess(time.monotonic() - start, 1)
+                self.assertEqual(r.held, "budget")
         for n in (16, 20, 22):
             with self.subTest(n=n):
                 code = 'a = "xxxxxxxx"\n' + "a += a\n" * n + "goto_url(a)"
@@ -5605,6 +5617,10 @@ class SourceReader(unittest.TestCase):
                 ('[url] = [input()]\ngoto_url(url)', "arg"),
                 ('for url in [input()]:\n    pass\ngoto_url(url)', "arg"),
                 ('[goto_url(url) for url in [input()]]', "arg"),
+                # `:=` in a comprehension binds the enclosing name, which the comprehension's own scope kept literal
+                ('u = "https://docs.python.org/"\n[(u := input()) for _ in [1]]\ngoto_url(u)', "arg"),
+                ('u = "https://docs.python.org/"\n[0 for _ in [1] if (u := input())]\ngoto_url(u)', "arg"),
+                ('u = "https://docs.python.org/"\nany((u := input()) for _ in [1])\ngoto_url(u)', "arg"),
                 ('if input():\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg"),
                 ('try:\n    url = "https://docs.python.org/"\n'
                  'except Exception:\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg")]:
@@ -5862,11 +5878,18 @@ class CellSource(unittest.TestCase):
 
     def test_a_literal_argv_command_is_decided_on_its_argv(self):
         for e, verdict in ((self.server, "deny"), (self.strict, "deny"), (self.browser, "allow")):
-            with self.subTest(verdict=verdict):
-                d = self.cell(e, 'subprocess.run(["rm", "-rf", "~"])')
-                self.assertEqual(d["verdict"], verdict)
-                if verdict == "deny":
-                    self.assertIn("TK-D004", d["rule_ids"])
+            for code in ('subprocess.run(["rm", "-rf", "~"])', 'import os\nos.execlp("sh", "sh", "-c", "rm -rf ~")'):
+                with self.subTest(verdict=verdict, code=code):
+                    d = self.cell(e, code)
+                    self.assertEqual(d["verdict"], verdict)
+                    if verdict == "deny":
+                        self.assertIn("TK-D004", d["rule_ids"])
+
+    def test_a_name_a_comprehension_rebinds_with_walrus_is_held(self):
+        """The comprehension's scope kept `u` literal, so this cell was decided as the docs page it never opens."""
+        d = self.cell(self.server, 'u = "https://docs.python.org/"\n[(u := "file:///etc/passwd") for _ in [1]]\n'
+                                   'goto_url(u)')
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SOURCE-PARSE"]))
 
     def test_an_unreadable_body_a_cd_call_and_an_unmapped_import_hold_a_cell(self):
         for code in ('cdp("Page.navigate", "file:///x")',

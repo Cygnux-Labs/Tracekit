@@ -61,7 +61,8 @@ extends: coding.yaml            # optional: a relative path, or a list of them; 
 unknown_tools: ask              # allow (default), flag, ask or deny
 on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's and TK-SOURCE-PARSE's verdict; a shell command
                                 # or a 1.x cell source the reader can't read
-oversize: ask                   # ask holds a call over 64 KiB for a person; deny (or left out) keeps the rule's section
+oversize: ask                   # deny (default) or ask: TK-OVERSIZE's verdict where a deny rule can't read a call
+                                # over 64 KiB (dev.yaml asks; a policy that extends it sets deny to deny again)
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp

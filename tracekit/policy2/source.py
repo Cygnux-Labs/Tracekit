@@ -59,13 +59,14 @@ SHELL = {
 }
 _SPAWNL = {"os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe"}
 _SPAWNV = {"os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe"}
+_EXECL = {"os.execl", "os.execle", "os.execlp", "os.execlpe"}   # (path, arg0, arg1, ...): no mode, argv inline
 # calls that run a program from an argv list, which no shell rule reads through the action's own line
 SHELL_ARGV = {
     "asyncio.create_subprocess_exec",
     "os.execv", "os.execve", "os.execvp", "os.execvpe",
     "os.posix_spawn", "os.posix_spawnp",
     "pty.spawn",
-} | _SPAWNL | _SPAWNV
+} | _SPAWNL | _SPAWNV | _EXECL
 # the two Browser Use 1.x actions whose source this reads: the action -> (its argument, its parse mode)
 CELLS = {"browser_use:python": ("code", "exec"), "browser_use:finish_from_repl": ("expression", "eval")}
 
@@ -150,6 +151,17 @@ class Reader(ast.NodeVisitor):
 
     def _save(self):
         return self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never
+
+    def _scope(self):
+        """Copy the names into a scope of its own (a function, a class body, a comprehension), on the budget: each
+        copy costs the names it copies, so many scopes over many names hold the source rather than stall it."""
+        saved = self._save()
+        if not self._charge(sum(map(len, saved))):
+            return None
+        self.env, self.aliases = dict(self.env), dict(self.aliases)
+        self.defined, self.dynamic, self.shadowed, self.never = (set(self.defined), set(self.dynamic),
+                                                                 set(self.shadowed), set(self.never))
+        return saved
 
     def _restore(self, saved):
         self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never = saved
@@ -444,11 +456,10 @@ class Reader(ast.NodeVisitor):
             self.bind(node.target.id, None, True)
 
     def _function_scope(self, args, body):
-        saved = self._save()
+        saved = self._scope()
+        if saved is None:
+            return
         self.env = {}
-        self.aliases = dict(saved[1])
-        self.defined, self.dynamic, self.shadowed, self.never = (set(saved[2]), set(saved[3]), set(saved[4]),
-                                                                 set(saved[5]))
         for arg in [*args.posonlyargs, *args.args, *args.kwonlyargs]:
             self.bind(arg.arg, None, True)
         for arg in (args.vararg, args.kwarg):
@@ -491,10 +502,9 @@ class Reader(ast.NodeVisitor):
             self.visit(d)
         self._type_params(node)
         # the body runs at definition time, in a namespace of its own that ends with the class
-        saved = self._save()
-        self.env, self.aliases = dict(self.env), dict(self.aliases)
-        self.dynamic, self.defined, self.shadowed = set(self.dynamic), set(self.defined), set(self.shadowed)
-        self.never = set(self.never)
+        saved = self._scope()
+        if saved is None:
+            return
         try:
             self.stmts(node.body)
         finally:
@@ -507,10 +517,9 @@ class Reader(ast.NodeVisitor):
     def _comprehension(self, node, elts):
         generators = node.generators
         self.visit(generators[0].iter)   # the first iterable runs in the enclosing scope
-        saved = self._save()
-        self.env, self.aliases = dict(self.env), dict(self.aliases)
-        self.dynamic, self.defined, self.shadowed = set(self.dynamic), set(self.defined), set(self.shadowed)
-        self.never = set(self.never)
+        saved = self._scope()
+        if saved is None:
+            return
         try:
             for i, gen in enumerate(generators):
                 if i:
@@ -522,6 +531,9 @@ class Reader(ast.NodeVisitor):
                 self.visit(elt)
         finally:
             self._restore(saved)
+        for sub in ast.walk(node):   # `:=` in a comprehension binds in the enclosing scope (PEP 572)
+            if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
+                self.bind(sub.target.id, None, True)
 
     def visit_ListComp(self, node):
         self._comprehension(node, [node.elt])
@@ -670,6 +682,9 @@ class Reader(ast.NodeVisitor):
         if dotted in _SPAWNL:
             program = lit(args[1], self.env) if len(args) > 1 else _MISSING
             nodes = args[2:]
+        elif dotted in _EXECL:
+            program = lit(args[0], self.env) if args else _MISSING
+            nodes = args[1:]
         elif dotted in _SPAWNV:
             program = lit(args[1], self.env) if len(args) > 1 else _MISSING
             nodes = args[2:3]
