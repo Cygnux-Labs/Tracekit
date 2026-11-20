@@ -82,7 +82,7 @@
   "kit/vectors/ai-approval-one-key.tkb": "526f5ceb3f9281285e892b23c62354d6ba1516fb7badac7219a5bc2e277a8dc0",
   "kit/vectors/ai-approval-other-kind.tkb": "458a6f96b6ef4c9134a368446838e5df33e65b540c343c3dd64efe0cf5e37a5e",
   "kit/vectors/ai-approval-revoked-rejection.tkb": "e997cb108d15256b7b174e00e7ad51924f1a834140999292944ceb468ca83e2b",
-  "kit/vectors/ai-approval-run-bound-unchecked.tkb": "998a12fcb45f4aae40b66e448e14711e6871352b31187feabc3323939c172ba5",
+  "kit/vectors/ai-approval-run-bound-no-snapshot.tkb": "998a12fcb45f4aae40b66e448e14711e6871352b31187feabc3323939c172ba5",
   "kit/vectors/ai-approval-run-bound.tkb": "6687d4a5b97fdb16debf4c2578ad906aaadd9f0ae96782ce69c48a997a959a58",
   "kit/vectors/ai-approval-unlisted.tkb": "62fff4b52af04a27923cd190ab79d0a0ef06817ed337897fc36e632ce86365d2",
   "kit/vectors/ai-approval-unnamed-rejection.tkb": "dbf2069631f0598a8a7e7e4fcd3763f219c6068df402e76d6bcee211925f13bf",
@@ -1184,21 +1184,23 @@
    "verdict": "FAILED",
    "level": null,
    "failed_check": [
-    "AI approvals"
+    "AI run bound"
    ],
    "decided_by": "§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)",
    "addon": "AI approvals",
    "needs": "1.8.0"
   },
   {
-   "name": "an AI approver's yes in a labelled run, no policy snapshot to check its run bound",
-   "input": "kit/vectors/ai-approval-run-bound-unchecked.tkb",
+   "name": "an AI approver's yes in a labelled run, its policy snapshot left out of the bundle",
+   "input": "kit/vectors/ai-approval-run-bound-no-snapshot.tkb",
    "trust": "kit/vectors/trust.json",
-   "exit": 0,
-   "verdict": "VERIFIED",
-   "level": "witnessed",
-   "failed_check": null,
-   "decided_by": "§9 (version table, 1.8.0: without the snapshot, an AI yes's run labels are a warning: unchecked)",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)",
    "addon": "AI approvals",
    "needs": "1.8.0"
   },

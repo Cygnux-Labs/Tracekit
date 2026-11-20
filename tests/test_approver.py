@@ -529,6 +529,22 @@ class TestRunBound(Case):
         self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-REJECTED"]))
         self.assertIn("no person's answer to a call like this one counts now", out["reason"])
 
+
+class TestTenantsAnAppAsserts(Case):
+    def open(self):
+        s = svc.SignerService(self.dir, policy=engine(**self.policy), identity=AGENT, approvals=self.approvals,
+                              authorize={f"uid:{REVIEWER.subject}": sorted(svc.AGENT_METHODS)},
+                              multi_tenant_apps=[f"uid:{AGENT.subject}"])
+        self.addCleanup(s.close)
+        return s
+
+    def test_a_secret_read_in_one_tenant_holds_the_requesters_runs_in_every_tenant(self):
+        self.ask("cat ~/.aws/credentials")   # tenant default
+        for tenant in ("t2", "default"):
+            with self.subTest(tenant):
+                r = self.s.call(AGENT, "register_run", {"request_id": rid(), "agent": {"name": "x"}, "tenant": tenant})
+                self.assertEqual(self.s._run_labels(self.s.log.runs[(tenant, r["run_id"])]), ["secrets_access"])
+
 class TestUntrustedUnread(Case):
     policy = {"run": {"clean": ["untrusted_content", "secrets_access"]}}
 
@@ -731,7 +747,7 @@ class TestReplayAndView(Case):
         self.restart()
         self.assertEqual({k: self.s.log.agent[k] for k in keys}, before)
         self.assertIn(p, before["precedents"])
-        self.assertEqual(list(before["tainted"]), [f"default\0uid:{AGENT.subject}"])
+        self.assertEqual(list(before["tainted"]), [f"uid:{AGENT.subject}"])
 
     def test_the_review_view_shows_precedents_labels_and_recent_calls(self):
         bidi = "/Users/me/api" + chr(0x202E)   # a right-to-left override the reviewer must see escaped
@@ -864,6 +880,9 @@ class TestEvidence(Case):
                  "30 days old": ({}, {}, {"ts": "2026-10-19T12:00:00Z"}, None),
                  "a label of the run bound": ({}, {"labels": ["secrets_access"]}, {}, "carried secrets_access, which"),
                  "a label outside the run bound": ({}, {"labels": ["untrusted_content"]}, {}, None),
+                 "a label, no snapshot": ({}, {"labels": ["untrusted_content"], "policy_hash": "sha256:" + "9" * 64},
+                                          {}, "whose snapshot the bundle doesn't hold"),
+                 "no label, no snapshot": ({}, {"policy_hash": "sha256:" + "9" * 64}, {}, None),
                  "after": ({}, {}, {}, "came after the answer"),
                  "revoked": ({}, {}, {}, "was revoked as a precedent"),
                  "a rejection not named": ({}, {}, {}, "a person's rejection of a call like it (p2) counted"),
@@ -896,10 +915,12 @@ class TestEvidence(Case):
                     rec("approval", answer)
                 rep = mock.Mock(checks=[])
                 rep.check = lambda n, ok, detail, problems=(), warn=False: rep.checks.append((n, ok, list(problems)))
-                v2._ai_approvals(rep, runs, bound)
-                [(n, ok, problems)] = rep.checks
-                self.assertEqual(ok, why is None, problems)
+                v2._ai_approvals(rep, runs, bound)   # AI approvals, and AI run bound when the yes carried a label
+                problems = [p for _, _, ps in rep.checks for p in ps]
+                self.assertEqual(all(ok for _, ok, _ in rep.checks), why is None, problems)
                 self.assertTrue(why is None or why in problems[0], problems)
+                self.assertEqual([n for n, _, _ in rep.checks], ["AI approvals"] + ["AI run bound"] * bool(
+                    {**relied, **x}["labels"]))
 
 
 class TestTheViewItAnswers(Case):
@@ -1003,10 +1024,36 @@ class TestTheReviewersUser(unittest.TestCase):
             self.assertIn("uid:990299: it is in the wheel group", svc.agent_key_access(["uid:990299"], d))
         self.assertIsNone(svc.agent_key_access(["uid:990299"], d))
         for names, acl in ((["system.posix_acl_access"], True), (["system.posix_acl_default"], True),
-                           (["user.note"], False), (OSError(95, "no xattrs"), False)):
+                           (["system.nfs4_acl"], True), (["user.note"], False), (OSError(95, "no xattrs"), False)):
             with self.subTest(names=str(names)), mock.patch.object(os, "listxattr", create=True, side_effect=lambda p, **kw: (
                     (_ for _ in ()).throw(names) if isinstance(names, Exception) else names)):   # Linux's ACLs
                 self.assertEqual(bool(svc.agent_key_access(["uid:990299"], d)), acl)
+
+    def test_a_symbolic_link_for_the_data_dir_its_keys_or_a_key_is_refused(self):
+        """Its target's owner, mode and ACLs are what count, which the check doesn't follow: refused outright."""
+        for linked in ("data", "keys", "log.key"):
+            with self.subTest(linked):
+                root = os.path.realpath(ts.tmpdir(self))
+                target = os.path.join(root, "elsewhere")
+                d = os.path.join(root, "data")
+                os.makedirs(os.path.join(d if linked != "data" else target, "keys"), 0o700)
+                os.chmod(d if linked != "data" else target, 0o700)
+                if linked == "data":
+                    os.symlink(target, d)
+                elif linked == "keys":
+                    os.rmdir(os.path.join(d, "keys"))
+                    os.makedirs(target, 0o700)
+                    os.symlink(target, os.path.join(d, "keys"))
+                else:
+                    with open(target, "w") as f:
+                        f.write("k")
+                    os.chmod(target, 0o600)
+                    os.symlink(target, os.path.join(d, "keys", "log.key"))
+                link = {"data": d, "keys": os.path.join(d, "keys"), "log.key": os.path.join(d, "keys", "log.key")}
+                self.assertEqual(svc.agent_key_access(["uid:990299"], d),
+                                 f"approvals.agents: {link[linked]} is a symbolic link, whose target may let uid:990299 "
+                                 "in: make the data dir, its keys dir and its keys plain folders and files")
+                self.assertIsNone(svc.agent_key_access(["token:reviewer"], d))   # no local user to keep out
 
     @unittest.skipUnless(sys.platform == "darwin" or shutil.which("setfacl"), "macOS, or Linux with setfacl")
     def test_an_acl_on_a_key_stops_the_signer(self):
@@ -1031,10 +1078,11 @@ class TestTheReviewersUser(unittest.TestCase):
             svc.SignerService(d, policy=engine(), identity=AGENT, approvals=conf)
 
 
-
 class TestTheRunBoundOffline(TestEvidence):
     @pytest.mark.unverified_bundles
-    def test_without_the_policy_snapshot_an_ai_yes_in_a_labelled_run_is_a_warning(self):
+    def test_an_ai_yes_in_a_labelled_run_fails_without_its_policy_snapshot(self):
+        """A bundle can leave its policy snapshot out, never the signed records that cite it: an AI yes in a labelled
+        run whose snapshot is missing fails the `AI run bound` line, as one its run bound refused does."""
         import test_ts_verifier as tv
         aid, _ = self.ask(tcid="tc-1")
         self.person(aid)
@@ -1042,19 +1090,30 @@ class TestTheRunBoundOffline(TestEvidence):
         with mock.patch.object(svc.SignerService, "_unclean", lambda s, run: []):   # a signer that let it through
             aid2, _ = self.ask(tcid="tc-2")
             self.ai(aid2)
-        path, trust = self.bundle()   # with the snapshot: the run bound fails the line
-        bare = os.path.join(self.dir, "bare.tkb")   # without it: unchecked, said
+        path, trust = self.bundle()
+        bare = os.path.join(self.dir, "bare.tkb")   # the same run, exported without its policy snapshots
         export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], bare)
-        for bundle, status, words in ((path, "fail", "which the policy's run bound names"),
-                                      (bare, "warn", "not checked against the run bound")):
-            with self.subTest(status):
+        for bundle, words in ((path, "which the policy's run bound names"), (bare, "whose snapshot the bundle doesn't")):
+            with self.subTest(words):
                 rep, code = v2.verify(bundle, trust)
-                [line] = [c for c in rep.checks if c["check"] == "AI approvals"]
-                self.assertEqual((line["status"], code), (status, 1 if status == "fail" else 0))
-                self.assertIn(words, line["problems"][0])
+                got = {c["check"]: c for c in rep.checks}
+                self.assertEqual((code, got["AI approvals"]["status"], got["AI run bound"]["status"]),
+                                 (1, "pass", "fail"))
+                self.assertIn(words, got["AI run bound"]["problems"][0])
                 if not tv.SKIP:
-                    [ts_line] = [c for c in tv.ts_verify(bundle, trust)["checks"] if c["check"] == "AI approvals"]
-                    self.assertEqual((ts_line["status"], ts_line["problems"]), (status, line["problems"]))
+                    ts = {c["check"]: c for c in tv.ts_verify(bundle, trust)["checks"]}
+                    self.assertEqual({k: (ts[k]["status"], ts[k]["problems"]) for k in ("AI approvals", "AI run bound")},
+                                     {k: (got[k]["status"], got[k]["problems"]) for k in ("AI approvals", "AI run bound")})
+
+    def test_a_bundle_whose_ai_yes_carried_no_label_has_no_run_bound_line(self):
+        aid, _ = self.ask(tcid="tc-1")
+        self.person(aid)
+        aid2, _ = self.ask(tcid="tc-2")
+        self.ai(aid2)
+        path, trust = self.bundle()
+        rep, code = v2.verify(path, trust)
+        self.assertEqual((code, "AI run bound" in {c["check"] for c in rep.checks}), (0, False))
+
 
 class TestHookProject(unittest.TestCase):
     def test_the_hook_names_the_repository_its_session_works_in(self):

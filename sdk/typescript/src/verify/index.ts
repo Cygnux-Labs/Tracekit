@@ -1276,8 +1276,9 @@ export const PRECEDENT_S = 30 * 86400;
  * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on`
  * with mode enforce, two answers that approve and a person's precedent, and no person's rejection of a call like it;
  * with the snapshot of the policy it names, none of its run's labels is one the policy's approval_agent run bound
- * names; without that snapshot (or one it can't read), labels it carried make the line a warning: the run bound wasn't
- * checked. A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
+ * names: checked on a line of its own, `AI run bound`, when any AI yes carried a label, which also fails when the bundle
+ * has no readable snapshot of the policy such a yes cites (a bundle can leave a snapshot out, never its signed records).
+ * A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
  * count as the signer counts them: a person's own answer (not a self-approval, not break-glass) to a request with the
  * same precedent key (its digest), tenant and requester, made in a run clean when asked and when answered (run_clean),
  * before the answer and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A
@@ -1287,8 +1288,8 @@ export const PRECEDENT_S = 30 * 86400;
 function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
   const events: J[] = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)).sort((a, b) => a.seq - b.seq);
   const asked = new Map<string, J>(), answered = new Map<string, J>(), gone = new Map<string, number>(), broken: string[] = [];
-  const unchecked: string[] = [];
-  let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0;
+  const boundBroken: string[] = [];
+  let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0, labelled = 0;
   const key = (tenant: J, id: J) => JSON.stringify([tenant ?? null, id ?? null]);
   for (const e of events) {
     const d = e.data, k = key(get(e, "tenant"), get(d, "approval_id"));
@@ -1323,21 +1324,27 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
     }
     if (!x.precedents.approve.length || x.precedents.reject.length)
       broken.push(`${where}: an AI yes without a person's precedent, or with a person's rejection of a call like it`);
-    const snap = policies.get(x.policy_hash);
-    let bound: J[] | null = null;
-    try {
-      if (snap) {
-        const run = get(get(get(strictParseBytes(snap, floats), "approval_agent") ?? {}, "run") ?? {}, "clean");
-        bound = Array.isArray(run) ? run : [];
+    if (x.labels.length) {   // the run bound of the policy it cites decides whether those labels let it answer
+      labelled++;
+      const snap = policies.get(x.policy_hash);
+      let bound: J[] | null = null;
+      try {
+        if (snap) {
+          const run = get(get(get(strictParseBytes(snap, floats), "approval_agent") ?? {}, "run") ?? {}, "clean");
+          bound = Array.isArray(run) ? run : [];
+        }
+      } catch {
+        bound = null;
       }
-    } catch {
-      bound = null;
+      const met = x.labels.filter((l: J) => (bound ?? []).includes(l)).sort();
+      if (bound === null) {
+        boundBroken.push(`${where}: an AI yes in a run that carried ${[...x.labels].sort().join(", ")}, under policy `
+          + `${x.policy_hash}, whose snapshot the bundle doesn't hold (or can't be read): export the run with its policy `
+          + "snapshots");
+      } else if (met.length) {
+        boundBroken.push(`${where}: an AI yes in a run that carried ${met[0]}, which the policy's run bound names`);
+      }
     }
-    const met = x.labels.filter((l: J) => (bound ?? []).includes(l)).sort();
-    if (bound === null && x.labels.length) {
-      unchecked.push(`${where}: an AI yes in a run that carried ${[...x.labels].sort().join(", ")}, not checked against `
-        + `the run bound: the bundle has no readable snapshot of policy ${x.policy_hash}`);
-    } else if (met.length) broken.push(`${where}: an AI yes in a run that carried ${met[0]}, which the policy's run bound names`);
     for (const pid of x.precedents.approve) {
       const k = key(get(e, "tenant"), pid), p = answered.get(k), pa = asked.get(k);
       if (p === undefined || pa === undefined) { outside++; continue; }
@@ -1356,10 +1363,13 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
     }
   }
   if (!asked.size && !shadow && !changes) return;   // a bundle without the AI approver keeps the report it always had
-  rep.check("AI approvals", !broken.length && !unchecked.length, `${yes} AI approval(s) that decided, each with two `
-    + `answers that agree and a person's precedent (${checked} precedent(s) checked in this bundle, ${outside} in runs it `
-    + `doesn't hold); ${shadow} shadow suggestion(s); ${changes} playbook, precedent and circuit-breaker record(s)`,
-    (broken.length ? broken : unchecked).slice(0, 20), !broken.length);
+  rep.check("AI approvals", !broken.length, `${yes} AI approval(s) that decided, each with two answers that agree and a `
+    + `person's precedent (${checked} precedent(s) checked in this bundle, ${outside} in runs it doesn't hold); ${shadow} `
+    + `shadow suggestion(s); ${changes} playbook, precedent and circuit-breaker record(s)`, broken.slice(0, 20));
+  if (labelled) {
+    rep.check("AI run bound", !boundBroken.length, `${labelled} AI approval(s) in a run that carried a label, each read `
+      + "against the run bound of the policy snapshot it cites", boundBroken.slice(0, 20));
+  }
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];

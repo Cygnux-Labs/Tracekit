@@ -509,8 +509,8 @@ person's. On a laptop the signer also refuses to start with an `approval.agent` 
 `executor: t2` (a warning on a server).
 
 **The run.** While the run carries a label `run.clean` names, people answer every hold. The signer reads labels for
-the requester (its identity, as precedents match it) across all of its runs, whatever principal each attested, so a
-run the agent registers afresh is no way around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
+the requester (its identity, as precedents match it) across all of its runs, in every tenant it asserts and whatever
+principal each attested, so a run the agent registers afresh is no way around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
 credentials file, an env file, a key), or the signer lost events of one of them; the label holds while that run is
 open and for 24 hours after it closes. A run that continues an earlier run of its session, whose calls it can't see,
 carries it too. The bound is as wide as the rules labelled `secrets_access`: a script that opens a secret file
@@ -562,15 +562,17 @@ in a run that isn't clean it shows no target at all. A person's answer carries `
 (`approval`, `approval.suggested`, `approval.escalated`) carries `relied_on`: the precedents, the playbook's version
 and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided
 (`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer. The verifiers' `AI
-approvals` line checks each AI yes against the precedents its bundle holds, against any person's rejection of a call
-like it there, and against the run bound of the policy snapshot it names; without that snapshot, an AI yes in a run
-that carried a label makes the line a warning, since its run bound wasn't checked ([verdicts](verdicts.md)).
+approvals` line checks each AI yes against the precedents its bundle holds and against any person's rejection of a
+call like it there. When an AI yes's run carried a label, their `AI run bound` line checks it against the run bound of
+the policy snapshot it names, and fails when the bundle doesn't hold that snapshot: export with the policy snapshots
+([verdicts](verdicts.md)).
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
 own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start
 when a `uid:` in `approvals.agents` is its own user, root or in an admin group (as `D-AGENT-PRIV` reads them), or can
 open its data dir, its `keys` folder or a key by their owner and mode, or when any of them carries an ACL (Linux and
-macOS); `tracekit doctor` fails `D-REVIEWER-USER` then, and run as root it also tries each as the reviewer's own uid.
+macOS) or is a symbolic link; `tracekit doctor` fails `D-REVIEWER-USER` then, and run as root it also tries each as
+the reviewer's own uid.
 Make the user once, as root.
 
 macOS (an id that `dscl . -list /Users UniqueID` and `dscl . -list /Groups PrimaryGroupID` don't list, in 200-399, as

@@ -1272,16 +1272,17 @@ def _ai_approvals(rep, runs, policies):
     circuit-breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`)
     carries `relied_on` with mode enforce, two answers that approve and a person's precedent, and no person's
     rejection of a call like it; with the snapshot of the policy it names, none of its run's labels is one the policy's
-    approval_agent run bound names; without that snapshot (or one it can't read), labels it carried make the line a
-    warning: the run bound wasn't checked. A precedent it names, when the bundle holds it, and any person's rejection
-    the bundle holds of a call like it, count as the signer counts them: a person's own answer (not a self-approval,
-    not break-glass) to a request with the same precedent key (its digest), tenant and requester, made in a run clean
-    when asked and when answered (run_clean), before the answer and at most PRECEDENT_S before it, not revoked as a
-    precedent (precedent.revoked) before it. A named precedent that doesn't count, or a rejection that does, fails the
-    line; a named precedent the bundle doesn't hold (often another run's) is counted, not checked."""
+    approval_agent run bound names: checked on a line of its own, `AI run bound`, when any AI yes carried a label,
+    which also fails when the bundle has no readable snapshot of the policy such a yes cites (a bundle can leave a
+    snapshot out, never its signed records). A precedent it names, when the bundle holds it, and any person's
+    rejection the bundle holds of a call like it, count as the signer counts them: a person's own answer (not a
+    self-approval, not break-glass) to a request with the same precedent key (its digest), tenant and requester, made
+    in a run clean when asked and when answered (run_clean), before the answer and at most PRECEDENT_S before it, not
+    revoked as a precedent (precedent.revoked) before it. A named precedent that doesn't count, or a rejection that
+    does, fails the line; a named precedent the bundle doesn't hold (often another run's) is counted, not checked."""
     events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
-    asked, answered, gone, broken, unchecked = {}, {}, {}, [], []
-    yes = shadow = checked = outside = changes = 0
+    asked, answered, gone, broken, bound_broken = {}, {}, {}, [], []
+    yes = shadow = checked = outside = changes = labelled = 0
     for e in events:
         d, key = e["data"], (e.get("tenant"), e["data"].get("approval_id"))
         if e.get("type") == "approval.request" and "ai" in d:
@@ -1321,17 +1322,19 @@ def _ai_approvals(rep, runs, policies):
             continue
         if not x["precedents"]["approve"] or x["precedents"]["reject"]:
             broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
-        snap = policies.get(x["policy_hash"])
-        try:
-            bound = (loads_strict(snap).get("approval_agent") or {}).get("run", {}).get("clean", ()) if snap else None
-        except (ValueError, TypeError, AttributeError):
-            bound = None
-        if bound is None and x["labels"]:
-            unchecked.append(f"{at}: an AI yes in a run that carried {', '.join(sorted(x['labels']))}, not checked "
-                             f"against the run bound: the bundle has no readable snapshot of policy {x['policy_hash']}")
-        elif set(x["labels"]) & set(bound or ()):
-            broken.append(f"{at}: an AI yes in a run that carried {sorted(set(x['labels']) & set(bound))[0]}, which "
-                          "the policy's run bound names")
+        if x["labels"]:   # the run bound of the policy it cites decides whether those labels let it answer
+            labelled, snap = labelled + 1, policies.get(x["policy_hash"])
+            try:
+                bound = (loads_strict(snap).get("approval_agent") or {}).get("run", {}).get("clean", ()) if snap else None
+            except (ValueError, TypeError, AttributeError):
+                bound = None
+            if bound is None:
+                bound_broken.append(f"{at}: an AI yes in a run that carried {', '.join(sorted(x['labels']))}, under "
+                                    f"policy {x['policy_hash']}, whose snapshot the bundle doesn't hold (or can't be "
+                                    "read): export the run with its policy snapshots")
+            elif set(x["labels"]) & set(bound):
+                bound_broken.append(f"{at}: an AI yes in a run that carried {sorted(set(x['labels']) & set(bound))[0]}, "
+                                    "which the policy's run bound names")
         for pid in x["precedents"]["approve"]:
             p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
             if p is None or pa is None:
@@ -1351,11 +1354,13 @@ def _ai_approvals(rep, runs, policies):
                     and pa["data"]["requester"] == mine["data"]["requester"] and discounted(p, pa, e) is None:
                 broken.append(f"{at}: a person's rejection of a call like it ({pid[:64]}) counted when the AI said yes")
     if asked or shadow or changes:   # a bundle without the AI approver keeps the report it always had
-        rep.check("AI approvals", not (broken or unchecked),
+        rep.check("AI approvals", not broken,
                   f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "
                   f"({checked} precedent(s) checked in this bundle, {outside} in runs it doesn't hold); {shadow} "
-                  f"shadow suggestion(s); {changes} playbook, precedent and circuit-breaker record(s)",
-                  (broken or unchecked)[:20], warn=not broken)
+                  f"shadow suggestion(s); {changes} playbook, precedent and circuit-breaker record(s)", broken[:20])
+    if labelled:
+        rep.check("AI run bound", not bound_broken, f"{labelled} AI approval(s) in a run that carried a label, each "
+                  "read against the run bound of the policy snapshot it cites", bound_broken[:20])
 
 
 def _coverage(matrices, k):

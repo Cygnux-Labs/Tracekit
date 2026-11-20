@@ -485,12 +485,12 @@ def vectors():
          decided_by="§11 step 9 (a rule neither with approval.agent nor listed by approval_agent doesn't permit agents)")
     case("an AI approver's yes in a run carrying a label of the snapshot's run bound", ai_run(
         "ai-approval-run-bound", listed=["TK-A025"], labels=["secrets_access"]), t, 1, "FAILED",
-         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: none of an AI yes's run labels is one the policy's run bound names)")
-    case("an AI approver's yes in a labelled run, no policy snapshot to check its run bound", ai_run(
-        "ai-approval-run-bound-unchecked", labels=["secrets_access"]), t, 0, "VERIFIED", "witnessed",
-         addon="AI approvals", needs="1.8.0",
-         decided_by="§9 (version table, 1.8.0: without the snapshot, an AI yes's run labels are a warning: unchecked)")
+    case("an AI approver's yes in a labelled run, its policy snapshot left out of the bundle", ai_run(
+        "ai-approval-run-bound-no-snapshot", labels=["secrets_access"]), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)")
     case("an AI approver's yes on a precedent more than 30 days older", ai_run(
         "ai-approval-old-precedent", person={"ts": "2026-09-09T11:59:59.000000Z"}), t, 1, "FAILED",
          failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",

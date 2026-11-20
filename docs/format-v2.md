@@ -597,10 +597,11 @@ answered, the policy hash, the run's labels, `view` (a commitment to the `view_d
 `mode` (enforce: it decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the
 reviewer's own word (each model's answer). `playbook.entry`, `precedent.revoked` and `approver.enabled` are a person's
 answers through the signer, in the tenant's signer run. A verifier from 1.8.0 prints `AI approvals` for a bundle with
-any of them: an AI yes that decided must carry two answers that approve and a person's precedent and no rejection,
-and, with the snapshot of the policy it names, none of its run's labels may be one the policy's `approval_agent` run
-bound names; without a snapshot it can read, an AI yes whose run carried a label makes the line a warning (the run
-bound unchecked), never a pass. A person's answer counts as a precedent when it is a person's own (not self-approved, not break-glass), to
+any of them: an AI yes that decided must carry two answers that approve and a person's precedent and no rejection.
+When such a yes's `relied_on.labels` is not empty, it prints `AI run bound` too: none of those labels may be one the
+`approval_agent` run bound of the policy it names (`relied_on.policy_hash`) names, and the bundle must hold that
+policy's snapshot, readable; one it lacks fails the line (a bundle can leave a snapshot out, never the signed
+records that cite it). A person's answer counts as a precedent when it is a person's own (not self-approved, not break-glass), to
 a request with the same digest, tenant and requester, clean when asked and when answered (`run_clean: true`), before
 the AI's answer and at most 30 days before it, and not revoked as a precedent before it. Each precedent the AI's yes
 names that the bundle holds must count, and no person's rejection the bundle holds may count; a named precedent the

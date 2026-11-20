@@ -835,11 +835,11 @@ def _agents(approvals, authorize, multi_tenant_apps):
 
 def _acl(path):
     """Whether `path` (a link not followed) carries an ACL, which may let a user in that its mode keeps out: Linux's
-    POSIX ACL attributes, macOS's extended ACL (one it can't read counts as one)."""
+    POSIX and NFSv4 ACL attributes, macOS's extended ACL (one it can't read counts as one)."""
     # lean: ACLs are read on Linux and macOS only; read another system's when a signer runs there
     if hasattr(os, "listxattr"):   # Linux
         try:
-            return bool({"system.posix_acl_access", "system.posix_acl_default"} & set(
+            return bool({"system.posix_acl_access", "system.posix_acl_default", "system.nfs4_acl"} & set(
                 os.listxattr(path, follow_symlinks=False)))
         except OSError:   # a file system without extended attributes has no ACL either
             return False
@@ -863,8 +863,9 @@ def agent_key_access(agents, data_dir, signer_uid=None):
     """Why an agent approver that is a local user (`uid:N` in approvals.agents) could answer as the signer or read its
     data, or None: N is the signer's own user (`signer_uid`, default this process's), root or a member of an admin
     group (install._privileges), or it can open the data dir, its keys dir or a key in it (it owns it, the mode lets its
-    groups or every user read it, or enter it for a directory, or any of them carries an ACL). The signer refuses to
-    start then, and `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as an unprivileged user of its own
+    groups or every user read it, or enter it for a directory, or any of them carries an ACL), or one of them is a
+    symbolic link (whose target's owner, mode and ACLs this doesn't read). The signer refuses to start then, and
+    `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as an unprivileged user of its own
     (docs/approvals.md#the-ai-approver)."""
     if not hasattr(os, "getuid"):
         return None
@@ -875,6 +876,7 @@ def agent_key_access(agents, data_dir, signer_uid=None):
     paths = [p for p in (data_dir, keys) if os.path.isdir(p)] + (
         [os.path.join(keys, n) for n in sorted(os.listdir(keys))] if os.path.isdir(keys) else [])
     acl = next((p for p in paths if _acl(p)), None)
+    link = next((p for p in paths if os.path.islink(p)), None)
     for a in sorted(agents):
         if not re.fullmatch(r"uid:[0-9]{1,10}", a):
             continue
@@ -894,6 +896,9 @@ def agent_key_access(agents, data_dir, signer_uid=None):
         if acl:
             return (f"approvals.agents: {acl} carries an ACL, which may let {a} in: remove it (macOS: chmod -N; Linux: "
                     "setfacl -b) and keep the signer's data dir its user's alone")
+        if link:
+            return (f"approvals.agents: {link} is a symbolic link, whose target may let {a} in: make the data dir, its "
+                    "keys dir and its keys plain folders and files")
         for p in paths:
             st = os.lstat(p)
             other, group = ((stat.S_IROTH | stat.S_IXOTH, stat.S_IRGRP | stat.S_IXGRP) if stat.S_ISDIR(st.st_mode)
@@ -2415,8 +2420,8 @@ class SignerService:
 
     def _run_labels(self, run):
         """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ), read for
-        the run's requester (its tenant and owner, as precedents match) across all of its runs whatever principal each
-        attested, never from what a client says:
+        the run's requester (its owner, as precedents match) across all of its runs, in every tenant it asserts and
+        whatever principal each attested, never from what a client says:
         secrets_access while one of them that had a call decided under a rule labelled secrets_access (TK-F005 and its
         kin, as detection counts the label; a denied or held call too) or lost events the signer never got (a
         client_counter_gap: what they held is unknown) is open, and for SECRETS_S after it closed; and for a run
@@ -2424,7 +2429,7 @@ class SignerService:
         untrusted_content is not read yet: a bound that names it sends every hold to people (_unclean)."""
         # lean: untrusted_content is unread until run labels are signed records (1.8 A's run.label); read it here then
         since = time.time() - SECRETS_S
-        ends = (self.log.agent["tainted"].get(f"{run['tenant']}\0{run['owner']}") or {}).values()
+        ends = (self.log.agent["tainted"].get(run["owner"]) or {}).values()
         return ["secrets_access"] if run.get("partial_start") or any(t is None or t > since for t in ends) else []
 
     def _unclean(self, run):
