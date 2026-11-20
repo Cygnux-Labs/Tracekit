@@ -1071,7 +1071,6 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                 c["opaque"] = True
         _made_text(ctx)
         _home_readings(ctx)
-        _xargs_here_readings(ctx)
         _tracekit_copies(ctx)
         # a value the line gives with a substitution in a subscript (x='a[$(cmd)]'), on a line where bash may evaluate
         # one as a name or a number (_Parser.word): bash runs the substitution then
@@ -1533,10 +1532,11 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
-    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
+    and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
+    TK-D004 reads them as that home or root, and TK-D014 as a system folder.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
-    where, links, printed = None, {}, {}
+    where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
         argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
         if argv[0] in ("find", "rsync") and argv != c["argv"]:
@@ -1549,8 +1549,12 @@ def _home_readings(ctx):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
+        elif argv[0] in ("xargs", "gxargs"):
+            fed = c
         if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -1565,35 +1569,21 @@ def _home_readings(ctx):
             ctx["cmds"].append({**c, "argv": read, "via": c["via"] + ["read at home"]})
 
 
-def _xargs_here_readings(ctx):
-    """Read literal single-path here-string input to xargs rm as an rm operand (#810).
-
-    xargs passes a plain /etc from `<<< /etc` to rm even though it is not
-    part of rm's command line as written.  Only promote one absolute path of
-    safe pathname characters; quoted xargs input, shell expansions, multiple
-    words, and generated text do not have the same argv semantics. Keep a
-    strict size limit, so crafted input cannot inflate a policy decision.
-    """
-    cmds = list(ctx["cmds"])
-    wrappers = {(w["argv"][0], w["pipeline"], w["stage"], tuple(
-        w["argv"][2:] if w["argv"][1:2] == ["-r"] else w["argv"][1:]))
-        for w in cmds if w["argv"][0] in ("xargs", "gxargs")}
-    for c in cmds:
-        if c["argv"][0] != "rm" or c["via"][-1:] not in (["xargs"], ["gxargs"]):
-            continue
-        # Only default whitespace-separated xargs input, optionally -r (which
-        # does not change splitting). -0/-d treat the here-string's terminating
-        # newline as data; -I/-J replacement changes the resulting operands.
-        # Matching the original wrapper also avoids applying this to a later
-        # unrelated rm in the same pipeline.
-        if (c["via"][-1], c["pipeline"], c["stage"], tuple(c["argv"])) not in wrappers:
-            continue
-        # `stdin` contains literal here-string data; it is empty when xargs
-        # reads a pipe, inherited stdin or an input file.
-        for data in c.get("stdin", ())[:8]:
-            if isinstance(data, str) and len(data) <= 512 and re.fullmatch(r"/[A-Za-z0-9_./:-]*", data):
-                ctx["cmds"].append({**c, "argv": [*c["argv"], data],
-                                    "via": [*c["via"], "xargs literal here-string"]})
+def _xargs_here_words(xargs, c):
+    """The words of a here-string or heredoc that `xargs` (its own command, which the parser lists just before) gives
+    c, the command it runs (`xargs rm -rf <<< /etc`): split at blanks, as xargs reads its input unless an option says
+    otherwise (-0, -d, -a, -E, -e, -I, -i, -J or their long forms: then none), and only those that are a path from /
+    in letters, digits and `_./:-` (the parser doesn't expand or unquote what xargs reads)."""
+    n = len(c["argv"])   # (the program by its base name in c, as written in xargs's words)
+    if xargs is None or len(xargs["argv"]) <= n or xargs["argv"][len(xargs["argv"]) - n + 1:] != c["argv"][1:]:
+        return []
+    for a in xargs["argv"][1:len(xargs["argv"]) - n]:
+        name = a.split("=")[0]
+        if len(name) > 2 and any(o.startswith(name) for o in ("--null", "--delimiter", "--arg-file", "--eof",
+                                                                "--replace")) \
+                or re.match(r"-[^-LlnPs0adEeIiJ]*[0adEeIiJ]", a):   # (L, l, n, P and s take the rest as a value)
+            return []
+    return [w for s in c.get("stdin", ()) for w in s.split() if re.fullmatch(r"/[A-Za-z0-9_./:-]*", w)]
 
 
 def hidden_commands(cmds, refs):

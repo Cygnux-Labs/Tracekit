@@ -4005,7 +4005,18 @@ class CodingPack(unittest.TestCase):
             "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
             "rm -rf /etc/.ssh/..", "rm -rf /etc/.cache/..",
             "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
-            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx")
+            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx",
+            # the #932 review's spellings: find already walks the tree, so -exec needs no -R; any xargs option that
+            # keeps its input split at blanks; chattr's words before the folder; mv's other source forms; rsync's
+            # options after the destination and --del
+            "find /etc -exec chmod 777 {} +", "find /etc -exec chown nobody {} +", "find /etc -exec chgrp staff {} +",
+            "find /etc -exec chattr +i {} +", "xargs -n1 rm -rf <<< /etc", "xargs -n 1 rm -rf <<< /etc",
+            "xargs -t rm -rf <<< /etc", "xargs -P4 rm -rf <<< /etc", "xargs -L1 rm -rf <<< /etc",
+            "xargs --no-run-if-empty rm -rf <<< /etc", "xargs rm -rf <<EOF\n/etc\nEOF", "chattr -R +i -- /etc",
+            "chattr +i -R -- /etc", "chattr -R +i /tmp/x /etc", "mv -t /tmp /etc", "mv --backup=numbered /etc /tmp/x",
+            "mv -S .bak /etc /tmp/x", "mv /etc /tmp/x -v", "mv /tmp/a /etc /tmp/b/", "rsync -a --delete empty/ /etc/ -v",
+            "rsync -a --del empty/ /etc/", "rsync --delete-after -a empty/ /etc", "chattr -R +i /mnt/c/Windows",
+            "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/")
         for pack, engine, e in self.every_pack():
             for command in commands:
                 with self.subTest(pack=pack, engine=engine, command=command):
@@ -4050,7 +4061,13 @@ class CodingPack(unittest.TestCase):
             "rm -rf ./etc/ssh/..", "rm -rf /etc/ssh/../nginx", "rm -rf /usr/local/x",
             "rm -rf /var/tmp/../x",
             "chmod -R 777 /etc/ssh/../nginx", "find /etc/ssh/../nginx -delete",
-            "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx"))
+            "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx",
+            # one rsync operand only lists it; mv into a system folder (-t) moves something else; a command find -exec
+            # runs through xargs (it has no pipeline stage: this raised KeyError)
+            "rsync --delete -a /etc", "rsync -a --delete /etc/", "mv -t /etc x.conf", "mv -ft /etc x.conf",
+            "mv --target-directory /etc x.conf", "mv x.conf /etc/", "rsync -a --delay-updates empty/ /etc/",
+            "find . -name '*.txt' -exec xargs grep foo {} \\;", "bash -c 'find . -exec xargs echo {} +'",
+            "find . -execdir xargs ls {} \\;", "find . -ok xargs ls {} \\;"))
 
     def test_a_system_folder_is_read_past_plain_words_dot_steps_and_case(self):
         # #783 review: each was only flagged: more than 16 plain words before the folder (TK-D004 reads any number
