@@ -463,10 +463,10 @@ class Routes(unittest.TestCase):
                               "ssh-keygen -lf ~/.ssh/id_ed25519.pub", "ssh-keygen -F host.example -f ~/.ssh/known_hosts",
                               "ssh-keygen -R host.example -f ~/.ssh/known_hosts"),
                     "flag", "TK-F005")
-        # -y prints a private key's public half: the server packs already deny reading one (their own credential rule)
-        # and the laptop packs only flag it, so this change must not move either verdict
+        # -y prints a private key's public half: dev, server and strict already deny reading one (their credential rule)
+        # and coding only flags it, so this change must not move either verdict
         self.expect(self.bash("ssh-keygen -y -f ~/.ssh/id_ed25519"),
-                    {"dev": "flag", "coding": "flag", "server": "deny", "strict": "deny"})
+                    {"dev": "deny", "coding": "flag", "server": "deny", "strict": "deny"})
 
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
