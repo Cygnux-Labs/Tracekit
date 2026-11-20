@@ -14,8 +14,8 @@ offline.
 | Decides | Its own deny and approval policies, on every call | Your Tracekit policy, before the call is sent, with approvals bound to the exact arguments |
 | Records | An optional trace per call: the tool, the server and the identity. Not the data sent or returned | A signed event for the decision and for the result, committed to by the signer, verified offline |
 
-Both policies apply: Tracekit decides first, and a call it allows can still be denied by LangSmith (that call completes
-as an error in the record).
+Both policies apply: Tracekit decides first, and a call it allows can still be blocked by LangSmith. That call is recorded as
+an error, whichever form its refusal takes (a tool error or a JSON-RPC error).
 
 ```text
 path 1:  agent --> tracekit mcp-gateway --Streamable HTTP, X-Api-Key--> LangSmith Tool Gateway --> your MCP servers
@@ -113,14 +113,16 @@ Confirmed from LangSmith's docs (beta, Plus and Enterprise plans): the kit URL i
 
 - **Tested:** path 1 against a stand-in kit, a local Streamable HTTP MCP server that requires `X-Api-Key` and
   `X-Tenant-Id` and records what it receives (`tests/test_langsmith_tool_gateway.py`): an allowed call reaches it with
-  the headers and is signed and completed (tier T2), a denied call never reaches it, the key is in no record, no
-  bundle and nothing the agent sees, and the exported bundle verifies.
-- **Tested, by hand:** path 2 in a scratch environment (`langchain` 1.4.10, `langgraph` 1.2.24, `langchain-core` 1.8.4,
+  the headers and is signed and completed (tier T2), a denied call never reaches it, a kit that refuses a call by a tool
+  error or by a JSON-RPC error is recorded as an error, a tool that echoes the key is cut from what the agent gets and
+  from every record, the content vault and the bundle, and the exported bundle verifies.
+- **Tested, by hand on 2026-11-20:** path 2 in a scratch environment (`langchain` 1.4.10, `langgraph` 1.2.24, `langchain-core` 1.8.4,
   `langchain-mcp-adapters` 0.3.2, `mcp` 1.30.0) against the same stand-in kit, with a fake chat model that asks for
   `create_ticket` and `delete_ticket`: the stand-in received `create_ticket` with the key, a deny rule on
-  `delete_ticket` kept that call from it, and the record, signed through the middleware, verified. This isn't a
+  `delete_ticket` kept that call from it, and the record, signed through the middleware, verified. The script that did it is not in the repo, and it isn't a
   test in the suite: the adapters and the `mcp` 2.3 the suite pins can't be installed together.
-- **Not tested:** LangSmith's real Tool Gateway (it needs an account and key); `?mode=search`,
+- **Not tested:** LangSmith's real Tool Gateway (it needs an account and key), including the exact shape of its
+  refusal (its docs show a blocked call as failed, not what the MCP client receives); `?mode=search`,
   `kits/me` and `servers/<id>` URLs; LangSmith's OAuth-based and `"auth": "langsmith"` setups (Managed Deep Agents),
   which don't send an `X-Api-Key` the gateway could hold; approval policies on LangSmith's side (an approval LangSmith
   asks the client for isn't something the MCP gateway relays).

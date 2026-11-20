@@ -19,7 +19,7 @@ from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS
 from tracekit.verify import v2 as verify_v2
 
-LANGSMITH_KEY = "lsv2_sk_0123456789abcdef"
+LANGSMITH_KEY = "kitkey-7Qw3Zr9xKp2Lm8Vb"
 TENANT = "6f1b2c3d-workspace"
 POLICY = Engine({"deny": [{"id": "R-NO-DELETE", "tool": "^mcp:langsmith/delete_ticket$", "pattern": "^"}]})
 
@@ -33,7 +33,7 @@ class KitStandIn:
     headers of every request and each tool it runs."""
 
     def __init__(self):
-        self.requests, self.ran = [], []
+        self.requests, self.ran, self.key = [], [], None
         mcp = MCPServer("kit")
 
         @mcp.tool()
@@ -48,6 +48,21 @@ class KitStandIn:
             self.ran.append(("delete_ticket", ticket_id))
             return "deleted"
 
+        @mcp.tool()
+        def whoami() -> str:
+            """An upstream that echoes the key it was called with."""
+            return f"acting with {self.key}"
+
+        @mcp.tool()
+        def refused() -> str:
+            """A call the kit refuses with a tool error (isError)."""
+            raise ValueError("blocked by the kit")
+
+        @mcp.tool()
+        def blocked() -> str:
+            """A call the kit refuses with a JSON-RPC error: the gate answers it, this never runs."""
+            raise AssertionError("not reached")
+
         app = mcp.streamable_http_app(streamable_http_path="/v1/managed-tools/kits/support/mcp")
 
         async def gate(scope, receive, send):
@@ -57,6 +72,25 @@ class KitStandIn:
                 if headers.get("x-api-key") != LANGSMITH_KEY or headers.get("x-tenant-id") != TENANT:
                     await send({"type": "http.response.start", "status": 401, "headers": []})
                     return await send({"type": "http.response.body", "body": b"unauthorized"})
+                self.key = headers["x-api-key"]
+                body = b""
+                while True:
+                    msg = await receive()
+                    body += msg.get("body", b"")
+                    if not msg.get("more_body"):
+                        break
+                call = json.loads(body) if body.startswith(b"{") else {}
+                if call.get("method") == "tools/call" and call["params"]["name"] == "blocked":
+                    await send({"type": "http.response.start", "status": 200,
+                                "headers": [(b"content-type", b"application/json")]})
+                    return await send({"type": "http.response.body", "body": json.dumps(
+                        {"jsonrpc": "2.0", "id": call["id"],
+                         "error": {"code": -32001, "message": "blocked by the kit"}}).encode()})
+                sent, live = [{"type": "http.request", "body": body}], receive
+
+                async def replay():
+                    return sent.pop() if sent else await live()
+                receive = replay
             await app(scope, receive, send)
         self.server = uvicorn.Server(uvicorn.Config(gate, host="127.0.0.1", port=0, log_level="error"))
         threading.Thread(target=lambda: asyncio.run(self.server.serve()), daemon=True).start()
@@ -74,7 +108,7 @@ class LangSmithUpstream(unittest.TestCase):
         self.kit = KitStandIn()
         self.addCleanup(self.kit.stop)
         self.dir = tmpdir(self)
-        self.s = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
+        self.s = svc.SignerService(self.dir, policy=POLICY, content={"retain": True}, gateways=["mtls:spiffe://acme/*"],
                                    authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/mcp": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume", "observe"]})
@@ -97,7 +131,8 @@ class LangSmithUpstream(unittest.TestCase):
 
     def test_an_allowed_call_reaches_the_kit_with_the_key_and_is_signed_and_completed(self):
         self.assertEqual(sorted(t.name for t in self.agent(lambda c: c.list_tools()).tools),
-                         ["langsmith__create_ticket", "langsmith__delete_ticket"])
+                         ["langsmith__blocked", "langsmith__create_ticket", "langsmith__delete_ticket",
+                          "langsmith__refused", "langsmith__whoami"])
         out = self.agent(lambda c: c.call_tool("langsmith__create_ticket", {"title": "printer"}))
         self.assertEqual((out.is_error, out.content[0].text), (False, "created printer"))
         self.assertEqual(self.kit.ran, [("create_ticket", "printer")])
@@ -116,13 +151,33 @@ class LangSmithUpstream(unittest.TestCase):
         self.assertIn("R-NO-DELETE", out.content[0].text)
         self.assertEqual(self.kit.ran, [])
 
+    def test_a_call_the_kit_refuses_is_recorded_as_an_error_in_either_form(self):
+        out = self.agent(lambda c: c.call_tool("langsmith__refused", {}))
+        self.assertTrue(out.is_error)
+
+        async def rpc_error(c):
+            return await c.call_tool("langsmith__blocked", {})
+        with self.assertRaises(BaseException) as e:
+            self.agent(rpc_error)
+        self.assertIn("blocked by the kit", base.messages(e.exception))
+        results = [e["data"]["ok"] for e in self.events() if e["type"] == "tool.result"]
+        self.assertEqual(results, [False, False])
+
     def test_the_key_is_in_no_record_no_bundle_and_nothing_the_agent_sees(self):
         seen = [self.agent(lambda c: c.list_tools()).model_dump_json(),
                 self.agent(lambda c: c.call_tool("langsmith__create_ticket", {"title": "printer"})).model_dump_json(),
-                self.agent(lambda c: c.call_tool("langsmith__delete_ticket", {"ticket_id": "T-1"})).model_dump_json()]
+                self.agent(lambda c: c.call_tool("langsmith__delete_ticket", {"ticket_id": "T-1"})).model_dump_json(),
+                self.agent(lambda c: c.call_tool("langsmith__whoami", {})).model_dump_json()]
+        self.assertEqual(self.kit.key, LANGSMITH_KEY)   # the kit did answer with the key
+        self.assertIn("acting with [REDACTED:executor_secret]", seen[-1])
         self.assertFalse(any(LANGSMITH_KEY in s for s in seen))
         self.s.checkpoint()
         st = self.s.log.storage
+        self.s.authorize["token:http"] += ["content_read"]
+        seqs = [r["event"]["run_seq"] for r in st.iter_run("default", self.run["run_id"])]
+        vault = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": seqs, "purpose": "t"})["items"]
+        self.assertIn("created printer", json.dumps(vault))   # the vault holds the results, so the key would show
+        self.assertNotIn(LANGSMITH_KEY, json.dumps(vault))
         bundle, trust = os.path.join(self.dir, "run.tkb"), os.path.join(self.dir, "trust.json")
         from tracekit.bundle_v2 import export
         export(st, "default", self.run["run_id"], st.checkpoint_latest()[1], bundle,
