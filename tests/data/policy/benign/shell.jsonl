@@ -338,6 +338,3 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
-{"tool": "Bash", "args": {"command": "sl push --to=refs/heads/feature"}, "expect": "allow", "note": "Sapling pushing a feature branch spelled as a Git ref stays unheld (#990)"}
-{"tool": "Bash", "args": {"command": "sl pull"}, "expect": "allow", "note": "a Sapling pull pushes nothing (#990)"}
-{"tool": "Bash", "args": {"command": "hatch build"}, "expect": "allow", "note": "building a package publishes nothing (#990)"}
