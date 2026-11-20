@@ -40,6 +40,7 @@ import urllib.request
 
 from tracekit import __version__, yamlmini
 from tracekit.client import no_redirect_opener, remote_url_error
+from tracekit.deploy import files
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 
@@ -173,11 +174,8 @@ class Reviewer:
     def _save(self):
         if not self.state_file or self.seen == self._saved:
             return
-        tmp = self.state_file + ".tmp"
         try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(sorted(self.seen), f)
-            os.replace(tmp, self.state_file)
+            files.write_json(self.state_file, sorted(self.seen))
             self._saved = set(self.seen)
         except OSError as e:
             log.warning("tracekit reviewer: could not write %s: %s", self.state_file, e)
@@ -211,6 +209,7 @@ class Reviewer:
                         listed.add(x["approval_id"])
                         if x["approval_id"] not in self.seen and self.review(tenant, agent, x["approval_id"]):
                             self.seen.add(x["approval_id"])
+                            self._save()
                     if page["next_cursor"] is None:
                         break
             except (SignerUnavailable, RPCError) as e:

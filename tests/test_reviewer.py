@@ -52,7 +52,7 @@ class Model:
     def __call__(self, tenant, view):
         self.views.append((tenant, view))
         a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        if isinstance(a, Exception):
+        if isinstance(a, BaseException):
             raise a
         return a
 
@@ -196,6 +196,8 @@ class TestState(Case):
         self.reviewer(model, state_file=state).poll()
         self.reviewer(model, state_file=state).poll()   # the restart
         self.assertEqual((self.suggested(), len(model.views)), (1, 1))
+        if os.name != "nt":
+            self.assertEqual(os.stat(state).st_mode & 0o777, 0o600)
 
     def test_without_a_state_file_a_restart_suggests_again(self):
         self.ask()
@@ -232,6 +234,15 @@ class TestState(Case):
         with open(state) as f:
             self.assertEqual(json.load(f), sorted(rv.seen))
         self.assertEqual(os.listdir(os.path.dirname(state)), ["reviewer.state"])
+
+    def test_each_answer_is_kept_as_it_is_sent(self):
+        a1, _ = self.ask(tcid="tc-1")
+        self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with self.assertRaises(KeyboardInterrupt):   # stopped during the second model call
+            self.reviewer(Model(message(), KeyboardInterrupt()), state_file=state).poll()
+        with open(state) as f:
+            self.assertEqual(json.load(f), [a1])
 
     def test_an_unwritable_state_file_does_not_stop_the_reviewer(self):
         self.ask()
