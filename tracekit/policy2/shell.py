@@ -209,10 +209,7 @@ WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
 # anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
-# hatch run's and `hatch env run`'s options that take a value (src/hatch/cli/env/run.py: --env/-e, --include/-i,
-# --exclude/-x, --filter/-f); --force-continue and --ignore-compat take none
-HATCH_OPTS = ("-e", "--env", "-i", "--include", "-x", "--exclude", "-f", "--filter")
-RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), HATCH_OPTS, 0),
+RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
            "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
