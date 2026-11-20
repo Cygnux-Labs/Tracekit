@@ -92,12 +92,12 @@ class Packs(unittest.TestCase):
         # the laptop has no detection, and the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
-        self.assertEqual([r["id"] for r in server["flag"][-4:]], list(wide))
-        self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-4:]],
+        self.assertEqual([r["id"] for r in server["flag"][-5:]], [*wide, "TK-F028"])   # TK-F028: the server pack's own
+        self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-5:-1]],
                          [("line", False), ("target", True), ("target", False), (None, False)])   # F005: the templates'
-        self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-4:]))
+        self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-5:-1]))
         self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
-        mine = [r for r in server["flag"] if r["id"] not in wide]
+        mine = [r for r in server["flag"] if r["id"] not in (*wide, "TK-F028")]   # the laptop has no TK-F028
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
                          ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
@@ -1232,7 +1232,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, args=args):
                     d = e.decide("send_email", args)
                     self.assertEqual((d["verdict"], "TK-M003" in d["rule_ids"]),
-                                     ("ask", True) if args in held else ("allow", False), d)
+                                     ("ask", True) if args in held else ("flag", False), d)   # TK-F028: an email send is egress
 
     def test_deleting_container_volumes_asks_in_every_pack(self):
         """TK-A048: deleting Docker or Podman volumes, where a project's database usually lives, is held for a person;
