@@ -1,9 +1,9 @@
 """A coding agent and a production database, after a public incident report: in July 2026 a developer reported that
-GPT-5.6 Sol, OpenAI's model behind Codex, deleted their whole production database; its credentials were in the
-project's local .env file. The report doesn't say which commands ran. Here a scripted coding agent reads .env, runs the
-tests, then drops the database's schema with psql as a Bash tool call under the dev pack: the psql waits for a person
-(TK-A039), the person rejects it and the psql never runs, the agent's other calls run, and the run is exported and
-verified. Offline, scripted.
+GPT-5.6 Sol, OpenAI's model behind Codex, deleted their whole production database; commentators blamed its credentials
+being kept in a local .env file. The report doesn't say which commands ran. Here a scripted coding agent reads .env,
+runs the tests, then drops the database's schema with psql as a Bash tool call under the dev pack: the psql waits for a
+person (TK-A039), the person rejects it and the psql never runs, the agent's other calls run, and the run is exported
+and verified. Offline, scripted.
 
     python examples/v2/demos/codex_database.py
 """

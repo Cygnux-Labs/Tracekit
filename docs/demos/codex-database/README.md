@@ -1,9 +1,9 @@
 # A production database
 
 After a public incident report: in July 2026 a developer reported that GPT-5.6 Sol, OpenAI's model behind Codex,
-deleted their whole production database ([The Register](https://www.theregister.com/a/5274008)); the database's
-credentials were in the project's local `.env` file. OpenAI's Codex lead said such deletions happen mostly in
-Full-Access mode, without Codex's sandbox or its Auto-review. The report doesn't say which commands ran, so here a
+deleted their whole production database ([The Register](https://www.theregister.com/a/5274008)); commentators blamed
+the database's credentials being kept in a local `.env` file. OpenAI said the model is usually run in Full-Access
+mode, without Codex's sandbox. The report doesn't say which commands ran, so here a
 scripted coding agent takes one likely path under the dev pack, the signer's default for coding agents on a laptop:
 it reads `.env` (flagged, TK-F005, a secret-looking path), runs the tests, then drops the database's schema with
 `psql "$DATABASE_URL" -c "DROP SCHEMA public CASCADE; …"`. The `psql` waits for a person (TK-A039, a drop, truncate
@@ -20,11 +20,12 @@ signer's `approval.refused` (`TK-APPROVAL-REJECTED`) when the agent tries to run
 A call the person approves would show the approval, then its result.
 
 **Why it matters.** The rule holds the statement itself, whatever mode the agent runs in and whatever the model says
-it is doing: a `DROP`, `TRUNCATE` or unfiltered `DELETE` given to `psql -c`, `mysql -e`, `mongosh --eval` or
-`redis-cli` waits for a person, and so do `dropdb` (TK-A001) and a framework's reset (`prisma migrate reset`,
-`rails db:drop`, TK-A055). It reads the statement on the command line, so one run from a file (`psql -f reset.sql`,
-`psql < reset.sql`), built in a variable or sent from an interpreter one-liner isn't held
-([what TK-A039 reads](../../limits.md)); keep production credentials out of the agent's project.
+it is doing: a `DROP`, `TRUNCATE` or unfiltered `DELETE` given to `psql -c` or `mysql -e`, a drop through
+`mongosh --eval` and a flush through `redis-cli` wait for a person, and so do `dropdb` (TK-A001) and a framework's
+reset (`prisma migrate reset`, `rails db:drop`, TK-A055). It reads the statement the line gives the client, so one run
+from a file (`psql -f reset.sql`, `psql < reset.sql`), held in a variable the line doesn't set (`psql -c "$SQL"`) or
+sent through a database driver from code isn't held ([what TK-A039 reads](../../limits.md)); keep production
+credentials out of the agent's project.
 
 [transcript.txt](transcript.txt) · [the example](../../../examples/v2/demos/codex_database.py) ·
 [packs](../../policy-v2.md#packs-shipped) · [limits](../../limits.md)
