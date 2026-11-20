@@ -3412,6 +3412,23 @@ class InterpreterRuns(unittest.TestCase):
             ("deno run -A - <<'EOF'\nrequire('child_process').execSync('sudo id')\nEOF", S),
             ("bun run - <<'EOF'\nrequire('child_process').execSync('sudo id')\nEOF", S),
             ("python3 -c 'import pydoc; pydoc.pipepager(t, \"sudo id\")'", S)],
+        "IPC, native libraries, includes, aliases, Deno and Bun": [
+            ("perl -e 'use IPC::Open3; waitpid(open3(my $i, my $o, undef, \"sudo id\"), 0)'", S),
+            ("perl -e 'use IPC::Open2; open2(my $o, my $i, \"sudo id\")'", S),
+            ("perl -e 'use IPC::Cmd \"run\"; run(command => \"sudo id\")'", S),
+            ("perl -e 'use IPC::Run \"run\"; run [\"sudo\", \"id\"]'", S),
+            ("perl -e 'use IPC::System::Simple \"capture\"; capture(\"sudo id\")'", S),
+            ("python3 -c 'import ctypes; ctypes.CDLL(None).system(b\"sudo id\")'", S),
+            ("python3 -c 'from cffi import FFI; FFI().dlopen(None).system(b\"sudo id\")'", S),
+            ("php -r 'include \"data://text/plain;base64,PD9waHAgc3lzdGVtKCJzdWRvIGlkIik7\";'", S),
+            ("lua -e 'local o=os; o.execute(\"sudo id\")'", S),
+            ("deno eval 'new Deno.Command(\"sudo\",{args:[\"id\"]}).outputSync()'", S),
+            ("deno eval 'Deno.run({cmd:[\"sudo\",\"id\"]})'", S),
+            ("deno eval 'new Deno.Command(\"rm\",{args:[\"-rf\",\"/\"]}).outputSync()'", "rm -rf /"),
+            ("deno eval 'const c=Deno[\"Com\"+\"mand\"]; new c(\"sudo\",{args:[\"id\"]}).outputSync()'", S),
+            ("bun -e 'await Bun.$`sudo id`'", S), ("bun -e 'const {$}=Bun; await $`sudo id`'", S),
+            ("bun -e 'import { $ as sh } from \"bun\"; await sh`sudo id`'", S),
+            ("bun -e 'Bun.spawn({cmd: [\"sudo\", \"id\"]})'", S)],
     }
     HELD = {   # a command or code the program makes at run time: held (TK-SHELL-PARSE)
         "perl": ["perl -e '$c = \"sudo id\"; qx/$c/'", "perl -e '$c = \"sudo id\"; print `$c`'",
@@ -3439,6 +3456,10 @@ class InterpreterRuns(unittest.TestCase):
             "perl -pe 's/x/$c/ee'", "perl -pe 's{x}{$c}gee'", "perl -pe 's {x} {$c}eeg'", "perl -pe 's#x#$c#ee'",
             "perl -e '$s =~ s/x/\"sys\".\"tem q(id)\"/ee'", "perl -e '\"a\" =~ /(??{ $c })/'",
             "perl -e '\"a\" =~ /(*{ $c })/'", "perl -e 'use re \"eval\"; \"a\" =~ /$c/'"],
+        "perl's computed calls": [
+            "perl -e 'system join \"\", \"su\", \"do id\"'", "perl -e 'my %h = (r => sub { system shift }); $h{r}->(\"x\")'",
+            "perl -e 'system lc \"SUDO ID\"'", "perl -e 'use IPC::Open3; open3($i, $o, $e, $c)'",
+            "perl -e 'use IPC::Cmd \"run\"; run(command => $c)'"],
         "python": [
             "python3 -c 'import os; os.system(f\"echo {x}\")'", "python3 -c 'import os; os.system(\"echo %s\" % x)'",
             "python3 -c 'import os; os.system(\"ls \" + d)'",
@@ -3470,7 +3491,8 @@ class InterpreterRuns(unittest.TestCase):
             "python3 -c 'import pickle; pickle.loads(b\"cos\\nsystem\\n.\")'", "python3 -c 'import marshal; marshal.loads(d)'",
             "python3 -c 'import dill; dill.loads(d)'", "python3 -c 'import yaml; yaml.load(s)'",
             "python3 -c 'import yaml; yaml.load(s, Loader=yaml.Loader)'", "python3 -c 'import yaml; yaml.unsafe_load(s)'",
-            "python3 -c 'import yaml; yaml.full_load(s)'"],
+            "python3 -c 'import yaml; yaml.full_load(s)'", "python3 -c 'import ctypes; ctypes.CDLL(None).system(c)'",
+            "python3 -c 'import ctypes; ctypes.cdll.msvcrt.system(c)'"],
         "node": [
             "node -e 'require(\"child_process\").exec(`echo ${x}`)'",
             "node -e 'require(\"child_process\").execSync(\"echo \" + x)'",
@@ -3493,7 +3515,10 @@ class InterpreterRuns(unittest.TestCase):
             "node -e 'process[\"binding\"](\"spawn_sync\")'", "node -e 'globalThis[\"req\" + \"uire\"](m)'",
             "node -e 'global[k](c)'", "node -e 'module[k](m)'", "node -e 'require(\"vm\"); vm[k](c)'",
             "node -e '[].constructor.constructor(c)()'", "node -e 'const cp = require(\"child_process\"); cp[k](c)'",
-            "node -e 'const o = {r: require(\"child_process\").execSync}; o[k](c)'"],
+            "node -e 'const o = {r: require(\"child_process\").execSync}; o[k](c)'",
+            "deno eval 'new Deno.Command(c).outputSync()'", "deno eval 'Deno.run({cmd: c})'",
+            "deno eval 'const C = Deno.Command; new C(c)'", "bun -e 'await Bun.$`${c}`'", "bun -e 'const sh = Bun.$; sh`ls`'",
+            "bun -e 'Bun.spawn({cmd: c})'", "bun -e 'Bun[k](c)'"],
         "php, lua and awk": [
             "php -r 'system(\"echo $x\");'", "php -r 'shell_exec($c);'", "php -r 'passthru(\"ls \" . $d);'",
             "php -r 'exec(\"ls {$d}\");'", "php -r '$p = popen($c, \"r\");'", "php -r '\\system($c);'",
@@ -3504,7 +3529,9 @@ class InterpreterRuns(unittest.TestCase):
             "lua -e 'local f = os.execute; f(c)'", "lua -e 'os[n](c)'", "php -r '$f($c);'",
             "php -r 'array_map(\"system\", $a);'", "php -r 'preg_replace(\"/x/e\", $c, $s);'",
             "php -r 'preg_replace(\"#x#ie\", $c, $s);'", "php -r 'preg_replace($p, \"y\", $s);'",
-            "php -r 'assert(\"system(1)\");'", "php -r 'assert($c);'", "php -r 'create_function(\"\", $c);'"],
+            "php -r 'assert(\"system(1)\");'", "php -r 'assert($c);'", "php -r 'create_function(\"\", $c);'",
+            "php -r 'include \"php://stdin\";'", "php -r 'include $f;'", "php -r 'require_once($f);'",
+            "lua -e 'local o = io; o.popen(c)'"],
     }
     BENIGN = [
         "perl -ne 'print if /qx/'", "perl -ne 'print if /^qx\\s/'", "perl -pe 's/qx/QX/g'", "perl -e 'print q(qx)'",
@@ -3549,7 +3576,12 @@ class InterpreterRuns(unittest.TestCase):
         "python3 -c 'import json; json.loads(d)'", "python3 -c 'import yaml; yaml.safe_load(s)'",
         "python3 -c 'import yaml; yaml.load(s, Loader=yaml.SafeLoader)'", "python3 -c 'import pickle; print(pickle.dumps(1))'",
         "python3 -c 'import runpy; runpy.run_module(\"http.server\")'", "python3 -c 'import pydoc; pydoc.pipepager(t, \"less\")'",
-        "ruby -e 'puts \"Tilt\"'", "php -r 'preg_replace(\"/x/i\", \"y\", $s);'", "php -r 'assert($x > 0);'"]
+        "ruby -e 'puts \"Tilt\"'", "php -r 'preg_replace(\"/x/i\", \"y\", $s);'", "php -r 'assert($x > 0);'",
+        "perl -e 'use IPC::Open3; print 1'", "perl -e 'print join \",\", 1, 2'", "perl -e 'system \"ls\"'",
+        "python3 -c 'import ctypes; print(ctypes.sizeof(ctypes.c_int))'", "php -r 'include \"x.php\";'",
+        "lua -e 'print(os.time())'", "lua -e 'print(\"os\")'", "deno eval 'new Deno.Command(\"ls\").outputSync()'",
+        "deno eval 'console.log(Deno.version)'", "bun -e 'await Bun.$`ls`'", "bun -e 'Bun.spawnSync([\"ls\"])'",
+        "bun -e 'Bun.spawn({cmd: [\"ls\"]})'", "bun -e 'import { $ } from \"bun\"; await $`ls`'"]
 
     @classmethod
     def setUpClass(cls):
@@ -3636,7 +3668,9 @@ class InterpreterRuns(unittest.TestCase):
                 ("const {", "node", lambda k: 'require("child_process");' + rep("const {", k - 40)),
                 ("os.system(f", "python", lambda k: "import os;" + rep('os.system(f"{x}");', k - 20)),
                 ("print |", "awk", lambda k: rep("print | c;", k)), ("system(", "php", lambda k: rep("system($c);", k)),
-                ("os.execute", "lua", lambda k: rep("os.execute(c)", k))):
+                ("os.execute", "lua", lambda k: rep("os.execute(c)", k)),
+                ("local o = os", "lua", lambda k: rep("local o = os; ", k)),   # (analyse's declare/local … -i scan)
+                ("Bun's $ names", "bun", lambda k: rep("const {$} = Bun;", k))):
             with self.subTest(name=name):
                 flag = {"php": "-r", "awk": "", "python": "-c"}.get(kind, "-e")
                 small, big = (best(f"{kind} {flag} '{build(k)}'") for k in (n // 4, n))

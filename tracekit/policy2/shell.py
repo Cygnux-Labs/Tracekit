@@ -1010,10 +1010,12 @@ _EVALS = {"perl": re.compile(r"(?<![$@\w])eval\b"), "ruby": re.compile(r"\b(?:in
 # code a program runs that no eval call names: Perl's s///ee (its replacement evaluated as code, then run: _perl_ee)
 # and a pattern's code block ((?{…}), (??{…}), (*{…}); `use re "eval"`, under which a pattern made at run time may
 # hold one); Ruby's ERB template; Python's getattr, vars or __dict__ of a process module, globals() and locals(), and
-# __import__ or import_module of one or of a name made at run time, runpy's runs (a literal's are read as code:
+# __import__ or import_module of one or of a name made at run time, a native library ctypes or cffi loads (libc's
+# system), runpy's runs (a literal's are read as code:
 # _EVALS), the deserialisers that run code (pickle, marshal, dill, yaml.load but its safe loaders); Node's require or
 # import of a name it makes (any but a literal), process.binding, and a property computed on process, vm, globalThis,
-# global, module or require, or a constructor's constructor (Function); Ruby's Erubi, Erubis and Tilt templates; PHP's
+# global, module or require, or a constructor's constructor (Function), Deno or Bun subscripted with a value, and
+# their runners taken as values (`const c = Deno.Command`, `Bun.$` not run); Ruby's Erubi, Erubis and Tilt templates; PHP's
 # function named by a value (`$f(…)`, call_user_func, create_function), preg_replace with /e (or a pattern it makes),
 # assert of a string; Lua's _G, os or io indexed (`os[n](c)`): held, with what they may run read loose
 _CODE_RUNS = {"perl": re.compile(r"\((?:\?\??|\*)\{|\buse\s+re\b[^;\n]{0,64}\beval\b"),
@@ -1024,12 +1026,16 @@ _CODE_RUNS = {"perl": re.compile(r"\((?:\?\??|\*)\{|\buse\s+re\b[^;\n]{0,64}\bev
                                    r"(?:\b__import__|\bimport_module)\s*\(\s*(?!['\"](?!(?:os|subprocess|pty|commands|"
                                    r"asyncio|posix|nt)['\"])\w+['\"])|"
                                    r"\b(?:pickle|cPickle|_pickle|marshal|dill)\s*\.\s*(?:loads?|Unpickler)\b|"
+                                   r"\b(?:CDLL|PyDLL|WinDLL|OleDLL|LoadLibrary|dlopen)\s*\(|"
+                                   r"\bctypes\s*\.\s*(?:cdll|pydll|windll|oledll)\b|"
                                    r"\byaml\s*\.\s*(?:unsafe_load|full_load)(?:_all)?\b|"
                                    r"\byaml\s*\.\s*load(?:_all)?\s*\((?![^)\n]{0,200}\b(?:C?SafeLoader|BaseLoader)\b)"),
               "node": re.compile(r"(?<![\w.$])(?:require|import)\s*\(\s*(?![\"'`][\w@./:-]*[\"'`]\s*\))|"
                                  r"\bprocess\s*(?:\.\s*|\[\s*[\"'`])(?:binding|_linkedBinding)\b|"
                                  r"\b(?:process|vm|globalThis|global|module|require|child_process)\s*\[\s*"
-                                 r"(?![\"'`][\w$]*[\"'`]\s*\])|\bconstructor\s*(?:\.\s*constructor\b|\[)"),
+                                 r"(?![\"'`][\w$]*[\"'`]\s*\])|\bconstructor\s*(?:\.\s*constructor\b|\[)|"
+                                 r"\b(?:Deno|Bun)\s*\[\s*(?![\"'`][\w$]*[\"'`]\s*\])|\bDeno\s*\.\s*(?:Command|run)\b(?!\s*\()|"
+                                 r"\bBun\s*\.\s*(?:spawn(?:Sync)?\b(?!\s*\()|\$(?!\s*`))"),
               "php": re.compile(r"(?<![\w>:])\$\w+\s*\(|\b(?:call_user_func(?:_array)?|create_function)\s*\(|"
                                 r"\bpreg_replace\s*\(\s*(?:(['\"])[^'\"\n]{0,500}?[^\w\s\\'\"][a-zA-Z]*e[a-zA-Z]*\1|(?!['\"]))|"
                                 r"\bassert\s*\(\s*(?:['\"]|\$\w+\s*[,)])"),
@@ -1046,9 +1052,11 @@ _TAKEN = {"perl": re.compile(r"\\\s{0,8}&\s{0,8}(?:CORE::)?(?:system|exec|readpi
 _HEREDOC_RUN = re.compile(r"<<[-~]?\s*`")
 # where a call's arguments start (_call_open): `name(`; else, after blanks, one that starts a value (a quote, a
 # quote-like literal, a sigil, Perl's block, a here-doc, a list; in Ruby a name the statement ends after, or that a
-# subscript, method or call follows), so a word in prose (`"file system ok"`) is no call
+# subscript, method or call follows; in Perl a function its arguments or the statement's end follow: `system join
+# "", …`, `system shift`), so a word in prose (`"file system ok"`) is no call
 _PAREN = re.compile(r"\s*\(")
-_ARG_START = {"perl": re.compile(r"""[ \t]+(?=["'`$@\\&{]|<<|q[qwx]?\s*[^\w\s=,;)\]}>])"""),
+_ARG_START = {"perl": re.compile(r"""[ \t]+(?=["'`$@\\&{]|<<|q[qwx]?\s*[^\w\s=,;)\]}>]|"""
+                                 r"""[A-Za-z_]\w*(?:::\w+)*[ \t]*(?:[("'$@{;})]|$))"""),
               "ruby": re.compile(r"""[ \t]+(?=["'`$@*%:\[]|<<|(?!(?:do|end|if|unless|while|until|then|and|or|not|"""
                                  r"""rescue)\b)[A-Za-z_]\w*[?!]?[ \t]*(?:$|[;\n)}\].(\[]))""")}
 # Perl's open and IO::File->new; Ruby's open (read as Perl's 2-argument open's text) and IO.read and its kin, whose
@@ -1058,6 +1066,12 @@ _OPENS = {"perl": re.compile(r"\b(open|IO::File\s*->\s*new)\b\s*(\(?)"),
 # (Ruby's opens that may run a command: open, Kernel.open, URI.open and IO's; not File.open: the receiver before it)
 _KERNEL_OPEN = re.compile(r"(?:^|[^\w.:$@]|\b(?:Kernel|URI)\s*\.\s*)$")
 _PERL_QX = re.compile(r"(?<![\w$@])qx(?!\w)")
+# Perl's IPC modules' runners, read where the code names IPC::: the command starts after IPC::Open2's open2 and
+# IPC::Open3's open3 handles (_PERL_IPC_AT), at IPC::Cmd's `command =>`, else first (IPC::Cmd's run and run_forked,
+# IPC::Run's run, start and harness, IPC::System::Simple's capture, capturex, systemx and runx)
+_PERL_IPC = re.compile(r"\b(open2|open3|run_forked|run|start|harness|capturex?|systemx|runx)\b")
+_PERL_IPC_AT = {"open2": 2, "open3": 3}
+_IPC_COMMAND = re.compile(r"\bcommand\s*=>\s*")
 # the calls of Python's (_py_calls), Node's (_node_calls), PHP's, Lua's and awk's code that run a command (_Parser.
 # shell_calls): PHP's by name (not a method: `$pdo->exec(…)` runs SQL), Lua's os.execute and io.popen (a string after
 # the name is its argument: `os.execute"ls"`), awk's system; of Python's that code looks up at run time (_PY_CALL) the
@@ -1067,10 +1081,35 @@ _SHELL_CALLS = {"php": re.compile(r"(?<![\w>:$])(system|exec|passthru|shell_exec
                 "awk": re.compile(r"\b(system)\s*\(")}
 _PY_SHELL = re.compile(r"system|popen[234]?|getoutput|getstatusoutput|create_subprocess_shell")
 _PYDOC_PAGER = re.compile(r"\bpydoc\s*\.\s*(?:pipepager|pipe|tempfilepager)\s*\(")   # (text, the shell line)
+_PHP_INCLUDE = re.compile(r"\b(?:include|require)(?:_once)?\b\s*(\(?)")
+# Deno's and Bun's process calls: Deno.Command(program, {args: […]}), Deno.run({cmd: […]}), Bun.spawn(list or {cmd: […]})
+_OPTION_RUNS = re.compile(r"\b(?:Deno\s*\.\s*(Command|run)|Bun\s*\.\s*spawn(?:Sync)?)\s*\(")
+_BUN_NAMES = re.compile(r"""(?:const|let|var)\s*\{([^}]{0,500})\}\s*=\s*Bun\b|import\s*\{([^}]{0,500})\}\s*from\s*['"]bun['"]""")
+
+
+def _option_list(code, start, end, key, charge):
+    """The items of an options object's `key: […]` in code[start:end] (Deno's and Bun's), or None: no such list."""
+    m = re.compile(r"\b%s\s*:\s*\[" % key).search(code, start, end)
+    got = m and _delimited(code, m.end(), "[")
+    return _call_args("node", got[0], 0, True, charge)[0] if got else None
+
+
+def _bun_shell(code):
+    """The pattern of Bun's shell run as a tagged template, up to its backquote: Bun.$`…`, and $ under each name the
+    code takes it as (`const { $ } = Bun`, `import { $ as sh } from "bun"`), each once."""
+    names = set()
+    for m in _BUN_NAMES.finditer(code):
+        for item in (m.group(1) or m.group(2)).split(","):
+            name, alias = (re.split(r"\s*(?::|\bas\b)\s*", item.strip(), maxsplit=1) + [""])[:2]
+            if name == "$":
+                names.add(re.escape(alias or "$"))
+    named = r"(?<![\w$.])(?:%s)" % "|".join(sorted(names)) if names else "(?!)"
+    return re.compile(r"(?:Bun\s*\.\s*\$|%s)\s*`" % named)
 # a runner PHP or Lua code takes as a value: PHP's name of one as a string (`$f = 'system'`,
-# call_user_func('exec', …)), Lua's os.execute or io.popen not called (`local f = os.execute`)
+# call_user_func('exec', …)), Lua's os.execute or io.popen not called (`local f = os.execute`), or os or io itself
+# (`local o = os`)
 _SHELL_TAKEN = {"php": re.compile(r"""['"](?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)['"]"""),
-                "lua": re.compile(r"\b(?:os\s*\.\s*execute|io\s*\.\s*popen)\b(?!\s*[(\"'])")}
+                "lua": re.compile(r"\b(?:os\s*\.\s*execute|io\s*\.\s*popen)\b(?!\s*[(\"'])|(?<![\w.])(?:os|io)\b(?!\s*[.\[:])")}
 _SHELL_TRUE = re.compile(r"\bshell\s*=\s*True\b")
 # Node's child_process: the module (require or import, node: too) and the names the code gives it or its functions
 _NODE_CP = r"""(?:require|import)\s*\(\s*(['"`])(?:node:)?child_process\1\s*\)"""
@@ -1329,12 +1368,15 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
-    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    # (declare, local or typeset with -i after it: -i after the first one, so the line is read once)
+    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    declare = re.compile(r"\b(?:declare|local|typeset)\b")
     for line in command.replace("\\\n", "").splitlines():   # bash deletes a backslash-newline before it reads
         has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
         test_open = line.find("[[")
         has_test_context = test_open >= 0 and any(line.find(op, test_open + 2) >= 0 for op in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"))
-        if (has_context and arithmetic.search(line)) or has_test_context:
+        if has_context and (arithmetic.search(line) or (d := declare.search(line)) and re.search(r"\s-i\b", line[d.end():])) \
+                or has_test_context:
             parameterized_index = _has_parameterized_index(line)
             if parameterized_index and re.search(r"\$\((?!\()|`|\$\{[^{}]*\$\}\s*\(", line):
                 raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
@@ -5332,6 +5374,14 @@ class _Parser:
                 self.run_call(kind, name, code, start, opened[1], pid, via, cmd)
             elif _EVALS[kind].fullmatch(name):
                 self.eval_call(kind, code, start, opened[1], pid, via, cmd)
+        for m in _PERL_IPC.finditer(code) if kind == "perl" and "IPC::" in code else ():
+            if not (opened := _call_open(kind, code, m.end())):
+                continue
+            items, end = _call_args(kind, code, *opened, self.charge)
+            self.charge(end - opened[0])
+            if kw := _IPC_COMMAND.search(code, opened[0], end):
+                items = _call_args(kind, code, kw.end(), opened[1], self.charge)[0][:1]
+            self.run_words(items[_PERL_IPC_AT.get(m.group(1), 0):], pid, via, cmd)
         if _HEREDOC_RUN.search(code):
             self.hold(cmd, "code")
         if _TAKEN[kind].search(code):
@@ -5347,9 +5397,30 @@ class _Parser:
         calls = _py_calls(code) if kind == "python" else _node_calls(code) if kind == "node" else _SHELL_CALLS.get(kind)
         # (a runner taken as a value may run any of the code's literals)
         loose = kind == "awk" and _awk_computed_pipe(code) or kind == "python" and _py_taken(code) or \
-            kind == "node" and _node_taken(code) or kind in _SHELL_TAKEN and bool(_SHELL_TAKEN[kind].search(code))
+            kind == "node" and _node_taken(code) or \
+            kind in _SHELL_TAKEN and bool(_SHELL_TAKEN[kind].search(_BLANK_STR["'\""].sub('""', code) if kind == "lua" else code))
         if loose:
             self.hold(cmd, "code")
+        for m in _PHP_INCLUDE.finditer(code) if kind == "php" else ():   # (a data: URL's code; a stream's or value's held)
+            items, end = _call_args(kind, code, m.end(), bool(m.group(1)), self.charge)
+            self.charge(end - m.end())
+            path = _text_of(items[0]) if items and isinstance(items[0], tuple) and None not in items[0] else None
+            if path is not None and path.startswith("data:"):
+                self.read_code(kind, _data_url(path), pid, via + ["include"], cmd)
+            elif path is None or path.startswith("php:"):
+                self.hold(cmd, "code")
+        for m in _OPTION_RUNS.finditer(code) if kind == "node" else ():
+            items, end = _call_args(kind, code, m.end(), True, self.charge)
+            self.charge(end - m.end())
+            if m.group(1) == "Command":   # (its program, then its args)
+                listed = _option_list(code, m.end(), end, "args", self.charge) or []
+                self.run_words([items[0] if items else None, *listed], pid, via, cmd, argv=True)
+            elif not (items and isinstance(items[0], list)):   # (a list first: _CALL's reading)
+                listed = _option_list(code, m.end(), end, "cmd", self.charge)
+                self.run_words([listed if listed is not None else None], pid, via, cmd)
+        for m in _bun_shell(code).finditer(code) if kind == "node" and "bun" in code.lower() else ():
+            if lit := _string_at(kind, code, m.end() - 1, self.charge):   # (Bun's shell reads its template as a line)
+                self.run_text(lit[0], via, cmd)
         for m in _PYDOC_PAGER.finditer(code) if kind == "python" else ():   # (its command is its second argument)
             items, end = _call_args(kind, code, m.end(), True, self.charge)
             self.charge(end - m.end())
@@ -5412,15 +5483,23 @@ class _Parser:
         items, end = _call_args(kind, code, start, paren, self.charge)
         self.charge(end - start)
         text = items[-1] if kind == "node" and items else items[0] if items else None   # (Function(a, b, code))
-        if not isinstance(text, tuple) or None in text or self.ctx.get("evals", 0) >= MAX_DEPTH:
+        if not isinstance(text, tuple) or None in text:
             self.hold(cmd, "code")
             return end
+        self.read_code(kind, _text_of(text), pid, via + ["eval"], cmd)
+        return end
+
+    def read_code(self, kind, text, pid, via, cmd):
+        """`text` read as the program's own code (an eval's literal, a data: URL PHP includes), up to MAX_DEPTH deep:
+        past it `cmd` is held."""
+        if self.ctx.get("evals", 0) >= MAX_DEPTH:
+            self.hold(cmd, "code")
+            return
         self.ctx["evals"] = self.ctx.get("evals", 0) + 1
         try:
-            self.scan(kind, _text_of(text), pid, via + ["eval"], cmd)
+            self.scan(kind, text, pid, via, cmd)
         finally:
             self.ctx["evals"] -= 1
-        return end
 
     def open_pipe(self, kind, m, items, pid, via, cmd):
         """Perl's open (`m`: _OPENS's match; a filehandle, then a mode: `-|` or `|-` and the command, as a runner's
