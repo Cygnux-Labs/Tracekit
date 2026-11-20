@@ -3725,7 +3725,8 @@ class Installer(unittest.TestCase):
                             "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
                 with self.subTest(pack=pack, command=command):
                     self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
-        for name, args in [("kilo_memory_save", {"action": "skip"}),
+        for name, args in [("kilo_memory_save", {"action": "skip"}), ("kilo_memory_save", {"action": ["remember"]}),
+                           ("kilo_memory_save", {"action": {"remember": 1}}),   # unhashable: tool() raised TypeError
                            ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
             with self.subTest(name=name):
                 self.assertEqual(agent_hooks.tool("kilo", name, args), (name, args))

@@ -1067,7 +1067,8 @@ def tool(harness, name, ti):
         if harness == "kilo" and name == "repo_clone":   # the URL it clones, never a decoy `url` beside it
             ti.pop("urls", None)
             ti["url"] = _kilo_remote(ti["repository"]) if isinstance(ti.get("repository"), str) else None
-        if harness == "kilo" and name == "kilo_memory_save" and ti.get("action") in KILO_MEMORY_FILES:
+        if harness == "kilo" and name == "kilo_memory_save" and isinstance(ti.get("action"), str) \
+                and ti["action"] in KILO_MEMORY_FILES:
             paths = [KILO_MEMORY + f for f in KILO_MEMORY_FILES[ti["action"]]]
             ti.pop("content", None)   # what a remember or a correct writes is its `text` (a forget's is a query)
             text = {"content": ti["text"]} if ti["action"] != "forget" and isinstance(ti.get("text"), str) else {}
