@@ -10,11 +10,13 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
+import pytest
 import test_signer_service as ts
 from tracekit import reviewer, schema
 from tracekit.bundle_v2 import export
@@ -260,6 +262,22 @@ class TestTargets(unittest.TestCase):
                           ("pip install --index-url 'http://a b/s' x", None)):
             with self.subTest(cmd):
                 self.assertEqual(target(cmd), want)
+        for cmd, added in (("--extra-index-url https://pypi.org/simple", "pip --extra-index-url https://pypi.org/simple"),
+                           ("-f https://pypi.org/simple", "pip --find-links https://pypi.org/simple"),
+                           ("--extra-index-url https://PyPI.org/simple/", "pip --extra-index-url https://pypi.org/simple/"),
+                           ("--index-url https://pypi.org/simple", "pip --index-url https://pypi.org/simple")):
+            with self.subTest(cmd):   # the default index beside the one a person vetted: where a package may come from
+                self.assertEqual(target(f"pip install --index-url https://pypi.internal/simple {cmd} x"),
+                                 {"TK-A025": sorted([added, "pip --index-url https://pypi.internal/simple"])})
+        self.assertEqual(target("PIP_EXTRA_INDEX_URL=https://pypi.org/simple " + INDEX.format("x")),
+                         {"TK-A025": ["PIP_EXTRA_INDEX_URL https://pypi.org/simple",
+                                      "pip --index-url https://pypi.internal/simple"]})
+        for cmd, want in (("pip config set global.extra-index-url https://pypi.org/simple",
+                           "pip config global.extra-index-url https://pypi.org/simple"),
+                          ("npm install --@acme:registry=https://registry.npmjs.org x",
+                           "npm --@acme:registry https://registry.npmjs.org")):
+            with self.subTest(cmd):   # a config key and a scope's registry name the default as well
+                self.assertEqual(target(cmd), {"TK-A025": [want]})
 
 class TestPrecedent(Case):
     def test_people_answer_until_a_person_answered_a_call_like_it(self):
@@ -360,7 +378,11 @@ class TestPrecedent(Case):
     def test_an_extra_index_or_find_links_never_rides_an_index_url_precedent(self):
         self.precedent()   # an --index-url install, approved by Alice
         for cmd in ("pip install --extra-index-url https://pypi.internal/simple x",
-                    "pip install -f https://pypi.internal/simple x", "pip install -f ./wheels x"):
+                    "pip install -f https://pypi.internal/simple x", "pip install -f ./wheels x",
+                    INDEX.format("--extra-index-url https://pypi.org/simple x"),
+                    "PIP_EXTRA_INDEX_URL=https://pypi.org/simple " + INDEX.format("x"),
+                    INDEX.format("-f https://pypi.org/simple x"),
+                    INDEX.format("--extra-index-url https://PyPI.org/simple/ x")):
             with self.subTest(cmd):
                 _, a = self.ask(cmd)
                 self.assertFalse(a["agent"]["eligible"], a["agent"])
@@ -417,6 +439,27 @@ class TestRunBound(Case):
                                       "tool": "Bash", "args_source": "parsed", "args": {"command": INDEX.format("o1")}})
         aid = self.s.call(other, "approval_request", {"request_id": rid(), **run, "tool_call_id": "o1"})["approval_id"]
         self.assertEqual(self.s.log.approvals[aid]["ai"]["labels"], [])
+
+    def principal_switch(self, first, then):
+        """A secret read in a run registered with `first`, then a hold in a fresh run registered with `then`."""
+        self.s.oidc = mock.Mock(validate=lambda t: CallerIdentity("oidc", "iss/" + t, True, {"person": "oidc:" + t}))
+        self.precedent()
+        reader, fresh = self.register(**first), None
+        self.ask("cat ~/.aws/credentials", run=reader)
+        fresh = self.register(**then)
+        people = [self.s.log.runs[("default", r[0]["run_id"])]["people"][1] for r in (reader, fresh)]
+        _, a = self.ask(run=fresh)
+        return people, a
+
+    def test_a_secret_read_under_a_principal_holds_the_requesters_runs_without_one(self):
+        people, a = self.principal_switch({"principal_token": "alice"}, {})
+        self.assertEqual((people[0] is not None, people[1]), (True, None))
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
+
+    def test_a_secret_read_without_a_principal_holds_the_requesters_runs_under_one(self):
+        people, a = self.principal_switch({}, {"principal_token": "mallory"})
+        self.assertEqual((people[0], people[1] is not None), (None, True))
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
 
     def test_events_a_run_lost_send_every_hold_of_the_requester_to_people(self):
         self.precedent()
@@ -688,8 +731,7 @@ class TestReplayAndView(Case):
         self.restart()
         self.assertEqual({k: self.s.log.agent[k] for k in keys}, before)
         self.assertIn(p, before["precedents"])
-        self.assertEqual(list(before["tainted"]), [pipeline.cooldown_key("default", self.s.log.runs[
-            ("default", self.run["run_id"])])])
+        self.assertEqual(list(before["tainted"]), [f"default\0uid:{AGENT.subject}"])
 
     def test_the_review_view_shows_precedents_labels_and_recent_calls(self):
         bidi = "/Users/me/api" + chr(0x202E)   # a right-to-left override the reviewer must see escaped
@@ -865,11 +907,12 @@ class TestTheViewItAnswers(Case):
         self.precedent()
         aid, _ = self.ask()
         req = {"approval_id": aid, "decision": "approve", "ai": TWO, "asserted": {"model": "m-a", "version": "1"}}
-        msg = self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), **req})   # never read
-        self.assertIn("answer the view approval_review served you", msg)
+        msg = self.refused("conflict", REVIEWER, "approval_decide", {"request_id": rid(), **req})   # never read
+        self.assertIn("read it again", msg)
         served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"]
-        self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), **req,
-                                                                "view_digest": "sha256:" + "0" * 64})
+        msg = self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), **req,
+                                                                      "view_digest": "sha256:" + "0" * 64})
+        self.assertIn("answer the view approval_review served you", msg)
         self.assertEqual(self.s.call(REVIEWER, "approval_decide", {"request_id": rid(), **req,
                                                                    "view_digest": served})["state"], "approved")
         view = self.s._commit(f"approval.view:{aid}", served)
@@ -877,6 +920,21 @@ class TestTheViewItAnswers(Case):
         self.assertEqual(yes["relied_on"]["view"], view)
         self.assertNotIn(served, json.dumps(yes))   # committed: the digest opens it for an auditor alone
 
+
+    def test_an_answer_to_a_view_whose_precedents_changed_is_refused(self):
+        p1 = self.precedent()
+        aid, _ = self.ask()
+        served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})
+        self.assertEqual([p["approval_id"] for p in served["ai"]["precedents"]], [p1])
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "revoke", "id": p1})
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        p2 = self.precedent()   # the view showed p1; p2 counts now
+        req = {"request_id": rid(), "approval_id": aid, "decision": "approve", "ai": TWO,
+               "asserted": {"model": "m-a", "version": "1"}, "view_digest": served["view_digest"]}
+        self.assertIn("is not what holds now", self.refused("conflict", REVIEWER, "approval_decide", req))
+        self.assertEqual(self.ai(aid)["state"], "approved")   # read again: the answer names what it relied on
+        [yes] = [e["data"] for e in self.events() if e["type"] == "approval" and e["data"]["approval_id"] == aid]
+        self.assertEqual(yes["relied_on"]["precedents"]["approve"], [p2])
 
 class TestWhatTheKeyShows(Case):
     def test_no_dotenv_value_or_index_path_and_no_target_once_unclean(self):
@@ -910,7 +968,8 @@ class TestTheReviewersUser(unittest.TestCase):
         stranger = ["uid:990299", "token:reviewer", "uid:x"]   # no such user; and identities that aren't users
         self.assertIsNone(svc.agent_key_access(stranger, d))
         self.assertIn("uid:990299 is the signer's own user", svc.agent_key_access(stranger, d, signer_uid=990299))
-        self.assertIn(f"uid:{st.st_uid} can open {d}", svc.agent_key_access([f"uid:{st.st_uid}"], d, signer_uid=1))
+        with mock.patch("pwd.getpwuid", side_effect=KeyError):   # its owner, no other privilege
+            self.assertIn(f"uid:{st.st_uid} can open {d}", svc.agent_key_access([f"uid:{st.st_uid}"], d, signer_uid=1))
         for path, mode, words in ((key, 0o604, key), (d, 0o701, d), (os.path.dirname(key), 0o704, "keys")):
             with self.subTest(oct(mode)):
                 os.chmod(path, mode)
@@ -918,13 +977,48 @@ class TestTheReviewersUser(unittest.TestCase):
                 os.chmod(path, 0o600 if path == key else 0o700)
         os.chmod(key, 0o640)   # group-readable: for a member of the key's group only
         member = mock.Mock(pw_name="reviewer", pw_gid=st.st_gid + 1)
-        with mock.patch("pwd.getpwuid", return_value=member), mock.patch("os.getgrouplist", return_value=[st.st_gid]):
+        plain = mock.patch("tracekit.install._privileges", return_value=[])   # whatever this machine calls the group
+        with mock.patch("pwd.getpwuid", return_value=member), plain, \
+                mock.patch("os.getgrouplist", return_value=[st.st_gid]):
             self.assertIn(key, svc.agent_key_access(["uid:990299"], d))
-        with mock.patch("pwd.getpwuid", return_value=member), mock.patch("os.getgrouplist", return_value=[]):
+        with mock.patch("pwd.getpwuid", return_value=member), plain, mock.patch("os.getgrouplist", return_value=[]):
             self.assertIsNone(svc.agent_key_access(["uid:990299"], d))
-        with mock.patch("pwd.getpwuid", return_value=member), mock.patch("os.getgrouplist", return_value=[st.st_gid]):
+        with mock.patch("pwd.getpwuid", return_value=member), plain, \
+                mock.patch("os.getgrouplist", return_value=[st.st_gid]):
             os.chmod(key, 0o600)
             self.assertIsNone(svc.agent_key_access(["uid:990299"], d))
+
+    def test_root_an_admin_or_an_acl_could_read_the_keys(self):
+        d = os.path.realpath(ts.tmpdir(self))
+        key = os.path.join(d, "keys", "log.key")
+        os.makedirs(os.path.dirname(key), 0o700)
+        with open(key, "w") as f:
+            f.write("k")
+        os.chmod(key, 0o600)
+        os.chmod(d, 0o700)
+        self.assertIn("uid:0: it is root", svc.agent_key_access(["uid:0"], d))
+        admin = mock.Mock(pw_name="reviewer", pw_gid=4242, pw_uid=990299)
+        with mock.patch("pwd.getpwuid", return_value=admin), mock.patch("os.getgrouplist", return_value=[4242]), \
+                mock.patch("grp.getgrgid", return_value=mock.Mock(gr_name="wheel")):
+            self.assertIn("uid:990299: it is in the wheel group", svc.agent_key_access(["uid:990299"], d))
+        self.assertIsNone(svc.agent_key_access(["uid:990299"], d))
+        for names, acl in ((["system.posix_acl_access"], True), (["system.posix_acl_default"], True),
+                           (["user.note"], False), (OSError(95, "no xattrs"), False)):
+            with self.subTest(names=str(names)), mock.patch.object(os, "listxattr", create=True, side_effect=lambda p, **kw: (
+                    (_ for _ in ()).throw(names) if isinstance(names, Exception) else names)):   # Linux's ACLs
+                self.assertEqual(bool(svc.agent_key_access(["uid:990299"], d)), acl)
+
+    @unittest.skipUnless(sys.platform == "darwin" or shutil.which("setfacl"), "macOS, or Linux with setfacl")
+    def test_an_acl_on_a_key_stops_the_signer(self):
+        d = ts.tmpdir(self)
+        svc.SignerService(d, policy=engine(), identity=AGENT, approvals=Case.approvals).close()
+        key = os.path.join(d, "keys", "log.key")
+        if sys.platform == "darwin":
+            subprocess.run(["chmod", "+a", "group:everyone allow read", key], check=True)
+        else:
+            subprocess.run(["setfacl", "-m", "o::---,u:nobody:r", key], check=True)
+        with self.assertRaisesRegex(ValueError, "log.key carries an ACL, which may let uid:990299 in"):
+            svc.SignerService(d, policy=engine(), identity=AGENT, approvals=Case.approvals)
 
     def test_the_signer_refuses_to_start_with_one_that_could_read_its_keys(self):
         d = ts.tmpdir(self)
@@ -935,6 +1029,32 @@ class TestTheReviewersUser(unittest.TestCase):
         os.chmod(os.path.join(d, "keys", "log.key"), 0o644)
         with self.assertRaisesRegex(ValueError, "uid:990299 can open .*log.key"):
             svc.SignerService(d, policy=engine(), identity=AGENT, approvals=conf)
+
+
+
+class TestTheRunBoundOffline(TestEvidence):
+    @pytest.mark.unverified_bundles
+    def test_without_the_policy_snapshot_an_ai_yes_in_a_labelled_run_is_a_warning(self):
+        import test_ts_verifier as tv
+        aid, _ = self.ask(tcid="tc-1")
+        self.person(aid)
+        self.ask("cat ~/.aws/credentials", tcid="tc-secret")
+        with mock.patch.object(svc.SignerService, "_unclean", lambda s, run: []):   # a signer that let it through
+            aid2, _ = self.ask(tcid="tc-2")
+            self.ai(aid2)
+        path, trust = self.bundle()   # with the snapshot: the run bound fails the line
+        bare = os.path.join(self.dir, "bare.tkb")   # without it: unchecked, said
+        export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], bare)
+        for bundle, status, words in ((path, "fail", "which the policy's run bound names"),
+                                      (bare, "warn", "not checked against the run bound")):
+            with self.subTest(status):
+                rep, code = v2.verify(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "AI approvals"]
+                self.assertEqual((line["status"], code), (status, 1 if status == "fail" else 0))
+                self.assertIn(words, line["problems"][0])
+                if not tv.SKIP:
+                    [ts_line] = [c for c in tv.ts_verify(bundle, trust)["checks"] if c["check"] == "AI approvals"]
+                    self.assertEqual((ts_line["status"], ts_line["problems"]), (status, line["problems"]))
 
 class TestHookProject(unittest.TestCase):
     def test_the_hook_names_the_repository_its_session_works_in(self):
@@ -1129,6 +1249,24 @@ class TestReviewerOnTheSigner(Case):
         self.assertEqual((self.s.log.approvals[bad]["state"], self.s.log.approvals[good]["state"]),
                          ("requested", "approved"))
         self.assertEqual(sum(bad in line for line in logs.output), 2)
+
+    def test_a_view_that_changed_before_the_answer_is_read_again_next_poll(self):
+        p1 = self.precedent()
+        aid, _ = self.ask()
+        judge, moved = reviewer.judge, []
+
+        def judging(ask, tenant, view, *a):   # people change the precedents while the model thinks
+            if not moved:
+                moved.append(self.s.call(ALICE, "approver", {"request_id": rid(), "action": "revoke", "id": p1}))
+                self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+                self.precedent()
+            return judge(ask, tenant, view, *a)
+        rv = reviewer.Reviewer([("", As(self, REVIEWER))], FakeModel(said("approve")), ["m-a", "m-b"])
+        with mock.patch.object(reviewer, "judge", judging), contextlib.redirect_stderr(io.StringIO()):
+            rv.poll()
+            self.assertEqual(self.s.log.approvals[aid]["state"], "requested")   # refused: conflict
+            rv.poll()
+        self.assertEqual(self.s.log.approvals[aid]["state"], "approved")
 
     def test_status_escapes_what_agents_wrote(self):
         line = "$X run \x1b[2K\r\x1b[1A tidy"   # erase the line, carriage return, cursor up

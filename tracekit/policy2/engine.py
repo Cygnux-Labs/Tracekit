@@ -1217,11 +1217,14 @@ def _environment_sent(parsed):
 
 def _package_indexes(commands, refs=(), kinds=False):
     """Return only explicitly selected non-default package sources, one subject per effective option or variable; with
-    `kinds`, each as (how it was selected: the variable, or the program and its option or config key, the source), as
+    `kinds`, every selected source, the default's too (pypi.org as an --extra-index-url adds where a package may come
+    from), each as (how it was selected: the variable, or the program and its option or config key, the source), as
     Engine.target keys a precedent by (an --extra-index-url is no --index-url)."""
+    def counted(value, default):
+        return kinds or _non_default_source(value, default)
     words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
     out = [(name.upper(), value) for name, eq, value in (w.partition("=") for w in words)
-           if eq and name.upper() in _SOURCE_VARIABLES and _non_default_source(value, _SOURCE_VARIABLES[name.upper()])]
+           if eq and name.upper() in _SOURCE_VARIABLES and counted(value, _SOURCE_VARIABLES[name.upper()])]
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -1263,7 +1266,7 @@ def _package_indexes(commands, refs=(), kinds=False):
                 if value is not None and (
                         (exe == "pip" and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url", "find-links"})
                         or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
-                    if _non_default_source(value, default):
+                    if counted(value, default):
                         out.append((f"{exe} config {key}", value))
             continue
         selected, i = [], 0
@@ -1279,7 +1282,7 @@ def _package_indexes(commands, refs=(), kinds=False):
                     value = args[i + 1]
                     i += 1
                 if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
-                    out += [(f"{exe} {name}", value)] if value is not None and _non_default_source(value, default) \
+                    out += [(f"{exe} {name}", value)] if value is not None and counted(value, default) \
                         else []
                 elif exe in ("npm", "pnpm", "yarn", "bun"):
                     selected = [(name, value)] if value is not None else []  # npm uses the last --registry
@@ -1291,7 +1294,7 @@ def _package_indexes(commands, refs=(), kinds=False):
                 selected.append(("-i", arg[2:]))
             i += 1
         for name, value in selected:
-            if value is None or _non_default_source(value, default):
+            if value is None or counted(value, default):
                 out.append((f"{exe} {_LONG_OPTIONS.get(name, name)}", value or "<missing>"))
     return out if kinds else [value for _, value in out]
 

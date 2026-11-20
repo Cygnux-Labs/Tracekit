@@ -509,17 +509,19 @@ person's. On a laptop the signer also refuses to start with an `approval.agent` 
 `executor: t2` (a warning on a server).
 
 **The run.** While the run carries a label `run.clean` names, people answer every hold. The signer reads labels for
-the requester (its user and attested principal) across all of its runs, so a run the agent registers afresh is no way
-around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
+the requester (its identity, as precedents match it) across all of its runs, whatever principal each attested, so a
+run the agent registers afresh is no way around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
 credentials file, an env file, a key), or the signer lost events of one of them; the label holds while that run is
 open and for 24 hours after it closes. A run that continues an earlier run of its session, whose calls it can't see,
-carries it too. `untrusted_content` isn't read by this signer yet: a bound that names it sends every hold to people
-([limits](limits.md#approvals)).
+carries it too. The bound is as wide as the rules labelled `secrets_access`: a script that opens a secret file
+itself labels nothing. `untrusted_content` isn't read by this signer yet: a bound that names it sends every hold to
+people ([limits](limits.md#approvals)).
 
 **Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target,
 the same project and the same requesting identity. The target: for `TK-A025`, each package source and how it was
 selected (`pip --index-url`, `pip --extra-index-url`, `pip --find-links`, a config key or a variable are each their
-own), any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
+own), the default index too when the line names it (pypi.org as an extra index adds where a package may come from),
+any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
 `TK-SHELL-PARSE`, the same command, exactly. The person's answer counts when the run was clean both when the call was
 asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
@@ -550,7 +552,8 @@ widens a bound.
 answer, when, the person's reason), the playbook in force, and the run's last 10 calls (tool, decision, rules). The
 reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
 `approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
-reviewer for that approval.
+reviewer for that approval, and only while what the view showed of it (its precedents, the run's labels, the
+playbook) still holds. Otherwise it answers `conflict`, and the reviewer reads the view again at its next poll.
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
 own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
@@ -560,12 +563,15 @@ in a run that isn't clean it shows no target at all. A person's answer carries `
 and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided
 (`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer. The verifiers' `AI
 approvals` line checks each AI yes against the precedents its bundle holds, against any person's rejection of a call
-like it there, and against the run bound of the policy snapshot it names ([verdicts](verdicts.md)).
+like it there, and against the run bound of the policy snapshot it names; without that snapshot, an AI yes in a run
+that carried a label makes the line a warning, since its run bound wasn't checked ([verdicts](verdicts.md)).
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
 own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start
-when a `uid:` in `approvals.agents` is its own user or can open its data dir, its `keys` folder or a key, and
-`tracekit doctor` fails `D-REVIEWER-USER` then. Make the user once, as root.
+when a `uid:` in `approvals.agents` is its own user, root or in an admin group (as `D-AGENT-PRIV` reads them), or can
+open its data dir, its `keys` folder or a key by their owner and mode, or when any of them carries an ACL (Linux and
+macOS); `tracekit doctor` fails `D-REVIEWER-USER` then, and run as root it also tries each as the reviewer's own uid.
+Make the user once, as root.
 
 macOS (an id that `dscl . -list /Users UniqueID` and `dscl . -list /Groups PrimaryGroupID` don't list, in 200-399, as
 `tracekit init` picks the signer's):

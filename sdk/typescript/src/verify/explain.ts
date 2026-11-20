@@ -254,6 +254,8 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
       + "call like it, in a run the policy's run bound closed to it, with a person's rejection of a call like it, or "
       + "on an earlier yes that doesn't hold: another kind of call, a self-approval or break-glass answer, a run that "
       + "wasn't clean, given after it or over 30 days before it, or revoked before it.",
+    warn: "An AI approver's yes in a run that carried a label, in a bundle without the policy snapshot that says "
+      + "whether its run bound allowed that: nothing here checks it. Export with the policy snapshots.",
   },
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "

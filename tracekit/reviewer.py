@@ -60,7 +60,8 @@ DEFAULT_MODEL = "claude-opus-5-5"
 POLL_S, TIMEOUT_S, MAX_REASON = 5.0, 120.0, 500
 KEYS = {"signer", "gateway", "url", "key_file", "api", "model", "poll_s", "timeout_s", "tenants"}
 DECISIONS = ("approve", "reject", "escalate")
-TRANSIENT = ("unavailable", "quota_exceeded")   # the signer can't write now or rate-limits: tried again next poll
+# tried again next poll: the signer can't write now, rate-limits, or what the view showed changed before the answer
+TRANSIENT = ("unavailable", "quota_exceeded", "conflict")
 APIS = {"messages": "/v1/messages", "chat": "/v1/chat/completions"}   # Anthropic Messages, OpenAI chat
 PROMPT = """You review one tool call that an AI agent asked to run and that a policy held for approval.
 The user message is a JSON view prepared by the Tracekit signer: the tool, the policy rules that held the call with

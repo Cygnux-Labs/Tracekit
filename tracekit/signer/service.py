@@ -309,6 +309,7 @@ import argparse
 import base64
 import collections
 import datetime
+import errno
 import faulthandler
 import functools
 import hashlib
@@ -832,19 +833,48 @@ def _agents(approvals, authorize, multi_tenant_apps):
     return frozenset(agents)
 
 
+def _acl(path):
+    """Whether `path` (a link not followed) carries an ACL, which may let a user in that its mode keeps out: Linux's
+    POSIX ACL attributes, macOS's extended ACL (one it can't read counts as one)."""
+    # lean: ACLs are read on Linux and macOS only; read another system's when a signer runs there
+    if hasattr(os, "listxattr"):   # Linux
+        try:
+            return bool({"system.posix_acl_access", "system.posix_acl_default"} & set(
+                os.listxattr(path, follow_symlinks=False)))
+        except OSError:   # a file system without extended attributes has no ACL either
+            return False
+    if sys.platform != "darwin":
+        return False
+    import ctypes
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    libc.acl_get_link_np.restype, libc.acl_get_link_np.argtypes = ctypes.c_void_p, (ctypes.c_char_p, ctypes.c_int)
+    libc.acl_get_entry.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+    libc.acl_free.argtypes = (ctypes.c_void_p,)
+    acl = libc.acl_get_link_np(os.fsencode(path), 0x100)   # ACL_TYPE_EXTENDED
+    if not acl:
+        return ctypes.get_errno() != errno.ENOENT   # ENOENT: none
+    try:
+        return libc.acl_get_entry(acl, 0, ctypes.byref(ctypes.c_void_p())) == 0   # ACL_FIRST_ENTRY: one at least
+    finally:
+        libc.acl_free(acl)
+
+
 def agent_key_access(agents, data_dir, signer_uid=None):
     """Why an agent approver that is a local user (`uid:N` in approvals.agents) could answer as the signer or read its
-    data, or None: N is the signer's own user (`signer_uid`, default this process's), or it can open the data dir, its
-    keys dir or a key in it (it owns it, or the mode lets its groups or every user read it, or enter it for a directory).
-    The signer refuses to start then, and `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as a user of its
-    own (docs/approvals.md#the-ai-approver)."""
+    data, or None: N is the signer's own user (`signer_uid`, default this process's), root or a member of an admin
+    group (install._privileges), or it can open the data dir, its keys dir or a key in it (it owns it, the mode lets its
+    groups or every user read it, or enter it for a directory, or any of them carries an ACL). The signer refuses to
+    start then, and `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as an unprivileged user of its own
+    (docs/approvals.md#the-ai-approver)."""
     if not hasattr(os, "getuid"):
         return None
     import pwd   # POSIX only: Windows has no uid to compare
+    from tracekit import install
     me = os.getuid() if signer_uid is None else signer_uid
     keys = os.path.join(data_dir, "keys")
     paths = [p for p in (data_dir, keys) if os.path.isdir(p)] + (
         [os.path.join(keys, n) for n in sorted(os.listdir(keys))] if os.path.isdir(keys) else [])
+    acl = next((p for p in paths if _acl(p)), None)
     for a in sorted(agents):
         if not re.fullmatch(r"uid:[0-9]{1,10}", a):
             continue
@@ -855,8 +885,15 @@ def agent_key_access(agents, data_dir, signer_uid=None):
         try:
             pw = pwd.getpwuid(uid)
             groups = set(os.getgrouplist(pw.pw_name, pw.pw_gid))   # as the system resolves them (macOS's staff too)
-        except KeyError:   # no such user here: only the bits for every user can let it in
-            groups = set()
+            privileged = install._privileges(pw)
+        except KeyError:   # no such user here (root always is): only the bits for every user can let it in
+            groups, privileged = set(), []
+        if privileged:
+            return (f"approvals.agents: {a}: {privileged[0]}, so it can read the signer's keys: run the reviewer as an "
+                    "unprivileged user of its own (docs/approvals.md#the-ai-approver)")
+        if acl:
+            return (f"approvals.agents: {acl} carries an ACL, which may let {a} in: remove it (macOS: chmod -N; Linux: "
+                    "setfacl -b) and keep the signer's data dir its user's alone")
         for p in paths:
             st = os.lstat(p)
             other, group = ((stat.S_IROTH | stat.S_IXOTH, stat.S_IRGRP | stat.S_IXGRP) if stat.S_ISDIR(st.st_mode)
@@ -2378,7 +2415,8 @@ class SignerService:
 
     def _run_labels(self, run):
         """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ), read for
-        the run's requester (pipeline.cooldown_key) across all of its runs, never from what a client says:
+        the run's requester (its tenant and owner, as precedents match) across all of its runs whatever principal each
+        attested, never from what a client says:
         secrets_access while one of them that had a call decided under a rule labelled secrets_access (TK-F005 and its
         kin, as detection counts the label; a denied or held call too) or lost events the signer never got (a
         client_counter_gap: what they held is unknown) is open, and for SECRETS_S after it closed; and for a run
@@ -2386,7 +2424,7 @@ class SignerService:
         untrusted_content is not read yet: a bound that names it sends every hold to people (_unclean)."""
         # lean: untrusted_content is unread until run labels are signed records (1.8 A's run.label); read it here then
         since = time.time() - SECRETS_S
-        ends = (self.log.agent["tainted"].get(cooldown_key(run["tenant"], run)) or {}).values()
+        ends = (self.log.agent["tainted"].get(f"{run['tenant']}\0{run['owner']}") or {}).values()
         return ["secrets_access"] if run.get("partial_start") or any(t is None or t > since for t in ends) else []
 
     def _unclean(self, run):
@@ -4064,19 +4102,21 @@ class SignerService:
                 raise RPCError("forbidden", why)
             ap, demoted, ext, basis = a.get("ai"), self._demoted(a), {}, None
             if ap:   # what the answer relied on, in its record (relied_on): the signer's own reading of each
-                served = (a.get("viewed") or {}).get(sub)
-                if served is None or req.get("view_digest") != served:
-                    raise RPCError("forbidden", f"{aid}: answer the view approval_review served you (its view_digest): "
-                                                "read it again")
-                prec = self._precedents(run["tenant"], a["requester"], ap["digest"])
-                book = _playbook_ref(self.log.agent["playbook"].get(run["tenant"]))
+                served, state = (a.get("viewed") or {}).get(sub), self._ai_state(a, run)
+                if served is not None and req.get("view_digest") != served[0]:
+                    raise RPCError("forbidden", f"{aid}: answer the view approval_review served you (its view_digest)")
+                if served is None or served[1] != "sha256:" + hashlib.sha256(canonical(state)).hexdigest():
+                    # no view served (the signer restarted since), or its precedents, labels or playbook changed
+                    raise RPCError("conflict", f"{aid}: what approval_review showed you is not what holds now: read "
+                                               "it again and answer that")
+                prec, labels, book = state
                 pin = pinned({**data, "relied_on": {"playbook": book}})
                 demoted = demoted or next((
                     "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
                     ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
                 ext = {"relied_on": {
-                    "precedents": prec, "playbook": book, "view": self._commit(f"approval.view:{aid}", served),
-                    "policy_hash": a["policy_hash"], "labels": self._run_labels(run),
+                    "precedents": prec, "playbook": book, "view": self._commit(f"approval.view:{aid}", served[0]),
+                    "policy_hash": a["policy_hash"], "labels": labels,
                     "mode": "shadow" if shadow or demoted else "enforce", **({"demoted": demoted} if demoted else {}),
                     **given}}
                 basis = decision == "approve" and (
@@ -4133,7 +4173,7 @@ class SignerService:
         except TimeoutError:
             conditions = [{"rule": "", "condition": "a bound's pattern ran out of time", "passed": False}]
         more = self._approver_view(a, copy) if a.get("ai") else {}
-        conditions += more.pop("conditions", [])
+        conditions, state = conditions + more.pop("conditions", []), more.pop("state", None)
         view = {"approval_id": aid, "tool": a["tool"], "expires_at": a["expires_at"],
                 "rules": [{"id": r["id"], **{k: r[k][:1024] for k in ("reason", "rationale") if k in r}} for r in rules],
                 "conditions": conditions, "budget": self._budgets(a["run_key"][0], a["requester"], rules, time.time()),
@@ -4141,32 +4181,41 @@ class SignerService:
                 "redacted": sorted(_escaped(k)[:4096] for k, v in (shown.items() if isinstance(shown, dict) else ())
                                    if MARK.search(canonical(v).decode())), **more}
         digest = "sha256:" + hashlib.sha256(canonical(view)).hexdigest()
-        if a.get("ai"):   # what this identity was shown: its answer must name it (_agent_answer)
+        if a.get("ai"):   # what this identity was shown: its answer must name it, unchanged since (_agent_answer)
             def served(tx):
                 live = self.log.approvals.get(aid)
                 if live is not None:
-                    tx.set(live, "viewed", {**(live.get("viewed") or {}), subject(identity): digest})
+                    tx.set(live, "viewed", {**(live.get("viewed") or {}), subject(identity): [digest, state]})
             self.log.write(served)
         return {**view, "view_digest": digest}
+
+    def _ai_state(self, a, run):
+        """(precedents, labels, playbook {version, digest}) an AI answer to approval `a` relies on, read now: what its
+        view shows of them (_approver_view) and what its record names (_agent_answer), which refuses an answer once they
+        changed since the view it answers was served."""
+        return (self._precedents(run["tenant"], a["requester"], a["ai"]["digest"]), self._run_labels(run),
+                _playbook_ref(self.log.agent["playbook"].get(run["tenant"])))
 
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
         conditions as they stand now, and `ai`: the precedent key, the run's labels, the precedents (each
         person's answer, when, and their reason), the playbook in force and the run's last calls (tool, decision, rule
-        ids). Strings the agent chose are escaped."""
+        ids). Strings the agent chose are escaped. `state`, for approval_review to keep and not to show: a digest of
+        _ai_state as the view shows it."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
-        unclean, prec = self._unclean(run), self._precedents(a["run_key"][0], a["requester"], ap["digest"])
+        state = self._ai_state(a, run)
+        (prec, labels, _), unclean = state, self._unclean(run)
         found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
         book = self.log.agent["playbook"].get(a["run_key"][0])
-        return {"conditions": [{"rule": "approval_agent", "condition": f"the run carries no {x} label" + (
+        conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label" + (
             "" if x in RUN_LABELS_READ else " (this signer doesn't read it yet)"), "passed": x not in unclean}
             for x in self.policy.policy["approval_agent"]["run"]["clean"]] + [
             {"rule": "approval_agent", "condition": "a person answered a call like this one (the same rules, tool, "
                                                     "target and project) in a clean run", "passed": bool(found)},
             {"rule": "approval_agent", "condition": "people's answers to calls like this one agree",
-             "passed": not (prec["approve"] and prec["reject"])}],
-            "ai": {
-                "target": _escaped(ap["key"]), "labels": self._run_labels(run),
+             "passed": not (prec["approve"] and prec["reject"])}]
+        return {"state": "sha256:" + hashlib.sha256(canonical(state)).hexdigest(), "conditions": conditions, "ai": {
+                "target": _escaped(ap["key"]), "labels": labels,
                 "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
                                 **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
                 "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in

@@ -1285,6 +1285,17 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     agents = (cfg.get("approvals") or {}).get("agents") or ()
     if owner is not None and any(str(a).startswith("uid:") for a in agents):   # an AI approver on this machine
         why = service.agent_key_access(agents, data, owner)
+        uids = sorted(str(a) for a in agents if re.fullmatch(r"uid:[0-9]{1,10}", str(a))) if pwd and not why else []
+        for a in uids:   # and as the reviewer's own uid when doctor can act as it (root), as D-AGENT-PROBE does
+            try:
+                rpw = pwd.getpwuid(int(a[4:]))
+                listed = sorted(os.listdir(keys)) if os.path.isdir(keys) else []
+            except (KeyError, OSError):   # no such user here: nothing runs as it
+                continue
+            hits = agent_access(rpw, [[data, "read"], [keys, "read"]] + [[os.path.join(keys, n), "read"] for n in listed])
+            if hits:
+                why = f"approvals.agents: {a} can read " + ", ".join(p for p, _ in hits)
+                break
         add("D-REVIEWER-USER", not why, why or "the agent approvers that are local users can't read the signer's keys",
             "run the reviewer as a user of its own, listed as uid:<its uid> in approvals.agents, and keep the keys "
             "readable by the signer's user alone (docs/approvals.md#the-ai-approver)")

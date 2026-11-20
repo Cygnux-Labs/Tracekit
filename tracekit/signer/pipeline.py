@@ -220,11 +220,12 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (cooldown_key, the requester -> {run
-    id: None while open, else when it closed} of its runs that had a call decided under a rule labelled
-    secrets_access, `log.secret_rules`, or lost events the signer never got, for SECRETS_S after each closed: the run
-    bound reads it across all of the requester's runs, so a run it registers afresh is no way around it). A precedent
-    goes bad when a person revokes it (precedent.revoked), an
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (tenant and run owner, the requester
+    precedents match by, joined by a NUL -> {run id: None while open, else when it closed} of its runs that had a call
+    decided under a rule labelled secrets_access, `log.secret_rules`, or lost events the signer never got, for
+    SECRETS_S after each closed: the run bound reads it across all of the requester's runs, whatever principal each
+    attested, so a run it registers afresh is no way around it). A precedent goes bad when a person revokes it
+    (precedent.revoked), an
     incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI
     approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more,
     or an answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled
@@ -243,9 +244,9 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
-    # lean: a stand-in for 1.8 A's requester labels (`labels_for`: the same cooldown_key and window); swap it in once A
-    # lands. A final run (final_run: no `people`) takes no label.
-    k = cooldown_key(tenant, run) if run.get("owner") and "people" in run else None
+    # lean: a stand-in for 1.8 A's requester labels (`labels_for`, same window); swap it in once A lands, read for the
+    # owner across all its principals as here
+    k = f"{tenant}\0{run['owner']}" if run.get("owner") else None
     if k and (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
               or typ == "capture.gap" and d.get("kind") == "client_counter_gap"
               or typ == "run.closing" and (ag["tainted"].get(k) or {}).get(e["run_id"], 0) is None):

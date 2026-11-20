@@ -599,7 +599,8 @@ reviewer's own word (each model's answer). `playbook.entry`, `precedent.revoked`
 answers through the signer, in the tenant's signer run. A verifier from 1.8.0 prints `AI approvals` for a bundle with
 any of them: an AI yes that decided must carry two answers that approve and a person's precedent and no rejection,
 and, with the snapshot of the policy it names, none of its run's labels may be one the policy's `approval_agent` run
-bound names. A person's answer counts as a precedent when it is a person's own (not self-approved, not break-glass), to
+bound names; without a snapshot it can read, an AI yes whose run carried a label makes the line a warning (the run
+bound unchecked), never a pass. A person's answer counts as a precedent when it is a person's own (not self-approved, not break-glass), to
 a request with the same digest, tenant and requester, clean when asked and when answered (`run_clean: true`), before
 the AI's answer and at most 30 days before it, and not revoked as a precedent before it. Each precedent the AI's yes
 names that the bundle holds must count, and no person's rejection the bundle holds may count; a named precedent the
