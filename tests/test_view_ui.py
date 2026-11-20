@@ -2615,6 +2615,9 @@ class PlainPages(unittest.TestCase):
         pushed_call["edges"] += [{**pushed_call["edges"][0], "kind": "email"}, {**pushed_call["edges"][0], "grade": "claimed"}]
         again = html.unescape(self.influence(S["sources"], S["edges"], S["groups"], calls=twice)[0])
         self.assertEqual(again.count(exact), 1)
+        pushed_call["edges"] = [{**e, "bound": False} if e["grade"] == "exact" else e for e in pushed_call["edges"]]
+        unbound = html.unescape(self.influence(S["sources"], S["edges"], S["groups"], calls=twice)[0])
+        self.assertIn(exact[:-1] + "; the call's arguments here are the log's, not checked against them)</div>", unbound)
         self.assertIn("claimed by the log, not checked against the signer: its `branch` from github:issue-12</div>", again)
         self.assertIn("seen: 3 sources in the context of the model call that asked for it (the agent&#39;s runtime recorded its context)", page)
         # the held push's branch is in the issue's text: a hint, shown only when asked for

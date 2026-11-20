@@ -7104,7 +7104,7 @@
       // an argument the signer traced twice (as an address and as a string, say) is one line
       const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
       const lines = [
-        ...by("exact").map(e => `exact: ${e.label} holds its \`${e.field}\`, and nothing the signer indexed as trusted does (the call's signed records, which this viewer verified)`),
+        ...by("exact").map(e => `exact: ${e.label} holds its \`${e.field}\`, and nothing the signer indexed as trusted does (the call's signed records, which this viewer verified${e.bound ? "" : "; the call's arguments here are the log's, not checked against them"})`),
         ...by("claimed").map(e => `claimed by the log, not checked against the signer: its \`${e.field}\` from ${e.label}`),
         ...by("measured").map(e => `measured: a replay without ${e.label} changed it, effect ${sgn(e.effect)}` + (e.ci ? ` [${sgn(e.ci[0])}, ${sgn(e.ci[1])}]` : "")),
         c.seen ? `seen: ${plural(c.seen, "source")} in the context of the model call that asked for it (${[...new Set(seen.map(e => BASIS[e.basis] || e.basis))].join("; ")})` : "",

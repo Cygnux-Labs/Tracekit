@@ -114,6 +114,8 @@ class Run:
     # the exact influence edges (call, field, kind, record, source) the code holding this Run checked against the
     # signer's records (influence.signed_edges); never read from the run's own files, which its agent can write
     signed: FrozenSet[Tuple[str, Any, Any, Any, str]] = frozenset()
+    # of those calls, the ones whose arguments in the log were checked against the arguments their signed decision kept
+    bound: FrozenSet[str] = frozenset()
 
     @property
     def start(self) -> Dict[str, Any]:

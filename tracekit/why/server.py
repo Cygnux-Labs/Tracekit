@@ -38,8 +38,8 @@ from .core import (GENESIS, OWNER, REF, SCHEMA, content_hash, event_hash, event_
                    ts_seconds)
 from .evals import list_runs
 from .guard import Webhook
+from . import import_v2
 from .import_v2 import _target
-from .influence import signed_edges
 from .replay import attribute, counterfactual, load_system
 from .view import run_detail
 
@@ -106,6 +106,16 @@ def _events(path: str) -> Tuple[Dict[str, Any], List[Optional[str]]]:
                                            if e.get("id") else None for e in events]
 
 
+def _blobs_state(path: str) -> Optional[Tuple[int, int, int]]:
+    """(how many content files, their bytes, the latest change time of one) of the run folder at `path`: a file written
+    again in place changes its change time, which no one can set back."""
+    try:
+        sts = [e.stat() for e in os.scandir(os.path.join(path, "blobs"))]
+    except OSError:
+        return None
+    return len(sts), sum(s.st_size for s in sts), max((s.st_ctime_ns for s in sts), default=0)
+
+
 def _blobs_open(path: str) -> bool:
     """Whether every content file of the run folder at `path` holds the content its name (the content's hash) says."""
     d = os.path.join(path, "blobs")
@@ -114,23 +124,6 @@ def _blobs_open(path: str) -> bool:
             if "sha256:" + name[:-len(".json")] != content_hash(json.load(f).get("v")):
                 return False
     return True
-
-
-def lookups(rows: List[Dict[str, Any]]):
-    """(decision_of, record) of influence.signed_edges over the viewer's rows of the signed records it verified: the
-    provenance the decision of the call a record is of recorded (a call that ran cites its result, whose call is its
-    decision's tool_use_id), when that decision is of the tool; a record's type, trust and source."""
-    by_key = {(r.get("session_id"), r["v2"].get("run_seq")): r for r in rows}
-    decisions = {(r.get("session_id"), r.get("tool_use_id")): r for r in rows if r.get("tool_name")}
-
-    def decision_of(run_id, run_seq, tool):
-        r = by_key.get((run_id, run_seq))
-        d = decisions.get((run_id, r.get("tool_use_id"))) if r else None
-        return (d["v2"].get("provenance") or []) if d and d.get("tool_name") == tool else None
-    def record(run_id, run_seq):
-        r = by_key.get((run_id, run_seq))
-        return r and (r["v2"].get("type"), r["v2"].get("trust"), r["v2"].get("source"))
-    return decision_of, record
 
 
 def _covers(imp: Optional[str], log: str) -> bool:
@@ -240,8 +233,8 @@ class Store:
         self._seen: Dict[str, set] = {}
         self._sent: Dict[str, int] = {}   # with tape: events of each run already published
         self._heads: Dict[str, Dict[str, Any]] = {}   # run folder -> what ingest needs of it (_head)
-        self._cache: Dict[str, Tuple[Tuple, Dict[str, Any]]] = {}   # run folder -> (its _stat, analyse())
-        self._joins: Tuple[Optional[int], Any] = (None, None)   # (records read, lookups() of their rows)
+        # run folder -> (its _stat, analyse(), the feed's signed_version it was joined at)
+        self._cache: Dict[str, Tuple[Tuple, Dict[str, Any], Any]] = {}
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._watcher: Optional[threading.Thread] = None
@@ -256,14 +249,16 @@ class Store:
 
     def analysed(self, path: str) -> Dict[str, Any]:
         """analyse() of a run folder, cached until its events or tests change."""
-        st = _stat(path)
+        st, version = _stat(path), getattr(self.out, "signed_version", None)
         hit = self._cache.get(path)
         if hit and hit[0] == st:
-            run = hit[1].get("run")
-            signed = run and self._verify(run)
-            if run is not None and signed != run.signed:   # signed records arrived, or left the live view
-                run.signed = signed
-                self._cache[path] = (st, {**hit[1], **analysed_run(run, hit[1]["graph"])})
+            a = hit[1]
+            if a.get("run") is not None and hit[2] != version:   # the signed records changed: join the run again
+                joined = self._verify(a["run"])
+                if joined != (a["run"].signed, a["run"].bound):
+                    a["run"].signed, a["run"].bound = joined
+                    a = {**a, **analysed_run(a["run"], a["graph"])}
+                self._cache[path] = (st, a, version)
             return self._cache[path][1]
         # lean: keeps each run (blobs included) in memory for the server's life; cache summaries only if that grows
         a = analyse(path, self._verify)
@@ -275,17 +270,33 @@ class Store:
                 return hit[1] if hit else a
             if now != st:   # the new folder arrived during the analysis
                 st, a = now, analyse(path, self._verify)
-        self._cache[path] = (st, a)
+        self._cache[path] = (st, a, version)
         return a
 
-    def _verify(self, run) -> FrozenSet[Tuple]:
-        """The run's exact influence edges (influence.signed_edges) from the signed records this viewer verified."""
+    def _verify(self, run) -> Tuple[FrozenSet[Tuple], FrozenSet[str]]:
+        """(the run's exact influence edges, the calls whose arguments in the log were checked) from the signed records
+        this viewer verified (its feed's signed_runs), joined as a merge checks a log against them (import_v2.signed): a
+        run id two tenants share joins nothing. A call whose signed decision kept its arguments (a row the tape shows
+        them on) is checked when they are the log's, and loses its edges when they aren't."""
         with self.out.lock:
-            n = len(self.out.records)
-            if self._joins[0] != n:
-                self._joins = (n, lookups([r for r in self.out.records if isinstance(r.get("v2"), dict)]))
-            lk = self._joins[1]
-        return signed_edges(run, *lk)
+            runs = dict(getattr(self.out, "signed_runs", {}))
+            kept = {(r.get("tenant"), r.get("session_id"), r["v2"].get("run_seq")): r.get("tool_input")
+                    for r in self.out.records if isinstance(r, dict) and isinstance(r.get("v2"), dict)
+                    and r.get("tool_name") and r.get("target") is None}
+        tenants: Dict[str, List[Any]] = {}
+        for tenant, rid in runs:
+            tenants.setdefault(rid, []).append(tenant)
+        cited = {ev["tracekit"].get("run_id") for ev in run.events if isinstance(ev.get("tracekit"), dict)}
+        mine = {rid: tenants[rid][0] for rid in cited if len(tenants.get(rid, ())) == 1}
+        edges, decisions = import_v2.signed(run, {rid: runs[(t, rid)] for rid, t in mine.items()})
+        by_id, bound, wrong = run.by_id(), set(), set()
+        for nid, (rid, seq) in decisions.items():
+            args = kept.get((mine[rid], rid, seq))
+            if args is not None:
+                same = json.dumps(args, sort_keys=True) == json.dumps(run.value(by_id[nid[3:]].get("args_ref")),
+                                                                      sort_keys=True)
+                (bound if same else wrong).add(nid)
+        return frozenset(e for e in edges if e[0] not in wrong), frozenset(bound)
 
     def _changed(self, path: str, announce: bool) -> None:
         """A run's log grew: recompute its alerts and announce the new ones (each one once)."""
@@ -366,7 +377,7 @@ class Store:
         was, now = self._covered, {}
         for log in paths:   # each read again only when either run's files changed; a run gone is forgotten
             imp = named.get(os.path.basename(_target(self.root, os.path.basename(log))))
-            key = (imp, _stat(log), imp and _stat(imp))
+            key = (imp, _stat(log), imp and _stat(imp), imp and _blobs_state(imp))
             now[log] = was[log] if was.get(log, (None,))[0] == key else (key, _covers(imp, log))
         self._covered = now
         return [p for p in paths if not now[p][1]]

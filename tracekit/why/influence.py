@@ -119,7 +119,7 @@ def graded(g: Graph, nid: str, seen: bool = True) -> Dict[str, Any]:
     ev = g.nodes[nid]["event"]
     mine = _by_call(g.run.signed).get(nid, [])
     out: List[Dict[str, Any]] = [{"src": s, "grade": "exact", "basis": "provenance", "field": f, "kind": k,
-                                  "record": r} for _, f, k, r, s in mine if s in g.nodes]
+                                  "record": r, "bound": nid in g.run.bound} for _, f, k, r, s in mine if s in g.nodes]
     for p in ev.get("provenance") or []:
         src = "ev:" + p["from_event"] if p.get("from_event") else None
         if src in g.nodes and (nid, p.get("field"), p.get("kind"), p.get("record"), src) not in mine:
@@ -370,6 +370,8 @@ def words(inf: Dict[str, Any]) -> str:
     u = inf["untrusted"]
     note = "" if not u else " " + (
         f"{u['label']} holds its `{u['field']}`, and nothing the signer indexed as trusted does"
+        + ("" if u.get("bound") else " (the call's arguments here are the log's: they weren't checked against its "
+                                     "signed record)")
         + (f" (why's search finds the value in {_named(inf['also'])} too)" if inf["also"] else "")
         if u["grade"] == "exact" else f"A replay without {u['label']} (untrusted) changed it ({_how(u)})") + \
         ": test it without the task to see whether it serves the task."

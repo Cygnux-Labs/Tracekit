@@ -25,33 +25,35 @@ from tracekit.why.graph import target_hits  # noqa: E402
 from tracekit.why.guard import Guard  # noqa: E402
 from tracekit.why.import_v2 import _mismatch, _target, convert, merge  # noqa: E402
 from tracekit.why.influence import call_influence, chain, goals, graded, influences, signed_edges, untrusted  # noqa: E402
-from tracekit.why.server import OWNER, Store, lookups  # noqa: E402
+from tracekit.why.server import OWNER, Store  # noqa: E402
 
 TASK = "Fix the login bug in issue 12"
 
 
-def signed(run, *calls):
-    """`run` beside its signer's records, read through the viewer's own join (server.lookups, Run.signed): each of
-    `calls` cites its signed decision, whose provenance is the call's `provenance` entries, and each entry's source
-    event cites the observed record it names."""
-    rows = []
+def signed(run, *calls, bound=True):
+    """`run` with the exact edges a join of its signer's records gave (Run.signed, influence.signed_edges), for tests
+    of what INFLUENCE says of them: each of `calls` cites a signed decision whose provenance is the call's `provenance`
+    entries, and each entry's source event cites the observed record it names, of that event's trust and source; with
+    `bound`, the calls' arguments were checked against their decisions' (Run.bound). The join itself, over a real
+    signer's records, is tests/test_why_join.py's."""
+    decisions, records = {}, {}
     for i, call in enumerate(calls):
         ev = next(e for e in run.events if "ev:" + e["id"] == call)
         ev["tracekit"] = {"run_id": "tk", "run_seq": 1000 + i, "type": "policy.decision"}
         prov = ev.get("provenance") or []
-        rows.append({"session_id": "tk", "tool_name": ev["tool"], "tool_use_id": f"c{i}", "v2": {
-            "type": "policy.decision", "run_seq": 1000 + i,
-            "provenance": [{"field": p["field"], "kind": p["kind"], "source": {"run_seq": p["record"]}} for p in prov]}})
+        decisions[1000 + i] = ev["tool"], [{"field": p["field"], "kind": p["kind"], "source": {"run_seq": p["record"]}}
+                                           for p in prov]
         for p in prov:
             src = next(e for e in run.events if e["id"] == p["from_event"])
             src["tracekit"] = {"run_id": "tk", "run_seq": p["record"], "type": "input.observed"}
-            rows.append({"session_id": "tk", "v2": {"type": "input.observed", "run_seq": p["record"],
-                                                    "trust": src.get("trust"), "source": src.get("source")}})
-    run.signed = signed_edges(run, *lookups(rows))
+            records[p["record"]] = "input.observed", src.get("trust"), src.get("source")
+    run.signed = signed_edges(run, lambda rid, seq, tool: decisions[seq][1] if decisions.get(seq, ("",))[0] == tool
+                              else None, lambda rid, seq: records.get(seq))
+    run.bound = frozenset(calls) if bound else frozenset()
     return run
 
 
-def desk(provenance=None, tool="git_push", args=None, decide=True, signer=False):
+def desk(provenance=None, tool="git_push", args=None, decide=True, signer=False, bound=True):
     """A run: the task, a trusted README and an untrusted issue, a model call that had all three in its context and
     asked for one call, `tool` with `args`. `provenance`: the entries on the call ("issue" names the issue's event);
     `signer`: the run is an import of its signed records (signed())."""
@@ -66,7 +68,7 @@ def desk(provenance=None, tool="git_push", args=None, decide=True, signer=False)
     if provenance:
         call["provenance"] = [{**p, "from_event": {"issue": issue.event_id, "readme": readme.event_id}.get(
             p["from_event"], p["from_event"])} for p in provenance]
-    return (signed(run, "ev:" + call["id"]) if signer else run), "ev:" + call["id"], issue
+    return (signed(run, "ev:" + call["id"], bound=bound) if signer else run), "ev:" + call["id"], issue
 
 
 EXACT = [{"field": "branch", "kind": "string", "record": 4, "from_event": "issue"}]
@@ -107,6 +109,20 @@ class Grades(unittest.TestCase):
                 self.assertEqual((inf["untrusted"], [e for e in inf["edges"] if e["grade"] == "exact"]), (None, []))
                 self.assertEqual([s["text"] for s in inf["chain"]], [CONTEXT.split(" → ")[0], "this call"])
                 self.assertNotIn("traced to untrusted", " ".join(a["title"] for a in alerts(run, g) if a.get("node") == call))
+
+    def test_an_exact_edge_needs_the_event_citing_its_source_to_be_that_record(self):
+        """A log can make another event cite the record the signer traced a value to: the edge goes to the event only
+        when it is that record (an input of its trust and source), as merge checks a citation."""
+        def edges(rec):
+            run, call, _ = desk(EXACT)
+            signed(run, call)   # the citations
+            return signed_edges(run, lambda rid, seq, tool: [{"field": "branch", "kind": "string",
+                                                              "source": {"run_seq": 4}}], lambda rid, seq: rec)
+        self.assertEqual(len(edges(("input.observed", "untrusted", "github:issue-12"))), 1)
+        for rec in (("input.observed", "trusted", "github:issue-12"), ("input.observed", "untrusted", "repo:README.md"),
+                    ("tool.result", "untrusted", "github:issue-12"), None):
+            with self.subTest(rec=rec):
+                self.assertEqual(edges(rec), frozenset())
 
     def test_an_exact_edge_comes_from_the_record_the_signer_named_not_the_latest_untrusted_read(self):
         rt = Runtime({"m": lambda ctx, **k: "push"}, {"git_push": lambda **a: "ok"}, task=TASK, signer=False)
@@ -263,6 +279,16 @@ class Serves(unittest.TestCase):
                                        "`branch`, and nothing the signer indexed as trusted does: test it without the "
                                        "task to see whether it serves the task.")
         self.assertNotIn("only", inf["words"])
+
+    def test_an_exact_edge_on_a_call_whose_arguments_werent_checked_says_so(self):
+        """A log can give a call another call's citation (the review's p13 B): with no arguments to check the log's
+        against (the decision's are kept only as a commitment), the words say they weren't checked."""
+        run, call, _ = desk(EXACT, signer=True, bound=False)
+        inf = call_influence(run, build_graph(run), call)
+        self.assertIn("github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does (the call's "
+                      "arguments here are the log's: they weren't checked against its signed record): test it",
+                      inf["words"])
+        self.assertEqual([e["bound"] for e in inf["edges"] if e["grade"] == "exact"], [False])
 
     def test_a_traced_value_why_also_finds_in_trusted_content_says_so(self):
         """The task names the branch, and an untrusted issue holds it as a value the signer's index reads: "came only
@@ -700,10 +726,11 @@ class Workspace(unittest.TestCase):
         blob = os.path.join(imported, "blobs", note[7:] + ".json")
         with open(blob) as f:
             kept = f.read()
-        for content, covered in (({"v": "Q3 notes: two hires"}, False), (None, True)):   # the note swapped, then back
+        # the note swapped in place, then back: the same viewer sees each (its cache read the content files' state too,
+        # the review's p4v3)
+        for content, covered in (({"v": "Q3 notes: two hires"}, False), (None, True)):
             with open(blob, "w") as f:
                 f.write(kept) if content is None else json.dump(content, f)
-            store._covered.clear()
             self.assertEqual(log not in store.paths(), covered)
         tk = os.path.join(store.root, "tk-run")   # an import's own name is never covered, whatever is beside it
         shutil.copytree(log, tk)
@@ -757,52 +784,20 @@ class Workspace(unittest.TestCase):
         without_task(quiet, "ruled-out", 0.0, target="tool=deploy_site")   # nothing untrusted, yet it strays: listed
         self.assertEqual([c["serves"] for c in influences(quiet, build_graph(quiet, infer=False), risky=True)], ["drift"])
 
-    def test_an_edge_is_exact_only_where_signed_records_the_viewer_verified_back_it(self):
+    def test_an_ingests_run_is_never_an_import_and_tracekit_why_reads_no_signed_records(self):
         """A log that said it was an import gave its call a made-up citation and a `provenance` pointing at the trusted
-        README: it read as exact, and the injected issue left the chain (the review's p9b). An edge is exact only where
-        the viewer's verified records back it: the call's signed decision names the issue's record, and the issue is it."""
-        def view(rows, prov=EXACT, late=()):
-            store = Store(os.path.join(tempfile.mkdtemp(dir=self.tmp), "why"))
-            run, call, issue = desk(prov)
-            run.start["meta"] = {"source": "tracekit"}
-            next(e for e in run.events if "ev:" + e["id"] == call)["tracekit"] = {"run_id": "tk-1", "run_seq": 7,
-                                                                                "type": "tool.result"}
-            next(e for e in run.events if e["id"] == issue.event_id)["tracekit"] = {"run_id": "tk-1", "run_seq": 4,
-                                                                                  "type": "input.observed"}
-            _write(run, os.path.join(store.root, run.run_id))
-            store.out.records.extend(rows)
-            store.scan(announce=False)
-            if late:   # the run read before its records reach the viewer, then again
-                store.workspace()
-                store.out.records.extend(late)
-            ws = store.workspace()
-            [c] = ws["influence"]["calls"]
-            return ([(e["grade"], e["label"]) for e in c["edges"] if e["grade"] != "seen"],
-                    [a["title"] for a in ws["alerts"] if a.get("node") == call])
-        decision = {"session_id": "tk-1", "tool_name": "git_push", "tool_use_id": "c1", "v2": {
-            "type": "policy.decision", "run_seq": 6, "provenance": [{"field": "branch", "kind": "string",
-                                                                      "source": {"run_seq": 4}}]}}
-        result = {"session_id": "tk-1", "tool_use_id": "c1", "v2": {"type": "tool.result", "run_seq": 7}}
-        issue = {"session_id": "tk-1", "v2": {"type": "input.observed", "run_seq": 4, "trust": "untrusted",
-                                              "source": "github:issue-12"}}
-        traced = ["git_push's `branch` traced to untrusted content"]
-        self.assertEqual(view([decision, result, issue]), ([("exact", "github:issue-12")], traced))
-        self.assertEqual(view([]), ([("claimed", "github:issue-12")], []))   # the log's word alone
-        self.assertEqual(view([], late=[decision, result, issue]), ([("exact", "github:issue-12")], traced))
-        self.assertEqual(view([decision, result, issue], [{**EXACT[0], "from_event": "readme"}]),   # p9b's README
-                         ([("exact", "github:issue-12"), ("claimed", "repo:README.md")], traced))
-        for broken in ({**decision, "tool_name": "Bash"}, {**issue, "v2": {**issue["v2"], "trust": "trusted"}},
-                       {**issue, "v2": {**issue["v2"], "source": "repo:README.md"}}):
-            with self.subTest(broken=broken):   # another tool's decision; a record the issue isn't
-                self.assertEqual(view([broken] + [r for r in (decision, result, issue) if r["v2"]["type"] !=
-                                                  broken["v2"]["type"]])[0], [("claimed", "github:issue-12")])
+        README: it read as exact (the review's p9b). Exact edges come only from signed records the code holding the run
+        checked (tests/test_why_join.py); `tracekit why` reads none."""
         ingested = desk(EXACT)[0]
         ingested.start["meta"] = {"source": "tracekit"}
         path = os.path.join(self.tmp, "ingested")
         _write(ingested, path)
         open(os.path.join(path, OWNER), "w").close()
         self.assertFalse(influence._imported(load_run(path)))   # an ingest's run is never an import
-        self.assertEqual(analyse(path)["run"].signed, frozenset())
+        a = analyse(path)
+        self.assertEqual((a["run"].signed, a["run"].bound), (frozenset(), frozenset()))
+        [call] = [n for n, x in a["graph"].nodes.items() if x["type"] == "action"]
+        self.assertEqual([e["grade"] for e in graded(a["graph"], call, seen=False)["edges"]], ["claimed"])
 
 def _rewrite(path, events):
     os.makedirs(path, exist_ok=True)

@@ -8,6 +8,7 @@ import bisect
 import os
 import re
 import sys
+import unicodedata
 from collections import deque
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
@@ -112,9 +113,10 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
                      memo: Optional[Dict[Any, Any]] = None) -> List[Dict[str, Any]]:
     """arg_provenance for argument values that need not be recorded yet: the live guard calls this before a tool runs,
     with before_seq past the end of the log. Each atom is read as the signer's index reads values (_holds). Untrusted
-    content also brought an atom when it holds a value of it the index reads that no trusted content holds (an IBAN's
-    digits written in groups, a URL's host), as the signer's index would trace it. A trusted call's result holds nothing
-    an earlier call's arguments carried: an echo of the agent's own value (a lookup's error naming it) didn't bring it.
+    content also brought an atom when it holds a value of it that no trusted content holds (an IBAN's digits written in
+    groups, a URL's host), read wider than the index reads untrusted content (_wide), or when two untrusted texts hold
+    its two halves (_split). A trusted call's result holds nothing an earlier call's arguments carried any of: an echo
+    of the agent's own value (a lookup's error naming it, a validator returning it whole) didn't bring it.
     texts: _texts(run); memo: the readings of the run's content and calls, kept across its calls."""
     rows = []
     if _committed(args):   # a signed run's arguments: only their commitment, which is no argument value
@@ -129,7 +131,7 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
             continue
         atom = _atom(a)
         p, word, vals, _ = atom
-        echo = next((seq for seq, plain, cv in calls if _holds(atom, plain, cv)), None)
+        echo = next((seq for seq, plain, cv, cw in calls if _holds(atom, plain, cv) or (cv | cw) & vals), None)
 
         def counts(i: int) -> bool:   # trusted content that may be this value's source: not a call's echo of it
             ev, trust = reads[i][:2]
@@ -138,12 +140,13 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
         if word is not None:
             held |= {i for i in range(k) if p in reads[i][3] and word.search(reads[i][3])}
         trusted_vals = {v for v in vals for i in by_val.get(v, ()) if i < k and counts(i)}
+        halves = _split(atom, [i for i in range(k) if reads[i][1] != "trusted"], reads)
         srcs = []
-        for i in sorted(held):
-            ev, trust, label, plain, rv = reads[i]
+        for i in sorted(held | halves):
+            ev, trust, label, plain, rv, wide = reads[i]
             if trust == "trusted" and not counts(i):
                 continue
-            if _holds(atom, plain, rv) or trust != "trusted" and bool((rv & vals) - trusted_vals):
+            if _holds(atom, plain, rv) or trust != "trusted" and (bool(((rv | wide) & vals) - trusted_vals) or i in halves):
                 srcs.append({"node": "ev:" + ev["id"], "label": label, "trust": trust})
         if not srcs:
             status = "hashed" if hashed else "generated"  # with hashed capture there is no text to search
@@ -184,32 +187,78 @@ def _holds(atom, plain: str, vals: Set[Tuple[str, str]]) -> bool:
 
 def _index(run: Run, memo: Dict[Any, Any], texts: Optional[List[Tuple]]):
     """The run's content and calls, read once into `memo` for its calls: (each content as (event, trust, label, text read
-    plain, values) in log order, their seqs, the contents that hold each value, each call as (seq, its arguments read
-    plain, their values) in log order)."""
+    plain, values, values read wider) in log order, their seqs, the contents that hold each value, each call as (seq,
+    its arguments read plain, their values, those read wider) in log order)."""
     if "index" not in memo:
         reads = [(ev, trust, label, *_read(run, memo, ev, text))
                  for ev, text, trust, label in (_texts(run) if texts is None else texts)]
         by_val: Dict[Tuple[str, str], List[int]] = {}
         for i, r in enumerate(reads):
-            for v in r[4]:
+            for v in r[4] | r[5]:
                 by_val.setdefault(v, []).append(i)
         calls = [(e["seq"], *_read(run, memo, e, None)) for e in run.events if e["type"] == "action"]
         memo["index"] = reads, [r[0]["seq"] for r in reads], by_val, calls
     return memo["index"]
 
 
-def _read(run: Run, memo: Dict[Any, Any], ev: Dict[str, Any], text: Optional[str]) -> Tuple[str, Set[Tuple[str, str]]]:
-    """(the text read plain, the values the index reads) of the content an event brought (`text`: _texts'), or of a
-    call's arguments (text None), each read once into `memo`."""
+def _read(run: Run, memo: Dict[Any, Any], ev: Dict[str, Any], text: Optional[str]
+          ) -> Tuple[str, Set[Tuple[str, str]], Set[Tuple[str, str]]]:
+    """(the text read plain, the values the index reads, the values _wide reads) of the content an event brought
+    (`text`: _texts'), or of a call's arguments (text None), each read once into `memo`."""
     key = ("read" if text is not None else "args", ev["id"])
     if key not in memo:
         v = run.value(ev.get("args_ref") if text is None else ev.get("ref") if ev["type"] == "input" else
                       ev.get("result_ref"))
         if _committed(v):
-            memo[key] = "", set()
+            memo[key] = "", set(), set()
         else:
-            memo[key] = _plain(_text(v) if text is None else text), set(provenance.values(v)[0])
+            t = _text(v) if text is None else text
+            memo[key] = _plain(t), set(provenance.values(v)[0]), _wide(t)
     return memo[key]
+
+
+_WIDE_DIGITS = re.compile(r"[0-9](?:[^0-9A-Za-z\n]{0,3}[0-9])*")
+_AT = re.compile(r"\s*[\[(]?\s*\bat\b\s*[\])]?\s*", re.I)
+_DOT = re.compile(r"\s*[\[(]?\s*\bdot\b\s*[\])]?\s*", re.I)
+
+
+def _wide(text: str) -> Set[Tuple[str, str]]:
+    """Values a text holds that the signer's index doesn't read: digit runs of 8 or more across any short run of other
+    characters (slashes, dashes, commas, spaces) or in another script's digits, and addresses spelled out ("audit at
+    outside dot example"). Read in untrusted content only, where reading wider stops more, never fewer."""
+    if not text.isascii():   # Arabic-Indic and other scripts' digits as the digits they are
+        text = "".join(str(unicodedata.digit(c)) if unicodedata.digit(c, None) is not None else c for c in text)
+    out = {("digits", d) for d in (re.sub("[^0-9]", "", m.group(0)) for m in _WIDE_DIGITS.finditer(text)) if len(d) >= 8}
+    spelled = _DOT.sub(".", _AT.sub("@", text))
+    if spelled != text:
+        out |= {(k, v) for k, v in provenance.values(spelled)[0] if k in ("email", "host", "url")}
+    return out
+
+
+def _split(atom, untrusted: List[int], reads) -> Set[int]:
+    """The untrusted contents (`untrusted`: their indices in reads) that hold free-string atom `atom` in two halves of 4
+    or more characters, each a whole token (a value given in two mails), when it is one word of 8 or more."""
+    p = atom[0]
+    if atom[1] is None or len(p) < 8 or " " in p:
+        return set()
+    for cut in range(4, len(p) - 3):
+        first = [i for i in untrusted if _token(p[:cut], reads[i][3])]
+        last = [i for i in untrusted if _token(p[cut:], reads[i][3])] if first else []
+        if last:
+            return set(first + last)
+    return set()
+
+
+def _token(piece: str, plain: str) -> bool:
+    """Whether `piece` is a whole token of `plain`: in it, with no letter, digit or _ just before or after it."""
+    i = plain.find(piece)
+    while i != -1:
+        j = i + len(piece)
+        if not (i and (plain[i - 1].isalnum() or plain[i - 1] == "_")) and \
+                not (j < len(plain) and (plain[j].isalnum() or plain[j] == "_")):
+            return True
+        i = plain.find(piece, i + 1)
+    return False
 
 
 def suggest_target(run: Run, action_ev: Dict[str, Any], prov: Optional[List[Dict[str, Any]]] = None) -> str:
@@ -688,11 +737,11 @@ def broken_summary(path: str, err: Exception) -> Dict[str, Any]:
 def analyse(path: str, verify: Optional[Callable[[Run], Any]] = None) -> Dict[str, Any]:
     """What the workspace needs of one run folder: run, graph (no inferred edges), alerts and summary; or, for a run
     that cannot be analysed, its broken summary (listed with why, never dropped from the view). `verify`: the run's
-    signed edges (Run.signed) from signed records the caller holds; none without it."""
+    (Run.signed, Run.bound) from signed records the caller holds; none without it."""
     try:
         run = load_run(path)
         if verify is not None:
-            run.signed = verify(run)
+            run.signed, run.bound = verify(run)
         return analysed_run(run, build_graph(run, infer=False))
     except Exception as e:
         if os.path.exists(os.path.join(path, "events.jsonl")) or not isinstance(e, FileNotFoundError):

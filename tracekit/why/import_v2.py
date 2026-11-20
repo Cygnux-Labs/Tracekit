@@ -56,13 +56,14 @@ def store_runs(data_dir: str) -> Dict[str, int]:
 
 def store_records(data_dir: str, run: Optional[str] = None) -> Dict[str, List[Dict[str, Any]]]:
     """run_id -> records of every client run (or only run `run`) in the store of signer data dir `data_dir`, read
-    without its lock."""
+    without its lock. A why log cites a run by its id alone, so a run id two tenants share is left out: which tenant's
+    records it means can't be told."""
     from ..signer.pipeline import SIGNER_RUN
     r = _store(data_dir)
-    # lean: keyed by run id alone, tenants dropped (run ids are random); key by (tenant, run_id) if ids may collide
     try:
-        return {key[1]: list(r.iter_run(*key)) for key in list(r.runs)
-                if key != SIGNER_RUN and run in (None, key[1])}
+        keys = [key for key in list(r.runs) if key != SIGNER_RUN and run in (None, key[1])]
+        ids = [key[1] for key in keys]
+        return {key[1]: list(r.iter_run(*key)) for key in keys if ids.count(key[1]) == 1}
     finally:
         r.close()
 
@@ -190,22 +191,38 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     return calls
 
 
+def signed(run: Run, records: Dict[str, List[Dict[str, Any]]]):
+    """(the exact edges the signer's `records` back in why run `run`, influence.signed_edges; the run_seq of each such
+    call's signed decision, by its node) over records the caller read and checked: none when the log fails merge's
+    check against them (a citation that doesn't match its record or its agent's run, a record cited twice, one the log
+    owes and doesn't cite, a run it cites that isn't among them). A call's record is the one it cites, and a result is
+    the call of the decision it names."""
+    from .influence import signed_edges
+    if check(run, records)[1]:   # its alerts: each problem of an event is one too
+        return frozenset(), {}
+    decision_of, record, decision = lookups(records)
+    edges = signed_edges(run, decision_of, record)
+    calls = {e[0] for e in edges}
+    return edges, {"ev:" + ev["id"]: (ev["tracekit"]["run_id"], decision(ev["tracekit"]["run_id"], ev["tracekit"]["run_seq"]))
+                   for ev in run.of_type("action") if "ev:" + ev["id"] in calls}
+
+
 def lookups(records: Dict[str, List[Dict[str, Any]]]):
-    """(decision_of, record) of influence.signed_edges over signed records the caller read from the signer's store:
-    the provenance the decision of the call a record is of recorded, when that call is of the tool; a record's type,
-    trust and source."""
+    """(decision_of, record, decision) over signed records: the provenance the decision of the call a record is of
+    recorded (a result is the call of the decision it names, never another decision under its tool call id; that the
+    call is of the tool, merge's check says); a record's type, trust and source; the run_seq of a record's call's
+    decision."""
     at = {rid: _at(_calls(recs)) for rid, recs in records.items()}
     index = {(r["event"]["run_id"], r["event"]["run_seq"]): r["event"] for recs in records.values() for r in recs}
 
-    def decision_of(run_id, run_seq, tool):
+    def decision_of(run_id, run_seq, _tool):
         call = at.get(run_id, {}).get(run_seq)
-        d = call["decision"]["event"]["data"] if call else {}
-        return (d.get("provenance") or []) if call and d.get("tool") == tool else None
+        return (call["decision"]["event"]["data"].get("provenance") or []) if call else None
 
     def record(run_id, run_seq):
         e = index.get((run_id, run_seq))
         return e and (e["type"], e["data"].get("trust"), e["data"].get("source"))
-    return decision_of, record
+    return decision_of, record, lambda run_id, run_seq: at[run_id][run_seq]["decision"]["event"]["run_seq"]
 
 
 def _at(calls: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:

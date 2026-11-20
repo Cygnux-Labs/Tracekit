@@ -77,7 +77,7 @@ from tracekit.why import import_v2  # noqa: E402
 from tracekit.why.analysis import alerts, arg_provenance, atoms  # noqa: E402
 from tracekit.why.core import Runtime  # noqa: E402
 from tracekit.why.demo import EXFIL_TARGET, SIGNED_SYSTEM  # noqa: E402
-from tracekit.why.influence import call_influence, goals, graded, hints, influences, signed_edges, untrusted  # noqa: E402
+from tracekit.why.influence import call_influence, goals, graded, hints, influences, untrusted  # noqa: E402
 from tracekit.why.replay import System, attribute, counterfactual  # noqa: E402
 
 POLICY = "version: e28-1\ndescription: E28, no rules: the signer indexes provenance and holds nothing\n"
@@ -122,7 +122,7 @@ class Signer:
         for rid in {ev["tracekit"]["run_id"] for ev in run.events if ev.get("tracekit")}:
             recs.update(import_v2.store_records(os.path.join(self.d, "data"), rid))
         run = load_run(import_v2.import_records(recs, why_dir, {})[0])
-        run.signed = signed_edges(run, *import_v2.lookups(recs))
+        run.signed = import_v2.signed(run, recs)[0]   # the arguments aren't checked: E28 reads no content
         return run
 
     def close(self):
