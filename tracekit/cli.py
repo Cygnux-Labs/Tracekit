@@ -1083,7 +1083,8 @@ def _run(a):
         if a.action == "backtest":
             from .policy2.engine import Engine
             from .signer import detect
-            found, other = detect.backtest(Engine(pol), a.store, a.bundle)
+            peaks = {}
+            found, other = detect.backtest(Engine(pol), a.store, a.bundle, peaks)
             if other:
                 print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
                       "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
@@ -1094,6 +1095,15 @@ def _run(a):
                                            f"{d.get('scope', {}).get('kind')}",
                         "incident.capped": f"{d.get('cap')} cap ({d.get('trigger')})"}
                 print(f"{typ:18} {tenant}/{run_id} {what.get(typ, '')}".rstrip())
+            for lim in pol.get("limits", []):
+                seen = sorted(((cur or "", p) for (i, cur), p in peaks.items() if i == lim["id"]),
+                              key=lambda x: x[0])
+                if not seen:
+                    print(f"limit {lim['id']}: no call counted (max {lim['max']} in {lim['window']}s)")
+                for cur, p in seen:
+                    print(f"limit {lim['id']}: peak {p['value']}{' ' + cur if cur else ''} of max {lim['max']} "
+                          f"(fixed {lim['window']}s window from {p['start']}), scope {p['scope']['kind']} "
+                          f"{p['scope']['id']}, run {p['tenant']}/{p['run_id']}")
             opened = sum(t == "incident.opened" for t, *_ in found)
             print(f"{opened} incident(s) would open" + ("" if detect.Detector.of(Engine(pol)) else
                                                          ": the policy has no sequences, limits or respond triggers"))
