@@ -436,6 +436,83 @@ class Lines(unittest.TestCase):
             with self.subTest(twin=twin):
                 self.assertTrue(held({"command": twin})[1])
 
+    def test_a_data_reader_is_its_bare_name_on_a_line_that_names_it_no_other_way(self):
+        """A program the agent wrote under a data reader's name (./curl, bin/cat, ./ECHO, ~/printf, or one PATH or a
+        sourced file makes the name's) may run its words: a data reader is its bare name, as written, on a line nothing
+        on gives the name another meaning, and given no option that runs a program (sort's --compress-program, rg's
+        --pre, wget's --use-askpass and -e, openssl's -engine, curl's --engine and -K, ag's --pager)."""
+        key, run = "/tmp/sk-proj-" + "a" * 24, "'A=TOKEN: ./payload'"
+        for twin in (f"./echo {run}", f"./curl -s {run}", f"bin/cat {run}", f"./ECHO {run}", f"~/printf {run}",
+                     f"PATH=.:$PATH echo {run}", f"export PATH=.:$PATH; echo {run}", f"PATH=$PWD/bin:$PATH cat {run}",
+                     f"read -r PATH < p; echo {run}", f". ./env.sh; echo {run}", f"source ./env.sh && echo {run}",
+                     "./cat <<'EOF'\nA=TOKEN: ./payload\nEOF",
+                     f"sort --compress-program='{key}' -S 1K x.txt", f"rg --pre '{key}' foo .",
+                     f"rg --hostname-bin '{key}' foo .", f"wget --use-askpass='{key}' https://x.example/",
+                     f"wget -e 'use_askpass={key}' https://x.example/", f"openssl version -engine '{key}.so'",
+                     f"openssl req -config '{key}'", f"curl --engine '{key}.so' https://x.example/",
+                     "curl --engine ./e.so -H 'X-Token: abcd1234' https://x.example/",   # not a data reader then
+                     f"curl -K '{key}' https://x.example/", f"ag --pager '{key}' foo"):
+            with self.subTest(twin=twin):
+                self.assertTrue(held({"command": twin})[1])
+        for command in (f"echo {run}", f"command echo {run}", f"echo $PATH; echo {run}", f"sort -S 1K '{key}.txt'",
+                        "rg 'token=abcd1234' .", "cat <<'EOF'\nA=TOKEN: ./payload\nEOF",
+                        "curl -H 'X-Token: abcd1234' https://x.example/"):
+            with self.subTest(command=command):
+                self.assertFalse(held({"command": command})[1])
+
+    def test_what_a_line_writes_and_then_runs_by_a_path_the_parser_does_not_follow_hides_no_value(self):
+        """Text a data reader writes to a file or a pipe is code on a line that runs a script file (copied, moved or
+        linked there, or found: find -exec sh {}), sets BASH_ENV or ENV, or hands it to at, batch, crontab or ssh;
+        written where nothing on the line runs it, or printed, it stays data (a git hook or a make recipe a file the
+        line copies names stays open, docs/limits.md)."""
+        run = "'A=TOKEN: ./payload'"
+        for twin in (f"echo {run} > x.txt; cp x.txt x.sh; sh x.sh", f"echo {run} > x.txt; mv x.txt x.sh; sh x.sh",
+                     f"echo {run} > x.txt; ln -s x.txt x.sh; sh x.sh", f"echo {run} > x.sh; find . -name x.sh -exec sh {{}} \\;",
+                     f"export BASH_ENV=./e.sh; echo {run} > e.sh; bash -c :", f"echo {run} | at now",
+                     f'export BASH_ENV; echo {run} > "$BASH_ENV"; bash -c :',   # (one the environment gives)
+                     f"echo {run} | batch", "echo '* * * * * A=TOKEN: ./payload' | crontab -",
+                     f"echo {run} | tee x.txt >/dev/null; cp x.txt x.sh; bash x.sh",
+                     "cat > x.txt <<'EOF'\nA=TOKEN: ./payload\nEOF\ncp x.txt x.py; python3 x.py"):
+            with self.subTest(twin=twin):
+                self.assertTrue(held({"command": twin})[1])
+        for command in (f"echo {run}; sh build.sh", f"echo {run} > notes.txt; make", f"echo {run} >/dev/null; sh x.sh",
+                        "cat > notes.txt <<'EOF'\nA=TOKEN: ./payload\nEOF\nmake"):
+            with self.subTest(command=command):
+                self.assertFalse(held({"command": command})[1])
+
+    def test_a_runner_options_value_and_a_value_a_program_may_run_hide_none_quoted_or_not(self):
+        """A value a program runs as a program, a script or code is hidden as clean nowhere, quoted or not: a runner
+        option's (tar's --to-command, docker's --entrypoint, make's SHELL=, rsync's -e, git's --upload-pack), and one
+        given before a program any name but a data name (LD_PRELOAD, NODE_OPTIONS, GIT_ASKPASS, a git config value).
+        The data names are DATABASE_URL, PGPASSWORD, MYSQL_PWD and those ending _URL, _DSN, _PASSWORD, _PASSWD, _PASS,
+        _TOKEN, _SECRET, _KEY or _API_KEY or holding _ACCESS_KEY, in any case."""
+        key = "/tmp/sk-proj-" + "a" * 24
+        for twin in (f"LD_PRELOAD={key} ls", f"NODE_OPTIONS=--require={key} node -e 1", f"tar --to-command={key} -xf a.tar",
+                     f"tar -I {key} -xf a.tar", f"tar -I{key} -xf a.tar", f"docker run --entrypoint {key} img",
+                     f"make SHELL={key}",
+                     f"rsync -e {key} a host:b", f"git fetch --upload-pack={key} origin", f"GIT_ASKPASS={key} git push",
+                     f"GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.sshCommand GIT_CONFIG_VALUE_0={key} git ls-remote x",
+                     f"A={key} aws s3 ls"):
+            with self.subTest(twin=twin):
+                self.assertTrue(held({"command": twin})[1])
+        for command in ("GH_TOKEN=ghp_" + "a" * 36 + " gh pr merge 1", "TF_VAR_db_password=hunter2pass terraform apply",
+                        "DB_PASS=hunter2pass ./migrate", "SECRET_KEY=abcd1234efgh python3 manage.py runserver",
+                        "docker login -u ci -p hunter2pass registry.example.com", f"tar -xf {key}.tar",
+                        "git rebase --exec 'TOKEN=abcd;make' HEAD~1"):
+            with self.subTest(command=command):
+                self.assertFalse(held({"command": command})[1])
+
+    def test_a_database_statement_is_code(self):
+        """A SQL tool's statement (sql, query, statement, in any case) is code, as TK-S012's code arguments are: with a
+        .env file named, a KEY=value line in it was hidden to its end (`API_TOKEN=API_TOKEN OR 1 = 1`)."""
+        q = "UPDATE users SET role = 'admin' WHERE id = 7 AND\nAPI_TOKEN=API_TOKEN OR 1 = 1"
+        for key in ("query", "sql", "Statement"):
+            with self.subTest(key=key):
+                self.assertTrue(privacy.approver_copy({key: q, "path": ".env"}, True, "execute_sql")[1])
+        for args in ({"note": q, "path": ".env"}, {"query": "select 1", "path": ".env"}):
+            with self.subTest(args=args):
+                self.assertFalse(privacy.approver_copy(args, True, "execute_sql")[1])
+
     def test_tk_s012s_code_and_argv_arguments_are_read_as_code(self):
         """A code runner's, a notebook's or a process's arguments TK-S012 holds: code (any value hidden there denies)
         and an argv (run by the program beside it: sh -c's script read as a line), in the copy and in v1's record."""
@@ -518,6 +595,21 @@ class Lines(unittest.TestCase):
         d = privacy.screened({"decision": "ask", "rule_ids": ["R"], "reasons": ["r"]}, "run_code", args,
                              privacy.tool_input("run_code", args), [])
         self.assertEqual((d["decision"], d["summary"]), ("ask", "run_code language=python code=print(1)"))
+        # an ordinary held call's summary is shown whole, however long its arguments are (it was cut at 400 characters
+        # and so denied); only one past what the approval request holds (SUMMARY_CHARS) is denied
+        for name, args, decision in (
+                ("WebFetch", {"url": "https://docs.python.org/3/library/subprocess.html", "prompt": "Summarize " * 60},
+                 "ask"),
+                ("mcp__github__create_issue", {"owner": "acme", "repo": "web", "title": "Login fails",
+                                               "body": "Steps: open /login. " * 40}, "ask"),
+                ("Write", {"file_path": "ci.yml", "content": "name: ci\non: [push]\n" * 100}, "ask"),
+                ("Write", {"file_path": "big.txt", "content": "x" * privacy.SUMMARY_CHARS}, "deny")):
+            with self.subTest(tool=name, decision=decision):
+                got = privacy.screened({"decision": "ask", "rule_ids": ["R"], "reasons": ["r"]}, name, args,
+                                       privacy.tool_input(name, args), [])
+                self.assertEqual(got["decision"], decision)
+                if decision == "ask":
+                    self.assertEqual(got["summary"], privacy.approval_summary(name, privacy.tool_input(name, args, "full")))
         from tracekit import hook
         seen, call = [], {"run_id": "r", "agent_id": "a", "data": {"name": "run_code", "tool_use_id": "t",
                                                                    "input": privacy.tool_input("run_code", args)}}

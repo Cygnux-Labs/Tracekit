@@ -241,6 +241,22 @@ class Approvals(unittest.TestCase):
         self.request(dev)
         self.assertEqual(dev.handle({"op": "approval_list"}, None, None)["pending"], [])
 
+    def test_a_pending_approval_lists_its_whole_summary(self):
+        """What `tracekit pending` shows of a held call (its summary, every argument) is kept whole up to what v1's
+        hook may send (privacy.SUMMARY_CHARS; it was cut at 500 characters), and dropped once it is decided."""
+        from tracekit import privacy
+        s = self.signer()
+        whole = "Write file_path=ci.yml content=" + "name: ci\n" * 300
+        for tid, summary in (("t", whole), ("u", "y" * (privacy.SUMMARY_CHARS + 5))):
+            s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": tid, "timeout_s": 30, "summary": summary},
+                     AGENT_UID, 999999)
+        listed = {a["tool_use_id"]: a["summary"] for a in s.handle({"op": "approval_list"}, OTHER_UID, 1)["pending"]}
+        self.assertEqual(listed, {"t": whole, "u": "y" * privacy.SUMMARY_CHARS})
+        for a in list(s.approvals.values()):
+            with s.cond:
+                s._record_approval(a, "reject", "x", "cli")
+        self.assertEqual([a["summary"] for a in s.approvals.values()], ["", ""])
+
     def test_request_fields_are_bounded_strings(self):
         s = self.signer()
         base = {"op": "approval_request", "run_id": "r", "tool_use_id": "t", "timeout_s": 30}

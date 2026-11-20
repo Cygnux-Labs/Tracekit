@@ -278,7 +278,7 @@ def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _
                 unclean.append(True)
             name = k.lower() if isinstance(k, str) else None
             how = _shell or name in commands and ("lines" if name == "commands" else True)
-            if not how and k in CODE_ARGS and isinstance(v, str):
+            if not how and (k in CODE_ARGS or name in QUERY_ARGS) and isinstance(v, str):
                 rv, hv = redact(v, dotenv, _depth + 1, counts, commands, noted, "interp", unclean, own, budget)
             elif not how and k in ARGV_ARGS and isinstance(v, list) and all(isinstance(x, str) for x in v):
                 program = next((obj[p] for p in _PROGRAM_ARGS if isinstance(obj.get(p), str)), None)
@@ -296,6 +296,9 @@ def redact(obj, dotenv=False, _depth=0, counts=None, commands=(), noted=False, _
 # the arguments TK-S012 holds as what a code runner, a notebook or a process runs (policy2/packs/server-core.yaml):
 # code, where any hidden value is unclean, and an argv, run by the program the call names beside it
 CODE_ARGS = frozenset(("code", "python_code", "source", "cell_source", "cell_content", "input"))
+# a database tool's statement (any case): code, as CODE_ARGS are, where a value hidden to a line's end (a .env's
+# KEY=value) or past `--` may change what it does
+QUERY_ARGS = frozenset(("sql", "query", "statement"))
 ARGV_ARGS = frozenset(("args", "argv"))
 _PROGRAM_ARGS = ("command", "cmd", "program", "executable")
 
@@ -366,7 +369,9 @@ HIDDEN_CODE = "TK-HIDDEN-CODE"
 HIDDEN_CODE_REASON = ("this command puts code behind text that looks like a secret, so a person can't see what "
                       "they'd approve")
 HIDDEN_CODE_REMEDY = "Rewrite it without inline secrets (read them from the environment or a file the command names)."
-SUMMARY_CHARS = 400   # what v1's approval summary holds (approval_summary): a hold whose summary is longer is denied
+# what v1's approval request holds and `tracekit pending` shows of a hold's summary (approval_summary), as much as the
+# policy reads of a subject (engine.MAX_SUBJECT): a hold whose summary is longer is denied
+SUMMARY_CHARS = 64 * 1024
 LONG_REASON = f"this call is too long for its approval request ({SUMMARY_CHARS} characters), so a person can't see " \
               "what they'd approve"
 LONG_REMEDY = "Split it into shorter calls."
@@ -500,9 +505,15 @@ _NAME_EQ = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=")   # a word's KEY=, named as D
 _ARRAY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")   # what an array's (…) follows: x=(1 2), x+=(3)
 _LEAD = re.compile(r"[ \t]*(?:export\s+)?")   # what DOTENV_LINE reads before a KEY
 _SEP = re.compile(r"\s*[=:]\s*(?:\$'|[\"'])?")   # what ASSIGNMENT reads between a name and its value
-# what on a line may give a program's name another meaning (a function, an alias, PATH) or send what a program prints
-# to one that runs it (>(…), a coprocess, a named pipe): no heredoc on it is data
-_UNSURE = re.compile(r"\b(?:alias|enable|hash|function|coproc|mkfifo|mknod)\b|\(\s*\)|>\(|\b(?:BASH_ENV|ENV|PATH)\+?=")
+# what on a line may give a program's name another meaning (a function, an alias, `hash -p`, PATH however it is set,
+# a file it sources) or send what a program prints to one that runs it (>(…), a coprocess, a named pipe): no heredoc
+# on it is data, and no program on it is one of DATA_READERS
+_UNSURE = re.compile(r"\b(?:alias|enable|hash|function|coproc|mkfifo|mknod)\b|(?<![-\w])source\b|\(\s*\)|>\(|"
+                     r"\b(?:BASH_ENV|ENV)\+?=|(?<![\w${])PATH\b|(?:^|[;&|(){}\n!]|\b(?:then|do|else))[ \t]*\.[ \t]")
+# a line that names BASH_ENV or ENV (export, declare or a prefix): a shell it starts sources the file it names
+_SOURCES_ENV = re.compile(r"(?<![\w${])(?:BASH_ENV|ENV)\b")
+# programs that run what they are given later (at, batch, crontab) or read a script from stdin on another host (ssh)
+_RUNS_LATER = frozenset(("at", "batch", "crontab", "ssh"))
 # $( <( >( open at once, past which the reader doesn't follow the line: each holds the line's state, which made a
 # line of 256 KiB of "$( take 0.6 s with the garbage collector on
 _FRAMES = 64
@@ -524,6 +535,37 @@ DATA_READERS = frozenset((
     "openssl", "sha256sum", "sha1sum", "md5sum", "shasum", "wc", "head", "tail", "sort", "uniq", "cut", "tr", "curl",
     "wget", "http", "https", "xh", "touch", "mkdir", "ls", "cp", "mv", "rm", "ln", "chmod", "chown", "test", "[",
     "true", "false", "export", "declare", "local", "readonly", "typeset"))
+# options whose value is a program, a script or code its program runs (a hidden value there names what runs, quoted
+# or not): one whose name says so (tar's --to-command, docker's --entrypoint, rsync's --rsh, node's --require, go's
+# -toolexec, git's --upload-pack, sort's --compress-program, curl's --engine, wget's --use-askpass, openssl's -engine
+# and -provider, ag's --pager, helm's --post-renderer), and these, each checked in its manual: rg runs --pre on each
+# file (--pre-glob picks which) and --hostname-bin; openssl's -config loads engines and providers; tar's -I and -F;
+# node's -r; ssh's -o (ProxyCommand) and -F; scp's and sftp's -S too; gdb's -ex, -iex and -x; man's -P; zip's -TT
+# (the policy's parser holds wget's -e and --config and curl's -K and --config, and places rsync's -e's program). A
+# program of DATA_READERS given one is not one of them
+_RUNNER_OPTION = re.compile(r"--?[A-Za-z0-9-]*(?:command|cmd|exec|program|script|shell|pager|editor|askpass|entrypoint|"
+                            r"hook|wrapper|plugin|loader|require|import|preload|rsh|pack|engine|provider|interpreter|"
+                            r"helper|renderer)[A-Za-z0-9-]*")
+_RUNNER_OPTIONS = {"rg": ("--pre", "--pre-glob", "--hostname-bin"), "openssl": ("-config",), "tar": ("-I", "-F"),
+                   "node": ("-r",),
+                   "ssh": ("-o", "-F"), "scp": ("-o", "-F", "-S"), "sftp": ("-o", "-F", "-S"),
+                   "gdb": ("-ex", "-iex", "-x"), "man": ("-P",), "zip": ("-TT",)}
+
+
+def _runner_args(name, args):
+    """The indexes of `args` (program `name`'s words after its name) that are a runner option's value (_RUNNER_OPTION,
+    _RUNNER_OPTIONS): in its word (`--to-command=x`, `-Ix`) or the word after it; and each of make's VAR=value (its
+    recipes run SHELL, CC and the like)."""
+    shell, opts, out = _policy("shell"), _RUNNER_OPTIONS.get(name, ()), set()
+    for k, a in enumerate(args):
+        option = a.split("=", 1)[0]
+        if name == "make" and shell._ASSIGN.match(a):
+            out.add(k)
+        elif _RUNNER_OPTION.fullmatch(option) or option in opts:
+            out.add(k if "=" in a else k + 1)
+        elif any(len(o) == 2 and a.startswith(o) and len(a) > 2 for o in opts):
+            out.add(k)
+    return {k for k in out if k < len(args)}
 # options whose value is data though their program may run other words it gets as code: a value hidden there may be
 # text a shell would split (`--set "k=a b"`). Where it is, _data_args says; every other word of these programs is code
 # to them, as any program's outside DATA_READERS
@@ -549,11 +591,12 @@ _JOINED = ("psql", "mysql")
 # positional as a file. redis-cli runs its first positional as its command (its URI is -u's)
 _URIS = {"psql": re.compile(r"postgres(?:ql)?://"), "mysql": re.compile(r"mysql://"),
          "mongosh": re.compile(r"mongodb(?:\+srv)?://")}
-# environment variables a program reads as data (a connection or a credential), whatever the program: a value given
-# one before a program not among DATA_READERS is data (`DATABASE_URL=… npm run migrate`); any other name there may be
-# code the program runs (LD_PRELOAD, NODE_OPTIONS, PYTHONSTARTUP, BASH_ENV, GIT_SSH_COMMAND, EDITOR, PAGER)
-_DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|\w*_(?:URL|DSN|PASSWORD|PASSWD|TOKEN|SECRET|API_KEY)|"
-                       r"\w*_ACCESS_KEY\w*")
+# environment variables a program reads as data (a connection or a credential), whatever the program, in any case: a
+# value given one before a program is data (`DATABASE_URL=… npm run migrate`, `TF_VAR_db_password=…`, `SECRET_KEY=…`);
+# any other name there may be code the program runs (LD_PRELOAD, NODE_OPTIONS, PYTHONSTARTUP, BASH_ENV, GIT_ASKPASS,
+# GIT_SSH_COMMAND, EDITOR, PAGER), quoted or not
+_DATA_ENV = re.compile(r"DATABASE_URL|PGPASSWORD|MYSQL_PWD|(?:\w*_)?(?:URL|DSN|PASSWORD|PASSWD|PASS|TOKEN|SECRET|"
+                       r"API_KEY|KEY)|\w*_ACCESS_KEY\w*", re.I)
 
 
 def _data_args(name, args):
@@ -681,12 +724,20 @@ class _Facts:
     or interpreter runs (`bash x.sh`, `. ./env.sh`, `python3 x.py`): `at` its word's span, None where the line doesn't
     hold it as written (a variable's value, an alias's), `within` the span of the code it was read from (None: the
     line); `placed`, (how, at, inner, within) of each text it reads again as code (policy2.shell._learned); `args`,
-    (name, the spans of its words) of each command; `sure`, False when it can't read the line (ParseError, over
-    engine.MAX_SUBJECT, past the call's Budget, its loop values' readings cut) or a command runs what it can't read
-    (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`). Readings are kept by text in the call's Budget (of)."""
+    (name, the spans of its words, each with whether it is data: a program of DATA_READERS named by its bare name, as
+    written, on a line _UNSURE finds nothing on, given no runner option; an option of _DATA_OPTIONS's value) of each
+    command; `runners`, the spans of runner options' values (_runner_args); `written`, the spans of the words of each
+    command whose output goes to a file or a pipe (or out of a nested command's); `runs_file`, whether the line runs a
+    script file (a shell's, source's or an interpreter's: whose text it may have written there by a path the parser
+    doesn't follow, cp, ln, find -exec), sets BASH_ENV or ENV, or runs one of _RUNS_LATER; `sure`, False when it can't
+    read the line (ParseError, over engine.MAX_SUBJECT, past the call's Budget, its loop values' readings cut) or a
+    command runs what it can't read (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`). Readings are kept by
+    text in the call's Budget (of)."""
 
     def __init__(self, line=None, argv=None, work=None):
         self.programs, self.placed, self.args, self.sure, work = [], [], [], False, [0] if work is None else work
+        text = line if line is not None else "\n".join(argv)
+        self.runners, self.written, self.runs_file = [], [], bool(_SOURCES_ENV.search(text))
         shell, engine = _policy("shell"), _policy("engine")
         if (len(line) if line is not None else sum(map(len, argv))) > engine.MAX_SUBJECT:
             return
@@ -696,12 +747,23 @@ class _Facts:
                 shell.analyse_argv(argv, work=work)
         except (shell.ParseError, RecursionError):
             return
+        renamed, last = bool(_UNSURE.search(text)), {}
+        for c, _, _ in learned["programs"]:   # each pipeline's last stage
+            if c.get("stage") is not None:
+                last[c["pipeline"]] = max(last.get(c["pipeline"], 0), c["stage"])
         for c, at, within in learned["programs"]:
             name, args = c["argv"][0], c["argv"][1:]
             self.programs.append((at, within))
+            runs = _runner_args(name, args)
+            reads = name in DATA_READERS and c.get("word") == name and not renamed and not runs
             data = _data_args(name, args) if name in _DATA_OPTIONS else ()
-            self.args.append((name, [(*a.at, name in DATA_READERS or k in data) for k, a in enumerate(args)
-                                     if getattr(a, "at", None)]))
+            spans = [(*a.at, reads or k in data) for k, a in enumerate(args) if getattr(a, "at", None)]
+            self.args.append((name, spans))
+            self.runners += [args[k].at for k in runs if getattr(args[k], "at", None)]
+            if c.get("stage") is None or c["stage"] < last.get(c["pipeline"], 0) or \
+                    any(o not in ("/dev/null", "/dev/stderr", "/dev/tty") for o in c.get("out") or ()):
+                self.written += [(a, b) for a, b, _ in spans]
+            self.runs_file |= name in _RUNS_LATER
             kind, script = shell._kind(name), None
             if name in shell.SHELLS:
                 mode, script = shell._shell_mode(args, name)
@@ -712,12 +774,15 @@ class _Facts:
                 script = next((a for a in args if a[:1] != "-"), None)
             if script:   # (as a program's word: where it is written as it is)
                 self.programs.append((script.at if getattr(script, "inner", None) else None, within))
+                self.runs_file = True
         data = {}   # a program's word is data only if it is in each reading of the line (`psql $O '-h…'`: O may be -c)
         for name, spans in self.args:
             for a, b, reads in spans:
                 data[name, a, b] = data.get((name, a, b), True) and reads
         self.args = [(name, [(a, b, data[name, a, b]) for a, b, _ in spans]) for name, spans in self.args]
         self.placed = learned["placed"]
+        read = {at for _, at, inner, _ in self.placed if inner}   # (a runner's value the parser reads as code: so read)
+        self.runners = [at for at in self.runners if at not in read]
         self.sure = not learned["pieces_cut"] and not any(c.get("opaque") for c in cmds)
 
     @classmethod
@@ -739,7 +804,7 @@ def _data_stdin(stages, nested):
     out, data = [], True
     for words in reversed(stages):
         k = next((k for k, w in enumerate(words) if not shell._ASSIGN.match(w)), len(words))
-        name = shell.base_name(words[k]) if k < len(words) else ""
+        name = words[k] if k < len(words) and words[k] == shell.base_name(words[k]) else ""   # (./cat: not cat)
         kind = shell._kind(name)
         data = data and name in shell.DATA_ONLY and not (kind and shell._reads_stdin(kind, words[k + 1:]))
         out.append(data and not nested)
@@ -1081,10 +1146,18 @@ def _clean(s, r, marks, crossed, facts):
     (_Reading.ctx) and holding nothing _SEEN there; not in an interpreter's program, nor where the reader is unsure; in
     quotes, and when it starts a word of its own (`crossed`: `KEY: x`) anywhere, data: in a word a program of
     DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a heredoc such a program reads, a value
-    assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV."""
+    assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV; quoted or not, not a runner option's value
+    (_runner_args) nor a value given any other name before a program (LD_PRELOAD); on a line that runs a file
+    (_Facts.runs_file), not in what it writes to a file or a pipe (a word of a command whose output goes there, a
+    herestring or a heredoc), which may be that file."""
     if not facts.sure:
         return False
-    program, data, loose = bytearray(len(s) + 1), bytearray(r.data), []
+    program, data, runner, written, loose = bytearray(len(s) + 1), bytearray(r.data), bytearray(len(s) + 1), \
+        bytearray(r.data if facts.runs_file else len(s) + 1), []
+    for at in facts.runners:
+        _mark(runner, *at)
+    for at in facts.written if facts.runs_file else ():
+        _mark(written, *at)
     for _, at, _, within in facts.placed:
         if at is None:
             loose.append(within)
@@ -1109,10 +1182,12 @@ def _clean(s, r, marks, crossed, facts):
                     break
                 if alone or _DATA_ENV.fullmatch(s, a, a + len(m.group().rstrip("+=").split("[")[0])):
                     _mark(data, a, b)
+                else:   # a value a program may run (LD_PRELOAD, NODE_OPTIONS)
+                    _mark(runner, a, b)
     for v, e, _ in marks:   # (one that leaves its quotes, body or comment holds what ends them, which _SEEN finds)
         c = r.ctx[v]
         if v in crossed and data.count(1, v, e) < e - v or r.unsure.find(1, v, e) >= 0 or \
-                r.interp.find(1, v, e) >= 0 or \
+                r.interp.find(1, v, e) >= 0 or runner.find(1, v, e) >= 0 or written.find(1, v, e) >= 0 or \
                 program.find(1, v, e) >= 0 or _SEEN[c].search(s[v:e] if c == CODE else _QUERY.sub("", s[v:e])) or \
                 any(w is None or w[0] < e and v < w[1] for w in loose) or \
                 c in (SQ, DQ, ANSI) and data.count(1, v, e) < e - v:

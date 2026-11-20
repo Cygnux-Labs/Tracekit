@@ -4047,8 +4047,8 @@ class Installer(unittest.TestCase):
         for command, said in (("TOKEN='ab;cd' make", "this command puts code behind text that looks like a secret, so a "
                                "person can't see what they'd approve; rewrite it without inline secrets (read them from "
                                "the environment or a file the command names)"),
-                              (long, "this call is too long for its approval request (400 characters), so a person "
-                               "can't see what they'd approve; split it into shorter calls")):
+                              (long, f"this call is too long for its approval request ({privacy.SUMMARY_CHARS} "
+                               "characters), so a person can't see what they'd approve; split it into shorter calls")):
             err = io.StringIO()
             with self.subTest(command=command), mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}), \
                     mock.patch.object(hook.policy_mod, "load", lambda: (pol, "")), \
