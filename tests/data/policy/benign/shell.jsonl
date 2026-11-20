@@ -338,3 +338,6 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
+{"tool": "Bash", "args": {"command": "pip uninstall -y requests"}, "expect": "allow", "note": "uninstalling an unrelated package with pip"}
+{"tool": "Bash", "args": {"command": "claude plugin marketplace list"}, "expect": "allow", "note": "listing Claude Code plugin marketplaces"}
+{"tool": "Bash", "args": {"command": "claude plugin marketplace remove other"}, "expect": "allow", "note": "removing an unrelated Claude Code plugin marketplace"}
