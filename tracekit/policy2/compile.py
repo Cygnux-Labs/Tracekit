@@ -75,6 +75,11 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
                                               "read (a file, input or variable), which may force it",
                                     "remedy": "Give the update's fields on the line (-f sha=…), without force."},
+                           "output": {"reason": "a download writes a file the policy can't name (a variable, a pattern, a "
+                                                "config file, a URL list, a name the server picks, a recursive fetch, an "
+                                                "option the policy doesn't know)",
+                                      "remedy": "Name the file it writes plainly (-o file), with options the policy "
+                                                "knows."},
                            "budget": {"reason": "the line is too long or too complex for the policy to read all of it",
                                       "remedy": "Split it into shorter calls, or write repeated commands as a loop."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
@@ -107,11 +112,11 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit", "push"},
-           "fs": {"path", "op", "content_digest", "ci_workflow"},
+                     "tracekit", "push", "harness_launch", "environment", "gh_runs"},
+           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
-           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
+           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args", "run"},
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},
@@ -408,7 +413,7 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
-    if pol.get("oversize", "ask") not in ("ask", "deny"):   # (left out or deny, TK-OVERSIZE takes its rule's section)
+    if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
         errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
@@ -458,9 +463,7 @@ def _lint(pol, path):
     for x in pol.get("explains", []):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
-        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and two or more "
-                   "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
-                   if _loose_host(h)]
+        errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
     return errors + _lint_detect(pol, path)
 
 
@@ -476,14 +479,32 @@ def _lint_remedy(text, sec):
                                     "should, could or might do")) if bad]
 
 
+# lean: a short built-in list of public suffixes of two or more labels (from the Public Suffix List,
+# publicsuffix.org); vendor the full list once a policy needs a suffix that isn't here
+PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "com.au", "co.jp", "com.br", "co.in",
+    "github.io", "githubusercontent.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "herokuapp.com",
+    "azurewebsites.net", "cloudfront.net", "appspot.com", "s3.amazonaws.com"})
+
+
 def _loose_host(glob):
-    """Whether host glob `glob` is too loose: not an exact host, nor a dot and two or more labels after its last
-    wildcard."""
+    """Why host glob `glob` is too loose, or None: an exact host is not; a glob needs a dot and two or more labels
+    after its last wildcard, and those labels must not be a public suffix anyone can register under, nor a parent of
+    one (`*` spans dots when an explains host is matched, so `*.amazonaws.com` covers `*.s3.amazonaws.com`)."""
     if not re.search(r"[*?[]", glob):
-        return False
+        return None
     tail = re.split(r"[*?\]]", glob)[-1]
     labels = tail.split(".")[1:]
-    return not tail.startswith(".") or len(labels) < 2 or "" in labels
+    if not tail.startswith(".") or len(labels) < 2 or "" in labels:
+        return ("after its last wildcard it needs a dot and two or more labels (*.pythonhosted.org, not *.com or "
+                "*pypi.org); or name the hosts")
+    t = tail[1:].lower()
+    covered = sorted(s for s in PUBLIC_SUFFIXES if s == t or s.endswith("." + t))
+    if covered:
+        what = (f"{t} is a public suffix" if covered == [t] else
+                f"{t} covers the public suffix {', '.join(covered)}, which")
+        return f"{what} anyone can register under; name the hosts, or a suffix one owner holds (*.cdn.example.co.uk)"
+    return None
 
 
 def _int(v, lo=0, hi=float("inf")):

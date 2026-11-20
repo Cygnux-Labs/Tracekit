@@ -115,7 +115,8 @@ after its tool asked the person itself is claimed from the signer (`call_claim`)
 again. After a signer restart such a call must be approved again: its resume is refused (`the signer restarted since
 this call's approval was used; ask again`). An identity with an explicit `authorize` list needs `call_state` and
 `call_claim` granted beside `decide` and
-`approval_consume`; without them the node decides each call again. Single calls under `create_agent` keep their own
+`approval_consume`; without them the node decides each call again, or refuses a paused call, and warns once, naming
+the grant. Single calls under `create_agent` keep their own
 task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.

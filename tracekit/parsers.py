@@ -345,10 +345,70 @@ def _gemini_chunk(acc, chunk):
                 _text(acc, last, "text", _get(p, "text"))
 
 
+# ------------------------------------------------------------------ AWS Bedrock Runtime
+
+def bedrock_converse(resp, request=None):
+    sent = []
+    if request:
+        for m in _list(request, "messages"):
+            for b in _list(m, "content"):
+                tr = _get(b, "toolResult")
+                if tr and _get(tr, "toolUseId"):
+                    sent.append(_get(tr, "toolUseId"))
+    rid = _get(resp, "ResponseMetadata", "RequestId")
+    model = _get(request, "modelId") or _get(request, "model") or _get(resp, "modelId")
+    msg = _get(resp, "output", "message")
+    uses = []
+    for b in _list(msg, "content"):
+        tu = _get(b, "toolUse")
+        if tu:
+            uses.append(tool_use(_get(tu, "toolUseId"), _get(tu, "name"), _get(tu, "input"), args_source="parsed"))
+    stop_reason = _get(resp, "stopReason")
+    usage = _usage.from_bedrock(_get(resp, "usage"))
+    return _out(rid, model, stop_reason, usage, uses, sent)
+
+
+def _bedrock_converse_chunk(acc, chunk):
+    meta = _get(chunk, "metadata")
+    if meta and _get(meta, "usage"):
+        acc["usage"] = _get(meta, "usage")
+    stop = _get(chunk, "messageStop")
+    if stop and _get(stop, "stopReason"):
+        acc["stopReason"] = _get(stop, "stopReason")
+    start = _get(chunk, "contentBlockStart", "start")
+    if start:
+        tu = _get(start, "toolUse")
+        if tu:
+            msg = acc.setdefault("output", {}).setdefault("message", {})
+            content = msg.setdefault("content", [])
+            content.append({"toolUse": {"toolUseId": _get(tu, "toolUseId"), "name": _get(tu, "name"), "input": ""}})
+    delta = _get(chunk, "contentBlockDelta", "delta")
+    if delta:
+        txt = _get(delta, "text")
+        if txt:
+            msg = acc.setdefault("output", {}).setdefault("message", {})
+            content = msg.setdefault("content", [])
+            content.append({"text": txt})
+        tu = _get(delta, "toolUse")
+        if tu and "input" in tu:
+            msg = acc.setdefault("output", {}).setdefault("message", {})
+            content = msg.setdefault("content", [])
+            if content and "toolUse" in content[-1]:
+                content[-1]["toolUse"]["input"] = content[-1]["toolUse"].get("input", "") + str(tu["input"])
+
+
+def bedrock_invoke_model(resp, request=None):
+    rid = _get(resp, "ResponseMetadata", "RequestId")
+    model = _get(request, "modelId") or _get(request, "model")
+    return _out(rid, model, None, None, [], [])
+
+
 # ------------------------------------------------------------------ dispatch
 
 PARSERS = {"openai:chat": (openai_chat, _openai_chat_chunk), "openai:responses": (openai_responses, _openai_responses_event),
-           "anthropic:messages": (anthropic, _anthropic_event), "gemini:generate_content": (gemini, _gemini_chunk)}
+           "anthropic:messages": (anthropic, _anthropic_event), "gemini:generate_content": (gemini, _gemini_chunk),
+           "bedrock:converse": (bedrock_converse, _bedrock_converse_chunk),
+           "bedrock:invoke_model": (bedrock_invoke_model, None)}
 
 
 ANTHROPIC_CLIENT_TOOLS = ("custom", "bash_", "text_editor_", "computer_", "memory_")   # typed tools the client runs
@@ -385,6 +445,10 @@ def tool_results(kind, req):
     elif kind == "anthropic:messages":
         pairs = [(_get(b, "tool_use_id"), _get(b, "content")) for m in _list(req, "messages")
                  for b in _list(m, "content") if _get(b, "type") == "tool_result"]
+    elif kind.startswith("bedrock:"):
+        pairs = [(_get(_get(b, "toolResult"), "toolUseId"), _get(_get(b, "toolResult"), "content"))
+                 for m in _list(req, "messages")
+                 for b in _list(m, "content") if _get(b, "toolResult")]
     else:
         return []
     return [(_id(i), c) for i, c in pairs if i]

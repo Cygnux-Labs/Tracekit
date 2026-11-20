@@ -47,6 +47,9 @@ class Driver:
             os.environ.pop(k, None)
         self.client = Client(signer_path)
         case.addCleanup(self.client.close)
+        # Claude Code starts a session with SessionStart, which registers its run: one with no SessionStart and no
+        # state is one that went on after its SessionEnd (a later run: claude_code._run)
+        case.assertEqual(self.hook("SessionStart", None, None, None, source="startup"), (0, ""))
 
     def run(self):
         st = claude_code._load(claude_code._state("s1"))   # retries while a hook replaces it (Windows)

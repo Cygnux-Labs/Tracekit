@@ -16,6 +16,7 @@ import hashlib
 import itertools
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -75,6 +76,51 @@ def report(results, as_json=False):
             print(f"{r['status'] if r['status'] in (OK, INFO) else r['status'].upper():<6}{r['detail']}  ({r['id']})"
                   + (f"\n      fix: {r['fix']}" if r["fix"] else ""))
     return 1 if any(r["status"] == FAIL for r in results) else 0
+
+
+def _google_re2_supported(python_version=None, implementation=None, sys_platform=None, machine=None):
+    """Whether google-re2 is declared for this Python and platform.
+
+    Keep these conditions in sync with the google-re2 markers in pyproject.toml.
+    """
+    python_version = python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
+    implementation = implementation or platform.python_implementation()
+    sys_platform = sys_platform or sys.platform
+    machine = machine or platform.machine()
+
+    version = tuple(int(part) for part in python_version.split("."))
+
+    if implementation != "CPython" or not ((3, 10) <= version < (3, 15)):
+        return False
+
+    return (
+        (sys_platform == "win32" and (
+            machine in ("x86", "AMD64") or
+            (version >= (3, 11) and machine == "ARM64")
+        ))
+        or (sys_platform == "linux" and machine in ("x86_64", "aarch64"))
+        or (sys_platform == "darwin" and machine in ("x86_64", "arm64"))
+    )
+
+
+def _google_re2_wheel_expected():
+    """The marker, and what it cannot see: libc and OS version constraints."""
+    if not _google_re2_supported():
+        return False
+
+    if sys.platform == "linux":
+        if sys.maxsize <= 2**32 - 1:
+            return False
+        libc, version = platform.libc_ver()
+        return (
+            libc == "glibc"
+            and tuple(int(p) for p in version.split(".")[:2] if p.isdigit()) >= (2, 28)
+        )
+
+    if sys.platform == "darwin":
+        return int((platform.mac_ver()[0] or "0").split(".")[0]) >= 13
+
+    return True
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
@@ -268,6 +314,12 @@ def _harness_hooks(harness, config):
                      for c in (table[k] if isinstance(table[k], list) else [table[k]])]
                 for k, ev in agent_hooks.JCODE_EVENTS.items() if k in table}
     return config.get("hooks") or {}
+
+
+def _hook_entries(hooks):
+    """[(event, hook)] of a coding agent's {event: [hook groups]}: each group's hooks, or the group itself."""
+    return [(ev, h) for ev, groups in hooks.items() for g in groups
+            for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
 
 
 def _config(harness, path):
@@ -839,9 +891,11 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     f"PowerShell's execution policy ({policy or 'unread'}) lets Cline's CLI start Tracekit's hooks",
                     "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned", bad=WARN)
             continue
+        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
+        if harness == "opencode":
+            _opencode_loads(add, path, fix, FAIL if prod else WARN)
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
-        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
         if harness == "gptme":
             if not prod:
                 ok, detail = _gptme_load_check(path)
@@ -865,12 +919,25 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                     "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
             hooks = _harness_hooks(harness, _config(harness, path))
-            cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
-                    for h in (g.get("hooks") or () if "hooks" in g else [g])
-                    if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+            every = _hook_entries(hooks)
+            cmds = [(ev, h) for ev, h in every if agent_hooks._version(h.get("command")) == "v2"]
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
+        if harness == "interpreter":   # /import copies Claude Code's hooks into the user's file (#940)
+            held = {path: every}
+            user = agent_hooks.config_path(harness, home=home)
+            if os.path.realpath(user) != os.path.realpath(path):
+                with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):   # none, or not hooks
+                    held[user] = _hook_entries(_harness_hooks(harness, _config(harness, user)))
+            copied = {f: sorted({ev for ev, h in entries if install._cmd_version(h.get("command")) is not None})
+                      for f, entries in held.items()}
+            copied = {f: evs for f, evs in copied.items() if evs}
+            add("D-HOOKS-EVENT", not copied,
+                " and ".join(f"{f} holds Tracekit's Claude Code hook ({', '.join(evs)})" for f, evs in copied.items())
+                + ": Open Interpreter runs it as well as its own, so each call is decided a second time, recorded as "
+                "claude-code" if copied else f"no Tracekit Claude Code hook in {' or '.join(held)}",
+                f"remove Tracekit's Claude Code hook from {' and '.join(copied or held)}", bad=WARN)
         if harness in agent_hooks.TRUSTING:
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
@@ -920,6 +987,30 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _opencode_loads(add, path, fix, bad):
+    """D-OPENCODE-PLUGIN: whether the OpenCode on PATH loads Tracekit's plugin at `path`. OpenCode 2.x (@opencode/cli)
+    loads a plugin only from its default export, {id, setup}; one without it (as an earlier Tracekit wrote) it logs as
+    failed to load and runs every call undecided, and says nothing else.
+    lean: reads `opencode --version` from doctor's PATH, which is OpenCode's only when doctor runs where OpenCode does"""
+    try:
+        default = re.search(r"^export default \{", install.agent_file(path).decode("utf-8", "replace"), re.M)
+    except OSError as e:
+        add("D-OPENCODE-PLUGIN", False, f"cannot read Tracekit's OpenCode plugin {path}: {e}", fix, bad=bad)
+        return
+    exe, out = shutil.which("opencode"), ""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):   # never a program the working directory placed
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=15).stdout \
+            if _outside_cwd(exe) else ""
+    major = re.search(r"(\d+)\.\d+\.\d+", out)
+    two = major is not None and int(major[1]) >= 2
+    add("D-OPENCODE-PLUGIN", bool(default),
+        f"Tracekit's plugin {path} has the default export OpenCode 2.x loads, and the plugin 1.x loads"
+        if default else f"Tracekit's plugin {path} has no default export: OpenCode {major[0]} can't load it, so every "
+        "call runs undecided and unrecorded (its log says \"failed to load plugin\")" if two else
+        f"Tracekit's plugin {path} has no default export: OpenCode 2.x can't load it, so after an upgrade every call "
+        "would run undecided and unrecorded", fix, bad=bad if two else WARN)
 
 
 def _codebuddy_later(home=None):
@@ -1544,7 +1635,24 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "root-owned and not group/world-writable, or set policy: in signer.yaml to such a file")
     try:
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
-        add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
+        loaded = service.load_policy(policy)
+        using_re2 = loaded.engine.startswith("re2@")
+        wheel_expected = _google_re2_wheel_expected()
+        detail = f"{policy} loads on {loaded.engine}"
+        if not using_re2:
+            detail += (
+                " (regex fallback: large inputs can exhaust the 1 s budget "
+                "and the call will be denied)"
+                if wheel_expected else
+                " (no google-re2 wheel is expected for this Python or platform)"
+            )
+        fix = (
+            f"{sys.executable} -m pip install google-re2, then restart the signer "
+            "(tracekit down in dev)"
+            if wheel_expected and not using_re2 else ""
+        )
+        add("D-POLICY-ENGINE", using_re2, detail, fix,
+            bad=WARN if wheel_expected else INFO)
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
