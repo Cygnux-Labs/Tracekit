@@ -148,6 +148,9 @@ def claims():
         f"named the record in all {e28['held']['exact_from_record']}",
         f"in all {e28['held']['said_task_too']} the words say the task holds the value too",
         f"only untrusted content supplied a value fires on {e28['held']['only_alerts']} of them",
+        f"reads values) names {ad['attack_calls_said']['high_alert']} of the {ad['attack_calls_said']['listed']}",
+        f"{e28['goals']['runs']} built runs whose log calls other content the task",
+        f"In {e28['goals']['goal_beyond_task']} of the {e28['goals']['runs']} is the goal anything but the run's own task",
     ]
     limits = [
         f"in {pct(ag['exact']['found'] / ag['exact']['calls'])} of the successful attacks scored",

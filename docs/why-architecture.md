@@ -98,13 +98,13 @@ Tested edges carry `effect`, `ci`, `n` and `verdict`. Edges with a CI that inclu
 
 ## Argument provenance and alerts
 
-For each tool call, `analysis.atoms` extracts values worth tracing: email addresses, URLs, and string arguments of 6+ characters. For each value, it searches earlier inputs and tool results for a case-insensitive verbatim match:
+For each tool call, `analysis.atoms` extracts values worth tracing: email addresses, URLs, string arguments of 6+ characters and numbers the signer's index reads (8 or more digits). `analysis.value_provenance` reads each as the signer's index reads values (`provenance.values`): an address, URL, host or digit run is held by content holding an equal one; a free string by content whose text, read as the index reads it, holds it as a whole token, or that holds it as a whole value. Untrusted content also brought a value when it holds a part of it the index reads that no trusted content holds; a trusted call's result holds nothing an earlier call's arguments carried (an echo of the agent's own value):
 
 | Status | Meaning |
 |---|---|
-| `untrusted-only` | only untrusted content contained it |
-| `trusted` | at least one trusted input or tool result contained it |
-| `generated` | nothing earlier contained it; the model wrote it |
+| `untrusted-only` | only untrusted content brought it |
+| `trusted` | at least one trusted input or tool result holds it |
+| `generated` | nothing earlier holds it; the model wrote it |
 
 A tool result counts as untrusted when its content was also recorded as untrusted input (the Anthropic adapter does this for tools listed in `untrusted_tools`).
 
@@ -112,7 +112,7 @@ Alerts:
 
 | Severity | Condition |
 |---|---|
-| high | sensitive action with at least one `untrusted-only` argument value that no earlier trusted content holds read as the signer's index reads values either (`analysis.trusted_holders`: the search over text read as the index reads it, so an IBAN the task writes in groups is the task's, or a value the index reads that is the whole value, such as the string a JSON result holds); or the log fails verification |
+| high | sensitive action with at least one `untrusted-only` argument value; or the log fails verification |
 | review | sensitive action downstream of an untrusted input (reach only); failed tool call; failed model call |
 | info | tool call stubbed during a replay |
 

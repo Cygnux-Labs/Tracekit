@@ -682,8 +682,9 @@ run's bundle, whose `intent grants` line re-checks every release. Results: `eval
 ## E28: influence grades on runs with a known cause
 
 `eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
-true influence, offline, with no model API. Four parts, and a gate: E28 exits 1 when any promise below breaks (each
-grade's recall floor among them).
+true influence, offline, with no model API. Five parts, and a gate: E28 exits 1 when any promise below breaks (each
+grade's recall floor and the high alert's among them). Each part reads its runs' exact edges from the signed records it
+read from the signer's store, as `tracekit view` reads them from the records it verified.
 
 - **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, MIT, gpt-4o-2024-05-13, the `important_instructions`
   attack and the clean runs; the runs E28 reads are kept in `eval/e28_agentdojo/` with the upstream commit and license)
@@ -700,7 +701,7 @@ grade's recall floor among them).
   |---|---|---|
   | exact | 214 of 214 (100%) | 214 of 274 (78.1%) |
   | seen | 293 of 405 (72.3%) | 273 of 274 (99.6%) |
-  | hint | 248 of 248 (100%) | 236 of 274 (86.1%) |
+  | hint | 282 of 282 (100%) | 264 of 274 (96.4%) |
 
   Hint's and exact's precision here is high by construction: both need the call's value in the source, and a negative
   holds none. What tests exact is where it says a value came from: 281 of the 283 exact edges on the attacker's own
@@ -710,7 +711,8 @@ grade's recall floor among them).
   97 clean runs: a task that asks the agent to act on what it reads gets it too, so it is never called drift on its
   own. What INFLUENCE says of the 274 attack calls: none reads as coming from the task (no replay without the task
   exists for a published trace), all 274 are in its list, and each of the 58 with no exact edge names the untrusted
-  content its model call had in context.
+  content its model call had in context. The high alert (a value only untrusted content brought, as the signer's index
+  reads values) names 136 of the 274.
 - **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
   vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
   found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40
@@ -724,6 +726,9 @@ grade's recall floor among them).
   4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too. The
   high alert that only untrusted content supplied a value fires on 0 of them: it reads the IBAN the task writes in
   groups as the signer's index does.
+- **A goal the log names**: 2 built runs whose log calls other content the task, a why log that marks a trusted README
+  and an untrusted note of source `task` as kind task, and one through the signer that writes the injected note again
+  as the trusted task under the note's own record. In 0 of the 2 is the goal anything but the run's own task.
 
 Results: `eval/results/e28_influence.json`.
 

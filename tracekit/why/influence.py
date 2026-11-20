@@ -1,9 +1,10 @@
 """What moved a call, graded by how it is known, and the chain back to the run's goal (docs/why.md#influence).
 
     exact     the signer's provenance: this untrusted record holds an argument's value, and nothing the signer indexed
-              as trusted does (the run's provenance index); only on a run imported from its signed records, the call's
-              citation matching its record. A why log's own `provenance` field is `claimed`: shown as the log's word,
-              never used for a finding, the chain or the order of the answers
+              as trusted does (the run's provenance index); only where code holding the signed records checked them
+              (Run.signed: signed_edges, from the viewer's verified records or records read from the store). A why
+              log's own `provenance` field is `claimed`: shown as the log's word, never used for a finding, the chain
+              or the order of the answers
     measured  a replay without the source changed whether the call happened (a run test, verdict causal, whose target
               matches only this call in the run: graph._attach_tests)
     seen      the source was in the context of the model call that asked for the call: `recorded` by the agent's
@@ -15,12 +16,14 @@
 The goal is the run's own task, as the signer recorded it where it did: an input of source `task`, trusted and of kind
 task (in an import, one its signed records back), else the trusted prompts the person typed. A call gets a chain walked
 back from it: a call to the model call that asked for it, a message to the model call that wrote it, a model call to
-the source in its context that is (or carries) an exact or measured source of the call, else the goal when it was in
-that context, else another agent's message (the run's own hop), observed content to the call it repeats.
+the source in its context that is (or carries) an exact or measured source of the call, else (for a call a replay
+showed needs the task) the goal when it was in that context, else another agent's message (the run's own hop),
+observed content to the call it repeats.
 
 Only a replay says whether a call serves the task: it serves no step of it (drift) when the strongest replay without
 each part of the goal kept it, and `serves` the task when one without it changed it. Otherwise it is `unknown`, and the
-words name the untrusted content its model call had in context. An argument from untrusted content outside the run's
+words name the untrusted content its model call had in context, and a replay without the task whose target other calls
+match too (it tested none of them alone). An argument from untrusted content outside the run's
 agents (exact) or a replay tying the call to untrusted content (measured) is named (`untrusted`), never called drift on
 its own: a task that asks the agent to act on what it reads ("pay the bill in bill.txt") gets those too (E28: 31 of 97
 clean AgentDojo runs). An exact value from another agent's message is not named: the signer's index is per run, so it
@@ -28,12 +31,14 @@ can't say where that agent got the value.
 """
 from __future__ import annotations
 
+import functools
 import heapq
-from typing import Any, Dict, List, Optional, Set, Tuple
+import os
+from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from .analysis import _committed, _ended, _short, _texts, arg_provenance, is_sensitive, trusted_holders
-from .core import Run
-from .graph import Graph
+from .analysis import _committed, _ended, _short, _texts, arg_provenance, atoms, is_sensitive
+from .core import OWNER, Run
+from .graph import Graph, nodes_matching, target_hits
 
 MAX_CHAIN = 12      # steps of a chain kept; a longer one starts with "…"
 SHOWN = 8           # seen edges and hints listed per call (untrusted first, then the latest); `seen`, `hinted`: all
@@ -41,7 +46,9 @@ NAMED = 5           # untrusted sources in context the words name; the rest are 
 
 
 def _imported(run: Run) -> bool:
-    return (run.start.get("meta") or {}).get("source") == "tracekit"
+    """Whether the run says it is an import of signed records (import_v2); a run an ingest wrote never is one."""
+    return (run.start.get("meta") or {}).get("source") == "tracekit" and not (
+        run.path and os.path.exists(os.path.join(run.path, OWNER)))
 
 
 def _backed(run: Run, ev: Dict[str, Any]) -> bool:
@@ -64,16 +71,59 @@ def consequential(run: Run, ev: Dict[str, Any]) -> bool:
     return bool(_ended(ev) or is_sensitive(run, ev) or ev.get("provenance"))
 
 
+def signed_edges(run: Run, decision_of: Callable[[Any, Any, str], Optional[List[Dict[str, Any]]]],
+                 record: Callable[[Any, Any], Optional[Tuple[Any, Any, Any]]]) -> FrozenSet[Tuple[str, Any, Any, Any, str]]:
+    """The exact edges the signer's records back in `run` (Run.signed): for each call whose citation is a checked
+    signed record of its tool (`decision_of(run_id, run_seq, tool)`: the provenance the call's signed decision
+    recorded, else None), each entry whose source is a checked record too (`record(run_id, run_seq)`: its type, trust and
+    source, else None) and the event of the run that cites it last (as import_v2.merge maps them) is that record's, as
+    merge checks one. The run's own `provenance` fields play no part: a why log is its agent's file."""
+    cites = {(ev["tracekit"].get("run_id"), ev["tracekit"].get("run_seq")): ev for ev in run.events
+             if isinstance(ev.get("tracekit"), dict) and not ev.get("tracekit_mismatch")}
+    out = set()
+    for ev in run.of_type("action"):
+        tk = ev.get("tracekit") if not ev.get("tracekit_mismatch") else None
+        if not isinstance(tk, dict):
+            continue
+        for p in decision_of(tk.get("run_id"), tk.get("run_seq"), ev["tool"]) or ():
+            seq = (p.get("source") or {}).get("run_seq")
+            src = cites.get((tk.get("run_id"), seq))
+            if src is not None and _is_record(src, record(tk.get("run_id"), seq)):
+                out.add(("ev:" + ev["id"], p.get("field"), p.get("kind"), seq, "ev:" + src["id"]))
+    return frozenset(out)
+
+
+def _is_record(ev: Dict[str, Any], rec: Optional[Tuple[Any, Any, Any]]) -> bool:
+    """Whether event `ev` is signed record `rec` (type, trust, source), as import_v2's merge checks a citation: an input
+    of its trust and source, a message of its trust, a call of a tool result."""
+    t, trust, source = rec or (None, None, None)
+    if ev["type"] == "input":
+        return t == "input.observed" and ev.get("trust") == trust and (ev.get("source") or "")[:256] == source
+    if ev["type"] == "message":
+        return t == "input.observed" and ev.get("trust") == trust
+    return ev["type"] == "action" and t == "tool.result"
+
+
+@functools.lru_cache(maxsize=32)
+def _by_call(signed: FrozenSet[Tuple[str, Any, Any, Any, str]]) -> Dict[str, List[Tuple[str, Any, Any, Any, str]]]:
+    out: Dict[str, List[Tuple[str, Any, Any, Any, str]]] = {}
+    for s in sorted(signed, key=str):
+        out.setdefault(s[0], []).append(s)
+    return out
+
+
 def graded(g: Graph, nid: str, seen: bool = True) -> Dict[str, Any]:
-    """{"edges": the exact (or claimed), measured and (with `seen`) seen edges into call `nid`, "ruled": the sources a
-    replay tested and ruled out}. A finding reads no seen edge: it asks for none."""
+    """{"edges": the exact, claimed, measured and (with `seen`) seen edges into call `nid`, "ruled": the sources a
+    replay tested and ruled out}. Exact: the run's signed edges (Run.signed); claimed: a `provenance` entry of the why
+    log that no signed edge backs. A finding reads no seen edge: it asks for none."""
     ev = g.nodes[nid]["event"]
-    out: List[Dict[str, Any]] = []
-    grade = "exact" if _backed(g.run, ev) else "claimed"
+    mine = _by_call(g.run.signed).get(nid, [])
+    out: List[Dict[str, Any]] = [{"src": s, "grade": "exact", "basis": "provenance", "field": f, "kind": k,
+                                  "record": r} for _, f, k, r, s in mine if s in g.nodes]
     for p in ev.get("provenance") or []:
         src = "ev:" + p["from_event"] if p.get("from_event") else None
-        if src in g.nodes:
-            out.append({"src": src, "grade": grade, "basis": "provenance", "field": p.get("field"),
+        if src in g.nodes and (nid, p.get("field"), p.get("kind"), p.get("record"), src) not in mine:
+            out.append({"src": src, "grade": "claimed", "basis": "provenance", "field": p.get("field"),
                         "kind": p.get("kind"), "record": p.get("record")})
     ruled = []
     for e in g.in_edges(nid, ("tested",)):
@@ -204,11 +254,13 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
         first += heapq.nlargest(SHOWN - len(first), (e for e in ctx if g.nodes[e["src"]].get("trust") != "untrusted"),
                                 key=lambda e: g.nodes[e["src"]]["seq"])
     seen = _seen(g, dec, first) if dec else []
-    steps, cut = chain(g, nid, {e["src"] for e in edges if e["grade"] in ("exact", "measured")}, gs, memo)
     needs = any(e["grade"] == "measured" and e["src"] in gs for e in edges)   # a replay without the task changed it
     serves = "drift" if drifted(got, goal) else "task" if needs else "unknown"
+    # a chain ends at the task only where a replay showed the call needs it
+    steps, cut = chain(g, nid, {e["src"] for e in edges if e["grade"] in ("exact", "measured")},
+                       gs if serves == "task" else set(), memo)
     step = next((s for s in steps if g.nodes[s]["type"] == "decision"), None) if serves == "task" else None
-    prov = arg_provenance(run, g, ev, texts)
+    prov = arg_provenance(run, g, ev, texts, memo)
     hinted = hints(g, nid, prov, {e["src"] for e in edges if e["grade"] in ("exact", "measured")})
     u = untrusted(edges)
     args = run.value(ev.get("args_ref"))
@@ -219,12 +271,40 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
            "chain": [_step(g, s, nid, edges, memo) for s in steps], "truncated": cut, "serves": serves,
            "untrusted": u,
            # the trusted content that holds the traced value too (the task, a trusted result): said beside
-           "also": trusted_holders(run, ev["seq"], traced, texts, memo) if traced is not None else [],
+           "also": _also(prov, traced) if traced is not None else [],
            "in_context": list(dict.fromkeys(g.nodes[e["src"]]["label"] for e in bad)),
+           "replays": _replays(run, g, nid, gs) if serves == "unknown" else {},
            "step": _step(g, step, nid, edges, memo)["text"] if step else None,
            **({"tracekit": ev["tracekit"]} if ev.get("tracekit") else {})}
     out["words"] = words(out)
     return out
+
+
+def _replays(run: Run, g: Graph, nid: str, gs: Set[str]) -> Dict[str, List[str]]:
+    """The replays without the goal (or part of it) whose target matches call `nid` and that left what it serves
+    unknown, by target: `shared`, a target other calls match too, which measured whether any of them happened and so
+    says nothing of this one (graph._attach_tests); `partial`, one that ruled it out without part of the goal (the
+    rest untested); `inconclusive`, one that did neither."""
+    out: Dict[str, List[str]] = {"shared": [], "partial": [], "inconclusive": []}
+    for t in run.tests:
+        if t.get("group") or t.get("scope") == "decision" or not gs & set(nodes_matching(g, t["intervention"])):
+            continue
+        try:
+            hits = ["ev:" + h["id"] for h in target_hits(run, t["target"])]
+        except ValueError:
+            continue
+        if nid in hits:
+            kind = "shared" if len(hits) > 1 else "partial" if t["verdict"] == "ruled-out" else "inconclusive"
+            out[kind].append(t["target"])
+    return {k: list(dict.fromkeys(v)) for k, v in out.items() if v}
+
+
+def _also(prov: List[Dict[str, Any]], value: Any) -> List[str]:
+    """The trusted content (the task, a trusted result) that holds every atom of traced argument `value` too, as why's
+    search reads values (`prov`: arg_provenance of the call)."""
+    want = set(atoms(value))
+    held = [{s["label"] for s in r["sources"] if s["trust"] == "trusted"} for r in prov if r["value"] in want]
+    return sorted(set.intersection(*held)) if want and len(held) == len(want) else []
 
 
 def _first(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -296,7 +376,14 @@ def words(inf: Dict[str, Any]) -> str:
     if inf["serves"] == "task":
         return f"{head} came from: {path}.{note}"
     around = f" Untrusted content in its model call's context: {_named(inf['in_context'])}." if inf["in_context"] else ""
-    return f"{head}: no replay has tested it without the task.{around} Chain: {path}.{note}"
+    r, named = inf["replays"], lambda k: ", ".join(f"`{t}`" for t in inf["replays"][k])
+    tested = "; ".join(x for x in (
+        r.get("shared") and f"the replay without the task targeted {named('shared')}, which other calls match too, so it "
+                            "tested none of them alone",
+        r.get("partial") and f"a replay without part of the task kept it ({named('partial')}), none without the rest",
+        r.get("inconclusive") and f"the replay without the task targeting {named('inconclusive')} was inconclusive")
+        if x) or "no replay has tested it without the task"
+    return f"{head}: {tested}.{around} Chain: {path}.{note}"
 
 
 def influences(run: Run, g: Graph, texts=None, risky: bool = False) -> List[Dict[str, Any]]:

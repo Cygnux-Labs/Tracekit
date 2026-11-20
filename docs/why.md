@@ -250,23 +250,29 @@ they are known (`tracekit/why/influence.py`):
 
 | Grade | It says | Comes from | Drawn |
 |---|---|---|---|
-| **exact** | this untrusted record holds the argument's value, and nothing the signer indexed as trusted does | the signer's provenance index, on a run imported from its signed records whose call's citation matched its record | solid |
-| **claimed** | the why log says so | a why log's own `provenance` field, with no signed record behind it: shown, never used for a finding, the chain or the order of the answers | none |
+| **exact** | this untrusted record holds the argument's value, and nothing the signer indexed as trusted does | the signer's provenance index, read from the signed records themselves: in `tracekit view`, the records it verified (the call's signed decision names the source record, and the run's event that cites that record is it) | solid |
+| **claimed** | the why log says so | a why log's own `provenance` field (or a run that only says it is an import) with no verified signed record behind it: shown, never used for a finding, the chain or the order of the answers; `tracekit why` without the signer's records shows every edge so | none |
 | **measured** | removing this source changed whether the call happened | a replay test (`tracekit why test`, FIND THE CAUSE): verdict causal, its target matching this call alone in the run | double |
 | **seen** | the source was in the context of the model call that asked for the call | the agent's runtime's record of its context; for a signed run, the LLM gateway's record of the results a request sent (the rest of an imported run's context is everything the run observed before the model call) | thin |
 | **hint** | the call's argument text is in the source | why's search for each value in what came before, and word overlap | dashed, only when asked for |
 
-A hint is never called an influence and never drives a finding. In the viewer an exact edge reads signed only on a
-call whose signed record the viewer verified. An exact edge says what the signer's index saw, not that the record
-supplied the value: when the task or a trusted result holds all of it too, the words say so. Why's own search finds
-it there, also over text read as the index reads it (an IBAN the task writes in groups), or a value the index reads
-there that is the whole of it (the string a JSON result holds); an address inside a URL is not the URL.
+A hint is never called an influence and never drives a finding. An exact edge says what the signer's index saw, not
+that the record supplied the value: when the task or a trusted result holds all of it too, the words say so.
+
+Why's search reads each argument value as the signer's index reads values. An address, URL, host or digit run is held
+by content that holds an equal one (a look-alike `bob@corp.co` is not `bob@corp.com`, nor `…/3abcdef` the task's
+`…/3AbCdEf`, nor an account `44851234` part of the task's `4485-1234-5566`); a free string by content whose text holds
+it as a whole token, read as the index reads text (an IBAN the task writes in groups is the task's), or as a whole
+value (the string a JSON result holds). Untrusted content also brought a value when it holds a part of it the index
+reads that no trusted content holds (an IBAN's digits written in groups, a URL's host). A trusted call's result holds
+nothing an earlier call's arguments carried: an echo of the agent's own value (a lookup's error naming it) didn't bring
+it.
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
 Each call gets its chain back from it: the call, the model call that asked for it, the source in that model call's
-context that is (or carries) an exact or measured source of the call (else the goal, when it was there, else another
-agent's message), and so on to the start.
+context that is (or carries) an exact or measured source of the call (else another agent's message), and so on to the
+start. It ends at the goal only for a call a replay showed needs it.
 
 Only a replay says whether a call serves the task:
 
@@ -277,7 +283,8 @@ Only a replay says whether a call serves the task:
   "git_push (dev): no replay has tested it without the task. Untrusted content in its model call's context:
   github:issue-12. Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided (…) → this call.
   github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does: test it without the task to see
-  whether it serves the task."
+  whether it serves the task." After a replay without the task whose target other calls match too, they say so: "the
+  replay without the task targeted `tool=git_push`, which other calls match too, so it tested none of them alone".
 
 Test a call by removing the task's content, with a target that matches that call alone (a value only it has):
 `tracekit why test RUN --remove ref:<the task's hash prefix> --target 'tool=send_email,arg~<its address>'` (with only
@@ -293,7 +300,7 @@ AgentDojo's published runs.
 
 | Severity | When |
 |---|---|
-| **high** | a sensitive tool used an argument value that appears only in untrusted content (no trusted content holds it, read as the signer's index reads values too: an IBAN the task writes in groups is the task's), or the log fails verification |
+| **high** | a sensitive tool used an argument value only untrusted content brought, as why's search reads values (above), or the log fails verification |
 | **review** | a call serves no step of the task (a replay without the task kept it); an argument traced to untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
 | **info** | a tool call was stubbed during replay |
 

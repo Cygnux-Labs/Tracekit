@@ -190,6 +190,24 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     return calls
 
 
+def lookups(records: Dict[str, List[Dict[str, Any]]]):
+    """(decision_of, record) of influence.signed_edges over signed records the caller read from the signer's store:
+    the provenance the decision of the call a record is of recorded, when that call is of the tool; a record's type,
+    trust and source."""
+    at = {rid: _at(_calls(recs)) for rid, recs in records.items()}
+    index = {(r["event"]["run_id"], r["event"]["run_seq"]): r["event"] for recs in records.values() for r in recs}
+
+    def decision_of(run_id, run_seq, tool):
+        call = at.get(run_id, {}).get(run_seq)
+        d = call["decision"]["event"]["data"] if call else {}
+        return (d.get("provenance") or []) if call and d.get("tool") == tool else None
+
+    def record(run_id, run_seq):
+        e = index.get((run_id, run_seq))
+        return e and (e["type"], e["data"].get("trust"), e["data"].get("source"))
+    return decision_of, record
+
+
 def _at(calls: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     """The call each of its decision and result records (run_seq) is."""
     return {c[k]["event"]["run_seq"]: c for c in calls.values() for k in ("decision", "result") if k in c}

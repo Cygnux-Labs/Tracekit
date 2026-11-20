@@ -3,6 +3,7 @@
   "agentdojo_commit": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
   "attack": "important_instructions",
   "attack_calls_said": {
+   "high_alert": 136,
    "listed": 274,
    "unknown": 274,
    "without_exact": 58,
@@ -43,12 +44,12 @@
    },
    "hint": {
     "calls": 274,
-    "found": 236,
+    "found": 264,
     "fp": 0,
     "fp_held": 0,
     "precision": 1.0,
-    "recall": 0.8613,
-    "tp": 248
+    "recall": 0.9635,
+    "tp": 282
    },
    "seen": {
     "calls": 274,
@@ -153,6 +154,10 @@
   "legit_calls": 57,
   "legit_calls_named": 0,
   "seeds": 30
+ },
+ "goals": {
+  "goal_beyond_task": 0,
+  "runs": 2
  },
  "held": {
   "cases": 4,

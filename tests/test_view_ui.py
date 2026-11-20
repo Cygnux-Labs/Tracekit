@@ -2594,20 +2594,20 @@ class PlainPages(unittest.TestCase):
         test = "test it without the task to see whether it serves the task."
         # only a replay without the task says anything about the task: none here says "came from: task"
         self.assertEqual([html.unescape(w) for w, *_ in said], [
-            f"git_push (dev) serves no step of the task: a replay without the task kept it. Chain: task 'Fix the login "
-            f"bug in issue 12' → {chain}",
+            f"git_push (dev) serves no step of the task: a replay without the task kept it. Chain: {chain}",
             f"git_push (dev): {unknown} {around} Chain: read github:issue-12 (untrusted; exact: `branch`) → {chain} "
             f"github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does: {test}",
             f"deploy_site (dev): {unknown} {around} Chain: read github:issue-12 (untrusted; measured: effect +0.70) → "
             f"{chain} A replay without github:issue-12 (untrusted) changed it (measured: effect +0.70): {test}",
             "git_push (dev, blocked): no influence found. Nothing exact, measured or seen links it to what the agents read.",
-            f"git_push (dev, held): {unknown} {around} Chain: task 'Fix the login bug in issue 12' → {chain}"])
+            f"git_push (dev, held): {unknown} {around} Chain: {chain}"])
         self.assertEqual([(r, n) for _, n, r in said], [(c["run"], c["node"]) for c in calls["calls"]])   # WHY opens it
         self.assertEqual(page.count('class="icall drift"'), 1)
         # solid from the step the signer traced an argument to, double from the step a replay tied to the call; thin hops
         arcs = lambda page, c: len(re.findall(f'<path class="{c}" d="M[^"]* C', page))  # noqa: E731  (not the key's swatches)
         self.assertEqual([arcs(page, c) for c in ("g-exact", "g-measured", "g-gap", "g-hint")], [1, 1, 1, 0])
-        exact = "exact: github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does"
+        exact = ("exact: github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does (the call's "
+                 "signed records, which this viewer verified)")
         self.assertIn(exact + "</div>", html.unescape(page))
         # an argument the signer traced as two kinds of value is one line; a log's own provenance reads as its claim
         twice = json.loads(json.dumps(calls))

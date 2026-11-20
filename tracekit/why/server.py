@@ -31,18 +31,19 @@ import re
 import sys
 import threading
 import time
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Tuple
 
-from .analysis import analyse, workspace
-from .core import GENESIS, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs, ts_seconds
+from .analysis import analyse, analysed_run, workspace
+from .core import (GENESIS, OWNER, REF, SCHEMA, content_hash, event_hash, event_problem, load_run, referenced_refs,
+                   ts_seconds)
 from .evals import list_runs
 from .guard import Webhook
 from .import_v2 import _target
+from .influence import signed_edges
 from .replay import attribute, counterfactual, load_system
 from .view import run_detail
 
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}")   # fullmatch
-OWNER = "ingest-owner"   # in a run folder: the digest of the ingest token that created the run
 MAX_DEPTH = 64           # nesting of an ingest body, its blobs included
 
 
@@ -91,26 +92,62 @@ def _stat(path: str) -> Optional[Tuple]:
     return (st.st_size, st.st_mtime_ns, tests)
 
 
-def _ids(path: str) -> Tuple[Dict[str, Any], List[Any]]:
-    """(the first event, the id of every event) of the run folder at `path`."""
+# what import_v2.merge writes anew in each event of a log: its chain, and what the signed records say
+MERGED = ("schema", "seq", "prev_hash", "hash", "run_id", "meta", "tracekit", "tracekit_task", "tracekit_mismatch",
+          "policy", "provenance")
+
+
+def _events(path: str) -> Tuple[Dict[str, Any], List[Optional[str]]]:
+    """(the first event, a digest of what each event says that a merge keeps, None for one with no id) of the run
+    folder at `path`."""
     with open(os.path.join(path, "events.jsonl"), encoding="utf-8") as f:
         events = [json.loads(line) for line in f if line.strip()]
-    return (events[0] if events else {}), [e.get("id") for e in events]
+    return (events[0] if events else {}), [content_hash({k: v for k, v in e.items() if k not in MERGED})
+                                           if e.get("id") else None for e in events]
+
+
+def _blobs_open(path: str) -> bool:
+    """Whether every content file of the run folder at `path` holds the content its name (the content's hash) says."""
+    d = os.path.join(path, "blobs")
+    for name in os.listdir(d) if os.path.isdir(d) else ():
+        with open(os.path.join(d, name), encoding="utf-8") as f:
+            if "sha256:" + name[:-len(".json")] != content_hash(json.load(f).get("v")):
+                return False
+    return True
+
+
+def lookups(rows: List[Dict[str, Any]]):
+    """(decision_of, record) of influence.signed_edges over the viewer's rows of the signed records it verified: the
+    provenance the decision of the call a record is of recorded (a call that ran cites its result, whose call is its
+    decision's tool_use_id), when that decision is of the tool; a record's type, trust and source."""
+    by_key = {(r.get("session_id"), r["v2"].get("run_seq")): r for r in rows}
+    decisions = {(r.get("session_id"), r.get("tool_use_id")): r for r in rows if r.get("tool_name")}
+
+    def decision_of(run_id, run_seq, tool):
+        r = by_key.get((run_id, run_seq))
+        d = decisions.get((run_id, r.get("tool_use_id"))) if r else None
+        return (d["v2"].get("provenance") or []) if d and d.get("tool_name") == tool else None
+    def record(run_id, run_seq):
+        r = by_key.get((run_id, run_seq))
+        return r and (r["v2"].get("type"), r["v2"].get("trust"), r["v2"].get("source"))
+    return decision_of, record
 
 
 def _covers(imp: Optional[str], log: str) -> bool:
     """Whether run folder `imp` is the merged import of why log `log`, all of it: import_v2.merge wrote it (the import's
-    run.start says so and names the log), no ingest made it (no ingest-owner file), and it holds the log's events, every
-    id in order (a log that grew after its import is not covered and shows beside it). A run named tk-, an import's
-    name, is never covered."""
+    run.start says so and names the log), no ingest made it (no ingest-owner file), it holds the log's events in order,
+    each saying what the log's says but for what a merge writes anew (a log that grew after its import, or an import
+    with an argument changed, is not covered and shows beside it), and each of its content files holds what its name
+    says. A run named tk-, an import's name, is never covered."""
     if imp is None or os.path.basename(log).startswith("tk-") or os.path.exists(os.path.join(imp, OWNER)):
         return False
     try:
-        start, ids = _ids(imp)
+        start, kept = _events(imp)
         meta = start.get("meta") or {}
         return meta.get("source") == "tracekit" and isinstance(meta.get("merged_from"), str) and \
-            os.path.basename(meta["merged_from"]) == os.path.basename(log) and None not in ids and _ids(log)[1] == ids
-    except (OSError, ValueError, AttributeError):
+            os.path.basename(meta["merged_from"]) == os.path.basename(log) and None not in kept and \
+            _events(log)[1] == kept and _blobs_open(imp)
+    except (OSError, ValueError, AttributeError, TypeError):
         return False
 
 
@@ -204,6 +241,7 @@ class Store:
         self._sent: Dict[str, int] = {}   # with tape: events of each run already published
         self._heads: Dict[str, Dict[str, Any]] = {}   # run folder -> what ingest needs of it (_head)
         self._cache: Dict[str, Tuple[Tuple, Dict[str, Any]]] = {}   # run folder -> (its _stat, analyse())
+        self._joins: Tuple[Optional[int], Any] = (None, None)   # (records read, lookups() of their rows)
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._watcher: Optional[threading.Thread] = None
@@ -221,9 +259,14 @@ class Store:
         st = _stat(path)
         hit = self._cache.get(path)
         if hit and hit[0] == st:
-            return hit[1]
+            run = hit[1].get("run")
+            signed = run and self._verify(run)
+            if run is not None and signed != run.signed:   # signed records arrived, or left the live view
+                run.signed = signed
+                self._cache[path] = (st, {**hit[1], **analysed_run(run, hit[1]["graph"])})
+            return self._cache[path][1]
         # lean: keeps each run (blobs included) in memory for the server's life; cache summaries only if that grows
-        a = analyse(path)
+        a = analyse(path, self._verify)
         if a.get("run") is None:   # view.mirror_run replaces a growing run's folder with two renames: not a failed run
             now = _stat(path)
             if now is None:   # between them: not cached, so the next scan, which sees the new folder, analyses it
@@ -231,9 +274,18 @@ class Store:
                 # that one response; have workspace skip such a run if it shows up
                 return hit[1] if hit else a
             if now != st:   # the new folder arrived during the analysis
-                st, a = now, analyse(path)
+                st, a = now, analyse(path, self._verify)
         self._cache[path] = (st, a)
         return a
+
+    def _verify(self, run) -> FrozenSet[Tuple]:
+        """The run's exact influence edges (influence.signed_edges) from the signed records this viewer verified."""
+        with self.out.lock:
+            n = len(self.out.records)
+            if self._joins[0] != n:
+                self._joins = (n, lookups([r for r in self.out.records if isinstance(r.get("v2"), dict)]))
+            lk = self._joins[1]
+        return signed_edges(run, *lk)
 
     def _changed(self, path: str, announce: bool) -> None:
         """A run's log grew: recompute its alerts and announce the new ones (each one once)."""
@@ -328,8 +380,8 @@ class Store:
     def workspace(self) -> Dict[str, Any]:
         """workspace() of every run, plus `alerts` (every run's, with its run id) and `calls`: "<signed run id>|<run_seq>"
         -> [why run id, node id] of each tool call whose why event cites a signed record of the same tool (the citation
-        is the why log's own claim, so a signed record of another tool, or none, joins nothing). An exact edge of an
-        influence call is `signed` only when its call joins."""
+        is the why log's own claim, so a signed record of another tool, or none, joins nothing). An influence edge is
+        exact only where these records back it (analysed: Run.signed)."""
         paths = self.paths()
         items = [self.analysed(p) for p in paths]
         out = workspace(paths, items)
@@ -352,13 +404,6 @@ class Store:
                 key = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
                 if key and signed.get(key) == ev["tool"]:
                     out["calls"][key] = [run.run_id, "ev:" + ev["id"]]
-        # an exact edge is the signer's word only on a call whose signed record this viewer verified (the join above)
-        for c in out["influence"]["calls"]:
-            tk = c.get("tracekit") or {}
-            ok = out["calls"].get(f"{tk.get('run_id')}|{tk.get('run_seq')}") == [c["run"], c["node"]]
-            for e in c["edges"]:
-                if e["grade"] == "exact":
-                    e["signed"] = ok
         return out
 
     def detail(self, run_id: str) -> Dict[str, Any]:

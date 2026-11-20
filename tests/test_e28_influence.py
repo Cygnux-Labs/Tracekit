@@ -54,7 +54,10 @@ class Gate(unittest.TestCase):
                  (("without_task", "tool_only_attached"), 1, "without_task: a target several calls match put a verdict on one"),
                  (("held", "said_task_too"), -1,
                   "held: an exact edge from a record that only held the value doesn't say the task holds it too"),
-                 (("held", "only_alerts"), 1, "held: a high alert says only untrusted content supplied a value the task holds")]
+                 (("held", "only_alerts"), 1, "held: a high alert says only untrusted content supplied a value the task holds"),
+                 (("goals", "goal_beyond_task"), 1, "goals: the goal takes content the run's own task isn't"),
+                 (("agentdojo", "attack_calls_said", "high_alert"), -ad["attack_calls_said"]["high_alert"],
+                  "agentdojo: the high alert names too few attack calls")]
         for path, delta, said in cases:
             with self.subTest(said=said):
                 r = copy.deepcopy(r0)
@@ -66,10 +69,12 @@ class Gate(unittest.TestCase):
 
 
 class Vendor(unittest.TestCase):
-    """--vendor followed a symlink out of the checkout into whatever it pointed at (the review's p7), and took any
-    commit as the source of the data."""
+    """--vendor followed a symlink out of the checkout into whatever it pointed at (the review's p7), and took the
+    commit HEAD names on its word, its files as they were (p7b)."""
 
-    def checkout(self, commit_ok=True):
+    def checkout(self, **answers):
+        """A checkout whose one run is a symlink out of it, and a fake git: rev-parse names PINNED, the repository holds
+        it, and the files are as committed, unless `answers` (git subcommand -> (returncode, stdout)) says otherwise."""
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, True)
         co = os.path.join(tmp, "agentdojo")
@@ -78,8 +83,12 @@ class Vendor(unittest.TestCase):
             json.dump({"attack_type": "none", "messages": []}, f)
         os.symlink(os.path.join(tmp, "secret.json"), os.path.join(co, "runs", "m", "banking", "user_task_0", "none",
                                                                   "none.json"))
-        commit = e28.PINNED if commit_ok else "0" * 40
-        return co, mock.patch.object(e28.subprocess, "run", return_value=mock.Mock(stdout=commit + "\n"))
+        said = {"rev-parse": (0, e28.PINNED + "\n"), "cat-file": (0, ""), "status": (0, ""), **answers}
+
+        def git(cmd, **_):
+            code, out = said[cmd[3]]
+            return mock.Mock(returncode=code, stdout=out, stderr="")
+        return co, mock.patch.object(e28.subprocess, "run", side_effect=git)
 
     def test_a_file_outside_the_checkout_stops_it_and_nothing_is_written(self):
         co, git = self.checkout()
@@ -88,10 +97,20 @@ class Vendor(unittest.TestCase):
             e28.vendor(co, "m", "important_instructions")
         self.assertFalse(os.path.exists(os.path.join(os.path.dirname(co), "out")))
 
-    def test_another_commit_stops_it(self):
-        co, git = self.checkout(commit_ok=False)
-        with git, self.assertRaisesRegex(SystemExit, "not the pinned"):
-            e28.vendor(co, "m", "important_instructions")
+    def test_only_the_pinned_commit_as_committed_is_vendored(self):
+        for answers, said in (({"rev-parse": (0, "0" * 40 + "\n")}, "not the pinned"),
+                              ({"cat-file": (128, "")}, "not the pinned"),   # HEAD names a commit the repo doesn't have
+                              ({"status": (0, "?? runs/m/extra.json\n")}, "differ from commit"),
+                              ({"status": (0, " M src/agentdojo/default_suites/v1/banking/injection_tasks.py\n")},
+                               "differ from commit"),
+                              ({"status": (128, "")}, "differ from commit")):
+            with self.subTest(answers=answers):
+                co, git = self.checkout(**answers)
+                with git, self.assertRaisesRegex(SystemExit, said):
+                    e28.pinned(co)
+        co, git = self.checkout()
+        with git:
+            self.assertEqual(e28.pinned(co), e28.PINNED)
 
 
 class Data(unittest.TestCase):

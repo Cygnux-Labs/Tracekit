@@ -21,11 +21,12 @@ import urllib.error
 import urllib.request
 import warnings
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Sequence, Tuple
 
 SCHEMA = "tracekit.why.event.v1"
 GENESIS = "0" * 64
 COMMITTED = "content committed, not in the log"   # a signed run's content: only its commitment is known
+OWNER = "ingest-owner"   # in a run folder: the digest of the ingest token that created the run
 
 TRUST_LEVELS = ("trusted", "untrusted")
 EVENT_TYPES = ("run.start", "agent.start", "input", "decision", "action", "message", "run.end")
@@ -110,6 +111,9 @@ class Run:
     blobs: Dict[str, Any]
     path: Optional[str] = None
     tests: List[Dict[str, Any]] = field(default_factory=list)
+    # the exact influence edges (call, field, kind, record, source) the code holding this Run checked against the
+    # signer's records (influence.signed_edges); never read from the run's own files, which its agent can write
+    signed: FrozenSet[Tuple[str, Any, Any, Any, str]] = frozenset()
 
     @property
     def start(self) -> Dict[str, Any]:

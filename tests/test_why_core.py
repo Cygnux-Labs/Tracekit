@@ -343,12 +343,12 @@ class StoreRequests(Tmp):
         def replaced(back):   # the first rename lands mid-analysis, the second before the store looks again or after
             first = []
 
-            def analyse(p):
+            def analyse(p, verify=None):
                 if first:
-                    return real(p)
+                    return real(p, verify)
                 first.append(p)
                 os.rename(p, aside)
-                a = real(p)
+                a = real(p, verify)
                 if back:
                     os.rename(aside, p)
                     grew()

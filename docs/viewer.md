@@ -328,10 +328,10 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 ![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/1.5/influence.png)
 
 Across every why run, INFLUENCE answers first, per risky call, what led to it, graded by how each link is known
-([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance traced an argument to the record),
-measured (a replay without the source changed the call), seen (the source was in the model's context when it decided)
-and hint (text overlap, never an influence). A why log's own provenance, with no signed record behind it, is shown as
-"claimed by the log".
+([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance, in records this viewer verified,
+traced an argument to the record), measured (a replay without the source changed the call), seen (the source was in the
+model's context when it decided) and hint (text overlap, never an influence). A why log's own provenance, with no
+verified signed record behind it, is shown as "claimed by the log".
 
 - **The answer, first.** The risky calls (stopped, flagged, with an exact or measured link, serving no step of the
   task, or whose model call had untrusted content in front of it), worst first: those a replay without the task kept,
