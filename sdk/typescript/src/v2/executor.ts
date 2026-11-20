@@ -8,10 +8,13 @@
  *   const actions = await executorActions("https://executor.internal:8090", run, { headers: { authorization: `Bearer ${token}` } });
  *   new Agent({ tools: actions.map((a) => openaiAgentsTool(tool, a)) });
  *   generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(a, jsonSchema)])) });
+ *   // Claude Agent SDK: its `tool` and `createSdkMcpServer`, and zod's `z`
+ *   const mcpServers = { [SERVER]: createSdkMcpServer({ name: SERVER, tools: actions.map((a) => claudeAgentSdkTool(tool, z, a)) }) };
+ *   query({ prompt, options: { mcpServers, hooks: tracekitHooks(run, { mcpServers, executorActions: actions }) } });
  *
  * `headers` authenticate the agent to the executor (a bearer or service-account token); for a client certificate pass
- * a `fetch` that presents one. The tools carry EXECUTOR, so the Tracekit adapters leave them to the executor, which
- * decides and records them (T2). A
+ * a `fetch` that presents one. The tools carry EXECUTOR (the Claude Agent SDK hooks know theirs by SERVER and the
+ * actions), so the Tracekit adapters leave them to the executor, which decides and records them (T2). A
  * refusal (deny, an approval not given, the signer unreachable) throws ExecutorRefused with the executor's message,
  * which the framework hands the model as the tool's error.
  */
@@ -83,3 +86,41 @@ export const vercelTool = (a: Action, jsonSchema: (s: any) => unknown) => ({
   [EXECUTOR]: true, description: a.description, inputSchema: jsonSchema(a.args),
   execute: (input: unknown, opts?: { toolCallId?: string }) => a.call(input, opts?.toolCallId),
 });
+
+const SCALARS = new Map<unknown, (z: any) => any>([["string", (z) => z.string()], ["number", (z) => z.number()],
+  ["integer", (z) => z.number().int()], ["boolean", (z) => z.boolean()]]);
+
+/** A Claude Agent SDK tool for the in-process MCP server under SERVER; `tool` is the SDK's, `z` is zod. The SDK's
+ * `tool()` takes zod only, so the action's JSON Schema is converted: an object whose properties are strings, numbers,
+ * integers, booleans, string enums or arrays of those, and which requires only properties it declares; anything else
+ * throws, naming the property. Arguments it doesn't declare reach the executor, which checks them, unless it is closed
+ * (`additionalProperties: false`). The handler passes the executor the model's tool-use id, which the CLI sends. */
+export function claudeAgentSdkTool<T>(tool: (name: string, description: string, schema: any, handler: (args: any, extra?: any) => Promise<any>) => T,
+  z: any, a: Action): T {
+  if (a.args?.type !== "object") throw new Error(`${a.name}: the arguments' schema must be an object`);
+  const props: Frame = a.args.properties ?? {};
+  const required: unknown[] = Array.isArray(a.args.required) ? a.args.required : [];
+  for (const k of required) {
+    if (!Object.hasOwn(props, String(k))) throw new Error(`${a.name}: argument ${JSON.stringify(k)}: required but not in properties`);
+  }
+  // lean: string enums only; a number or mixed enum throws until an action needs one
+  const one = (s: Frame) => s?.enum === undefined ? SCALARS.get(s?.type)?.(z)
+    : Array.isArray(s.enum) && s.enum.length && s.enum.every((v: unknown) => typeof v === "string") ? z.enum(s.enum) : undefined;
+  const shape = Object.fromEntries(Object.entries<Frame>(props).map(([k, s]) => {
+    const item = s?.type === "array" ? one(s.items) : undefined;
+    const t = s?.type === "array" ? item && z.array(item) : one(s);
+    if (!t) throw new Error(`${a.name}: argument ${JSON.stringify(k)}: unsupported schema ${JSON.stringify(s)?.slice(0, 200)}`);
+    const d = typeof s.description === "string" ? t.describe(s.description) : t;
+    return [k, required.includes(k) ? d : d.optional()];
+  }));
+  // zod strips undeclared keys by default: keep them for the executor, or refuse them as it would
+  const schema = a.args.additionalProperties === false ? z.object(shape).strict() : z.object(shape).passthrough();
+  return tool(a.name, a.description, schema, async (args, extra) => {
+    try {
+      return { content: [{ type: "text", text: JSON.stringify(await a.call(args, extra?._meta?.["claudecode/toolUseId"])) }] };
+    } catch (e) {
+      if (e instanceof ExecutorRefused) return { content: [{ type: "text", text: e.message }], isError: true };
+      throw e;
+    }
+  });
+}

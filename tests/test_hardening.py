@@ -19,6 +19,8 @@ import zipfile
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -566,6 +568,95 @@ class Packaging(unittest.TestCase):
         else:
             self.assertEqual(re.search(r'^version = "([^"]+)"', toml, re.M).group(1), tracekit.__version__)
 
+    def test_google_re2_marker_matches_doctor_support(self):
+        import itertools
+        import re
+        from packaging.requirements import Requirement
+        from tracekit import doctor
+
+        with open(os.path.join(ROOT, "pyproject.toml"), encoding="utf-8") as f:
+            toml_text = f.read()
+
+        requirements = [
+            Requirement(value)
+            for value in re.findall(r'"(google-re2[^"]+)"', toml_text)
+        ]
+        self.assertEqual(len(requirements), 2, "expected google-re2 in dependencies and dev extra")
+
+        marker = requirements[0].marker
+        self.assertEqual(requirements[1].marker, marker, "google-re2 markers must remain identical")
+
+        versions = [f"3.{minor}" for minor in range(9, 17)]
+        implementations = ("CPython", "PyPy")
+
+        marker_text = str(marker)
+        platforms = sorted(
+            set(re.findall(r"""sys_platform == ['"]([^'"]+)['"]""", marker_text))
+            | {"freebsd"}
+        )
+        machines = sorted(
+            set(re.findall(r"""platform_machine == ['"]([^'"]+)['"]""", marker_text))
+            | {"unknown"}
+        )
+
+        for version, implementation, sys_platform, machine in itertools.product(
+            versions, implementations, platforms, machines
+        ):
+            environment = {
+                "python_version": version,
+                "platform_python_implementation": implementation,
+                "sys_platform": sys_platform,
+                "platform_machine": machine,
+            }
+            with self.subTest(**environment):
+                self.assertEqual(
+                    doctor._google_re2_supported(version, implementation, sys_platform, machine),
+                    marker.evaluate(environment),
+                    f"doctor support disagrees with pyproject.toml for {environment}",
+                )
+        self.assertEqual(
+            doctor._google_re2_supported(),
+            marker.evaluate(),
+        )
+
+    def test_google_re2_wheel_expected_platform_constraints(self):
+        from tracekit import doctor
+
+        cases = (
+            # Linux: libc, glibc version, and Python bitness.
+            ("linux", 2**63 - 1, ("glibc", "2.28"), ("", ""), True),
+            ("linux", 2**63 - 1, ("glibc", "2.27"), ("", ""), False),
+            ("linux", 2**63 - 1, ("musl", "1.2.5"), ("", ""), False),
+            ("linux", 2**31 - 1, ("glibc", "2.36"), ("", ""), False),
+            ("linux", 2**63 - 1, ("glibc", ""), ("", ""), False),
+
+            # macOS: wheels require version 13 or newer.
+            ("darwin", 2**63 - 1, ("", ""), ("12.7", ""), False),
+            ("darwin", 2**63 - 1, ("", ""), ("13.0", ""), True),
+
+            # No additional version constraint for other supported platforms.
+            ("win32", 2**63 - 1, ("", ""), ("", ""), True),
+        )
+
+        for platform_name, maxsize, libc, mac_version, expected in cases:
+            with (
+                self.subTest(
+                    platform=platform_name,
+                    libc=libc,
+                    mac=mac_version,
+                    maxsize=maxsize,
+                ),
+                mock.patch.object(doctor, "_google_re2_supported", return_value=True),
+                mock.patch.object(doctor.sys, "platform", platform_name),
+                mock.patch.object(doctor.sys, "maxsize", maxsize),
+                mock.patch.object(doctor.platform, "libc_ver", return_value=libc),
+                mock.patch.object(doctor.platform, "mac_ver", return_value=mac_version),
+            ):
+                self.assertEqual(doctor._google_re2_wheel_expected(), expected)
+
+        with mock.patch.object(doctor, "_google_re2_supported", return_value=False):
+            self.assertFalse(doctor._google_re2_wheel_expected())
+
     def test_python_dash_m_tracekit(self):
         r = subprocess.run([sys.executable, "-m", "tracekit", "--version"], capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -789,6 +880,7 @@ class RejectionFlood(unittest.TestCase):
         s.ledger.close()
 
 
+@pytest.mark.serial
 class LongInputs(unittest.TestCase):
     def test_padding_cannot_hide_a_command_and_scanning_stays_fast(self):
         import time

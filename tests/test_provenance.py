@@ -12,6 +12,8 @@ import uuid
 import zipfile
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_bundle_v2 import KEY1, Case   # noqa: E402
 
@@ -89,6 +91,7 @@ class Values(unittest.TestCase):
     def test_a_long_local_part_keeps_its_last_64_characters(self):
         self.assertEqual(self.kinds("x" * 100 + "@evil.example", "email"), ["x" * 64 + "@evil.example"])
 
+    @pytest.mark.serial
     def test_adversarial_text_is_read_in_linear_time(self):
         def took(unit, n):   # the best of two, so a busy runner's pause isn't counted
             text, best = (unit * (n // len(unit) + 1))[:n], float("inf")
