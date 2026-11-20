@@ -66,10 +66,12 @@ tracekit mcp-gateway serve --config mcp-gateway.yaml
   the calls Docker's dynamic tools make (keep them off); anything the agent does with Docker itself.
 - **Doesn't tell agents apart on Docker's side:** Docker's gateway sees one client, Tracekit's gateway, not the agents
   behind it. The Tracekit record names the agent.
-- **Doesn't import Docker's spans:** Docker's gateway exports an OpenTelemetry span per tool call (`mcp.tool.call`,
+- **Imports Docker's spans at T3:** Docker's gateway exports an OpenTelemetry span per tool call (`mcp.tool.call`,
   with `mcp.tool.name`, `mcp.server.name` and `mcp.server.type`). Tracekit's
-  [OTLP import](../otel.md#receiving-traces-tier-t3-import) doesn't read those attributes as a tool call; it counts and
-  skips the spans. They carry no arguments or results.
+  [OTLP import](../otel.md#receiving-traces-tier-t3-import) imports a span with `mcp.tool.name` as a tier T3 tool call
+  named `mcp:<mcp.server.name>/<mcp.tool.name>` (or `<mcp.tool.name>` when `mcp.server.name` is missing; note that
+  Tracekit's own MCP gateway decides a call through Docker under its upstream's name, so the two names can differ).
+  Docker's spans carry no arguments or results.
 
 ## Why not Docker's interceptors
 
@@ -90,7 +92,10 @@ call.
 - Tracekit's gateway cuts only the secrets in its own config from what it answers and records, not the ones Docker
   gives its servers. Keep Docker's `--block-secrets` on.
 - Custody holds only while the agent can't reach Docker. Run the agent without Docker access.
-- Docker's OpenTelemetry spans aren't imported as tool calls. Record the calls through Tracekit's gateway.
+- Docker's OpenTelemetry spans (`mcp.tool.call`) carry no arguments or results, and are imported as
+  `mcp:<mcp.server.name>/<mcp.tool.name>` (or `<mcp.tool.name>` when `mcp.server.name` is missing, tier T3), whereas
+  Tracekit's gateway decides a call through Docker under its upstream's name (`mcp:<upstream>/<tool>`). Record the
+  calls through Tracekit's gateway.
 - Tested against a stand-in for `docker mcp gateway run` (an MCP server on stdio), not Docker's gateway itself.
 
 The MCP gateway's own [limits](../mcp-gateway.md#limits) apply too. [Limits](../limits.md) lists these with what to do.
