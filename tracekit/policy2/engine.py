@@ -1763,7 +1763,7 @@ _GO_INSECURE = re.compile(r"--?insecure(?:=\S*)?")
 
 # go run's options that take a value as the next word (`-tags x`; `-tags=x` is one word)
 _GO_RUN_VALUED = {"C", "p", "asmflags", "gcflags", "gccgoflags", "ldflags", "mod", "modfile", "overlay", "pgo", "pkgdir",
-                  "tags", "toolexec", "exec", "installsuffix", "covermode", "coverpkg"}
+                  "tags", "toolexec", "exec", "installsuffix", "covermode", "coverpkg", "compiler", "buildmode"}
 
 
 def _go_run_module(args):

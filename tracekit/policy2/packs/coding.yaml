@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-103'
+version: '2026.11-v2-104'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -548,13 +548,13 @@ ask:
   - id: TK-A028
     class: shell
     field: argv
-    # a version-control source anywhere in an install's words (git+https, git+ssh, git+git, git+file, git://, pip's
+    # a version-control source anywhere in an install's words (schemes in any case, as pip reads them: git+https, git+ssh, git+git, git+file, git://, pip's
     # hg+, svn+ and bzr+ sources, npm's github:, gitlab:, bitbucket: and gist: shorthands), after a space or a PEP 508
     # `name @`; npm's `i`; and cargo install or add --git. A registry with integrity checks is no such source, Go's
     # module proxy and checksum database among them; a go install, go get or go run of a module at a version on a line
     # that turns them off is (engine._go_unchecked gives it as `go install git+https://<module>`). Anchored and lazy,
     # so the fallback engine stays linear
-    pattern: '^(pip[0-9.]*|python[0-9.]*\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo|go)\s+(install|add|get|i)\s(?:[^\n]*?[\s@])?(git\+(https?|ssh|git|file)://|(hg|svn|bzr)\+[a-z-]+:|git://|(github|gitlab|bitbucket|gist):)|^cargo\s+(install|add)\s(?:[^\n]*?\s)?--git(\s|=|$)'
+    pattern: '^(pip[0-9.]*|python[0-9.]*\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo|go)\s+(install|add|get|i)\s(?:[^\n]*?[\s@])?([Gg][Ii][Tt]\+([Hh][Tt][Tt][Pp][Ss]?|[Ss][Ss][Hh]|[Gg][Ii][Tt]|[Ff][Ii][Ll][Ee])://|([Hh][Gg]|[Ss][Vv][Nn]|[Bb][Zz][Rr])\+[A-Za-z-]+:|[Gg][Ii][Tt]://|(github|gitlab|bitbucket|gist):)|^cargo\s+(install|add)\s(?:[^\n]*?\s)?--git(\s|=|$)'
     reason: installing a package directly from a version-control source
     remedy: Have a person approve the held call, or install a released version from the configured index.
     rationale: Version-control installs are common but their source and revision need human review.

