@@ -125,6 +125,7 @@ Each page says what it was tested against; most have not yet run against a live 
 [E2B](../integrations/e2b.md), [microsandbox](../integrations/microsandbox.md),
 [agent-sandbox](../integrations/agent-sandbox.md), [agentgateway](../integrations/agentgateway.md),
 [LiteLLM](../integrations/litellm.md), [Docker MCP Gateway](../integrations/docker-mcp-gateway.md),
+[LangSmith Tool Gateway](../integrations/langsmith-tool-gateway.md),
 [Wassette](../integrations/wassette.md), [Tetragon](../integrations/tetragon.md), [Falco](../integrations/falco.md).
 
 ## What real agents taught

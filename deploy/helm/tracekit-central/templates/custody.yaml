@@ -102,10 +102,37 @@ spec:
 {{- if not .podSelector }}
 {{- fail "agentEgress.podSelector is required: the agent pods' labels" }}
 {{- end }}
+{{- $dns := .dns }}
+{{- $resolvers := list }}
+{{- with $dns.nodeLocal }}
+{{- $family := include "tc.ipFamily" (toString .) }}
+{{- if not $family }}
+{{- fail (printf "agentEgress.dns.nodeLocal must be one IP address such as 169.254.20.10, not %q" (toString .)) }}
+{{- end }}
+{{- $resolvers = append $resolvers (printf "%s/%d" . (ternary 128 32 (eq $family "6"))) }}
+{{- end }}
+{{- range $dns.cidrs }}
+{{- $cidr := toString . }}
+{{- $parts := splitList "/" $cidr }}
+{{- $family := "" }}
+{{- if eq (len $parts) 2 }}
+{{- $family = include "tc.ipFamily" (first $parts) }}
+{{- end }}
+{{- $prefix := int (last $parts) }}
+{{- if or (not $family) (not (regexMatch `^(0|[1-9][0-9]{0,2})$` (last $parts))) (gt $prefix (ternary 128 32 (eq $family "6"))) }}
+{{- fail (printf "agentEgress.dns.cidrs entry %q must be a CIDR such as 10.0.0.53/32" $cidr) }}
+{{- else if lt $prefix (ternary 64 24 (eq $family "6")) }}
+{{- fail (printf "agentEgress.dns.cidrs entry %q is too broad: name the resolvers, /24 or longer for IPv4, /64 or longer for IPv6" $cidr) }}
+{{- end }}
+{{- $resolvers = append $resolvers $cidr }}
+{{- end }}
+{{- if not (or $dns.kubeDns $resolvers) }}
+{{- fail "agentEgress.dns names no resolver: set kubeDns, nodeLocal or cidrs, or the agents cannot resolve names" }}
+{{- end }}
 ---
 # Agent pods reach only the signers, the custody services, the egress proxy and DNS: a call that needs a credential
-# goes through a service that records it, and outside traffic through the egress observer. Enforced only by a CNI
-# that enforces egress policies.
+# goes through a service that records it, and outside traffic through the egress observer. DNS goes to the resolvers
+# agentEgress.dns names. Enforced only by a CNI that enforces egress policies.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -136,9 +163,18 @@ spec:
             matchLabels: {{- toYaml . | nindent 14 }}
       ports: [{port: {{ $.Values.agentEgress.egressProxy.port }}, protocol: TCP}]
     {{- end }}
+    {{- if $dns.kubeDns }}
     - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
           podSelector: {matchLabels: {k8s-app: kube-dns}}
       ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    {{- end }}
+    {{- if $resolvers }}
+    - to:
+        {{- range $resolvers }}
+        - ipBlock: {cidr: {{ . | quote }}}
+        {{- end }}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+    {{- end }}
 {{- end }}
 {{- end }}

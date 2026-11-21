@@ -14,6 +14,8 @@ import tracemalloc
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import SLOWER
 from tracekit import schema
 from tracekit.format.canon import event_hash
@@ -3189,6 +3191,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    @pytest.mark.serial
     def test_powershell_profile_changes_are_harness_config_in_every_pack(self):
         # #559: PowerShell runs the user's profile before a hook it starts without -NoProfile, so a profile that exits
         # ends the hook before Tracekit runs; a write to one (5.1's or 7's, OneDrive's Documents, $PSHOME's) or to
@@ -3387,6 +3390,7 @@ class CodingPack(unittest.TestCase):
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         self.assertEqual((server.decide("Foo", {})["verdict"], self.e.decide("Foo", {})["verdict"]), ("ask", "flag"))
 
+    @pytest.mark.serial
     def test_a_long_option_word_after_git_push_is_decided_without_the_fallback_timeout(self):
         # TK-A002's short-option cluster backtracked over a long word: the regex fallback ran out of time and denied
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
@@ -3421,10 +3425,12 @@ class CodingPack(unittest.TestCase):
             d = self.e.decide("Bash", {"command": command})
             self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"]), ("ask", True), command)
 
+    @pytest.mark.serial
     def test_a_long_command_after_terraform_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terraform apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    @pytest.mark.serial
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
@@ -3670,6 +3676,7 @@ class CodingPack(unittest.TestCase):
             # a tool not named for running a command is left to TK-A037 and TK-A038 (docs/limits.md)
             self.assertNotIn("TK-A036", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
 
+    @pytest.mark.serial
     def test_every_command_tk_a035_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
         """TK-A036 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
         newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
@@ -3849,6 +3856,7 @@ class CodingPack(unittest.TestCase):
                     if pack == "coding.yaml" and tool.startswith("mcp"):   # dev.yaml has TK-S002 since #604
                         self.assertEqual(d["verdict"], "flag", d)
 
+    @pytest.mark.serial
     def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
             # and of TK-C002's own words: each `grant` read on to the end, from every place a role word stood (8 s)
@@ -3867,6 +3875,7 @@ class CodingPack(unittest.TestCase):
         ids = {id(t): r["id"] for _, r, t, *_ in e.rules if t is not None}
         self.assertEqual(({"TK-A036", "TK-A037"} & {ids.get(id(c)) for c in searched}), {"TK-A036"})
 
+    @pytest.mark.serial
     def test_a_long_command_after_aws_ssm_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
             with self.subTest(pack=pack, engine=engine):
@@ -3907,6 +3916,7 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "flag")
 
+    @pytest.mark.serial
     def test_a_force_push_is_read_in_its_own_command(self):
         # TK-D003 matched the normalised line, which joins commands with ` ; `: a later command's `-f`, `--m` or `+`
         # denied a plain push, a commit message naming a force push was denied, a flag after an argument with a newline
@@ -4017,7 +4027,7 @@ class CodingPack(unittest.TestCase):
             "mv -S .bak /etc /tmp/x", "mv /etc /tmp/x -v", "mv /tmp/a /etc /tmp/b/", "rsync -a --delete empty/ /etc/ -v",
             "rsync -a --del empty/ /etc/", "rsync --delete-after -a empty/ /etc", "chattr -R +i /mnt/c/Windows",
             "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/",
-            "rsync -a empty/ --delete /etc/", "mv /etc -f /tmp/x")
+            "rsync -a empty/ --delete /etc/", "mv /etc -f /tmp/x", r"find /etc -ok rm {} \;")
         for pack, engine, e in self.every_pack():
             for command in commands:
                 with self.subTest(pack=pack, engine=engine, command=command):
@@ -4381,6 +4391,7 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "echo " + "x" * (64 * 1024)})
         self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-OVERSIZE"))
 
+    @pytest.mark.serial
     def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
         """The new rules alone, on the fallback engine."""
         policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
@@ -5613,6 +5624,7 @@ class GuardrailsAndPushes(unittest.TestCase):
             "npm install")], "flag")
         self.verdicts([("Bash", {"command": c}) for c in ("git status", "git log push", "helm template a b")], "allow")
 
+    @pytest.mark.serial
     def test_a_long_push_option_decides_in_time(self):
         for e in self.engines:
             d = e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
@@ -5948,6 +5960,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                         self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
         self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
 
+    @pytest.mark.serial
     def test_a_nested_argument_is_read_once(self):
         """Final review of #605: TK-A062 read each string under a sql, query or statement argument once for each such
         argument above it, and wrote a command argument's value out again for each command argument above it, so a
@@ -6231,6 +6244,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                                             "refUpdates:[{name:\"refs/heads/main\",afterOid:\"x\"}]}){clientMutationId}}'"})],
                       "ask", "TK-A056")
 
+    @pytest.mark.serial
     def test_an_over_cap_calls_sql_isnt_lexed_and_its_verdict_stands(self):
         """Sixth review of #605: TK-A062's SQL reading and the sql class's lexed every dialect of a call over MAX_SUBJECT,
         which every pack that reads them holds unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
@@ -6280,6 +6294,7 @@ class GuardrailsAndPushes(unittest.TestCase):
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --delete origin feature"})], "ask", "TK-A002")
         self.verdicts([("Bash", {"command": "git --attr-source HEAD config core.hooksPath /tmp/h"})], "ask", "TK-A013")
 
+    @pytest.mark.serial
     def test_the_second_reviews_ways_to_main(self):
         """Second review of #605: GitHub reads a percent-encoded path as decoded; a -c remote.<name>.push picks the
         push's target; GraphQL and the contents API write a branch; Jujutsu takes -bmain, exact: and glob:; git-town

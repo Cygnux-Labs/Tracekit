@@ -1,6 +1,7 @@
 """Autotrace into v2 runs (tracekit/autotrace.py with tracekit.sdk.client run handles): each provider SDK, sync, async
 and streaming, against FakeSigner and the real signer served in this process; the SDKs talk to mock transports."""
 import asyncio
+import collections
 import copy
 import gc
 import json
@@ -274,7 +275,10 @@ class Recording:
         self.assertIn("abandoned", self.exchanges()[0][1]["error"])
 
     def test_a_response_the_signer_missed_is_sent_at_the_next_call_after_a_gap(self):
-        self.addCleanup(autotrace._UNSENT.clear)
+        # a queue of its own: the process's keeps the responses earlier tests' outages missed (FailMode's, run first)
+        unsent = mock.patch.object(autotrace, "_UNSENT", collections.deque(maxlen=autotrace._UNSENT.maxlen))
+        unsent.start()
+        self.addCleanup(unsent.stop)
         signer = self.client.signer
 
         def outage(r):   # the signer goes away while the model answers

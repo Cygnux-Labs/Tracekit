@@ -272,6 +272,13 @@ def unverified_bundles(test):
     return test
 
 
+def serial(test):
+    """@pytest.mark.serial for files the TypeScript suite runs without pytest: conftest marks the test, so CI runs it
+    on its own (`-m serial`)."""
+    test.serial = True
+    return test
+
+
 def rewrite_bundle(src, dst, edit):
     """Copy a bundle, letting `edit(files: dict, manifest: dict)` change it; manifest hashes are refreshed."""
     with zipfile.ZipFile(src) as z:

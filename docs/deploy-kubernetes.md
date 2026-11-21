@@ -198,9 +198,22 @@ It is off by default: turning it on cuts every other connection the agents make.
 only on a CNI that enforces them (Calico and Cilium do; some managed defaults don't): check from an agent pod that an
 outside address is refused, for example `kubectl exec -n agents deploy/support-agent -- python -c
 "import socket; socket.create_connection(('api.github.com', 443), 3)"` must time out. Keep the provider keys and action
-secrets out of the agents' namespace altogether. The policy lets the agents reach kube-dns, which a DNS tunnel can carry
-data through: filter DNS (a DNS-aware policy, a CoreDNS allow-list) where that matters. With NodeLocal DNSCache the
-agents resolve through `169.254.20.10`, which the policy doesn't allow: add an egress rule for `169.254.20.10/32` on
-port 53.
+secrets out of the agents' namespace altogether. By default the policy lets the agents reach kube-dns, which a DNS
+tunnel can carry data through: filter DNS (a DNS-aware policy, a CoreDNS allow-list) where that matters.
+`agentEgress.dns` says where DNS goes, on port 53 (UDP and TCP) only:
+
+```yaml
+agentEgress:
+  dns:
+    kubeDns: true            # the kube-dns pods in kube-system (the default)
+    nodeLocal: 169.254.20.10 # NodeLocal DNSCache: one address, allowed as <address>/32 (/128 for IPv6)
+    cidrs: [10.0.0.53/32]    # other resolvers, for example a filtering one
+```
+
+With NodeLocal DNSCache the agents resolve through `169.254.20.10`: set `nodeLocal` to it. To send DNS only to a
+filtering resolver, set `kubeDns: false` and name it in `cidrs`. Only exact resolvers can be named: the render fails
+when `nodeLocal` is not a single address, when a `cidrs` entry is not a CIDR or is shorter than `/24` (IPv4) or `/64`
+(IPv6) (which includes `0.0.0.0/0` and `::/0`), and when `kubeDns` is false and neither `nodeLocal` nor `cidrs` is set,
+since the agents could then resolve nothing.
 
 `tests/test_helm.py` checks the rendered manifests, `tests/test_central.py` the routing and the close on scale-down.

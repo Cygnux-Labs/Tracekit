@@ -20,6 +20,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -1999,6 +2001,137 @@ class GeminiSandbox(unittest.TestCase):
         self.assertEqual(got["status"], "ok")
 
 
+class FolderTrust(unittest.TestCase):
+    """#973: Gemini CLI and Qwen Code (a fork) load no project settings when folder trust is on and the folder isn't
+    trusted (trustedFolders.json): D-GEMINI-SANDBOX read a project's tools.sandbox that Gemini ignores, and nothing
+    said that a Qwen Code project's hooks, or every hook under disableAllHooks, don't run."""
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home, self.repo = os.path.join(self.d, "home"), os.path.join(self.d, "repo")
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
+                                           "GEMINI_CLI_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "gs.json"),
+                                           "QWEN_CODE_SYSTEM_SETTINGS_PATH": os.path.join(self.d, "qs.json")})
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("QWEN_HOME", "GEMINI_CLI_TRUSTED_FOLDERS_PATH", "QWEN_CODE_TRUSTED_FOLDERS_PATH"):
+            os.environ.pop(k, None)
+
+    def write(self, path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(data if isinstance(data, str) else json.dumps(data))
+        return path
+
+    def sandbox(self, trust=None, user=None):
+        """D-GEMINI-SANDBOX with Tracekit's hooks in the user's settings and tools.sandbox in the project's."""
+        if trust is not None:
+            self.write(os.path.join(self.home, ".gemini", "trustedFolders.json"), trust)
+        settings = [self.write(os.path.join(self.home, ".gemini", "settings.json"), {**GeminiSandbox.HOOKS, **(user or {})}),
+                    self.write(os.path.join(self.repo, ".gemini", "settings.json"), {"tools": {"sandbox": "docker"}})]
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", gemini_settings=settings,
+                                                     gemini_project=settings[1])}.get("D-GEMINI-SANDBOX")
+
+    def test_an_untrusted_projects_sandbox_is_left_out(self):
+        project = os.path.join(self.repo, ".gemini", "settings.json")
+        off = {"security": {"folderTrust": {"enabled": False}}}
+        # Gemini CLI's folder trust is on by default, and a folder no rule names is untrusted; its environment decides
+        # first, folder trust off or not; the longest rule path wins
+        for trust, user, env in ((None, None, {}), ({self.repo: "DO_NOT_TRUST"}, None, {}),
+                                 ({self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"}, None, {}),
+                                 ({os.path.join(self.d, "other"): "TRUST_FOLDER"}, None, {}),
+                                 ({self.repo: "TRUST_FOLDER"}, off, {"GEMINI_CLI_TRUST_WORKSPACE": "false"}),
+                                 ({self.repo: "TRUST_FOLDER"}, off, {"GEMINI_RESTRICTED_MODE": "true"})):
+            with mock.patch.dict(os.environ, env):
+                got = self.sandbox(trust, user)
+            # only the left-out project turns the sandbox on: said so, as info
+            self.assertEqual(got["status"], "info", (trust, env))
+            # worded from what made it untrusted: an environment variable, which no trust rule overrides, or the file
+            why, cure = ((f"{''.join(f'{k}={v}' for k, v in env.items())} in the environment makes Gemini skip the "
+                          "project's settings", f"unset {''.join(env)}") if env else
+                         ("folder trust is on and ", "trust the folder (/permissions)"))
+            self.assertTrue(got["detail"].startswith(f"{project} turns Gemini's sandbox on, but Gemini doesn't load "
+                                                     f"it: {why}"), got["detail"])
+            self.assertTrue(got["fix"].startswith(f"to sandbox Gemini there, {cure} or"), got["fix"])
+        got = self.sandbox({}, {"security": {"folderTrust": {"enabled": True}, "toolSandboxing": True}})
+        self.assertEqual(got["status"], "ok")
+        self.assertIn(f"({project} left out: folder trust is on", got["detail"])
+        with mock.patch.dict(os.environ, {"GEMINI_CLI_TRUST_WORKSPACE": "false"}):
+            got = self.sandbox({}, {"security": {"folderTrust": {"enabled": False}, "toolSandboxing": True}})
+        self.assertIn(f"({project} left out: GEMINI_CLI_TRUST_WORKSPACE=false in the environment makes Gemini skip "
+                      "the project's settings)", got["detail"])
+
+    def test_a_trusted_project_or_trust_off_reads_the_project_as_before(self):
+        moved = os.path.join(self.d, "trust.json")
+        for trust, user, env in (({self.repo: "TRUST_FOLDER"}, None, {}), ({self.d: "TRUST_FOLDER"}, None, {}),
+                                 ({os.path.join(self.repo, "sub"): "TRUST_PARENT"}, None, {}),
+                                 ({self.d: "DO_NOT_TRUST", self.repo: "TRUST_FOLDER"}, None, {}),
+                                 # Gemini CLI: the longest rule path, TRUST_PARENT's own (Qwen Code: a tie, untrusted)
+                                 ({self.repo: "DO_NOT_TRUST", os.path.join(self.repo, "x"): "TRUST_PARENT"}, None, {}),
+                                 (None, {"security": {"folderTrust": {"enabled": False}}}, {}),
+                                 ({}, None, {"GEMINI_CLI_TRUST_WORKSPACE": "true"}),
+                                 ({}, None, {"GEMINI_CLI_TRUSTED_FOLDERS_PATH": self.write(moved, {self.repo: "TRUST_FOLDER"})})):
+            with mock.patch.dict(os.environ, env):
+                got = self.sandbox(trust, user)
+            self.assertEqual((got["status"], got["detail"].endswith("every call")), ("warn", True), (trust, user, env))
+        # a trust file doctor can't read: it says so and reads the project
+        got = self.sandbox("{not json")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("can't be read, so doctor can't tell whether Gemini trusts", got["detail"])
+
+    def qwen_rows(self, path, trust=None, system=None):
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("qwen", None if path == agent_hooks.config_path("qwen") else self.repo, v2=True)
+        if trust is not None:
+            self.write(os.path.join(self.home, ".qwen", "trustedFolders.json"), trust)
+        if system is not None:
+            self.write(os.path.join(self.d, "qs.json"), system)
+        rows = []
+        with mock.patch("os.getcwd", return_value=self.repo):
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail, fix)),
+                                        {"qwen": path}, False)
+        return [r for r in rows if not r[1]]
+
+    def test_qwen_disable_all_hooks_warns_naming_the_file(self):
+        user = agent_hooks.config_path("qwen")
+        self.assertEqual(self.qwen_rows(user), [])
+        system = os.path.join(self.d, "qs.json")
+        got = self.qwen_rows(user, system={"disableAllHooks": True})
+        self.assertEqual(got, [("D-HOOKS-EVENT", False, f"disableAllHooks is set in {system}: Qwen Code runs none of "
+                                "its hooks, so every call runs undecided and unrecorded",
+                                f'remove "disableAllHooks" from {system}')])
+        # a project's file only when Qwen Code loads it: not in a folder it doesn't trust
+        project = self.write(agent_hooks.config_path("qwen", self.repo), {"disableAllHooks": True})
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        self.assertEqual(self.qwen_rows(user, {}, on), [])
+        got = self.qwen_rows(user, {self.repo: "TRUST_FOLDER"}, on)
+        self.assertEqual([r[2].split(": Qwen")[0] for r in got], [f"disableAllHooks is set in {project}"])
+
+    def test_qwen_project_hooks_in_an_untrusted_folder_warn(self):
+        project = agent_hooks.config_path("qwen", self.repo)
+        self.assertEqual(self.qwen_rows(project), [])   # Qwen Code's folder trust is off by default
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        self.assertEqual(self.qwen_rows(project, {self.repo: "TRUST_FOLDER"}, on), [])
+        # the deepest rule wins, DO_NOT_TRUST on a tie, whichever comes first (Gemini CLI trusts the last one)
+        for trust in ({}, {self.d: "TRUST_FOLDER", self.repo: "DO_NOT_TRUST"},
+                      {os.path.join(self.repo, "x"): "TRUST_PARENT", self.repo: "DO_NOT_TRUST"},
+                      {self.repo: "DO_NOT_TRUST", os.path.join(self.repo, "x"): "TRUST_PARENT"}):
+            got = self.qwen_rows(project, trust, on)
+            self.assertEqual(len(got), 1, trust)
+            self.assertIn(f"doesn't trust {self.repo}: Qwen Code loads none of its settings there, so the hooks in "
+                          f"{project} don't run", got[0][2])
+        # QWEN_CODE_TRUSTED_FOLDERS_PATH moves the trust file
+        with mock.patch.dict(os.environ, {"QWEN_CODE_TRUSTED_FOLDERS_PATH": self.write(
+                os.path.join(self.d, "trust.json"), {self.repo: "TRUST_FOLDER"})}):
+            self.assertEqual(self.qwen_rows(project, {}, on), [])
+
+    def test_qwen_user_settings_need_no_trust(self):
+        """The user's own settings ($QWEN_HOME's here) load in any folder: only a project's are trust-gated."""
+        on = {"security": {"folderTrust": {"enabled": True}}}
+        with mock.patch.dict(os.environ, {"QWEN_HOME": os.path.join(self.d, "qh")}):
+            self.assertEqual(self.qwen_rows(agent_hooks.config_path("qwen"), {}, on), [])
+
+
 class PluginHooks(unittest.TestCase):
     """The Claude Code plugin's hooks are init's: doctor told plugin users `fix: tracekit init --dev --v2`, after which
     every call was decided twice and every approved call blocked."""
@@ -2111,6 +2244,7 @@ class ThinkingSummaries(unittest.TestCase):
 
 @unittest.skipIf(not hasattr(os, "mkfifo"), "FIFOs")
 class HostileSettings(unittest.TestCase):
+    @pytest.mark.serial
     def test_a_fifo_or_a_device_as_the_agents_settings_doesnt_hang_doctor(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -2404,6 +2538,26 @@ class Versions(unittest.TestCase):
             self.assertIn("or one that CLAUDE_CONFIG_DIR='cc', CODEX_HOME='.codex', XDG_CONFIG_HOME='.config', a relative "
                           "path, places", r["detail"])
             self.assertTrue(r["fix"].startswith("set CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME to an absolute path"))
+
+    def test_a_relative_qwen_or_interpreter_home_does_not_make_a_project_file_yours(self):
+        """#973 review: Qwen Code's QWEN_HOME and Open Interpreter's INTERPRETER_HOME, relative, placed the user's hook
+        file in doctor's working directory, so running doctor in a cloned repository ran the interpreter it named."""
+        project = os.path.join(os.path.realpath(self.d), "repo")
+        ran = self.planted(project)
+        evil = os.path.join(project, "evil")
+        for folder, name, harness in (("relq", "settings.json", "qwen"), ("reli", "hooks.json", "interpreter")):
+            os.makedirs(os.path.join(project, folder))
+            with open(os.path.join(project, folder, name), "w") as f:
+                json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": self.command(
+                    evil, "tracekit.integrations.harness_hooks", f"entry('{harness}', 'PreToolUse')",
+                    python=os.path.join(evil, "python"))}]}]}}, f)
+        self.chdir(project)
+        with mock.patch.dict(os.environ, {"QWEN_HOME": "relq", "INTERPRETER_HOME": "reli"}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None):
+            rows = [r for r in doctor.collect() if r["id"] == "D-VERSIONS"]
+        self.assertFalse(os.path.exists(ran), "doctor ran a hook file a relative variable placed")
+        self.assertEqual(sorted(r["detail"].split(" hooks in ")[0] for r in rows if "not probed" in r["detail"]),
+                         ["the interpreter", "the qwen"], rows)
 
     def test_a_relative_home_makes_no_record_yours(self):
         """Final review of #512: with HOME (USERPROFILE on Windows) relative and TRACEKIT_CLIENT_HOME unset, init's record
