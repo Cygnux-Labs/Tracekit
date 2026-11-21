@@ -696,6 +696,15 @@ class Translator(observe.Translator):
                          "a later call that breaks it waits for a person's approval (TK-CONSTRAINT)"
                          + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
                          constraint=d.get("kind"))
+        if t == "run.label":   # a run label (docs/policy-v2.md#run-conditions): what the run's conditions read
+            if d.get("action") == "clear":
+                return alert("info", f"RUN LABEL CLEARED · {d.get('label')}",
+                             f"by {d.get('person') or d.get('identity')}"
+                             + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
+            how = f"inherited from run {(d.get('inherited') or {}).get('run_id')}, of the same requester" \
+                if "inherited" in d else f"set by this run's record {d.get('source')}"
+            return alert("med", f"RUN LABEL · {d.get('label')}", f"{how}: a later call a run condition reads it "
+                         "for is held for a person (recorded only, under a rule in shadow)", "HOLD")
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
@@ -1283,7 +1292,9 @@ class StoreFeed:
         with self.lock:   # _again drops a run's off this thread too (rows())
             kept = self.bundles.pop(key, {})
         rep, code, text, verified = check(reader, tenant, run_id, note, self.trust, None, self.memo,
-                                          **({} if self.pg else {"kept": kept}))
+                                          **({} if self.pg else {"kept": kept}),
+                                          policy_dir=os.path.join(self.cfg["data_dir"], "policies")
+                                          if self.cfg.get("data_dir") else None)
         # the runs checked last keep theirs, BUNDLES_MAX bytes in all: one past them is read whole next time, and so is a
         # run bigger than that alone, which keeping would only empty the others' (the signer's own run, never final)
         if kept and len(kept["data"]) <= BUNDLES_MAX:
@@ -1514,7 +1525,8 @@ class StoreFeed:
                     count = bisect.bisect_left(run["seqs"], note[0]) if run and note else 0
                     if not count:
                         return None
-                    export(r, tenant, run_id, note[1], out)
+                    export(r, tenant, run_id, note[1], out, policy_dir=os.path.join(self.cfg["data_dir"], "policies")
+                           if self.cfg.get("data_dir") else None)
                     verified, _, code = bundle_records(out, self.trust, self.memo)   # the watcher's: checked once
                 # the store does not match its own checkpoint, or holds a record of a shape export can't read
                 except (ValueError, KeyError, TypeError, AttributeError, IndexError):
@@ -1663,20 +1675,21 @@ def write_trust(path, vkeys, witnesses=()):
     return path
 
 
-def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None):
+def check(reader, tenant, run_id, note, trust, out=None, memo=None, kept=None, policy_dir=None):
     """(report, exit code, printed report, records) of verify.v2 on the run's bundle from `reader` with `note`, exported
     to `out`, else checked as bundle_v2.bundle builds it (not zipped); `records`: the run's records as verify.v2 read
     them ([] unless it verifies), so what is shown is what was checked, never a second read of the store; `memo`:
     verify.v2's, kept across checks; `kept`: a dict that holds bundle's `kept` of the run's last bundle that verified
-    (none once one does not), so a run that grew is read from there, from a reader that still holds those records."""
+    (none once one does not), so a run that grew is read from there, from a reader that still holds those records;
+    `policy_dir`: the signer's compiled policies (a file store's own beside it by default: bundle_v2.bundle)."""
     from .why.import_v2 import bundle_records
     records, now = [], {}
     try:
         if out:
-            export(reader, tenant, run_id, note, out)
+            export(reader, tenant, run_id, note, out, policy_dir=policy_dir)
             verified, rep, code = bundle_records(out, trust, memo)
         else:
-            files, info = bundle(reader, tenant, run_id, note, kept=kept)
+            files, info = bundle(reader, tenant, run_id, note, kept=kept, policy_dir=policy_dir)
             verified, rep, code = bundle_records(files, trust, memo)
             now = {} if code else info.get("kept", {})
         records = verified.get(run_id, [])

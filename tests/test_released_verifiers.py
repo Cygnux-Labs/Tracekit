@@ -156,7 +156,8 @@ class Released(Signed):
         cases = {"an agent run": (self.export(run), "1.2.0")}
         # a run past the per-file limit, here lowered so it fills two parts: no released verifier reads parts
         files = v2.read_zip(cases["an agent run"][0][0])
-        with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in files.items() if n.startswith("runs/")) - 1):
+        with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in files.items() if n.startswith("runs/")) - 1), \
+                mock.patch("tracekit.bundle_v2.cited_policies", lambda events: set()):   # its policy is over the limit
             cases["a run in parts"] = (self.export(run), "1.4.0")
         self.findings(ANALYZER, run)
         cases["the run, with a findings run not exported"] = (self.export(run), "1.2.0")
@@ -184,8 +185,11 @@ class Released(Signed):
                     self.assertEqual("observers" in rep.warnings, "lost" in name)   # the loss is a signed gap
                     if v2._version(need) <= v2._version(tag[1:]):
                         self.assertEqual((old["code"], old["integrity"]), (0, "VERIFIED"), old["checks"])
+                        # the run in parts carries no policy (its file is over the lowered limit): today's verifier
+                        # says it can't replay its labels, a 1.8 line no released verifier has
                         self.assertEqual([(c["check"], c["status"]) for c in old["checks"]],
-                                         [(c["check"], c["status"]) for c in rep.checks])
+                                         [(c["check"], c["status"]) for c in rep.checks
+                                          if c["check"] != "label policies" or name != "a run in parts"])
                     else:
                         self.assertEqual((old["code"], old["integrity"]), (2, f"UNVERIFIABLE (needs tracekit >= {need})"))
 

@@ -5,8 +5,10 @@ approver): approval_request's `project` (the folder the agent works in, as its c
 `ai` (an agent approver's answers) and `view_digest` (the approval_review it answers, required for an approval
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
 playbook and recent calls of such an approval) and `approver` (people: the circuit breaker's state and the playbook,
-accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 26 adds
-register_run's `continues` (a later run of an
+accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 27 adds
+`run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
+the signer records as theirs; a run's own owner, principal or requester can't. Version 26 adds register_run's
+`continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -98,6 +100,7 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+RUN_LABEL = {"enum": ["secrets_access", "untrusted_content"]}   # policy2.compile.RUN_LABELS
 # in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
 INSTEAD = ". Instead: "
 
@@ -491,6 +494,9 @@ REQUESTS = {
     # the shared suspension list: `identity` (scheme:subject, or a prefix ending in :* or /*) is refused every call
     **{m: _obj(["request_id", "identity"], request_id=ID, identity=IDENTITY, reason=REASON)
        for m in ("suspend", "unsuspend")},
+    # a person (as for run_resume) ends one of a run's labels: a run.label of theirs
+    "run_label_clear": _obj(["request_id", "run_id", "label"], request_id=ID, run_id=ID, label=RUN_LABEL,
+                            reason=REASON),
     # proof-carrying messages (experimental), the run's own agent only: sign a message as it (the signer adds pcm, id,
     # ts, nonce and sig); a root grant from the consumed approval of its `pcm.grant` call with these args; a narrower
     # child of a grant held by the caller; and its run's records with inclusion proofs, for claim evidence
@@ -637,6 +643,7 @@ RESPONSES = {
     **{m: _obj(["enabled"], enabled={"type": "boolean"}) for m in ("response_pause", "response_resume")},
     **{m: _obj(["identity", "state"], identity=IDENTITY, state={"enum": ["suspended", "lifted"]})
        for m in ("suspend", "unsuspend")},
+    "run_label_clear": _obj(["run_id", "label", "run_seq"], run_id=ID, label=RUN_LABEL, run_seq=SEQ),
     "pcm_sign": _obj(["message", "run_seq"], message=PCM_MESSAGE, run_seq=SEQ),
     **{m: _obj(["grant", "run_seq"], grant=PCM_GRANT, run_seq=SEQ) for m in ("pcm_grant", "pcm_delegate")},
     # the latest checkpoint note and, for each record it covers, its inclusion proof under it (a policy.decision's salt
@@ -738,6 +745,7 @@ class SignerAPI(Protocol):
     def run_hold(self, req: dict) -> dict: ...
     def run_quarantine(self, req: dict) -> dict: ...
     def run_resume(self, req: dict) -> dict: ...
+    def run_label_clear(self, req: dict) -> dict: ...
     def response_pause(self, req: dict) -> dict: ...
     def response_resume(self, req: dict) -> dict: ...
     def suspend(self, req: dict) -> dict: ...

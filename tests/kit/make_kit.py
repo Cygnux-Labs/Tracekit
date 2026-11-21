@@ -299,6 +299,14 @@ EVERY_TYPE = [
     ("constraint.added", {"kind": "no_push"}),
 ]
 
+# a compiled policy with a run condition (docs/policy-v2.md#run-conditions), as a signer's policies/ keeps it
+LABELLED_BYTES = json.dumps({"tools": {"read_file": "fs"},
+                             "flag": [{"id": "SECRET", "class": "fs", "pattern": "\\.env", "label": "secrets_access"},
+                                      {"id": "EGRESS", "field": "target", "pattern": "://", "label": "egress"}],
+                             "ask": [{"id": "SEND", "field": "labels", "pattern": "(?:^| )egress(?: |$)",
+                                      "when": {"run_has": ["secrets_access"]}}]},
+                            sort_keys=True, separators=(",", ":")).encode()
+LABELLED_HASH = "sha256:" + hashlib.sha256(LABELLED_BYTES).hexdigest()
 V = "§11 step 11"
 VECTOR_CASES = []
 
@@ -397,6 +405,43 @@ def vectors():
         "incident_id": "i1", "trigger": "sequence", "rule_ids": [], "scope": {"kind": "run", "id": "run-a"},
         "cites": [], "mode": "shadow", "actions": [], "would": []}, {})), t, 0, "VERIFIED", "witnessed",
          addon="containment", decided_by="§3 (containment), §11 step 9")
+    # run labels (format 1.8): replayed under the run's policy when the bundle carries it, signer-asserted without
+    secret = ("policy.decision", {"tool_use_id": "t1", "decision": "flag", "rule_ids": ["SECRET"], "tool": "read_file",
+                                  "policy_hash": LABELLED_HASH}, {"tool_call_id": "t1"})
+    added = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer", "source": 1}, {})
+    case("a run label, its policy not in the bundle", closed("run-label", secret, added), t, 0, "VERIFIED",
+         "witnessed", addon="run labels", needs="1.8.0", decided_by="§3 (run labels), §11 step 9")
+    policies = os.path.join(VECTORS, ".stores", "policies")
+    os.makedirs(policies)
+    with open(os.path.join(policies, LABELLED_HASH.removeprefix("sha256:") + ".json"), "wb") as f:
+        f.write(LABELLED_BYTES)
+    case("a run label its cited record doesn't set", closed(
+        "run-label-unset", (secret[0], {**secret[1], "rule_ids": []}, secret[2]), added, policy_dir=policies), t, 1,
+         "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a record sets the labels of a call it lets run), §11 step 9")
+    sent = ("policy.decision", {"tool_use_id": "t2", "decision": "ask", "rule_ids": ["EGRESS", "SEND"],
+                                "tool": "read_file", "policy_hash": LABELLED_HASH, "run_labels": ["secrets_access"]},
+            {"tool_call_id": "t2"})
+    case("a label its record sets, no run.label adds", closed("run-label-omitted", secret, sent, policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: added before the run's next decision), §11 step 9")
+    case("a label left out, its policy only in the trust config", closed("run-label-omitted-trusted", secret, sent),
+         trust("policy", policies=[LABELLED_BYTES.decode()]), 1, "FAILED", failed_check=["run labels"],
+         addon="run labels", needs="1.8.0",
+         decided_by="§10 (a trust config's policies: known by their hash), §11 step 9")
+    inherited = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                               "inherited": {"run_id": "run-z", "run_seq": 2}}, {})
+    case("a label inherited from another run of the requester", closed("run-label-inherited", inherited, sent,
+                                                                       policy_dir=policies),
+         t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a requester's, signer-asserted), §11 step 9")
+    untracked = ("run.label", {**inherited[1], "label": "untrusted_content"}, {})
+    plain = ("policy.decision", {"tool_use_id": "t3", "decision": "allow", "rule_ids": [], "tool": "read_file",
+                                 "policy_hash": LABELLED_HASH}, {"tool_call_id": "t3"})
+    case("an inherited label no run condition reads", closed("run-label-inherited-untracked", untracked, plain,
+                                                             policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: only those the policy's run conditions read), §11 step 9")
     case("an agent's approval", closed(
         "agent-approval",
         ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["PAY"], "decision_id": "d1",

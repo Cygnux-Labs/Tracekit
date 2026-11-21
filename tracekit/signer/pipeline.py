@@ -26,7 +26,7 @@ from tracekit.core import now_ts
 from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
-from tracekit.signer import detect, reconcile
+from tracekit.signer import detect, labels, reconcile
 from tracekit.signer.detect import epoch
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.runtoken import subject
@@ -64,9 +64,10 @@ def new_run(tenant, run_id):
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
-# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result
+# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result;
+# `run_labels`: the run labels that made its run condition rules apply (a retry's decision records them again)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended", "policy_hash")
+             "detect_ids", "via", "caller", "refused", "ended", "policy_hash", "run_labels")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 # the AI approver (approver_state): how long a person's answer counts as a precedent, and a requester's runs carry
@@ -487,6 +488,15 @@ class Tx:
         agent_state(self.set, log, run, e, self.pop)
         contain_state(self.set, log, run, e, self.pop)
         grant_state(self.set, run, e)
+        labels.state(self.set, run, e)
+        labels.carry(self.set, log, run, e, self.pop)
+        # the run labels this record sets, each a signer's run.label right after it, before the run's next call (a
+        # final run's state keeps no calls: nothing it records runs a call)
+        new = log.labels.sets(e, log.approvals.get, run["calls"].get) - set(run.get("labels") or ()) \
+            if log.labels and "calls" in run else ()
+        for label in sorted(new):
+            self.emit(run, "run.label", {"label": label, "action": "add", "by": "signer", "source": e["run_seq"]},
+                      source="signer")
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)
@@ -559,16 +569,17 @@ class Tx:
 
 class RecordLog:
     def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None,
-                 secret_rules=frozenset()):
+                 labels=None, secret_rules=frozenset()):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
         signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing.
+        `labels`: a labels.Sources, or None when the policy has no run condition (its runs carry no label).
         `respond(tx, run, e, incident)`, set by the service: writes an enforced incident.opened that record `e` fired
         and acts on it, or (incident None) acts on a decision `e` whose detection state is unavailable."""
-        self.detector, self.respond = detector, None
+        self.detector, self.labels, self.respond = detector, labels, None
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
         self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
@@ -614,7 +625,7 @@ class RecordLog:
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys, "agent": self.agent, "contain": self.contain,
+                "keys": self.keys, "agent": self.agent, "contain": self.contain, "carry": self.carry,
                 **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
@@ -639,7 +650,7 @@ class RecordLog:
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
         unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
-        agent, contain = new_agent(), new_contain()
+        agent, contain, carry = new_agent(), new_contain(), {}
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
 
@@ -679,7 +690,7 @@ class RecordLog:
                             outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
-            agent, contain = {**agent, **st.get("agent", {})}, st.get("contain", contain)   # (1.8 added keys)
+            agent, contain, carry = {**agent, **st.get("agent", {})}, st.get("contain", contain), st.get("carry", carry)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
@@ -755,7 +766,8 @@ class RecordLog:
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
-                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash")}
+                        "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash"),
+                        "run_labels": d.get("run_labels")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -814,11 +826,14 @@ class RecordLog:
                                                                     secret_rules=self.secret_rules), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
+                labels.state(dict.__setitem__, run, e)
+                labels.carry(dict.__setitem__, types.SimpleNamespace(carry=carry, labels=self.labels), run, e,
+                             lambda d, k: d.pop(k, None))
         for run in runs.values():   # a run's last result had no executed_against_policy gap after it
             if run.get("ran_under"):
                 run["decisions"].pop(run.pop("ran_under")[1], None)
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.agent, self.contain = agent, contain
+        self.agent, self.contain, self.carry = agent, contain, carry   # carry: labels.carry's
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         for (tenant, run_id), r in runs.items():   # open runs a fresh detection state never saw registered
             k = f"{tenant}\0{run_id}"

@@ -17,8 +17,8 @@ import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
 from . import classes, shell
-from .compile import APPROVER_RULES, BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, \
-    translate
+from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals,
+                      policy_hash, requirements, translate)
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -123,7 +123,9 @@ class Engine:
         # pattern names a folder in mixed case
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
-        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
+        # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
+        self.rules = [("flag" if r.get("mode") == "shadow" else sec, r, compile_(r["tool"]) if "tool" in r else None,
+                       rx(r, "pattern"),
                        rx(r, "unless") if "unless" in r else None, lits := literals(r["pattern"]),
                        _finer(requirements(r["pattern"]), lits), literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
@@ -167,11 +169,17 @@ class Engine:
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
                         if "pattern" in b}
-        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names both
-        self._spelled = {}
-        for t in self.policy.get("tools", {}):
-            if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
-                self._spelled.setdefault(_spelling(t), []).append(t)
+        self._spelled = spelled(self.policy)
+        # run conditions (docs/policy-v2.md#run-conditions): each `when` rule's labels, by id; each rule's label, and
+        # each run label a rule sets (its own label, of RUN_LABELS); the rules on the call's labels (LABELS_FIELD),
+        # read after the others, of which a call's own labels are
+        self.when = {r["id"]: frozenset(r["when"]["run_has"]) for _, r, *_ in self.rules if "when" in r}
+        self.labels = {r["id"]: r["label"] for _, r, *_ in self.rules if "label" in r}
+        self.run_label = {i: x for i, x in self.labels.items() if x in RUN_LABELS}
+        self._on_labels = [x for x in self.rules if x[1].get("field") == LABELS_FIELD]
+        # the rules on LABELS_FIELD each set of a call's labels matches, as the subject they read (labels_subject):
+        # a policy's labels are a closed set, and a call's few, so each set is searched once
+        self._label_hits = {}
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -291,7 +299,7 @@ class Engine:
             self._names[tool_re, name] = got
         return got
 
-    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None, _pieces=True):
+    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None, _pieces=True, labels=()):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
         policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
@@ -359,10 +367,13 @@ class Engine:
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
             # each with the subjects it reads, its memo key (rules on the same subjects read them once; a shell rule with
-            # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts
-            self._of[cls] = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
-                                   "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
-                             for x in self.rules if _reaches(x[1], cls)]
+            # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts; the run condition rules
+            # (`when`) apart, read after the others
+            of = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
+                        "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
+                  for x in self.rules if _reaches(x[1], cls) and x[1].get("field") != LABELS_FIELD]
+            self._of[cls] = [x for x in of if x[1]["id"] not in self.when]
+            self._of[cls, "when"] = [x for x in of if x[1]["id"] in self.when]
             self._of[cls, "deny"] = [x for x in self._of[cls] if x[0] == "deny"]
 
         spent = []   # why the engine's reading of the parse stopped (its budget), if it did
@@ -398,7 +409,14 @@ class Engine:
                     subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
-                memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
+                memo[key], memo[key + ("read",)] = _prepare(subjects, _TAGGED.get(key[0], 0)), subjects
+            if unless is not None and cls == "shell":   # an exemption holds only where it holds on the _quoted reading
+                if (q := key + ("quoted",)) not in memo:
+                    if "spaced" not in memo:
+                        memo["spaced"] = _spaced(parsed[0])
+                    quoted = _quoted(memo[key + ("read",)], memo["spaced"])
+                    memo[q] = _prepare(memo[key + ("read",)] + quoted, _TAGGED.get(key[0], 0)) if quoted else memo[key]
+                key = q
             texts, lows, joined, big = memo[key]
             if lits is None or holds(lits, ids, joined):
                 for subject, low in zip(texts, lows):
@@ -428,7 +446,7 @@ class Engine:
                 self._of[cls, bool(_hidden), low_name] = rules
         for entry in rules:
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
-            # is over MAX_SUBJECT) gives nothing: hit() would match nothing
+            # is over MAX_SUBJECT) gives nothing: hit() would match nothing (_quoted, they hold no more of them)
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
                     not m[0] or entry[5] is not None and not holds(entry[5], entry[9], m[2])):
                 continue
@@ -436,6 +454,20 @@ class Engine:
                 if (found := hit(entry, parsed, memo, oversize)) is not None:
                     hits[entry[0]].append(found)
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
+                nondeterministic = True
+                hits["deny"].append(entry[1]["id"])
+                break
+        # the run condition rules that match, held aside (`cond`: section, id) until their labels apply them; a subject
+        # over MAX_SUBJECT matches none of them (the other rules decide such a call)
+        cond = []
+        # (none for a harness call, a message to the agent's own agents: it reads no file and runs nothing, and sets no
+        # label: labels.Sources.of_call)
+        harness = cls == "harness"
+        for entry in () if _hidden or nondeterministic or harness else self._of[cls, "when"]:
+            try:
+                if hit(entry, parsed, memo, []) == entry[1]["id"]:
+                    cond.append((entry[0], entry[1]["id"]))
+            except TimeoutError:   # as a rule's match above that runs out of time: deny
                 nondeterministic = True
                 hits["deny"].append(entry[1]["id"])
                 break
@@ -486,9 +518,36 @@ class Engine:
                 len(_text(canonical(args)).encode()) > MAX_SUBJECT:
             hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]
             hits["ask"].append("TK-OVERSIZE")
+        # the rules on the call's labels: those of the rules it matched (not the run condition rules held aside), as
+        # one subject (labels_subject); a run condition rule's waits in `cond`, another's applies now
+        mine = labels_subject(self.labels[i] for sec in SECTIONS for i in hits[sec] if i in self.labels) \
+            if self._on_labels and not nondeterministic and not harness else ""
+        found = self._label_hits.get(mine) if mine else ()
+        try:
+            if found is None:
+                found = []
+                for x in self._on_labels:
+                    rid = x[1]["id"]
+                    if self._match(x[3], mine, False, deadline) and not (
+                            x[4] is not None and self._match(x[4], mine, False, deadline)):
+                        found.append(x)
+                if len(self._label_hits) < 4096:
+                    self._label_hits[mine] = found
+            for sec, rule, tool_re, *_, tool_lits in found:
+                rid = rule["id"]
+                if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low_name, deadline):
+                    if rid in self.when:
+                        cond.append((sec, rid))
+                    else:
+                        hits[sec].append(rid)
+        except TimeoutError:   # as a match of the loop above that runs out of time: deny
+            nondeterministic = True
+            hits["deny"].append(rid)
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
+        if cond:
+            out["when"] = {rid: sec for sec, rid in cond}
         if nondeterministic:
             out["nondeterministic"] = True
         if oversize:
@@ -502,6 +561,31 @@ class Engine:
             out["verdict"] = max(out["verdict"], base["verdict"], key=("allow", *reversed(SECTIONS)).index)
             out["rule_ids"] = list(dict.fromkeys(base["rule_ids"] + out["rule_ids"]))
             out.update((k, base[k]) for k in ("nondeterministic", "oversize") if k in base and k not in out)
+            if base.get("when"):
+                out["when"] = {**base["when"], **out.get("when", {})}
+        return self.condition(out, labels)
+
+    def condition(self, d, labels=()):
+        """Decision `d` (of decide, or two readings _stricter joined) in a run that carries `labels`: each run condition
+        rule it matched (`when`: id -> section) applies once every label the rule names is the run's, or one a rule
+        the call matched sets (a command that reads a secret and sends it); `run_labels` names the labels that made
+        them apply, and `when` keeps those that still wait. It only adds rule ids: never looser."""
+        if not d.get("when"):
+            return d
+        have = set(labels) | {self.run_label[i] for i in d["rule_ids"] if i in self.run_label}
+        out, wait, used = {**d, "rule_ids": list(d["rule_ids"])}, {}, set(d.get("run_labels", ()))
+        for rid, sec in d["when"].items():
+            if self.when[rid] <= have:
+                out["verdict"] = max(out["verdict"], sec, key=("allow", *reversed(SECTIONS)).index)
+                out["rule_ids"] += [rid] * (rid not in out["rule_ids"])
+                used |= self.when[rid]
+            else:
+                wait[rid] = sec
+        out.pop("when")
+        if wait:
+            out["when"] = wait
+        if used:
+            out["run_labels"] = sorted(used)
         return out
 
     def _parse(self, args, command, work, readings=True, fallback=True, pieces=True):
@@ -540,8 +624,9 @@ class Engine:
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised (each also with `\\` as `/`: _slashes), a shell `code` those without the
         text a command only writes into a file
-        (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, and each entry of a
-        `paths` list (every file of a Codex patch) is a path too, and an http field is read for each URL of a `urls`
+        (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, each of the
+        `file_path`, `notebook_path` and `path` arguments a call has and each entry of a `paths` list (every file of a
+        Codex patch) is a path too, and an http field is read for each URL of a `urls`
         list too (every URL a Gemini CLI web_fetch prompt names). `target` (every class) is what the call
         acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
         (_effects); sql `code` is one subject per dialect reading. With
@@ -604,13 +689,14 @@ class Engine:
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
-            raws = [classes.first(args, *classes.PATH_KEYS)] + args["paths"]
+            raws = [args.get(k) for k in classes.PATH_KEYS] + args["paths"]
             return list(dict.fromkeys(f for r in raws for f in classes.fs_forms(r)))
         value = fields.get(field) if field in CLASSES.get(cls, ()) else args.get(field)
         if value is None:
             return []
-        if cls == "fs" and field == "path" and isinstance(value, str):
-            return classes.fs_forms(classes.first(args, *classes.PATH_KEYS))
+        if cls == "fs" and field == "path" and isinstance(value, str):   # each path argument: a decoy under one of
+            # them can't stand for the file the tool opens (the hostile twins)
+            return list(dict.fromkeys(f for k in classes.PATH_KEYS for f in classes.fs_forms(args.get(k))))
         if split and isinstance(value, list):
             return [v if isinstance(v, str) else canonical(v) for v in _flat(value)]
         return [value if isinstance(value, str) else canonical(value)]
@@ -670,6 +756,28 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _spaced(commands):
+    """Every argv word of a shell call's commands that holds a space (a quoted word: `'x --help'`, `--notes 'see -d'`),
+    also as a path is read (casefolded, `\\` as `/`), longest first, for _quoted."""
+    return sorted({f for c in commands for w in c["argv"] if " " in w
+                   for f in (w, w.casefold(), w.replace("\\", "/"), w.replace("\\", "/").casefold())},
+                  key=len, reverse=True)
+
+
+def _quoted(subjects, words):
+    """Each subject of a shell call again with each of its _spaced `words` spelled with WORD_SPACE for its spaces,
+    where it differs: a rule's `unless` exempts a call only when it holds on this reading too, so text quoted into one
+    word never reads as words of its own (the hostile twins, tests/test_hostile_twins.py)."""
+    out = []
+    for s in subjects if words else ():
+        v = s
+        for w in words:
+            v = v.replace(w, w.replace(" ", WORD_SPACE))
+        if v != s:
+            out.append(v)
+    return out
 
 
 def _alternatives(pattern):
@@ -3559,6 +3667,22 @@ def _prepare(subjects, tag=0):
 def _text(s):
     """Lone surrogates (valid in JSON escapes, not in UTF-8) become \\udxxx text, the same for both engines."""
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def labels_subject(labels):
+    """The subject a rule on LABELS_FIELD reads: a call's labels (of the rules it matched), sorted, each once, joined by
+    a space (`background_spawn egress`), so one pattern can name two of them."""
+    return " ".join(sorted(set(labels)))
+
+
+def spelled(policy):
+    """{spelling: [the names `tools:` lists (not its globs) that spell it]}, for Engine.listed; a spelling two names
+    share names both."""
+    out = {}
+    for t in policy.get("tools", {}):
+        if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
+            out.setdefault(_spelling(t), []).append(t)
+    return out
 
 
 def _spelling(name):

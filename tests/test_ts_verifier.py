@@ -1393,7 +1393,7 @@ class Agreement(SignerBundles):
         import run_kit as kit
         cases = kit.load()
         reports = ts_verify_many([[os.path.join(TESTS, c[k]) for k in ("input", "trust")] for c in cases])
-        version = v2.READS   # the newest format it reads: its READS, which a test here holds to the reference's
+        version = v2.READS   # the newest format version it reads (test_the_verifier_is_the_package_version)
         for c, out in zip(cases, reports):
             with self.subTest(c["name"]):
                 ok, how = kit.score(c, {"exit": out["exit_code"], "verdict": kit.verdict(out["integrity"]),
@@ -1601,7 +1601,13 @@ class AgreementScripts(unittest.TestCase):
                 if call.args[1] == "another signer's trust config":
                     with open(call.kwargs["trust"]) as f:
                         pinned[call.args[0]] = json.load(f)["logs"][0].split("+")[0]
-        self.assertEqual(pinned, {name: e22._origin(name, corpus) for name in bundles})
+        # each base's own origin, or a key-derived one (the page's sample's) the forger's key names in its place
+        from tracekit.format import checkpoint as cp
+        self.assertEqual({n: o if not cp.KEY_ORIGIN.match(o) else bool(cp.KEY_ORIGIN.match(o) and
+                                                                    o != e22._origin(n, corpus))
+                          for n, o in pinned.items()},
+                         {n: e22._origin(n, corpus) if not cp.KEY_ORIGIN.match(e22._origin(n, corpus)) else True
+                          for n in bundles})
 
 
 if __name__ == "__main__":

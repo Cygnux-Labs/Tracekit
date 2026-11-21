@@ -4,24 +4,26 @@
 # and money moved are held or denied here too (#604); plus a visible demo deny and ask, so both are easy to see. They
 # also match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 #
-# Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
-# held: a laptop runs tools and MCP servers no list names; one given a command line or a SQL statement to run is held
-# (TK-A062). And a coding agent's messages to its own agents are class `harness`: Claude Code's Agent and Task
-# prompts, SendMessage, a subagent's SubagentHandback report, its TodoWrite list and a Workflow's script (its agents'
-# calls are each decided by their own hook), and what the hooks map onto those names (Task: Qwen Code's agent,
-# Cursor's Task, OpenCode's and Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's
-# todo_write, OpenCode's todowrite). Every
-# rule of no class reads them, but their `target` is only the URLs and network addresses they name, not the file
-# names their prose mentions: TK-S004 (a credentials file) and TK-F005 (a secret-looking path) don't read them, as a
-# prompt that names ~/.aws/credentials doesn't open it. TK-S002 still denies a secret's value in one, and TK-S001 the
-# metadata service's address, as a URL or a bare IPv4 address in any form. A SendMessage can leave the machine, so
-# it is flagged (TK-F018); an Agent or Task run remotely is held (TK-F019), as none of its calls are decided here. An
-# app's own tool by one of these names (Workflow included) gets the same reading here. Every email, payment and database tool's call and
-# every Browser Use action is flagged (TK-F020 to TK-F023), as the coding pack flags an MCP call: the server parts'
-# rules for them hold only the harmful forms.
+# Three things differ from the server pack. Its detection is lighter here: data sent off the machine after the run read
+# a secret is a run condition (TK-Q001, below; in shadow in 1.8: recorded, not held), where the server pack records the
+# pair as a sequence, and a runaway loop (TK-L001) and a call that ran against its decision are recorded as shadow
+# incidents. A tool no pack maps is flagged, not held: a laptop runs tools and MCP servers no list names; one given a
+# command line or a SQL statement to run is held (TK-A062). And a coding agent's messages to its own agents are class
+# `harness`: Claude Code's Agent and Task prompts, SendMessage, a subagent's SubagentHandback report, its TodoWrite list
+# and a Workflow's script (its agents' calls are each decided by their own hook), and what the hooks map onto those
+# names (Task: Qwen Code's agent, Cursor's Task, OpenCode's and Kilo Code's task, Antigravity CLI's invoke_subagent;
+# TodoWrite: Qwen Code's todo_write, OpenCode's todowrite). Every rule of no class reads them, but their `target` is
+# only the URLs and network addresses they name, not the file names their prose mentions: TK-S004 (a credentials file)
+# and TK-F005 (a secret-looking path) don't read them, as a prompt that names ~/.aws/credentials doesn't open it.
+# TK-S002 still denies a secret's value in one, and TK-S001 the metadata service's address, as a URL or a bare IPv4
+# address in any form. A harness call sets no run label and meets no run condition: it reads no file and runs nothing. A
+# SendMessage can leave the machine, so it is flagged (TK-F018); an Agent or Task run remotely is held (TK-F019), as
+# none of its calls are decided here. An app's own tool by one of these names (Workflow included) gets the same reading
+# here. Every email, payment and database tool's call and every Browser Use action is flagged (TK-F020 to TK-F023), as
+# the coding pack flags an MCP call: the server parts' rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-9'
+version: '2026.11-dev-12'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -42,9 +44,9 @@ tools:
   # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
   # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
   # are a subagent's answer in its caller's schema), so one given a `command` or `sql` field, which TK-A062 held as an
-  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay unmapped: their writes publish to
-  # claude.ai or send files off the machine to the user's Claude app, so they keep the unknown tool's flag.
-  # RemoteTrigger is held (TK-A081)
+  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay
+  # unmapped: their writes publish to claude.ai or send files off the machine to the user's Claude app, so they keep the
+  # unknown tool's flag. RemoteTrigger is held (TK-A081)
   TaskStop: app              # stops a background task or agent by its id
   TaskCreate: app            # the session's task list
   TaskUpdate: app
@@ -92,16 +94,16 @@ ask:
     # its argv: publishing a package (npm, pnpm, yarn or bun publish, npm's pu, pub, publ or publi, which it runs as
     # publish, yarn's `npm publish`, uv, poetry or cargo
     # publish, gem push, twine upload, also as any runner's `-m twine`), pushing an image or a chart (docker or podman
-    # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or upgrade,
-    # kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`), each after
-    # up to eight options with a value or not; a gh or hub api call naming main's or master's ref (git/refs/heads/main,
-    # ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or putting or deleting a
-    # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, `PUSH:merge-upstream`
-    # for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target the line can't
-    # tell), read percent-decoded as GitHub reads its path; `gh repo sync <owner/repo>` into main or master
-    # (engine._gh_repo_sync's `PUSH:repo-sync`);
-    # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
-    # Sapling's `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments,
+    # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or
+    # upgrade, kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`),
+    # each after up to eight options with a value or not; a gh or hub api call naming main's or master's ref
+    # (git/refs/heads/main, ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or
+    # putting or deleting a file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path,
+    # `PUSH:merge-upstream` for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target
+    # the line can't tell), read percent-decoded as GitHub reads its path; `gh repo sync <owner/repo>` into main or
+    # master (engine._gh_repo_sync's `PUSH:repo-sync`); a GraphQL updateRef or updateRefs, mergeBranch or
+    # createCommitOnBranch, read as TK-A002 reads deleteRef; Sapling's `sl push --to main`, `git town ship` (or
+    # git-town), and Jujutsu's `jj git push` with no arguments,
     # --all, --tracked, a main or master bookmark (exact: too) or a glob:. And a platform CLI's production deploy, each
     # form read from the CLI's own docs (#892): `vercel --prod` or `--environment production` (`deploy` may be left
     # out) and `vercel promote`, `netlify deploy --prod` or `--prod-if-unlocked`, `fly` or `flyctl deploy`, `wrangler
@@ -115,9 +117,10 @@ ask:
     # --environment or serverless --stage naming a dev, staging, preview, test, qa, sandbox or local environment (any
     # other name, prod included, is held). A preview deploy stays allowed: vercel without --prod, netlify deploy
     # without --prod, wrangler dev, firebase hosting:channel:deploy.
-    # lean: a deploy CLI not named here (heroku, render, wrangler pages or versions deploy) is recorded, not held; the
-    # subject is a command's words joined by spaces, so a -d or --draft inside another option's quoted value
-    # (`--notes 'see -d'`) reads as a draft and the release is allowed (docs/limits.md); a gh or hub api GET of
+    # A -d or --draft inside a quoted word (`--notes 'see -d'`) is no draft: an `unless` also reads each quoted word
+    # as one (engine._quoted).
+    # lean: a deploy CLI not named here (heroku, render, wrangler pages or versions deploy) is recorded, not held; a
+    # later flag that undoes the exempting one isn't read (docs/limits.md); a gh or hub api GET of
     # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
     # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
     # engine seconds on 64 KiB); add a verb here when one is in use
@@ -141,12 +144,12 @@ ask:
     # comments and literals blanked, every blank run a space), `SQL;` before one a `;` ends and `SQL:` before the
     # last. A command line is any value but one plain word (`WORD:<its last /-part>`; letters, digits, `_ . : / -`: a
     # list or an object, a blank, a shell metacharacter or expansion makes one), and a plain word that changes the
-    # machine on its own: reboot, shutdown, halt, poweroff or killall5 (every other program needs arguments to do harm). A statement is held when
-    # it writes or changes the schema or access (INSERT, REPLACE or MERGE INTO; UPDATE x [alias] SET; DELETE FROM,
-    # DELETE x FROM, DELETE x; DROP an object; TRUNCATE x; ALTER an object; CREATE USER or ROLE; GRANT or REVOKE on or
-    # to something; COPY to or from a program or a file; a CTE; DO), or is a SELECT, CREATE, EXEC or CALL a `;` ends.
-    # What the tool runs it on, and how, is its own, so no rule reads its effect; the server pack holds every
-    # unmapped tool, the laptop these.
+    # machine on its own: reboot, shutdown, halt, poweroff or killall5 (every other program needs arguments to do harm).
+    # A statement is held when it writes or changes the schema or access (INSERT, REPLACE or MERGE INTO; UPDATE x
+    # [alias] SET; DELETE FROM, DELETE x FROM, DELETE x; DROP an object; TRUNCATE x; ALTER an object; CREATE USER or
+    # ROLE; GRANT or REVOKE on or to something; COPY to or from a program or a file; a CTE; DO), or is a SELECT, CREATE,
+    # EXEC or CALL a `;` ends. What the tool runs it on, and how, is its own, so no rule reads its effect; the server
+    # pack holds every unmapped tool, the laptop these.
     # lean: a search in English shaped like one of these (`delete file from repo`, `truncate text`) is held too, and a
     # statement under another argument name (input, text, q) or behind a leading `(` or EXPLAIN is flagged, not held,
     # as is a bare SELECT; name such a tool in a policy of your own (`tools:` sql) if it runs SQL
@@ -172,6 +175,32 @@ ask:
     reason: a cloud routine that runs where Tracekit doesn't decide its calls
     remedy: Have a person approve the held call, or run the task in this session, where each of its calls is decided.
     rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
+  - id: TK-Q001
+    # a run condition (docs/policy-v2.md#run-conditions): a call labelled egress (TK-F012 a URL, TK-F013 a network
+    # command, TK-F024 an upload, TK-F037 to TK-F041 below) once the run carries secrets_access (a read of a secret
+    # ran in it or in another run of its requester, this call included: a command that reads a secret and sends it, or
+    # a credential store read with a person's approval; below). The server pack records the same pair as its TK-Q001
+    # sequence. A run that read no secret sends as before.
+    # In shadow (1.8): each such call is recorded with TK-Q001 and its run_labels, as a flag, and runs; it becomes an
+    # ask once a week of normal projects measures what its holds cost (docs/limits.md#run-conditions-18)
+    field: labels
+    pattern: '(?:^| )egress(?: |$)'
+    when: {run_has: [secrets_access]}
+    mode: shadow
+    reason: data sent off the machine after the run read a secret
+    remedy: Have a person approve the held call, or send it from a new session that has read no secret.
+    rationale: A secret the agent read can leave in any request it sends afterwards; a person confirms each send in such a run.
+  - id: TK-Q002
+    # a send from a process left running in the background: a call labelled egress that is also labelled
+    # background_spawn (TK-F007 nohup, setsid, disown and the like, TK-F014 a trailing &, TK-F008 run_in_background),
+    # whatever the run carries: decided now, it may run after the run reads a secret (run labels apply in the order
+    # calls are decided: docs/limits.md#run-conditions-18). In shadow with TK-Q001, and enforced with it
+    field: labels
+    pattern: '(?:^| )background_spawn(?: [a-z_]{1,48}){0,16} egress(?: |$)'
+    mode: shadow
+    reason: data sent by a command left running in the background
+    remedy: Have a person approve the held call, or run the send in the foreground once its data is ready.
+    rationale: A background job decided before the run reads a secret can send it afterwards; each such send is kept on the record.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'
@@ -208,3 +237,133 @@ flag:
     # every Browser Use action, kept on the record as a browser MCP tool's call is (TK-F006)
     pattern: '^'
     label: browser_action
+
+  # What sets the run labels TK-Q001 reads (docs/policy-v2.md#run-conditions), and the egress it reads besides the
+  # coding pack's (TK-F012 a URL, TK-F013 a network command, TK-F024 an upload). secrets_access is set by a read of
+  # a secret: a file one is kept in (.env and its kind, .envrc, .netrc, a credentials file, .ssh/, .aws/, .gnupg/,
+  # .npmrc, .pypirc, gh's hosts.yml, an SSH private key's id_rsa, id_dsa, id_ecdsa or id_ed25519 anywhere) read by a
+  # tool that reads it (TK-F033), a command that prints or copies it (TK-F034) or a redirection into a command
+  # (TK-F035); a credential store's (TK-F031, TK-F036, and the coding
+  # pack's held reads: TK-A020, TK-A021, TK-A035 to TK-A038, TK-A052, TK-A053, once a person approves one). A call
+  # that only names such a file (ls, git check-ignore, ssh-keygen -R, a write) is TK-F005's, which sets no run label.
+  # Files never secret are left out: in .ssh/, known_hosts, config, authorized_keys and a public key (*.pub, and an
+  # SSH key's .pub anywhere); a template (.env.example, .env.sample, .env.template, .env.dist); prose named for
+  # credentials (*.md, *.rst, *.adoc). ~/.aws/config stays: the AWS CLI reads keys from it as from credentials. A
+  # harness call (class harness) sets no label and meets no run condition.
+  # lean: a path a pipe gives xargs (`echo .env | xargs cat`), one a script reads (python x.py) and a variable's value
+  # aren't read as a read of it; label them in a rule of your own
+  - id: TK-F031
+    class: shell
+    # a secret printed into the agent's context: the whole environment (env or printenv with nothing but options),
+    # printenv of a name shaped like a secret's, or echo or printf of one as a variable ($X, ${X}): a name holding
+    # SECRET, TOKEN, PASSWORD, PASSWD, PASSPHRASE, CREDENTIAL, API_KEY, ACCESS_KEY or PRIVATE_KEY (APIKEY too), in
+    # upper, lower or title case; and a command that prints a stored credential: git credential fill (and a helper's
+    # get), gcloud auth print-access-token and print-identity-token, aws configure get of a key, export-credentials
+    # and sts get-session-token, assume-role or get-federation-token, az account get-access-token, gpg
+    # --export-secret-keys, heroku config, docker or podman inspect (a container's environment) and ps with BSD's e
+    # (each process's environment) or macOS's -E. lean: a name of any other shape (DB_URL, STRIPE_SK) and a value
+    # printed another way (a script, set, declare -p) aren't read
+    pattern: '^(?:printenv|env)(?: -[^ ]+)*$|^printenv(?: [^ ]+){0,64}? [A-Za-z0-9_]{0,64}(?:SECRET|Secret|secret|TOKEN|Token|token|PASSWORD|Password|password|PASSWD|passwd|PASSPHRASE|Passphrase|passphrase|CREDENTIAL|Credential|credential|API_?KEY|Api_?Key|api_?key|ACCESS_?KEY|Access_?Key|access_?key|PRIVATE_?KEY|Private_?Key|private_?key)[A-Za-z0-9_]{0,64}(?: |$)|^(?:echo|printf)(?: [^ ]+){0,64}? [^ ]{0,64}\$\{?[A-Za-z0-9_]{0,64}(?:SECRET|Secret|secret|TOKEN|Token|token|PASSWORD|Password|password|PASSWD|passwd|PASSPHRASE|Passphrase|passphrase|CREDENTIAL|Credential|credential|API_?KEY|Api_?Key|api_?key|ACCESS_?KEY|Access_?Key|access_?key|PRIVATE_?KEY|Private_?Key|private_?key)|^git(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? credential(?:-[A-Za-z0-9]+)? (?:fill|get)(?: |$)|^gcloud(?: [^ ]+){0,32}? auth (?:application-default )?print-(?:access|identity)-token(?: |$)|^aws(?: [^ ]+){0,32}? (?:configure get (?:[^ ]{0,64}\.)?aws_(?:secret_access_key|session_token|access_key_id)|configure export-credentials|sts (?:get-session-token|assume-role[a-z-]{0,32}|get-federation-token))(?: |$)|^az(?: [^ ]+){0,32}? account get-access-token(?: |$)|^gpg2?(?: [^ ]+){0,32}? --export-secret-(?:sub)?keys(?:[ =]|$)|^heroku(?: [^ ]+){0,32}? config(?::get)?(?: |$)|^(?:docker|podman)(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:container )?inspect(?: |$)|^ps(?: [^ ]+){0,32}? (?:[A-Za-z]{0,16}e[A-Za-z]{0,16}|-[A-Za-z]{0,16}E[A-Za-z]{0,16})(?: |$)'
+    label: secrets_access
+  - id: TK-F032
+    # a file in a download folder (~/Downloads/x, $HOME/Downloads/x, /Users/me/Downloads/x, /home/me/Downloads/x,
+    # C:\Users\me\Downloads\x, or a path that starts with Downloads/, in any case) that a call acts on: content from
+    # outside that reached the machine through no tool the policy reads, as a web page's does, so it labels the run
+    # untrusted_content where a run condition reads that label. A URL's downloads/ (python.org/downloads/) is no such
+    # folder. lean: only a folder named Downloads in a home folder or at the start of a path (not one under /mnt/c
+    # or another mount, nor a localized name such as Téléchargements); label them in a rule of your own
+    field: target
+    pattern: '(?:^|[\s\"''=@])(?:(?:~|\$HOME|\$\{HOME\}|/[Uu]sers/[^/\\\s\"'']{1,255}|/home/[^/\\\s\"'']{1,255}|/root|[A-Za-z]:[/\\][Uu]sers[/\\][^/\\\s\"'']{1,255})[/\\])?[Dd][Oo][Ww][Nn][Ll][Oo][Aa][Dd][Ss][/\\]'
+    label: untrusted_content
+  - id: TK-F033
+    class: fs
+    # a secret file read by a file tool that reads it (Read and Grep; the other harnesses' read tools are mapped to
+    # Read): any path argument
+    tool: Read|Grep
+    field: path
+    pattern: '(?:^|[/\\])(?:\.ssh|\.aws|\.gnupg)(?:[/\\]|$)|(?:^|[/\\])(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))$'
+    unless: '(?:^|[/\\])(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/\\]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$'
+    label: secrets_access
+  - id: TK-F034
+    class: shell
+    # a secret file as an operand of a command that reads it (cat, less, head, tail, base64, jq, source and `.`,
+    # dd if=, curl -d @ and the like; grep and its kind, sed and awk after their pattern or script word, which only
+    # names what it matches), as any operand but the last of one that copies it (cp, mv, ln, install, rsync, scp: the
+    # last is where it goes), or anywhere in an interpreter's words (python -c, node -e, a script's arguments). One
+    # read of one file never secret (above), after options and a grep-like's pattern, or a copy of one, is exempt.
+    # lean: a pattern file (grep -f .env) is read as the pattern word, and a copy into .ssh/, .aws/ or .gnupg/ labels
+    # as a copy out of one (a folder's name is read up to its separator, which keeps the search linear); an
+    # exemption reads at most 16 options and a path word of 1,000 characters (a longer one is labelled)
+    pattern: '^(?:cat|tac|nl|less|more|most|head|tail|bat|batcat|view|vi|vim|nvim|nano|emacs|ed|cut|sort|uniq|strings|od|xxd|hexdump|base64|base32|basenc|uuencode|jq|yq|diff|cmp|comm|paste|join|column|fold|fmt|iconv|dd|dotenv|env-cmd|tar|zip|gzip|bzip2|xz|zstd|7z|openssl|gpg|gpg2|age|curl|wget|http|https|xh|pbcopy|xclip|wl-copy)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:source|\.)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[^ ]+){0,16} [^- ][^ ]* (?:[^\n]*?[ =@/\\])?(?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255})) [^ ])|^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|osascript|pwsh|powershell|Rscript|lua)(?: [^\n]*?)?[/\s\"''=:@(](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?:$|[/\s\"''\\),;]))'
+    unless: '^[A-Za-z0-9_.-]+(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc))) [^ ]+$|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[A-Za-dg-z0-9=]+){0,16} [^- ][^ ]*(?: -[A-Za-dg-z0-9=]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$'
+    label: secrets_access
+  - id: TK-F035
+    class: shell
+    # a secret file redirected into a command (`< .env`, `done < .env`, `3< .env`); a line whose one redirection is of
+    # a file never secret is exempt
+    field: line
+    pattern: '(?:^|[^<0-9&])[0-9]{0,2}< ?[\"'']?(?:[^ ;&|<>()\"''\n]{0,1000}[/\\])?(?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]|[\"'']|$|[ ;&|)])|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))[\"'']?(?:$|[ ;&|)]))'
+    unless: '^[^<]*< ?[\"'']?(?:[^ ;&|<>()\"''\n]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ;&|<>()"''\n]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))[\"'']?(?:[ ;&|)][^<]*)?$'
+    label: secrets_access
+  - id: TK-F036
+    class: mcp
+    # a password manager's MCP tool that reads an item (1Password, Bitwarden, LastPass, Keeper, Dashlane, Proton Pass,
+    # KeePass): any tool on its server but one that lists, searches, writes or locks
+    tool: 'mcp(?::[^/]*?(?:[Oo]ne[_-]?[Pp]assword|1[Pp]assword|[Bb]it[Ww]arden|[Ll]ast[Pp]ass|[Kk]eeper|[Dd]ashlane|[Pp]roton[_-]?[Pp]ass|[Kk]ee[Pp]ass)[^/]*/|__(?:[^_]|_[^_])*?(?:[Oo]ne[_-]?[Pp]assword|1[Pp]assword|[Bb]it[Ww]arden|[Ll]ast[Pp]ass|[Kk]eeper|[Dd]ashlane|[Pp]roton[_-]?[Pp]ass|[Kk]ee[Pp]ass)(?:[^_]|_[^_])*__).*'
+    field: tool
+    pattern: '^'
+    unless: '^(?:list|search|find|create|add|new|update|edit|delete|remove|move|archive|lock|status|whoami|sync|help)(?:[_-]|$)'
+    label: secrets_access
+  - id: TK-F037
+    class: shell
+    # a send through a command the coding pack doesn't count as a network one: gh gist create, release upload, an issue
+    # or pull request's create, comment, edit or review with a body file (-F, --body-file), gh api with -X/--method
+    # POST, PUT or PATCH or an --input body; any git push (and send-pack); ping, traceroute, tracepath, mtr or arping of
+    # a name a substitution or variable builds (the name a DNS lookup sends)
+    pattern: '^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:gist create|release upload)(?: |$)|^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:issue|pr) (?:create|comment|edit|review)(?: [^ ]+){0,32}? (?:-F|--body-file)(?:[ =]|$)|^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? api(?: [^ ]+){0,32}? (?:(?:-X|--method)[ =]?(?:POST|PUT|PATCH|[Pp]ost|[Pp]ut|[Pp]atch)|--input)(?:[ =]|$)|^git(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:push|send-pack)(?: |$)|^(?:ping6?|traceroute6?|tracepath|mtr|arping)(?: [^ ]+){0,32}? [^ ]{0,1000}[$\x60]'
+    label: egress
+  - id: TK-F038
+    class: shell
+    # bash's own network files: a redirection to or from /dev/tcp/host/port or /dev/udp/host/port
+    field: target
+    pattern: '(?:^|[ /=<>])dev[/\\](?:tcp|udp)[/\\]'
+    label: egress
+  - id: TK-F039
+    class: http
+    # a web fetch, to any host: its URL alone can carry data (a path or a name), where TK-F012 counts only a URL with
+    # a query or to a host not on this machine's list
+    tool: WebFetch
+    pattern: '^'
+    label: egress
+  - id: TK-F040
+    class: mcp
+    # an MCP tool whose own name says it sends: send, post, publish, reply, share, tweet, notify, dm, upload, or types
+    # or fills text into a page (type, fill, submit), first or after browser_, puppeteer_, playwright_, page_,
+    # preview_ or a messaging service's name (slack_, discord_, teams_, telegram_, chat_, mail_, gmail_, email_,
+    # whatsapp_, signal_, matrix_, sms_, twilio_): slack_post_message, chat_postMessage, send_message, browser_type
+    field: tool
+    pattern: '^(?:(?:browser|puppeteer|playwright|page|preview|slack|discord|teams|telegram|chat|gmail|mail|email|whatsapp|signal|matrix|sms|twilio)[_-])?(?:[Ss]end|[Pp]ost|[Pp]ublish|[Rr]eply|[Tt]ype|[Ff]ill|[Ss]ubmit|[Uu]pload|[Ss]hare|[Tt]weet|[Nn]otify|[Dd]m)(?:$|[_A-Z-])'
+    label: egress
+  - id: TK-F041
+    class: email
+    # an email send with a recipient: the email class reads `recipients` from to, cc, bcc and recipients, so a send
+    # names where the data goes (a mail-reading tool mapped to email reads none)
+    field: recipients
+    pattern: '.'
+    label: egress
+
+# Detection (signer/detect.py), recorded only: a shadow incident is kept with the run (tracekit view shows it) and
+# holds nothing. Notify in enforce mode needs a webhook, which a laptop's signer has none of.
+limits:
+  - id: TK-L001
+    # a runaway loop: more calls in one minute of a session than an agent makes working (the server pack's)
+    match: '*'
+    count: true
+    max: 300
+    window: 60
+    scope: session
+
+respond:
+  - {trigger: TK-L001, mode: shadow, action: notify}
+  # a call that ran after a deny or an unapproved ask: a harness that ran it anyway
+  - {trigger: executed_against_policy, mode: shadow, action: notify}

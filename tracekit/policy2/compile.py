@@ -19,9 +19,16 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", "oversize", "approval_agent", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", "label_inherit_s", "approval_agent", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
-             "remedy"}
+             "remedy", "when", "mode"}
+# the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
+# runs matches a rule whose `label` it is (secrets_access: a read of a secret, dev.yaml's TK-F033), and
+# untrusted_content also when a tool the policy's `untrusted` list names runs or an input is observed as untrusted; a
+# person may clear one
+RUN_LABELS = ("secrets_access", "untrusted_content")
+# a rule's field: the labels of the rules the call matched, sorted and joined by a space (engine.labels_subject)
+LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
@@ -421,6 +428,9 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if "label_inherit_s" in pol and not _int(pol["label_inherit_s"], 0, MAX_WINDOW):   # (labels.labels_for)
+        errors.append(f"{path}: label_inherit_s must be whole seconds from 0 to {MAX_WINDOW}: how long a run's labels "
+                      "stay with its requester after it ends")
     if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
         errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
@@ -430,8 +440,13 @@ def _lint(pol, path):
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
-            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
+            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval", "when"})
                        if not isinstance(r[k], str)]
+            if "when" in r:
+                errors += [f"{where}: {e}" for e in _lint_when(r, sec, pol)]
+            if "mode" in r and not (sec == "ask" and r["mode"] in ("shadow", "enforce")):
+                errors.append(f"{where}: mode is shadow or enforce, on an ask rule (shadow: it records the calls it "
+                              "would hold, as a flag, and holds none)")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):
@@ -463,7 +478,7 @@ def _lint(pol, path):
             cls, field = r.get("class"), r.get("field")
             if cls is not None and cls not in CLASSES:
                 errors.append(f"{where}: unknown class {cls!r}")
-            elif cls is not None and field is not None and field not in CLASSES[cls]:
+            elif cls is not None and field not in (None, LABELS_FIELD) and field not in CLASSES[cls]:
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
@@ -532,6 +547,24 @@ def _money(rule, pol):
             re.fullmatch(rule["tool"], t) for t, c in pol.get("tools", {}).items() if c == "payment")
     except (re.error, TypeError):
         return False
+
+
+def _lint_when(rule, sec, pol):
+    """The errors of a rule's run condition, `when: {run_has: [label, ...]}`: on an ask or flag rule, labels of
+    RUN_LABELS, each once, each one a source in the policy can set; a rule with one carries no run label itself."""
+    w, errors = rule["when"], []
+    if sec == "deny":
+        errors.append("when is for ask and flag rules: a deny rule applies always")
+    if not (isinstance(w, dict) and set(w) == {"run_has"} and isinstance(w["run_has"], list) and w["run_has"]
+            and all(isinstance(x, str) and x in RUN_LABELS for x in w["run_has"])
+            and len(set(w["run_has"])) == len(w["run_has"])):
+        return errors + [f"when must be {{run_has: [label, ...]}}, each label once, of {', '.join(RUN_LABELS)}"]
+    live = {r.get("label") for s in ("ask", "flag") for r in pol.get(s, []) if isinstance(r, dict)}
+    errors += [f"when: {x} can never be set: no ask or flag rule has `label: {x}`" for x in w["run_has"]
+               if x != "untrusted_content" and x not in live]
+    if rule.get("label") in RUN_LABELS:
+        errors.append(f"a rule with when can't have label {rule['label']}: it would set what it reads")
+    return errors
 
 
 def _lint_remedy(text, sec):

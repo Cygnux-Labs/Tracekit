@@ -223,6 +223,14 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   },
   "incident policies": { warn: "Policies an incident cites that aren't in the bundle: those incidents are the "
     + "signer's word." },
+  "run labels": {
+    pass: "What each run had done that its run conditions read (a secret read, untrusted content), replayed from its "
+      + "records under its policy, and what it inherited from another run of the same requester.",
+    fail: "A run label was added without a record that sets it, left out after one, or cleared by the run's own owner, "
+      + "or a call was held under a label the run didn't carry.",
+  },
+  "label policies": { warn: "Policies runs were decided under that neither the bundle nor the trust config carries: "
+    + "their labels are the signer's word, and one it left out wouldn't show." },
   "content vault": { pass: "Who read or erased retained content, as the signer recorded it." },
   "tiers": {
     pass: "Tool calls by how they were captured: T2 gateway or executor, T1 adapter, T3 import (receipt only).",

@@ -8,27 +8,29 @@ Bash 'railway volume list': allow
   ran
 
 Bash 'curl -X POST https://backboard.railway.app/graphql/v2 -H "Authorization: Bearer $RAILWAY_TOKEN" -H \'Content-Type: application/json\' -d \'{"query":"mutation { volumeDelete(volumeId: \\"3d2c42fb-b1f0-4b43-9a2c-ffb8c1a0e5d1\\") }"}\'': ask TK-A001 TK-F001 TK-F012 TK-F013
-  destroying a deployment, database or volume; network; egress; egress. Wait for a person to approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
+  destroying a deployment, database or volume. Instead: Have a person approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
 
 the person at the terminal:
-$ tracekit approvals reject apr-ffd787592f2fcba4d72c3cf1173d8a12 --reason 'don'"'"'t delete the volume; fix the credential mismatch'
-rejected: apr-ffd787592f2fcba4d72c3cf1173d8a12
+$ tracekit approvals reject apr-40e976b0e67cf6156eea579e3fc33519 --reason 'don'"'"'t delete the volume; fix the credential mismatch'
+rejected: apr-40e976b0e67cf6156eea579e3fc33519
 
 the agent: the call was rejected
 
 Bash 'git status': allow
   ran
 
-$ tracekit verify 267361c0260f138521f373c8f3d53600.tkb --trust trust.json --detail
+$ tracekit verify 7bccad7165ccbdab986dd4f00014c630.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/2af65fc8c95862e3c254324dceed4229 at tree size 14, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/kc897019660db58f0e1d7166fe3599d492eb8b2606bfbf35dc78257659044bdb3 at tree size 14, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 13 record(s), keys valid at their position
-[PASS] run chain — run '267361c0260f138521f373c8f3d53600' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '7bccad7165ccbdab986dd4f00014c630' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 14
+[PASS] policy snapshot — policies/dfb95a36a50fac4ea1fae8882d2807cdfa1ac1d1bd68ebcca2a85fd7ce2f826c.json
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] run labels — 1 run(s) replayed under their policy, 0 signer-asserted (under several policies, or a policy not in the bundle)
 [PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
 [PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
 [PASS] isolation — signer-reported: remote 1 run(s)
@@ -36,11 +38,11 @@ $ tracekit verify 267361c0260f138521f373c8f3d53600.tkb --trust trust.json --deta
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2af65fc8c95862e3c254324dceed4229); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/kc897019660db58f0e1d7166fe3599d492eb8b2606bfbf35dc78257659044bdb3); no witness cosignature; key retirements not proven complete.
 
 the held call and the person's answer, as signed records:
   #1 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-1"}
   #3 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-2"}
   #5 policy.decision {"decision": "ask", "rule_ids": ["TK-A001", "TK-F001", "TK-F012", "TK-F013"], "tool": "Bash", "tool_use_id": "call-3"}
-  #7 approval {"approval_id": "apr-ffd787592f2fcba4d72c3cf1173d8a12", "approver": "uid:1000", "decision": "reject", "person": "alice", "reason": "don't delete the volume; fix the credential mismatch", "self_approved": false, "tool_use_id": "call-3"}
+  #7 approval {"approval_id": "apr-40e976b0e67cf6156eea579e3fc33519", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "don't delete the volume; fix the credential mismatch", "self_approved": false, "tool_use_id": "call-3"}
   #9 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-4"}

@@ -25,6 +25,7 @@ import {
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
+import { Sources, runLabels } from "./labels.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 import VERSIONS_JSON from "./versions.json" with { type: "json" };
@@ -180,7 +181,7 @@ const fmt = (ts: bigint | number) => {
 };
 
 type Trust = { logs: string[]; witnesses: { vkey: string; class: string }[]; algs: string[]; witnesses_required: number;
-  rekor?: Record<string, J>; issuers: J[]; analyzers: string[] };
+  rekor?: Record<string, J>; issuers: J[]; analyzers: string[]; policies: Map<string, Uint8Array> };
 
 async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const floats: Floats = new WeakMap();
@@ -192,7 +193,7 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   const opt = (o: Record<string, J>, k: string) => Object.hasOwn(o, k) ? o[k] : [];
   const r = isObj(t) ? get(t, "rekor", {}) : null;
   const ok = isObj(t) && Object.keys(t).every((k) => ["logs", "witnesses", "algs", "witnesses_required", "rekor",
-    "monitors", "issuers", "analyzers"].includes(k))
+    "monitors", "issuers", "analyzers", "policies"].includes(k))
     && isObj(r) && (!Object.keys(r).length || exactly(r, ["trusted_root", "publishing_key", "class"])
       && isObj(r.trusted_root) && typeof r.publishing_key === "string" && CLASSES.includes(r.class))
     && strings(t.logs)
@@ -204,9 +205,18 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
     && Array.isArray(opt(t, "issuers")) && opt(t, "issuers").every((i: J) => exactly(i, ["vkey", "issuance_log_vkey"])
       && Object.values(i).every((v) => typeof v === "string"))
     && Array.isArray(opt(t, "analyzers"))
-    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a));
+    && opt(t, "analyzers").every((a: J) => typeof a === "string" && /^[a-z0-9_]+:[^\n]+$/.test(a))
+    && Array.isArray(opt(t, "policies")) && opt(t, "policies").every((x: J) => typeof x === "string");
   if (!ok) throw new ValueError(`${name}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, `
-    + "issuers, analyzers)");
+    + "issuers, analyzers, policies)");
+  const known = new Map<string, Uint8Array>();   // `policies`: each compiled policy's text, by its policy_hash
+  for (const text of opt(t, "policies") as string[]) {
+    const bytes = new TextEncoder().encode(text);
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text)
+      || !isObj(strictParseBytes(bytes, new WeakMap())))
+      throw new ValueError(`${name}: a policies entry is not a compiled policy (a JSON object's text)`);
+    known.set(`sha256:${await sha256hex(bytes)}`, bytes);
+  }
   for (const k of [...t.logs, ...opt(t, "witnesses").map((w: J) => w.vkey), ...opt(t, "monitors").map((m: J) => m.vkey),
     ...opt(t, "issuers").flatMap((i: J) => Object.values(i))]) {
     try {
@@ -234,6 +244,7 @@ async function loadTrust(data: Uint8Array, name: string): Promise<Trust> {
   t.witnesses_required ??= 0;
   t.issuers ??= [];
   t.analyzers ??= [];
+  t.policies = known;
   return t as Trust;
 }
 
@@ -273,7 +284,8 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
   const rep = new Report();
   let t: Trust, files: Map<string, Uint8Array>, manifest: J, v1 = false;
   if (trust === null) {
-    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [] };
+    t = { logs: [], witnesses: [], algs: ["ed25519"], witnesses_required: 0, issuers: [], analyzers: [],
+      policies: new Map() };
     rep.check("trust config", false, "none: the checkpoint's signature and its witnesses are not checked, so nothing ties "
       + "these records to a signer you trust", [], true);
   } else try {
@@ -535,6 +547,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       p === `policies/${hex}.json` ? p : `${p} is not named by the SHA-256 of its bytes`);
     if (p === `policies/${hex}.json`) policies.set(`sha256:${hex}`, file(p));
   }
+  for (const [h, data] of trust.policies) if (!policies.has(h)) policies.set(h, data);   // and the trust config's
 
   const open = [...runs.values()].filter((rs) => get(rs.at(-1).event, "type") !== "run.final");
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
@@ -609,6 +622,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   checkReviews(rep, runs, trust.analyzers);
   checkConstraints(rep, runs);
   checkIncidents(rep, runs, policies, floats);
+  checkLabels(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
     rep.check("content vault", true, `${accessed} access(es), ${erased} erasure(s) of retained content, each signed by the signer`);
@@ -1580,6 +1594,43 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
     rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
       + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
       + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
+}
+
+/** The `run labels` line, as verify/v2.py's _labels: each run's labels replayed under the compiled policy of its one
+ * policy_hash (the bundle's or the trust config's), an inherited one signer-asserted; a `label policies` warning for
+ * each policy a decision names that neither carries. */
+function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  const problems: string[] = [], unbundled = new Set<string>(), inherited: [string, string, J][] = [];
+  let checked = 0, asserted = 0;
+  for (const rs of runs.values()) {
+    const events = rs.map((r) => r.event).filter((e) => isObj(e) && isObj(e.data));
+    const marked = events.some((e) => e.type === "run.label" || e.type === "policy.decision"
+      && Object.hasOwn(e.data, "run_labels"));
+    const hashes = new Set(events.filter((e) => e.type === "policy.decision" && Object.hasOwn(e.data, "policy_hash"))
+      .map((e) => str(e.data.policy_hash)));
+    for (const h of hashes) if (!policies.has(h)) unbundled.add(cut(h, 80));
+    const data = hashes.size === 1 ? policies.get([...hashes][0]) : undefined;
+    if (!data) {
+      if (marked) asserted++;
+      continue;
+    }
+    const src = new Sources(strictParseBytes(data, floats));
+    if (marked || src.tracked.size) {
+      checked++;
+      extend(problems, runLabels(events, src, inherited));
+    }
+  }
+  if (checked || asserted)
+    rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policy, `
+      + `${asserted} signer-asserted (under several policies, or a policy not in the bundle)`
+      + (inherited.length ? `; ${inherited.length} label(s) inherited from another run of the requester, `
+        + "signer-asserted (that run's bundle shows its add)" : ""), "run labels"),
+    problems.slice(0, 20));
+  if (unbundled.size)
+    rep.check("label policies", false, `${unbundled.size} policy(ies) neither in the bundle nor the trust config: the `
+      + "labels of the runs decided under them are signer-asserted, not replayed, so one a signer left out wouldn't "
+      + "show (export the run with the signer's config, which bundles the policies its records cite, or add the "
+      + "policy's text to the trust config's `policies`)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */

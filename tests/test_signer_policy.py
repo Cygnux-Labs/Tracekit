@@ -87,9 +87,10 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-A081", "TK-DEMO-ASK")], server["ask"])
+                                                                   "TK-A081", "TK-Q001", "TK-Q002", "TK-DEMO-ASK")],
+                         server["ask"])
         # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
-        # the laptop has no detection, and the coding pack's narrower ones
+        # the laptop counts no sequence (its TK-Q001 is a run condition), and has the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
         self.assertEqual([r["id"] for r in server["flag"][-4:]], list(wide))
@@ -99,10 +100,15 @@ class Packs(unittest.TestCase):
         self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
         mine = [r for r in server["flag"] if r["id"] not in wide]
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
+        # and what sets the run labels its run conditions read (docs/policy-v2.md#run-conditions)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
-                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 42))])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
-        self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
+        # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
+        self.assertNotIn("sequences", dev)
+        self.assertEqual(dev["limits"], [x for x in server["limits"] if x["id"] == "TK-L001"])
+        self.assertEqual({r["trigger"]: (r["mode"], r["action"]) for r in dev["respond"]},
+                         {"TK-L001": ("shadow", "notify"), "executed_against_policy": ("shadow", "notify")})
         e = Engine(dev)
         for tool, args, rule in (
                 ("Read", {"file_path": "/home/u/.ssh/id_rsa"}, "TK-S004"),
@@ -5429,7 +5435,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             for e in self.engines:
                 with self.subTest(engine=e.engine, tool=tool, args=str(args)[:80]):
                     d = e.decide(tool, args)
-                    self.assertEqual(d["verdict"], want, d)
+                    # a gh write that runs is flagged as egress (TK-F037, which a run condition reads), and no more
+                    ran = "allow" if d["verdict"] == "flag" and d["rule_ids"] == ["TK-F037"] else d["verdict"]
+                    self.assertEqual(ran if want == "allow" else d["verdict"], want, d)
                     if rule:
                         self.assertIn(rule, d["rule_ids"], d)
 
@@ -5487,17 +5495,16 @@ class GuardrailsAndPushes(unittest.TestCase):
                     self.assertEqual(d["verdict"], "allow", d)
                     self.assertNotIn("TK-A056", d["rule_ids"], d)
 
-    def test_a_draft_flag_inside_a_quoted_value_reads_as_a_draft(self):
-        """#908 review, a documented limit (docs/limits.md): TK-A056 reads a command's words joined by spaces, so a -d
-        inside another option's quoted value reads as an option of its own and the release is allowed, though it
-        publishes. A -d that is a whole value stays that option's value and is held."""
-        for c in ("gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'"):
-            for e in self.engines:
-                with self.subTest(engine=e.engine, command=c):
-                    d = e.decide("Bash", {"command": c})
-                    self.assertEqual(d["verdict"], "allow", d)
-                    self.assertNotIn("TK-A056", d["rule_ids"], d)
-        self.verdicts([("Bash", {"command": "gh release create v1.0 --notes '-d'"})], "ask", "TK-A056")
+    def test_a_draft_flag_inside_a_quoted_value_is_no_draft(self):
+        """#908 review, a limit until the hostile twins (tests/test_hostile_twins.py): a -d inside another option's
+        quoted value read as an option of its own, and the release was allowed, though it publishes. An `unless` reads
+        each quoted word as one now (engine._quoted): held, as a -d that is a whole value is; a draft is still one."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'",
+            "gh release create v1.0 --notes '-d'")], "ask", "TK-A056")
+        for e in self.engines:
+            self.assertNotIn("TK-A056", e.decide("Bash", {"command": "gh release create v1.0 --draft --notes 'a b'"})[
+                "rule_ids"])
 
     def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
         """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""

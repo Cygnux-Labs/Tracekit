@@ -69,8 +69,19 @@ held, only deny while quarantined, a held call approved only by a person (never 
 the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
 under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
 or, held, one consumed with such an approval.
-Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others are the
-one set of snapshots, by policy_hash, that both the incidents and the agent-approval checks read.
+Run labels (format 1.8, docs/policy-v2.md#run-conditions): a run whose decisions name one policy the bundle carries is
+replayed under it (tracekit.signer.labels): each label a record sets (a call that ran: its decision allowed or flagged
+it, its approval was consumed, or it ran against its decision; an input observed as untrusted) is added by a
+run.label before the run's next decision or consume, and each add cites a record that sets it and wasn't carried; an
+add a run inherits from another run of its requester (`inherited`) is of a label its policy reads (the run it names
+is another bundle's: signer-asserted); a clear is of a carried label and not by the run's owner; a decision's
+run_labels were carried or set by its own rules, and cover each run condition rule it names. Fails `run labels`;
+without the snapshot they are signer-asserted. Every policy a decision names that neither the bundle nor the trust
+config (`policies`) carries is a `label policies` warning: a signer that left a label out of such a run would pass
+unseen.
+Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others, and each
+compiled policy's text the trust config's `policies` lists, by the SHA-256 of its UTF-8 bytes, are the one set of
+snapshots, by policy_hash, that the incidents, run labels and agent-approval checks read.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls and unexplained effects make it a warning, so `--strict` exits 3
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
@@ -561,7 +572,7 @@ def load_trust(path):
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
     ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors",
-                                             "issuers", "analyzers"}
+                                             "issuers", "analyzers", "policies"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -579,10 +590,17 @@ def load_trust(path):
           and all(isinstance(i, dict) and set(i) == {"vkey", "issuance_log_vkey"}
                   and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", []))
           and isinstance(t.get("analyzers", []), list)
-          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", [])))
+          and all(isinstance(a, str) and _IDENTITY.fullmatch(a) for a in t.get("analyzers", []))
+          and isinstance(t.get("policies", []), list) and all(isinstance(p, str) for p in t.get("policies", [])))
     if not ok:
         raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, "
-                         "issuers, analyzers)")
+                         "issuers, analyzers, policies)")
+    known = {}   # policies: the text of each compiled policy the verifier knows, by its policy_hash
+    for text in t.get("policies", []):
+        data = text.encode("utf-8", "surrogatepass")
+        if not isinstance(loads_strict(data), dict):
+            raise ValueError(f"{path}: a policies entry is not a compiled policy (a JSON object's text)")
+        known["sha256:" + hashlib.sha256(data).hexdigest()] = data
     for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
               + [v for i in t.get("issuers", []) for v in i.values()]):
         try:
@@ -600,7 +618,8 @@ def load_trust(path):
         if classes.setdefault(w["vkey"], w["class"]) != w["class"]:
             raise ValueError(f"trust pins witness {w['vkey'].split('+')[0]} with two classes ({classes[w['vkey']]}, "
                              f"{w['class']}); a witness has one class: list it once, with the class you give it")
-    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], "analyzers": [], **t,
+            "policies": known}
 
 
 def _jsonl(data, shortest=MIN_RECORD):
@@ -1011,6 +1030,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   p if p == f"policies/{h[7:]}.json" else f"{p} is not named by the SHA-256 of its bytes")
         if p == f"policies/{h[7:]}.json":
             policies[h] = files[p]
+    policies = {**trust["policies"], **policies}   # and those the trust config knows, by the same hash
 
     still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
     rep.integrity = ("VERIFIED" if not still_open else
@@ -1095,6 +1115,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     _reviews(rep, runs, trust["analyzers"])
     _constraints(rep, runs)
     _incidents(rep, runs, policies)
+    _labels(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -1452,6 +1473,104 @@ def _incidents(rep, runs, policies):
         rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
                   "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
                   "policies its records cite)", sorted(unbundled)[:20], warn=True)
+
+
+def _labels(rep, runs, policies):
+    """The `run labels` line (module docstring): each run's labels replayed from its records under the compiled policy
+    the bundle (or the trust config) carries for the run's one policy_hash; signer-asserted without it, and so is each
+    label a run inherits (the run it names is another bundle's). A `label policies` warning names each policy a run was
+    decided under that neither carries: its labels, or one a signer left out, can't be replayed."""
+    from tracekit.signer import detect, labels
+    problems, checked, asserted, unbundled, inherited = [], 0, 0, set(), []
+    for rs in runs.values():
+        events = [r["event"] for r in rs if isinstance(r["event"].get("data"), dict)]
+        marked = any(e.get("type") == "run.label" or e.get("type") == "policy.decision" and "run_labels" in e["data"]
+                     for e in events)
+        hashes = {str(e["data"]["policy_hash"]) for e in events if e.get("type") == "policy.decision"
+                  and "policy_hash" in e["data"]}
+        unbundled |= {h[:80] for h in hashes if h not in policies}
+        snap = policies.get(next(iter(hashes))) if len(hashes) == 1 else None
+        if snap is None:
+            asserted += marked
+            continue
+        src = labels.Sources(detect.Rules(loads_strict(snap)))
+        if marked or src.tracked:
+            checked += 1
+            problems += _run_labels(events, src, inherited)
+    if checked or asserted:
+        rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policy, "
+                                                               f"{asserted} signer-asserted (under several policies, "
+                                                               "or a policy not in the bundle)"
+                                                     + (f"; {len(inherited)} label(s) inherited from another run of "
+                                                        "the requester, signer-asserted (that run's bundle shows its "
+                                                        "add)" if inherited else ""), "run labels"),
+                  problems[:20])
+    if unbundled:
+        rep.check("label policies", False, f"{len(unbundled)} policy(ies) neither in the bundle nor the trust config: "
+                  "the labels of the runs decided under them are signer-asserted, not replayed, so one a signer left "
+                  "out wouldn't show (export the run with the signer's config, which bundles the policies its records "
+                  "cite, or add the policy's text to the trust config's `policies`)", sorted(unbundled)[:20],
+                  warn=True)
+
+
+def _run_labels(events, src, inherited):
+    """The problems of one run's labels under labels.Sources `src`: a label a record sets that no run.label adds before
+    the run's next decision or consume (or its end); an add the record it cites doesn't set, or of a label carried; an
+    inherited add of a label no run condition reads; a clear of a label not carried, or by the run's owner; a decision
+    whose run_labels the run didn't carry (nor its own rules set) or that don't cover each run condition rule it names.
+    Each inherited add of a label its policy reads goes to `inherited`, (where, label, the add it cites)."""
+    problems, carried, owed, asked, decided, owner, seqs = [], set(), {}, {}, {}, None, {}
+    key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
+    for e in events:
+        t, d, where = e.get("type"), e["data"], f"seq {e.get('seq')}"
+        if not isinstance(e.get("run_seq"), int):   # schema-invalid: its schema check fails it
+            continue
+        seqs[e["run_seq"]] = e.get("seq")
+        if t == "run.registered" and isinstance(d.get("identity"), dict):
+            owner = f"{d['identity'].get('scheme')}:{d['identity'].get('subject')}"
+        if t == "run.label":
+            x = key(d.get("label"))
+            if d.get("action") == "add":
+                if x is not None and x in carried:
+                    problems.append(f"{where}: adds {x[:32]}, which the run carries already")
+                elif "inherited" in d and x in src.tracked:
+                    inherited.append((where, x, d["inherited"]))
+                elif "inherited" in d:
+                    problems.append(f"{where}: inherits {str(x)[:32]}, which no run condition of the run's policy "
+                                    "reads")
+                elif x is None or x not in owed or owed[x] != d.get("source"):
+                    problems.append(f"{where}: adds {str(x)[:32]} citing run_seq {str(d.get('source'))[:20]}, which "
+                                    "doesn't set it under the run's policy")
+                if x is not None:
+                    owed.pop(x, None)
+                    carried.add(x)
+            elif x not in carried:
+                problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
+            elif d.get("identity") == owner:
+                problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
+            else:
+                carried.discard(x)
+            continue
+        if owed and t in ("policy.decision", "approval.consumed"):
+            problems += [f"seq {seqs.get(s)}: sets {x}, which no run.label adds before {where}" for x, s in owed.items()]
+            carried |= owed.keys()
+            owed = {}
+        ids = [i for i in d.get("rule_ids") if isinstance(i, str)] if isinstance(d.get("rule_ids"), list) else []
+        if t == "policy.decision":
+            have = carried | {src.label[i] for i in ids if i in src.label}
+            used = {x for x in d.get("run_labels") if isinstance(x, str)} if isinstance(d.get("run_labels"), list) \
+                else set()
+            problems += [f"{where}: run_labels names {x[:32]}, which the run didn't carry" for x in sorted(used - have)]
+            problems += [f"{where}: {i} applied without run_labels naming {', '.join(sorted(src.when[i]))}"
+                         for i in ids if i in src.when and not src.when[i] <= used]
+            decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}
+        elif t == "approval.request" and isinstance(d.get("binding"), dict):
+            asked[key(d.get("approval_id"))] = {"tool": d["binding"].get("tool"), "rule_ids": ids}
+        call = {**d, "rule_ids": ids} if t == "policy.decision" else d
+        for x in sorted(src.sets({**e, "data": call}, lambda a: asked.get(key(a)), lambda c: decided.get(key(c)))
+                        - carried - owed.keys()):
+            owed[x] = e["run_seq"]
+    return problems + [f"seq {seqs.get(s)}: sets {x}, which no run.label adds" for x, s in owed.items()]
 
 
 def _honoured(events, pointers):
