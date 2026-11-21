@@ -1535,9 +1535,12 @@ def _home_readings(ctx):
     the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
     C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
-    where, links, printed = None, {}, {}
-    for c in list(ctx["cmds"]):
+    where, links, printed, wrappers = None, {}, {}, {}
+    cmds = list(ctx["cmds"])
+    for c in cmds:
         argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
+        if c["argv"][0] in ("xargs", "gxargs"):
+            wrappers[(c["argv"][0], c["pipeline"], c.get("stage", 0))] = c
         if argv[0] in ("find", "rsync") and argv != c["argv"]:
             ctx["cmds"].append({**c, "argv": argv, "via": c["via"] + ["read at home"]})
         ops = [a for a in argv[1:] if not a.startswith("-")]
@@ -1550,6 +1553,15 @@ def _home_readings(ctx):
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
         if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
+        if argv[0] == "rm" and c["via"][-1:] in (["xargs"], ["gxargs"]):
+            wrapper = wrappers.get((c["via"][-1], c["pipeline"], c.get("stage", 0)))
+            opts = wrapper["argv"][1:] if wrapper else ()
+            delimiter = any(a in ("-d", "--delimiter") or a.startswith(("-d", "--delimiter=")) for a in opts)
+            if wrapper and not delimiter and not {"-0", "--null"} & set(opts) and _xargs_replace(opts) is None:
+                for data in c.get("stdin", ())[:8]:
+                    if isinstance(data, str) and len(data) <= 512 and re.fullmatch(r"/[A-Za-z0-9_./:-]*", data):
+                        ctx["cmds"].append({**c, "argv": [*c["argv"], data],
+                                            "via": [*c["via"], "xargs literal here-string"]})
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
