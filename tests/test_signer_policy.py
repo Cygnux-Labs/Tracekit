@@ -3445,7 +3445,15 @@ class CodingPack(unittest.TestCase):
                 # each pattern's own cases (no other of the five holds them): TK-A091's path first in `/` form or
                 # $PROFILE, TK-A092's PowerShell form first, then an alias bash has too or a write after `(`
                 r"Get-Item $PROFILE | Remove-Item", r"Get-ChildItem ~/.kiro/hooks | Remove-Item",
-                r"Get-ChildItem $env:USERPROFILE\.kiro\hooks | rm", r"Get-ChildItem $HOME\.kiro\hooks | (Remove-Item)")
+                r"Get-ChildItem $env:USERPROFILE\.kiro\hooks | rm", r"Get-ChildItem $HOME\.kiro\hooks | (Remove-Item)",
+                # a loop's `do`, a branch's `then` and `else` start a command as `;` does, for TK-A088's write and for
+                # TK-A091's write after a path (#1057's loop test wraps every corpus row in a loop)
+                r"for x in a; do Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; done",
+                r"if true; then Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; fi",
+                r"if false; then :; else Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; fi",
+                "for p in '$PROFILE'; do Set-Content -Value x -Path \"$p\"; done",
+                "if true; then echo $PROFILE; Set-Content -Value x o; fi",
+                "if false; then :; else echo '$PROFILE'; Set-Content x; fi")
         family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
         denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
                   r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
