@@ -3971,19 +3971,21 @@ class ExemptionWords(unittest.TestCase):
         """`gh auth token 'x --help'` was allowed: TK-A021's `--help` exemption matched the joined argv, where a quoted
         value ending in ` --help` reads as a last word of its own; and so for TK-A043's stripe help, TK-A056's draft
         release and others. The engine now matches an `unless` on such a subject only if it also matches with each
-        word's own blanks marked (engine._Joined), and the help exemptions take --help only after words that aren't
-        options (one could take it as its value)."""
+        word's own blanks marked (engine._Joined); and gh's -h and -u take the next word whatever it is, so a --help
+        right after one is its value (argparse, Tracekit's own CLI's parser, takes no --help as an option's value)."""
         TimedAndBraced.held_or_denied(self, [
             ("gh auth token 'x --help'", "TK-A021"), ('gh auth token "x --help"', "TK-A021"),
             ("gh auth token $'x\\t--help'", "TK-A021"), ("gh auth token x' --help'", "TK-A021"),
             ("gh auth token -u --help", "TK-A021"), ("gh auth status -t 'x --help'", "TK-A021"),
-            ("pass 'ls x'", "TK-A021"), ("tracekit signer serve --config --help", "TK-D007"),
-            ("tracekit init 'x --help'", "TK-A057"), ("tracekit init --path --help", "TK-A057"),
+            ("pass 'ls x'", "TK-A021"), ("gh auth token --hostname --help", "TK-A021"),
+            ("tracekit signer serve 'x --help'", "TK-D007"), ("tracekit init 'x --help'", "TK-A057"),
             ("stripe refunds create 'x --help'", "TK-A043"), ("terraform destroy ' --help'", "TK-A001"),
             ("docker volume rm 'x -h'", "TK-A048")], packs=("coding.yaml",))
         TimedAndBraced.held_or_denied(self, [("gh release create v1 --notes 'see -d'", "TK-A056"),
                                              ("gh release create v1 'x --draft'", "TK-A056")], packs=("dev.yaml",))
         Round11.allowed(self, ["gh auth token --help", "gh auth status --help", "gh auth token x --help", "pass ls",
+                               "gh auth token --hostname github.com --help", "gh auth status -t --help",
+                               "tracekit signer serve --dev --help", "tracekit signer serve --config s.yaml --help",
                                "tracekit init --help", "python3 -m tracekit init --help", "terraform destroy --help",
                                "docker volume rm --help", "stripe refunds create --help", "op read --help"])
         e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], BACKENDS[0])
