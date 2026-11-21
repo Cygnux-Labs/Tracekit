@@ -6372,7 +6372,11 @@ class StrictPack(unittest.TestCase):
             want = "ask" if pack == "strict.yaml" else "flag"
             for command in ("npm --prefix x install left-pad", "npm -g install left-pad", "pnpm --dir x add left-pad",
                             "yarn --cwd x add left-pad", "bun --cwd x install", "npm -g i left-pad",
-                            "npm --loglevel=silent ci", "npm install --prefix x left-pad"):
+                            "npm --loglevel=silent ci", "npm install --prefix x left-pad",
+                            # several options, each with or without a value, up to eight as a publish
+                            "pnpm -C x --silent --filter app add left-pad",
+                            "npm --json --silent --yes --force --foreground-scripts --ignore-scripts --no-audit "
+                            "--no-fund install left-pad"):
                 with self.subTest(pack=pack, command=command):
                     d = e.decide("Bash", {"command": command})
                     self.assertEqual((d["verdict"], "TK-F004" in d["rule_ids"]), (want, True), d)
