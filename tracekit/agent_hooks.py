@@ -399,10 +399,22 @@ OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath"
                      "experimental_image_generate": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+# an experimental_image_generate image OpenCode downloads rather than reads (readImage's /^https?:\/\//i)
+IMAGE_URL = re.compile(r"https?://", re.I)
 # Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
-# plus its own; those that run a command or read or write a file are mapped here (packages/opencode/src/kilocode/tool)
+# plus its own; those that run a command, read or write a file or fetch a URL are mapped here
+# (packages/opencode/src/kilocode/tool): browser_open on its `url`, repo_clone on the URL it clones (tool()).
+# agent_manager stays an unknown tool: it starts or prompts Agent Manager sessions with a prompt, names, branches and
+# a model, and names no file, command or URL; each session's own calls run the plugin's hooks
 KILO_TOOLS = {**OPENCODE_TOOLS, "background_process": "Bash", "notebook_read": "Read", "notebook_edit": "NotebookEdit",
-              "send_file": "Read", "generate_image": "Write"}
+              "send_file": "Read", "generate_image": "Write", "browser_open": "WebFetch", "repo_clone": "WebFetch"}
+# kilo_memory_save's files (kilo-memory's storage/paths.ts and tool.ts): a remember writes project.md, a correct
+# corrections.md, and a forget edits all three, in $XDG_DATA_HOME/kilo/memory/<project>-<hash>/, which later sessions
+# read back; a skip writes nothing (an unknown tool)
+# lean: the <project>-<hash> folder (a sha1 of the project's root) isn't worked out; the path is the memory folder's
+KILO_MEMORY = "~/.local/share/kilo/memory/"
+KILO_MEMORY_FILES = {"remember": ("project.md",), "correct": ("corrections.md",),
+                     "forget": ("project.md", "environment.md", "corrections.md")}
 KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "notebook_edit", "send_file", "generate_image"),
                                                       "path")}
 # Kilo's notebook_execute (VS Code, experimental.native_notebook_tools) runs a cell in the live kernel: the cell's code
@@ -799,6 +811,26 @@ def _jcode_dispatch_name(server, called):
     return name
 
 
+def _kilo_remote(repository):
+    """The URL Kilo's repo_clone clones `repository` from (Repository.parse, packages/core/src/repository.ts): a URL as
+    given (a git+ prefix dropped), scp-style [user@]host:path as ssh://, split at its first ':' as git splits it, and
+    host/path, GitHub's owner/repo and github:owner/repo as https. One Kilo refuses (a file: URL, or no form it reads)
+    is decided as sent.
+    lean: KILO_REPO_CLONE_GITHUB_BASE_URL, which moves GitHub's clones to another host, isn't read"""
+    s = re.sub(r"/+\Z", "", re.sub(r"#[^\n\r\u2028\u2029]*\Z", "", re.sub(r"\Agit\+", "", repository.strip(JS_SPACE))))
+    if "://" in s:
+        return s
+    gh = re.fullmatch(r"github:([^/\s]+/[^/\s]+)", s)
+    if not gh and re.fullmatch(r"(?:[^@/\s]+@)?[^:/\s]+:.+", s):   # git splits scp-style at the first ':'
+        host, path = s.split(":", 1)
+        return f"ssh://{host}/{path}"
+    parts = [p for p in (re.sub(r"\.git\Z", "", x.strip(JS_SPACE)) for x in ("github.com/" + gh[1] if gh else s).split("/"))
+             if p]
+    if len(parts) >= 2 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        return f"https://{parts[0].lower()}/{'/'.join(parts[1:])}.git"
+    return f"https://github.com/{'/'.join(parts)}.git" if len(parts) == 2 else s
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
@@ -1018,14 +1050,29 @@ def tool(harness, name, ti):
         if (harness, name) in (("kilo", "generate_image"), ("opencode", "experimental_image_generate")):
             ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
             # Kilo's `image` and OpenCode 2.x's `images`, files read and sent to the image provider: decided as a Read
-            # of each, with the `path` it writes (an image extension is given to it)
-            # lean: an http(s) image OpenCode downloads is decided as a path, not by the fetch rules
+            # of each, with the `path` it writes (an image extension is given to it). OpenCode downloads an http(s) one
+            # instead (readImage, under webfetch's permission): images that are all URLs are decided as a WebFetch of
+            # each, and a call with both is denied in the hook (_blocked)
+            # lean: the `path` a WebFetch writes is not decided; OpenCode gives it an image extension
             images = ti.get("image" if harness == "kilo" else "images")
             images = [i for i in (images if isinstance(images, list) else [images]) if isinstance(i, str)]
+            urls = [i for i in images if harness == "opencode" and IMAGE_URL.match(i)]
+            if urls:
+                ti.pop("urls", None)
+                return "WebFetch", {**ti, "url": urls[0], **({"urls": urls} if len(urls) > 1 else {})}
             if images:
                 ti["file_path"] = images[0]
                 ti["paths"] = images + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
+        if harness == "kilo" and name == "repo_clone":   # the URL it clones, never a decoy `url` beside it
+            ti.pop("urls", None)
+            ti["url"] = _kilo_remote(ti["repository"]) if isinstance(ti.get("repository"), str) else None
+        if harness == "kilo" and name == "kilo_memory_save" and isinstance(ti.get("action"), str) \
+                and ti["action"] in KILO_MEMORY_FILES:
+            paths = [KILO_MEMORY + f for f in KILO_MEMORY_FILES[ti["action"]]]
+            ti.pop("content", None)   # what a remember or a correct writes is its `text` (a forget's is a query)
+            text = {"content": ti["text"]} if ti["action"] != "forget" and isinstance(ti.get("text"), str) else {}
+            return "Edit" if ti["action"] == "forget" else "Write", {**ti, "file_path": paths[0], "paths": paths, **text}
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
@@ -1779,6 +1826,12 @@ def _blocked(harness, p, raw="", line=None):
                        "can read, so it can't decide what the workflow will run; send the file's text.")
         return why
     name = _named(harness, str(p.get("tool_name") or ""))
+    images = _input(p.get("tool_input")).get("images") if (harness, name) == ("opencode", "experimental_image_generate") \
+        else None
+    if isinstance(images, list) and len({bool(IMAGE_URL.match(i)) for i in images if isinstance(i, str)}) > 1:
+        return ("Blocked by Tracekit: OpenCode's experimental_image_generate call downloads some of its images and "
+                "reads others from disk, and Tracekit decides a call as a fetch or as a read, not both; download the "
+                "image to a file first (a fetch Tracekit decides), then pass only files.")
     if harness == "kiro" and name in KIRO_DECIDED_ON:
         v = _input(p.get("tool_input")).get(KIRO_DECIDED_ON[name])
         if not (isinstance(v, str) and v):
