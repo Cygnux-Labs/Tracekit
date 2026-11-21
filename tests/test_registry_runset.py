@@ -411,8 +411,9 @@ class TestLogClosed(RunSet):
             self.call("close_run", open_run)
 
         out = os.path.join(self.dir, "closed.tkb")
-        code, stdout, err = run_cli("export", "--v2", "--run-set", "--config", cfg, "-o", out)
+        code, stdout, err = run_cli("export", "--v2", "--run-set", "--config", cfg, "-o", out, "--json")
         self.assertEqual((code, err), (0, ""))
+        self.assertNotIn("final", json.loads(stdout))   # whether a run is final is said for a single run's export
         code, rep, line = self.check(out, "log tail")
         self.assertEqual((code, rep.warnings, line["status"]), (0, ["gaps"], "pass"), rep.checks)   # the run cut off
 
