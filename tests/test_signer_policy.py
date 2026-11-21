@@ -1402,6 +1402,14 @@ class CodingPack(unittest.TestCase):
             ("Write", {"file_path": "/w/models/model.ckpt", "content": "w"}),
             ("Edit", {"file_path": "/w/models/model.safetensors", "old_string": "a", "new_string": "b"}),
             ("MultiEdit", {"file_path": "/w/models/model.safetensors", "edits": []}),
+            # #999: the other formats in a model folder, and a harness's Delete, which arrives as an Edit
+            ("Write", {"file_path": "/w/models/prod.onnx", "content": "w"}),
+            ("Write", {"file_path": "/w/models/v2/prod.h5", "content": "w"}),
+            ("Write", {"file_path": "/w/model/prod.keras", "content": "w"}),
+            ("Write", {"file_path": "/w/Models/prod.TFLITE", "content": "w"}),
+            ("Write", {"file_path": "models/prod.mlmodel", "content": "w"}),
+            ("Write", {"file_path": "/w/models/flax_model.msgpack", "content": "w"}),
+            ("Edit", {"file_path": "/w/models/prod.onnx", "old_string": "a", "new_string": ""}),
         ]
         held_shell = [
             "cp new.safetensors /srv/models/prod/model.safetensors",
@@ -1413,6 +1421,19 @@ class CodingPack(unittest.TestCase):
             "cp x 'a\nb.safetensors'",
             "echo x > MODEL.SAFETENSORS",
             "python train.py > out.pt",
+            # #999: the other formats in a model folder, and deletes
+            "cp new.onnx models/prod.onnx",
+            "mv new.h5 models/prod.h5",
+            "cp a.keras /srv/models/prod/v2/a.keras",
+            "cp a.tflite model/a.tflite",
+            "cp a.mlmodel MODELS/A.MLMODEL",
+            "cp a.msgpack models/flax_model.msgpack",
+            "rm models/prod.safetensors",
+            "rm -f out.pt",
+            "git rm models/prod.safetensors",
+            "mv models/prod.onnx /tmp/",
+            # the site-packages .pth exemption is per file: a weights .pth deleted beside one is still held
+            "rm models/prod.pth .venv/lib/python3.12/site-packages/x.pth",
         ]
         # TK-A060: publishing to a model hub
         held_hub = [
@@ -1430,6 +1451,9 @@ class CodingPack(unittest.TestCase):
             ("Read", {"file_path": "/w/models/model.safetensors"}),
             ("Write", {"file_path": "/w/models/config.json", "content": "{}"}),
             ("Write", {"file_path": "/w/models/model.safetensors.bak", "content": "w"}),
+            ("Write", {"file_path": "/w/data/results.h5", "content": "w"}),
+            ("Write", {"file_path": "/w/models/README.md", "content": "w"}),
+            ("Edit", {"file_path": "/w/mymodels/cache.msgpack", "old_string": "a", "new_string": ""}),
         ]
         benign_shell = [
             "ls models/",
@@ -1441,6 +1465,14 @@ class CodingPack(unittest.TestCase):
             "ollama pull acme/model",
             "ollama run acme/model",
             "cp model.safetensors model.safetensors.bak",
+            "cp data.csv data/backup.csv",
+            "rm build/out.o",
+            "cp results.h5 data/results.h5",
+            "rm cache/state.msgpack",
+            "cp new.bin models/pytorch_model.bin",
+            "ls models/prod.onnx",
+            # a .pth deleted from site-packages is a Python path file (TK-A068's), not weights, as a write there is
+            "rm .venv/lib/python3.12/site-packages/distutils-precedence.pth",
         ]
         for pack, engine, e in self.every_pack():
             for tool, args in held_fs:

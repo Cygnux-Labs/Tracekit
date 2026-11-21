@@ -636,8 +636,11 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
-    pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
+    # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt; .onnx, .h5, .keras, .tflite, .mlmodel, .msgpack in a
+    # model or models folder, up to eight folders deep, as those also hold other data) written, edited or deleted
+    # through file tools (a harness's Delete reaches the signer as an Edit); reads are allowed. .bin, .pkl, .npy,
+    # .npz and .joblib aren't held: they hold other data as often
+    pattern: '\.(safetensors|gguf|pt|pth|ckpt)$|(?:^|[/\\])models?[/\\](?:[^/\\]*[/\\]){0,8}[^/\\]*?\.(?:onnx|h5|keras|tflite|mlmodel|msgpack)$'
     # a .pth directly in site-packages or dist-packages is TK-A067's, not a weights file
     unless: '(?:^|[/\\])(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a model weights file
@@ -646,12 +649,12 @@ ask:
   - id: TK-A059
     class: shell
     field: effects
-    # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, ending in model weights
-    # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
-    pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
+    # each file a command writes or deletes (redirections, cp, mv, tee, rm, git rm …), as TK-D008 reads them, of the
+    # weights formats TK-A058 holds; reads, listings and non-weights files aren't held
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?models?[/\\](?:[^/\\]*[/\\]){0,8}[^/\\]*?\.(?:onnx|h5|keras|tflite|mlmodel|msgpack)$'
     # a .pth directly in site-packages or dist-packages is TK-A068's, not a weights file
-    unless: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
-    reason: writing a model weights file
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
+    reason: writing or deleting a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
   - id: TK-A060
