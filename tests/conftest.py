@@ -1,3 +1,4 @@
+import collections
 import gc
 import glob
 import io
@@ -56,14 +57,47 @@ if sys.version_info < (3, 13):
     gc.set_threshold(2000, 10, 10)
 
 
+def pytest_addoption(parser):
+    parser.addoption("--shard", default=None, metavar="I/N",
+                     help="run only shard I of N (0-based): whole test files, packed by size so the shards are even, so "
+                          "CI can split the suite over runners; every test is in exactly one shard")
+
+
+def _shard(config):
+    spec = config.getoption("--shard")
+    if spec is None:
+        return None
+    try:
+        i, n = map(int, spec.split("/"))
+    except ValueError:
+        i = n = 0
+    if not 0 <= i < n:
+        raise pytest.UsageError(f"--shard={spec}: expected I/N with 0 <= I < N")
+    return i, n
+
+
 def pytest_configure(config):
+    _shard(config)
     for name, doc in MARKERS.items():
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
 @pytest.hookimpl(tryfirst=True)   # before -m selects: it reads the marker
 def pytest_collection_modifyitems(config, items):
-    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`."""
+    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`; --shard=I/N keeps
+    the test files of one shard (a file's tests stay together)."""
+    shard = _shard(config)
+    if shard:
+        # lean: balanced by test count, not by time; upgrade to recorded durations if one shard stays the slowest
+        sizes = collections.Counter(i.nodeid.split("::")[0] for i in items)
+        load = [0] * shard[1]
+        where = {}
+        for path, n in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):   # largest file first, onto the lightest
+            where[path] = load.index(min(load))
+            load[where[path]] += n
+        mine = [where[i.nodeid.split("::")[0]] == shard[0] for i in items]
+        config.hook.pytest_deselected(items=[i for i, m in zip(items, mine) if not m])
+        items[:] = [i for i, m in zip(items, mine) if m]
     for item in items:
         if getattr(getattr(item, "function", None), "serial", False):
             item.add_marker(pytest.mark.serial)

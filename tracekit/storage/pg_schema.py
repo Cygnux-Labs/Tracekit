@@ -28,6 +28,7 @@ GRANT USAGE ON SEQUENCE tracekit_notes_id_seq, tracekit_anchors_id_seq TO {role}
 GRANT SELECT, INSERT, UPDATE ON tracekit_witness_queue, tracekit_tiles, tracekit_meta TO {role};
 GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots, tracekit_content_keys, tracekit_content TO {role};
 """
+VAULT_GRANTS = next(g for g in GRANTS.splitlines() if "tracekit_content" in g)   # GRANTS' line for the vault's tables
 READ_GRANTS = """
 GRANT USAGE ON SCHEMA {schema} TO {role};
 GRANT SELECT ON tracekit_schema, tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors, tracekit_tiles,

@@ -1329,7 +1329,8 @@ _CURL_SHORT = {
     "Z": "parallel"}
 _CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
                 "hsts", "alt-svc", "ssl-sessions"}
-# wget's, as GNU wget 1.21's manual lists them (its option index; no binary here checked them), read as getopt_long
+# wget's, checked against GNU Wget 1.25.0's own `--help` (tests/data/wget-1.25.0-help.txt, compared with these by
+# test_the_download_option_table_is_wgets_own), read as getopt_long
 # reads them: a long option by any unique prefix, with its value after `=` or as the next word; the short letters as
 # long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value is a file it writes, and those
 # that make it write files the reader can't name (a URL list or metalink file, a wgetrc command or file, a name the

@@ -335,7 +335,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
-    provenance, public_witness, yamlmini
+    lessons, provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -468,13 +468,14 @@ EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
 EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
-# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
-# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
-# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
-# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id,
+# its text's sha256 and, on a retire, the record that disproved it (`because`: RUN:SEQ) (_observe refuses any other).
+# On the dev signer, where lessons live, a run of nothing else (at most ANSWERS_KEPT: `tracekit tips` writes one run per
+# command) keeps its content past retention (expire_content), as the Claude Code hook reads each answer back before it
+# gives a lesson (lessons.verified)
 LESSON_ANSWERS = "tracekit:lessons:person"
 LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
-                 re.compile(r"[0-9a-f]{64}"))
+                 re.compile(r"[0-9a-f]{64}"), lessons.SIGNED)
 ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
 ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
@@ -3397,14 +3398,18 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
-        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
-        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
-                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
-                and lid.fullmatch(v["id"])
-                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+        v, (actions, lid, sha, because) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (
+                isinstance(v, dict) and set(v) - {"because"} == {"action", "id", "sha256"} and (
+                    isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                    and lid.fullmatch(v["id"])
+                    and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"])
+                    and ("because" not in v or v["action"] == "retire" and isinstance(v["because"], str)
+                         and because.fullmatch(v["because"])))):
             raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
-                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
-                                              "and nothing else")
+                                              f"({', '.join(sorted(actions))}), a lesson's id, its text's sha256 and, "
+                                              "on a retire, the record that disproved it (because: RUN:SEQ), and "
+                                              "nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -6143,7 +6148,13 @@ def main(argv=None):
             return 2
         from tracekit.storage import postgres
         try:
-            print(f"schema version {postgres.migrate(postgres.read_dsn(cfg['storage']['postgres']))}")
+            dsn = postgres.read_dsn(cfg["storage"]["postgres"])
+            before = postgres.version(dsn)
+            print(f"schema version {postgres.migrate(dsn)}")
+            if before == 1:   # it added the content vault's tables, and granted nothing on them (a fresh store's
+                # first deploy grants all of GRANTS)
+                print("the content vault's tables are new: grant the signer's role these, or every item it keeps "
+                      "reads back not_retained:\n" + postgres.VAULT_GRANTS.format(role="<the signer's role>"))
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer migrate: {e}", file=sys.stderr)
             return 1
