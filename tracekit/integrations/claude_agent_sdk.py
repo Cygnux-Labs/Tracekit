@@ -48,7 +48,7 @@ from tracekit.format.canon import event_hash
 from tracekit.integrations import executor_tools, said, version_check
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
-from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
+from tracekit.sdk.client import SignerUnavailable, _class_of, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -125,7 +125,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
         try:
             d = await rpc("decide", tool_call_id=tid, tool=tool, args_source="parsed", args=args)
         except SignerUnavailable as e:
-            return {} if fail_open(rpc.fail_modes) else _deny(f"signer unavailable ({e})")
+            return {} if fail_open(rpc.fail_modes, _class_of(tool)) else _deny(f"signer unavailable ({e})")
         except Exception as e:
             return _deny(f"signer error ({type(e).__name__}: {e})")
         try:

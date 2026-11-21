@@ -640,7 +640,11 @@ class RealSigner(unittest.TestCase):
 @unittest.skipUnless(HAVE, "google-adk not installed")
 class VersionCheck(VersionCheckCases, unittest.TestCase):
     module, inside = "google_adk", "2.12.0"
-    message = "Google ADK 0.0.1 is wired but untested; Tracekit is tested with google-adk>=2.12,<2.13"
+    message = "Google ADK 0.0.1 is wired but untested; Tracekit is tested with google-adk>=2.12,<2.16"
+
+    def test_the_tested_range_ends_after_2_15(self):
+        self.assertEqual(self.warnings_for("2.15.3"), [])
+        self.assertEqual(len(self.warnings_for("2.16.0")), 1)
 
 
 if __name__ == "__main__":
