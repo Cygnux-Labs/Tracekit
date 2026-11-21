@@ -6085,6 +6085,7 @@ class GuardrailsAndPushes(unittest.TestCase):
             {"sql_query": "SELECT 1"},
             {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
 
+    @pytest.mark.serial
     def test_a_long_explain_or_paren_lead_decides_in_time(self):
         # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time.
         # The later statements hold the words a held statement needs (DELETE FROM), so the engine's prefilter
