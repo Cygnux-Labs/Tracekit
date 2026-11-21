@@ -1056,6 +1056,21 @@ class Speed(unittest.TestCase):
                 budget = self.BUDGET_S * machine_scale()
                 self.assertLess(self.search(rx, s, budget), budget)
 
+    def test_a_docker_host_lines_values_and_braces_search_in_linear_time(self):
+        """#995 review: TK-A072 read a value's `$(…)` as `\\$\\(…\\)` or as `$` and a `(…)` group, so 64 KiB of `A=$(a)$(a)…`
+        took 14 s on the fallback engine; and a command could start at any `{`, from which a program's path read on to
+        the end of the line: `A=${a}${a}…` took 15 s (on main too). A group's `{` is a start only with a blank after
+        it, as bash reads one."""
+        patterns = {rid: p for rid, key, p in pack_patterns() if key == "pattern"}
+        rx = regex.compile(pc.translate(patterns["TK-A072"]), regex.ASCII | regex.V0)
+        n = MAX_SUBJECT - 4
+        for head, unit, tail in (("A=", "$(a)", " x"), ("A=", "${a}", " x"), ("A=", "(a)", " x"), ("", "a{", ""),
+                                 ("", "{ a", "/"), ("A=", "${a}", " DOCKER_HOST=unix:///x")):
+            s = head + unit * ((n - len(head) - len(tail)) // len(unit)) + tail
+            with self.subTest(head=head, unit=unit, tail=tail):
+                budget = self.BUDGET_S * machine_scale()
+                self.assertLess(self.search(rx, s, budget), budget)
+
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
         """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
         took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
