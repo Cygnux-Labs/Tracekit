@@ -25,6 +25,35 @@ MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or w
 # where a quoted value with a space looked like two words (`git -C 'my dir' push --force`); this one is no blank (\s)
 # on either engine, no word character, matched by [^ ], and one byte, so that subject is never longer than the other
 WORD_SPACE = "\x7f"
+
+
+class _Joined(str):
+    """A subject that joins argv words with spaces (after a tag, ACT:); `marked`: the same with each word's own blanks
+    as WORD_SPACE (None when no word has one), which a rule's exemption (`unless`) must match too, so a word it names
+    (`--help`) counts only as a word of its own, not as the end of a quoted value (`gh auth token 'x --help'`)."""
+    marked = None
+
+
+def _joined(words, tag=""):
+    s = tag + " ".join(words)
+    if s.count(" ") - tag.count(" ") == len(words) - 1 and not _OTHER_BLANK.search(s):   # no word has a blank
+        return s
+    s = _Joined(s)
+    s.marked = tag + " ".join(_BLANK.sub(WORD_SPACE, w) for w in words)
+    return s
+
+
+def _form(s, f):
+    """f(s), a form of subject `s` (tagged, casefolded, with `\\` as `/`), with its marked form's when it has one."""
+    if (marked := getattr(s, "marked", None)) is None:
+        return f(s)
+    out = _Joined(f(s))
+    out.marked = f(marked)
+    return out
+
+
+_BLANK = re.compile(r"\s")
+_OTHER_BLANK = re.compile(r"[^\S ]")
 # a word that is only a variable the parser doesn't know there ($x, "${x}", $_), in a third argv subject: TK-D012 reads
 # it as an action it can't read; a loop's or a literal's variable stays as written
 UNKNOWN_WORD = "$\x7f"
@@ -379,7 +408,9 @@ class Engine:
                             self._match(pat, subject, False, deadline) if parts is None else any(
                                 self._match(rx, subject, False, deadline) for rx, strings in parts
                                 if any(map(low.__contains__, strings)))) and not (
-                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                            unless is not None and self._match(unless, subject, False, deadline) and (
+                                (marked := getattr(subject, "marked", None)) is None or
+                                self._match(unless, marked, False, deadline))) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
                         return rule["id"]
@@ -559,7 +590,7 @@ class Engine:
             # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
             # plugin …` and `node node_modules/.bin/claude plugin …` too
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
-            return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
+            return _slashes(list(dict.fromkeys([_joined(c["argv"]) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
@@ -606,7 +637,7 @@ class Engine:
             urls = [t for t in _url_targets([u for w in found if ":" in w for u in _URL.findall(w)]) if t]
             bare = [t for t in _url_targets(["http://" + w for w in found if _BARE_ADDRESS.match(w)])
                     if t and _BARE_TARGET.fullmatch(t)]
-            targets = [" ".join(w) for w in words] + parsed[2] + stdin
+            targets = [_joined(w) for w in words] + parsed[2] + stdin
             return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
@@ -711,7 +742,7 @@ def _slashes(texts):
     """Texts of a shell call, each with a `\\` in it also read as `/`: a Windows path (Git Bash keeps a quoted or
     escaped `\\`, and C:\\x is C:/x, as classes.fs_path reads one). A second reading: it adds matches. The parser's
     texts hold a `\\` only where the shell keeps one; a line it can't read is read as written (_plain), so too."""
-    more = [t.replace("\\", "/") for t in texts if "\\" in t]
+    more = [_form(t, lambda x: x.replace("\\", "/")) for t in texts if "\\" in t]
     have = set(texts) if more else ()
     return texts + [n for n in dict.fromkeys(more) if n not in have]
 
@@ -725,7 +756,9 @@ def _path_forms(targets):
                                      for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))
                          if n not in have]
     have = set(targets)
-    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+    folds = (_form(t, str.casefold) for t in targets) if any(type(t) is _Joined for t in targets) else \
+        map(str.casefold, targets)
+    return targets + [f for f in dict.fromkeys(folds) if f not in have]
 
 
 def commands_each(args):
@@ -1647,8 +1680,8 @@ def _pushes(commands):
         dry = "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv)))
         # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
         # publish after any options as its program's publish: _published)
-        out += push if push is not None else [dry + " ".join(argv)] + [
-            dry + " ".join([_program(argv), *argv[1:]])] * (_program(argv) != argv[0]) + [
+        out += push if push is not None else [_joined(argv, dry)] + [
+            _joined([_program(argv), *argv[1:]], dry)] * (_program(argv) != argv[0]) + [
             dry + p for p in [_published(argv)] if p]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             given = replaced if {"xargs", "gxargs", "parallel"} & runner else None
@@ -3113,9 +3146,9 @@ def _tracekit(parsed, finds, work):
             if roams:
                 deep += at(named)
             else:
-                act += [" ".join(words)] + at(named)
+                act += [_joined(words)] + at(named)
         elif kind is None:
-            act += [" ".join(words)] + at(named)[len(named):]
+            act += [_joined(words)] + at(named)[len(named):]
         else:
             {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(at(named))
         act += [] if c.get("data_stdin") else c["stdin"]
@@ -3129,7 +3162,7 @@ def _tracekit(parsed, finds, work):
     act += at([t.partition(":")[2] for t in _effects(parsed)])
 
     def tag(name, texts):
-        return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
+        return [_form(s, lambda t: name + t) for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
@@ -3524,7 +3557,7 @@ def _prepare(subjects, tag=0):
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT + tag:
             continue
-        texts.append(s if b is s else b.decode("utf-8"))
+        texts.append(s if b is s else _form(s, _text))
     lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 

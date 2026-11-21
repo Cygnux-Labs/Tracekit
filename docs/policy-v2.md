@@ -305,8 +305,11 @@ a file a command only reads or copies. The tags are not in `target`, so a target
 | no `field` (not shell) | the whole arguments as compact sorted JSON (so Write content, WebFetch URLs and MCP arguments are scanned) |
 
 A rule fires when its pattern matches any of its subjects and `unless` does not match that subject. Use `unless` only
-where the subject is one target (a file path): in a whole command line it could exempt a different target. `target`
-is a class field in every class, so a rule can't name a raw argument called `target`.
+where the subject is one target (a file path): in a whole command line it could exempt a different target. On a
+subject that joins a command's words (shell `argv`, `target`, `push`, `tracekit`'s `ACT:`), `unless` must match it
+again with each word's own blanks as `\x7f`, so what it names counts only as words of the command's own: in
+`gh auth token 'x --help'` the quoted `x --help` is one word, and no `--help`. `target` is a class field in every
+class, so a rule can't name a raw argument called `target`.
 
 **Shell parsing** (`policy2/shell.py`, its own tokenizer): quotes, escapes (`$'…'` as bash 5 decodes it, cut at its
 first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` `&`, newlines,
