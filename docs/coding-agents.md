@@ -223,8 +223,9 @@ once it is approved. `tool_input` is the tool's Action (with its class name unde
 `file_editor` (or a gemini-preset file tool) with no path or an `apply_patch` with no file header is denied in the hook.
 **`task` and `delegate` are denied in the hook**: they run a sub-agent with no hooks, so its calls would go undecided
 and unrecorded. **`invoke_skill` runs each `` !`cmd` `` line of the skill with no hook**: it is flagged (`TK-F027`),
-and writing one is held, a file tool's write of a skill under `.agents/skills/` with such a line (`TK-A085`) and any
-shell write there (`TK-F015`). **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
+and writing one is held, a file tool's write of a skill under `.agents/skills/`, or of `AGENTS.md`, `agent.md`,
+`CLAUDE.md`, `GEMINI.md` or `.cursorrules` (which OpenHands also loads as skills), with such a line (`TK-A085`) and any
+shell write under `.agents/skills/` (`TK-F015`). **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
 a key name (`UP`, `TAB`, `ENTER`, `C-r`, which it sends as keystrokes), a command with a control character in it
 (tmux types it as a key: `^U` erases the line before it, `\r` is an Enter, a tab completes the word before it) and a line left open (a trailing `\`) run
 with what came before or comes after them, so the hook marks each `typed` and the policy holds it for a person
