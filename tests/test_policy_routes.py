@@ -449,6 +449,37 @@ class Routes(unittest.TestCase):
                               "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
                     "allow")
 
+    def test_ssh_keygen_writes_the_file_its_f_mode_names(self):
+        """#980 item 3: `-f` is the file a writing mode creates or rewrites, so a key written into `~/.ssh` is the
+        shell write the file rules read. The reading modes keep the verdicts they had before this change — `-f` there
+        names a file they only read (ssh-keygen's own usage lists -i, -e, -y, -l, -B, -F, -r, -L, -Q, -M screen and
+        -Y) — and a mode the list does not name is read as writing, which denies rather than waves through."""
+        self.expect(self.bash("ssh-keygen -f ~/.ssh/known", "ssh-keygen -t ed25519 -f ~/.ssh/id_x",
+                              "ssh-keygen -q -t rsa -b 4096 -f /root/.ssh/deploy",
+                              "ssh-keygen -p -f ~/.ssh/id_ed25519",
+                              # options read as getopt reads them: -f in a cluster, a value that looks like a reading
+                              # mode (a comment, a passphrase), a word after `--`
+                              "ssh-keygen -qf ~/.ssh/id_x -t ed25519", "ssh-keygen -t ed25519 -C -l -f ~/.ssh/id_x",
+                              "ssh-keygen -t ed25519 -Clol -f ~/.ssh/id_x", "ssh-keygen -N -y -f ~/.ssh/id_x",
+                              "ssh-keygen -t ed25519 -f ~/.ssh/id_x -- -l"),
+                    "deny", "TK-D023")
+        # -f is an input there: the key that signs, the allowed signers, the candidates screened; -R's host attached
+        self.spare(self.bash("ssh-keygen -Y sign -n file -f ~/.ssh/id_ed25519 data.txt",
+                             "ssh-keygen -Y verify -f ~/.ssh/allowed_signers -I a -n file -s data.sig",
+                             "ssh-keygen -M screen -f ~/.ssh/moduli.candidates moduli",
+                             "ssh-keygen -Rhost.example -f ~/.ssh/known_hosts"), "TK-D023")
+        # as before this change: a flag from the egress and env-tamper rules, not a write. -R is here with the reading
+        # modes because known_hosts is the exception the limits row records — appending a host key is ordinary work, so
+        # naming that file is not a write these rules read
+        self.expect(self.bash("ssh-keygen -l -f ~/.ssh/id_ed25519.pub", "ssh-keygen -B -f ~/.ssh/id_ed25519.pub",
+                              "ssh-keygen -lf ~/.ssh/id_ed25519.pub", "ssh-keygen -F host.example -f ~/.ssh/known_hosts",
+                              "ssh-keygen -R host.example -f ~/.ssh/known_hosts"),
+                    "flag", "TK-F005")
+        # -y prints a private key's public half: dev, server and strict already deny reading one (their credential rule)
+        # and coding only flags it, so this change must not move either verdict
+        self.expect(self.bash("ssh-keygen -y -f ~/.ssh/id_ed25519"),
+                    {"dev": "deny", "coding": "flag", "server": "deny", "strict": "deny"})
+
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
         self.expect(self.bash("sed -i 's/a/b/' ~/.ss?/conf?g", "echo x > .e[^x]v", "echo x > .e[!x]v",
