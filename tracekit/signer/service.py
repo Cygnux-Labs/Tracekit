@@ -371,6 +371,7 @@ APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
+HIDDEN_CODE = privacy.HIDDEN_CODE   # a held call whose approver's copy would hide code: denied (_shown)
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
@@ -554,17 +555,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # NUL (agent_hooks.UNKNOWN), unread, and is decided without it too, so a deny the text makes stands. Text typed
         # into a running process (Hermes Agent's process_manage write or submit) is also decided as the shell line it
         # is, where that process is a shell, counting only where a deny or ask rule of the pack matches it: a line a
-        # shell can't read (a REPL's) isn't held for that
-        typed = args.get("typed_line")
-        for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
+        # shell can't read (a REPL's) isn't held for that. Both are privacy.typed_lines, which an approver's copy reads
+        # as shell lines too
+        lines = privacy.typed_lines(tool, args)
+        typed = args[privacy.TYPED_LINE] if privacy.TYPED_LINE in lines else None
+        for text in [typed, typed.replace("\x00", "")] if typed is not None else []:
             b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
             if b["verdict"] in ("ask", "deny"):
                 d = _stricter(d, b)
         flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
-        data = args.get("data")
-        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
-                isinstance(data, str):
-            b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
+        if "data" in lines and cls == "unknown":
+            b = policy.decide("Bash", {"command": args["data"]}, untrusted=untrusted)
             if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
                 d = _stricter(d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
@@ -682,10 +683,17 @@ def _digested(v):
     return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
-def _shown(args, dotenv):
-    """The approver's copy of parsed `args`: privacy.redact, and each digest under `typed_secrets` (a secret the
-    Browser Use adapter typed) hidden, since an approver could test guesses of a weak secret against it."""
-    shown = privacy.redact(args, dotenv)[0]
+def _shown(tool, args, dotenv, unclean=None, noted=True, budget=None):
+    """The approver's copy of a call of `tool` with parsed `args`: privacy.approver_copy, each shell line or argv
+    under an argument the engine reads as a command (privacy.COMMAND_KEYS, typed_lines) redacted as the shell reads
+    it, so a value hides nothing that runs after it, and, `noted`, a string redaction may have hid more than values in
+    starting with how much it hid (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use
+    adapter typed) hidden, since an approver could test guesses of a weak secret against it. `unclean`, a list: gets
+    True when it hides more than clean values, so a held call is denied (TK-HIDDEN-CODE). `budget`: the call's
+    privacy.Budget, which another copy of the same call reuses."""
+    shown, hides = privacy.approver_copy(args, dotenv, tool, noted, budget)
+    if hides and unclean is not None:
+        unclean.append(True)
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
         shown = {**shown, "typed_secrets": {n: [d if not (isinstance(d, str) and _DIGEST.fullmatch(d))
                                                 else "[REDACTED:typed_secret]" for d in v] if isinstance(v, list) else v
@@ -2208,6 +2216,8 @@ class SignerService:
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
         so its label is no reason it was denied or held."""
+        if HIDDEN_CODE in ids:   # its reason alone: the call can't be approved, whatever held it
+            ids = [HIDDEN_CODE]
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
@@ -3117,6 +3127,15 @@ class SignerService:
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
+        # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE). One budget for the
+        # call's copies: the copy kept of a call it doesn't hold, and its noted one (an approver's) when it holds it
+        unclean, budget, copies = [], privacy.Budget(), {}
+        shown = _shown(tool, args, _dotenv(args), unclean, noted=False, budget=budget) if digest else None
+
+        def noted():   # the approver's copy: once, for the approval request and the content vault
+            if "noted" not in copies:
+                copies["noted"] = _shown(tool, args, _dotenv(args), budget=budget)
+            return copies["noted"]
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
@@ -3215,6 +3234,9 @@ class SignerService:
                 record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
                 which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
+                if verdict == "ask" and unclean:   # no person can see what they'd approve: never asked, and recorded
+                    verdict, rule_ids = "deny", rule_ids + [HIDDEN_CODE]
+                    tx.set(run["denied"], digest, True)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
                          **({"args_commitment": commitment} if commitment else {}),
@@ -3225,7 +3247,8 @@ class SignerService:
                         "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
                         "policy_hash": self.policy.policy_hash}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
-                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
+                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"],
+                                       "shown": noted() if digest else None}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
                         call["agent"] = agent
                 tx.set(run["calls"], tcid, call)
@@ -3271,8 +3294,8 @@ class SignerService:
                 out["send_result"] = True
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
-        if written and written[-1][1]:
-            self._retain(key, *written[-1], _shown(args, _dotenv(args)))
+        if written and written[-1][1]:   # what a held call's approver read, with its note; else the copy alone
+            self._retain(key, *written[-1], noted() if out.get("decision") == "ask" else shown)
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
@@ -3715,7 +3738,8 @@ class SignerService:
                     reask = reason.startswith("reask_after_reject")
             if agent:
                 data["agent"] = agent
-            shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
+            # the copy decide made (of the parsed args, so a raw copy stays valid JSON)
+            shown = p.get("shown") or _shown(call["tool"], args, call["dotenv"])
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}

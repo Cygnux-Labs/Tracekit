@@ -57,7 +57,7 @@ Both settings are off by default, recorded in each run's `run.start`, and the ve
 
 ## Redaction patterns
 
-Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments, and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret.
+Private key blocks, Anthropic / OpenAI / GitHub / AWS (access and secret keys) / Slack / Google / Stripe / npm tokens, `Authorization:` bearer values, JWTs, credentials in connection strings, `KEY=value` / `token: value` style assignments, and every value of a `KEY=value` line when the tool call read or printed a `.env` file. Dictionary keys are redacted too, and the same rules apply to hook, proxy and transcript content. Matches become `[REDACTED:<kind>]` and the field is marked `redacted: true`. Redaction runs **before** hashing, so a hash never commits to a secret. In a command, any value (a pattern's match, an assignment's, a `.env` line's) is hidden only up to where the shell ends its word (a blank, a line end, an operator, a redirection or code outside quotes) and never past a quote it didn't open, so what the command runs after it stays in clear. The same holds in code a shell runs from the command: a `$(...)`, a heredoc or herestring a shell reads, an `sh -c` or `eval` script. Elsewhere a value is hidden as far as its rule reads, as in content: in a comment, a heredoc body a program reads as data (`cat > f`, `tee`) or as its program (`python3 <<EOF`), an interpreter's `-c` program and each word of an argument list; when the command names a `.env` file, a heredoc body's `KEY=value` lines are hidden to their ends, up to the body's end line. A variable's name (`$TOKEN`) is no value and stays in view. A private key is hidden whole. A held call's copy may hide only clean values: one word of plain text with no blank or shell character, not where a program runs, read exactly as bash reads it. A held call whose copy would hide more is denied, never asked (`TK-HIDDEN-CODE`, [policy](policy-v2.md)): no person can see what they would approve. Where the signer can't read the command as bash does, a value is hidden as content rules read it, and a held call is denied if one is.
 
 Redaction is pattern-based and will miss secrets it doesn't recognise. A command line kept in clear can still contain one. If that's a concern, deny the pattern in policy or keep bundles internal.
 
@@ -81,8 +81,22 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
 - **What is redacted where.** A tool result and error (`complete`) go through the same redaction patterns before the
   signer commits to them; when the call's `command`, `file_path`, `path` or `pattern` mentions a `.env` file, every
   `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
-  redacted the same way and shows `[REDACTED:<kind>]` markers. The policy decides on the unredacted arguments: the
-  signer saw them, the record never holds them.
+  redacted the same way and shows `[REDACTED:<kind>]` markers, but in a shell line (a `command`, `cmd` or `script`
+  argument and the like, a typed call's `typed_line`, `process_manage` text) a value is hidden only up to where the
+  shell ends its word, as above, in the code it runs too, which the policy's own shell parser finds where the line holds
+  it (a script `sh -c`, `eval`, `ssh`, `watch` or `trap` runs, a heredoc a shell reads). What runs after it stays in
+  view; a comment and a heredoc body a program reads as data are text, redacted as content. A variable's name
+  (`$TOKEN`) is no value where bash expands it; in `'...'`, `$'...'`, after a backslash or in a body kept as written it
+  is text, and hidden. A code runner's arguments TK-S012 holds (`code`, `source`, `input` …; `args`, `argv`) are read
+  as its program and as an argv. A held call whose copy would hide more than clean values is denied instead
+  (`TK-HIDDEN-CODE`, [limits](limits.md)). When
+  redaction may have hidden more than values in an argument (more than 256 characters, or text with a
+  blank, a line end, a quote or another character the shell reads), the copy's argument starts with a line saying how
+  many characters it hid, `# [N characters hidden by redaction]`, and which characters of shell code were among them
+  (`, among them ; and a line break, which a shell can read as code]`): a shell comment, so what reads the copy as a
+  command (`tracekit analyze --v2`, `tracekit why`) reads the rest as before. The copy the signer keeps of a call it
+  doesn't hold has no such line. The policy decides on the unredacted arguments:
+  the signer saw them, the record never holds them.
 - **The manifest.** A `tool.result` record carries `redaction: {rules, count, client_claimed}`: the rules that fired
   and how often, never the values. A client may send content it already redacted (`redacted: true` and its own
   `redaction: {rules, count}`); the signer records that claim under `client`, redacts again anyway, and adds
