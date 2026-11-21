@@ -542,8 +542,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 287 / 420 (68.3%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 312 / 420 (74.3%) | 158 (37.6%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 288 / 420 (68.6%) | 123 (29.3%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 313 / 420 (74.5%) | 159 (37.9%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
@@ -599,7 +599,7 @@ times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubl
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
 (default 4.2%, strict 13.0%), the blind pools (default 9.1%, strict 13.3%), strict's sessions (15.4%) and strict's
-E17 benign calls (5.1%).
+E17 benign calls (5.0%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)
