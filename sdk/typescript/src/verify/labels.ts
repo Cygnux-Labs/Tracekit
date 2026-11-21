@@ -8,6 +8,7 @@ import { Detector, glob } from "./detect.js";
 type J = any;
 const SECTIONS = ["deny", "ask", "flag"];
 const UNTRUSTED = "untrusted_content";
+const UNREAD = "TK-OVERSIZE";   // a call the policy couldn't read: it sets every label a run condition reads
 // tracekit/policy2/compile.py CLASSES: an `untrusted` entry that names one is a class, any other a tool name glob
 const CLASSES = ["shell", "fs", "http", "sql", "payment", "email", "mcp", "browser", "a2a", "app", "unknown", "harness"];
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
@@ -54,6 +55,8 @@ export class Sources {
   }
 
   ofCall(tool: J, ruleIds: string[]): Set<string> {
+    if (typeof tool === "string" && this.classes.toolClass(tool) === "harness") return new Set();
+    if (ruleIds.includes(UNREAD)) return new Set(this.tracked);
     const out = new Set(ruleIds.filter((i) => this.label.has(i)).map((i) => this.label.get(i)!));
     if (this.tracked.has(UNTRUSTED) && typeof tool === "string" && this.untrustedResults(tool)) out.add(UNTRUSTED);
     return out;
@@ -72,8 +75,9 @@ export class Sources {
   }
 }
 
-/** The problems of one run's labels under `src` (tracekit/verify/v2.py _run_labels). */
-export function runLabels(events: J[], src: Sources): string[] {
+/** The problems of one run's labels under `src` (tracekit/verify/v2.py _run_labels); each inherited add of a label its
+ * policy reads goes to `inherited` as [where, label, the add it cites]. */
+export function runLabels(events: J[], src: Sources, inherited: [string, string, J][]): string[] {
   const problems: string[] = [], carried = new Set<string>(), asked = new Map<J, J>(), decided = new Map<J, J>();
   const seqs = new Map<number, J>();
   let owed = new Map<string, number>(), owner: string | null = null;
@@ -87,6 +91,10 @@ export function runLabels(events: J[], src: Sources): string[] {
       const x = key(d.label);
       if (d.action === "add") {
         if (x !== null && carried.has(x)) problems.push(`${where}: adds ${cut(str(x), 32)}, which the run carries already`);
+        else if (Object.hasOwn(d, "inherited") && x !== null && src.tracked.has(x))
+          inherited.push([where, x, d.inherited]);
+        else if (Object.hasOwn(d, "inherited"))
+          problems.push(`${where}: inherits ${cut(str(x), 32)}, which no run condition of the run's policy reads`);
         else if (x === null || !owed.has(x) || owed.get(x) !== d.source)
           problems.push(`${where}: adds ${cut(str(x), 32)} citing run_seq ${cut(str(d.source ?? null), 20)}, which doesn't `
             + "set it under the run's policy");

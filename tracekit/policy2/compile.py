@@ -19,14 +19,16 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", "label_inherit_s", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
              "remedy", "when", "mode"}
 # the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
-# runs matches a rule whose `label` it is (secrets_access: TK-F005), and untrusted_content also when a tool the
-# policy's `untrusted` list names runs or an input is observed as untrusted; a person may clear one
+# runs matches a rule whose `label` it is (secrets_access: a read of a secret, dev.yaml's TK-F033), and
+# untrusted_content also when a tool the policy's `untrusted` list names runs or an input is observed as untrusted; a
+# person may clear one
 RUN_LABELS = ("secrets_access", "untrusted_content")
-LABELS_FIELD = "labels"   # a run condition rule's field: the labels of the rules the call matched
+# a rule's field: the labels of the rules the call matched, sorted and joined by a space (engine.labels_subject)
+LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
@@ -418,6 +420,9 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if "label_inherit_s" in pol and not _int(pol["label_inherit_s"], 0, MAX_WINDOW):   # (labels.labels_for)
+        errors.append(f"{path}: label_inherit_s must be whole seconds from 0 to {MAX_WINDOW}: how long a run's labels "
+                      "stay with its requester after it ends")
     if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
         errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
@@ -431,12 +436,9 @@ def _lint(pol, path):
                        if not isinstance(r[k], str)]
             if "when" in r:
                 errors += [f"{where}: {e}" for e in _lint_when(r, sec, pol)]
-            elif r.get("field") == LABELS_FIELD:
-                errors.append(f"{where}: field labels is for a rule with `when`: a call's labels are its other rules' "
-                              "own, which decide it already")
-            if "mode" in r and not (sec == "ask" and "when" in r and r["mode"] in ("shadow", "enforce")):
-                errors.append(f"{where}: mode is shadow or enforce, on an ask rule with `when` (shadow: it records "
-                              "the calls it would hold, as a flag, and holds none)")
+            if "mode" in r and not (sec == "ask" and r["mode"] in ("shadow", "enforce")):
+                errors.append(f"{where}: mode is shadow or enforce, on an ask rule (shadow: it records the calls it "
+                              "would hold, as a flag, and holds none)")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):

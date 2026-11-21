@@ -2,9 +2,9 @@
  "format": "tracekit.bundle.v2",
  "spec": "docs/format-v2.md",
  "files": {
-  "../sdk/typescript/src/verify/sample/sample-tampered.tkb": "3d859a130c114862d4b7fde6176a588c28898180cbaffb6dac05021a6db815a7",
-  "../sdk/typescript/src/verify/sample/sample.tkb": "066455e63cf8667d11d944f74b95ab8c3c697093c0fd98e2a789ddaf600205f3",
-  "../sdk/typescript/src/verify/sample/sample.trust.json": "6c86658c88b8076cf3a9f6d6e06e42d6ca9eab7f8b0298d3eb8be6bf806ba2ed",
+  "../sdk/typescript/src/verify/sample/sample-tampered.tkb": "59b10a8d41001d7d0633aa8b289ba0e77e757d2e6a6a081d3f71cf867bcdd46b",
+  "../sdk/typescript/src/verify/sample/sample.tkb": "7d65963a728c46c10b8282b83aede948166d8a11644d6677276785ad3df76b27",
+  "../sdk/typescript/src/verify/sample/sample.trust.json": "6951972304542dd7dfe98ec3b24094d488a0a23d4ca4aaafa1bc04ee0f4d04c7",
   "golden/negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
   "golden/negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
   "golden/negative/extra-trust-file.tkb": "7f7af1c8a3c359320dd0b3fee365a5edd95ec0f49c09e8d725a854f6b76f476c",
@@ -94,9 +94,12 @@
   "kit/vectors/retire-self-signed.tkb": "c33f9ed5549c282c2f5fddb0ac8177497e44b4621890371a1f1e735a77db89f5",
   "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
   "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
-  "kit/vectors/run-label-omitted.tkb": "6e63468fe0e914dc74d3cb08f9cd1e6d79bc24c3c81485927f35a351c50153cb",
-  "kit/vectors/run-label-unset.tkb": "11d54d5657363f0ceeca81c431628d8492841525e4120a98ac42c2024f060e1a",
-  "kit/vectors/run-label.tkb": "08f894d98aeed6f51be007d303e2d734cfd07c656f2f688d7688a059d82d4160",
+  "kit/vectors/run-label-inherited-untracked.tkb": "76ccb51e1a19666d7c774a9c259b4656f796260a0cd59e8ffded16181a568225",
+  "kit/vectors/run-label-inherited.tkb": "b8b80a42b4425a806ee846c72c4b8775d4d15668eb121b4c5a890802780f3d33",
+  "kit/vectors/run-label-omitted-trusted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
+  "kit/vectors/run-label-omitted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
+  "kit/vectors/run-label-unset.tkb": "3568120c790ea55ac856cf81c8146cb7e425a18a7089e94c3184d0dcfae91f77",
+  "kit/vectors/run-label.tkb": "b7ec4eea11d8522f58d17b14fb1ebe253f4dbc242911c9d0cf7107adf6a76536",
   "kit/vectors/run-seq-written-0.tkb": "85a6cacbf2346cc88fb4154e20a1d6dbc5fd171f01f559b9550d73d3bb5eba9f",
   "kit/vectors/run-set-open-only.tkb": "e61809464ed089a0f749735c5fd7db4343e28ccf9f5652b1695b6a30f8a0e6ad",
   "kit/vectors/signature-s-plus-l.tkb": "9be85507ea5c6b888dee292c426eda0509a3d519b0be3d84e976918265ac7464",
@@ -107,6 +110,7 @@
   "kit/vectors/trust-extra-alg.json": "763c87a01b841f4aa710c3a7f00ff6335669b303fc91a31cdf427af4943fbf18",
   "kit/vectors/trust-issuer.json": "85f21c05ee39114c3ff342d93014e5629869de1fbfb3e4cd25cae5156ec29145",
   "kit/vectors/trust-other-alg.json": "d24aadaee508480b7c2f258bbae19b4839ebaa9f680fcbccd4cb07673b8ad244",
+  "kit/vectors/trust-policy.json": "5e0b92af019a05334652046951780548b47ec95b08aeafebf6f80dc474146eb6",
   "kit/vectors/trust-two-logs.json": "830edf08998c5e9844de6f799ef3c26f4180d2c239567a462d39bef14791c93e",
   "kit/vectors/trust.json": "b0c81d58854284eaca0e2cec37846b53fd0beecb37f541ef2176566a7f1302de",
   "kit/vectors/v-float.tkb": "85a7dc87f46994a42c41510e438d2ff72f34ab723a6a6e12ea0a841d466943bd"
@@ -1126,6 +1130,46 @@
     "run labels"
    ],
    "decided_by": "§3 (run labels: added before the run's next decision), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label left out, its policy only in the trust config",
+   "input": "kit/vectors/run-label-omitted-trusted.tkb",
+   "trust": "kit/vectors/trust-policy.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§10 (a trust config's policies: known by their hash), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label inherited from another run of the requester",
+   "input": "kit/vectors/run-label-inherited.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a requester's, signer-asserted), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an inherited label no run condition reads",
+   "input": "kit/vectors/run-label-inherited-untracked.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: only those the policy's run conditions read), §11 step 9",
    "addon": "run labels",
    "needs": "1.8.0"
   },

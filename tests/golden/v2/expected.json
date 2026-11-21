@@ -59,6 +59,10 @@
             "pass"
           ],
           [
+            "label policies",
+            "warn"
+          ],
+          [
             "tiers",
             "pass"
           ],
@@ -136,6 +140,10 @@
             "pass"
           ],
           [
+            "label policies",
+            "warn"
+          ],
+          [
             "tiers",
             "pass"
           ],
@@ -203,6 +211,10 @@
           [
             "inclusion",
             "pass"
+          ],
+          [
+            "label policies",
+            "warn"
           ],
           [
             "tiers",
@@ -276,6 +288,10 @@
           [
             "coverage",
             "pass"
+          ],
+          [
+            "label policies",
+            "warn"
           ],
           [
             "tiers",
@@ -361,6 +377,10 @@
           [
             "coverage",
             "pass"
+          ],
+          [
+            "label policies",
+            "warn"
           ],
           [
             "tiers",

@@ -123,7 +123,9 @@ class Engine:
         # pattern names a folder in mixed case
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
-        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
+        # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
+        self.rules = [("flag" if r.get("mode") == "shadow" else sec, r, compile_(r["tool"]) if "tool" in r else None,
+                       rx(r, "pattern"),
                        rx(r, "unless") if "unless" in r else None, lits := literals(r["pattern"]),
                        _finer(requirements(r["pattern"]), lits), literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
@@ -172,15 +174,12 @@ class Engine:
         # each run label a rule sets (its own label, of RUN_LABELS); the rules on the call's labels (LABELS_FIELD),
         # read after the others, of which a call's own labels are
         self.when = {r["id"]: frozenset(r["when"]["run_has"]) for _, r, *_ in self.rules if "when" in r}
-        # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
-        self.shadow = {r["id"] for _, r, *_ in self.rules if r.get("mode") == "shadow"}
         self.labels = {r["id"]: r["label"] for _, r, *_ in self.rules if "label" in r}
         self.run_label = {i: x for i, x in self.labels.items() if x in RUN_LABELS}
-        # (with the policy's labels each matches: a closed set, so a call's are looked up, not searched)
-        names, deadline = set(self.labels.values()), [REGEX_TIMEOUT_S]
-        self._on_labels = [(*x, frozenset(n for n in names if self._match(x[3], n, False, deadline) and not (
-            x[4] is not None and self._match(x[4], n, False, deadline)))) for x in self.rules
-            if x[1].get("field") == LABELS_FIELD]
+        self._on_labels = [x for x in self.rules if x[1].get("field") == LABELS_FIELD]
+        # the rules on LABELS_FIELD each set of a call's labels matches, as the subject they read (labels_subject):
+        # a policy's labels are a closed set, and a call's few, so each set is searched once
+        self._label_hits = {}
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -430,7 +429,10 @@ class Engine:
         # the run condition rules that match, held aside (`cond`: section, id) until their labels apply them; a subject
         # over MAX_SUBJECT matches none of them (the other rules decide such a call)
         cond = []
-        for entry in () if _hidden or nondeterministic else self._of[cls, "when"]:
+        # (none for a harness call, a message to the agent's own agents: it reads no file and runs nothing, and sets no
+        # label: labels.Sources.of_call)
+        harness = cls == "harness"
+        for entry in () if _hidden or nondeterministic or harness else self._of[cls, "when"]:
             try:
                 if hit(entry, parsed, memo, []) == entry[1]["id"]:
                     cond.append((entry[0], entry[1]["id"]))
@@ -485,23 +487,36 @@ class Engine:
                 len(_text(canonical(args)).encode()) > MAX_SUBJECT:
             hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]
             hits["ask"].append("TK-OVERSIZE")
-        # the rules on the call's labels: those of the rules it matched (not the run condition rules held aside)
-        mine = {self.labels[i] for sec in SECTIONS for i in hits[sec] if i in self.labels} \
-            if self._on_labels and not nondeterministic else ()
-        for sec, rule, tool_re, *_, tool_lits, matching in self._on_labels if mine else ():
-            try:
-                if not mine.isdisjoint(matching) and _reaches(rule, cls) and self._named(
-                        tool_re, tool_lits, name, low_name, deadline):
-                    cond.append((sec, rule["id"]))
-            except TimeoutError:   # as a match of the loop above that runs out of time: deny
-                nondeterministic = True
-                hits["deny"].append(rule["id"])
-                break
+        # the rules on the call's labels: those of the rules it matched (not the run condition rules held aside), as
+        # one subject (labels_subject); a run condition rule's waits in `cond`, another's applies now
+        mine = labels_subject(self.labels[i] for sec in SECTIONS for i in hits[sec] if i in self.labels) \
+            if self._on_labels and not nondeterministic and not harness else ""
+        found = self._label_hits.get(mine) if mine else ()
+        try:
+            if found is None:
+                found = []
+                for x in self._on_labels:
+                    rid = x[1]["id"]
+                    if self._match(x[3], mine, False, deadline) and not (
+                            x[4] is not None and self._match(x[4], mine, False, deadline)):
+                        found.append(x)
+                if len(self._label_hits) < 4096:
+                    self._label_hits[mine] = found
+            for sec, rule, tool_re, *_, tool_lits in found:
+                rid = rule["id"]
+                if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low_name, deadline):
+                    if rid in self.when:
+                        cond.append((sec, rid))
+                    else:
+                        hits[sec].append(rid)
+        except TimeoutError:   # as a match of the loop above that runs out of time: deny
+            nondeterministic = True
+            hits["deny"].append(rid)
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
         if cond:
-            out["when"] = {rid: "flag" if rid in self.shadow else sec for sec, rid in cond}
+            out["when"] = {rid: sec for sec, rid in cond}
         if nondeterministic:
             out["nondeterministic"] = True
         if oversize:
@@ -3593,6 +3608,12 @@ def _prepare(subjects, tag=0):
 def _text(s):
     """Lone surrogates (valid in JSON escapes, not in UTF-8) become \\udxxx text, the same for both engines."""
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
+
+
+def labels_subject(labels):
+    """The subject a rule on LABELS_FIELD reads: a call's labels (of the rules it matched), sorted, each once, joined by
+    a space (`background_spawn egress`), so one pattern can name two of them."""
+    return " ".join(sorted(set(labels)))
 
 
 def spelled(policy):

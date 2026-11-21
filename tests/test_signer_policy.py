@@ -87,7 +87,8 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-A081", "TK-Q001", "TK-DEMO-ASK")], server["ask"])
+                                                                   "TK-A081", "TK-Q001", "TK-Q002", "TK-DEMO-ASK")],
+                         server["ask"])
         # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
         # the laptop counts no sequence (its TK-Q001 is a run condition), and has the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
@@ -99,8 +100,9 @@ class Packs(unittest.TestCase):
         self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
         mine = [r for r in server["flag"] if r["id"] not in wide]
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
+        # and what sets the run labels its run conditions read (docs/policy-v2.md#run-conditions)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
-                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 42))])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
         self.assertNotIn("sequences", dev)
@@ -5433,7 +5435,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             for e in self.engines:
                 with self.subTest(engine=e.engine, tool=tool, args=str(args)[:80]):
                     d = e.decide(tool, args)
-                    self.assertEqual(d["verdict"], want, d)
+                    # a gh write that runs is flagged as egress (TK-F037, which a run condition reads), and no more
+                    ran = "allow" if d["verdict"] == "flag" and d["rule_ids"] == ["TK-F037"] else d["verdict"]
+                    self.assertEqual(ran if want == "allow" else d["verdict"], want, d)
                     if rule:
                         self.assertIn(rule, d["rule_ids"], d)
 

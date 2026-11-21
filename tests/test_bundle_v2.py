@@ -1355,13 +1355,13 @@ class TestAgentApprovals(Case):
         code, lines = self.lines(answer={"approver_kind": None})   # without agent approvals, the report as before
         self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
 
-    def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
-        for kw, want in (({}, True), ({"answer": {"approver_kind": None}}, False),
-                         ({"answer": {"decision": "reject"}}, False)):
+    def test_a_bundle_holds_the_snapshot_of_each_policy_its_decisions_name(self):
+        # whoever answered: the run's labels are replayed under it (a person's approval and a rejection too)
+        for kw in ({}, {"answer": {"approver_kind": None}}, {"answer": {"decision": "reject"}}):
             with self.subTest(kw):
                 name = f"cited-{len(os.listdir(self.d))}"
                 out = agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw)
-                self.assertEqual(any(n.startswith("policies/") for n in v2.read_zip(out)), want)
+                self.assertEqual(len([n for n in v2.read_zip(out) if n.startswith("policies/")]), 1)
 
     def test_without_the_snapshot_the_bounds_are_unchecked(self):
         code, lines = self.lines(snapshot=False)

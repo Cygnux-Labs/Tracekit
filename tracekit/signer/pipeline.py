@@ -365,6 +365,7 @@ class Tx:
         contain_state(self.set, log, run, e, self.pop)
         grant_state(self.set, run, e)
         labels.state(self.set, run, e)
+        labels.carry(self.set, log, run, e, self.pop)
         # the run labels this record sets, each a signer's run.label right after it, before the run's next call (a
         # final run's state keeps no calls: nothing it records runs a call)
         new = log.labels.sets(e, log.approvals.get, run["calls"].get) - set(run.get("labels") or ()) \
@@ -499,7 +500,7 @@ class RecordLog:
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys, "agent": self.agent, "contain": self.contain,
+                "keys": self.keys, "agent": self.agent, "contain": self.contain, "carry": self.carry,
                 **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
@@ -524,7 +525,7 @@ class RecordLog:
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
         unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
-        agent, contain = {"off": False, "uses": {}}, new_contain()
+        agent, contain, carry = {"off": False, "uses": {}}, new_contain(), {}
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
 
@@ -564,7 +565,7 @@ class RecordLog:
                             outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
-            agent, contain = st.get("agent", agent), st.get("contain", contain)
+            agent, contain, carry = st.get("agent", agent), st.get("contain", contain), st.get("carry", carry)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
@@ -700,11 +701,13 @@ class RecordLog:
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
                 labels.state(dict.__setitem__, run, e)
+                labels.carry(dict.__setitem__, types.SimpleNamespace(carry=carry, labels=self.labels), run, e,
+                             lambda d, k: d.pop(k, None))
         for run in runs.values():   # a run's last result had no executed_against_policy gap after it
             if run.get("ran_under"):
                 run["decisions"].pop(run.pop("ran_under")[1], None)
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.agent, self.contain = agent, contain
+        self.agent, self.contain, self.carry = agent, contain, carry   # carry: labels.carry's
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         for (tenant, run_id), r in runs.items():   # open runs a fresh detection state never saw registered
             k = f"{tenant}\0{run_id}"

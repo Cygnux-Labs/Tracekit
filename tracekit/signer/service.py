@@ -535,6 +535,18 @@ def _stricter(a, b):
     return d
 
 
+def _carry(policy, d, b):
+    """Decision `d` with what a reading `b` that doesn't decide the call still says of the run: its run condition rules
+    waiting on labels (`when`) and its rules that set a label a run condition reads (as a flag: the call runs, and the
+    label is set when it does), so a send typed into a shell or a PowerShell line counts as one."""
+    tracked = frozenset().union(*policy.when.values())
+    ids = [i for i in b["rule_ids"] if policy.labels.get(i) in tracked] if tracked else []
+    if not (ids or b.get("when")):
+        return d
+    return _stricter(d, {"verdict": "flag" if ids else "allow", "rule_ids": ids,
+                         **({"when": b["when"]} if b.get("when") else {})})
+
+
 def evaluate(policy, tool, args, hint=None, untrusted=None):
     """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
     hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
@@ -563,15 +575,13 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         typed = args.get("typed_line")
         for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
             b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
-            if b["verdict"] in ("ask", "deny"):
-                d = _stricter(d, b)
+            d = _stricter(d, b) if b["verdict"] in ("ask", "deny") else _carry(policy, d, b)
         flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
         data = args.get("data")
         if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
                 isinstance(data, str):
             b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
-            if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
-                d = _stricter(d, b)
+            d = _stricter(d, b) if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"} else _carry(policy, d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
         if tool.startswith("mcp__") and "__" in tool[5:]:
             # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
@@ -594,8 +604,8 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
             # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
             b = policy.decide("Bash", args, untrusted=untrusted)
-            if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in policy.rules):
-                d = _stricter(d, b)
+            d = _stricter(d, b) if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in policy.rules) \
+                else _carry(policy, d, b)
         for mcp in mcps:
             if mcp != tool:
                 d = _stricter(d, policy.decide(mcp, args, untrusted=untrusted))
@@ -611,7 +621,9 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             return d, False, d["rule_ids"]
         h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+        mismatch = cls == "unknown" or strict is not d
+        strict = policy.condition(_carry(policy, strict, h if strict is d else d))
+        return strict, mismatch, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
     except RecursionError:
         raise
     except Exception as e:
@@ -3196,8 +3208,15 @@ class SignerService:
                 if memo.get("run_labels"):
                     data["run_labels"] = memo["run_labels"]
             else:
-                # run conditions under the labels the run carries now, on the writer: one a call just before set counts
+                # run conditions under the labels the run carries now, on the writer: one a call just before set counts,
+                # and one its requester carries from another run of theirs, added first (labels.labels_for)
                 d, mismatch, both = ruled
+                have = run.get("labels") or {}
+                for label, (rid, seq) in sorted(labels.labels_for(self.log, run["tenant"], run["owner"],
+                                                                  run["people"][1]).items()):
+                    if label not in have:
+                        tx.emit(run, "run.label", {"label": label, "action": "add", "by": "signer",
+                                                   "inherited": {"run_id": rid, "run_seq": seq}}, source="signer")
                 d = self.policy.condition(d, run.get("labels") or ())
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
                 both = list(dict.fromkeys(both + rule_ids))

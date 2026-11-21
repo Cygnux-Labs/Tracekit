@@ -1,13 +1,16 @@
-"""Hostile twins (docs/policy-v2.md#hostile-twins): for every shipped rule with an `unless`, four calls that carry its
+"""Hostile twins (docs/policy-v2.md#hostile-twins): for every shipped rule with an `unless`, calls that carry its
 exempt text where it must not exempt, each decided on every shipped pack and both engines; a twin is never decided
 looser than the call it is the twin of, and keeps that call's rule.
 
 An `unless` reads text, and text can be made to look like the exemption: an exempt flag in a quoted last word, in
-another option's value or in a decoy MCP argument (three spoofs a review found). A rule's entry names a call it matches (the
-base), the exempt form of it (the sanity check: the exemption is real) and the exempt text E. On a command line the
-twins are the exempt form with E rewritten: E as a quoted last word's end (`'x E'`), as the value of an option that
-takes one, and after `--`, where every program reads it as a positional; and the base sent through an MCP tool with E
-in a decoy argument. A rule on one value (a file path, a URL, a tool name) or on a call's whole arguments has no
+another option's value or in a decoy MCP argument (three spoofs a review found), after a tab in its word, or before an
+option that undoes it (two more). A rule's entry names a call it matches (the base), the exempt form of it (the sanity
+check: the exemption is real) and the exempt text E; a rule may have several. On a command line the twins are the
+exempt form with E rewritten: E as a quoted last word's end (`'x E'`), as the value of an option that takes one, after
+`--`, where every program reads it as a positional, and after a tab in its own word (`'<TAB>E'`: one word, which
+an `unless` reading any whitespace takes as two); each option of RESETS after the exempt form, followed by the base's
+words (curl's --next starts another request, -K reads options from a file); and the base sent through an MCP tool
+with E in a decoy argument. A rule on one value (a file path, a URL, a tool name) or on a call's whole arguments has no
 command line: its twins carry E in a decoy argument, in another argument the class reads for the same field, in a key
 that ends as the exempted key does, and in a decoy argument of the call sent through an MCP tool."""
 import json
@@ -31,7 +34,9 @@ LINES = {
     "TK-A021": ("gh auth token", "gh auth token --help", "--help", "--hostname"),
     "TK-A035": ("aws secretsmanager get-secret-value", "aws secretsmanager get-secret-value --help", "--help",
                 "--secret-id"),
-    "TK-A043": ("stripe refunds create", "stripe refunds create --help", "--help", "--charge"),
+    "TK-A043": [("stripe refunds create", "stripe refunds create --help", "--help", "--charge"),
+                ("curl https://api.stripe.com/v1/refunds -d charge=ch_1",
+                 "curl -G https://api.stripe.com/v1/refunds -d charge=ch_1", "-G", "-o")],
     "TK-A048": ("docker volume rm", "docker volume rm --help", "--help", "--filter"),
     "TK-A055": ("prisma migrate reset", "prisma migrate reset --help", "--help", "--schema"),
     "TK-A056": ("gh release create v1.0", "gh release create v1.0 --draft", "--draft", "--notes"),
@@ -46,7 +51,12 @@ LINES = {
     "TK-F012": ("curl https://example.org/?q=1", "curl http://localhost:8000/", "http://localhost:8000/", "-o"),
     "TK-F013": ("curl example.org", "curl http://127.0.0.1:8000/", "http://127.0.0.1:8000/", "-o"),
     "TK-F015": ("rm .codex/config.toml", "rm .claude/projects/p/memory/m.md", ".claude/projects/p/memory/m.md", "-I"),
+    "TK-F034": [("grep x .env", "grep x .env.example", ".env.example", "-m"),
+                ("cat .env", "cat ~/.ssh/known_hosts", "~/.ssh/known_hosts", "-n")],
+    "TK-F035": ("cat < .env", "cat < .env.example", ".env.example", "-n"),
 }
+# options after which a program no longer reads the exempt form as it did: (option, its value or None)
+RESETS = {"TK-A043": [("--next", None), ("-:", None), ("-K", "/tmp/c"), ("--config", "/tmp/c")]}
 # rules on one value or on a call's whole arguments: (tool, base arguments, exempt arguments, E, the key E stands for)
 CALLS = {
     "TK-A058": ("Write", {"file_path": "/w/model.pth", "content": "x"},
@@ -64,6 +74,9 @@ CALLS = {
     "TK-D022": ("LibraryUpload", {"path": "/h/.ssh/id_rsa"}, {"path": "/h/.ssh/id_rsa.pub"}, "/h/.ssh/id_rsa.pub",
                 "path"),
     "TK-F006": ("mcp__gh__create_issue", {"title": "x"}, None, "get_issue", "tool"),
+    "TK-F033": ("Read", {"file_path": "/app/.env"}, {"file_path": "/app/.env.example"}, "/app/.env.example",
+                "file_path"),
+    "TK-F036": ("mcp__onepassword__get_item", {"item": "x"}, None, "list_items", "tool"),
     "TK-F009": ("Write", {"file_path": "/h/.claude/settings.json", "content": "x"},
                 {"file_path": "/h/.claude/projects/p/memory/m.md", "content": "x"}, "/h/.claude/projects/p/memory/m.md",
                 "file_path"),
@@ -78,17 +91,22 @@ TOOLS = {"TK-M005": {"issue_refund": "payment"}}   # a deployment's own tool, ma
 def twins(rid):
     """[(shape, base call, twin call)] of rule `rid`'s entry; a call is (tool, args)."""
     if rid in LINES:
-        base, exempt, e, value = LINES[rid]
-        flag = exempt.replace(e, "", 1).split() == base.split()
-        at = exempt.index(e) if flag else len(base) + 1
-        line = exempt if flag else base + " " + e
+        out = []
+        for base, exempt, e, value in LINES[rid] if isinstance(LINES[rid], list) else [LINES[rid]]:
+            flag = exempt.replace(e, "", 1).split() == base.split()
+            at = exempt.index(e) if flag else len(base) + 1
+            line = exempt if flag else base + " " + e
 
-        def put(shape):
-            return ("Bash", {"command": line[:at] + shape + line[at + len(e):]})
-        return [("quoted last word", ("Bash", {"command": base}), put(f"'x {e}'")),
-                ("another option's value", ("Bash", {"command": base}), put(f"{value} {e}")),
-                ("after --", ("Bash", {"command": base}), put(f"-- {e}")),
-                ("decoy MCP argument", (MCP, {"command": base}), (MCP, {"command": base, "args": e}))]
+            def put(shape, line=line, at=at, e=e):
+                return ("Bash", {"command": line[:at] + shape + line[at + len(e):]})
+            b = ("Bash", {"command": base})
+            out += [("quoted last word", b, put(f"'x {e}'")), ("another option's value", b, put(f"{value} {e}")),
+                    ("after --", b, put(f"-- {e}")), ("a tab before it in its word", b, put(f"'\t{e}'")),
+                    ("decoy MCP argument", (MCP, {"command": base}), (MCP, {"command": base, "args": e}))]
+            out += [(f"{opt} after it", b, ("Bash", {"command": " ".join(
+                [exempt, opt, *([arg] if arg else []), *base.split()[1:]])})) for opt, arg in RESETS.get(rid, ())
+                    if flag]
+        return out
     tool, args, _, e, key = CALLS[rid]
     out = [("decoy argument", (tool, args), (tool, {**args, "note": e})),
            ("a key that ends as the exempted one", (tool, args), (tool, {**args, f'x"{key}': e})),
@@ -135,14 +153,16 @@ class TestHostileTwins(unittest.TestCase):
         for rid, names in unless_rules(self.pols).items():
             e = self.engine(names[0], "re2", rid)
             if rid in LINES:
-                base, exempt = ("Bash", {"command": LINES[rid][0]}), ("Bash", {"command": LINES[rid][1]})
+                pairs = [(("Bash", {"command": x[0]}), ("Bash", {"command": x[1]}))
+                         for x in (LINES[rid] if isinstance(LINES[rid], list) else [LINES[rid]])]
             else:
                 tool, args, free, *_ = CALLS[rid]
-                base, exempt = (tool, args), free and (tool, free)
-            with self.subTest(rid):
-                self.assertIn(rid, evaluate(e, *base)[0]["rule_ids"])
-                if exempt:
-                    self.assertNotIn(rid, evaluate(e, *exempt)[0]["rule_ids"])
+                pairs = [((tool, args), free and (tool, free))]
+            for base, exempt in pairs:
+                with self.subTest(rid, base=base):
+                    self.assertIn(rid, evaluate(e, *base)[0]["rule_ids"])
+                    if exempt:
+                        self.assertNotIn(rid, evaluate(e, *exempt)[0]["rule_ids"])
 
     def test_every_twin_is_held_as_its_base(self):
         findings = []

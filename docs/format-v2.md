@@ -221,8 +221,13 @@ call it lets run (a `policy.decision` of `allow` or `flag`; the `approval.consum
 `rule_ids` its `approval.request` names; its `capture.gap{executed_against_policy}`, for its latest decision): the
 `label` of each of its rules that is a run label, and `untrusted_content` when the policy's `untrusted` list names the
 tool (as the provenance index reads it). An `input.observed` with `trust: untrusted` sets `untrusted_content`.
+`run.label{label, action: add, by: signer, inherited: {run_id, run_seq}}`: a label the run's requester (its tenant,
+owner and attested principal) carries from another run of theirs, open or ended within the policy's `label_inherit_s`
+(default 3600 s), added before the run's next decision; `inherited` names that run's `run.label` add. A bundle holds
+one run, so an inherited label is signer-asserted (the other run's bundle shows its add).
 `run.label{label, action: clear, by: person, identity, person, reason?, break_glass?}`: a person ended the label
-(`run_label_clear`), never the run's owner, principal or requester; a later record that sets it sets it again. A
+(`run_label_clear`), for the run and its requester, never the run's owner, principal or requester; a later record that
+sets it sets it again. A
 `policy.decision` whose run conditions applied names the labels that made them apply (`run_labels`): each one the run
 carried, or one a rule of the call itself sets. A bundle with either needs `verifier_min_version` 1.8.0.
 
@@ -662,14 +667,18 @@ The verifier pins its own trust, never the bundle's (`verify.v2.load_trust`):
  "rekor": {"trusted_root": {}, "publishing_key": "<base64 SPKI>", "class": "public"},
  "monitors": [{"vkey": "<monitor vkey>", "class": "public|customer|tracekit|operator", "max_age_s": 3600}],
  "issuers": [{"vkey": "<issuer vkey>", "issuance_log_vkey": "<issuance log vkey>"}],
- "analyzers": ["<scheme:subject>"]}
+ "analyzers": ["<scheme:subject>"],
+ "policies": ["<a compiled policy's text>"]}
 ```
 
 `logs` and `algs` are required and non-empty; `witnesses`, `witnesses_required` (default 0, an integer token),
 `rekor`, `monitors` ([monitor](monitor.md) reports the verifier is given), `issuers` (record-key issuers,
 [issuer.md](issuer.md)) and `analyzers` (the identities, `scheme:subject` as `run.registered` records them, whose
-signed findings you take as independent: your operator's `tracekit analyze --v2`, never the agent's) are optional. No
-other key is allowed. A witness is one key under one name, with one class: a cosignature signs no key name and a
+signed findings you take as independent: your operator's `tracekit analyze --v2`, never the agent's) and `policies`
+(the text of each compiled policy you know, as a signer's `<data_dir>/policies/<sha256>.json` holds it: the verifier
+names each by the SHA-256 of its UTF-8 bytes and reads it as a bundled snapshot of that `policy_hash`, so a bundle whose
+snapshot was left out is still replayed; an entry that is not a JSON object's text is refused) are optional. No other
+key is allowed. A witness is one key under one name, with one class: a cosignature signs no key name and a
 witness cosigns with one key (C2SP tlog-cosignature), so each witness counts once, and a trust config that pins one
 cosignature key under two names, two cosignature keys under one name, or one witness vkey with two classes is
 refused. An Ed25519 log key pinned under a key-derived origin (`tracekit.local/k<64 lower-case hex>`, alone or
@@ -741,10 +750,8 @@ line and verdict is in [verdicts](verdicts.md).
    `constraint.added` in its run, else `constraints` fails.
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
    check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
-   (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
-   one the `policy.decision` an agent's approval answered cites (`approvals by agents` checks its rules permit agents;
-   without it, a warning) and the one policy a run with an `incident.opened`, or whose policy has run conditions,
-   was decided under. No other is bundled.
+   (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a `policy.decision` names, once. The
+   trust config's `policies` (§10) count as bundled snapshots.
    **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
    and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
    records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an
@@ -760,7 +767,10 @@ line and verdict is in [verdicts](verdicts.md).
    cites a record that sets that label and that the run didn't carry; a clear is of a label the run carries and its
    `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`); a decision's `run_labels` were
    carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold (`run
-   labels`). With labels but without the policy, they are signer-asserted, with a `label policies` warning.
+   labels`); an inherited add (`inherited`) is of a label the policy's run conditions read, and signer-asserted.
+   Without the policy the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle
+   nor the trust config carries is a `label policies` warning, labels or none: a signer that left every label and the
+   snapshot out would otherwise pass unseen.
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in
     name order: the verifier's own check of it when it interprets it, else a `not interpreted` warning counting the
     records that carry it, for the first 20 such names; one more `not interpreted` warning counts the others. `amended` (1.4.0): `gateway amendments`, passing with `gateway amended n request(s) to show

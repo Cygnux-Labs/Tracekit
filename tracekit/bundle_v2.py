@@ -14,8 +14,8 @@
     checkpoints/<size>.note     the C2SP checkpoint note the proofs are against
     rekor/<size>.json           its Rekor v2 TransparencyLogEntry, when the signer anchored that note
     tsa/<size>.tsr              and the RFC 3161 timestamp response of the anchor
-    policies/<sha256>.json      the compiled policies (canonical JSON, so each is named by its policy_hash) the records
-                                cite where a verifier checks against one (cited_policies), from the signer's policy_dir
+    policies/<sha256>.json      the compiled policies (canonical JSON, so each is named by its policy_hash) the records'
+                                decisions name (cited_policies), from the signer's policy_dir
 
 A run-set bundle (export(..., run_set=(a, b))) proves which runs of one tenant were registered and finalised between
 two checkpoints of the tenant's registry log (tracekit.format.registry). It adds:
@@ -218,25 +218,11 @@ def about(storage, tenant, run_id):
     return out
 
 
-def cited_policies(events, conditioned=lambda h: False):
-    """The policy_hashes whose snapshot a verifier checks the records against: the policy.decision's of each approval an
-    agent gave (its rules must permit agents), and the one policy each run with an incident.opened was decided under,
-    or that has run conditions (`conditioned(policy_hash)`: its labels are replayed under it, so one a record should
-    have set and no run.label adds shows) (its incidents and labels are recomputed under it; a run decided under
-    several has them signer-asserted)."""
-    agent = {e["data"].get("approval_id") for e in events if e["type"] == "approval"
-             and e["data"].get("approver_kind") == "agent" and e["data"].get("decision") == "approve"}
-    asked = {e["data"].get("decision_id") for e in events if e["type"] == "approval.request"
-             and e["data"].get("approval_id") in agent}
-    ran = {}   # run_id -> the policy_hashes its decisions name
-    for e in events:
-        if e["type"] == "policy.decision":
-            ran.setdefault(e.get("run_id"), set()).add(e["data"].get("policy_hash"))
-    incidents = {e.get("run_id") for e in events if e["type"] == "incident.opened"}
-    return ({e["data"]["policy_hash"] for e in events if e["type"] == "policy.decision"
-             and e["data"].get("decision_id") in asked and "policy_hash" in e["data"]}
-            | {next(iter(hs)) for r, hs in ran.items() if len(hs) == 1 and (r in incidents or conditioned(*hs))}) \
-        - {None}
+def cited_policies(events):
+    """The policy_hashes whose snapshot a verifier checks the records against: each one a policy.decision names (its
+    run's labels are replayed under it, so one a record should have set and no run.label adds shows; its incidents are
+    recomputed under it; an agent's approval is checked against its rules)."""
+    return {e["data"].get("policy_hash") for e in events if e["type"] == "policy.decision"} - {None}
 
 
 def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None):
@@ -300,8 +286,11 @@ def zip_entry(name):
 def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None, kept=None):
     """({name: bytes}, summary) of the bundle export() writes, manifest.json first, unzipped: what a verifier reads of
     it. `kept`, for one run with no run-set, other runs or policy_dir (tracekit view, as a run grows): the summary's
-    `kept` of an earlier call ({count, first, last, data, need}), from a reader that still holds those records, so only
-    the run's records after them are read; a `kept` of records the note does not cover is not used."""
+    `kept` of an earlier call ({count, first, last, data, need, policies}), from a reader that still holds those
+    records, so only the run's records after them are read; a `kept` of records the note does not cover is not used.
+    `policy_dir` defaults to the one beside a file store (<data_dir>/policies, where the signer keeps them)."""
+    if policy_dir is None and isinstance(getattr(storage, "root", None), str):
+        policy_dir = os.path.join(os.path.dirname(os.path.abspath(storage.root)), "policies")
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -316,7 +305,7 @@ def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_r
         raise ValueError("export needs a run or a run-set")
     else:
         run_ids += with_runs
-    prior = kept if kept and run_ids == [run_id] and not (run_set or policy_dir) and kept["last"] < size else None
+    prior = kept if kept and run_ids == [run_id] and not run_set and kept["last"] < size else None
     runs, ends, data = {}, {}, {}   # run file -> its records read now; (first, last) of its seqs; its bytes
     for rid in run_ids:
         count = prior["count"] if prior else 0
@@ -355,17 +344,14 @@ def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_r
         with open(os.path.join(policy_dir, str(h).removeprefix("sha256:") + ".json"), "rb") as f:
             return f.read()
 
-    def conditioned(h):   # whether policy h has a run condition (a rule with `when`)
+    cited = cited_policies(events) | set(prior.get("policies", ()) if prior else ())   # the records read before too
+    for h in sorted(cited if policy_dir else ()):
         try:
-            pol = json.loads(snapshot(h))
-        except (FileNotFoundError, ValueError):
-            return False
-        return any("when" in r for sec in ("deny", "ask", "flag") for r in pol.get(sec, []))
-    for h in sorted(cited_policies(events, conditioned) if policy_dir else ()):
-        try:
-            files[f"policies/{h.removeprefix('sha256:')}.json"] = snapshot(h)
+            text = snapshot(h)
         except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
-            pass
+            continue
+        if "sha256:" + hashlib.sha256(text).hexdigest() == h:   # a file changed since the signer kept it: not that one
+            files[f"policies/{h.removeprefix('sha256:')}.json"] = text
     layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
     need, full = needs(events, layout)
     if prior:   # each version is the newest any record needs: the records read before need theirs
@@ -388,8 +374,8 @@ def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_r
             **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {}),
             "verifier_min_version": need, "raised_by": [] if prior else raised_by(events, need, layout),
             "verifier_min_version_full": full}
-    if kept is not None and run_ids == [run_id] and not (run_set or policy_dir):
+    if kept is not None and run_ids == [run_id] and not run_set:
         first, last = ends[run_name(tenant, run_id)]
         info["kept"] = {"count": count, "first": first, "last": last, "data": data[run_name(tenant, run_id)],
-                        "need": (need, full)}
+                        "need": (need, full), "policies": sorted(cited)}
     return {"manifest.json": manifest.encode("utf-8"), **files}, info

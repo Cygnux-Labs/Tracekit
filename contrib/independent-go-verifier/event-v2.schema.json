@@ -4860,7 +4860,7 @@
       }
     },
     "run_label": {
-      "description": "format 1.8: a change of the run's labels (docs/policy-v2.md#run-conditions), which run condition rules read. add: by the signer alone, right after the record that set it (source: that record's run_seq): a call that ran and matched a rule whose label it is, a tool whose results the policy's untrusted list names, an input observed as untrusted. clear: by a person (run_label_clear), never the run's owner, principal or requester",
+      "description": "format 1.8: a change of the run's labels (docs/policy-v2.md#run-conditions), which run condition rules read. add: by the signer alone, right after the record that set it (source: that record's run_seq): a call that ran and matched a rule whose label it is, a tool whose results the policy's untrusted list names, an input observed as untrusted; or before a decision, a label the run's requester carries from another run of theirs (inherited: that run's run.label add). clear: by a person (run_label_clear), never the run's owner, principal or requester",
       "oneOf": [
         {
           "type": "object",
@@ -4888,6 +4888,50 @@
               "type": "integer",
               "minimum": 0,
               "description": "the run_seq of the record that set the label"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "action",
+            "by",
+            "inherited"
+          ],
+          "properties": {
+            "label": {
+              "enum": [
+                "secrets_access",
+                "untrusted_content"
+              ]
+            },
+            "action": {
+              "const": "add"
+            },
+            "by": {
+              "const": "signer"
+            },
+            "inherited": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "run_id",
+                "run_seq"
+              ],
+              "description": "the run.label add of another run of the requester's that this one inherits",
+              "properties": {
+                "run_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 200
+                },
+                "run_seq": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
             }
           }
         },

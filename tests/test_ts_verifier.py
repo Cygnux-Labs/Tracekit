@@ -1601,7 +1601,13 @@ class AgreementScripts(unittest.TestCase):
                 if call.args[1] == "another signer's trust config":
                     with open(call.kwargs["trust"]) as f:
                         pinned[call.args[0]] = json.load(f)["logs"][0].split("+")[0]
-        self.assertEqual(pinned, {name: e22._origin(name, corpus) for name in bundles})
+        # each base's own origin, or a key-derived one (the page's sample's) the forger's key names in its place
+        from tracekit.format import checkpoint as cp
+        self.assertEqual({n: o if not cp.KEY_ORIGIN.match(o) else bool(cp.KEY_ORIGIN.match(o) and
+                                                                    o != e22._origin(n, corpus))
+                          for n, o in pinned.items()},
+                         {n: e22._origin(n, corpus) if not cp.KEY_ORIGIN.match(e22._origin(n, corpus)) else True
+                          for n in bundles})
 
 
 if __name__ == "__main__":

@@ -67,7 +67,7 @@ tracekit signer incidents clear-label RUN --label secrets_access [--reason "..."
 | `incident_resolve` | `run.resumed` in each run it still holds, then `incident.resolved` in the tenant's signer run |
 | `run_hold`, `run_quarantine` | `incident.opened{trigger: operator}` and `run.held` / `run.quarantined` in the run |
 | `run_resume` | `run.resumed` for each incident holding the run (the incidents stay open) |
-| `run_label_clear` | `run.label{action: clear, by: person}` in the run ([run conditions](policy-v2.md#run-conditions)) |
+| `run_label_clear` | `run.label{action: clear, by: person}` in the run; the label leaves its requester too, so a new run of theirs no longer inherits it ([run conditions](policy-v2.md#run-conditions)) |
 | `response_pause`, `response_resume` | `incident.response{enabled}` in the tenant's signer run |
 | `suspend`, `unsuspend` | `identity.suspension{state: suspended \| lifted}` in the tenant's signer run |
 
