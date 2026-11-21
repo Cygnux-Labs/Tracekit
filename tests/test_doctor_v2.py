@@ -20,6 +20,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -810,6 +812,7 @@ class OpenCodePlugin(unittest.TestCase):
                                                                  settings=os.path.join(d, "none.json"),
                                                                  harnesses={"opencode": path})}["D-OPENCODE-PLUGIN"]
             self.assertEqual(row("opencode v2.3.0")["status"], "ok")
+            self.assertEqual(row("1.19.5")["status"], "ok")   # #989: its 2.x prompt and event hooks leave 1.x's as it was
             with open(path) as f:
                 plugin = f.read()
             with open(path, "w") as f:   # the plugin init wrote before: no default export
@@ -2242,6 +2245,7 @@ class ThinkingSummaries(unittest.TestCase):
 
 @unittest.skipIf(not hasattr(os, "mkfifo"), "FIFOs")
 class HostileSettings(unittest.TestCase):
+    @pytest.mark.serial
     def test_a_fifo_or_a_device_as_the_agents_settings_doesnt_hang_doctor(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)

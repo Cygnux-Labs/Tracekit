@@ -165,8 +165,8 @@ class Middleware(unittest.TestCase):
     def test_a_blocking_signer_call_does_not_stall_the_event_loop(self):   # issue #680
         """The async gate's signer calls run in a worker thread: while `decide` sleeps 0.3s, other tasks on the
         loop (here a 10ms tick) keep running - no inter-tick gap approaches the sleep."""
-        decide = self.signer.decide
-        self.signer.decide = lambda req: time.sleep(0.3) or decide(req)
+        decide, deciding = self.signer.decide, threading.Event()
+        self.signer.decide = lambda req: deciding.set() or time.sleep(0.3) or decide(req)
 
         async def one_run_then_tick():
             a_task = asyncio.create_task(self.agent().ainvoke(prompt("echo", text="hi")))
@@ -174,7 +174,8 @@ class Middleware(unittest.TestCase):
             while not a_task.done():
                 await asyncio.sleep(0.01)
                 now = time.monotonic()
-                gaps.append(now - last)
+                if deciding.is_set():   # not LangChain's first-call setup, which is slow in 1.5 and before the call
+                    gaps.append(now - last)
                 last = now
             out = await a_task
             self.assertEqual(tool_message(out).content, "hi")

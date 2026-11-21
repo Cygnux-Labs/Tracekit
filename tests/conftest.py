@@ -1,3 +1,4 @@
+import gc
 import glob
 import io
 import json
@@ -29,6 +30,8 @@ MARKERS = {
     "nightly": "too slow for every push; runs on the nightly schedule",
     "perf": "performance measurement",
     "quickstart": "builds the wheel into a fresh venv and runs docs/quickstart-v2.md (TRACEKIT_QUICKSTART=1)",
+    "serial": "can't share the machine with other tests (a wall-clock budget, a shared port or path): CI runs the "
+              "rest in parallel (`-n auto -m 'not serial'`), then these on their own (`-m serial`)",
     "unverified_bundles": "exports v2 bundles the verifier rejects on purpose (a tampered or synthetic store, a "
                           "forged line), or that need a pinned issuer; skips the every-export-verifies check",
 }
@@ -47,14 +50,23 @@ PROXIES = urllib.request.getproxies()
 _serve_forever = socketserver.BaseServer.serve_forever
 socketserver.BaseServer.serve_forever = lambda self, poll_interval=0.5: _serve_forever(self, min(poll_interval, 0.02))
 
+# Python 3.13 raised the youngest generation's collection threshold from 700 to 2000. At 700, the slowest test files
+# run about four times as many collections, and the full ones walk the whole heap. 3.9 and 3.12 take 3.13's (#722).
+if sys.version_info < (3, 13):
+    gc.set_threshold(2000, 10, 10)
+
 
 def pytest_configure(config):
     for name, doc in MARKERS.items():
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
+@pytest.hookimpl(tryfirst=True)   # before -m selects: it reads the marker
 def pytest_collection_modifyitems(config, items):
-    """perf tests run only when asked for: `pytest -m perf`."""
+    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`."""
+    for item in items:
+        if getattr(getattr(item, "function", None), "serial", False):
+            item.add_marker(pytest.mark.serial)
     if "perf" in (config.getoption("-m") or ""):
         return
     for item in items:
@@ -139,14 +151,34 @@ def _no_real_home_dirs(request):
 
 
 def pytest_sessionfinish(session):
-    made = _made(set(_HOME_DIRS_BEFORE))
-    if made:
-        print(f"\nthis session made {made} in the real home folder, outside any test", file=sys.stderr)
+    errors = _WORKER_ERRORS   # on pytest-xdist's controller, which runs no tests: what its workers found
+    if not session.config.pluginmanager.has_plugin("dsession"):
+        made = _made(set(_HOME_DIRS_BEFORE))
+        if made:
+            errors.append(f"this session made {made} in the real home folder, outside any test")
+        if _LEFT_RUNNING:
+            errors.append(f"a dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}")
+    worker = getattr(session.config, "workeroutput", None)
+    if worker is not None:   # an xdist worker's exit status is not the run's: the controller fails the run for it
+        worker["tracekit"] = {"errors": errors, "bundles": [_BUNDLES["count"], _BUNDLES["seconds"]]}
+        return
+    for e in errors:
+        print("\n" + e, file=sys.stderr)
+    if errors:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    if _LEFT_RUNNING:
-        print(f"\na dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}",
-              file=sys.stderr)
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+_WORKER_ERRORS = []
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    """pytest-xdist's controller, as each worker ends: the errors and bundle count its pytest_sessionfinish passed on."""
+    out = getattr(node, "workeroutput", {}).get("tracekit")
+    if out:
+        _WORKER_ERRORS.extend(out["errors"])
+        _BUNDLES["count"] += out["bundles"][0]
+        _BUNDLES["seconds"] += out["bundles"][1]
 
 
 # Every v2 bundle a test exports in this process is verified against the log key that signed its checkpoint: an honest

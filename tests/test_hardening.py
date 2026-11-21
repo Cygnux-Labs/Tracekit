@@ -19,6 +19,8 @@ import zipfile
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -878,6 +880,7 @@ class RejectionFlood(unittest.TestCase):
         s.ledger.close()
 
 
+@pytest.mark.serial
 class LongInputs(unittest.TestCase):
     def test_padding_cannot_hide_a_command_and_scanning_stays_fast(self):
         import time
