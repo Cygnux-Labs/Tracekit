@@ -66,16 +66,31 @@ and provenance holds only what a page alone brought in ([policy](../policy-v2.md
 | after the delivery ran | `complete` | `status` `ok`, or `error` when the expression raised |
 
 On 1.0, the `python` cell is a tool like the others: its decide names it `browser_use:python` and reads the cell's
-source (`code`), not the browser calls the cell makes when it runs. A cell that raises is completed as `error`: Browser
-Use hands the traceback to the model as the cell's text, so the completion carries the text and the error status. The
-`finish_from_repl` delivery is an output tool, which Pydantic AI runs without the tool hook above: it is decided and
-completed at `Repl.call`, which is where its expression runs. `Repl.call` gates both ops it runs. The `python` cell's
-`exec` is the one the tool hook just decided: it marks that cell's code in a context variable, and the `exec` runs
-without a second decision. An `exec` from anywhere else, which a later release could add, is decided as
-`browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the REPL and the run's state but no
-browser session, so no page is observed and `page_url` is always `""`. The shipped packs allow every cell and every
-delivery until a source reader lands: to hold one, write your own rule for `browser_use:python` or
-`browser_use:finish_from_repl`.
+source (`code`) with `ast.parse` only, never running it. Each literal browser-helper or shell call the source names is
+decided as the action it stands for, on the pack's own rules (`goto_url` as a navigation, `js` as evaluate, and so on),
+and the cell takes the strictest of those decisions; `finish_from_repl` is read the same way from its `expression`. A
+function or lambda body is read where it is defined, whether or not the cell calls it; a parameter or module name in it
+is not literal, and a literal `exec`/`eval` without a namespace shares the cell's names. A literal argv list is decided
+as the shell command it runs, for `subprocess.run`/`Popen` and for `asyncio.create_subprocess_exec`, `os.exec*` and
+`spawn*`, `posix_spawn*` and `pty.spawn` (the program path must be literal too). A call a binding target or an
+annotation evaluates is read too: a subscript's base and index or slice, an attribute's base, a `del`, `for`, `with` or
+comprehension target, an augmented assignment, a module or class annotation, and a parameter, return or PEP 695
+type-parameter annotation (a function's, a class's or a `type` alias's). A source the reader can't follow waits
+for `on_parse_error` (`TK-SOURCE-PARSE`): a callee or required argument that isn't literal text, an unknown bare callee
+that is neither defined in the cell nor a Python builtin (raw CDP such as `cdp(...)` and `_`-prefixed helpers), a helper
+or command used as a value (`goto_url.__call__`, `map(goto_url, ...)`, `Thread(target=os.system)`), `setattr`/`delattr`,
+a computed `getattr`, `globals`/`locals`/`vars`, `__import__`, an unmapped network, process or FFI import (`urllib`,
+`http`, `socket`, `requests`, `httpx`, `aiohttp`, `ctypes`, `multiprocessing`), nested `exec`/`eval` with a namespace of
+its own, a name that may be rebound (`global`/`nonlocal`, a match capture, a comprehension or loop target, a branch),
+nested code past three levels, over 256 calls, or over 64 KiB. A value a branch or a nested `exec` assigns is read as it
+becomes. Code with no mapped action is left to the cell: file writes through `open`, ordinary stdlib calls, or a call
+built at run time. A cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
+completion carries the text and the error status. The `finish_from_repl` delivery is an output tool, which Pydantic AI
+runs without the tool hook above: it is decided and completed at `Repl.call`, which is where its expression runs.
+`Repl.call` gates both ops it runs. The `python` cell's `exec` is the one the tool hook just decided: it marks that
+cell's code in a context variable, and the `exec` runs without a second decision. An `exec` from anywhere else, which a
+later release could add, is decided as `browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the
+REPL and the run's state but no browser session, so no page is observed and `page_url` is always `""`.
 
 The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none,
 when Browser Use doesn't say within 2 s, or on 1.0, whose `Session` has no browser session (an allowlist rule never
@@ -230,6 +245,11 @@ carries no model call id, so they are not linked to the actions. Which framework
 - What the page itself does (scripts, redirects after a click) is not an action and is not seen.
 - A link's target the model never read (an `href` Browser Use doesn't show it) enters the provenance index only once
   the agent is on that page (its URL is in the next step's browser state).
-- On 1.0, no page is observed and `page_url` is empty, and a `python` cell's browser calls run inside the cell, not as
-  actions: Tracekit decides the cell's source and records its outcome, not each call it makes. The same goes for the
-  `finish_from_repl` expression: its source is decided, not the calls it makes.
+- On 1.0, no page is observed and `page_url` is empty. A `python` cell's browser calls run inside the cell, not as
+  actions: Tracekit reads the cell's source and decides each literal helper or shell call as the action it stands for,
+  with the cell at the strictest; what it can't follow is held as `TK-SOURCE-PARSE`. It reads a function or lambda
+  body where it is defined, so the calls in it are decided too; a value that may be rebound, an unknown bare callee,
+  raw CDP, and an unmapped network, process or FFI import are held. It does not read code with no mapped action (file
+  writes through `open`, ordinary stdlib calls, a name built at run time). The same goes for the `finish_from_repl`
+  expression. A cell can still hide an action behind such code; read a 1.0 decision as a statement about the calls its
+  source names literally.
