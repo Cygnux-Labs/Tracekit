@@ -812,6 +812,7 @@ class OpenCodePlugin(unittest.TestCase):
                                                                  settings=os.path.join(d, "none.json"),
                                                                  harnesses={"opencode": path})}["D-OPENCODE-PLUGIN"]
             self.assertEqual(row("opencode v2.3.0")["status"], "ok")
+            self.assertEqual(row("1.19.5")["status"], "ok")   # #989: its 2.x prompt and event hooks leave 1.x's as it was
             with open(path) as f:
                 plugin = f.read()
             with open(path, "w") as f:   # the plugin init wrote before: no default export

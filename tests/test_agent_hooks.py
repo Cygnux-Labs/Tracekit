@@ -995,6 +995,18 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "allow", "allow", "allow", "deny"])
 
+    def test_opencode_2_v1_records_no_unverified_prompt_and_ends_a_deleted_session(self):
+        # #989: v1 has no untrusted prompt observation, so OpenCode 2.x's prompts (nothing says a person typed them)
+        # aren't recorded as the person's; a deleted session ends its run
+        base = {"session_id": "oc2-v1", "cwd": self.d}
+        call = {**base, "tool_name": "bash", "tool_use_id": "c1", "tool_input": {"command": "ls"}}
+        self.assertEqual(self.hook("opencode", call, "tool.execute.before")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", {**base, "prompt": "keep away from prod"}, "session.prompt")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", base, "session.deleted")[:2], (0, ""))
+        types = [e["type"] for e in self.events("oc2-v1")]
+        self.assertNotIn("user.prompt", types)
+        self.assertIn("run.end", types)
+
     def test_cline_answers_in_json_at_exit_0_and_a_denied_call_is_cancelled(self):
         # Cline reads a hook's answer only from its JSON ({"cancel": true} stops the task) and runs the call on any
         # other exit, so every answer is at 0; the event is the hook file's name, on the command line
@@ -3693,7 +3705,7 @@ class Installer(unittest.TestCase):
         import site
         from tracekit import install
         user = os.path.join(site.getusersitepackages(), "tracekit", "__init__.py")   # pip install --user, which -I hides
-        events = ("tool.execute.before", "tool.execute.after")
+        events = ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")
         with mock.patch("importlib.util.find_spec", return_value=mock.Mock(origin=user)):
             plugin = agent_hooks._opencode_plugin(None, False)
             want = {ev: install._dev_hook_argv("tracekit.agent_hooks", "entry", ("opencode", ev)) for ev in events}
@@ -3765,7 +3777,8 @@ class Installer(unittest.TestCase):
                     plugin = f.read()
                 # the same plugin, whose hook is told it runs for Kilo, and whose batch block names Kilo Code's config
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
-                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo")
+                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace('"opencode", "session.', '"kilo", "session.')
+                    .replace("--agent opencode", "--agent kilo")
                     .replace("OpenCode's experimental batch", "Kilo Code's experimental batch").replace(
                         "batch_tool in opencode.json", "batch_tool in kilo.json"))
                 self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
