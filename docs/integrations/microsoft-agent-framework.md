@@ -10,11 +10,11 @@ waits for a person) and records the outcome after. Agent Framework's own code is
 ## Install
 
 ```bash
-pip install tracekit-ai "agent-framework-core>=1.22,<1.23" agent-framework-openai
+pip install tracekit-ai "agent-framework-core>=1.22,<2" agent-framework-openai
 ```
 
-Tested with Agent Framework 1.22 (`agent-framework-core`), which needs Python 3.10+; other minors may change how
-middleware runs, and building `Tracekit(run)` with one warns. Pick the package for your model provider
+Tested with Agent Framework 1.22 and 1.26 (`agent-framework-core`), which need Python 3.10+; a later 1.x installs,
+and building `Tracekit(run)` with one warns once that it is untested; CI runs the newest 1.x on every change. Pick the package for your model provider
 (`agent-framework-openai`, `agent-framework-anthropic`, `agent-framework-foundry`, ...); the middleware itself needs
 only the core.
 
@@ -125,5 +125,5 @@ The message itself is kept only when the signer's content vault is on; without i
 - With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content items is
   recorded as its items, which the gateway doesn't match to what the model is sent (joined with newlines for OpenAI,
   separate blocks for Anthropic): such a call reads as `result_mismatch`.
-- Not wired by `tracekit.instrument()`, and tested with 1.22 only: another version warns when you build
+- Not wired by `tracekit.instrument()`, and tested with 1.22 and 1.26: a later 1.x warns when you build
   `Tracekit(run)`.

@@ -10,10 +10,11 @@ that gates every tool call an agent makes, and every output function the model c
 ## Install
 
 ```bash
-pip install tracekit-ai "pydantic-ai-slim[openai]>=2.57,<2.58"
+pip install tracekit-ai "pydantic-ai-slim[openai]>=2.57,<3"
 ```
 
-Tested with Pydantic AI 2.57, which needs Python 3.11+. Pick the extra for your model provider (`[openai]`,
+Tested with Pydantic AI 2.57 and 2.71, which need Python 3.11+. A later 2.x installs and the capability says once
+that it is untested; CI runs the newest 2.x on every change. Pick the extra for your model provider (`[openai]`,
 `[anthropic]`, ...); the capability itself needs none.
 
 ## Setup
