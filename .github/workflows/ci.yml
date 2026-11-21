@@ -3,18 +3,86 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:   # the merge queue: the required checks run on the queue's merge commit
+  schedule:
+    - cron: "23 1 * * *"   # nightly: the full matrix and every job, whatever changed
 
 permissions:
   contents: read
 
 concurrency:   # a new push to a pull request cancels its older run; runs on main always finish
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'schedule' && 'nightly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    # Which jobs below a pull request or a merge group needs, from the paths it changes; a push to main and the nightly
+    # run need them all. The required jobs (the Linux test and Speed jobs, E8 Linux system mode, the TypeScript SDK, the
+    # wheel) don't wait for this one and run on every pull request. Only an output of 'false' skips a job, so if this
+    # job fails, every job runs
+    name: Changed paths
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      insider_v2: ${{ steps.paths.outputs.insider_v2 }}
+      root: ${{ steps.paths.outputs.root }}
+      contrib: ${{ steps.paths.outputs.contrib }}
+      go_verifier: ${{ steps.paths.outputs.go_verifier }}
+      strands: ${{ steps.paths.outputs.strands }}
+      crewai: ${{ steps.paths.outputs.crewai }}
+      browser_use: ${{ steps.paths.outputs.browser_use }}
+      quickstart: ${{ steps.paths.outputs.quickstart }}
+      signer_evals: ${{ steps.paths.outputs.signer_evals }}
+      clean_machine: ${{ steps.paths.outputs.clean_machine }}
+      container: ${{ steps.paths.outputs.container }}
+      postgres: ${{ steps.paths.outputs.postgres }}
+      evals: ${{ steps.paths.outputs.evals }}
+    steps:
+      - if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2   # a pull request's merge commit and the base it is merged onto
+          persist-credentials: false
+      - id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) files=$(git diff --no-renames --name-only HEAD^1 HEAD) ;;
+            merge_group) git fetch --no-tags --depth=1 origin "$GROUP_BASE"
+                         files=$(git diff --no-renames --name-only "$GROUP_BASE" HEAD) ;;
+            *) files=ALL ;;
+          esac
+          printf '%s\n' "$files"
+          # need <output> <paths>: true on a push and nightly, for a change to CI itself, the package's dependencies or
+          # the shared test setup, and for a change to one of <paths>
+          need() {
+            if [ "$files" = ALL ] || grep -qE "^(\.github/workflows/ci\.yml|pyproject\.toml|MANIFEST\.in|Makefile|tests/(conftest|factories|adapter_contract)\.py)$|$2" <<< "$files"; then
+              echo "$1=true" | tee -a "$GITHUB_OUTPUT"
+            else
+              echo "$1=false" | tee -a "$GITHUB_OUTPUT"
+            fi
+          }
+          need insider_v2 '^(tracekit/|eval/e8_)'
+          need root '^(tracekit/|tests/test_(install_files|harness_03|hotfix_021|system_install|v02)\.py)'
+          need contrib '^(contrib/|tracekit_sdk\.py|tracekit/(__init__|agent_sdk|bundle|client|core|cost|coverage|daemon|findings|hook|install|ledger|policy)\.py|tracekit/(adapters|policy|verify)/)'
+          need go_verifier '^(contrib/independent-go-verifier/|tracekit/(bundle|bundle_v2)\.py|tracekit/(verify|format|schema)/|tests/(golden|kit)/|tests/test_(go_verifier|bounded|ts_verifier)\.py)'
+          need strands '^(tracekit/integrations/(__init__|strands|said|gate|version_check)\.py|tracekit/(parsers|autowire|gateway|policy)\.py|tracekit/(sdk|signer|format)/|tests/test_(strands|examples_v2|said)\.py|examples/v2/strands/)'
+          need crewai '^(tracekit/integrations/(__init__|crewai|version_check)\.py|tracekit/autowire\.py|tracekit/(sdk|format)/|tracekit/signer/rpc_schema\.py|tests/test_(crewai|examples_v2)\.py|examples/v2/crewai/)'
+          need browser_use '^(tracekit/integrations/|tracekit/(__init__|autowire|testing|wiki|policy)\.py|tracekit/(sdk|signer|format)/|tests/test_(contract_browser_use|instrument)\.py)'
+          need quickstart '^(docs/quickstart-v2\.md|tests/(test_quickstart|quickstart_agents)\.py|tracekit/(__init__|autowire|cli|install)\.py|tracekit/(integrations|sdk|signer)/)'
+          need signer_evals '^(tracekit/|eval/e(9|15)_)'
+          need clean_machine '^(examples/v2/(clean-machine\.(sh|ps1)|custom/)|tracekit/(__init__|cli)\.py|tracekit/(sdk|signer)/)'
+          need container '^(deploy/|tracekit/(signer|deploy|storage|transport|identity)/|tracekit/(cli|doctor)\.py)'
+          need postgres '^(tracekit/(storage|signer|format|verify)/|tracekit/bundle_v2\.py|tests/(storage_contract|test_storage_postgres|test_format_bridge|test_monitor|test_signer_checkpoints|test_signer_lifecycle|test_signer_service|test_witness_publish)\.py)'
+          need evals '^(tracekit/|tracekit_sdk\.py|eval/|tests/|sdk/typescript/|examples/)'
+
   test:
     name: py${{ matrix.python }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest became Ubuntu 26.04 on 2026-11-19, which has no Python 3.9 build: 3.9 runs on 24.04, under the
+    # same job name, so the required checks keep their names
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os }}
     # a hung test must fail the job, not hold a runner for six hours
     timeout-minutes: 120
     env:
@@ -28,9 +96,19 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.12", "3.13"]
-        exclude:   # macOS and Windows (advisory): the oldest and newest Python are enough
+        # macOS and Windows (advisory): the oldest and newest Python on a push to main and nightly, none on a pull
+        # request or in the merge queue (on a push the last four entries exclude 3.12 again, so they match a real entry)
+        exclude:
           - {os: macos-latest, python: "3.12"}
           - {os: windows-latest, python: "3.12"}
+          - os: macos-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.9' || '3.12' }}
+          - os: macos-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.13' || '3.12' }}
+          - os: windows-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.9' || '3.12' }}
+          - os: windows-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.13' || '3.12' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fetch the release tags (tests/test_released_verifiers.py runs their verifiers)
@@ -45,9 +123,16 @@ jobs:
       - name: Lint
         run: python -m pyflakes tracekit tracekit_sdk.py tests eval examples
       - name: Test
-        # the Speed test runs in its own job below, so this one isn't held up by it
+        # a worker per CPU (pytest-xdist); the Speed test runs in its own job below, so this one isn't held up by it
+        id: test
         run: >-
-          python -m pytest -v -o faulthandler_timeout=240
+          python -m pytest -v -o faulthandler_timeout=240 -n auto --dist worksteal -m "not serial"
+          --deselect tests/test_policy2.py::Speed::test_every_pack_pattern_searches_64_kib_within_budget
+      - name: Test the serial tests
+        # the tests marked serial (wall-clock budgets) on their own, after the parallel run even when it failed
+        if: ${{ !cancelled() && steps.test.outcome != 'skipped' }}
+        run: >-
+          python -m pytest -v -o faulthandler_timeout=240 -m serial
           --deselect tests/test_policy2.py::Speed::test_every_pack_pattern_searches_64_kib_within_budget
 
   speed:
@@ -55,7 +140,9 @@ jobs:
     # pool (#722). It took 3-6 minutes of each test job, so its own job, alongside the test job, takes that off the
     # test job's time. Every Python and OS of the test job, since each installs its own `regex` build
     name: Speed py${{ matrix.python }} on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    # ubuntu-latest became Ubuntu 26.04 on 2026-11-19, which has no Python 3.9 build: 3.9 runs on 24.04, under the
+    # same job name, so the required checks keep their names
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && matrix.python == '3.9' && 'ubuntu-24.04' || matrix.os }}
     # about twice the slowest job measured (7.7 min): a pattern that starts backtracking fails in minutes, not at 90
     timeout-minutes: 15
     env:
@@ -67,9 +154,17 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.12", "3.13"]
-        exclude:
+        exclude:   # as the test job's
           - {os: macos-latest, python: "3.12"}
           - {os: windows-latest, python: "3.12"}
+          - os: macos-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.9' || '3.12' }}
+          - os: macos-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.13' || '3.12' }}
+          - os: windows-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.9' || '3.12' }}
+          - os: windows-latest
+            python: ${{ (github.event_name == 'pull_request' || github.event_name == 'merge_group') && '3.13' || '3.12' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -120,6 +215,8 @@ jobs:
     # policy through the environment, self-approval, a run fabricated outside the registered harness. Merges are
     # blocked unless every gated case (E8v2.1-E8v2.6) is caught.
     name: E8 insider attacks (v2 system mode)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.insider_v2 != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -145,6 +242,8 @@ jobs:
     # the tests marked root (OS-user isolation, root-owned config and binaries, installer) skip in the test job;
     # here they run as root from a root-owned install, and the job fails if any of them is skipped
     name: Root-only tests (Linux)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.root != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -243,6 +342,8 @@ jobs:
 
   contrib:
     name: contrib packages
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.contrib != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -269,6 +370,8 @@ jobs:
   go-verifier:
     # contrib/independent-go-verifier: its own tests, then the same verdicts as the Python verifier on every golden bundle
     name: Independent Go verifier
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.go_verifier != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -306,6 +409,8 @@ jobs:
 
   strands:
     name: "Strands integration (own environment: needs mcp<2.2)"
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.strands != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -317,8 +422,96 @@ jobs:
       - run: python -m pytest -q tests/test_strands.py
       - run: python -m pytest -q tests/test_examples_v2.py -k test_strands
 
+  strands-latest:
+    # the newest Strands Agents 1.x the docs' install line allows (strands-agents>=1.61,<2), tested as 1.61 is
+    name: "Strands integration, newest 1.x (own environment: needs mcp<2.2)"
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.strands != 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex "strands-agents>=1.65,<2"
+      - run: python -m pytest -q tests/test_strands.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_strands
+
+  google-adk-latest:
+    # the newest Google ADK 2.x the docs' install line allows (google-adk>=2.12,<3), tested as the floor the dev extra pins is
+    name: "Google ADK integration, newest (own environment)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex packaging hypothesis "google-adk>=2.15,<3"
+      - run: python -m pytest -q tests/test_google_adk.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_google_adk
+
+  haystack-latest:
+    # the newest Haystack 3.x the docs' install line allows (haystack-ai>=3.4,<4), tested as the floor the dev extra pins is
+    name: "Haystack integration, newest (own environment)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex packaging hypothesis "haystack-ai>=3.5,<4"
+      - run: python -m pytest -q tests/test_haystack.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_haystack
+
+  pydantic-ai-latest:
+    # the newest Pydantic AI 2.x the docs' install line allows (pydantic-ai-slim>=2.57,<3), tested as the floor the dev extra pins is
+    name: "Pydantic AI integration, newest (own environment)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex packaging hypothesis "pydantic-ai-slim>=2.71,<3"
+      - run: python -m pytest -q tests/test_pydantic_ai.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_pydantic_ai
+
+  agent-framework-latest:
+    # the newest Agent Framework 1.x the docs' install line allows (agent-framework-core>=1.22,<2), tested as the floor the dev extra pins is
+    name: "Agent Framework integration, newest (own environment)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex packaging hypothesis "agent-framework-core>=1.26,<2" agent-framework-openai
+      - run: python -m pytest -q tests/test_agent_framework.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_agent_framework
+
+  langchain-latest:
+    # the newest LangChain 1.x the docs' install line allows (langchain>=1.4,<2), tested as the floor the dev extra pins is
+    name: "LangChain integration, newest (own environment)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex packaging hypothesis "langchain>=1.5,<2" "langgraph>=1.2,<1.3" "langgraph-checkpoint-sqlite>=3.1,<3.2" "mcp>=2.3,<2.4"
+      - run: python -m pytest -q tests/test_integration_langchain.py tests/test_contract_langchain.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_langchain
+
   crewai:
     name: "CrewAI integration (own environment)"
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.crewai != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -332,6 +525,8 @@ jobs:
 
   browser-use:
     name: "Browser Use 1.0 integration (own environment)"
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.browser_use != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -345,6 +540,8 @@ jobs:
   quickstart:
     # M1a exit gate: docs/quickstart-v2.md from a wheel in a fresh venv. Not a required check at first.
     name: v2 quickstart (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.quickstart != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -366,6 +563,8 @@ jobs:
     # E15: kill -9 the signer 30 times under 8 clients, zero silent drops and zero acknowledged records lost at
     # ack-on-fsync. Not a required check at first; make it required once it is stable on the runners.
     name: Signer evals E9 and E15 (Linux)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.signer_evals != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -387,6 +586,8 @@ jobs:
   clean-machine-v2:
     # M2-10: one v2 example from a fresh venv on each OS, timed (examples/v2/clean-machine.sh / .ps1)
     name: v2 example on a clean machine (${{ matrix.os }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.clean_machine != 'false' }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
@@ -406,6 +607,8 @@ jobs:
 
   container:
     name: Signer container image
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.container != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -434,6 +637,8 @@ jobs:
 
   postgres:
     name: Postgres storage contract
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.postgres != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -462,6 +667,8 @@ jobs:
     # committed. The committed files were made on macOS: if this job's first run differs only by platform, commit the
     # files of its eval-results artifact. Not a required check at first; make it required once it is stable.
     name: Offline evals (Linux)
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.evals != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:

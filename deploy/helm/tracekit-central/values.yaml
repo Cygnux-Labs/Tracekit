@@ -164,6 +164,10 @@ agentEgress:
     podSelector: {}
     namespace: ""
     port: 3128
+  dns:                     # where the agents may resolve names (port 53, UDP and TCP); exact resolvers only
+    kubeDns: true          # the kube-dns pods in kube-system
+    nodeLocal: ""          # a NodeLocal DNSCache address, one IP such as 169.254.20.10 (rendered as /32, IPv6 /128)
+    cidrs: []              # other resolvers, e.g. ["10.0.0.53/32"]; nothing shorter than /24 (IPv4) or /64 (IPv6)
 
 # tracekit monitor of each log; logKeys[n] is replica n's log vkey (`tracekit signer vkey`). Turns on the metrics
 # port's record entries (serve_records), which only the monitor and networkPolicy.monitoringNamespace reach.

@@ -21,6 +21,8 @@ import urllib.parse
 import warnings
 from unittest import mock
 
+import pytest
+
 import adapter_contract as ac
 from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
 from tracekit.format.canon import event_hash
@@ -275,13 +277,78 @@ class Mapping(HarnessCase):
     def test_gemini(self):
         self.check("gemini")
 
-    def test_gemini_person_approval_command_prefix(self):
+    def test_person_approval_command_prefix(self):
         prefix = claude_code._approval_command_prefix
 
         self.assertEqual(prefix("claude-code", None), "! ")
         self.assertEqual(prefix("claude-code", "/path/to/signer.sock"), "")
         self.assertEqual(prefix("gemini-cli", None), "!")
         self.assertEqual(prefix("gemini-cli", "/path/to/signer.sock"), "")
+        self.assertEqual(prefix("codex", None), "!")
+        self.assertEqual(prefix("codex", "/path/to/signer.sock"), "")
+
+    def test_codex_approval_command_quotes_interpreter_path(self):
+        with mock.patch.object(claude_code.os, "name", "posix"), \
+                mock.patch.object(claude_code.sys, "executable", "/path/with spaces/python"):
+            command = claude_code.approvals_cmd(None, use_interpreter=True)
+        self.assertEqual(command, "'/path/with spaces/python' -I -m tracekit approvals")
+
+    def test_codex_approval_command_never_imports_tracekit_from_the_working_folder(self):
+        """The person runs the command in the agent's working folder: `python -m tracekit` there would import a
+        tracekit package the agent wrote. `-I` keeps the folder (and PYTHONPATH, the user site) off sys.path."""
+        d = ac.tmpdir(self)
+        os.makedirs(os.path.join(d, "tracekit"))
+        for name in ("__init__.py", "__main__.py"):
+            with open(os.path.join(d, "tracekit", name), "w") as f:
+                f.write("open('PLANTED', 'w').close()\n")
+        with mock.patch.object(claude_code.os, "name", "posix"):
+            command = claude_code.approvals_cmd(None, use_interpreter=True)
+        subprocess.run(shlex.split(command) + ["--help"], cwd=d, capture_output=True, timeout=60)
+        self.assertFalse(os.path.exists(os.path.join(d, "PLANTED")))
+
+    def test_codex_approval_command_on_windows_runs_under_powershell_and_cmd(self):
+        for exe, want in ((r"C:\Python312\python.exe", r"C:\Python312\python.exe -I -m tracekit approvals"),
+                          (r"C:\Program Files\Tracekit\python.exe",
+                           r'& "C:\Program Files\Tracekit\python.exe" -I -m tracekit approvals')):
+            with self.subTest(exe=exe), mock.patch.object(claude_code.os, "name", "nt"), \
+                    mock.patch.object(claude_code.sys, "executable", exe):
+                self.assertEqual(claude_code.approvals_cmd(None, use_interpreter=True), want)
+
+    def test_held_approval_message_uses_harness_specific_command(self):
+        interpreter = "/path/with spaces/python"
+        original_approvals_cmd = claude_code.approvals_cmd
+        original_prefix = claude_code._approval_command_prefix
+        quoted_interpreter = f'& "{interpreter}"' if claude_code.os.name == "nt" else shlex.quote(interpreter)
+
+        def unnamed_approvals_cmd(signer, use_interpreter=False):
+            return original_approvals_cmd(None, use_interpreter)
+
+        def unnamed_prefix(agent, signer):
+            return original_prefix(agent, None)
+
+        for harness, expected in (
+            ("codex", f"!{quoted_interpreter} -I -m tracekit approvals approve "),
+            ("gemini", "!tracekit approvals approve "),
+        ):
+            with self.subTest(harness=harness):
+                self.decision = "ask"
+                case = next(c for c in cases(harness) if c["decision"] == "ask")
+
+                with mock.patch.object(
+                    claude_code, "approvals_cmd", side_effect=unnamed_approvals_cmd
+                ), mock.patch.object(
+                    claude_code, "_approval_command_prefix", side_effect=unnamed_prefix
+                ), mock.patch.object(
+                    claude_code.sys, "executable", interpreter
+                ), mock.patch.dict(
+                    os.environ, {claude_code.WAIT_ENV: "0"}
+                ):
+                    code, out, err = self.hook(
+                        harness, case["payload"], case.get("event")
+                    )
+
+                self.assertIn("HELD, nothing ran", err)
+                self.assertIn(expected, err)
 
     def test_opencode(self):
         self.check("opencode")
@@ -2698,6 +2765,7 @@ class SlowSignerStart(HarnessCase):
     UPLOAD = {"preToolUse": {"toolName": "run_commands",   # held by the dev pack (TK-A032)
                              "parameters": {"commands": json.dumps(["aws s3 cp build/ s3://releases/ --recursive"])}}}
 
+    @pytest.mark.serial
     def test_a_cline_hook_that_waits_for_its_signer_and_an_approval_answers_before_cline_runs_the_call(self):
         """One deadline for the whole hook: a start that takes 15 s leaves the held call's approval wait (20 s here)
         nothing, and the hook blocks the call before Cline's 30 s."""
@@ -2761,6 +2829,7 @@ class SlowSignerStart(HarnessCase):
         code, stdout, err = out[0]
         self.assertEqual((code, json.loads(stdout).get("cancel")), (0, None), err)
 
+    @pytest.mark.serial
     def test_a_cline_hook_blocks_before_cline_runs_the_call(self):
         """Cline runs a call whose hook is still running at 30 s: its hook gives up on a signer still starting within
         agent_hooks.CLINE_WAIT_S and blocks the call."""

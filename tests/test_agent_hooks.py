@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -868,6 +870,26 @@ class Harnesses(DaemonCase):
         self.assertIn("native_notebook_tools", err)
         self.assertNotIn("Blocked by tracekit policy", err)   # the hook's own block, not a policy decision
         self.assertEqual(agent_hooks._blocked_tool("opencode", "notebook_execute"), None)   # not OpenCode's tool
+
+    def test_opencode_and_kilo_batch_is_denied_in_the_hook(self):
+        # OpenCode's and Kilo's experimental batch tool runs nested calls with no plugin hooks; the plugin blocks it
+        # first and _blocked_tool returns the exact same reason so Python hooks and `tracekit audit` agree.
+        for harness, agent, config in (("opencode", "OpenCode", "opencode.json"), ("kilo", "Kilo Code", "kilo.json")):
+            reason = agent_hooks._blocked_tool(harness, "batch")
+            self.assertIsNotNone(reason, harness)
+            self.assertIn(agent, reason)
+            self.assertIn(f"(experimental.batch_tool in {config})", reason)
+            self.assertIn(json.dumps(reason), agent_hooks._opencode_plugin(None, False, harness))
+            code, out, err = self.hook(harness, {"session_id": f"{harness}-b", "cwd": self.d,
+                                                 "hook_event_name": "tool.execute.before",
+                                                 "tool_name": "batch", "tool_use_id": "b1",
+                                                 "tool_input": {"tool_calls": []}},
+                                       "tool.execute.before")
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn(f"experimental.batch_tool in {config}", err)
+            self.assertNotIn("Blocked by tracekit policy", err)
+        for other in ("claude", "codex", "cursor", "goose", "kiro", "crush"):
+            self.assertIsNone(agent_hooks._blocked_tool(other, "batch"), other)
 
     def test_goose_maps_tools_records_results_and_blocks_denied_calls(self):
         # goose's payload names its event `event` and its working directory `working_dir`, and carries a stable
@@ -1803,6 +1825,58 @@ class JcodeTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("jcode", "mcp", {"action": "search", "query": "x"})[0], "mcp")
         self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "rec"})[0], "mcp_call")
 
+        # jcode dispatch_name turns characters outside [A-Za-z0-9_] into _
+        cases = [
+            ({"server": "my-server", "tool": "get.x", "arguments": {}}, "mcp__my_server__get_x", {}),
+            ({"server": "git-hub", "tool": "search-issues", "arguments": {"q": "bug"}},
+             "mcp__git_hub__search_issues", {"q": "bug"}),
+            ({"server": "srv.test-1", "tool": "tool:run@v1", "arguments": None},
+             "mcp__srv_test_1__tool_run_v1", {}),
+            ({"server": "already_valid_123", "tool": "valid_tool_456", "arguments": {"a": 1}},
+             "mcp__already_valid_123__valid_tool_456", {"a": 1}),
+        ]
+        for payload, expected_name, expected_args in cases:
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp_call", payload),
+                    (expected_name, expected_args),
+                )
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp", {"action": "call", **payload}),
+                    (expected_name, expected_args),
+                )
+
+        # a name over 64 characters is cut and ends in the hash of server and tool, as jcode's dispatch_name does it
+        long_name = "mcp__srv__" + "t" * 54
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "srv", "tool": "t" * 54})[0], long_name)
+        long_call = {"server": "my-server", "tool": "get.x" + "y" * 60}
+        for route in (("mcp_call", long_call), ("mcp", {"action": "call", **long_call})):
+            name = agent_hooks.tool("jcode", *route)[0]
+            self.assertEqual(len(name), 64)
+            self.assertTrue(name.startswith("mcp__my_server__get_xyyy"), name)
+            self.assertRegex(name[55:], r"^_[0-9a-f]{8}$")
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "a", "tool": "b" * 70})[0][55:], "_" + "%08x" % 0x71695508)
+
+        # Invalid or missing server/tool fields fall back gracefully without crashing
+        for invalid_payload in (
+            {"tool": "get.x"},
+            {"server": "my-server"},
+            {"server": "", "tool": "get.x"},
+            {"server": "my-server", "tool": ""},
+            {"server": None, "tool": "get.x"},
+            {"server": "my-server", "tool": 123},
+            {},
+        ):
+            with self.subTest(invalid=invalid_payload):
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp_call", invalid_payload),
+                    ("mcp_call", invalid_payload),
+                )
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp", {"action": "call", **invalid_payload}),
+                    ("mcp", {"action": "call", **invalid_payload}),
+                )
+
     def test_batch_is_decided_as_the_tools_it_runs(self):
         # each call in it reaches its own gate: its arguments are decided there, not again on the batch
         ti = {"tool_calls": [{"tool": "bash", "intent": "x", "command": "rm -rf ~"}, "junk",
@@ -2330,6 +2404,7 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(mapped, name)
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
+    @pytest.mark.serial
     def test_a_long_run_of_spaces_takes_linear_time(self):
         # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
         line = "a" + " " * 40_000 + "b"
@@ -2972,6 +3047,33 @@ class HarnessList(unittest.TestCase):
                 doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((ok, detail)),
                                             {"cline": found["cline"]}, False, d)
                 self.assertIn(ok, [r[0] for r in rows if r[1].startswith("PowerShell's execution policy")])
+
+
+class QwenHome(unittest.TestCase):
+    """#973: Qwen Code reads a user's settings from $QWEN_HOME in place of ~/.qwen (qwen-code 0.28.0
+    getGlobalQwenDirLite): init wrote ~/.qwen/settings.json, which that Qwen Code never reads, so no hook ran."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.qwen = os.path.join(self.d, "x")
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
+
+    def test_init_and_uninstall_write_qwen_home(self):
+        from tracekit import cli, install
+        path = os.path.join(self.qwen, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(install, "init_dev",
+                                                                         return_value={"socket": "s"}):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIn("PreToolUse", json.load(f)["hooks"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".qwen")))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIsNone(agent_hooks._version(f.read()))
+        # a project's, and another user's, are where they were
+        self.assertEqual(agent_hooks.config_path("qwen", "/repo"), os.path.join("/repo", ".qwen", "settings.json"))
+        self.assertEqual(agent_hooks.config_path("qwen", home="/h"), os.path.join("/h", ".qwen", "settings.json"))
 
 
 class Installer(unittest.TestCase):
@@ -3868,6 +3970,7 @@ class Installer(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(agent_hooks.kiro_version())
 
+    @pytest.mark.serial
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)

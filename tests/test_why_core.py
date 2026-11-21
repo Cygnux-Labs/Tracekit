@@ -13,6 +13,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
 from tracekit.why.analysis import LINEAGE_CHAINS, _ended, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
@@ -178,6 +180,7 @@ def rechain(events):
 
 
 class LongRuns(Tmp):
+    @pytest.mark.serial
     def test_lineage_is_the_nearest_inputs_shortest_chains(self):
         """Lineage searched forward from every upstream input and kept every chain: opening a 200-call run whose
         model calls see the whole history took 33 s and sent 24 MB."""
@@ -197,6 +200,7 @@ class LongRuns(Tmp):
 
         self.assertLess(took(150), 30 * took(50))   # 3x the steps: about 14x the time; 60x before
 
+    @pytest.mark.serial
     def test_dense_contexts_build_their_graph_in_time(self):
         """add_edge scanned the source's edges for a duplicate: cubic when every model call sees every input."""
         rt = Runtime({"m": lambda ctx, **k: "x"}, signer=False)
