@@ -5717,6 +5717,50 @@ class GuardrailsAndPushes(unittest.TestCase):
                     self.assertEqual(d["verdict"], "ask", d)
                     self.assertIn(rule, d["rule_ids"], d)
 
+    def test_sql_behind_explain_analyze_or_a_paren_or_under_sql_query_or_stmt_is_held(self):
+        """#975: EXPLAIN with ANALYZE runs the statement on PostgreSQL, as coding.yaml's database-client rule reads it,
+        a statement may open with `(`, and `sql_query` and `stmt` name SQL arguments too. Plain EXPLAIN, an
+        unterminated SELECT and a search tool's `q` stay flagged."""
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN ANALYZE DELETE FROM users;"},
+            {"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"},
+            {"statement": "explain (analyse, buffers) delete from users"},
+            {"statement": "EXPLAIN ANALYZE VERBOSE DROP TABLE users"},
+            {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"},
+            {"statement": "( ( DROP TABLE users"},
+            {"statement": "EXPLAIN(ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (FORMAT JSON, COSTS OFF, BUFFERS ON, ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (ANALYZE, COSTS OFF, VERBOSE, BUFFERS, FORMAT JSON, SETTINGS, WAL, TIMING, SUMMARY)"
+                          " DELETE FROM users"},
+            {"statement": "EXPLAIN ANALYZE (WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d)"},
+            {"sql_query": "DROP TABLE users;"},
+            {"stmt": "DROP TABLE users;"},
+            {"Stmt": {"text": "TRUNCATE users"}})], "ask", "TK-A062")
+        # an MCP database tool's statements are read the same way (TK-A086), under the new names too
+        self.verdicts([("mcp__postgres__query", args) for args in (
+            {"sql_query": "DROP TABLE users"}, {"stmt": "DELETE FROM users"})], "ask", "TK-A086")
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN SELECT 1;"},
+            {"statement": "EXPLAIN DELETE FROM users"},
+            {"statement": "(SELECT 1)"},
+            {"sql_query": "SELECT 1"},
+            {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
+
+    def test_a_long_explain_or_paren_lead_decides_in_time(self):
+        # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time.
+        # The later statements hold the words a held statement needs (DELETE FROM), so the engine's prefilter
+        # (compile.requirements) doesn't skip the search: with `[^;)]*` around ANALYZE the last two took the fallback's
+        # whole second
+        for statement in ("(" * 60000, "( " * 30000, "EXPLAIN (" + "a" * 60000, "EXPLAIN (" + "ANALYZE " * 7000,
+                          "EXPLAIN ANALYZE " * 3500, "(" * 60000 + " DELETE FROM x",
+                          "EXPLAIN ANALYZE " + "( " * 30000 + "DELETE FROM x", "EXPLAIN(" + "ANALYZE, DELETE FROM " * 2700,
+                          "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800,
+                          "(" * 8 + "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800 + ")"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, statement=statement[:12]):
+                    d = e.decide("acme_runner", {"statement": statement})
+                    self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+
     def test_a_harness_or_mcp_tool_is_not_read_as_an_unmapped_one(self):
         """Review of #605, through the signer's own reading (evaluate): TK-A062 held Claude Code's ToolSearch, Skill
         and SlashCommand, Anthropic's text-editor and memory tools (a `command` of `view` or `create`), a Gemini CLI or
