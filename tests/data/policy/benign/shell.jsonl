@@ -338,3 +338,4 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
+{"tool": "Bash", "args": {"command": "mysql -h db.internal -e '# count\nSELECT count(*) FROM users;' shop"}, "expect": "allow", "note": "a count after a # comment line through mysql (#978)"}
