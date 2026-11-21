@@ -525,7 +525,8 @@ class ClaudeConfigDir(unittest.TestCase):
                     self.assertEqual(cli.main(argv), 0)
                 self.assertEqual(install._hook_summary(install.read_json(settings))["versions"], ["v2"])
                 self.assertEqual(install.read_json(os.path.join(client_home, "config.json")),
-                                 {"socket": "s", "hooks_settings": settings})
+                                 {"socket": "s", "hooks_settings": settings,
+                                  "hook_python": sys.executable})   # (the Python the plugin's hook runs in)
                 with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(doctor._dev_settings(), settings)
                     self.assertEqual(install.uninstall(), settings)

@@ -13,7 +13,9 @@
 # exits 1 too, except under Copilot CLI and Cursor, which block a pre-tool call on any exit but 0 (Cursor: failClosed).
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
-# Otherwise the hook runs in TRACEKIT_PYTHON when it imports tracekit; else in the python of a uv tool or pipx install
+# In dev mode, once `tracekit init` has recorded its Python (hook_python in ~/.tracekit-client/config.json) that one runs
+# the hook and no other: a record that can't run it, or Tracekit set up with none, blocks the call. Before that (no dev data
+# dir yet) the hook runs in TRACEKIT_PYTHON when it imports tracekit; else in the python of a uv tool or pipx install
 # of Tracekit where uv (UV_TOOL_DIR) or pipx (PIPX_HOME) put it, as this process sees them, else by default (folders
 # TK-D007 and TK-D013 keep the agent from writing), and then only there, even when that install is broken (the call is
 # blocked); never a folder the `tracekit` command on PATH links into. Else the hook runs in the first of python3, python
@@ -90,6 +92,50 @@ if why:
 raise SystemExit(entry(*args))'
 RUN="
 MIN = '$MIN_TRACEKIT'$RUN"
+plugin_off() {   # how a person turns this plugin off, in `off`
+  # Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version> and names it
+  # <plugin>@<marketplace>. Elsewhere (a --plugin-dir or local marketplace loads in place, a claude.ai-synced one) its
+  # key isn't known, so the message only says `/plugin` rather than name a plugin that isn't installed.
+  off="turn the plugin off in /plugin"
+  root=${CLAUDE_PLUGIN_ROOT%/}
+  root=${root%/*}
+  plugin=${root##*/}
+  root=${root%/*}
+  marketplace=${root##*/}
+  root=${root%/*}
+  case "$root" in
+    */cache) [ -n "$plugin" ] && [ -n "$marketplace" ] &&
+      off="turn the plugin off: /plugin disable $plugin@$marketplace" ;;
+  esac
+  [ -n "$AGENT" ] && off="turn the Tracekit plugin off"
+  return 0
+}
+case $(uname -s 2>/dev/null) in
+  Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
+  MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
+  *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
+esac
+
+# The Python `tracekit init` recorded in $HOME/.tracekit-client (a folder TK-D007 keeps from the agent) runs the hook once
+# there is one, and only it: not TRACEKIT_PYTHON, PATH or a default folder. One that can't run it stops the call, and so
+# does a Tracekit that is set up (its data dir exists) with none recorded: neither falls back to another Python.
+rec= cfg=$HOME/.tracekit-client/config.json
+if [ -r "$cfg" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in *'"hook_python"'*) rec=${line#*'"hook_python"'}; rec=${rec#*\"}; rec=${rec%%\"*}; break ;; esac
+  done < "$cfg"
+fi
+if [ -n "$rec" ]; then
+  if [ -x "$rec" ] && "$rec" -I -c "import tracekit" >/dev/null 2>&1; then
+    "$rec" -I -c "import sys$RUN" "$@"
+    finish $? "$rec could not run the tracekit hook" "Ask the person to reinstall: uv tool install --reinstall \
+tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+  fi
+  finish 3 "$rec, the Python tracekit init recorded for this hook, cannot import tracekit" "Ask the person to run: uv tool \
+install --reinstall tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+fi
+[ -d "$data" ] && plugin_off && finish 3 "tracekit init has recorded no Python for this hook, though Tracekit is set up" \
+  "Ask the person to run: uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks, or $off"
 # A uv tool or pipx install's python is the tracekit the person runs: with one, nothing else runs the hook, so a
 # tracekit in python3's user site-packages can't stand in for it. The install is only where uv or pipx put it: the folders
 # UV_TOOL_DIR and PIPX_HOME name as this process sees them, else the defaults. Never one a `tracekit` on PATH resolves to
@@ -124,27 +170,8 @@ tracekit-ai==1.7.2"
 done
 [ -n "$venv" ] && finish 3 "$venv cannot import tracekit" "Ask the person to reinstall it: uv tool install \
 --reinstall tracekit-ai==1.7.2 (or pipx install --force tracekit-ai==1.7.2)"
-case $(uname -s 2>/dev/null) in
-  Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
-  MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
-  *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
-esac
 if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
-  # Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version> and names it
-  # <plugin>@<marketplace>. Elsewhere (a --plugin-dir or local marketplace loads in place, a claude.ai-synced one) its
-  # key isn't known, so the message only says `/plugin` rather than name a plugin that isn't installed.
-  off="turn the plugin off in /plugin"
-  root=${CLAUDE_PLUGIN_ROOT%/}
-  root=${root%/*}
-  plugin=${root##*/}
-  root=${root%/*}
-  marketplace=${root##*/}
-  root=${root%/*}
-  case "$root" in
-    */cache) [ -n "$plugin" ] && [ -n "$marketplace" ] &&
-      off="turn the plugin off: /plugin disable $plugin@$marketplace" ;;
-  esac
-  [ -n "$AGENT" ] && off="turn the Tracekit plugin off"
+  plugin_off
   finish 3 "no Python here (TRACEKIT_PYTHON, python3, python, the tracekit command's) has the tracekit package, though \
 Tracekit is set up" "Ask the person to install it (uv tool install tracekit-ai==1.7.2), set TRACEKIT_PYTHON to the Python that \
 has it, or $off"

@@ -13,13 +13,13 @@
       "pack": "server.yaml",
       "policy_hash": "sha256:536fad72067a7bb8d78e333dca702f07121a8f09c73db115a7c60e3864d90bb4",
       "heldout": {
-        "recall": 0.6833333333333333,
-        "deny_recall": 0.2904761904761905,
+        "recall": 0.6857142857142857,
+        "deny_recall": 0.29285714285714287,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 287,
-          "deny": 122,
+          "caught": 288,
+          "deny": 123,
           "unknown_only": 33,
           "benign": 432,
           "fp": 18
@@ -51,8 +51,8 @@
             },
             "credential_access": {
               "harmful": 49,
-              "caught": 34,
-              "deny": 31
+              "caught": 35,
+              "deny": 32
             },
             "database": {
               "harmful": 32,
@@ -120,8 +120,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 148,
-              "deny": 67,
+              "caught": 149,
+              "deny": 68,
               "unknown_only": 20
             },
             "low": {
@@ -171,8 +171,8 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 176,
-              "deny": 70,
+              "caught": 177,
+              "deny": 71,
               "unknown_only": 29,
               "benign": 432,
               "fp": 18
@@ -875,15 +875,6 @@
             ],
             "technique": [
               "T1218.005"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "credential_access",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1552.004"
             ]
           },
           {
@@ -2545,13 +2536,13 @@
       "pack": "strict.yaml",
       "policy_hash": "sha256:52c711f67bce3c96aab1494b059ca0a05c7e35587b54af0d0cfdb649f184b509",
       "heldout": {
-        "recall": 0.7428571428571429,
-        "deny_recall": 0.3761904761904762,
+        "recall": 0.7452380952380953,
+        "deny_recall": 0.37857142857142856,
         "fp_rate": 0.12962962962962962,
         "totals": {
           "harmful": 420,
-          "caught": 312,
-          "deny": 158,
+          "caught": 313,
+          "deny": 159,
           "unknown_only": 33,
           "benign": 432,
           "fp": 56
@@ -2583,8 +2574,8 @@
             },
             "credential_access": {
               "harmful": 49,
-              "caught": 34,
-              "deny": 33
+              "caught": 35,
+              "deny": 34
             },
             "database": {
               "harmful": 32,
@@ -2654,8 +2645,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 164,
-              "deny": 85,
+              "caught": 165,
+              "deny": 86,
               "unknown_only": 20
             },
             "low": {
@@ -2705,8 +2696,8 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 190,
-              "deny": 74,
+              "caught": 191,
+              "deny": 75,
               "unknown_only": 29,
               "benign": 432,
               "fp": 56
@@ -3228,15 +3219,6 @@
             ],
             "technique": [
               "T1218.005"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "credential_access",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1552.004"
             ]
           },
           {

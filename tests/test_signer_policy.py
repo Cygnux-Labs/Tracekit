@@ -4691,6 +4691,68 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_plugin_review_6_writes_through_a_cd_a_link_a_tree_writer_a_find_or_a_package_manager(self):
+        """The plugin's sixth review: a write into the tool venv's folder in one call passed when its folder came from a
+        `cd` (with a pattern, `cd -`, a bare `cd` with HOME set, CDPATH set by printf -v or read), a link, tar, unzip,
+        ditto, pax, cpio, 7z or `python -m zipfile`; a find was harmless when -empty or -xtype l was anywhere in it; a
+        package manager installed into the venv (`<venv>/bin/python -m pip`, uv pip --python, pip --target, VIRTUAL_ENV,
+        uv tool install --with, pipx inject); and an unresolved expansion before the root's own name was unread."""
+        root = "~/.local/share/uv/tools/tracekit-ai"
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "cd ~/.local/share/uv/tool? && cp -R evil/tracekit-ai .",
+            "OLDPWD=~/.local/share/uv/tools; cd - && cp -R evil/tracekit-ai .",
+            "ln -s ~/.local/share/uv/tools t && cp -R evil/tracekit-ai t", "ln -sf evil/python ~/.local/***/bin/python",
+            "export CDPATH=~/.local; CDPATH+=:/x; cd share/uv/tools && cp -R evil/tracekit-ai .",
+            "cd ~/.local/share/uv && chmod 000 tools", "cd ~/.local/share && chmod -R 000 uv",
+            "find ~/.local/share/uv/tools -empty -exec cp evil.py {} \\;", "find ~/.local/share/uv/tools ! -empty -delete",
+            "find ~/.local/share/uv/tools -not -empty -delete", "find ~/.local/share/uv/tools -empty -or -delete",
+            "find ~/.local/share/uv/tools -empty , -delete", "find -L ~/.local/share/uv/tools -xtype l -delete",
+            "find ~/.local/share/uv/tools -empty -execdir cp evil.py {} \\;",
+            "find ~/.local/share/uv/tools -empty -print0 | xargs -0 cp evil.py",
+            "find ~/.local/share/uv/tools -xtype l -exec ln -sf evil {} \\;",
+            f"{root}/bin/python -m ensurepip", f"{root}/bin/python -m pip install --no-index ./evilpkg",
+            f"uv pip install --python {root}/bin/python ./evilpkg", f"pip install --target {root}/lib ./evilpkg",
+            f"pip install --prefix {root} ./evilpkg", f"VIRTUAL_ENV={root} uv pip install ./evilpkg",
+            f"uv venv {root}", "virtualenv ~/.local/share/pipx/venvs/tracekit-ai",
+            f"rsync -a --delete /tmp/empty/ {root}/", "rsync -a --delete /tmp/empty/ ~/.local/share/uv/tools/")]
+        held = [("Bash", {"command": c}, rid) for c, rid in (
+            ("cd ~/.local/share/uv/tools && tar -xf evil.tar", "TK-F015"), ("cd ~/.local/share/uv/tools && unzip -o e.zip", "TK-F015"),
+            ("cp -R evil/ ~/.local/share/uv/tools", "TK-F015"), ("ditto evil ~/.local/share/uv/tools", "TK-F015"),
+            ("tar xfC evil.tar ~/.local/share/uv/tools", "TK-F015"), ("tar -xf e.tar -C ~/.local/share/uv/tools .", "TK-F015"),
+            ("unzip -o e.zip '*python' -d ~/.local/share/uv/tools", "TK-F015"),
+            ("python3 -m zipfile -e evil.zip ~/.local/share/uv/tools", "TK-F015"),
+            ("python3 -m tarfile -e evil.tar ~/.local/share/uv/tools", "TK-F015"),
+            ("cd ~/.local/share/uv/tools && pax -r -f evil.tar", "TK-F015"),
+            ("cd ~/.local/share/uv/tools && cpio -idv < evil.cpio", "TK-F015"),
+            ("7z x evil.7z -o$HOME/.local/share/uv/tools", "TK-F015"),
+            ("printf -v CDPATH '%s' ~/.local; cd share/uv/tools && tar -xf evil.tar", "TK-F015"),
+            ("read -r CDPATH <<< ~/.local; cd share/uv/tools && tar -xf evil.tar", "TK-F015"),
+            ("HOME=~/.cursor; cd && cp -R evil/plugins .", "TK-F015"), ("OLDPWD=~/.cursor; cd - && cp -R evil/plugins .", "TK-F015"),
+            ("ln -s ~/.cursor c && cp -R evil/plugins c", "TK-F015"), ("cd ~/.cursor && tar -xf evil.tar", "TK-F015"),
+            ("uv tool install --force --from ./fake tracekit-ai", "TK-F015"),
+            ("uv tool install tracekit-ai --with ./evil", "TK-F015"), ("uv tool install --force ./fake-tracekit-ai", "TK-F015"),
+            ("pipx inject tracekit-ai ./evilpkg", "TK-F015"), ("pipx runpip tracekit-ai install ./evilpkg", "TK-F015"),
+            ('cp evil "$(ls -d ~/.local/share/uv/tools/t*)/bin/python"', "TK-F015"),
+            ('read -r D < <(uv tool dir); cp evil "$D/tracekit-ai/bin/python"', "TK-F015"),
+            ("uv tool list --show-paths | awk '{print $1}' | xargs -I{} cp evil {}/bin/python", "TK-F015"),
+            ('cp evil "$X/tracekit-ai/bin/python"', "TK-F015"), ('cp evil "$X/uv/python/cpython/bin/python3"', "TK-F015"))]
+        benign = [("Bash", {"command": c}) for c in (
+            "cd src && tar -xf x.tar", "tar -xf x.tar", "cd build && cp -R ../dist/. .", "ln -s build b && cp -R x b",
+            'cp evil "$X/build/out"', "find ~/.cache -empty -delete", "find ~/.local/share/uv/tools -type d -empty -delete",
+            "find ~/.local/bin -type l -xtype l -delete", "uv tool install ruff", "pipx install black", "uv venv",
+            "python3 -m venv .venv", "pip install requests", "pip install --user black")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in denied + held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    ids = e.decide(tool, args)["rule_ids"]
+                    self.assertIn(rid, ids)
+                    if (tool, args, rid) in held:
+                        self.assertNotIn("TK-D007", ids)
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
     def test_plugin_review_5_hostile_patterns_are_read_in_bounded_time_the_same_on_both_engines(self):
         """The new readers took 6 to 58 seconds on inputs near 64 KiB (a thousand forms as long as the path, a `*/` a
         thousand times): they are read in a bounded number of forms, charged to the decision's work, and an input past
@@ -4713,10 +4775,16 @@ class CodingPack(unittest.TestCase):
                 self.assertLess(time.perf_counter() - t, 5 * SLOWER, (engine, row[:40]))
                 seen[engine] = (d["verdict"], d["rule_ids"])
             self.assertEqual(len(set(map(str, seen.values()))), 1, (row[:40], seen))
-        for row in ("cp x ~/" + "/".join(["*"] * 40), "cp x ~/" + "share/*a*e*/" * 20):   # more forms than are read
+        # too many forms to read: held (TK-F015), and what else the line is stays read (a deny on it stays one)
+        for row in ("cp x ~/" + "/".join(["*"] * 40), "cp x ~/" + "share/*a*e*/" * 20, "cp x ~/**/**/**/x"):
             for engine, e in engines.items():
-                self.assertIn("TK-SHELL-PARSE", e.decide("Bash", {"command": row})["rule_ids"], (engine, row[:40]))
+                self.assertIn("TK-F015", e.decide("Bash", {"command": row})["rule_ids"], (engine, row[:40]))
+                d = e.decide("Bash", {"command": row + "; pkill tracekitd"})
+                self.assertEqual(d["verdict"], "deny", (engine, row[:40], d))
                 self.assertNotIn("TK-SHELL-PARSE", e.decide("Bash", {"command": "rm -rf /tmp/**/**/**/x"})["rule_ids"])
+        for pack, engine, e in self.every_pack():   # (the line is unread: the strict pack denies it, as it denies any unread line)
+            if pack == "strict.yaml":
+                self.assertEqual(e.decide("Bash", {"command": "cp x ~/" + "/".join(["*"] * 40)})["verdict"], "deny", engine)
 
     def test_plugin_review_5_the_readers_charge_their_work_and_read_each_start_and_test_once(self):
         from tracekit.policy2 import engine as eng, shell as sh

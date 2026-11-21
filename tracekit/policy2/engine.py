@@ -444,7 +444,8 @@ class Engine:
                         break
                 if nondeterministic or work[0] > shell.MAX_WORK:
                     break
-        if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
+        if (spent or work[0] > shell.MAX_WORK or len(parsed) > 5 and parsed[5].get("unread")) and \
+                "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
         # a call over MAX_SUBJECT (its arguments as JSON), which the policy can't read, waits for a person (the dev pack),
@@ -1994,8 +1995,17 @@ def _effects(parsed, work=None):
 _KNOWN_HOSTS = re.compile(r"(?i)(?:^|[/\\])\.ssh[/\\]known_hosts2?$")   # (a Windows spelling too)
 
 
+def _variable(parsed, name):
+    """The values the line gives variable `name`: as an assignment (a reference; `+=` too), inline, or an argument of
+    export, declare, typeset, readonly, local or env."""
+    return [r.partition("=")[2] for r in parsed[2] if re.match(name + r"\+?=", r)] + [
+        a.partition("=")[2] for c in parsed[0] if c["argv"][0] in ("export", "declare", "typeset", "readonly", "local", "env")
+        for a in c["argv"][1:] if re.match(name + r"\+?=", a)]
+
+
 def _write_effects(parsed, work):
-    appended = collections.Counter((parsed[5] if len(parsed) > 5 else {}).get("appended", ()))
+    learned = parsed[5] if len(parsed) > 5 else {}
+    appended = collections.Counter(learned.get("appended", ()))
     tags = []
     for ref in parsed[3]:
         add = appended[ref] > 0 and bool(_KNOWN_HOSTS.search(_text(ref)))
@@ -2018,24 +2028,42 @@ def _write_effects(parsed, work):
     # plug?ns/y.js`), as a pattern isn't one there when the folder is a Claude Code worktree's (`cd .claude/worktrees/w
     # && rm src/*.orig`)
     # (and what env -C runs, in its folder)
-    options = (parsed[5] if len(parsed) > 5 else {}).get("globs", ())
+    options = learned.get("globs", ())
+
+    def forms_of(kind, path):
+        """(kind, form) of each protected path a pattern may make; a path that reads as more than the readers take
+        (their ParseError) is held instead, where the rest of the line keeps what it was read as."""
+        try:
+            return [(kind, f) for f in _pattern_forms(path, work) + _protected_forms(path, options, work)]
+        except shell.ParseError:
+            learned["unread"] = True   # (decide holds the line as an unread one beside what the rules found)
+            return [("ROOT_TARGET", path)]
 
     def joined(folder, effects, find=False):
         out = [(k, _normal(folder.rstrip("/") + "/" + path)) for k, _, path in (t.partition(":") for t in effects)
                if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "")]
         tagged = [(("WRITE_TARGET" if k == "APPEND_TARGET" and not _KNOWN_HOSTS.search(p) else k) + ":" + p)
                   for k, p in out if not shell._GLOB.search(p)]
-        tagged += [k + ":" + f for k, p in out if shell._GLOB.search(p)
-                   for f in _pattern_forms(p, work) + _protected_forms(p, options, work)]
-        return tagged + ["DELETE_TARGET:" + r for k, p in out if k == "DELETE_TARGET" and not find
+        tagged += [k + ":" + f for k, p in out if shell._GLOB.search(p) for k, f in forms_of(k, p)]
+        return tagged + [k + ":" + r for k, p in out if k in ("DELETE_TARGET", "MODE_TARGET") and not find
                          for r in _roots_below(p)]
-    bases, appends, cdpath = [], collections.Counter((parsed[5] if len(parsed) > 5 else {}).get("appended", ())), _cdpath(parsed)
+    appends, cdpath = collections.Counter(learned.get("appended", ())), _cdpath(parsed)
+    homes, oldpwds = _variable(parsed, "HOME") or ["~"], _variable(parsed, "OLDPWD")
+    bases, before, group = [], [], None   # (the folders the line is in; the ones before the last cd; its cd's pipeline)
     for c in parsed[0]:
         if c["argv"][0] in ("cd", "pushd"):
-            to = next((a for a in c["argv"][1:] if not a.startswith("-")), "~")   # (a relative one is also read from each CDPATH folder)
-            bases = [to] if to.startswith(("/", "~", "$")) else ([posixpath.join(b, to) for b in bases] or [to]) + [
-                posixpath.join(p, to) for p in cdpath]
-            bases = list(dict.fromkeys(bases))
+            to = next((a for a in c["argv"][1:] if not a.startswith("-") or a == "-"), None)
+            if c["pipeline"] != group:   # (the readings of one cd share its pipeline: each is a place the line may be)
+                group, before, bases = c["pipeline"], bases, []
+            if to is None:   # HOME, a variable the line may set
+                new = homes
+            elif to == "-":   # the folder before, or OLDPWD
+                new = oldpwds + before
+            elif to.startswith(("/", "~", "$")):
+                new = [to]
+            else:   # (a relative one is also read from each CDPATH folder)
+                new = ([posixpath.join(b, to) for b in before] or [to]) + [posixpath.join(p, to) for p in cdpath]
+            bases = list(dict.fromkeys(bases + new))
             shell.charge(work, sum(map(len, bases)))
             continue
         for base in bases:
@@ -2053,27 +2081,51 @@ def _write_effects(parsed, work):
                 tags += joined(where, _command_effects([{"argv": c["argv"][at:]}], work), c["argv"][at] == "find")
                 if c["argv"][at] == "find":
                     tags += _command_effects([{"argv": _find_in(c["argv"][at:], where)}], work)
+    # the environment a pip, uv pip or interpreter module installs into, named by a VIRTUAL_ENV the line gives
+    if any(c["argv"][0] in ("pip", "pip3", "uv", "python", "python3") for c in parsed[0]) and any(
+            a in ("install", "sync", "ensurepip") for c in parsed[0] for a in c["argv"][1:]):
+        tags += ["WRITE_TARGET:" + v for v in _variable(parsed, "VIRTUAL_ENV")]
+    # a target a placeholder or variable stands for, on a line that asks where the Python lives (`uv tool list
+    # --show-paths | xargs -I{} cp x {}/bin/python`)
+    if any(c["argv"][:3] in (["uv", "tool", "list"], ["uv", "tool", "dir"], ["uv", "python", "dir"], ["pipx", "environment"],
+                             ["pipx", "list"]) for c in parsed[0]):
+        tags += ["ROOT_TARGET:" + path for k, _, path in (t.partition(":") for t in tags)
+                 if k in ("WRITE_TARGET", "INTO_TARGET", "TREE_TARGET") and re.search(r"\{\}|\$", path)]
+    # a CDPATH set some way the parse doesn't read (printf -v, read, eval) puts a cd anywhere: held with the writes
+    if any(c["argv"][0] in ("cd", "pushd") for c in parsed[0]) and any(
+            c["argv"][0] in ("printf", "read", "mapfile", "readarray", "eval") and any(
+                re.search(r"\bCDPATH\b", a) for a in c["argv"][1:]) for c in parsed[0]):
+        tags.append("ROOT_TARGET:CDPATH")
     # a path through a link the line makes is also read as what it points at (`ln -s ~/.cursor/plugins p && cp x
-    # p/local/y`), and what a delete there takes of a trust root (_roots_below)
+    # p/local/y`; a copy into the link, TREE_TARGET and INTO_TARGET, too), and what a delete or mode change there takes
+    # of a trust root (_roots_below)
     links = _links(parsed[0])
     through = [(k, target + path[len(link):]) for k, _, path in (t.partition(":") for t in tags) if k != "MAY_WRITE"
-               for link, target in links.items() if path.startswith(link + "/")]
-    tags += [k + ":" + p for k, p in through] + ["DELETE_TARGET:" + r for k, p in through if k == "DELETE_TARGET"
+               for link, target in links.items() if path.startswith(link + "/") or path == link and k in (
+                   "INTO_TARGET", "TREE_TARGET")]
+    tags += [k + ":" + p for k, p in through] + [k + ":" + r for k, p in through if k in ("DELETE_TARGET", "MODE_TARGET")
                                                    for r in _roots_below(p)]
-    # a target a substitution makes of where Tracekit's Python lives (`ln -sf x "$(command -v tracekit)"`) may be it
-    where = "|".join(re.escape(n) for n, text in (parsed[5] if len(parsed) > 5 else {}).get("assigned", ())
-                     if _WHERE_ROOT.search(text))   # (or a variable the line gives one)
+    # a target a substitution makes of where Tracekit's Python lives (`ln -sf x "$(command -v tracekit)"`), a variable the
+    # line gives one, or an unresolved expansion followed by a root's own name (`$D/tracekit-ai/bin/python`) may be it
+    where = "|".join(re.escape(n) for n, text in learned.get("assigned", ()) if _WHERE_ROOT.search(text))
     tags += ["ROOT_TARGET:" + path for k, _, path in (t.partition(":") for t in tags)
-             if k in ("WRITE_TARGET", "DELETE_TARGET", "MODE_TARGET") and (_WHERE_ROOT.search(path) or where and re.search(
-                 r"\$\{?(?:%s)\b" % where, path))]
+             if k in ("WRITE_TARGET", "DELETE_TARGET", "MODE_TARGET", "INTO_TARGET", "TREE_TARGET") and (
+                 _WHERE_ROOT.search(path) or _ROOT_NAMED.search(path) or where and re.search(
+                     r"\$\{?(?:%s)\b" % where, path))]
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
     # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
-    forms = [(k, f) for k, _, path in (t.partition(":") for t in tags)
-             if k != "MAY_WRITE" and shell._GLOB.search(path) for f in _pattern_forms(path, work) + _protected_forms(path, options, work)]
+    forms = [kf for k, _, path in (t.partition(":") for t in tags) if k != "MAY_WRITE" and shell._GLOB.search(path)
+             for kf in forms_of(k, path)]
     tags += [k + ":" + f for k, f in forms] + [k + ":" + r for k, f in forms if k in ("DELETE_TARGET", "MODE_TARGET")
                                                 for r in _roots_below(f)]
+    # once every path is read as it is where it lands: what a folder's contents may write there (TREE_TARGET) is held
+    # where it may take a trust root's place, and a name copied into a folder is a write where the folder holds a
+    # protected path
+    resolved = [(k, path) for k, _, path in (t.partition(":") for t in tags)]
+    tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "INTO_TARGET" and _holds_protected(p.rpartition("/")[0])] + [
+        t for k, p in resolved if k == "TREE_TARGET" for t in ["WRITE_TARGET:" + p, *_held_roots(p)]]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
 
@@ -2086,8 +2138,11 @@ _ROOT_PLACES = tuple(tuple(p.split("/")) for p in (
 
 
 # a command that says where Tracekit's Python lives, run in a substitution
-_WHERE_ROOT = re.compile(r"(?:\$\(|`)[^\n]*?(?:(?:command\s+-v|which|type\s+-p|whereis)\s+tracekit|\buv\s+(?:tool|python)\s+dir|"
-                         r"\bpipx\s+environment)")
+_WHERE_ROOT = re.compile(r"(?:\$\(|`)[^\n]*?(?:(?:command\s+-v|which|type\s+-p|whereis)\s+tracekit|\buv\s+(?:tool|python)\s+(?:dir|list)|"
+                         r"\bpipx\s+(?:environment|list)|\.local/share/(?:uv|pipx)|uv/tools|pipx/venvs|uv/python|\.local/bin)")
+
+# an unresolved expansion followed by the name of a trust root's own folder or file
+_ROOT_NAMED = re.compile(r"(?:\$|`)[^\n]*(?:tracekit-ai|uv/python|\.local/bin/tracekit)")
 
 # the paths, by their components, whose files an agent's harness runs or reads as settings, hooks and plugins (as
 # TK-F009 and TK-F015 name them) and the Python the Tracekit plugin's hook runs (TK-D007, TK-D013): a pattern in a
@@ -2136,7 +2191,7 @@ def _protected_forms(path, options=(), work=None):
     up to the protected path it makes; docs/limits.md says what to do"""
     parts = path.split("/")
     homed = any(_HOME_START.fullmatch("/".join(parts[:n])) for n in (1, 2, 3))   # (a `**` is read under a home only)
-    stars = [i for i, p in enumerate(parts) if p == "**"] if homed else []
+    stars = [i for i, p in enumerate(parts) if p in ("**", "***")] if homed else []
     if len(stars) > 2:
         raise shell.ParseError("a path with more than two ** components is not supported")
     out = []
@@ -2383,9 +2438,25 @@ def _find_files(args, work):
                   if args[i - 1] in ("-path", "-ipath", "-wholename", "-iwholename")]
     by_path = bool(path_tests)
     # a test that finds only what no trust root is (a link that points nowhere, an empty file or folder) leaves the
-    # start's contents out: `find ~/.local/bin -xtype l -delete`
-    safe = any(a == "-empty" or a == "-xtype" and args[i + 1:i + 2] == ["l"] for i, a in enumerate(args)) and not any(
-        a == "-o" for a in args)
+    # start's contents out of a delete: `find ~/.local/bin -xtype l -delete`, when it is all of the expression (an AND of
+    # -type, -empty, -xtype l and depth limits, -delete last, no -L or -H, which change what -xtype tests)
+    after = args[(_find_starts(args) or [0])[-1] + 1:]
+    safe, saw, i = bool(after) and after[-1] == "-delete" and not any(
+        re.fullmatch(r"-[LH]+", a) for a in args[:(_find_starts(args) or [0])[0]]), False, 0
+    while safe and i < len(after):
+        a = after[i]
+        saw |= a == "-empty" or a == "-xtype" and after[i + 1:i + 2] == ["l"]
+        i += 1 + (a in ("-type", "-xtype", "-maxdepth", "-mindepth"))
+        safe = a in ("-empty", "-delete", "-depth", "-xdev", "-mount", "-a", "-and", "-type", "-xtype", "-maxdepth",
+                     "-mindepth")
+    safe = safe and saw
+    # each trust root under a start, and each folder along the way, that a name test finds (find matches a name as
+    # fnmatch does, a `*` matching a leading dot; a path whole, a `*` matching `/` too) with what it takes of a root, and
+    # from a start short of a home what a root holds: a name test's name inside it, any file for a path test (`find ~/.local/bin -name 'trace?it' -delete`, `find ~/.local/share/uv
+    # -name python -delete`)
+    path_tests = [(args[i], args[i - 1] in ("-ipath", "-iwholename")) for i in kept
+                  if args[i - 1] in ("-path", "-ipath", "-wholename", "-iwholename")]
+    by_path = bool(path_tests)
     reached = []
     shell.charge(work, len(starts) * sum(map(len, tested)))   # (each start with each test)
     tokens = [(shell._glob_tokens(t), t in folded) for t in tested]
@@ -2760,16 +2831,23 @@ def _holds_protected(dest):
 
 
 def _copies(dests, sources, work, merges=False, folder=False):
-    """(what cp, mv, ln and install write, what a copy that merges folders may write of a trust root, held): each
-    destination, and in it each source's name where the destination is a folder (`folder`: -t's, several sources),
-    ends in `/` or is a home, or may be one that holds a protected path (`cp x ~/.local/bin` writes ~/.local/bin/x,
-    `cp -R x/plugins ~/.cursor` ~/.cursor/plugins), whether or not the line says it is one; with `merges` (cp -r,
-    rsync), the trust roots below each of those (_held_roots). The pairs are charged to `work`."""
+    """(what cp, mv, ln and install write, each source's name in each destination as INTO, the folders they write the
+    contents of as TREE): each destination, and in it each source's name where the destination is a folder (`folder`:
+    -t's, several sources) or ends in `/` or is a home, written; the name in any destination as INTO_TARGET, which
+    _write_effects makes a write where the destination, resolved (a cd's, a link's), holds a protected path
+    (`cp x ~/.local/bin` writes ~/.local/bin/x, `cp -R x/plugins ~/.cursor` ~/.cursor/plugins). TREE_TARGET (what a
+    folder's contents may write, held by _held_roots): a source that is `dir/`, `.` or a pattern (a folder's contents:
+    `cp -R evil/ dest` as macOS reads it), and with `merges` (cp -r, rsync) each name, which merges into a folder of
+    that name. The pairs are charged to `work`."""
     dests, names = list(dict.fromkeys(dests)), list(dict.fromkeys(src.rstrip("/").rsplit("/", 1)[-1] for src in sources))
     shell.charge(work, sum(map(len, dests)) * max(len(names), 1) + sum(map(len, names)) * len(dests))
     written = [d for dest in dests for d in [dest] + [dest.rstrip("/") + "/" + name for name in names if (
         folder or dest.endswith("/") or dest in ("~", ".", "..") or _holds_protected(dest))]]
-    return written, [t for w in written[1:] for t in _held_roots(w)] if merges else []
+    into = [dest.rstrip("/") + "/" + name for dest in dests for name in names]
+    contents = any(src.endswith("/") or src.rstrip("/").rsplit("/", 1)[-1] in (".", "..") or shell._GLOB.search(src)
+                   for src in sources)
+    tree = [dest for dest in dests if contents] + (into if merges else [])
+    return written, into, tree
 
 
 def _command_effects(commands, work):
@@ -2850,10 +2928,11 @@ def _command_effects(commands, work):
             else:   # cp, mv, install and ln write the last operand or each -t directory, and in a directory each source's
                 # name (`cp -t ~ x/.bash_history`, `cp x/.bash_history ~/`); mv also removes its sources
                 sources = operands if directories else operands[:-1]
-                written, held = _copies(directories or operands[-1:], sources, work, exe == "cp" and any(
+                written, into, tree = _copies(directories or operands[-1:], sources, work, exe == "cp" and any(
                     re.fullmatch(r"-[A-Za-z]*[rRa][A-Za-z]*", a) or a in ("--recursive", "--archive") for a in args),
                     bool(directories) or len(sources) > 1)
-                out.extend(held)
+                out.extend(["INTO_TARGET:" + p for p in into] + ["TREE_TARGET:" + p for p in tree]
+                           if exe in ("cp", "install") else ["INTO_TARGET:" + p for p in into])
                 deleted = sources if exe == "mv" else []
             # tee's options come before its first file or `--` (after either, `-a` is a file: BSD's tee reads none
             # after a file, so `tee FILE -a` overwrites FILE)
@@ -2972,6 +3051,7 @@ def _command_effects(commands, work):
             if code is None or _SQL_WRITE.search(code):
                 out.extend("WRITE_TARGET:" + a for a in operands)
         out.extend(_tree_writes(exe, args, work))
+        out.extend(_installs(command, exe, args))
     return out
 
 
@@ -2980,23 +3060,100 @@ _GIT_READS = frozenset(("status", "log", "diff", "show", "ls-files", "ls-tree", 
                         "blame", "grep", "cat-file", "show-ref", "shortlog", "name-rev", "version", "help"))
 
 
+_PIP_ENV_OPTIONS = ("--python", "-p", "--target", "-t", "--prefix", "--root", "--directory")   # (pip's and uv's: where it installs)
+_TRACEKIT_AI = re.compile(r"(?i)tracekit[-_]ai")
+
+
+def _installs(command, exe, args):
+    """What a package manager or an interpreter's module installs or creates in an environment: WRITE_TARGET of the
+    environment it names (pip's --target, --prefix, --root and -t, uv pip's --python, a VIRTUAL_ENV in front, the
+    interpreter or pip it is run by, `-m ensurepip`, `-m venv`, `uv venv`, `virtualenv`), so a trust root there is denied
+    as any write to it is; and ROOT_TARGET (held) of a uv tool or pipx install, inject, runpip, upgrade or reinstall
+    whose words name tracekit-ai (a name, a path, a URL), which replaces or shadows the install."""
+    word = command.get("word") or command["argv"][0]   # (the program as written: the parse leaves its file name)
+    words = [a for a in args if not a.startswith("-")]
+    out = []
+    module = _python_module(args) if _PYTHON_EXE.fullmatch(exe) else []
+    sub = (module[1:2] if module[:1] == ["pip"] else words[:1]) if exe in ("pip", "pip3") or module[:1] == ["pip"] else (
+        words[1:2] if exe == "uv" and words[:1] == ["pip"] else words[:1])
+    sub = sub[0] if sub else ""
+    pip_like = exe in ("pip", "pip3") or module[:1] == ["pip"] or exe == "uv" and words[:1] == ["pip"]
+    if "/" in word and (module[:1] in (["pip"], ["ensurepip"], ["venv"]) or exe in ("pip", "pip3")):
+        out.append("WRITE_TARGET:" + posixpath.dirname(posixpath.dirname(word)))   # <venv>/bin/python -m pip: the venv
+    if pip_like and sub in ("install", "uninstall", "sync", "download") or module[:1] in (["ensurepip"], ["venv"]):
+        every = list(args) + list(module[1:])
+        out += ["WRITE_TARGET:" + v for a, v in zip(every, every[1:]) if a in _PIP_ENV_OPTIONS] + [
+            "WRITE_TARGET:" + a.partition("=")[2] for a in every if a.startswith(("--target=", "--prefix=", "--root=",
+                                                                                     "--python="))]
+    if exe in ("virtualenv",) or exe == "uv" and words[:1] == ["venv"] or module[:1] == ["venv"]:
+        out += ["WRITE_TARGET:" + w for w in (words[1:] if exe == "uv" else module[1:] if module else words)
+                if not w.startswith("-")]
+    if (exe == "uv" and words[:2] and words[0] == "tool" and words[1] in ("install", "upgrade", "reinstall")) or (
+            exe == "pipx" and words[:1] and words[0] in ("install", "inject", "runpip", "upgrade", "reinstall",
+                                                           "install-all", "upgrade-all")):
+        plain = words[:1] == ["install"] or words[:2] == ["tool", "install"]
+        plain = plain and not any(a.startswith("-") for a in args)   # (the name as on PyPI, no option: what the plugin asks for)
+        out += ["ROOT_TARGET:" + w for w in words if _TRACEKIT_AI.search(w) and not (plain and w == "tracekit-ai")]
+    return out
+
+
+_TAR_VALUED = "fCbIJTXLNV"   # tar's short options that take a value
+
+
+def _tar_words(args):
+    """(the letters of a tar line's options, each valued letter's values, its other operands): an old-style first word
+    without a dash (`xfC a.tar dir`), clusters (`-xfC a.tar dir`), attached values (`-Cdir`), and the long
+    --directory, --file, --extract and --get."""
+    letters, values, operands, i = "", collections.defaultdict(list), [], 0
+    while i < len(args):
+        a, i = args[i], i + 1
+        if a == "--":
+            operands += args[i:]
+            break
+        if a.startswith("--"):
+            name, eq, value = a.partition("=")
+            if name in ("--directory", "--file"):
+                if not eq and i < len(args):
+                    value, i = args[i], i + 1
+                values["C" if name == "--directory" else "f"].append(value)
+            elif name in ("--extract", "--get"):
+                letters += "x"
+        elif a.startswith("-") and len(a) > 1 or i == 1 and a and not a.startswith("-") and re.fullmatch(r"[A-Za-z]+", a):
+            cluster, pending = a.lstrip("-"), []
+            for j, c in enumerate(cluster):
+                letters += c
+                if c in _TAR_VALUED:
+                    if cluster[j + 1:] and a.startswith("-"):   # attached: -Cdir
+                        values[c].append(cluster[j + 1:])
+                        break
+                    pending.append(c)   # (an old-style word's valued letters each take the next word)
+            for c in pending:
+                if i < len(args):
+                    values[c].append(args[i])
+                    i += 1
+        else:
+            operands.append(a)
+    return letters, values, operands
+
+
+def _plain_member(member):
+    return not (shell._GLOB.search(member) or member.endswith("/") or member in (".", ".."))
+
+
 def _tree_writes(exe, args, work):
-    """What a program that writes a whole tree writes: tar -x into -C's folder and unzip into -d's (default: here),
-    held when it may put a trust root's place there (_held_roots); rsync's destination and each source's name in it;
-    git's -C or --work-tree folder for any subcommand but a reader's, apply's --directory and clone's folder."""
-    members = []
+    """What a program that writes a whole tree writes: tar -x into -C's folder, unzip into -d's, ditto, pax, cpio, 7z
+    and python -m zipfile or tarfile into theirs (default: here): the files it names there, else TREE_TARGET, where
+    _held_roots holds a folder that may take a trust root's place; rsync's destination and each source's name in it
+    (and what --delete takes); git's -C or --work-tree folder for any subcommand but a reader's, apply's --directory and
+    clone's folder."""
+    members, into = [], []
     if exe in ("tar", "gtar", "bsdtar"):
-        bundles = [a for a in args[:1] if not a.startswith("-")] + [a for a in args if re.fullmatch(r"-[A-Za-z]+", a)]
-        if not (any("x" in b for b in bundles) or "--extract" in args or "--get" in args):
+        letters, values, operands = _tar_words(args)
+        if "x" not in letters:
             return []
-        into = [b for a, b in zip(args, args[1:]) if a == "--directory" or re.fullmatch(r"-[A-Za-z]*C", a)] + [
-            a.partition("=")[2] for a in args if a.startswith("--directory=")] + [
-            a[2:] for a in args if a.startswith("-C") and len(a) > 2]
-        taken = {b for a, b in zip(args, args[1:]) if a in ("--file", "--directory") or re.fullmatch(r"-[A-Za-z]*[fC]", a)}
-        taken |= {args[1]} if len(args) > 1 and not args[0].startswith("-") and "f" in args[0] else set()
+        into = values["C"]
         if not any(a.startswith("--strip") for a in args):
-            members = [a for a in args[bool(bundles and not args[0].startswith("-")):] if not a.startswith("-")
-                       and a not in taken]
+            members = operands
     elif exe == "unzip" and not any(re.fullmatch(r"-[A-Za-z]*[lptZ][A-Za-z]*", a) for a in args):
         into = [b for a, b in zip(args, args[1:]) if re.fullmatch(r"-[A-Za-z]*d", a)] + [
             a[2:] for a in args if a.startswith("-d") and len(a) > 2]
@@ -3009,11 +3166,33 @@ def _tree_writes(exe, args, work):
             elif not a.startswith("-"):
                 words.append(a)
         members = words[1:]
+    elif exe == "ditto":
+        into = [a for a in args if not a.startswith("-")][-1:]
+    elif _PYTHON_EXE.fullmatch(exe) and (mod := _python_module(args))[:1] in (["zipfile"], ["tarfile"]):
+        if not any(a in ("-e", "--extract") for a in mod[1:]):
+            return []
+        into = [a for a in mod[1:] if not a.startswith("-")][1:2]
+    elif exe in ("pax", "cpio"):
+        if exe == "cpio" and not any(re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*|--extract", a) for a in args):
+            return []
+        if exe == "pax" and not any(re.fullmatch(r"-[A-Za-z]*r[A-Za-z]*", a) for a in args):
+            return []
+        into = ["."] + [w for a in args for w in re.findall(r"(?:~|/)[^\s,'\"]*", a)] + [
+            b for a, b in zip(args, args[1:]) if a in ("-D", "--directory")]
+    elif exe in ("7z", "7za", "7zr", "7zz", "7zip"):
+        if not any(a in ("x", "e") for a in args[:1]):
+            return []
+        into = [a[2:] for a in args if a.startswith("-o") and len(a) > 2]
     elif exe == "rsync":
         operands = [a for a in args if not a.startswith("-")]
         local = [a for a in operands[-1:] if not re.match(r"[^/]*:", a)]
-        written, held = _copies(local, operands[:-1], work, True, len(operands) > 2) if local else ([], [])
-        return ["WRITE_TARGET:" + w for w in written] + held
+        if not local:
+            return []
+        written, into_names, tree = _copies(local, operands[:-1], work, True, len(operands) > 2)
+        deletes = ["DELETE_TARGET:" + d + r for d in local for r in ["", *_roots_below(d, True)]
+                   if any(a.startswith("--delete") for a in args)]
+        return ["WRITE_TARGET:" + w for w in written] + ["INTO_TARGET:" + w for w in into_names] + [
+            "TREE_TARGET:" + w for w in tree] + deletes
     elif exe == "git":
         folders, i, sub = [], 0, None
         while i < len(args):
@@ -3032,10 +3211,10 @@ def _tree_writes(exe, args, work):
         return ["WRITE_TARGET:" + f for f in folders + into] if sub not in _GIT_READS else []
     else:
         return []
-    into = into or ["."]
-    if members:   # named members are the only files it writes there
+    into = list(dict.fromkeys(into)) or ["."]
+    if members and all(map(_plain_member, members)):   # named members are the only files it writes there
         return ["WRITE_TARGET:" + d.rstrip("/") + "/" + m for d in into for m in members]
-    return ["WRITE_TARGET:" + d for d in into] + [t for d in into for t in _held_roots(d)]
+    return ["WRITE_TARGET:" + d for d in into] + ["TREE_TARGET:" + d for d in into]
 
 
 _SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
@@ -3323,12 +3502,8 @@ def _links(commands):
 
 
 def _cdpath(parsed):
-    """The folders of a CDPATH the line sets: as an assignment (it is a reference), inline, or an argument of export,
-    declare, typeset, readonly, local or env."""
-    values = [r.partition("=")[2] for r in parsed[2] if r.startswith("CDPATH=")] + [
-        a.partition("=")[2] for c in parsed[0] if c["argv"][0] in ("export", "declare", "typeset", "readonly", "local", "env")
-        for a in c["argv"][1:] if a.startswith("CDPATH=")]
-    return [p for v in values for p in v.split(":") if p]
+    """The folders of a CDPATH the line sets (_variable)."""
+    return [p for v in _variable(parsed, "CDPATH") for p in v.split(":") if p]
 
 
 def _bases(commands, work, cdpath=()):
@@ -3435,7 +3610,10 @@ def _tracekit(parsed, finds, work):
             more = [posixpath.normpath(posixpath.join(b, n)) for b in bases if n[0] not in "/~$-"]
             more += [h + m[1:] for m in [n, *more] if m[:1] == "~" for h in homes]
             more += [t + m[len(k):] for m in [n, *more] for k, t in links.items() if m.startswith(k + "/")]
-            more += [f for m in [n, *more] for f in _pattern_forms(m, work)]
+            try:
+                more += [f for m in [n, *more] for f in _pattern_forms(m, work)]
+            except shell.ParseError:   # (one that reads as too many: _write_effects holds it)
+                pass
             shell.charge(work, sum(map(len, more)))
             out += more
         return out
@@ -3468,7 +3646,7 @@ def _tracekit(parsed, finds, work):
         (listed if r not in written and r in private else read if r not in written and r in reads else act).extend(
             at([r]))
     targets = at([t.partition(":")[2] for t in _effects(parsed, work)
-                  if not t.startswith(("ROOT_TARGET:", "SAFE_MODE_TARGET:"))])
+                  if not t.startswith(("ROOT_TARGET:", "SAFE_MODE_TARGET:", "INTO_TARGET:", "TREE_TARGET:"))])
     act += targets
 
     def tag(name, texts):

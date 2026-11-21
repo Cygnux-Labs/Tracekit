@@ -485,7 +485,8 @@ def user_settings_all():
 def record_hooks_settings(path):
     """Record user settings file `path`, where init put the hooks, as hooks_settings in the client config (its other
     keys stay), as init_dev does for v1: user_settings_all then finds them from a shell without the same
-    CLAUDE_CONFIG_DIR. None: init was told --no-hooks, recorded as no_hooks, which doctor reports as the choice it is."""
+    CLAUDE_CONFIG_DIR. None: init was told --no-hooks, recorded as no_hooks, which doctor reports as the choice it is.
+    Also records the Python init ran with, as hook_python."""
     d = client.client_dir()
     fd = files.open_dir(d)
     try:
@@ -494,7 +495,9 @@ def record_hooks_settings(path):
         files.close(fd)
     cfg.pop("no_hooks", None)
     cfg.pop("hooks_settings", None)
-    _write_client_dir(d, {**cfg, **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
+    # hook_python: the Python init ran with, the only one the plugin's hook runs in (plugin/scripts/tracekit-hook)
+    _write_client_dir(d, {**cfg, "hook_python": sys.executable,
+                          **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
 
 
 AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most

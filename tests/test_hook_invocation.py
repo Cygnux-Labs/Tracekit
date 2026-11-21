@@ -287,6 +287,41 @@ class PluginShim(unittest.TestCase):
             self.assertIn(f"Ask the person to set it up: uv tool install tracekit-ai=={__version__} && tracekit init --dev --v2 "
                           "--no-hooks", err)
 
+    def record_python(self, python):
+        """What `tracekit init` leaves in the client config: the Python the hook runs in."""
+        client = os.path.join(self.home, ".tracekit-client")
+        os.makedirs(client, exist_ok=True)
+        with open(os.path.join(client, "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"hook_python": python, "hooks_settings": "/x"}, f, indent=2)
+
+    def test_the_python_init_recorded_is_the_only_one_that_runs_the_hook(self):
+        """The fifth review: with the uv install's folder unreadable or removed the hook fell back to python3, where a
+        planted tracekit ran. Once init has recorded a Python, that one runs it: not TRACEKIT_PYTHON (a project's settings
+        can set it), not what PATH or a default folder holds, and a record that can't run it stops the call."""
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)   # python3's: a planted one
+        self.set_up_tracekit()
+        os.makedirs(os.path.join(self.d, "rec"))
+        recorded = self.fake_python(os.path.join(self.d, "rec", "python"))
+        agents = self.fake_python(os.path.join(self.d, "agents-python"))
+        self.record_python(recorded)
+        self.assertEqual(self.hook("PreToolUse", TRACEKIT_PYTHON=agents)[0], 0)
+        self.assertIn(f"{recorded} -I -c", self.calls())
+        self.assertNotIn(agents, self.calls())
+        self.assertNotIn("python3", self.calls())
+        os.remove(recorded)   # gone: blocked, with what to run, and no other Python tried
+        code, err = self.hook("PreToolUse", TRACEKIT_PYTHON=agents)
+        self.assertEqual(code, 2, err)
+        self.assertIn("tracekit init --dev --v2 --no-hooks", err)
+        self.assertNotIn(agents, self.calls())
+
+    def test_a_tracekit_that_is_set_up_with_no_python_recorded_blocks_the_call(self):
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        self.set_up_tracekit()
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2, err)
+        self.assertIn("recorded no Python", err)
+        self.assertIn("turn the plugin off in /plugin", err)
+
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
         from tracekit.signer import service
@@ -351,6 +386,7 @@ class PluginShim(unittest.TestCase):
         os.symlink(os.path.join(venv_bin, "tracekit"), os.path.join(self.d, "tools", "link"))
         os.symlink(os.path.join("..", "tools", "link"), os.path.join(self.bin, "tracekit"))
         self.set_up_tracekit()
+        self.record_python(tool_python)   # (set up, the Python init recorded runs it, whatever PATH holds)
         for agent in (None, "codex"):
             with self.subTest(agent=agent):
                 self.assertEqual(self.hook("PreToolUse", agent)[0], 0)

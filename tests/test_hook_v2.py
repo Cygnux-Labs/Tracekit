@@ -1075,8 +1075,16 @@ class HookV2(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("allowing (fail-open)", err)
 
+    def record_hook_python(self):
+        """What `tracekit init` leaves in the client config: the Python the plugin's hook runs in."""
+        client = os.path.join(os.environ["HOME"], ".tracekit-client")
+        os.makedirs(client, exist_ok=True)
+        with open(os.path.join(client, "config.json"), "w") as f:
+            json.dump({"hook_python": sys.executable}, f)
+
     def test_the_plugin_decides_through_the_dev_signer(self):
-        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"), TRACEKIT_PYTHON=sys.executable)
+        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"))
+        self.record_hook_python()
         with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
             cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         for tid, command, code in (("t1", "pkill tracekitd", 2), ("t2", "ls", 0)):   # no hook_event_name: hooks.json names it
@@ -1098,7 +1106,7 @@ class HookV2(unittest.TestCase):
         """The plugin's hooks for Codex, Copilot CLI and Cursor run each harness's own hook (harness_hooks), with the
         harness's payload, from the variable each sets to the plugin's directory, and answer in the harness's own form
         (Claude Code's hook, which those harnesses ran from the plugin's default hooks file, answers in Claude Code's)."""
-        os.environ.update(TRACEKIT_PYTHON=sys.executable)
+        self.record_hook_python()
         plugin = os.path.join(ROOT, "plugin")
         harnesses = {   # (root variable, the pre-tool event, its entry's command field, a payload for a shell call,
             # the deny the harness reads on stdout)
