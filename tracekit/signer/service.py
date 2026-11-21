@@ -6126,7 +6126,13 @@ def main(argv=None):
             return 2
         from tracekit.storage import postgres
         try:
-            print(f"schema version {postgres.migrate(postgres.read_dsn(cfg['storage']['postgres']))}")
+            dsn = postgres.read_dsn(cfg["storage"]["postgres"])
+            before = postgres.version(dsn)
+            print(f"schema version {postgres.migrate(dsn)}")
+            if before == 1:   # it added the content vault's tables, and granted nothing on them (a fresh store's
+                # first deploy grants all of GRANTS)
+                print("the content vault's tables are new: grant the signer's role these, or every item it keeps "
+                      "reads back not_retained:\n" + postgres.VAULT_GRANTS.format(role="<the signer's role>"))
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer migrate: {e}", file=sys.stderr)
             return 1

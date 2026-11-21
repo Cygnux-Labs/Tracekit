@@ -468,6 +468,71 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
         self.assertEqual(s.check_store(), [])
         self.assertEqual(svc.fsck(d), [])
 
+    def test_doctor_fails_a_signer_role_without_the_content_vaults_grants(self):
+        from tracekit import doctor
+        admin, dsn = new_log(self)
+        data = tmpdir(self)
+        with open(os.path.join(data, "pg.dsn"), "w") as f:
+            f.write(dsn)
+        section = {"dsn_file": os.path.join(data, "pg.dsn")}
+        sql(admin, f"REVOKE ALL ON tracekit_content_keys, tracekit_content FROM {SIGNER}")   # GRANTS but the vault
+        got = {r["id"]: r for r in doctor.pg_checks(section, True)}
+        self.assertEqual(got["D-PG-SIGNER-ROLE"]["status"], "ok")
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["status"], "fail")
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["detail"], f"{SIGNER} lacks " + ", ".join(
+            f"{t}: {p}" for t in ("tracekit_content", "tracekit_content_keys")
+            for p in ("DELETE", "INSERT", "SELECT", "UPDATE")))
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["fix"], "GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots, "
+                         f"tracekit_content_keys, tracekit_content TO {SIGNER};")
+        sql(admin, postgres.GRANTS.format(schema=sql(admin, "SELECT current_schema()")[0][0], role=SIGNER))
+        got = {r["id"]: r for r in doctor.pg_checks(section, True)}
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["status"], "ok")
+        self.assertNotIn("D-PG-VAULT-GRANTS", {r["id"] for r in doctor.pg_checks(section)})   # the vault off
+        sql(admin, "DROP TABLE tracekit_content, tracekit_content_keys")   # a version 1 store: migrate first
+        sql(admin, "DELETE FROM tracekit_schema")
+        sql(admin, "INSERT INTO tracekit_schema VALUES (1)")
+        got = {r["id"]: r for r in doctor.pg_checks(section, True)}["D-PG-VAULT-GRANTS"]
+        self.assertEqual(got["detail"], "the content vault's tables are missing (schema version 1)")
+        self.assertTrue(got["fix"].startswith("run `tracekit signer migrate`, then GRANT "), got["fix"])
+
+    def test_doctor_reads_role_and_table_names_as_text_on_a_sql_ascii_database(self):
+        from tracekit import doctor
+        db = "t" + secrets.token_hex(8)   # psycopg returns a SQL_ASCII database's text as bytes, unless told utf8
+        sql(ADMIN, f"CREATE DATABASE {db} ENCODING SQL_ASCII TEMPLATE template0")
+        self.addCleanup(sql, ADMIN, f"DROP DATABASE {db} WITH (FORCE)")
+        admin = make_conninfo(ADMIN, dbname=db)
+        postgres.migrate(admin)
+        sql(admin, postgres.GRANTS.format(schema="public", role=SIGNER))
+        sql(admin, f"REVOKE ALL ON tracekit_content_keys, tracekit_content FROM {SIGNER}")
+        data = tmpdir(self)
+        with open(os.path.join(data, "pg.dsn"), "w") as f:
+            f.write(make_conninfo(admin, options=f"-c role={SIGNER}"))
+        got = {r["id"]: r for r in doctor.pg_checks({"dsn_file": os.path.join(data, "pg.dsn")}, True)}
+        detail = got["D-PG-VAULT-GRANTS"]["detail"]
+        self.assertEqual(got["D-PG-VAULT-GRANTS"]["status"], "fail")
+        self.assertIsInstance(detail, str)
+        self.assertIn("tracekit_content: INSERT", detail)
+        self.assertTrue(detail.startswith(f"{SIGNER} lacks "), detail)
+        self.assertNotIn("b'", got["D-PG-SIGNER-ROLE"]["detail"] + got["D-PG-VAULT-GRANTS"]["fix"])
+
+    def test_migrate_prints_the_vault_grant_when_it_adds_the_vault(self):
+        admin = new_log(self)[0]
+        sql(admin, "DROP TABLE tracekit_content, tracekit_content_keys")
+        sql(admin, "DELETE FROM tracekit_schema")
+        sql(admin, "INSERT INTO tracekit_schema VALUES (1)")
+        d = tmpdir(self)
+        with open(os.path.join(d, "pg.dsn"), "w") as f:
+            f.write(admin)
+        cfg = os.path.join(d, "signer.yaml")
+        with open(cfg, "w") as f:
+            f.write("data_dir: data\nstorage: {postgres: {dsn_file: pg.dsn}}\n")
+        line = postgres.VAULT_GRANTS.format(role="<the signer's role>")
+        for printed in (True, False):   # a version 1 store gets the vault's tables; once they exist, nothing to grant
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(svc.main(["migrate", "--config", cfg]), 0)
+            self.assertEqual(line in out.getvalue(), printed, out.getvalue())
+
     def test_migrate_and_fsck_commands(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
@@ -477,7 +542,10 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
         cfg = os.path.join(d, "signer.yaml")
         with open(cfg, "w") as f:
             f.write("data_dir: data\nstorage: {postgres: {dsn_file: pg.dsn}}\n")
-        self.assertEqual(svc.main(["migrate", "--config", cfg]), 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(svc.main(["migrate", "--config", cfg]), 0)
+        self.assertNotIn("content vault", out.getvalue())   # a fresh store: its first deploy grants all of GRANTS
         svc.open_service(svc.load_config(cfg)).close()
         self.assertEqual(svc.main(["fsck", "--config", cfg]), 0)
         with open(os.path.join(d, "pg.dsn"), "w") as f:
