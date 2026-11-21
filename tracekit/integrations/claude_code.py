@@ -1260,7 +1260,7 @@ def _handle(client, p, event, sid, tid, end=None):
     if event == "SessionStart":
         _prune()
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers
-        source = p.get("source") if AGENT == "claude-code" else None
+        source = p.get("source") if AGENT in ("claude-code", "opencode", "kilo") else None   # OpenCode's: normalise
         # a program's prompt through Claude Code's SDK is recorded as the request it is, under a source of its own:
         # only what a person typed is `<agent>:UserPromptSubmit` (TIPS' TOLD lessons read that alone)
         typed_by = f"{AGENT}:sdk:UserPromptSubmit" if source == "sdk" else f"{AGENT}:UserPromptSubmit"
@@ -1283,8 +1283,11 @@ def _handle(client, p, event, sid, tid, end=None):
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
-                     value=typed)
+                # OpenCode 2.x proves no prompt typed: an empty one would read as the person's prompt
+                # (findings_v2's hooked, hook_seqs), so only its untrusted record is kept
+                if typed or AGENT not in ("opencode", "kilo"):
+                    _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
+                         value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
