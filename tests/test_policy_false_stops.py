@@ -103,6 +103,13 @@ class FalseStops(unittest.TestCase):
                 f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate,{sep}SignerService\nEOF",
                 f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate{sep}SignerService\nEOF")
 
+    def test_a_backslash_continuation_of_any_line_ending_does_not_hide_a_name(self):
+        for end in ("\n", "\r\n", "\r"):
+            self.assert_denied(
+                "TK-D007",
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy, \\{end}    SignerService\nEOF",
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy,\\{end}SignerService\nEOF")
+
     def test_an_import_of_more_of_the_signer_stays_stopped(self):
         self.assert_denied(
             "TK-D007",
