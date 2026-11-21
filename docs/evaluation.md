@@ -542,13 +542,13 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 287 / 420 (68.3%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 312 / 420 (74.3%) | 158 (37.6%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 290 / 420 (69.0%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 315 / 420 (75.0%) | 161 (38.3%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
 32, Kubernetes 25 of 27. By evasion, calls with none are caught 172 of 275; quoting 12 of 18, environment prefixes 10 of 14, substitution 41
-of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
+of 49, interpreter one-liners 26 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
@@ -559,14 +559,14 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 1 |
-| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 38 (84.4%), 18 denied | 1 |
+| | strict | 25 (55.6%), 19 denied | 2 | 41 (91.1%), 20 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
 | narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
 | | strict | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
-| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 104 (72.2%), 25 denied | 13 (9.1%) |
-| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 109 (75.7%), 28 denied | 19 (13.3%) |
+| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 105 (72.9%), 25 denied | 13 (9.1%) |
+| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 110 (76.4%), 29 denied | 19 (13.3%) |
 
 The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
 rows are this run's, on 2026-11-17: 2,910 calls; the gates were recorded from four runs on 2026-11-14.

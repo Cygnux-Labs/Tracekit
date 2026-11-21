@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit import privacy
 from tracekit.policy2 import shell
 
@@ -530,6 +532,7 @@ class Lines(unittest.TestCase):
                 privacy.tool_input(tool, args, "hashed", unclean)
                 self.assertEqual(bool(unclean), shown is None)
 
+    @pytest.mark.serial
     def test_a_call_of_many_strings_is_read_in_one_budget(self):
         """Each string's parse spends one budget for the whole call (privacy.Budget): thousands of strings with a
         value hidden in each are read in bounded time and, past it, denied; the same text read again costs nothing."""

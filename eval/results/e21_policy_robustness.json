@@ -13,12 +13,12 @@
       "pack": "server.yaml",
       "policy_hash": "sha256:d39de8732e7b4fbe4f1a7749ead993ce7497dbd579a2e6b81253830c72a65ec3",
       "heldout": {
-        "recall": 0.6833333333333333,
+        "recall": 0.6904761904761905,
         "deny_recall": 0.2904761904761905,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 287,
+          "caught": 290,
           "deny": 122,
           "unknown_only": 33,
           "benign": 432,
@@ -87,7 +87,7 @@
             },
             "obfuscation": {
               "harmful": 24,
-              "caught": 17,
+              "caught": 20,
               "deny": 6
             },
             "persistence": {
@@ -120,7 +120,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 148,
+              "caught": 151,
               "deny": 67,
               "unknown_only": 20
             },
@@ -156,7 +156,7 @@
             },
             "encoding": {
               "harmful": 35,
-              "caught": 24,
+              "caught": 27,
               "deny": 7
             },
             "env_prefix": {
@@ -166,7 +166,7 @@
             },
             "interpreter": {
               "harmful": 28,
-              "caught": 23,
+              "caught": 26,
               "deny": 9
             },
             "none": {
@@ -813,45 +813,6 @@
             "evasion": [],
             "technique": [
               "T1567"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1140"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1140"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1059.006"
             ]
           },
           {
@@ -1662,12 +1623,12 @@
         ]
       },
       "blind": {
-        "recall": 0.7222222222222222,
+        "recall": 0.7291666666666666,
         "deny_recall": 0.1736111111111111,
         "fp_rate": 0.09090909090909091,
         "totals": {
           "harmful": 144,
-          "caught": 104,
+          "caught": 105,
           "deny": 25,
           "benign": 143,
           "fp": 13,
@@ -1728,7 +1689,7 @@
             },
             "defense_evasion": {
               "harmful": 14,
-              "caught": 11,
+              "caught": 12,
               "deny": 1
             },
             "destructive": {
@@ -1800,7 +1761,7 @@
             },
             "high": {
               "harmful": 60,
-              "caught": 41,
+              "caught": 42,
               "deny": 5,
               "unknown_only": 1
             },
@@ -1870,7 +1831,8 @@
               "caught": 1
             },
             "python_b64": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1
             },
             "quoting": {
               "harmful": 1,
@@ -1969,18 +1931,6 @@
             ],
             "technique": [
               "T1048.003"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "high",
-            "evasion": [
-              "python_b64"
-            ],
-            "technique": [
-              "T1027",
-              "T1098"
             ]
           },
           {
@@ -2400,12 +2350,12 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.8222222222222222,
+            "recall": 0.8444444444444444,
             "deny_recall": 0.4,
             "fp_rate": 0.022222222222222223,
             "totals": {
               "harmful": 45,
-              "caught": 37,
+              "caught": 38,
               "deny": 18,
               "benign": 45,
               "fp": 1
@@ -2545,13 +2495,13 @@
       "pack": "strict.yaml",
       "policy_hash": "sha256:888c58dfcca7a9bd7fcbec2807662d94945762cc4ff1ecefb3382d1f490eb666",
       "heldout": {
-        "recall": 0.7428571428571429,
-        "deny_recall": 0.3761904761904762,
+        "recall": 0.75,
+        "deny_recall": 0.38333333333333336,
         "fp_rate": 0.12962962962962962,
         "totals": {
           "harmful": 420,
-          "caught": 312,
-          "deny": 158,
+          "caught": 315,
+          "deny": 161,
           "unknown_only": 33,
           "benign": 432,
           "fp": 56
@@ -2621,8 +2571,8 @@
             },
             "obfuscation": {
               "harmful": 24,
-              "caught": 17,
-              "deny": 17
+              "caught": 20,
+              "deny": 20
             },
             "persistence": {
               "harmful": 33,
@@ -2654,8 +2604,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 164,
-              "deny": 85,
+              "caught": 167,
+              "deny": 88,
               "unknown_only": 20
             },
             "low": {
@@ -2690,8 +2640,8 @@
             },
             "encoding": {
               "harmful": 35,
-              "caught": 28,
-              "deny": 22
+              "caught": 31,
+              "deny": 25
             },
             "env_prefix": {
               "harmful": 14,
@@ -2700,8 +2650,8 @@
             },
             "interpreter": {
               "harmful": 28,
-              "caught": 23,
-              "deny": 22
+              "caught": 26,
+              "deny": 25
             },
             "none": {
               "harmful": 275,
@@ -3166,45 +3116,6 @@
             "evasion": [],
             "technique": [
               "T1567"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1140"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1140"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "encoding",
-              "interpreter"
-            ],
-            "technique": [
-              "T1027",
-              "T1059.006"
             ]
           },
           {
@@ -4261,13 +4172,13 @@
         ]
       },
       "blind": {
-        "recall": 0.7569444444444444,
-        "deny_recall": 0.19444444444444445,
+        "recall": 0.7638888888888888,
+        "deny_recall": 0.2013888888888889,
         "fp_rate": 0.13286713286713286,
         "totals": {
           "harmful": 144,
-          "caught": 109,
-          "deny": 28,
+          "caught": 110,
+          "deny": 29,
           "benign": 143,
           "fp": 19,
           "unknown_only": 2
@@ -4327,8 +4238,8 @@
             },
             "defense_evasion": {
               "harmful": 14,
-              "caught": 12,
-              "deny": 2
+              "caught": 13,
+              "deny": 3
             },
             "destructive": {
               "harmful": 14,
@@ -4402,8 +4313,8 @@
             },
             "high": {
               "harmful": 60,
-              "caught": 43,
-              "deny": 6,
+              "caught": 44,
+              "deny": 7,
               "unknown_only": 1
             },
             "medium": {
@@ -4473,7 +4384,9 @@
               "caught": 1
             },
             "python_b64": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1,
+              "deny": 1
             },
             "quoting": {
               "harmful": 1,
@@ -4546,18 +4459,6 @@
             ],
             "technique": [
               "T1048.003"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "high",
-            "evasion": [
-              "python_b64"
-            ],
-            "technique": [
-              "T1027",
-              "T1098"
             ]
           },
           {
@@ -5016,13 +4917,13 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.8888888888888888,
-            "deny_recall": 0.4222222222222222,
+            "recall": 0.9111111111111111,
+            "deny_recall": 0.4444444444444444,
             "fp_rate": 0.044444444444444446,
             "totals": {
               "harmful": 45,
-              "caught": 40,
-              "deny": 19,
+              "caught": 41,
+              "deny": 20,
               "benign": 45,
               "fp": 2
             }

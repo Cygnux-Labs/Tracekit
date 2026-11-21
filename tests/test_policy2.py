@@ -1675,8 +1675,9 @@ class Shell(unittest.TestCase):
 
     @pytest.mark.serial
     def test_sed_addresses_do_not_rescan_from_each_newline(self):
-        """`_SED_ADDR`'s whitespace runs matched `\\n`, so a sed script of only newlines was re-scanned from each one:
-        64 KiB took 86 s to decide and was allowed. The runs now stop at `\\n`, one match per newline as before."""
+        """A sed script of only newlines was once re-scanned from each one (the address pattern's whitespace ran over
+        `\\n`): 64 KiB took 86 s to decide and was allowed. sed's script is now read once, character by character
+        (_sed_commands)."""
         pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
         cmd = "sed -e '" + "\n" * (MAX_SUBJECT - 10) + "'"
         start = time.perf_counter()
@@ -3803,6 +3804,7 @@ class InterpreterRuns(unittest.TestCase):
             with self.subTest(pieces=pieces):
                 self.assertEqual(shell._pipe_opened(pieces), cmd)
 
+    @pytest.mark.serial
     def test_hostile_programs_parse_in_linear_time(self):
         def best(cmd):   # the least CPU time of three parses: other processes on a busy machine don't count
             times = []
@@ -4134,6 +4136,7 @@ class ReadAsBash(unittest.TestCase):
                 self.assertIn("alpha", [c["argv"][0] for c in shell.parse(cmd)])
         self.kept(["export BASH_ENV=./e.sh; echo 'echo hi' > e.sh; bash -c :", "echo 'echo hi' > e.sh; bash -c :"])
 
+    @pytest.mark.serial
     def test_a_startup_file_named_and_written_many_times_parses_in_linear_time(self):
         """Each BASH_ENV read every write the line had made to its file again, uncharged: 64 KiB of `export
         BASH_ENV=e.sh; echo x > e.sh; ` took 2.8 s. Each variable and file is now read once, charged for its writes."""
