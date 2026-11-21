@@ -79,5 +79,37 @@ class WithoutPytest(unittest.TestCase):
                 self.assertIn("1/2 tests collected (1 deselected)", p.stdout)
 
 
+class Shard(unittest.TestCase):
+    def collect(self, d, *args):
+        env = dict(os.environ, HOME=d, PYTHONPATH=os.pathsep.join(filter(None, [ROOT, os.environ.get("PYTHONPATH")])))
+        return subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--collect-only", *args,
+                               d], cwd=d, env=env, capture_output=True, text=True, timeout=120)
+
+    def test_every_test_is_in_exactly_one_shard_and_a_file_stays_whole(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        shutil.copy(os.path.join(TESTS, "conftest.py"), d)
+        for name, n in (("a", 5), ("b", 3), ("c", 3), ("d", 1)):
+            with open(os.path.join(d, f"test_{name}.py"), "w", encoding="utf-8") as f:
+                f.write("".join(f"def test_{k}():\n    pass\n\n\n" for k in range(n)))
+        everything = sorted(l for l in self.collect(d).stdout.splitlines() if "::" in l)
+        shards = [sorted(l for l in self.collect(d, f"--shard={i}/3").stdout.splitlines() if "::" in l)
+                  for i in range(3)]
+        self.assertEqual(len(everything), 12)
+        self.assertEqual(sorted(sum(shards, [])), everything)
+        self.assertEqual([len(s) for s in shards], [5, 4, 3])
+        self.assertEqual(sum(len({l.split("::")[0] for l in s}) for s in shards), 4)
+
+    def test_a_bad_shard_is_refused(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        shutil.copy(os.path.join(TESTS, "conftest.py"), d)
+        for spec in ("3/3", "x", "1/0", "-1/3"):
+            with self.subTest(spec=spec):
+                p = self.collect(d, f"--shard={spec}")
+                self.assertNotEqual(p.returncode, 0)
+                self.assertIn("expected I/N with 0 <= I < N", p.stdout + p.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()
