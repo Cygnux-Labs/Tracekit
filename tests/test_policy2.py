@@ -5706,6 +5706,8 @@ class SourceReader(unittest.TestCase):
                 ('f()("file:///etc/passwd")', [], "call"),
                 ('functools.partial(goto_url, "file:///etc/passwd")()', [], "call"),
                 ('while input():\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
+                # a while's else runs when its test is false, so `while False` runs it: it was left unread
+                ('while False:\n    pass\nelse:\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
                 ('d = {}\nd[goto_url("file:///etc/passwd")]: int', ["file:///etc/passwd"], None)]:
             with self.subTest(code=code):
                 r = source.read(code)

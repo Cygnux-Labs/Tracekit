@@ -228,7 +228,7 @@ class Reader(ast.NodeVisitor):
             self.visit(node.test)
             if test is not False:
                 self.stmts(node.body, True)
-                self.stmts(node.orelse, True)
+            self.stmts(node.orelse, True if test is not False else conditional)   # runs once the test is false
         elif isinstance(node, (ast.With, ast.AsyncWith)):
             for item in node.items:
                 self.visit(item.context_expr)
