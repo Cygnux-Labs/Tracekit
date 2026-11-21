@@ -4147,6 +4147,19 @@ class ReadAsBash(unittest.TestCase):
                     "env BASH_ENV=/dev/stdin bash -c : <<< alpha", "export BASH_ENV=/dev/stdin; bash -c : <<< alpha"])
         self.kept(["ENV=prod npm start", "BASH_ENV=~/.bashrc bash -c 'make test'"])
 
+    def test_a_prompt_or_startup_variable_a_pattern_gives_is_held(self):
+        """`touch '$(alpha)'; for PS4 in *; do set -x; :; done` was allowed: a loop over a pattern gave PS4 the names
+        it may match as literals, but any file's name may be one, and bash expands PS4 as a prompt when it traces. A
+        variable bash reads as code (PS4, PS0, PS1, PROMPT_COMMAND, BASH_ENV, ENV) a loop over a pattern sets is now a
+        value the parser can't read, as a read or an expansion's is."""
+        self.check(["touch '$(alpha)'; for PS4 in *; do set -x; :; done", "for PS4 in *; do set -x; :; done",
+                    "select PS4 in *; do set -x; :; break; done <<< 1", "for PS4 in {a,b}*; do set -x; :; done",
+                    "for PS4 in ./*.txt; do bash -x s.sh; done", "for PROMPT_COMMAND in *; do bash -i; done",
+                    "for PS0 in *; do bash -i; done", "for PS1 in *; do bash -i; done",
+                    "for f in *; do PS4=$f; set -x; :; done", "for BASH_ENV in *; do bash -c :; done"])
+        self.kept(["PS4='+ '; set -x; :", "set -x; :", "set -x", "PS4='+ $LINENO: '; set -x; make", "PS4=*; set -x; :",
+                   "for f in *; do echo $f; set -x; done", "for PS4 in '+ ' '> '; do set -x; :; done"])
+
     def test_a_startup_file_written_after_its_variable_is_read(self):
         """`echo 'alpha' > e.sh; BASH_ENV=./e.sh bash -c :` was read, but with the export first and the write after it
         (`export BASH_ENV=./e.sh; echo 'alpha' > e.sh; bash -c :`) the file was read where the variable was set, before

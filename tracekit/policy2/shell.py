@@ -3906,7 +3906,7 @@ class _Parser:
         unread = False   # a word of it (a redirection's target too) has more readings than MAX_READINGS
         # a herestring holds an expansion the parser can't read (_Spliced), or a value it can't name (unsafe's code);
         # so does a loop's header (header_spliced: the former)
-        spliced = unknown_string = header_unknown = header_spliced = header_joined = False
+        spliced = unknown_string = header_unknown = header_spliced = header_joined = header_glob = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
         # an assignment here runs whenever what follows it on the line does: outside compound commands but a { }
         # group, first in its list (not after && or ||, nor a pipeline stage), and no keyword but a { before it
@@ -4073,11 +4073,13 @@ class _Parser:
                 if made is not None:
                     for piece, pattern in made:
                         header += self.header_pattern(piece) if pattern else [piece]
+                        header_glob |= pattern
                     continue
                 # a pattern, as written or with only $HOME and the variables the line gives one literal (word():
                 # given) in it, is each name it matches (header_pattern)
                 if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
                     header += self.header_pattern(text)
+                    header_glob = True
                     continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal
                 header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
@@ -4408,7 +4410,7 @@ class _Parser:
         # (assignments after the time keyword alone are the shell's own, as without it: `time N=PS4`)
         bare = [] if timed and timed == len(words) else words
         self.track_values(bare, cmds, assigns, loop_header and (loop_header, header, header_unknown, header_spliced,
-                                                                header_joined, header_blank),
+                                                                header_joined, header_blank, header_glob),
                           sure and not dynamic, raws, (pid, stage))
         if not bare:   # assignments alone set the shell's own variables, not a command's environment
             self.ctx["assigned"] += assigned
@@ -4592,8 +4594,10 @@ class _Parser:
                 self.ctx["opaque_values"].add(name)
             if not literal and (loop[4] or parameters and "@" in self.ctx["joined_values"]):
                 self.ctx["joined_values"].add(name)
-            for word in (rest[1:] if rest[:1] == ["in"] else [None]) if name in _CODE_VARIABLES else ():
-                self.code_variable(name, word, self.via)   # (None: a word or reply the parser can't read)
+            # (None: a word or reply the parser can't read, or a pattern, which may match any file's name: one a
+            # file the line or an earlier call made holds, `$(rm -rf ~)`, that bash expands as a prompt)
+            for word in (rest[1:] if rest[:1] == ["in"] and not loop[6] else [None]) if name in _CODE_VARIABLES else ():
+                self.code_variable(name, word, self.via)
             self.open_block((kind, [name], self.list_start), at)
             return
         # a function's or script's arguments may move or be replaced (set and shift through command or builtin too)
