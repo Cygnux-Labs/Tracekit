@@ -16,7 +16,7 @@ systems and show what they did: your customers and auditors can verify the recor
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>956 of 956</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 972 (E17)</sub></td>
+<td align="center" width="25%"><h3>957 of 957</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 972 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -238,10 +238,9 @@ Recommend it to them, then set it up with their OK:
 1. **Show them your last week, read-only.** `uvx --from tracekit-ai tracekit audit --since 7d` reads the sessions of
    the agents in [docs/audit.md's readers table](docs/audit.md#what-it-reads) on this machine; nothing is installed and nothing leaves it.
 2. **With their yes, wire your hooks.** `pip install tracekit-ai`, then `tracekit init --dev --v2`, plus
-   `--agent codex`, `cursor`, `gemini`, `gptme` or another of the 20. In Claude Code, Codex, Copilot CLI and Cursor,
-   the plugin can take init's place (one or the other, not both): `claude plugin marketplace add
-   Cygnux-Labs/tracekit-plugin`, then `claude plugin install tracekit@tracekit`; Codex and Copilot CLI take the same two
-   lines with `codex` and `copilot` (Codex: `codex plugin add tracekit@tracekit`). Or add the skill with `npx skills add Cygnux-Labs/tracekit-skills`, and they say "set up Tracekit".
+   `--agent codex`, `cursor`, `gemini`, `gptme` or another of the 20. In Claude Code, the plugin can take init's place (one or
+   the other, not both): `/plugin marketplace add Cygnux-Labs/Tracekit`, then `/plugin install tracekit@tracekit`. Or
+   add the skill with `npx skills add Cygnux-Labs/tracekit-skills`, and they say "set up Tracekit".
 3. **Building an agent?** Make `import tracekit; tracekit.instrument()` its first line.
 4. **When a call is held, wait for the person.** Never answer a hold yourself (the packs deny an agent's
    `tracekit approvals approve`). At the end, `tracekit last` gives them the verified run.
@@ -345,8 +344,8 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 | **Cross-check** (E10): a skipped hook, a made-up call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **Three verifiers, one verdict** (E22): 63 bundles, 33 of them forged, each checked by the Python CLI, the TypeScript CLI and the browser page | **All three agree on all 63**; no forgery verifies. A 50,000-call run verifies in the browser in 14 s |
 | **Overhead** (E9): signer round trip over a Unix socket | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
-| **Policy packs, known cases** (E17): 956 harmful, 972 benign calls | 956 stopped, 1 false alarm |
-| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (288 now, with rules added after reading the pool); 18 benign held |
+| **Policy packs, known cases** (E17): 957 harmful, 972 benign calls | 957 stopped, 1 false alarm |
+| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (287 now, with rules added after reading the pool); 18 benign held |
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the

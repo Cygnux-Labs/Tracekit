@@ -12,6 +12,8 @@ import uuid
 import zipfile
 from unittest import mock
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_bundle_v2 import KEY1, Case   # noqa: E402
 
@@ -89,6 +91,7 @@ class Values(unittest.TestCase):
     def test_a_long_local_part_keeps_its_last_64_characters(self):
         self.assertEqual(self.kinds("x" * 100 + "@evil.example", "email"), ["x" * 64 + "@evil.example"])
 
+    @pytest.mark.serial
     def test_adversarial_text_is_read_in_linear_time(self):
         def took(unit, n):   # the best of two, so a busy runner's pause isn't counted
             text, best = (unit * (n // len(unit) + 1))[:n], float("inf")
@@ -195,7 +198,7 @@ class Signer(Calls, unittest.TestCase):
     def test_an_address_from_an_untrusted_result_is_held(self):
         self.call("http_get", {"url": "https://notes.example/vendor"}, {"body": INJECTED}, "tc-fetch")
         d = self.email("tc-mail")
-        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001", "TK-F028"]))
         data = self.record("tc-mail")
         self.assertEqual(data["provenance_state"], "complete")
         src = {"run_seq": data["provenance"][0]["source"]["run_seq"], "tool": "http_get", "tool_call_id": "tc-fetch"}
@@ -214,7 +217,7 @@ class Signer(Calls, unittest.TestCase):
         self.call("http_get", {"url": "https://notes.example/vendor"}, {"body": INJECTED}, "tc-fetch")
         self.call("bash", {"command": "echo audit@vendor.example"}, {"stdout": "audit@vendor.example\n"}, "tc-echo")
         self.call("run_sql", {"sql": "select 'audit@vendor.example'"}, [{"email": "audit@vendor.example"}], "tc-sql")
-        self.assertEqual(self.email("tc-mail")["rule_ids"], ["TK-P001"])
+        self.assertEqual(self.email("tc-mail")["rule_ids"], ["TK-P001", "TK-F028"])
 
     def test_a_recipient_whose_domain_only_appeared_in_untrusted_content_is_not_held(self):
         self.call("http_get", {"url": "https://notes.example/a"}, "see https://stripe.example/docs", "tc-fetch")
@@ -315,7 +318,7 @@ class Signer(Calls, unittest.TestCase):
     def fails_closed(self, state, why):
         """Every from rule matches, whatever the values; the decision records the state and the reason."""
         d = self.email("tc-mail", to="ops@ours.example")
-        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001", "TK-F028"]))
         data = self.record("tc-mail")
         self.assertEqual(data["provenance_state"], state)
         self.assertIn(why, data["provenance_reason"])
@@ -467,7 +470,7 @@ class Signer(Calls, unittest.TestCase):
         with mock.patch.object(pipeline, "RECOVER_S", 0):
             self.email("tc-mail")   # decided while the storage is down, and its write runs the recovery
         self.assertIsNotNone(self.s.log.runs[(self.run["tenant"], self.run["run_id"])]["prov"])
-        self.assertEqual(self.email("tc-after")["rule_ids"], ["TK-P001"])
+        self.assertEqual(self.email("tc-after")["rule_ids"], ["TK-P001", "TK-F028"])
         data = self.record("tc-after")   # the values are still there; the refused decide's client_seq is a gap
         self.assertEqual({p["source"].get("tool_call_id") for p in data["provenance"]}, {"tc-fetch"})
         self.assertEqual(data["provenance_state"], "partial")
@@ -495,12 +498,12 @@ class Signer(Calls, unittest.TestCase):
                             "value": {"ticket": INJECTED}})
         with mock.patch.object(pipeline, "RECOVER_S", 0):
             d = self.email("tc-mail")
-        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001", "TK-F028"]))
         self.assertIn("the storage failed a write", self.record("tc-mail")["provenance_reason"])
         self.assertIn("input.observed", [r["event"]["type"] for r in self.s.log.storage.iter_run(
             self.run["tenant"], self.run["run_id"])])
         d = self.email("tc-after")
-        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001", "TK-F028"]))
         data = self.record("tc-after")
         self.assertEqual(data["provenance_state"], "partial")
         self.assertIn("run_seq 1..1 reached the store in a write it reported failed", data["provenance_reason"])
@@ -537,7 +540,7 @@ class Restart(Calls, unittest.TestCase):
 
     def held(self, tcid, to, state):
         d = self.email(tcid, to)
-        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001"]))
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-P001", "TK-F028"]))
         data = self.record(tcid)
         self.assertEqual(data["provenance_state"], state)
         return data
@@ -593,11 +596,12 @@ class Restart(Calls, unittest.TestCase):
                       self.held("tc-mail", "audit@vendor.example", "partial")["provenance_reason"])
 
     def mine(self):
-        """A policy whose `untrusted` lists no http tool, with TK-P001 as the packs have it."""
+        """A policy whose `untrusted` lists no http tool, with TK-P001 and TK-F028 as the server pack has them."""
         path = os.path.join(self.dir, "mine.yaml")
         with open(path, "w") as f:
             f.write("untrusted: [mcp]\ntools: {send_email: email, http_get: http}\nask:\n"
-                    "  - {id: TK-P001, class: email, field: recipients, pattern: '.', from: untrusted}\n")
+                    "  - {id: TK-P001, class: email, field: recipients, pattern: '.', from: untrusted}\n"
+                    "flag:\n  - {id: TK-F028, class: email, field: recipients, pattern: '.', label: egress}\n")
         return path
 
     def after_restart(self, state, why, policy=os.path.join(PACKS, "server.yaml")):
