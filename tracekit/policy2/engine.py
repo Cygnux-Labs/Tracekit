@@ -556,10 +556,13 @@ class Engine:
             # also with `\` as `/` (_slashes), as a line is
             # and a harness a runner, a JavaScript runtime or python -m starts as `<harness> <its own words>`, the
             # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
-            # plugin …` and `node node_modules/.bin/claude plugin …` too
+            # plugin …` and `node node_modules/.bin/claude plugin …` too; and each operand of a package install without
+            # the install's options (_install_sources), as TK-D021 reads a URL source, and a go install or go get on a
+            # line that turns Go's checks off as the direct version-control fetch it is (_go_unchecked), for TK-A028
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"], c.get("word", "")))] + [
+                s for c in parsed[0] for s in _install_sources(c["argv"])] + _go_unchecked(parsed[0], parsed[2]) + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -1661,6 +1664,143 @@ def _pushes(commands):
         out += [s for s in _github_rest(argv) if s not in out]
         out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
     return out
+
+
+_PIP_URL_OPTS = {"-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--proxy", "-c", "--constraint",
+                 "--trusted-host", "--cert", "--client-cert"}
+_NPM_URL_OPTS = {"--registry", "--proxy", "--https-proxy"}
+_NPM_INSTALL = {(v,) for v in ("install", "i", "add", "in", "ins", "inst", "insta", "instal", "isnt", "isnta", "isntal",
+                               "isntall", "install-test", "it")}   # npm 11's lib/utils/cmd-list.js
+# each installer: the verbs whose operands are package sources (None: any word, yarn's workspace name, pipx inject's
+# venv), its options before the verb that take a value (pip 26's general options, uv 0.13's global ones, npm's: shell),
+# and its options whose value may be a URL that is no source (an index, a registry, a proxy, a constraints file), left
+# out with it; any other option is read as a flag, so a URL after it is a source (a requirements file's too: what it
+# lists is installed). pip wheel and download, uv pip sync and uv tool install build or install what they fetch too
+_INSTALLERS = {
+    "pip": ({("install",), ("wheel",), ("download",)},
+            {"--python", "--log", "--keyring-provider", "--proxy", "--retries", "--timeout", "--exists-action",
+             "--trusted-host", "--cert", "--client-cert", "--cache-dir", "--use-feature", "--use-deprecated",
+             "--resume-retries"}, _PIP_URL_OPTS),
+    "uv": ({("pip", "install"), ("pip", "sync"), ("add",), ("tool", "install")},
+           {"--cache-dir", "--color", "--allow-insecure-host", "--directory", "--project", "--config-file"},
+           _PIP_URL_OPTS | {"--index", "--default-index", "--constraints", "--overrides", "--override",
+                            "--build-constraints", "-b"}),
+    "pipx": ({("install",), ("inject", None)}, set(), {"--index-url", "--pip-args"}),
+    "poetry": ({("add",)}, {"-C", "--directory", "-P", "--project"}, {"--source"}),
+    "npm": (_NPM_INSTALL, set(shell._NPM_OPTS), _NPM_URL_OPTS),
+    "pnpm": ({("install",), ("i",), ("add",)}, {"-C", "--dir", "-F", "--filter"}, _NPM_URL_OPTS),
+    "yarn": ({("add",), ("global", "add"), ("workspace", None, "add")}, {"--cwd"}, _NPM_URL_OPTS),
+    "bun": ({("install",), ("i",), ("add",), ("a",)}, {"--cwd"}, _NPM_URL_OPTS),
+    "gem": ({("install",), ("i",)}, set(), {"-s", "--source", "-p", "--http-proxy"}),
+    "cargo": ({("install",), ("add",)}, {"--config", "-Z", "--color", "-C"}, {"--index", "--registry"})}
+# npm's, pnpm's, yarn's and bun's GitHub shorthand: owner/repo (a path starts with ., /, ~ or a drive)
+_NPM_GITHUB = re.compile(r"[\w-][\w.-]*/[\w.-]+(?:#\S*)?")
+
+
+def _verb_end(args, i, verb, before):
+    """Where the verb (its words, None for any one) that starts at args[i] ends, its words apart by options (`uv pip
+    --quiet install`, `uv tool -q install`), each with its value where `before` names it, and where one it doesn't
+    may take the next word, after that word too; 0 if it isn't there."""
+    j = i
+    for k, w in enumerate(verb):
+        maybe = False
+        while k and w is not None and j < len(args) and args[j].startswith("-") and args[j] != "-":
+            j, maybe = (j + 2, False) if args[j] in before else (j + 1, "=" not in args[j])
+        if w is not None and args[j:j + 1] != [w]:
+            if not (maybe and args[j + 1:j + 2] == [w]):
+                return 0
+            j += 1
+        j += 1
+    return j
+
+
+def _install_sources(argv):
+    """`<installer> install <operand>` for each operand of a package install (_INSTALLERS), without its options and the
+    values of the ones that name an index, registry or proxy: TK-D021 reads a URL source whatever options come before
+    or between (`pip --proxy http://p:1 install -q https://…`, `npm -w a i -D https://…`), TK-A028 a version-control
+    one (npm's owner/repo as github:owner/repo, cargo's --git URL as git+URL). The verb is the first of the
+    installer's own after its options, each with its value where its table names it, and where one it doesn't may
+    take the next word, after that word too. [] for anything else."""
+    prog, args = _program(argv), argv[1:]
+    if (prog.startswith("python") or prog == "py") and (module := _python_module(args))[:1] == ["pip"]:
+        prog, args = "pip", module[1:]
+    prog = "pip" if _PIP.fullmatch(prog) else prog
+    if prog not in _INSTALLERS:
+        return []
+    verbs, before, valued = _INSTALLERS[prog]
+    i, maybe, at = 0, False, None   # (maybe: the word before is an option, so this one may be its value)
+    while i < len(args) and at is None:
+        a = args[i]
+        if a.startswith("-") and a != "-":
+            i, maybe = (i + 2, False) if a in before else (i + 1, "=" not in a)
+            continue
+        at = next(filter(None, (_verb_end(args, i, v, before) for v in verbs)), None)
+        if at is None and not maybe:
+            return []
+        i, maybe = i + 1, False
+    out, skip = [], None   # (skip: the next word is an option's value, a source after this prefix if not None)
+    for a in args[at:] if at is not None else ():
+        if skip is not None:
+            out += [f"{prog} install {skip}{a}"] * (skip != "")
+            skip = None
+        elif a.startswith("-"):   # (pip's optparse takes a long option's unique prefix: --index-u is --index-url)
+            name, eq, value = a.partition("=")
+            if len(a) > 2 and a[1] != "-":   # -rURL, -eURL, -qrURL: pip's optparse reads the rest as the value
+                k = next((k for k in range(1, len(a)) if a[k] in "re" or "-" + a[k] in valued), 0)
+                if k and a[k] in "re" and "-" + a[k] not in valued and a[k + 1:]:
+                    out.append(f"{prog} install {a[k + 1:]}")
+            source = "git+" if prog == "cargo" and name == "--git" else None if name in valued or (
+                name.startswith("--@") and name.endswith(":registry")) or prog == "pip" and len(name) > 2 and \
+                name.startswith("--") and any(o.startswith(name) for o in valued) else ""
+            if eq:
+                out += [f"{prog} install {source}{value}"] * (source is not None)
+            elif source != "":   # an index's, a registry's or a proxy's value, left out, or cargo's --git URL
+                skip = "" if source is None else source
+        else:
+            out.append(f"{prog} install github:{a}" if prog in ("npm", "pnpm", "yarn", "bun") and
+                       _NPM_GITHUB.fullmatch(a) else f"{prog} install {a}")
+    return out
+
+
+# the variables that exempt modules from Go's module proxy or its checksum database, whatever their value
+_GO_EXEMPT = {"GONOPROXY", "GONOSUMDB", "GONOSUMCHECK", "GOPRIVATE", "GOINSECURE"}
+_GO_INSECURE = re.compile(r"--?insecure(?:=\S*)?")
+
+
+# go run's options that take a value as the next word (`-tags x`; `-tags=x` is one word)
+_GO_RUN_VALUED = {"C", "p", "asmflags", "gcflags", "gccgoflags", "ldflags", "mod", "modfile", "overlay", "pgo", "pkgdir",
+                  "tags", "toolexec", "exec", "installsuffix", "covermode", "coverpkg", "compiler", "buildmode"}
+
+
+def _go_run_module(args):
+    """Whether go run's package (the first word after its options and their values) is a module at a version, `x@v`,
+    which go run fetches and runs as go install fetches and installs it; not a local `.` or `./cmd/x`."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 1 + (args[i].lstrip("-") in _GO_RUN_VALUED)
+    return "@" in args[i] if i < len(args) else False
+
+
+def _go_unchecked(commands, refs=()):
+    """`go <install or get> git+https://<its operands>` for each go install or go get on a line that turns off what
+    checks the modules it fetches (dependencies too): Go's module proxy (GOPROXY direct or off, GONOPROXY), its checksum
+    database (GOSUMDB=off, GONOSUMDB, GONOSUMCHECK, GOPRIVATE) or both (GOINSECURE, -insecure in GOFLAGS or as an
+    option), set before a command (`refs`), through env or export, or saved by `go env -w`. Read as the direct
+    version-control fetch it is then, which TK-A028 holds; through the proxy and the checksum database, a registry with
+    integrity checks, `go install x@v` is no such fetch. [] for anything else."""
+    gets = [c["argv"] for c in commands if _program(c["argv"]) == "go" and (
+        c["argv"][1:2] in (["install"], ["get"]) or c["argv"][1:2] == ["run"] and _go_run_module(c["argv"][2:]))]
+    if not gets:
+        return []
+    words = list(refs) + [a for c in commands for a in (
+        c["argv"][1:] if c["argv"][:1] in (["env"], ["export"]) else
+        c["argv"][3:] if _program(c["argv"]) == "go" and c["argv"][1:3] == ["env", "-w"] else ())]
+    off = any(name in _GO_EXEMPT or name == "GOSUMDB" and value == "off" or name == "GOPROXY" and re.split(
+        r"[,|]", value)[0] in ("direct", "off") or name == "GOFLAGS" and any(map(_GO_INSECURE.fullmatch, value.split()))
+              for name, eq, value in (w.partition("=") for w in words) if eq)
+    return [f"go {argv[1] if argv[1] != 'run' else 'install'} git+https://" + " ".join(
+        a for a in argv[2:] if not a.startswith("-")) for argv in gets
+            if off or any(map(_GO_INSECURE.fullmatch, argv[2:]))]
 
 
 _REST_CLIENTS = {"curl", "wget", "http", "https", "xh", "xhs"}
@@ -3233,6 +3373,55 @@ def _may_run_input(argv):
     return name not in shell.DATA_ONLY
 
 
+# a remote source a runner fetches code from (a URL, a VCS one: git, Mercurial, Subversion, Bazaar, a PEP 508 `name @
+# URL`): _download_runs; for npm's runners also its hosted-git shorthands and owner/repo (_NPM_GITHUB)
+_REMOTE_SOURCE = re.compile(r"(?:[^\s@]+\s*@\s*)?(?:(?:git|hg|svn|bzr)\+)?(?:https?|ssh|git)://", re.I)
+_NPM_HOSTED = re.compile(r"(?:github|gitlab|bitbucket|gist):", re.I)
+# each package runner that fetches the code it runs: (its subcommands that do, none for one that runs it at once; its
+# options whose value is a package it installs to run it; the interpreter that runs it)
+_FETCHERS = {"uvx": ((), ("--from", "--with", "-w"), "python"), "uv": (("run",), ("--with", "-w"), "python"),
+             "pipx": (("run",), ("--spec", "--with"), "python"), "npx": ((), ("-p", "--package"), "node"),
+             "pnpx": ((), ("--package",), "node"), "bunx": ((), ("-p", "--package"), "node"),
+             "npm": (("exec", "x"), ("--package",), "node"), "pnpm": (("dlx",), ("--package",), "node"),
+             "yarn": (("dlx",), ("-p", "--package"), "node"), "bun": (("x",), ("-p", "--package"), "node")}
+
+
+def _fetched(args, starts, sources, valued, flags):
+    """The words a package runner may fetch code from, among its words `args` after its subcommand at each of `starts`
+    (shell.runner_at's places; -1 for none): each value of an option `sources` names, and the package or script it
+    runs, its first word that is no option, or that may be the value of an option neither `valued` (shell's table of
+    those that take one) nor `flags` names, read both ways as shell._unwrap reads one. An index's URL, any other
+    option's value and the words after what it runs aren't. Each word read once: linear (a place's words are read up
+    to the next place, from where its reading is the next one's). An option `sources` names before the subcommand
+    counts too (`pnpm --package=URL dlx x`: npm's and pnpm's options go anywhere)."""
+    out = []
+    for i, a in enumerate(args[:max(starts[0], 0)] if starts else ()):
+        name, eq, value = a.partition("=")
+        if name in sources:
+            out += [value] if eq else args[i + 1:i + 2]
+    for n, start in enumerate(starts):
+        end, i, maybe = (starts[n + 1:] or [len(args)])[0], start + 1, False   # (maybe: the word may be an option's)
+        while i < len(args) and i <= end:
+            a = args[i]
+            name, eq, value = a.partition("=")
+            if a == "--":
+                out += args[i + 1:i + 2]
+                break
+            if a.startswith("-") and a != "-":
+                if name in sources:
+                    out += [value] if eq else args[i + 1:i + 2]
+                    i, maybe = i + 1 + (not eq), False
+                elif a[:2] in sources and a[1] != "-":   # its value attached (-wURL)
+                    out.append(a[2:])
+                    i, maybe = i + 1, False
+                else:
+                    i, maybe = (i + 2, False) if name in valued and not eq else (i + 1, not eq and a not in flags)
+                continue
+            out.append(a)
+            if not maybe:
+                break
+            i, maybe = i + 1, False
+    return out
 # what a saved download may be read as without running it
 _DATA_SAVE = re.compile(r"\.(?:json|jsonl|ndjson|csv|tsv|txt|html?|xml|md|svg|png|jpe?g|gif|webp|ico|pdf|mp3|wav|ogg|"
                         r"mp4|webm|woff2?|ttf|otf)$", re.I)
@@ -3370,47 +3559,122 @@ def _download_runs(commands):
     anywhere on the line outside its pipeline (before it too: a background job, a FIFO, a trap, a loop's next turn)
     that runs what it saved, is `curl ; sh <it>`: run by its path or name where that is a saved file's or the URL's
     name, or any path with a name the server picks (-J, -K); a shell, interpreter or source given one as a word or a
-    redirection, or naming one in its inline code."""
+    redirection, or naming one in its inline code. An interpreter a later stage gives inline code or a script, however
+    the line spells it (through a wrapper or runner, after assignments, a versioned name, its code flag in a cluster or
+    with its code attached, as shell._code_arg reads it), is `curl | python -c` or `curl | python <script>`, for
+    TK-A046. A runner that fetches the code it runs from a remote source (`uv run https://…/x.py`, `uvx --from
+    hg+https://…`, `pipx run --spec https://…`, `npx github:o/r`, `npm exec --package=https://…`, `pnpm dlx`, `yarn
+    dlx`, `bunx`: the package or script it runs, or an option's that names one, not an index's URL or the arguments it
+    gives what it runs: _fetched) is a download into its interpreter too: `curl | python remote`, `curl | node
+    remote`. Linear in the line's commands and words: a pipeline's later stages are read once, for each tool's
+    first download in it (a later one's are among them), and each command once against the names every download
+    saves."""
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
+    for c in commands:
+        # (uv tool run is read as the uvx it is: shell; a runner at a version, pnpm@9, as that runner)
+        prog, args = _program(c["argv"]).partition("@")[0], c["argv"][1:]
+        if prog in _FETCHERS and f"curl | {_FETCHERS[prog][2]} remote" not in out:
+            verbs, sources, kind = _FETCHERS[prog]
+            starts = [k for k in shell.runner_at(prog, args) if args[k] in verbs] if verbs else [-1]
+            opts = shell.RUNNERS[prog][1] if verbs else shell.WRAPPERS[prog][0]
+            if any(_REMOTE_SOURCE.match(w) or kind == "node" and (_NPM_HOSTED.match(w) or _NPM_GITHUB.fullmatch(w))
+                   for w in _fetched(args, starts, sources, opts, shell.WRAPPER_FLAGS.get(prog, ()))):
+                out.append(f"curl | {kind} remote")
+    pipes, first, outs, groups, fed, into = {}, {}, {}, {}, [], []
+    for c in commands:
+        pipes.setdefault(c["pipeline"], []).append(c)
     for d in commands:
-        tool = d["argv"][0]
+        tool, p = d["argv"][0], d["pipeline"]
         if tool not in ("curl", "wget"):
             continue
+        first[p, tool] = min(first.get((p, tool), d.get("stage", 0)), d.get("stage", 0))
+        if "<()" in d["via"]:
+            fed += [tool] * (tool not in fed)
+            continue
+        if p not in outs:   # the files its pipeline's redirections and tees write, and whether one is a >( )
+            ts = [t for c in pipes[p] for t in [*c.get("out", ()), *c["argv"][1:] * (c["argv"][0] == "tee")]
+                  if _saved(t)]
+            outs[p] = (ts, any(t.startswith(">(") for t in ts))
+        own = _saves(d)
+        if outs[p][1] or any(t.startswith(">(") for t in own):
+            into += [tool] * (tool not in into)
+        hosts = {host[u] if u in host else host.setdefault(u, classes.url_info(u).get("host") or "")
+                 for u in _URL.findall(" ".join(d["argv"][1:]))}
+        if not (outs[p][0] or own) or hosts and all(h == "localhost" or h.startswith(("127.", "[::1]", "::1"))
+                                                    for h in hosts):
+            continue
+        if (p, tool) not in groups:   # (the names its pipeline's files are given, once)
+            groups[p, tool] = [_names(outs[p][0]), False]
+        group = groups[p, tool]
+        group[0] |= _names(d["argv"][1:] + own)
+        group[1] = group[1] or tool == "curl" and any(
+            re.fullmatch(r"--remote-header-name|--config|-[A-Za-z]*[JK][A-Za-z]*", a) for a in d["argv"][1:])
+    for (p, tool), stage in first.items():
         # a later stage of its pipeline that may run what it reads: any program but one known to read only data
         # (shell.DATA_ONLY, tar listing), a shell or an interpreter that reads its code from stdin; one given its code
         # (-c, a script) is TK-A046's
+        later = [c for c in pipes[p] if c.get("stage", 0) > stage]
+        if any(_may_run_input(c["argv"]) for c in later):
+            out.append(f"{tool} | sh")
+        for c in later:
+            if (kind := shell._kind(_program(c["argv"]))) in shell.CODE_FLAGS:
+                args = c["argv"][1:]
+                if shell._code_arg(kind, args) is not None:
+                    out.append(f"{tool} | {kind} -{shell.CODE_FLAGS[kind][0]}")
+                elif (i := shell._script_operand(kind, args)) is not None:
+                    out.append(f"{tool} | {kind} {args[i]}")
+    for tool in fed:
         for c in commands:
-            if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0) and _may_run_input(c["argv"]):
-                out.append(f"{tool} | sh")
-                break
-        if "<()" in d["via"]:
-            for c in commands:
-                subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]
-                if subs and _runs_code(c["argv"]):
-                    out += [f"{tool} | " + ("sh" if c["argv"][0] in ("source", ".") else
-                                            shlex.join(["/dev/stdin" if w == s else w for w in c["argv"]])) for s in subs]
-            continue
-        saved = _saves(d, commands)
-        if any(t.startswith(">(") for t in saved):
-            out += [f"{tool} | " + shlex.join(c["argv"]) for c in commands if ">()" in c["via"] and _runs_code(c["argv"])]
-        hosts = {host[u] if u in host else host.setdefault(u, classes.url_info(u).get("host") or "")
-                 for u in _URL.findall(" ".join(d["argv"][1:]))}
-        if not saved or hosts and all(h == "localhost" or h.startswith(("127.", "[::1]", "::1")) for h in hosts):
-            continue
-        names = {n for w in d["argv"][1:] + saved for n in (posixpath.basename(w), shell.base_name(w))} - {""}
-        anyname = tool == "curl" and any(re.fullmatch(r"--remote-header-name|--config|-[A-Za-z]*[JK][A-Za-z]*", a)
-                                         for a in d["argv"][1:])
+            subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]
+            if subs and _runs_code(c["argv"]):
+                out += [f"{tool} | " + ("sh" if c["argv"][0] in ("source", ".") else
+                                        shlex.join(["/dev/stdin" if w == s else w for w in c["argv"]])) for s in subs]
+    out += [f"{tool} | " + shlex.join(c["argv"]) for tool in into for c in commands
+            if ">()" in c["via"] and _runs_code(c["argv"])]
+    # each name a download saves (a saved file's, its URL's), and any with a name the server picks (-J, -K), by tool,
+    # with the pipelines they come from: two tell that one isn't a command's own
+    froms, anyname, lens = {}, {}, {}
+    for (p, tool), (names, anyn) in groups.items():
+        for n in names:
+            if len(ps := froms.setdefault((tool, n), set())) < 2:
+                ps.add(p)
+        if anyn and len(ps := anyname.setdefault(tool, set())) < 2:
+            ps.add(p)
+        lens.setdefault(tool, set()).update(map(len, names))
+    lens = {tool: sorted(ks) for tool, ks in lens.items()}
+    for c in commands:
+        p, word, given = c["pipeline"], c["word"], c["argv"][1:] + list(c.get("in", ()))
+        for tool, ks in lens.items():
+            def other(name):   # a name a download outside this command's pipeline saves
+                return any(q != p for q in froms.get((tool, name), ()))
 
-        def named(w):   # a word that names a saved file, as bash reads it or as Windows does (shell.base_name)
-            return bool(names & {posixpath.basename(w), shell.base_name(w)})
-
-        def runs(c):
-            given = c["argv"][1:] + list(c.get("in", ()))
-            return named(c["word"]) or anyname and "/" in c["word"] or _runs_code(c["argv"]) and (
-                anyname and given or any(named(w) or re.search(
-                    r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)), w) for w in given))
-        out += [f"{tool} ; sh {c['word']}" for c in commands if c["pipeline"] != d["pipeline"] and runs(c)]
+            def named(w):   # a word that names a saved file, as bash reads it or as Windows does (shell.base_name)
+                return other(posixpath.basename(w)) or other(shell.base_name(w))
+            far = any(q != p for q in anyname.get(tool, ()))
+            if named(word) or far and "/" in word or _runs_code(c["argv"]) and (
+                    far and given or any(named(w) or _mentions(w, ks, other) for w in given)):
+                out.append(f"{tool} ; sh {word}")
     return out
+
+
+def _names(words):
+    """The names `words` give a file, as bash reads each or as Windows does (shell.base_name)."""
+    return {n for w in words for n in (posixpath.basename(w), shell.base_name(w))} - {""}
+
+
+def _mentions(w, lens, named):
+    """Whether `w` holds a name `named` takes, as `(?<![\\w.-])(?:NAME)(?![\\w-])` finds one: where neither a word
+    character, a dot nor a dash comes before it, and neither a word character nor a dash after. `lens`: the lengths of
+    the names, ascending. Each place a name may start is tried once for each length."""
+    for i in range(len(w)):
+        if i and (w[i - 1].isalnum() or w[i - 1] in "_.-"):
+            continue
+        for k in lens:
+            if i + k > len(w):
+                break
+            if (i + k == len(w) or not (w[i + k].isalnum() or w[i + k] in "_-")) and named(w[i:i + k]):
+                return True
+    return False
 
 
 _NOWHERE = ("-", "/dev/null", "/dev/stdout", "/dev/stderr")
@@ -3421,13 +3685,16 @@ _WGET_OUTPUT = re.compile(r"--output-document(?:=(.*))?|-[A-Za-z]*?O(.*)")
 _CURL_NAMED = re.compile(r"--remote-name(?:-all)?|--remote-header-name|--config|-[A-Za-z]*[OJK][A-Za-z]*")
 
 
-def _saves(d, commands):
-    """The files a download writes: curl's -o or --output, or its URL's name with -O, -J or --remote-name (or any, with
-    a config file's options: -K); wget's -O or --output-document, else its URL's name (not with --spider); a
-    redirection or tee in its pipeline. Not stdout or /dev/null (a link check)."""
-    curl, args = d["argv"][0] == "curl", d["argv"][1:]
-    out = [t for c in commands if c["pipeline"] == d["pipeline"]
-           for t in list(c.get("out", ())) + (c["argv"][1:] if c["argv"][0] == "tee" else [])]
+def _saved(t):
+    """Whether a download's output `t` is a file: not stdout or /dev/null (a link check)."""
+    return bool(t) and t not in _NOWHERE and not t.startswith("-")
+
+
+def _saves(d):
+    """The files a download writes by its own options (a redirection or tee in its pipeline writes them too): curl's -o
+    or --output, or its URL's name with -O, -J or --remote-name (or any, with a config file's options: -K); wget's -O
+    or --output-document, else its URL's name (not with --spider)."""
+    curl, args, out = d["argv"][0] == "curl", d["argv"][1:], []
     named = not curl and "--spider" not in args
     option = _CURL_OUTPUT if curl else _WGET_OUTPUT
     for a, value in zip(args, args[1:] + [""]):
@@ -3436,8 +3703,7 @@ def _saves(d, commands):
             named = named and curl
         elif curl and _CURL_NAMED.fullmatch(a):
             named = True
-    return [t for t in out if t and t not in _NOWHERE and not t.startswith("-")] + [
-        a for a in args if named and not a.startswith("-")]   # the URL, whose name it takes
+    return [t for t in out if _saved(t)] + [a for a in args if named and not a.startswith("-")]   # the URL's name
 
 
 _REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds

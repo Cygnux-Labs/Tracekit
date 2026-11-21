@@ -334,8 +334,10 @@ deny:
     class: shell
     field: argv
     # a URL in any case, also as a PEP 508 direct reference (`name @ https://…`); a version-control source, npm's
-    # github: shorthand among them, is TK-A028's (ask)
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?[Hh][Tt][Tt][Pp][Ss]?://'
+    # github: shorthand among them, is TK-A028's (ask). The engine also gives each install's operands without its
+    # options, as `pip install <operand>` (engine._install_sources: an index's, registry's or proxy's URL is no
+    # operand), so options before or between them (`pip install -q https://…`) hide none
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get|i)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?[Hh][Tt][Tt][Pp][Ss]?://'
     reason: installing a package directly from a URL
     remedy: Install the package by name from the configured index; a person adds a URL source after reviewing it.
     rationale: A URL bypasses the configured package source and can install unreviewed code.
@@ -366,9 +368,17 @@ ask:
     # curl or wget where a command starts (the line's start or after a separator, as TK-A040 reads its client; after
     # up to four keywords, assignments or wrappers such as then, time -p, env, nice -n 5, timeout 5, sudo; by a path
     # too), piped, through up to four more stages (base64 -d, tee), into an interpreter (a path, sudo, env and a
-    # versioned python too) whose own words give it inline code (-c, -e) or a script: a word that is no option.
-    # `python3 -m json.tool` only pretty-prints, so json.tool is no script (the alternatives spell every other word)
-    pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node)(\s[^\s;&|]*)*?\s((-c|-e|--eval|--execute)(\s|$)|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
+    # versioned python, php or lua too, luajit) whose own words give it inline code (-c, -e, php's -r) or a script: a
+    # word that is no option. The engine also reads each interpreter a later stage of the download's pipeline gives
+    # code or a script as `curl | python -c` or `curl | python <script>` (engine._download_runs), however the line
+    # spells it: through a wrapper or runner (uvx, uv run, poetry run, pipx run, env -S …), after assignments, a
+    # versioned name (nodejs, perl5.36), a code option the parser names for that interpreter (shell.CODE_FLAGS: python's
+    # -c, perl's and ruby's -e, node's -e and -p, php's -r, -B, -R, -E and --run, lua's -e) at the end of a cluster or
+    # with its code attached (python3 -Ic …, perl -ne …, php -r'…', php --run='…'). Held, not denied: the inline code
+    # may only parse the downloaded data, so a person decides (an interpreter that reads its program from stdin is
+    # TK-D002's, denied). `python3 -m json.tool` only pretty-prints, so
+    # json.tool is no script (the alternatives spell every other word)
+    pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node|php[0-9.]*|lua(jit|[0-9.]*))(\s[^\s;&|]*)*?\s((-c|-e|-r|--eval|--execute)(\s|$)|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
     reason: downloaded data passed to an interpreter
     remedy: Have a person check what the interpreter does with the downloaded input before approving it.
     rationale: Inline code and script paths can execute downloaded input in ways the policy cannot determine from the command.
@@ -548,10 +558,13 @@ ask:
   - id: TK-A028
     class: shell
     field: argv
-    # a version-control source anywhere in an install's words (git+https, git+ssh, git+git, git+file, git://, npm's
-    # github:, gitlab:, bitbucket: and gist: shorthands), after a space or a PEP 508 `name @`; npm's `i`; and cargo
-    # install or add --git. Anchored and lazy, so the fallback engine stays linear
-    pattern: '^(pip[0-9.]*|python[0-9.]*\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get|i)\s(?:[^\n]*?[\s@])?(git\+(https?|ssh|git|file)://|git://|(github|gitlab|bitbucket|gist):)|^cargo\s+(install|add)\s(?:[^\n]*?\s)?--git(\s|=|$)'
+    # a version-control source anywhere in an install's words (schemes in any case, as pip reads them: git+https, git+ssh, git+git, git+file, git://, pip's
+    # hg+, svn+ and bzr+ sources, npm's github:, gitlab:, bitbucket: and gist: shorthands), after a space or a PEP 508
+    # `name @`; npm's `i`; and cargo install or add --git. A registry with integrity checks is no such source, Go's
+    # module proxy and checksum database among them; a go install, go get or go run of a module at a version on a line
+    # that turns them off is (engine._go_unchecked gives it as `go install git+https://<module>`). Anchored and lazy,
+    # so the fallback engine stays linear
+    pattern: '^(pip[0-9.]*|python[0-9.]*\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo|go)\s+(install|add|get|i)\s(?:[^\n]*?[\s@])?([Gg][Ii][Tt]\+([Hh][Tt][Tt][Pp][Ss]?|[Ss][Ss][Hh]|[Gg][Ii][Tt]|[Ff][Ii][Ll][Ee])://|([Hh][Gg]|[Ss][Vv][Nn]|[Bb][Zz][Rr])\+[A-Za-z-]+:|[Gg][Ii][Tt]://|(github|gitlab|bitbucket|gist):)|^cargo\s+(install|add)\s(?:[^\n]*?\s)?--git(\s|=|$)'
     reason: installing a package directly from a version-control source
     remedy: Have a person approve the held call, or install a released version from the configured index.
     rationale: Version-control installs are common but their source and revision need human review.
