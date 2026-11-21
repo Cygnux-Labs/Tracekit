@@ -355,6 +355,117 @@ test("fake: approvalConsume refuses, never rejects, when the signer is incompati
   assert.equal(warnings.filter((m) => m.startsWith("tracekit: Bash is blocked: approval_consume failed: the Tracekit signer test")).length, 1, warnings);
 });
 
+// RunHandle.transfer (docs/c2c.md#runtransfer): Python's, for a TypeScript agent. The fake allows it unless `handle` says otherwise.
+const consumeOk = (f) => f.method === "approval_consume" && { ok: true, rule_ids: [] };
+const sha = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+test("fake: a transfer is decided as a2a:transfer with the arguments Python sends, consumed, then completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: consumeOk });
+  const run = await client.registerRun("a");
+  const payload = Buffer.from("kv-cache bytes");
+  const out = await run.transfer("qwen2.5-7b@abc", "llama-3.2-1b@def", payload, "kv-cache",
+    { projector: "c2c-fuser@1", measured: { weights_hash: "sha256:00" } });
+  assert.deepEqual([out.decision, out.ok, out.reason], ["allow", true, undefined]);
+  const [decide, consume, complete, ...more] = frames.filter((f) => ["decide", "approval_consume", "complete"].includes(f.method));
+  assert.deepEqual([decide.method, consume.method, complete.method, more], ["decide", "approval_consume", "complete", []]);
+  assert.match(decide.tool_call_id, /^tx-[0-9a-f]{32}$/);
+  assert.equal(decide.tool, "a2a:transfer");
+  assert.deepEqual(decide.args, {
+    sender: "qwen2.5-7b@abc", receiver: "llama-3.2-1b@def", modality: "kv-cache", projector: "c2c-fuser@1",
+    claimed: ["modality", "projector", "receiver", "sender"], size: payload.length, digest: sha(payload),
+    weights_hash: "sha256:00", measured: ["digest", "size", "weights_hash"],
+  });
+  assert.deepEqual([consume.tool_call_id, consume.tool, consume.args], [decide.tool_call_id, "a2a:transfer", decide.args]);
+  assert.deepEqual([complete.tool_call_id, complete.status, complete.result, complete.args_digest],
+    [decide.tool_call_id, "ok", undefined, argsDigest("a2a:transfer", decide.args)]);   // the payload is not kept unless asked
+});
+
+test("a transfer sends the arguments Python's RunHandle.transfer sends", { skip: NO_PY }, async (t) => {
+  const cases = [   // sender, receiver, payload (hex), modality, projector, measured
+    ["qwen2.5-7b@abc", "llama-3.2-1b@def", "00ff10", "kv-cache", "c2c-fuser@1", { weights_hash: "sha256:00", layers: [1, 2] }],
+    ["a@1", "b@2", "", "text", null, null],
+    ["a@1", "b@2", Buffer.from("é😀 text").toString("hex"), "embedding", null, { note: "x" }],
+  ];
+  const theirs = JSON.parse(py(`
+import json, sys
+from tracekit.sdk.client import RunHandle
+class Capture(RunHandle):
+    def __init__(self): pass
+    def decide(self, tcid, tool, args, **kw):
+        self.args = args
+        return {"decision": "deny", "rule_ids": []}
+out = []
+for sender, receiver, data, modality, projector, measured in json.load(sys.stdin):
+    h = Capture()
+    h.transfer(sender, receiver, bytes.fromhex(data), modality, projector, measured)
+    out.append(h.args)
+print(json.dumps(out))`, JSON.stringify(cases)));
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide" && { decision: "deny", decision_id: "d", rule_ids: [] } });
+  const run = await client.registerRun("a");
+  for (const [sender, receiver, data, modality, projector, measured] of cases)
+    await run.transfer(sender, receiver, Buffer.from(data, "hex"), modality, { projector: projector ?? undefined, measured: measured ?? undefined });
+  assert.deepEqual(frames.filter((f) => f.method === "decide").map((f) => f.args), theirs);
+});
+
+test("fake: a transfer's ask is waited for 300 s; one left unanswered ends not ok and its approval is abandoned", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide"
+    ? { decision: "ask", decision_id: `dec-${f.tool_call_id}`, rule_ids: ["R-A2A"], run_seq: 1 }
+    : f.method === "approval_wait" && { approval_id: f.approval_id, state: "requested" } });
+  const run = await client.registerRun("a");
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.decision, out.ok, out.reason], ["ask", false, "approval requested"]);
+  assert.equal(frames.find((f) => f.method === "approval_wait").timeout_ms, 300000);
+  assert.equal(frames.find((f) => f.method === "approval_abandon").approval_id, "apr-1");
+  assert.deepEqual(frames.filter((f) => ["approval_consume", "complete"].includes(f.method)), []);
+});
+
+test("fake: a transfer the person approves is consumed with the approval's id and then completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide"
+    ? { decision: "ask", decision_id: `dec-${f.tool_call_id}`, rule_ids: [], run_seq: 1 } : consumeOk(f) });
+  const run = await client.registerRun("a");
+  assert.equal((await run.transfer("a@1", "b@2", "payload", "text")).ok, true);
+  assert.equal(frames.find((f) => f.method === "approval_consume").approval_id_hint, "apr-1");
+  assert.equal(frames.filter((f) => f.method === "complete").length, 1);
+});
+
+test("fake: a transfer the policy denies is not ok, and is neither consumed nor completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide" && { decision: "deny", decision_id: "d", rule_ids: ["R1"] } });
+  const run = await client.registerRun("a");
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.decision, out.ok, out.rule_ids], ["deny", false, ["R1"]]);
+  assert.deepEqual(frames.filter((f) => ["approval_consume", "complete"].includes(f.method)), []);
+});
+
+test("fake: a transfer is not ok with the signer unreachable, whatever the run's fail modes", async (t) => {
+  const { client, stop } = await fake(t, { failModes: { default: "open" } });
+  const run = await client.registerRun("a");
+  await stop();
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.unavailable, out.ok], [true, false]);   // a decide would have said allow: the fail mode is open
+});
+
+test("fake: a transfer's measured keys may not replace its own fields", async (t) => {
+  const { client, frames } = await fake(t);
+  const run = await client.registerRun("a");
+  for (const key of ["sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"])
+    await assert.rejects(run.transfer("a@1", "b@2", "payload", "text", { measured: { [key]: 1 } }),
+      (e) => e instanceof Error && e.message === `measured keys replace reserved transfer fields: ${key}`);
+  assert.deepEqual(frames.filter((f) => f.method === "decide"), []);
+});
+
+test("fake: keep sends the payload as hex in the result, up to half a frame; a larger one is recorded without it", async (t) => {
+  const { client, frames } = await fake(t, { handle: consumeOk });
+  const run = await client.registerRun("a");
+  const warnings = [], seen = (w) => warnings.push(w.message);
+  process.on("warning", seen);
+  t.after(() => process.off("warning", seen));
+  assert.equal((await run.transfer("a@1", "b@2", Buffer.from("abc"), "text", { keep: true })).ok, true);
+  assert.equal((await run.transfer("a@1", "b@2", Buffer.alloc(300_000), "text", { keep: true })).ok, true);   // 600 kB of hex
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result), [{ payload: "616263" }, undefined]);
+  await sleep(10);
+  assert.equal(warnings.filter((m) => /^tracekit: transfer tx-[0-9a-f]{32} is recorded but not kept/.test(m)).length, 1, warnings);
+});
+
 test("fake: the fail mode of the tool class applies only while the signer is unreachable", async (t) => {
   const { client, stop, path } = await fake(t, { failModes: { default: "closed", net: "open" } });
   const run = await client.registerRun("a");
