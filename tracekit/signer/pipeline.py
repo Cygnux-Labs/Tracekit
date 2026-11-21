@@ -512,6 +512,7 @@ class RecordLog:
             if not tx.records and not self.down:
                 if self.detector:
                     self.detector.prune(self.det, time.time())
+                labels.prune(self, time.time())
                 self.storage.snapshot_put(self._state())
         self.write(fn)
 
@@ -840,6 +841,7 @@ class RecordLog:
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
                     if req["stream"] not in run["writers"]:
+                        labels.join(tx.set, self, run, writer(identity, req))
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")

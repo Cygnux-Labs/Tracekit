@@ -499,7 +499,8 @@ class Routes(unittest.TestCase):
                     held, "TK-D023")
         # extglob's own syntax isn't read: held, as a line the parser can't read is
         self.expect(self.bash("shopt -s extglob; sed -i 's/a/b/' .@(env)"), held, "TK-SHELL-PARSE")
-        self.expect(self.bash("sed -i 's/a/b/' *env", "shopt -s dotglob; ls *"), "allow")
+        self.expect(self.bash("sed -i 's/a/b/' *sh/config", "shopt -s dotglob; ls *"), "allow")
+        self.expect(self.bash("sed -i 's/a/b/' *env"), held, "TK-D023")   # without dotglob, a name such as app.env
 
     def test_glob_options_set_any_way_are_read_and_unreadable_ones_held(self):
         # sec08 r3: each ran sed on .env unheld: dotglob by bash -O, BASHOPTS, a quoted or built shopt name, and a

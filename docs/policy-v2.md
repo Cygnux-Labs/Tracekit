@@ -528,9 +528,10 @@ link a subagent's prompt names), and any network command whatever it names (`TK-
 nc, ncat, telnet, ftp, dig, nslookup, host), except curl, wget, HTTPie or xh whose every target is on this machine
 and that read no hosts from a file (`-K`, `--config`, wget's `-i` or `-e`).
 Mail, payments, SQL and MCP tools without a URL in their arguments are not egress in the coding pack (`dev.yaml` adds
-an email send with a recipient, an MCP tool named for sending, a web fetch to any host, gh's writes, git push and
-bash's `/dev/tcp`: `TK-F037` to `TK-F041`): label your own tools that send data out (`label: egress` on a flag rule)
-to bring them in. These are the laptop packs' rules (`coding.yaml`, `dev.yaml`,
+an email send with a recipient, an MCP tool named for sending, a write to a service's MCP server (GitHub, Linear,
+Notion, Gmail and their kind), a web fetch to any host and a web search, gh's writes, git push, PowerShell's web and
+mail commands and bash's `/dev/tcp`: `TK-F037` to `TK-F041`, `TK-F044`): label your own tools that send data out
+(`label: egress` on a flag rule) to bring them in. These are the laptop packs' rules (`coding.yaml`, `dev.yaml`,
 which run no sequence: `dev.yaml`'s `TK-Q001` is a [run condition](#run-conditions)). `server.yaml`, and `strict.yaml` with it, keep the wider `TK-F003`, `TK-F005`, `TK-F012` and
 `TK-F013` that their detection counts, and add `TK-F028`: there every destructive command word on a line, every
 secrets-file name (its `TK-F005` labelled `secrets_access`), every URL, every network command and every email
@@ -623,48 +624,53 @@ ask:
 
 | Label | Set when a call runs that | Shipped sources |
 |---|---|---|
-| `secrets_access` | matched a rule labelled `secrets_access` | `dev.yaml`'s reads of a file a secret is kept in (`.env` and its kind, `.envrc`, `.netrc`, credentials files, `.ssh/`, `.aws/`, `.gnupg/`, `.npmrc`, `.pypirc`, gh's `hosts.yml`, an SSH private key): by a tool that reads it (`TK-F033`: Read, Grep), as the operand of a command that reads or copies it or in an interpreter's words (`TK-F034`: `cat`, `grep`, `source`, `cp .env x`, `python -c`), or redirected into a command (`TK-F035`), but never a file that is never secret (in `.ssh/`: `known_hosts`, `config`, `authorized_keys` and a public key; a `.env` template; prose named for credentials, `*.md`, `*.rst`, `*.adoc`; `~/.aws/config` stays, as it can hold access keys). A call that only names such a file (`ls -la .env`, `git check-ignore .env`, a write) sets nothing: `TK-F005` flags it with its own label, `secrets_file`. `TK-F031`, a stored secret printed (`printenv`, `env`, `echo $GITHUB_TOKEN`, `git credential fill`, `gcloud auth print-access-token`, `aws configure get aws_secret_access_key`, `gpg --export-secret-keys`, `docker inspect`, `ps eww`); `TK-F036`, a password manager's MCP read; a credential or secret-store read, once its approval is consumed (`TK-A020`, `TK-A021`, `TK-A035` to `TK-A038`, `TK-A052`, `TK-A053`: a keychain, a password manager, `gh auth token`, a cloud secret store, Kubernetes, Vault) |
+| `secrets_access` | matched a rule labelled `secrets_access` | `dev.yaml`'s reads of a file a secret is kept in (`.env` and its kind, `.envrc`, `.netrc`, credentials files, `.ssh/`, `.aws/`, `.gnupg/`, `.npmrc`, `.pypirc`, gh's `hosts.yml`, an SSH private key): by a tool that reads it (`TK-F033`: Read, Grep; `TK-F042`: Grep over files its glob names, `.env*`; `TK-F043`: an MCP server's file read, `read_file`, `read_multiple_files`), as the operand of a command that reads or copies it or in an interpreter's words (`TK-F034`: `cat`, `grep`, `grep ''`, `source`, `cp .env x`, `python -c`, PowerShell's `Get-Content`, `git show HEAD:.env`, `find -name .env -exec cat`, `rg -g .env`, a pattern such as `./*env`), or redirected into a command (`TK-F035`), but never a file that is never secret (in `.ssh/`: `known_hosts`, `config`, `authorized_keys` and a public key; a `.env` template; prose named for credentials, `*.md`, `*.rst`, `*.adoc`; `~/.aws/config` stays, as it can hold access keys). A call that only names such a file (`ls -la .env`, `git check-ignore .env`, a write) sets nothing: `TK-F005` flags it with its own label, `secrets_file`. `TK-F031`, a stored secret printed (`printenv`, `env`, `echo $GITHUB_TOKEN`, `git credential fill`, `gcloud auth print-access-token`, `aws configure get aws_secret_access_key`, `gpg --export-secret-keys`, `docker inspect`, `ps eww`); `TK-F036`, a password manager's MCP read; a credential or secret-store read, once its approval is consumed (`TK-A020`, `TK-A021`, `TK-A035` to `TK-A038`, `TK-A052`, `TK-A053`: a keychain, a password manager, `gh auth token`, a cloud secret store, Kubernetes, Vault) |
 | `untrusted_content` | is of a tool the policy's `untrusted` list names (a web fetch or search, a browser read, an MCP tool), or matched a rule labelled `untrusted_content`; and an input observed as untrusted (`observe`: a mail or ticket the app read) | the packs' `untrusted` lists; `dev.yaml`'s `TK-F032`, a file in a home folder's Downloads (not a URL's `downloads/`) |
-| every label a run condition reads | is a call the policy couldn't read (`TK-OVERSIZE`, over 64 KiB) | a person's approval of one, which says nothing of what it did |
+| every label the policy reads | is a call the policy couldn't read (`TK-OVERSIZE`, over 64 KiB); and events the signer never got (a `client_counter_gap`) | a person's approval of one, which says nothing of what it did; calls a client lost or held back |
 
 A call runs when its decision allows or flags it, when the approval of its ask is consumed, or when it ran against its
 decision (an `executed_against_policy` gap). The signer alone sets a label: a `run.label` record right after the
 record that set it, naming that record ([format](format-v2.md#3-events)). Nothing a client sends sets or clears one,
-but an input it observes as untrusted, which can only hold more. A run carries only the labels its policy's run
-conditions name, so a policy without them writes no label record. A harness call (class `harness`: a coding agent's
+but an input it observes as untrusted, which can only hold more. A run carries only the labels its policy reads:
+those its run conditions name and those the AI approver's run bound names (`approval_agent.run.clean`), so a
+policy with neither writes no label record. A harness call (class `harness`: a coding agent's
 message to its own agents, a subagent's report, its todo list) sets no label and meets no run condition.
 
-**Labels belong to the requester.** A run's tenant, owner and attested principal (the key a hold is inherited by)
-carry its labels too: before each decision, a run gets every label another run of theirs carries while that run is
-open and for the policy's `label_inherit_s` after it ends (whole seconds, default 3600), as a `run.label` naming that
-run's add (`inherited`). A run with no attested principal reads every principal's of its owner. So ending a run, or
-starting another (a second session, `claude -p`, the hook's next run after the agent ended its own session), keeps a
-label; a run of another owner gets none. The signer's `labels.labels_for(log, tenant, owner, principal, now=None)`
-returns them, `{label: [run_id, run_seq]}`, for any component deciding a requester's call.
+**Labels belong to the requesters.** A run's requesters are its client (its owner, or the client a gateway
+registered it for, never the gateway itself), each identity it was delegated to and each gateway caller that writes
+it. Each carries the run's labels: before each decision, a run gets every label a run of any of its requesters
+carries, in any tenant and under any principal, while that run is open and for the policy's `label_inherit_s` after
+it ends (whole seconds, default 3600, at most 86400), as a `run.label` naming that run's add (`inherited`). An
+identity that first writes a labelled run takes its labels then. So ending a run, starting another (a second
+session, `claude -p`, the hook's next run after the agent ended its own session), naming another tenant or
+principal, or working in a run it was handed keeps a label; a run of another identity, another client of the same
+gateway included, gets none. The signer's `labels.labels_for(log, run, now=None)` returns them, `{label: [run_id,
+run_seq]}`, one lookup per requester, for any component deciding one of the run's calls on the signer's writer.
 
 **The rule.** `when` goes on an `ask` or a `flag` rule; a `deny` rule applies always (a lint error). The rule is
 matched as any other and applies when the run carries its labels or a rule of the same call sets them: a command that
 reads a secret and sends it asks in a run that read none before. A rule with `when` can't carry a run label itself.
 `field: labels` reads the labels of the rules the call matched, sorted and joined by spaces (`background_spawn
 egress`), so a rule names a kind of call the labelled rules define already (`egress`: `TK-F012`, `TK-F013`, `TK-F024`,
-and in `dev.yaml` `TK-F037` to `TK-F041`) without repeating their patterns, or two kinds of one call; with `when` it
-waits for the run's labels, without it applies at once (`dev.yaml`'s `TK-Q002`: a send left running in the
-background). Each reading of a call the signer decides (a PowerShell line read as a shell one, text typed into a
+and in `dev.yaml` `TK-F037` to `TK-F041` and `TK-F044`) without repeating their patterns, or two kinds of one call;
+with `when` it waits for the run's labels, without it applies at once (`dev.yaml`'s `TK-Q002`: a send left running in
+the background, `launchctl submit` too). Each reading of a call the signer decides (a PowerShell line read as a shell one, text typed into a
 shell, a Hermes process write) keeps its run conditions and the labels it sets, even where it doesn't decide the
 call. A condition rule doesn't read a subject over 64 KiB; the other rules decide such a call. Lint also refuses a
 label outside the set, one named twice, and one no rule of the policy can set (`untrusted_content` always can: an
 observed input sets it).
 
 The decision records the labels that made its run conditions apply (`run_labels`), and a verifier replays the run's
-labels from its records under the bundled policy (`run labels`). A run condition only adds rule ids to a decision: it
+labels from its records under the bundled policies, each record under the one its decision names (`run labels`). A run condition only adds rule ids to a decision: it
 never lowers one. An ask rule with `mode: shadow` applies as a flag: the decision names it, with its `run_labels`, and
 the call runs, so a policy records what the rule would hold before it holds anything; `mode: enforce`, or none, holds.
 
 **Clearing a label.** A person ends a label when what set it no longer matters (the file read held test values):
 `clear-label <run_id> --label secrets_access --reason "..."` of `tracekit signer incidents` (RPC `run_label_clear`, an
 operator call), recorded as a `run.label` of theirs. Who may is who may resume a held run ([incidents](incidents.md)):
-never the run's own owner, principal or requester. It clears the label for the run's requester too: a new run of
-theirs no longer inherits it. The next call that sets it sets it again.
+never the run's own owner, principal or requester. It clears the label for the run's client too, in the run's
+tenant: a new run of theirs no longer inherits it (an identity the run was delegated to keeps its own runs'). The
+next call that sets it sets it again.
 
 `dev.yaml`, the laptop default, names a send (`egress`) once the run carries `secrets_access` (`TK-Q001`), and a
 send left in the background whatever the run carries (`TK-Q002`), both in shadow in 1.8: each such call is recorded,

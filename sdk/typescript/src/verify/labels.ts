@@ -8,7 +8,7 @@ import { Detector, glob } from "./detect.js";
 type J = any;
 const SECTIONS = ["deny", "ask", "flag"];
 const UNTRUSTED = "untrusted_content";
-const UNREAD = "TK-OVERSIZE";   // a call the policy couldn't read: it sets every label a run condition reads
+const UNREAD = "TK-OVERSIZE";   // a call the policy couldn't read: it sets every label the policy reads
 // tracekit/policy2/compile.py CLASSES: an `untrusted` entry that names one is a class, any other a tool name glob
 const CLASSES = ["shell", "fs", "http", "sql", "payment", "email", "mcp", "browser", "a2a", "app", "unknown", "harness"];
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
@@ -35,6 +35,7 @@ export class Sources {
     const rules: J[] = SECTIONS.flatMap((sec) => policy[sec] ?? []);
     for (const r of rules) if (Object.hasOwn(r, "when")) this.when.set(r.id, new Set(r.when.run_has));
     for (const ls of this.when.values()) for (const x of ls) this.tracked.add(x);
+    for (const x of policy.approval_agent?.run?.clean ?? []) this.tracked.add(x);   // the AI approver's run bound
     for (const r of rules) if (this.tracked.has(r.label)) this.label.set(r.id, r.label);
     this.untrusted = policy.untrusted ?? [];
     this.tools = policy.tools ?? {};
@@ -71,18 +72,36 @@ export class Sources {
       : t === "capture.gap" && d.kind === "executed_against_policy" ? decided(e.tool_call_id ?? null) : undefined;
     if (call) return this.ofCall(call.tool, call.rule_ids);
     if (t === "input.observed" && d.trust === "untrusted" && this.tracked.has(UNTRUSTED)) return new Set([UNTRUSTED]);
+    if (t === "capture.gap" && d.kind === "client_counter_gap") return new Set(this.tracked);   // calls never got
     return new Set();
   }
 }
 
-/** The problems of one run's labels under `src` (tracekit/verify/v2.py _run_labels); each inherited add of a label its
- * policy reads goes to `inherited` as [where, label, the add it cites]. */
-export function runLabels(events: J[], src: Sources, inherited: [string, string, J][]): string[] {
+/** The policies each of a run's records is replayed under (tracekit/verify/v2.py _policies_at): a decision's own; another
+ * record's, that of the decision before it (the first one's before any) and, between two decisions under different
+ * policies, the next one's too. */
+export function policiesAt(events: J[], srcs: Map<string, Sources>): Sources[][] {
+  if (srcs.size === 1) return events.map(() => [...srcs.values()]);
+  const named = events.map((e) => e.type === "policy.decision" && Object.hasOwn(e.data, "policy_hash")
+    ? str(e.data.policy_hash) : null);
+  const next: (string | null)[] = [];
+  let after: string | null = null, before: string | null = null;
+  for (let i = named.length - 1; i >= 0; i--) next[i] = after = named[i] ?? after;
+  return named.map((h, i) => {
+    before = h ?? before;
+    return [...new Set([before ?? next[i], next[i] ?? before])].map((x) => srcs.get(x!)!);
+  });
+}
+
+/** The problems of one run's labels under `srcs` (policy_hash -> Sources), each record under its policy
+ * (tracekit/verify/v2.py _run_labels); each inherited add of a label its policy reads goes to `inherited` as [where,
+ * label, the add it cites]. */
+export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [string, string, J][]): string[] {
   const problems: string[] = [], carried = new Set<string>(), asked = new Map<J, J>(), decided = new Map<J, J>();
-  const seqs = new Map<number, J>();
-  let owed = new Map<string, number>(), owner: string | null = null;
-  for (const e of events) {
-    const t = e.type, d = e.data, where = `seq ${str(e.seq)}`;
+  const seqs = new Map<number, J>(), at = policiesAt(events, srcs);
+  let owed = new Map<string, number>(), may = new Map<string, number>(), owner: string | null = null;
+  for (const [n, e] of events.entries()) {
+    const t = e.type, d = e.data, where = `seq ${str(e.seq)}`, cands = at[n], src = cands[0];
     if (!Number.isInteger(e.run_seq)) continue;   // schema-invalid: its schema check fails it
     seqs.set(e.run_seq, e.seq ?? null);
     if (t === "run.registered" && typeof d.identity === "object" && d.identity !== null && !Array.isArray(d.identity))
@@ -91,15 +110,17 @@ export function runLabels(events: J[], src: Sources, inherited: [string, string,
       const x = key(d.label);
       if (d.action === "add") {
         if (x !== null && carried.has(x)) problems.push(`${where}: adds ${cut(str(x), 32)}, which the run carries already`);
-        else if (Object.hasOwn(d, "inherited") && x !== null && src.tracked.has(x))
+        else if (Object.hasOwn(d, "inherited") && x !== null && cands.some((c) => c.tracked.has(x)))
           inherited.push([where, x, d.inherited]);
         else if (Object.hasOwn(d, "inherited"))
-          problems.push(`${where}: inherits ${cut(str(x), 32)}, which no run condition of the run's policy reads`);
-        else if (x === null || !owed.has(x) || owed.get(x) !== d.source)
+          problems.push(`${where}: inherits ${cut(str(x), 32)}, which the run's policy doesn't read`);
+        else if (x === null || d.source === undefined || d.source === null
+          || (owed.get(x) !== d.source && may.get(x) !== d.source))
           problems.push(`${where}: adds ${cut(str(x), 32)} citing run_seq ${cut(str(d.source ?? null), 20)}, which doesn't `
             + "set it under the run's policy");
         if (x !== null) {
           owed.delete(x);
+          may.delete(x);
           carried.add(x);
         }
       } else if (x === null || !carried.has(x)) problems.push(`${where}: clears ${cut(str(x), 32)}, which the run doesn't carry`);
@@ -107,10 +128,11 @@ export function runLabels(events: J[], src: Sources, inherited: [string, string,
       else carried.delete(x);
       continue;
     }
-    if (owed.size && (t === "policy.decision" || t === "approval.consumed")) {
+    if (t === "policy.decision" || t === "approval.consumed") {
       for (const [x, s] of owed) problems.push(`seq ${str(seqs.get(s) ?? null)}: sets ${x}, which no run.label adds before ${where}`);
       for (const x of owed.keys()) carried.add(x);
       owed = new Map();
+      may = new Map();
     }
     const ids: string[] = Array.isArray(d.rule_ids) ? d.rule_ids.filter((i: J) => typeof i === "string") : [];
     if (t === "policy.decision") {
@@ -125,8 +147,11 @@ export function runLabels(events: J[], src: Sources, inherited: [string, string,
     } else if (t === "approval.request" && typeof d.binding === "object" && d.binding !== null && !Array.isArray(d.binding))
       asked.set(key(d.approval_id ?? null), { tool: d.binding.tool ?? null, rule_ids: ids });
     const call = t === "policy.decision" ? { ...d, rule_ids: ids } : d;
-    const set = src.sets({ ...e, data: call }, (a) => asked.get(key(a)), (c) => decided.get(key(c)));
-    for (const x of [...set].filter((x) => !carried.has(x) && !owed.has(x)).sort(byCodePoint)) owed.set(x, e.run_seq);
+    const sets = cands.map((c) => c.sets({ ...e, data: call }, (a) => asked.get(key(a)), (c) => decided.get(key(c))));
+    const need = [...sets[0]].filter((x) => sets.every((s) => s.has(x)));
+    for (const x of need.filter((x) => !carried.has(x) && !owed.has(x)).sort(byCodePoint)) owed.set(x, e.run_seq);
+    for (const x of [...new Set(sets.flatMap((s) => [...s]))].filter((x) => !need.includes(x) && !carried.has(x)
+      && !owed.has(x) && !may.has(x)).sort(byCodePoint)) may.set(x, e.run_seq);
   }
   for (const [x, s] of owed) problems.push(`seq ${str(seqs.get(s) ?? null)}: sets ${x}, which no run.label adds`);
   return problems;

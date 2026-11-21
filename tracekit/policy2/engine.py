@@ -3164,9 +3164,28 @@ _OPTION = re.compile(r"-[^/=]*")   # an option, not a path or an assignment (_tr
 _PYTHON_EXE = re.compile(r"(?:pyw?|pypy|pythonw?)[0-9.]*t?")
 
 
+def _asks_help(argv):
+    """Whether `argv` asks Tracekit's own CLI for its help, which never runs the command (argparse prints it and exits
+    whatever options come before; an option given `--help` as its value fails to parse): `tracekit …` or `python -m
+    tracekit[.module] …` whose last word is `--help` (a word of its own: a quoted value ending in ` --help` is one
+    word), with no `--` before it (after which it is an argument), and not srt-decider, which runs the command it is
+    given."""
+    if argv[-1:] != ["--help"] or "--" in argv or len(argv) < 2:
+        return False
+    if argv[0] == "tracekit":
+        rest = argv[1:]
+    elif _PYTHON_EXE.fullmatch(argv[0]) and argv[1].startswith("-m"):
+        mod, rest = (argv[2], argv[3:]) if argv[1] == "-m" and len(argv) > 2 else (argv[1][2:], argv[2:])
+        if not re.fullmatch(r"tracekit(?:\.[a-z_.]+)?", mod):
+            return False
+    else:
+        return False
+    return "srt-decider" not in rest
+
+
 def _tracekit(parsed, finds, work):
     """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
-    runs, its words joined (but data words), its stdin, the files redirections write, _effects' files, the other words
+    runs, its words joined (but data words; none of a help request's, _asks_help), its stdin, the files redirections write, _effects' files, the other words
     that name something (assignments, heredoc programs). READ, DEEP and LIST: one subject per word a command that only
     reads names (_reading; the pack's `unless` names the files a READ may name under Tracekit's dirs): DEEP for a
     recursive read, a pattern, a reader whose output goes on to a file, a substitution or anything but a filter
@@ -3207,6 +3226,8 @@ def _tracekit(parsed, finds, work):
         return out
     act, listed, read, deep = _kills_signer(commands, finds), [], [], []
     for c, kind in zip(commands, kinds):
+        if _asks_help(c["argv"]):   # prints help: its words touch nothing (a redirection it writes is an effect)
+            continue
         data = shell.data_words(c["argv"]) | set(c.get("data_words", ()))
         words = [a for i, a in enumerate(c["argv"]) if i not in data]
         named = [a for a in words[1:] if not _OPTION.fullmatch(a)]

@@ -2029,12 +2029,12 @@ def _brace(word, charge, room=MAX_BRACE, depth=0):
 
 
 # the names the shipped rules protect that a pattern may stand for (`~/.bashr?`, `authorized_key?`, `.git/hook?/x`,
-# `id_*`)
+# `id_*`; app.env for any secrets file named *.env: `./*env`)
 GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshenv", ".zshrc", ".zprofile",
-              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "id_rsa", "id_ed25519",
-              "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc", ".netrc",
-              ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini", ".hermes",
-              "docker.sock")
+              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "app.env", "id_rsa",
+              "id_ed25519", "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc",
+              ".netrc", ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini",
+              ".hermes", "docker.sock")
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 

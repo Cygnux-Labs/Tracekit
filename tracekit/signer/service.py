@@ -3058,6 +3058,7 @@ class SignerService:
                 # log after the last snapshot counts in its owner's own entry until it closes; record the caller in
                 # run.registered if gateways' runs must count exactly across restarts
                 tx.set(run, "quota", count)
+                tx.set(run, "caller", caller)   # whose run it is: its labels are the client's (labels.requesters)
             tx.set(self.log.open_runs, count, n + 1)
             tx.set(run, "source", "import" if imported else req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
@@ -3209,11 +3210,10 @@ class SignerService:
                     data["run_labels"] = memo["run_labels"]
             else:
                 # run conditions under the labels the run carries now, on the writer: one a call just before set counts,
-                # and one its requester carries from another run of theirs, added first (labels.labels_for)
+                # and one a requester of the run carries from another run of theirs, added first (labels.labels_for)
                 d, mismatch, both = ruled
                 have = run.get("labels") or {}
-                for label, (rid, seq) in sorted(labels.labels_for(self.log, run["tenant"], run["owner"],
-                                                                  run["people"][1]).items()):
+                for label, (rid, seq) in sorted(labels.labels_for(self.log, run).items()):
                     if label not in have:
                         tx.emit(run, "run.label", {"label": label, "action": "add", "by": "signer",
                                                    "inherited": {"run_id": rid, "run_seq": seq}}, source="signer")
