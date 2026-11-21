@@ -747,7 +747,14 @@ class Routes(unittest.TestCase):
             "printf -v HOME %s /tmp/h; claude -p x", "readonly HOME=/tmp/h; claude -p x",
             "claude -p x $(echo --settings) s.json", "echo --settings s.json | xargs claude -p x", "claude --bare -p x",
             "CLAUDE_CODE_SIMPLE=1 claude -p x", "codex exec -c sandbox_workspace_write.network_access=true x",
-            "codex --profile other exec x", "env -u CODEX_HOME codex exec x"), "ask", "TK-A070")
+            "codex --profile other exec x", "env -u CODEX_HOME codex exec x",
+            "HOME=/tmp/x npx @kilocode/cli", "HOME=/tmp/x npx @kilocode/cli@latest",
+            "HOME=/tmp/x bunx @kilocode/cli", "HOME=/tmp/x bunx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpm dlx @kilocode/cli", "HOME=/tmp/x pnpm dlx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpx @kilocode/cli", "npx @kilocode/cli --config k.json"), "ask", "TK-A070")
+        # a scoped package's word names Kilo Code; a bare `cli`, or another scope's, is no harness
+        self.expect(self.bash("npx @kilocode/cli", "HOME=/tmp/x npx some-other/cli", "HOME=/tmp/x npx @some-other/cli",
+                              "HOME=/tmp/x cli"), "allow")
 
     def test_a_harness_is_read_with_every_way_the_line_sets_its_settings(self):
         # codex's own hooks off (--disable is -c features.<name>=false; features disable saves it), a variable set by
