@@ -7235,3 +7235,27 @@ class CICredentialEgress(unittest.TestCase):
             (wf, 'run: curl -d "$GITHUB_SHA" https://example.invalid/x'),
             (wf, 'run: |\n    echo "$GITHUB_SHA"\n    curl -d "sha=$GITHUB_SHA" https://example.invalid/x'),
         ], held=False)
+
+
+class ShellWorkingDirectory(unittest.TestCase):
+    """A shell tool's own working-directory argument is where its command runs."""
+
+    def test_a_command_is_decided_in_its_working_directory(self):
+        """`Bash {"command": "cp /tmp/x key", "workdir": <Tracekit's data dir>}` was allowed: Codex and OpenCode send
+        workdir, Gemini CLI dir_path, Cursor working_directory, and a relative path in the command was decided as if it
+        ran in the session's folder, so TK-D007 never saw the folder. The signer now also decides such a call as
+        `cd <dir> && <command>` (classes.in_workdir), for each key model_receipt reads, in any case."""
+        data = os.path.join(os.path.expanduser("~"), ".local", "share", "tracekit")
+        for pack in ("coding.yaml", "dev.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for key in (*classes.WORKDIR_KEYS, "Cwd"):
+                for tool, args in (("Bash", {"command": "cp /tmp/x key", key: data}),
+                                   ("Bash", {"command": ["cp", "/tmp/x", "key"], key: data}),
+                                   ("Bash", {"commands": ["true", "cp /tmp/x key"], key: data})):
+                    with self.subTest(pack=pack, args=args):
+                        d = svc.evaluate(e, tool, args)[0]
+                        self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True), d)
+                        # its twin, run in an ordinary folder, is decided as the command alone is
+                        twin = svc.evaluate(e, tool, {**args, key: "/tmp/project"})[0]
+                        alone = svc.evaluate(e, tool, {k: v for k, v in args.items() if k != key})[0]
+                        self.assertEqual((twin["verdict"], twin["rule_ids"]), (alone["verdict"], alone["rule_ids"]))

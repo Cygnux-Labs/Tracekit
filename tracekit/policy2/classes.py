@@ -6,12 +6,31 @@ shell.py in the engine. Fields that need signer state (payment.new_payee) are no
 import ipaddress
 import posixpath
 import re
+import shlex
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
+# a shell tool's own working directory, in any case: Gemini CLI's and Qwen Code's dir_path (directory in older
+# releases), Cursor's working_directory, Codex's and OpenCode's workdir, agy's Cwd, Crush's working_dir
+WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir")
+
+
+def in_workdir(args):
+    """Each reading of a shell call run in a working directory its arguments name (WORKDIR_KEYS): its arguments with
+    the command as `cd <dir> && <command>` (an argv as the line it is, a `commands` list as its lines), so a relative
+    path it names is read in that folder; none for a call with no such directory or no command."""
+    key = next((k for k in SHELL_KEYS if k in args), None)
+    command = args.get(key)
+    if isinstance(command, list) and all(isinstance(w, str) for w in command):
+        command = "\n".join(command) if key == "commands" else shlex.join(command)
+    if not isinstance(command, str):
+        return []
+    rest = {k: v for k, v in args.items() if k != key}
+    return [{**rest, "command": f"cd {shlex.quote(v)} && {command}"} for k, v in args.items()
+            if isinstance(v, str) and v and k.casefold() in WORKDIR_KEYS]
 PATH_KEYS = ("file_path", "notebook_path", "path")
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on

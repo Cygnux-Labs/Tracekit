@@ -543,10 +543,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
     unrecorded; a RecursionError is the request's nesting, which call() refuses."""
     try:
         d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        # a shell tool's own working directory (Codex's and OpenCode's workdir, Gemini CLI's dir_path, Cursor's
+        # working_directory: classes.WORKDIR_KEYS) is where its command runs: decided as `cd <dir> && <command>` too, so
+        # a relative path it names is read in that folder
+        for moved in classes.in_workdir(args) if cls == "shell" else ():
+            d = _stricter(d, policy.decide(tool, moved, untrusted=untrusted))
         # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+            for moved in classes.in_workdir(args) if policy.tool_class(listed) == "shell" else ():
+                d = _stricter(d, policy.decide(listed, moved, untrusted=untrusted))
         if tool in FILE_TOOLS and cls == "unknown":
             d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
         # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text
