@@ -350,3 +350,4 @@
 {"tool": "Bash", "args": {"command": "cp data.csv data/backup.csv"}, "expect": "allow", "note": "copy a data file, the twin of a weights write (#999)"}
 {"tool": "Bash", "args": {"command": "rm build/out.o"}, "expect": "allow", "note": "delete a build output, the twin of a weights delete (#999)"}
 {"tool": "Bash", "args": {"command": "printf '%s' PING | redis-cli -h cache.internal"}, "expect": "allow", "note": "a ping printed through a plain %s format into redis-cli (#978)"}
+{"tool": "Bash", "args": {"command": "psql -h db.internal --comm 'SELECT count(*) FROM users;' shop"}, "expect": "allow", "note": "a count through psql's --command abbreviated to --comm (#978)"}
