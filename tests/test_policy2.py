@@ -1053,6 +1053,21 @@ class Speed(unittest.TestCase):
                                  ("chmod -R /", "?*/", "x"), ("chmod -R /", "./", "x"), ("find /etc", "/*", "x -delete"),
                                  ("git -C /etc", "/*", "x clean"), ("rm -r C:\\Windows", "\\*", "x"),
                                  ("rm -r /", "./", "x"), ("rm -r /usr/", "./", "x"), ("rm -r /usr", "/", "x"),
+                                 # #810: find's parenthesised filters and -exec, chgrp, chattr, mv and rsync, each
+                                 # repeating what a branch reads before the folder, then missing it
+                                 ("find /etc", " ( -type f -o -type d )", " x -delete"),
+                                 ("find /etc", " -type f", " x -exec rm {} +"),
+                                 ("find /etc", " ( -type f -o -type d )", " x -exec chmod -R 777 {} +"),
+                                 ("find /etc -exec chmod", " 777", " x {} +"),
+                                 ("chgrp -R staff", " /etc/ssh/..", " /etcetera"),
+                                 ("chattr -R +i", " /etc/ssh/..", " /etcetera"),
+                                 ("chattr -R +i", " /tmp/x", " /etcx"), ("chattr +i", " -R", " /etcx"),
+                                 ("mv", " -f", " /etcetera /tmp/etc.bak"), ("mv", " /etc", "x"), ("mv -t", " /tmp", " /etcx"),
+                                 ("mv", " -t /etc", " x"), ("mv -", "at", " x"), ("chattr -R +", "ia", " /etcx"),
+                                 ("rsync --delete", " empty/", " /etcetera"),
+                                 ("rsync", " x", " --delete /etcx"), ("rsync --del", " x", " /etc -v x"),
+                                 ("rsync x", " /etc", " -v --delete x"), ("rsync x /etc", " -v", " --delete x"),
+                                 ("rm -r /etc", "/ssh/..", "x"),
                                  ("rm -rf", " a", " /etcx"), ("rm -rf", " -r", "x"), ("rm", " -f", " -rx"),
                                  ("find /etc", " -depth", "x")):
             s = head + unit * ((n - len(head) - len(tail)) // len(unit)) + tail
@@ -2063,6 +2078,35 @@ class Shell(unittest.TestCase):
                 self.assertEqual(d_cat["verdict"], "ask")
                 self.assertIn("TK-SHELL-PARSE", d_cat.get("rule_ids", []))
                 self.assertNotIn("TK-D002", d_cat.get("rule_ids", []))
+
+    def test_find_parentheses_and_xargs_here_strings_are_read_for_the_system_folder_rule(self):
+        """#810: the words a here-string or heredoc gives xargs are read as the operands of the command it runs, as
+        echo's piped words are (_home_readings), unless an xargs option reads its input another way; a find's
+        parenthesised filters are read as words."""
+        for text, expected in (
+                ("xargs rm -rf <<< /etc", ["rm", "-rf", "/etc"]), ("xargs -r rm -rf <<< /usr", ["rm", "-rf", "/usr"]),
+                ("gxargs rm -rf <<< /var", ["rm", "-rf", "/var"]), ("xargs -n1 rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
+                ("xargs -n 1 -t -P4 rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
+                ("xargs -L1 --no-run-if-empty rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
+                ("xargs --max-args=1 /bin/rm -rf <<< /etc", ["rm", "-rf", "/etc"]),
+                ("xargs rm -rf <<< '/etc /usr'", ["rm", "-rf", "/etc", "/usr"]),
+                ("xargs rm -rf <<EOF\n/etc\nEOF", ["rm", "-rf", "/etc"]),
+                ("printf x | xargs rm -rf <<< /etc", ["rm", "-rf", "x", "/etc"])):
+            with self.subTest(command=text):
+                self.assertIn(expected, [c["argv"] for c in shell.analyse(text)[0]])
+        for text in ("xargs -0 rm -rf <<< /etc", "xargs rm -rf <<< ./etc", "xargs -rt0 rm -rf <<< /etc",
+                     "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc", "xargs --null rm -rf <<< /etc",
+                     'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc', "xargs --delim=x rm -rf <<< /etc",
+                     "xargs -a list rm -rf <<< /etc", "xargs -E /etc rm -rf <<< /etc", "xargs -I{} rm -rf {} <<< /etc",
+                     "xargs rm -rf <<< '~'", "xargs rm -rf <<< '$HOME'"):
+            with self.subTest(command=text):
+                self.assertEqual([c["argv"] for c in shell.analyse(text)[0] if c["via"][-1:] == ["read at home"]], [])
+        # a command find -exec runs has no place in a pipeline (no `stage`): read without one
+        for text in ("find . -name '*.txt' -exec xargs grep foo {} \\;", "find . -execdir xargs rm -rf {} + <<< /tmp/x"):
+            with self.subTest(command=text):
+                shell.analyse(text)
+        self.assertIn("find /etc ( -type f -o -type d ) -delete",
+                      [" ".join(c["argv"]) for c in shell.analyse(r"find /etc \( -type f -o -type d \) -delete")[0]])
 
 
 class TimedAndBraced(unittest.TestCase):

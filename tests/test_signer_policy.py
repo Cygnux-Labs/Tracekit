@@ -3987,21 +3987,98 @@ class CodingPack(unittest.TestCase):
     def test_deleting_or_locking_a_system_folder_is_denied(self):
         # #749: each was only flagged (TK-F003), or allowed (find, git clean); TK-D014 reads the folder as TK-D004
         # reads a home
-        self.every_pack_verdicts([(c, "TK-D014") for c in (
+        commands = (
             "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
             "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
             "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows",
             "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
             "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
-            'bash -c "chown -R me:me /lib"')])
+            'bash -c "chown -R me:me /lib"',
+            # #810 items 1-3: parenthesised find filters, destructive -exec and a literal xargs here-string.
+            r"find /etc \( -type f -o -type d \) -delete",
+            r"find /usr \( -type d -o -type f \) -delete",
+            r"find /etc \( -type f -o -type d \) -exec rm {} +",
+            "find /etc -exec rm {} +", "find /usr -type f -exec rm -f {} +",
+            "find /etc -exec chmod -R 777 {} +", "find /var -exec chown -R root {} +",
+            "find /etc -execdir /bin/rm {} +", "find /etc -exec chgrp -R staff {} +",
+            "find /etc -exec chattr -R +i {} +", r"find /etc -exec /bin/rm {} \;",
+            "xargs rm -rf <<< /etc", "xargs -r rm -rf <<< /usr",
+            "gxargs rm -rf <<< /var",
+            # #810 item 6: policy decisions by command, with matching benign twins below.
+            "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
+            "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var", "chattr -R =a /etc",
+            "chattr -R +Ai /etc", "find /etc -exec chattr -R =Aa {} +",
+            "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak", "mv -- /etc /tmp/etc.bak",
+            "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/", "rsync -a empty/ /etc/ --delete",
+            # #810 item 5: one child then '..' resolves back to the system folder.
+            "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
+            "rm -rf /etc/.ssh/..", "rm -rf /etc/.cache/..",
+            "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
+            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx",
+            # the #932 review's spellings: find already walks the tree, so -exec needs no -R; any xargs option that
+            # keeps its input split at blanks; chattr's words before the folder; mv's other source forms; rsync's
+            # options after the destination and --del
+            "find /etc -exec chmod 777 {} +", "find /etc -exec chown nobody {} +", "find /etc -exec chgrp staff {} +",
+            "find /etc -exec chattr +i {} +", "xargs -n1 rm -rf <<< /etc", "xargs -n 1 rm -rf <<< /etc",
+            "xargs -t rm -rf <<< /etc", "xargs -P4 rm -rf <<< /etc", "xargs -L1 rm -rf <<< /etc",
+            "xargs --no-run-if-empty rm -rf <<< /etc", "xargs rm -rf <<EOF\n/etc\nEOF", "chattr -R +i -- /etc",
+            "chattr +i -R -- /etc", "chattr -R +i /tmp/x /etc", "mv -t /tmp /etc", "mv --backup=numbered /etc /tmp/x",
+            "mv -S .bak /etc /tmp/x", "mv /etc /tmp/x -v", "mv /tmp/a /etc /tmp/b/", "rsync -a --delete empty/ /etc/ -v",
+            "rsync -a --del empty/ /etc/", "rsync --delete-after -a empty/ /etc", "chattr -R +i /mnt/c/Windows",
+            "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/",
+            "rsync -a empty/ --delete /etc/", "mv /etc -f /tmp/x", r"find /etc -ok rm {} \;")
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D014", d["rule_ids"], d)
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
             "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
             "rm -rf /mnt/c/Users/build", "rm -rf /cygdrive/c/Users/build",
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
-            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
+            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"',
+            # #810 benign counterparts: same verbs on project paths or inside /var/tmp and /usr/local.
+            r"find ./etc \( -type f -o -type d \) -delete",
+            r"find /var/tmp/x \( -type f -o -type d \) -delete",
+            r"find /etc \( -name '*.log' -o -type d \) -delete",
+            "find ./etc -exec rm {} +", "find /var/tmp/x -type f -exec rm {} +",
+            "find /etc -name '*.log' -exec rm {} +",
+            "find ./etc -exec chmod -R 777 {} +", "find /usr/local/x -exec chown -R me {} +",
+            "find ./etc -execdir /bin/rm {} +", "find /var/tmp/x -exec chgrp -R staff {} +",
+            "find ./etc -exec chattr -R +i {} +", r"find ./etc -exec /bin/rm {} \;",
+            "xargs rm -rf <<< ./etc", "xargs -0 rm -rf <<< /etc",
+            "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc",
+            'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc',
+            "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /usr/local/x",
+            "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
+            "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x", "chattr -R =a ./etc",
+            "chattr -R +A /etc", "chattr -R =A /etc", "chattr -R +I /etc", "chattr -R =I /etc",
+            "find /etc -exec chattr -R +A {} +", "find /etc -exec chattr -R =A {} +",
+            "find /etc -exec chattr -R +I {} +", "find /etc -exec chattr -R =I {} +",
+            "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak", "mv -- ./etc /tmp/etc.bak",
+            "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/", "rsync -a empty/ ./etc/ --delete",
+            r"find ./usr \( -type d -o -type f \) -delete",
+            r"find ./etc \( -type f -o -type d \) -exec rm {} +",
+            "find ./usr -type f -exec rm -f {} +", "find ./var -exec chown -R root {} +",
+            "xargs -r rm -rf <<< ./usr", "chattr -R =i ./var", "mv -f ./usr /tmp/usr.bak",
+            "rm -rf ./usr/local/..", "rm -rf ./var/tmp/../.",
+            "rm -rf ./etc/.ssh/..", "rm -rf ./etc/.cache/..",
+            "chmod -R 777 ./etc/ssh/..", "chown -R root ./usr/local/..", "find ./etc/ssh/.. -delete",
+            # Project-local twins, Windows non-system folders, and children not resolving to the root.
+            "rm -rf ./etc/ssh/..", "rm -rf /etc/ssh/../nginx", "rm -rf /usr/local/x",
+            "rm -rf /var/tmp/../x",
+            "chmod -R 777 /etc/ssh/../nginx", "find /etc/ssh/../nginx -delete",
+            "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx",
+            # one rsync operand only lists it; mv into a system folder (-t) moves something else; a command find -exec
+            # runs through xargs (it has no pipeline stage: this raised KeyError)
+            "rsync --delete -a /etc", "rsync -a --delete /etc/", "mv -t /etc x.conf", "mv -ft /etc x.conf",
+            "mv --target-directory /etc x.conf", "mv x.conf /etc/", "rsync -a --delay-updates empty/ /etc/",
+            "find . -name '*.txt' -exec xargs grep foo {} \\;", "bash -c 'find . -exec xargs echo {} +'",
+            "find . -execdir xargs ls {} \\;", "find . -ok xargs ls {} \\;"))
 
     def test_a_system_folder_is_read_past_plain_words_dot_steps_and_case(self):
         # #783 review: each was only flagged: more than 16 plain words before the folder (TK-D004 reads any number

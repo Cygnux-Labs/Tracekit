@@ -1532,10 +1532,11 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
-    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
+    and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
+    TK-D004 reads them as that home or root, and TK-D014 as a system folder.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
-    where, links, printed = None, {}, {}
+    where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
         argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
         if argv[0] in ("find", "rsync") and argv != c["argv"]:
@@ -1548,8 +1549,12 @@ def _home_readings(ctx):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
+        elif argv[0] in ("xargs", "gxargs"):
+            fed = c
         if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -1562,6 +1567,23 @@ def _home_readings(ctx):
             read.append(a)
         if read != c["argv"]:
             ctx["cmds"].append({**c, "argv": read, "via": c["via"] + ["read at home"]})
+
+
+def _xargs_here_words(xargs, c):
+    """The words of a here-string or heredoc that `xargs` (its own command, which the parser lists just before) gives
+    c, the command it runs (`xargs rm -rf <<< /etc`): split at blanks, as xargs reads its input unless an option says
+    otherwise (-0, -d, -a, -E, -e, -I, -i, -J or their long forms: then none), and only those that are a path from /
+    in letters, digits and `_./:-` (the parser doesn't expand or unquote what xargs reads)."""
+    n = len(c["argv"])   # (the program by its base name in c, as written in xargs's words)
+    if xargs is None or len(xargs["argv"]) <= n or xargs["argv"][len(xargs["argv"]) - n + 1:] != c["argv"][1:]:
+        return []
+    for a in xargs["argv"][1:len(xargs["argv"]) - n]:
+        name = a.split("=")[0]
+        if len(name) > 2 and any(o.startswith(name) for o in ("--null", "--delimiter", "--arg-file", "--eof",
+                                                                "--replace")) \
+                or re.match(r"-[^-LlnPs0adEeIiJ]*[0adEeIiJ]", a):   # (L, l, n, P and s take the rest as a value)
+            return []
+    return [w for s in c.get("stdin", ()) for w in s.split() if re.fullmatch(r"/[A-Za-z0-9_./:-]*", w)]
 
 
 def hidden_commands(cmds, refs):
