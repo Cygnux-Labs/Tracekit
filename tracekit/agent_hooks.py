@@ -3120,6 +3120,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if harness == "kiro":
         return _install_kiro(path, uninstall, v2, python)
     if harness in ("droid", "copilot") and uninstall and not os.path.exists(path):   # nothing to remove: no file made
+        if harness == "copilot" and project:
+            _copilot_exclude(path, project, uninstall, False)
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
         legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
@@ -3225,11 +3227,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError:   # a config.toml init can't have written to
             pass
     _said(path, removed, uninstall, v2)
-    if harness == "copilot" and project and changed and not uninstall:   # said when the file is written
-        print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
-              "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out of "
-              "the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your user "
-              "instead (the same command without --project)")
+    if harness == "copilot" and project:
+        _copilot_exclude(path, project, uninstall, changed)
+    if harness == "copilot" and not uninstall:
+        _copilot_claude_hooks(project)
     if kept:
         print(f"{path} kept: {kept}. Droid runs the hooks in it, and those in {settings} only once it is gone: move "
               f"any you want into {settings}, then delete it")
@@ -3240,6 +3241,67 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 print(f"read_config_from.claude stays false in {devin_rc}: set it to true there for Devin to read "
                       "Claude Code's hooks, rules, skills, commands and MCP servers again")
     return path
+
+
+def _copilot_exclude(path, project, uninstall, changed):
+    """Keep `path`, a project's Copilot hooks file (it names this machine's Python, and .github/ is usually committed),
+    out of git: init adds its line to the checkout's exclude file (which its worktrees share), uninstall removes it.
+    Outside a git checkout init says how."""
+    import subprocess
+    try:
+        top, exclude = subprocess.run(["git", "-C", project, "rev-parse", "--show-toplevel", "--git-path", "info/exclude"],
+                                      capture_output=True, text=True, timeout=15, check=True).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError, ValueError):   # no git, or not a checkout
+        if changed and not uninstall:
+            print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
+                  "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out "
+                  "of the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your "
+                  "user instead (the same command without --project)")
+        return
+    exclude = os.path.join(project, exclude)   # --git-path is relative to the directory git ran in
+    rel = os.path.relpath(os.path.join(os.path.realpath(project), os.path.relpath(path, project)), os.path.realpath(top))
+    line = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.replace(os.sep, "/"))   # a pattern: a folder's `[1]` as written
+    try:
+        with open(exclude, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    lines = text.splitlines(keepends=True)
+    if uninstall:
+        kept = [x for x in lines if x.rstrip("\r\n") != line]
+        if kept != lines:
+            with open(exclude, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+                f.write("".join(kept))
+            print(f"{line} removed from {exclude}")
+        return
+    if {line, line[1:]} & {x.rstrip("\r\n") for x in lines}:   # init's line, or the one its advice named
+        return
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "a", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.write(("\n" if text and not text.endswith("\n") else "") + line + "\n")
+    print(f"{path} names this machine's Python: {line} added to {exclude}, so git leaves it out of commits (uninstall "
+          "removes the line)")
+
+
+def _copilot_claude_hooks(project):
+    """Say when the project's Claude Code settings (the working directory's, for a user install) hold Tracekit's hook:
+    Copilot CLI runs a repository's .claude hooks too."""
+    from .install import _hook_summary
+    root = project or os.getcwd()
+    if not project and os.path.realpath(root) == os.path.realpath(os.path.expanduser("~")):   # ~/.claude: the user's
+        return
+    for name in ("settings.json", "settings.local.json"):
+        p = os.path.join(root, ".claude", name)
+        try:
+            with open(p, encoding="utf-8") as f:
+                ours = _hook_summary(json.load(f))["events"]
+        except (OSError, ValueError, AttributeError, TypeError):   # absent, or not a settings object
+            continue
+        if ours:
+            print(f"{p} holds Tracekit's Claude Code hook, and Copilot CLI runs a repository's .claude hooks too: each "
+                  "Copilot call here is decided and recorded twice, under two agent names. Install Tracekit's hook "
+                  "for one of the two in this project, or both for your user")
+            return
 
 
 def _devin_claude_off(s, path):
