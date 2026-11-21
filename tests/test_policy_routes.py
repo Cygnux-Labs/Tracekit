@@ -257,11 +257,13 @@ class Routes(unittest.TestCase):
                               "hermes plugins disable -a", "python3 -m hermes_cli plugins disable --all",
                               "claude plugin disable --all", "claude plugin disable -as user",
                               "claude plugin uninstall ./plugin/tracekit/", "claude plugin remove TRACEKIT@tracekit",
+                              "claude plugin marketplace remove tracekit", "claude plugin marketplace rm tracekit",
                               "npx -y @anthropic-ai/claude-code plugin uninstall tracekit",
                               "node node_modules/.bin/claude plugin disable tracekit",
                               "\"$(which claude)\" plugin uninstall tracekit"), "ask", "TK-A054")
         self.expect(self.bash("hermes plugins list", "hermes plugins disable other-plugin",
                               "hermes config get approvals.mode", "claude plugin disable other@market",
+                              "claude plugin marketplace list", "claude plugin marketplace remove other",
                               "npx -y @anthropic-ai/claude-code plugin uninstall other@market",
                               "node scripts/claude.js plugin uninstall tracekit"), "allow")
 
