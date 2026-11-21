@@ -550,7 +550,16 @@ class CodingPack(unittest.TestCase):
                 "nice -n5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "nice --adjustment=5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "nohup nice env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
-                "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remotex ps"]
+                "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remotex ps",
+                "env -u X DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                "timeout 5 env DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                "export DOCKER_HOST=unix:///var/run/docker.sock; pytest",
+                "A='(x)' DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                # #995 review: each group read one way, quotes resolved as main reads them
+                "A='(s)' DOCKER_HOST=unix:///x pytest", "X={a,b} DOCKER_HOST=unix:///x pytest",
+                "A=\"it's\" DOCKER_HOST=unix:///x pytest", "A=$(id)${B} DOCKER_HOST=unix:///x pytest",
+                "env -u X -C /tmp DOCKER_HOST=unix:///x pytest", "timeout -s KILL 1.5m env DOCKER_HOST=unix:///x pytest",
+                "export DOCKER_HOST=unix:///x && pytest", "/usr/bin/timeout 5 env DOCKER_HOST=unix:///x pytest"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
@@ -571,7 +580,10 @@ class CodingPack(unittest.TestCase):
                   "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps",
                   "grep CONTAINER_HOST=unix:// compose.yaml",
                   "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remote ps",
-                  "CONTAINER_HOST=unix:///run/podman/podman.sock /usr/bin/podman-remote info"]
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock /usr/bin/podman-remote info",
+                  "env -u X pytest",
+                  "export DOCKER_HOST=tcp://build:2375; echo ok", "export DOCKER_HOST=unix:///x",
+                  "export DOCKER_HOST=unix:///x; docker ps", "timeout 5 env DOCKER_HOST=unix:///x docker ps"]
         rules = {"TK-A071", "TK-A072", "TK-A073"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
