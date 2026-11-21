@@ -27,7 +27,8 @@ answer again.
 
 Without `state_file` the answered approval ids live in memory: after a restart a shadow-mode approval, which stays
 listed, is judged and suggested again. With it they are written there (a JSON list, replaced whole) and read back at
-start; a missing or unreadable file starts empty.
+start; a missing, unreadable or malformed file starts empty, and a symlink or anything but a regular file is neither
+read nor written.
 """
 import argparse
 import hashlib
@@ -152,23 +153,34 @@ class Reviewer:
     def __init__(self, replicas, ask, model=DEFAULT_MODEL, state_file=None):
         self.replicas, self.ask, self.state_file = replicas, ask, state_file
         self.asserted = {"model": model[:128], "version": __version__, "prompt_hash": PROMPT_HASH}
+        self._warned = False   # a state file that can't be read or written is said once, until a write succeeds
         self.seen = self._load()   # approvals answered; a shadow-mode one stays listed
         self._saved = set(self.seen)
 
+    def _warn(self, message):
+        if not self._warned:
+            log.warning("tracekit reviewer: %s", message)
+        self._warned = True
+
     def _load(self):
+        """The ids in the state file, read as it is written (deploy.files: no symlink, a regular file only, opened
+        without blocking), or none: a missing file; a refused, unreadable or malformed one (said once)."""
         if not self.state_file:
             return set()
         try:
-            with open(self.state_file, encoding="utf-8") as f:
-                ids = json.load(f)
+            d = files.open_dir(os.path.dirname(os.path.abspath(self.state_file)))
+            try:
+                data = files.read(d, os.path.basename(self.state_file))
+            finally:
+                files.close(d)
+            ids = [] if data is None else json.loads(data)
             if isinstance(ids, list) and all(isinstance(i, str) for i in ids):
                 return set(ids)
             raise ValueError("not a list of approval ids")
-        except FileNotFoundError:
+        except FileNotFoundError:   # its folder isn't there yet
             return set()
-        except (OSError, ValueError) as e:
-            log.warning("tracekit reviewer: %s is unusable, starting with no answered approvals (%s)",
-                        self.state_file, e)
+        except (OSError, ValueError, RecursionError) as e:   # RecursionError: JSON nested deeper than Python parses
+            self._warn(f"{self.state_file} is unusable, starting with no answered approvals ({e})")
             return set()
 
     def _save(self):
@@ -176,9 +188,9 @@ class Reviewer:
             return
         try:
             files.write_json(self.state_file, sorted(self.seen))
-            self._saved = set(self.seen)
+            self._saved, self._warned = set(self.seen), False
         except OSError as e:
-            log.warning("tracekit reviewer: could not write %s: %s", self.state_file, e)
+            self._warn(f"could not write {self.state_file}: {e}")
 
     def review(self, tenant, agent, aid):
         """Answer approval `aid`; False when a transient signer error (TRANSIENT) leaves it for the next poll."""

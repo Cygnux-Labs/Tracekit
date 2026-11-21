@@ -469,8 +469,9 @@ The reviewer sends the redacted arguments of the tenants it serves to the model 
 
 `state_file` is optional. Without it the reviewer remembers the approvals it answered only in memory, so after a
 restart a shadow-mode approval, which stays listed, gets a second model call and a second `approval.suggested`. With
-it the ids are written there (a JSON list, replaced whole on each change) and read back at start; a missing or
-unreadable file starts empty.
+it the ids are written there (a JSON list, replaced whole on each change, mode 0600) and read back at start; a
+missing, unreadable or malformed file starts empty, and so does a symlink or anything but a regular file, which the
+reviewer neither reads nor writes (it says so once, in its log).
 
 **Before you enforce: eval, then shadow.**
 

@@ -244,6 +244,43 @@ class TestState(Case):
         with open(state) as f:
             self.assertEqual(json.load(f), [a1])
 
+    def test_json_nested_too_deep_for_python_starts_empty(self):
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with open(state, "w") as f:
+            f.write("[" * 200000 + "]" * 200000)
+        self.assertEqual(self.reviewer(Model(message()), state_file=state).seen, set())
+
+    @unittest.skipUnless(hasattr(os, "mkfifo"), "needs FIFOs")
+    def test_a_fifo_as_the_state_file_neither_blocks_nor_is_read(self):
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        os.mkfifo(state)
+        got = []
+        t = threading.Thread(target=lambda: got.append(self.reviewer(Model(message()), state_file=state).seen),
+                             daemon=True)
+        t.start()
+        t.join(10)
+        self.assertEqual(got, [set()])   # a plain open() waits for a writer that never comes
+
+    def test_a_symlinked_state_file_is_refused_and_said_once(self):
+        d = ts.tmpdir(self)
+        target, state = os.path.join(d, "elsewhere.json"), os.path.join(d, "reviewer.state")
+        with open(target, "w") as f:
+            json.dump(["apr-elsewhere"], f)
+        try:
+            os.symlink(target, state)
+        except (OSError, NotImplementedError) as e:   # Windows without the symlink privilege
+            self.skipTest(f"no symlinks here: {e}")
+        with self.assertLogs(reviewer.log, "WARNING") as logs:
+            rv = self.reviewer(Model(message()), state_file=state)
+            self.assertEqual(rv.seen, set())   # read as it is written: a symlink is refused both ways
+            self.ask(tcid="tc-1")
+            rv.poll()
+            self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
+            rv.poll()   # two answers, two refused writes
+        self.assertEqual((len(rv.seen), len(logs.records)), (2, 1), logs.output)
+        with open(target) as f:
+            self.assertEqual(json.load(f), ["apr-elsewhere"])
+
     def test_an_unwritable_state_file_does_not_stop_the_reviewer(self):
         self.ask()
         rv = self.reviewer(Model(message()), state_file=os.path.join(ts.tmpdir(self), "no", "such", "dir"))
