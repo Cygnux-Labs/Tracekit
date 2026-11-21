@@ -1,5 +1,5 @@
 {
-  "machine": "Darwin arm64 arm python 3.11.15",
+  "machine": "Windows AMD64 Intel64 Family 6 Model 186 Stepping 2, GenuineIntel python 3.13.7",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:248c0c7125d1c71608f800421b13daaa63a32ef7147133d90017e9cda2873403",
+      "policy_hash": "sha256:3153aaa28c1356016110d1722228c17e4d8103e9544c20e59b08c37c06455b76",
       "heldout": {
         "recall": 0.6833333333333333,
         "deny_recall": 0.2904761904761905,
@@ -2502,27 +2502,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.00102880658436214,
+        "fp_rate": 0.0010277492291880781,
         "totals": {
-          "benign": 972,
+          "benign": 973,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 1
             }
           }
@@ -2543,7 +2543,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:3e6fb4e40f20d277091ba72b973a8b550e97bce23725db4e766c2cdcc9f49633",
+      "policy_hash": "sha256:0a50e84ae2376e801f1b081948068925297218f051fef663078dd0c0f102e5b2",
       "heldout": {
         "recall": 0.7428571428571429,
         "deny_recall": 0.3761904761904762,
@@ -5267,27 +5267,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.051440329218107,
+        "fp_rate": 0.051387461459403906,
         "totals": {
-          "benign": 972,
+          "benign": 973,
           "fp": 50
         },
         "by": {
           "category": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 50
             }
           },
           "severity": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 50
             }
           },
           "evasion": {
             "none": {
-              "benign": 972,
+              "benign": 973,
               "fp": 50
             }
           }
@@ -5730,46 +5730,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 159,
-      "p99_us": 437,
-      "max_us": 1193,
-      "calls": 2910,
-      "p99_ref": 7.87
+      "p50_us": 458,
+      "p99_us": 1415,
+      "max_us": 3752,
+      "calls": 2913,
+      "p99_ref": 8.49
     },
     "default/regex": {
-      "p50_us": 173,
-      "p99_us": 484,
-      "max_us": 1610,
-      "calls": 2910,
-      "p99_ref": 8.87
+      "p50_us": 419,
+      "p99_us": 1581,
+      "max_us": 4342,
+      "calls": 2913,
+      "p99_ref": 9.91
     },
     "strict/re2": {
-      "p50_us": 159,
-      "p99_us": 404,
-      "max_us": 1066,
-      "calls": 2910,
-      "p99_ref": 7.3
+      "p50_us": 325,
+      "p99_us": 1098,
+      "max_us": 3073,
+      "calls": 2913,
+      "p99_ref": 8.16
     },
     "strict/regex": {
-      "p50_us": 173,
-      "p99_us": 455,
-      "max_us": 1600,
-      "calls": 2910,
-      "p99_ref": 8.31
+      "p50_us": 353,
+      "p99_us": 1170,
+      "max_us": 2597,
+      "calls": 2913,
+      "p99_ref": 8.72
     },
     "dev/re2": {
-      "p50_us": 164,
-      "p99_us": 456,
-      "max_us": 1232,
-      "calls": 2910,
-      "p99_ref": 8.42
+      "p50_us": 347,
+      "p99_us": 1272,
+      "max_us": 3056,
+      "calls": 2913,
+      "p99_ref": 9.12
     },
     "dev/regex": {
-      "p50_us": 181,
-      "p99_us": 512,
-      "max_us": 1678,
-      "calls": 2910,
-      "p99_ref": 9.5
+      "p50_us": 396,
+      "p99_us": 1344,
+      "max_us": 4021,
+      "calls": 2913,
+      "p99_ref": 9.98
     }
   },
   "engine_mismatches": [],
