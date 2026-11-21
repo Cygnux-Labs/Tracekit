@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_agent_approvers as aa
@@ -51,14 +52,14 @@ class Model:
     def __call__(self, tenant, view):
         self.views.append((tenant, view))
         a = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
-        if isinstance(a, Exception):
+        if isinstance(a, BaseException):
             raise a
         return a
 
 
 class Case(aa.Case):
-    def reviewer(self, model, agent=None):
-        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test")
+    def reviewer(self, model, agent=None, state_file=None):
+        return reviewer.Reviewer([("acme", agent or As(self, aa.AGENT))], model, "m-test", state_file)
 
     def state(self, aid):
         return self.s.log.approvals[aid]
@@ -157,6 +158,11 @@ class TestReviewer(Case):
                 load(f"signer: https://s\ngateway: {gateway}\n{tenants}")
         self.assertEqual(load(f"signer: https://s\ngateway: http://127.0.0.1:8080\n{tenants}")["gateway"],
                          "http://127.0.0.1:8080")
+        base = f"signer: https://s\ngateway: https://gw\n{tenants}"
+        self.assertNotIn("state_file", load(base))
+        self.assertEqual(load(base + "state_file: r.state\n")["state_file"], os.path.join(d, "r.state"))
+        with self.assertRaisesRegex(ValueError, "state_file"):
+            load(base + "state_file: [a]\n")
 
 
 class TestShadow(Case):
@@ -175,6 +181,74 @@ class TestShadow(Case):
         rv.poll()
         rv.poll()
         self.assertEqual([e["type"] for e in self.events()].count("approval.suggested"), 1)
+
+
+class TestState(Case):
+    agent = {"mode": "shadow"}
+
+    def suggested(self):
+        return [e["type"] for e in self.events()].count("approval.suggested")
+
+    def test_a_restart_with_a_state_file_does_not_suggest_again(self):
+        self.ask()
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        model = Model(message())
+        self.reviewer(model, state_file=state).poll()
+        self.reviewer(model, state_file=state).poll()   # the restart
+        self.assertEqual((self.suggested(), len(model.views)), (1, 1))
+        if os.name != "nt":
+            self.assertEqual(os.stat(state).st_mode & 0o777, 0o600)
+
+    def test_without_a_state_file_a_restart_suggests_again(self):
+        self.ask()
+        for _ in range(2):
+            self.reviewer(Model(message())).poll()
+        self.assertEqual(self.suggested(), 2)
+
+    def test_a_missing_or_unreadable_state_file_starts_empty(self):
+        self.ask()
+        d = ts.tmpdir(self)
+        for i, text in enumerate((None, "{not json", '{"a": 1}', "[1, 2]", "")):
+            state = os.path.join(d, f"s{i}")
+            if text is not None:
+                with open(state, "w") as f:
+                    f.write(text)
+            with self.subTest(text):
+                rv = self.reviewer(Model(message()), state_file=state)
+                self.assertEqual(rv.seen, set())
+                rv.poll()
+                with open(state) as f:
+                    self.assertEqual(json.load(f), sorted(rv.seen))
+
+    def test_the_state_file_is_replaced_whole_and_a_failed_write_keeps_the_old_one(self):
+        self.ask()
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with open(state, "w") as f:
+            json.dump(["old"], f)
+        rv = self.reviewer(Model(message()), state_file=state)
+        with mock.patch("os.replace", side_effect=OSError("disk full")):
+            rv.poll()   # the answer is sent; saving it fails
+        with open(state) as f:
+            self.assertEqual(json.load(f), ["old"])
+        rv.poll()
+        with open(state) as f:
+            self.assertEqual(json.load(f), sorted(rv.seen))
+        self.assertEqual(os.listdir(os.path.dirname(state)), ["reviewer.state"])
+
+    def test_each_answer_is_kept_as_it_is_sent(self):
+        a1, _ = self.ask(tcid="tc-1")
+        self.ask(aa.OK | {"amount": 41}, tcid="tc-2")
+        state = os.path.join(ts.tmpdir(self), "reviewer.state")
+        with self.assertRaises(KeyboardInterrupt):   # stopped during the second model call
+            self.reviewer(Model(message(), KeyboardInterrupt()), state_file=state).poll()
+        with open(state) as f:
+            self.assertEqual(json.load(f), [a1])
+
+    def test_an_unwritable_state_file_does_not_stop_the_reviewer(self):
+        self.ask()
+        rv = self.reviewer(Model(message()), state_file=os.path.join(ts.tmpdir(self), "no", "such", "dir"))
+        rv.poll()
+        self.assertEqual((self.suggested(), len(rv.seen)), (1, 1))
 
 
 class Gateway(BaseHTTPRequestHandler):

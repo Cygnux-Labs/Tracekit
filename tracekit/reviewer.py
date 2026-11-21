@@ -10,6 +10,7 @@ reviewer.yaml (relative paths are from this file):
     model: claude-opus-5-5                    # default DEFAULT_MODEL
     poll_s: 5
     timeout_s: 120                            # one model call; past it the reviewer escalates
+    state_file: reviewer.state                # optional: the answered approval ids, kept across a restart
     tenants:                                  # the tenants it serves, and no other (opt-in)
       acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
 
@@ -23,6 +24,10 @@ every condition in it passed, makes one model call with no memory of other appro
 treats the view as data. The model's answer is {decision: approve|reject|escalate, reason}; an error, a timeout, a
 refusal or a malformed answer escalates. It sends `asserted: {model, version, prompt_hash}`. The signer checks every
 answer again.
+
+Without `state_file` the answered approval ids live in memory: after a restart a shadow-mode approval, which stays
+listed, is judged and suggested again. With it they are written there (a JSON list, replaced whole) and read back at
+start; a missing or unreadable file starts empty.
 """
 import argparse
 import hashlib
@@ -35,12 +40,13 @@ import urllib.request
 
 from tracekit import __version__, yamlmini
 from tracekit.client import no_redirect_opener, remote_url_error
+from tracekit.deploy import files
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 
 DEFAULT_MODEL = "claude-opus-5-5"
 POLL_S, TIMEOUT_S, MAX_REASON = 5.0, 120.0, 500
-KEYS = {"signer", "gateway", "model", "poll_s", "timeout_s", "tenants"}
+KEYS = {"signer", "gateway", "model", "poll_s", "timeout_s", "tenants", "state_file"}
 DECISIONS = ("approve", "reject", "escalate")
 TRANSIENT = ("unavailable", "quota_exceeded")   # the signer can't write now or rate-limits: tried again next poll
 PROMPT = """You review one tool call that an AI agent asked to run and that a policy held for approval.
@@ -78,6 +84,10 @@ def load(path):
     for t in cfg["tenants"].values():
         for k in t:
             t[k] = os.path.join(base, t[k])
+    if "state_file" in cfg:
+        if not (isinstance(cfg["state_file"], str) and cfg["state_file"]):
+            raise ValueError(f"{path}: state_file: a file name")
+        cfg["state_file"] = os.path.join(base, cfg["state_file"])
     return cfg
 
 
@@ -137,12 +147,38 @@ def post(url, body, headers, timeout):
 
 class Reviewer:
     """`replicas`: [(tenant, sdk Client of the agent identity)], one per signer replica and tenant; `ask(tenant, view)`
-    returns the model's Messages response (Gateway)."""
+    returns the model's Messages response (Gateway). `state_file`: where the ids of the approvals answered are kept."""
 
-    def __init__(self, replicas, ask, model=DEFAULT_MODEL):
-        self.replicas, self.ask = replicas, ask
+    def __init__(self, replicas, ask, model=DEFAULT_MODEL, state_file=None):
+        self.replicas, self.ask, self.state_file = replicas, ask, state_file
         self.asserted = {"model": model[:128], "version": __version__, "prompt_hash": PROMPT_HASH}
-        self.seen = set()   # approvals answered; a shadow-mode one stays listed
+        self.seen = self._load()   # approvals answered; a shadow-mode one stays listed
+        self._saved = set(self.seen)
+
+    def _load(self):
+        if not self.state_file:
+            return set()
+        try:
+            with open(self.state_file, encoding="utf-8") as f:
+                ids = json.load(f)
+            if isinstance(ids, list) and all(isinstance(i, str) for i in ids):
+                return set(ids)
+            raise ValueError("not a list of approval ids")
+        except FileNotFoundError:
+            return set()
+        except (OSError, ValueError) as e:
+            log.warning("tracekit reviewer: %s is unusable, starting with no answered approvals (%s)",
+                        self.state_file, e)
+            return set()
+
+    def _save(self):
+        if not self.state_file or self.seen == self._saved:
+            return
+        try:
+            files.write_json(self.state_file, sorted(self.seen))
+            self._saved = set(self.seen)
+        except OSError as e:
+            log.warning("tracekit reviewer: could not write %s: %s", self.state_file, e)
 
     def review(self, tenant, agent, aid):
         """Answer approval `aid`; False when a transient signer error (TRANSIENT) leaves it for the next poll."""
@@ -173,6 +209,7 @@ class Reviewer:
                         listed.add(x["approval_id"])
                         if x["approval_id"] not in self.seen and self.review(tenant, agent, x["approval_id"]):
                             self.seen.add(x["approval_id"])
+                            self._save()
                     if page["next_cursor"] is None:
                         break
             except (SignerUnavailable, RPCError) as e:
@@ -180,6 +217,7 @@ class Reviewer:
                 complete = False
         if complete:   # only a full listing says which answered approvals are gone
             self.seen &= listed
+        self._save()
 
 
 def records(store=None, bundle=None):
@@ -247,7 +285,7 @@ def main(argv=None):
         print(json.dumps(out))
         return 0
     rv = Reviewer([(t, Client(s, token_file=v["token_file"])) for s in cfg["signer"] for t, v in cfg["tenants"].items()],
-                  ask, model)
+                  ask, model, cfg.get("state_file"))
     print(f"tracekit reviewer: serving {', '.join(sorted(cfg['tenants']))} on {len(cfg['signer'])} signer(s)",
           file=sys.stderr)
     while True:
