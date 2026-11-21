@@ -541,7 +541,7 @@ class CodingPack(unittest.TestCase):
                 "A='(x)' DOCKER_HOST=unix:///var/run/docker.sock pytest",
                 # #995 review: each group read one way, quotes resolved as main reads them
                 "A='(s)' DOCKER_HOST=unix:///x pytest", "X={a,b} DOCKER_HOST=unix:///x pytest",
-                "A=\"it's\" DOCKER_HOST=unix:///x pytest", "A=$(id -u)${B} DOCKER_HOST=unix:///x pytest",
+                "A=\"it's\" DOCKER_HOST=unix:///x pytest", "A=$(id)${B} DOCKER_HOST=unix:///x pytest",
                 "env -u X -C /tmp DOCKER_HOST=unix:///x pytest", "timeout -s KILL 1.5m env DOCKER_HOST=unix:///x pytest",
                 "export DOCKER_HOST=unix:///x && pytest"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
