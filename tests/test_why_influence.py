@@ -466,10 +466,11 @@ class Serves(unittest.TestCase):
                                                               "web:0", "web:9"])
         self.assertIn("context: web:6, web:5, web:4, web:3, web:2 and 2 more. Chain", inf["words"])
 
+    @factories.serial
     def test_a_model_call_with_a_long_context_grades_in_linear_time(self):
         """Each seen edge looked its context entry up by scanning the model call's whole context: quadratic per call,
         cubic over a run whose every model call sees everything before it (61 s for 800 calls' alerts, 17 s before)."""
-        def took(n):   # the best of two, so a busy runner's pause isn't counted
+        def took(n):   # CPU time, the best of five: a few milliseconds, which a busy machine's other work can't add to
             rt = Runtime({"m": lambda ctx, **k: "x"}, {"send_email": lambda **a: "ok"}, signer=False)
             a = rt.agent("a")
             read = [a.observe(f"page {i}", source=f"web:{i}") for i in range(n)]
@@ -478,13 +479,14 @@ class Serves(unittest.TestCase):
             for c in run.of_type("decision")[0]["context"]:   # every entry the gateway's: each looked up
                 c["seen"] = "gateway"
             g, call, best = build_graph(run, infer=False), "ev:" + run.of_type("action")[0]["id"], float("inf")
-            for _ in range(2):
-                start = time.perf_counter()
+            for _ in range(5):
+                start = time.process_time()
                 self.assertEqual({e["basis"] for e in graded(g, call)["edges"]}, {"gateway"})
-                best = min(best, time.perf_counter() - start)
+                best = min(best, time.process_time() - start)
             return best
         self.assertLess(took(2000), 8 * took(500))   # 4x the context: about 4x the time; 16x before
 
+    @factories.serial
     def test_influence_over_a_long_run_is_well_under_a_second(self):
         """Each call's chain walked everything its sources' content reached: 151 s for INFLUENCE over 800 calls whose
         every model call sees everything before it (the review's p10)."""
@@ -740,6 +742,7 @@ class Workspace(unittest.TestCase):
         _rewrite(imported, [{k: v for k, v in e.items() if k != "id"} for e in (first, *rest)])
         self.assertIn(log, store.paths())   # two hand-written files whose events have no id: not a merge
 
+    @factories.serial
     def test_a_long_last_event_is_read_in_linear_time(self):
         """The cover read a log's last line back 64 KiB at a time, prepending: 30 s for a 32 MiB run.end (p4)."""
         def took(mib):
