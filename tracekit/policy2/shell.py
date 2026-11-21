@@ -237,6 +237,9 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
            "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
+# a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
+# (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
+RUNNER_LEADS = {"hatch": ("env",)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -2377,6 +2380,13 @@ def runner_at(name, args):
     at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
         a = args[i]
+        lead = RUNNER_LEADS.get(name)
+        if lead and a in lead and i + 1 < len(args) and args[i + 1] in RUNNERS[name][0]:
+            at.append(i + 1)   # the subcommand's own word last: `hatch env run a-command` is `run a-command`
+            if not valued:
+                return at
+            i, valued = i + 2, False
+            continue
         if a in RUNNERS[name][0]:
             at.append(i)
             if not valued:
