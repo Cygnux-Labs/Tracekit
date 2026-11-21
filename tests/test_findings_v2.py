@@ -15,6 +15,8 @@ import unittest
 import uuid
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval.e20_alignment import Signer, Transcript, replay  # noqa: E402
@@ -881,6 +883,7 @@ class Bounded(unittest.TestCase):
         return recs, lambda want: ((r["event"]["run_seq"], content[r["event"]["run_seq"]], True) for r in want
                                    if r["event"]["run_seq"] in content)
 
+    @pytest.mark.serial
     def test_a_huge_run_is_bounded_in_time_and_memory(self):
         # timed untraced: tracemalloc slows every allocation about sixfold (5,000 calls: 4 s, 23 s traced), so the
         # timed traced run measured the tracing. Memory grows linearly (about 9 KiB a call), so the traced run is a
@@ -927,6 +930,7 @@ class Bounded(unittest.TestCase):
         self.assertEqual(checks["TK-X202"]["not_checkable"], [{"reason": "size", "n": 4}])
         self.assertIn("INCOMPLETE", out["summary"])
 
+    @pytest.mark.serial
     def test_a_constraint_or_a_denial_in_each_message_and_one_long_message_stay_linear(self):
         for label, run in (("a constraint and a denial in each message", self.synthetic(
                                4000, lambda i: f"I won't touch g{i}.py. Editing f{i}.py now.")),
@@ -937,6 +941,7 @@ class Bounded(unittest.TestCase):
             self.assertLess(time.perf_counter() - t0, 5 * SLOWER, label)
             self.assertLessEqual(max(len(c["seqs"]) for c in out["shown"]["calls"].values()), findings_v2.MAX_GROUP)
 
+    @pytest.mark.serial
     def test_hostile_text_is_read_in_linear_time(self):
         for text in ("a/" * 300_000, "." * 600_000, "don't " * 100_000 + "billing.py", "‮" * 100_000,
                      "x" * 1_000_000, "<think>" * 50_000):

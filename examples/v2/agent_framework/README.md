@@ -9,7 +9,7 @@ the outcome after ([the integration page](../../../docs/integrations/microsoft-a
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install tracekit-ai "agent-framework-core>=1.22,<1.23"   # from a checkout: pip install .
+pip install tracekit-ai "agent-framework-core>=1.22,<2"   # from a checkout: pip install .
 python examples/v2/agent_framework/agent.py --scripted
 ```
 

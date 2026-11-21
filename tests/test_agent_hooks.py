@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2402,6 +2404,7 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(mapped, name)
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
+    @pytest.mark.serial
     def test_a_long_run_of_spaces_takes_linear_time(self):
         # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
         line = "a" + " " * 40_000 + "b"
@@ -3044,6 +3047,33 @@ class HarnessList(unittest.TestCase):
                 doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((ok, detail)),
                                             {"cline": found["cline"]}, False, d)
                 self.assertIn(ok, [r[0] for r in rows if r[1].startswith("PowerShell's execution policy")])
+
+
+class QwenHome(unittest.TestCase):
+    """#973: Qwen Code reads a user's settings from $QWEN_HOME in place of ~/.qwen (qwen-code 0.28.0
+    getGlobalQwenDirLite): init wrote ~/.qwen/settings.json, which that Qwen Code never reads, so no hook ran."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.qwen = os.path.join(self.d, "x")
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
+
+    def test_init_and_uninstall_write_qwen_home(self):
+        from tracekit import cli, install
+        path = os.path.join(self.qwen, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(install, "init_dev",
+                                                                         return_value={"socket": "s"}):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIn("PreToolUse", json.load(f)["hooks"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".qwen")))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIsNone(agent_hooks._version(f.read()))
+        # a project's, and another user's, are where they were
+        self.assertEqual(agent_hooks.config_path("qwen", "/repo"), os.path.join("/repo", ".qwen", "settings.json"))
+        self.assertEqual(agent_hooks.config_path("qwen", home="/h"), os.path.join("/h", ".qwen", "settings.json"))
 
 
 class Installer(unittest.TestCase):
@@ -3940,6 +3970,7 @@ class Installer(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(agent_hooks.kiro_version())
 
+    @pytest.mark.serial
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)

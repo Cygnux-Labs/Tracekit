@@ -21,6 +21,8 @@ import urllib.parse
 import warnings
 from unittest import mock
 
+import pytest
+
 import adapter_contract as ac
 from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
 from tracekit.format.canon import event_hash
@@ -2763,6 +2765,7 @@ class SlowSignerStart(HarnessCase):
     UPLOAD = {"preToolUse": {"toolName": "run_commands",   # held by the dev pack (TK-A032)
                              "parameters": {"commands": json.dumps(["aws s3 cp build/ s3://releases/ --recursive"])}}}
 
+    @pytest.mark.serial
     def test_a_cline_hook_that_waits_for_its_signer_and_an_approval_answers_before_cline_runs_the_call(self):
         """One deadline for the whole hook: a start that takes 15 s leaves the held call's approval wait (20 s here)
         nothing, and the hook blocks the call before Cline's 30 s."""
@@ -2826,6 +2829,7 @@ class SlowSignerStart(HarnessCase):
         code, stdout, err = out[0]
         self.assertEqual((code, json.loads(stdout).get("cancel")), (0, None), err)
 
+    @pytest.mark.serial
     def test_a_cline_hook_blocks_before_cline_runs_the_call(self):
         """Cline runs a call whose hook is still running at 30 s: its hook gives up on a signer still starting within
         agent_hooks.CLINE_WAIT_S and blocks the call."""

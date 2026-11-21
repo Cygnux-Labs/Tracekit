@@ -78,6 +78,9 @@ There is no typecheck step.
 - Every change that touches the signer, ledger, verifier or policy gets a regression test that fails without it.
 - Every v2 bundle a test exports in the test process must verify (`tests/conftest.py`); a test that builds a bad
   bundle on purpose carries `@pytest.mark.unverified_bundles`. Bundles exported by a child process aren't checked.
+- CI runs the suite in parallel (`-n auto -m "not serial"`, pytest-xdist), then the tests marked `serial` on their
+  own. A test that times work against a wall-clock or CPU-time budget, asserts the fallback regex engine's 1 s isn't
+  spent, or waits on a tight deadline gets `@pytest.mark.serial`; one that reads process-wide state resets it itself.
 
 ## Local traps
 

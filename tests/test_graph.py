@@ -25,6 +25,8 @@ import unittest
 import uuid
 from unittest import mock
 
+import pytest
+
 from factories import ROOT, SLOWER, patch_env, rewrite_bundle
 from tracekit import cli, graph, install
 from tracekit.bundle_v2 import export
@@ -1518,6 +1520,7 @@ class Records(unittest.TestCase):
                                        {"id": "c", "source_file": "app/src/config.py"}]}, 0o644)
         self.assertEqual(graph._graphify(g, p)["linked"], 0)
 
+    @pytest.mark.serial
     def test_graphify_join_indexes_five_thousand_file_nodes(self):
         g = Graph(None, "grade")
         for i in range(5000):
@@ -1531,6 +1534,7 @@ class Records(unittest.TestCase):
         self.assertEqual(graph._graphify(g, p)["linked"], 5000)
         self.assertLess(time.monotonic() - start, 1.0)
 
+    @pytest.mark.serial
     def test_graphify_join_is_linear_in_path_parts(self):
         n = 40000   # tried suffix by suffix, joined again for each, this took about 6.5 s
         g = Graph(None, "grade")

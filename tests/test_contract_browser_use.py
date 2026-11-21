@@ -21,6 +21,8 @@ import unittest
 import weakref
 from unittest import mock
 
+import pytest
+
 import adapter_contract as ac
 from factories import VersionCheckCases
 from tracekit.format.canon import event_hash
@@ -513,6 +515,7 @@ class Masking(unittest.TestCase):
             with self.subTest(form=form):
                 self.assertEqual(_mask(f"[{form}]", secrets), "[<secret>pw</secret>]")
 
+    @pytest.mark.serial
     def test_a_text_that_almost_matches_is_rejected_in_time(self):
         """No two forms of a character match the same text: else a near miss retries every combination of them."""
         for secret, text in (("&" * 30 + "x", "&amp;" * 40), ("'" * 30 + "x", "&#x27;" * 40),

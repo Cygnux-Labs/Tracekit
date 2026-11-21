@@ -20,6 +20,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from tracekit import agent_hooks, cli, install, lessons, privacy, tips
@@ -354,6 +356,7 @@ class HookV2(unittest.TestCase):
                                 if e["type"] == "policy.decision" and e["data"]["decision_id"] == d["decision_id"])
                 self.assertTrue(decision["provenance"])
 
+    @pytest.mark.serial
     def test_prompt_parts_is_linear_and_bounds_observations(self):
         prompt = "<bash-stderr></bash-stderr>" * 32000 + "x" * 1_000_000
         started = time.monotonic()

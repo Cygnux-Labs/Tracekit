@@ -12,11 +12,12 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install tracekit-ai "langchain>=1.4,<1.5" "langgraph>=1.2,<1.3"
+pip install tracekit-ai "langchain>=1.4,<2" "langgraph>=1.2,<1.3"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 
-Python 3.10 or newer (LangChain v1's own requirement).
+Tested with LangChain 1.4 and 1.5 and LangGraph 1.2. A later LangChain 1.x installs; a LangGraph outside 1.2 warns
+once. Python 3.10 or newer (LangChain v1's own requirement).
 
 ## Setup
 
