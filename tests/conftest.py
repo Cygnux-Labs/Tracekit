@@ -1,4 +1,5 @@
 import collections
+import gc
 import glob
 import io
 import json
@@ -49,6 +50,11 @@ PROXIES = urllib.request.getproxies()
 # (the stdlib's 0.5 s, the signer's 0.2 s). Thousands stop in a run; polled every 0.02 s they stop at once.
 _serve_forever = socketserver.BaseServer.serve_forever
 socketserver.BaseServer.serve_forever = lambda self, poll_interval=0.5: _serve_forever(self, min(poll_interval, 0.02))
+
+# Python 3.13 raised the youngest generation's collection threshold from 700 to 2000. At 700, the slowest test files
+# run about four times as many collections, and the full ones walk the whole heap. 3.9 and 3.12 take 3.13's (#722).
+if sys.version_info < (3, 13):
+    gc.set_threshold(2000, 10, 10)
 
 
 def pytest_addoption(parser):

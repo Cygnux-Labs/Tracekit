@@ -188,6 +188,7 @@ class LangSmithUpstream(unittest.TestCase):
         self.assertEqual(code, verify_v2.EXIT_OK)
         with zipfile.ZipFile(bundle) as z:
             self.assertFalse([n for n in z.namelist() if LANGSMITH_KEY.encode() in z.read(n)])
+        self.close()   # Windows won't open a file the running signer holds open
         for root, _, files in os.walk(self.dir):   # the signer's whole store
             for name in files:
                 if name != "langsmith.key":
