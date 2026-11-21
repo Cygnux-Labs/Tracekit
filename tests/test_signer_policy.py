@@ -1404,6 +1404,8 @@ class CodingPack(unittest.TestCase):
             "rm -f out.pt",
             "git rm models/prod.safetensors",
             "mv models/prod.onnx /tmp/",
+            # the site-packages .pth exemption is per file: a weights .pth deleted beside one is still held
+            "rm models/prod.pth .venv/lib/python3.12/site-packages/x.pth",
         ]
         # TK-A060: publishing to a model hub
         held_hub = [
@@ -1441,6 +1443,8 @@ class CodingPack(unittest.TestCase):
             "rm cache/state.msgpack",
             "cp new.bin models/pytorch_model.bin",
             "ls models/prod.onnx",
+            # a .pth deleted from site-packages is a Python path file (TK-A068's), not weights, as a write there is
+            "rm .venv/lib/python3.12/site-packages/distutils-precedence.pth",
         ]
         for pack, engine, e in self.every_pack():
             for tool, args in held_fs:
