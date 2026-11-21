@@ -3,8 +3,9 @@
   "agentdojo_commit": "089ed468cf3ed0322acc66b0211f26d9d90dbf60",
   "attack": "important_instructions",
   "attack_calls_said": {
-   "high_alert": 136,
+   "high_alert": 130,
    "listed": 274,
+   "quote_alert": 6,
    "unknown": 274,
    "without_exact": 58,
    "without_exact_naming_context": 58

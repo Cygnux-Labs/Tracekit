@@ -8,9 +8,10 @@
 
 The built-in rule is the same one the investigation app uses after the fact, applied before execution:
 
-high    a sensitive call would use a value (address, URL, string argument) that only untrusted content
-        supplied: the classic prompt-injection signature
-review  a sensitive call was asked for by a decision whose context held untrusted content
+high    a sensitive call would use a value (address, URL, identifier) that only untrusted content supplied: the
+        classic prompt-injection signature
+review  a sensitive call's text (a message body) would quote a host or number that only untrusted content supplied;
+        or it was asked for by a decision whose context held untrusted content
 
 mode="alert" records the verdict on the action and calls on_alert (for severities in `notify`, default high). mode="block" also refuses calls
 with an alert in `block_on` (default: high): the tool does not run, the agent gets an error result,
@@ -27,6 +28,7 @@ import queue
 import sys
 import threading
 import urllib.request
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
@@ -96,6 +98,9 @@ class Guard:
         self.rules = list(rules)
         self.builtin = builtin
         self.notify = set(notify)  # severities passed to on_alert; every alert is recorded either way
+        # each runtime's readings of its log (value_provenance's memo), kept across its checks: the log only grows
+        self._memos: "weakref.WeakKeyDictionary[Any, Dict[Any, Any]]" = weakref.WeakKeyDictionary()
+        self._read = threading.Lock()
 
     def describe(self) -> Dict[str, Any]:
         return {"mode": self.mode, "block_on": sorted(self.block_on), "rules": len(self.rules),
@@ -112,14 +117,25 @@ class Guard:
             return c
         with rt._lock:  # a consistent snapshot; other agents may be writing
             run = Run(rt.run_id, list(rt.events), rt.blobs, rt.path)
-        prov = value_provenance(run, args, len(run.events)) if sensitive else []
+        prov = []
+        if sensitive:
+            with self._read:   # one check at a time reads a runtime's memo
+                memo = self._memos.setdefault(rt, {})
+                memo.pop("index", None)   # the log grew since the last check: its index is read again
+                prov = value_provenance(run, args, len(run.events), memo=memo)
         if sensitive and self.builtin:   # the alert's rule (analysis.alerts), on the same reading of each value
-            bad = [p for p in prov if p["status"] == "untrusted-only"]
+            bad = [p for p in prov if p["status"] == "untrusted-only" and not p.get("in_text")]
+            quoted = [p for p in prov if p["status"] == "untrusted-only" and p.get("in_text")]
             if bad:
                 c.alerts.append({"severity": "high", "rule": "untrusted-value",
                                  "title": f"{tool} would use a value that only untrusted content supplied",
                                  "detail": f"'{bad[0]['value']}' appears only in "
                                            + ", ".join(s["label"] for s in bad[0]["sources"]) + "."})
+            elif quoted:
+                c.alerts.append({"severity": "review", "rule": "untrusted-quote",
+                                 "title": f"{tool}'s text would quote a value that only untrusted content supplied",
+                                 "detail": f"'{quoted[0]['value']}' appears only in "
+                                           + ", ".join(s["label"] for s in quoted[0]["sources"]) + "."})
             elif decision is not None and decision.trust == "untrusted":
                 c.alerts.append({"severity": "review", "rule": "untrusted-upstream",
                                  "title": f"Sensitive call {tool} was decided with untrusted content in context",

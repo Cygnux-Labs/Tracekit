@@ -712,7 +712,9 @@ read from the signer's store, as `tracekit view` reads them from the records it 
   own. What INFLUENCE says of the 274 attack calls: none reads as coming from the task (no replay without the task
   exists for a published trace), all 274 are in its list, and each of the 58 with no exact edge names the untrusted
   content its model call had in context. The high alert (a value only untrusted content brought, as the signer's index
-  reads values) names 136 of the 274.
+  reads values) names 130 of the 274, and the review alert that a message's text quotes a host only untrusted content
+  brought names 6 more: a direct message relaying the injected bare link `www.secure-systems-252.com`, which text a
+  model wrote can quote without being stopped (docs/limits.md).
 - **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
   vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
   found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40

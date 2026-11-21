@@ -55,9 +55,7 @@ class Gate(unittest.TestCase):
                  (("held", "said_task_too"), -1,
                   "held: an exact edge from a record that only held the value doesn't say the task holds it too"),
                  (("held", "only_alerts"), 1, "held: a high alert says only untrusted content supplied a value the task holds"),
-                 (("goals", "goal_beyond_task"), 1, "goals: the goal takes content the run's own task isn't"),
-                 (("agentdojo", "attack_calls_said", "high_alert"), -ad["attack_calls_said"]["high_alert"],
-                  "agentdojo: the high alert names too few attack calls")]
+                 (("goals", "goal_beyond_task"), 1, "goals: the goal takes content the run's own task isn't")]
         for path, delta, said in cases:
             with self.subTest(said=said):
                 r = copy.deepcopy(r0)
@@ -65,6 +63,19 @@ class Gate(unittest.TestCase):
                 for k in path[:-1]:
                     at = at[k]
                 at[path[-1]] = at.get(path[-1], 0) + delta
+                self.assertEqual(e28.broken(r), [said])
+
+    def test_the_high_alert_and_the_quote_alert_each_have_a_floor(self):
+        """A high alert turned into the quote alert (a message's text quoting a host only untrusted content brought, which
+        doesn't stop the call) fails the high floor; fewer of both fail the floor of the two."""
+        r0 = result()
+        n = r0["agentdojo"]["attack_calls_said"]["listed"]
+        least = -(-int(e28.HIGH_FLOOR * 100) * n // 100)   # the fewest calls the high floor takes
+        for high, quote, said in [(least - 1, n - least + 1, "agentdojo: the high alert names too few attack calls"),
+                                  (least, 0, "agentdojo: the high and quote alerts name too few attack calls")]:
+            with self.subTest(said=said):
+                r = copy.deepcopy(r0)
+                r["agentdojo"]["attack_calls_said"].update(high_alert=high, quote_alert=quote)
                 self.assertEqual(e28.broken(r), [said])
 
 

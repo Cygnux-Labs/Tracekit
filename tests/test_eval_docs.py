@@ -149,6 +149,7 @@ def claims():
         f"in all {e28['held']['said_task_too']} the words say the task holds the value too",
         f"only untrusted content supplied a value fires on {e28['held']['only_alerts']} of them",
         f"reads values) names {ad['attack_calls_said']['high_alert']} of the {ad['attack_calls_said']['listed']}",
+        f"brought names {ad['attack_calls_said']['quote_alert']} more",
         f"{e28['goals']['runs']} built runs whose log calls other content the task",
         f"In {e28['goals']['goal_beyond_task']} of the {e28['goals']['runs']} is the goal anything but the run's own task",
     ]
@@ -157,6 +158,7 @@ def claims():
         f"{pct(ag['seen']['fp'] / (ag['seen']['tp'] + ag['seen']['fp']))} of the labelled seen edges",
         f"{un['clean_runs_named']} of {ad['runs']['clean']} had such a call",
         f"in all {e28['held']['exact_from_record']} of E28's built cases",
+        f"{ad['attack_calls_said']['quote_alert']} of E28's {ad['attack_calls_said']['listed']} AgentDojo attack calls",
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
         f"{se17['fp']} of E17's {se17['benign']} benign calls, {pct(se17['fp'] / se17['benign'], 1)}, and "
         f"{strict['sessions']['totals']['fp']} of E21's {strict['sessions']['totals']['benign']} developer-session "

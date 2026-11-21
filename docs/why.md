@@ -263,14 +263,22 @@ Why's search reads each argument value as the signer's index reads values. An ad
 by content that holds an equal one (a look-alike `bob@corp.co` is not `bob@corp.com`, nor `…/3abcdef` the task's
 `…/3AbCdEf`, nor an account `44851234` part of the task's `4485-1234-5566`); a free string by content whose text holds
 it as a whole token, read as the index reads text (an IBAN the task writes in groups is the task's), or as a whole
-value (the string a JSON result holds). Untrusted content also brought a value when it holds a part of it that no
-trusted content holds (an IBAN's digits written in groups, a URL's host). There the search reads wider than the
-signer's index, so it stops more, never fewer: digit runs across any short run of other characters (slashes, dashes,
-commas, spaces) and in other scripts' digits, addresses spelled out ("audit at outside dot example"), and a one-word
-value whose two halves two different untrusted texts hold as words, when no trusted content (the task included) holds
-both. A trusted call's result holds nothing an earlier call's arguments named: all of it, or its longest digit run (a
-lookup's error naming it, a validator returning it whole) is an echo of the agent's own value, not its source; a
-domain or another part is not (a directory looked up by the domain the mail names still gives the address).
+value (the string a JSON result holds). Untrusted content also brought an identifier (anything but text a model wrote:
+white space and two or more words) when it holds a part of it that no trusted content holds (an IBAN's digits written
+in groups, a URL's host). There the search reads wider than the signer's index, so it stops more, never fewer: a free
+string joined to another word by `_` (`External_…` holds `External`), digit runs across any characters but letters
+(slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words ("six zero one six"),
+addresses spelled out ("audit at outside dot example"), and a one-word value in parts that different untrusted texts
+hold as words: two parts, or more that each hold a digit (an account in three mails, not a name made of three words),
+when some part is one no trusted content (the task included) holds. Text a model wrote (a message body) is read for
+its addresses and URLs, and each host and digit run in it is a value of its own: a body that quotes one only untrusted
+content gave gets a review alert naming it, not the high one. A trusted call's result holds nothing an earlier call's
+arguments named (all of it, or its longest digit run) unless trusted content gave each argument that named it: a
+lookup's error naming the mail's IBAN, or a validator returning it whole, is an echo of the agent's own value, not its
+source; a lookup by an account the task gives is a source, and a domain or another part names nothing (a directory
+looked up by the domain the mail names still gives the address). A trusted call's result is untrusted content when
+only untrusted content brought every value of its arguments: a decoder, a reverser or a calculator given what the mail
+wrote, and a lookup by a key only the mail gave.
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
@@ -305,7 +313,7 @@ AgentDojo's published runs.
 | Severity | When |
 |---|---|
 | **high** | a sensitive tool used an argument value only untrusted content brought, as why's search reads values (above), or the log fails verification |
-| **review** | a call serves no step of the task (a replay without the task kept it); an argument traced to untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
+| **review** | a call serves no step of the task (a replay without the task kept it); a sensitive call's text quotes a host or number only untrusted content supplied; an argument traced to untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
 | **info** | a tool call was stubbed during replay |
 
 Sensitive tools are the ones a run declares. If it declares none, tool names such as send, pay, delete or export are
