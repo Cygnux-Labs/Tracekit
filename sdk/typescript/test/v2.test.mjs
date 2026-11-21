@@ -385,6 +385,7 @@ test("a transfer sends the arguments Python's RunHandle.transfer sends", { skip:
     ["qwen2.5-7b@abc", "llama-3.2-1b@def", "00ff10", "kv-cache", "c2c-fuser@1", { weights_hash: "sha256:00", layers: [1, 2] }],
     ["a@1", "b@2", "", "text", null, null],
     ["a@1", "b@2", Buffer.from("é😀 text").toString("hex"), "embedding", null, { note: "x" }],
+    ["a@1", "b@2", "", "text", null, { "😀": 1, "！": 2 }],   // above U+FFFF, and in U+E000..U+FFFF: listed by code point
   ];
   const theirs = JSON.parse(py(`
 import json, sys
@@ -441,7 +442,8 @@ test("fake: a transfer is not ok with the signer unreachable, whatever the run's
   const run = await client.registerRun("a");
   await stop();
   const out = await run.transfer("a@1", "b@2", "payload", "text");
-  assert.deepEqual([out.unavailable, out.ok], [true, false]);   // a decide would have said allow: the fail mode is open
+  assert.deepEqual([out.decision, out.unavailable, out.ok], ["allow", true, false]);   // the fail mode is open
+  assert.match(out.reason, /^signer unavailable: /);   // turned down on the decision, not by a consume that failed
 });
 
 test("fake: a transfer's measured keys may not replace its own fields", async (t) => {
@@ -460,8 +462,10 @@ test("fake: keep sends the payload as hex in the result, up to half a frame; a l
   process.on("warning", seen);
   t.after(() => process.off("warning", seen));
   assert.equal((await run.transfer("a@1", "b@2", Buffer.from("abc"), "text", { keep: true })).ok, true);
-  assert.equal((await run.transfer("a@1", "b@2", Buffer.alloc(300_000), "text", { keep: true })).ok, true);   // 600 kB of hex
-  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result), [{ payload: "616263" }, undefined]);
+  for (const n of [262_137, 262_138])   // {"payload":"<2n hex>"} in exactly half a frame, as Python's sendable; one byte more
+    assert.equal((await run.transfer("a@1", "b@2", Buffer.alloc(n), "text", { keep: true })).ok, true);
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result),
+    [{ payload: "616263" }, { payload: "00".repeat(262_137) }, undefined]);
   await sleep(10);
   assert.equal(warnings.filter((m) => /^tracekit: transfer tx-[0-9a-f]{32} is recorded but not kept/.test(m)).length, 1, warnings);
 });

@@ -828,7 +828,8 @@ export class RunHandle {
     if (collision.length) throw new Error(`measured keys replace reserved transfer fields: ${collision.sort().join(", ")}`);
     const head: Frame = { sender, receiver, modality, ...(projector ? { projector } : {}) };
     const args = { ...head, claimed: Object.keys(head).sort(), size: data.length, digest: `sha256:${createHash("sha256").update(data).digest("hex")}`,
-      ...more, measured: ["size", "digest", ...Object.keys(more)].sort() };
+      // in Python's order, by code point (UTF-8 bytes): sort() alone compares UTF-16 units
+      ...more, measured: ["size", "digest", ...Object.keys(more)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))) };
     const toolCallId = `tx-${randomBytes(16).toString("hex")}`;
     const d = await this.decide(toolCallId, TRANSFER, args);
     if (d.unavailable || d.decision === "deny") return { ...d, ok: false };
