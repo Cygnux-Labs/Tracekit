@@ -8,7 +8,7 @@ Interpreter, on the Claude Code pipeline.
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
     tracekit init --dev --agent kilo         # ~/.config/kilo/plugin/tracekit.js (project: .kilo/plugin/tracekit.js)
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
-    tracekit init --dev --agent qwen         # ~/.qwen/settings.json
+    tracekit init --dev --agent qwen         # ~/.qwen/settings.json ($QWEN_HOME/settings.json)
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
@@ -787,6 +787,18 @@ def _gptme_tool(name, ti):
     return name, kwargs if kwargs is not None else ti
 
 
+def _jcode_dispatch_name(server, called):
+    """jcode's `dispatch_name` (crates/jcode-base/src/mcp/tool.rs): each character outside [A-Za-z0-9_] becomes `_`; a
+    name over 64 characters is cut to leave room for `_` and the 8 hex digits of the FNV-1a hash of server, NUL, tool."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", f"mcp__{server}__{called}")
+    if len(name) > 64:
+        h = 0x811c9dc5
+        for b in (server + "\0" + called).encode():
+            h = (h ^ b) * 0x01000193 & 0xFFFFFFFF
+        name = f"{name[:55]}_{h:08x}"
+    return name
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
@@ -865,11 +877,9 @@ def tool(harness, name, ti):
             return name, ti
         if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
             # the tool it calls, on its own arguments
-            # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
-            # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
             server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
             if isinstance(server, str) and server and isinstance(called, str) and called:
-                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
+                return _jcode_dispatch_name(server, called), dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
             return name, ti
         if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
             # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would
@@ -2095,6 +2105,10 @@ def config_path(harness, project=None, home=None):
     # Open Interpreter, a Codex fork, reads $INTERPRETER_HOME in place of ~/.openinterpreter, and never CODEX_HOME
     oi = os.path.realpath(os.environ["INTERPRETER_HOME"]) \
         if not (project or home) and os.environ.get("INTERPRETER_HOME") else os.path.join(base, ".openinterpreter")
+    # Qwen Code reads a user's settings from $QWEN_HOME, ~ expanded, in place of ~/.qwen (qwen-code 0.28.0
+    # getGlobalQwenDirLite)
+    qwen = os.path.abspath(os.path.expanduser(os.environ["QWEN_HOME"])) \
+        if not (project or home) and os.environ.get("QWEN_HOME") else os.path.join(base, ".qwen")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
     # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
@@ -2106,7 +2120,7 @@ def config_path(harness, project=None, home=None):
             "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
-            "qwen": os.path.join(base, ".qwen", "settings.json"),
+            "qwen": os.path.join(qwen, "settings.json"),
             "droid": os.path.join(base, ".factory", "hooks.json"),
             "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
                            os.path.join(base, ".gemini", "config", "hooks.json"),

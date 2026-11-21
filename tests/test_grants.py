@@ -16,6 +16,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 import test_hook_v2
 import test_signer_service as ts
 from factories import rewrite_bundle, unverified_bundles
@@ -1051,6 +1053,7 @@ class TestPolicy(unittest.TestCase):
                 self.assertIn(why, " ".join(policy_compile._lint(pol, "p")))
         self.assertEqual(policy_compile.APPROVAL["grant"], tuple(grants.INTENTS))
 
+    @pytest.mark.serial
     def test_the_agent_own_grant_commands(self):
         """#642 reviews 4 and 6: every `tracekit grant` the agent runs is denied, whatever its options and action (an
         argparse prefix of --signer, a repeated or spaced value, an action from stdin or computed, list and revoke

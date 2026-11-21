@@ -24,6 +24,7 @@ real library on every push to main and every pull request; each experimental pag
 | LlamaIndex | Experimental | [LlamaIndex](integrations/llamaindex.md) |
 | Haystack | Experimental | [Haystack](integrations/haystack.md) |
 | Microsoft Agent Framework | Experimental | [Microsoft Agent Framework](integrations/microsoft-agent-framework.md) |
+| Inspect AI | Experimental | [Inspect AI](integrations/inspect-ai.md) |
 | Vercel AI SDK (TypeScript) | Experimental | [Vercel AI SDK](integrations/vercel-ai.md), [TypeScript SDK](../sdk/typescript/README.md) |
 
 Another agent: record its calls with the SDK's run handle ([custom agent](quickstarts/custom.md)).
@@ -66,7 +67,7 @@ pack. What each one records: [sandboxes, gateways and sensors](concepts/integrat
   [E2B](integrations/e2b.md), [microsandbox](integrations/microsandbox.md),
   [Kubernetes agent-sandbox](integrations/agent-sandbox.md).
 - Agent and MCP gateways: [A2A gateway](a2a.md), [agentgateway](integrations/agentgateway.md), [LiteLLM](integrations/litellm.md),
-  [Docker MCP Gateway](integrations/docker-mcp-gateway.md), [Wassette](integrations/wassette.md).
+  [Docker MCP Gateway](integrations/docker-mcp-gateway.md), [LangSmith Tool Gateway](integrations/langsmith-tool-gateway.md), [Wassette](integrations/wassette.md).
 - Kernel sensors: [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md).
 
 Tracekit's own [A2A gateway](a2a.md), [MCP gateway](mcp-gateway.md), [LLM gateway](gateway.md), [tool executor](executor.md) and
