@@ -6364,6 +6364,22 @@ class StrictPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow")
 
+    def test_an_install_after_options_is_held_as_one_before_them(self):
+        """#957: TK-F004 read `npm install` but not an install after an option (npm --prefix x install, npm -g
+        install), so strict allowed it and the other packs did not flag it."""
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            want = "ask" if pack == "strict.yaml" else "flag"
+            for command in ("npm --prefix x install left-pad", "npm -g install left-pad", "pnpm --dir x add left-pad",
+                            "yarn --cwd x add left-pad", "bun --cwd x install", "npm -g i left-pad",
+                            "npm --loglevel=silent ci", "npm install --prefix x left-pad"):
+                with self.subTest(pack=pack, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-F004" in d["rule_ids"]), (want, True), d)
+            for command in ("npm --prefix x init", "npm --prefix x run build", "npm -g ls", "pnpm --dir x test"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertEqual(e.decide("Bash", {"command": command})["verdict"], "allow")
+
     def test_benign_false_positives_on_e17_are_at_most_six_percent(self):
         # the pack holds every install, push, docker run and network command by design: E17's benign `npm ci`, `npm
         # install`, `helm upgrade` and `pulumi up` among them took it from 40 holds (4.7%) to 46 (5.5%) in 1.5.3
