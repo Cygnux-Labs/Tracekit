@@ -8,6 +8,8 @@ import sys
 import tempfile
 import unittest
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval.e20_alignment import SENSOR, Signer, effects_replay  # noqa: E402
@@ -304,6 +306,7 @@ if __name__ == "__main__":
 
 
 class Bounded(unittest.TestCase):
+    @pytest.mark.serial
     def test_a_call_with_no_result_does_not_make_each_effect_scan_every_call(self):
         import datetime
         import time

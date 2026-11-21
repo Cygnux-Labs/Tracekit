@@ -83,6 +83,7 @@ experimental.
 | The import of OpenShell's OCSF events into each sandbox's run (tested with log batches built as OpenShell's exporter writes them, not a live OpenShell) | [OpenShell](integrations/openshell.md#openshells-ocsf-events) |
 | The LiteLLM guardrail for LiteLLM's MCP gateway (tested against LiteLLM's guardrail interface as its source defines it, not a running proxy) | [LiteLLM](integrations/litellm.md) |
 | Docker's MCP Gateway as an upstream of the MCP gateway (tested against a stand-in for `docker mcp gateway run`, not Docker's gateway itself) | [Docker MCP Gateway](integrations/docker-mcp-gateway.md) |
+| LangSmith's Tool Gateway as an upstream of the MCP gateway (tested against a stand-in kit endpoint, not LangSmith's gateway) | [LangSmith Tool Gateway](integrations/langsmith-tool-gateway.md) |
 | The TypeScript SDK client and its Vercel AI SDK integration (`@cygnuxlabs/tracekit` on npm) | [TypeScript SDK](../sdk/typescript/README.md), [Vercel AI SDK](integrations/vercel-ai.md) |
 | `contrib/` packages | [contrib](../contrib) |
 | The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters. Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |

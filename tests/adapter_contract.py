@@ -68,6 +68,13 @@ def fail(why: str) -> str:
 TOOLS = [echo, pay, wipe, fail]
 
 
+def terminal(commands: str) -> str:
+    """Run commands: class shell in the default policy, unlike the tools above. Not in TOOLS, which every adapter's
+    agent is built from; a test that needs it adds it."""
+    RAN.append("terminal")
+    return "ran"
+
+
 def _rule(tool, args):
     return {"pay": ("ask", ["R-PAY"]), "wipe": ("deny", ["R-WIPE"])}.get(re.split("[/:]", tool)[-1], ("allow", []))
 
