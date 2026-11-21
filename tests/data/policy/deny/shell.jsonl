@@ -472,3 +472,4 @@
 {"tool": "Bash", "args": {"command": "mkntfs /dev/sdb1"}, "expect": "ask", "note": "creating an NTFS filesystem on a block device (#998)"}
 {"tool": "Bash", "args": {"command": "cp new.onnx models/prod.onnx"}, "expect": "ask", "note": "overwrite ONNX model weights in a models folder (#999)"}
 {"tool": "Bash", "args": {"command": "rm models/prod.safetensors"}, "expect": "ask", "note": "delete model weights (#999)"}
+{"tool": "Bash", "args": {"command": "printf '%s' FLUSHALL | redis-cli -h cache.internal"}, "expect": "ask", "note": "flush printed through a plain %s format into redis-cli (#978)"}
