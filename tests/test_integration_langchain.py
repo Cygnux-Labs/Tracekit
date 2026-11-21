@@ -11,11 +11,13 @@ import threading
 import time
 import types
 import unittest
+import warnings
 from unittest import mock
 
 import adapter_contract as ac
 import test_said as ts
 from tracekit.sdk.client import Client, SignerUnavailable
+from tracekit.signer.rpc_schema import RPCError
 from tracekit.testing import FakeSigner
 
 try:
@@ -163,8 +165,8 @@ class Middleware(unittest.TestCase):
     def test_a_blocking_signer_call_does_not_stall_the_event_loop(self):   # issue #680
         """The async gate's signer calls run in a worker thread: while `decide` sleeps 0.3s, other tasks on the
         loop (here a 10ms tick) keep running - no inter-tick gap approaches the sleep."""
-        decide = self.signer.decide
-        self.signer.decide = lambda req: time.sleep(0.3) or decide(req)
+        decide, deciding = self.signer.decide, threading.Event()
+        self.signer.decide = lambda req: deciding.set() or time.sleep(0.3) or decide(req)
 
         async def one_run_then_tick():
             a_task = asyncio.create_task(self.agent().ainvoke(prompt("echo", text="hi")))
@@ -172,7 +174,8 @@ class Middleware(unittest.TestCase):
             while not a_task.done():
                 await asyncio.sleep(0.01)
                 now = time.monotonic()
-                gaps.append(now - last)
+                if deciding.is_set():   # not LangChain's first-call setup, which is slow in 1.5 and before the call
+                    gaps.append(now - last)
                 last = now
             out = await a_task
             self.assertEqual(tool_message(out).content, "hi")
@@ -805,6 +808,139 @@ class ToolPauses(Driven):
                     out, pauses = self.drive(runner(tool_graph(node), mode), message(calls), approve={"pay-1"})
                     self.assertEqual((pauses, PAID, read(out)["pay-1"]), (
                         ["tracekit", "pay 1?"], [], "Tool call blocked by policy: the signer has no call_claim"))
+
+    def test_a_signer_without_call_state_warns_once_naming_the_grant(self):
+        """#958: an identity whose authorize list was written before call_state existed decides every call of a resume
+        again, and no line said which grant was missing. One warning per gate names it, however many calls read it."""
+        class Older:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_state":
+                    raise AttributeError(name)
+                return getattr(self.signer, name)
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                ac.RAN.clear()
+                self.signer = FakeSigner(ac._rule)
+                self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                node = tracekit_tool_node(TOOLS, Older(self.signer), self.run)
+                go = runner(tool_graph(node), mode)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    for call_id in ("p1", "p2"):   # two resumes, each reading what the signer recorded
+                        self.drive(go, message([{"name": "pay", "args": {"to": "a", "cents": 1},
+                                                 "id": call_id}]), approve={call_id})
+                grants = [str(w.message) for w in caught if "call_state" in str(w.message)]
+                self.assertEqual(len(grants), 1, grants)
+                self.assertIn("the signer has no call_state", grants[0])
+                self.assertIn("grant this identity call_state in signer.yaml authorize", grants[0])
+
+    def test_a_signer_that_refuses_call_state_warns_once_naming_the_grant(self):
+        """#958: an explicit authorize list grants only what it names, so the signer answers `forbidden`; the warning
+        says which grant to add, once."""
+        class Refusing:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_state":
+                    def refused(req):
+                        raise RPCError("forbidden", "this identity is not granted call_state")
+                    return refused
+                return getattr(self.signer, name)
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                self.signer = FakeSigner(ac._rule)
+                self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                node = tracekit_tool_node(TOOLS, Refusing(self.signer), self.run)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.drive(runner(tool_graph(node), mode), message(
+                        [{"name": "pay", "args": {"to": "a", "cents": 1}, "id": "p"}]), approve={"p"})
+                grants = [str(w.message) for w in caught if "call_state" in str(w.message)]
+                self.assertEqual(len(grants), 1, grants)
+                self.assertIn("the signer refused call_state", grants[0])
+                self.assertIn("grant this identity call_state in signer.yaml authorize", grants[0])
+
+    def test_a_signer_without_call_claim_warns_once_naming_the_grant(self):
+        """#958: without call_claim a paused call never goes on; the model's refusal was the only line, so the operator
+        never learned which grant to add."""
+        class NoClaim:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_claim":
+                    raise AttributeError(name)
+                return getattr(self.signer, name)
+        pay = {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"}
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                PAID.clear()
+                self.signer = FakeSigner(ac._rule)
+                self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                node = tracekit_tool_node([confirmed_pay, TOOLS[0]], NoClaim(self.signer), self.run)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.drive(runner(tool_graph(node), mode), message([pay]), approve={"pay-1"})
+                grants = [str(w.message) for w in caught if "call_claim" in str(w.message)]
+                self.assertEqual(len(grants), 1, grants)
+                self.assertIn("the signer has no call_claim", grants[0])
+                self.assertIn("grant this identity call_claim in signer.yaml authorize", grants[0])
+
+    def test_a_signer_that_refuses_call_claim_warns_once_naming_the_grant(self):
+        """#958: the same for a signer that answers `forbidden`: the call stays refused, and one line says why."""
+        class Refusing:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_claim":
+                    def refused(req):
+                        raise RPCError("forbidden", "this identity is not granted call_claim")
+                    return refused
+                return getattr(self.signer, name)
+        pay = {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"}
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                PAID.clear()
+                self.signer = FakeSigner(ac._rule)
+                self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                node = tracekit_tool_node([confirmed_pay, TOOLS[0]], Refusing(self.signer), self.run)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    out, pauses = self.drive(runner(tool_graph(node), mode), message([pay]), approve={"pay-1"})
+                grants = [str(w.message) for w in caught if "call_claim" in str(w.message)]
+                self.assertEqual((len(grants), PAID), (1, []), grants)
+                self.assertIn("the signer refused call_claim", grants[0])
+                self.assertTrue(read(out)["pay-1"].startswith("Tool call blocked by policy: forbidden"),
+                                read(out)["pay-1"])
+
+    def test_a_signer_that_cannot_be_reached_warns_about_no_grant(self):
+        """#958: an outage is not a missing grant: call_state and call_claim raise SignerUnavailable, and no warning
+        names either."""
+        class Unreachable:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name in ("call_state", "call_claim"):
+                    def unavailable(req):
+                        raise SignerUnavailable()
+                    return unavailable
+                return getattr(self.signer, name)
+        pay = {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"}
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                self.signer = FakeSigner(ac._rule)
+                self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                node = tracekit_tool_node([confirmed_pay, TOOLS[0]], Unreachable(self.signer), self.run)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    self.drive(runner(tool_graph(node), mode), message([pay]), approve={"pay-1"})
+                self.assertEqual([str(w.message) for w in caught if "grant this identity" in str(w.message)], [])
 
     def test_a_pass_cut_off_while_it_claims_a_call_gives_the_true_reason(self):   # probe851_claim.py claimcut
         """An approved pay whose tool asked the person itself; the answer's pass is cut off while it claims the call

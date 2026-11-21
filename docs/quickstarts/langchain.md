@@ -9,7 +9,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ```sh
 git clone --depth 1 https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
 python3 -m venv .venv && . .venv/bin/activate
-pip install . 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+pip install . 'langchain>=1.4,<2' 'langgraph>=1.2,<1.3'
 python examples/v2/langchain/agent.py --scripted
 ```
 
@@ -19,7 +19,7 @@ A mock model drives a real graph: `ls` is allowed, `sudo rm -rf /` is denied and
 ## 1. Install
 
 ```sh
-pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3' langchain-openai
+pip install tracekit-ai 'langchain>=1.4,<2' 'langgraph>=1.2,<1.3' langchain-openai
 export OPENAI_API_KEY=...        # the model below is OpenAI's
 ```
 

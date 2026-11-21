@@ -12,11 +12,12 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install tracekit-ai "langchain>=1.4,<1.5" "langgraph>=1.2,<1.3"
+pip install tracekit-ai "langchain>=1.4,<2" "langgraph>=1.2,<1.3"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 
-Python 3.10 or newer (LangChain v1's own requirement).
+Tested with LangChain 1.4 and 1.5 and LangGraph 1.2. A later LangChain 1.x installs; a LangGraph outside 1.2 warns
+once. Python 3.10 or newer (LangChain v1's own requirement).
 
 ## Setup
 
@@ -115,7 +116,8 @@ after its tool asked the person itself is claimed from the signer (`call_claim`)
 again. After a signer restart such a call must be approved again: its resume is refused (`the signer restarted since
 this call's approval was used; ask again`). An identity with an explicit `authorize` list needs `call_state` and
 `call_claim` granted beside `decide` and
-`approval_consume`; without them the node decides each call again. Single calls under `create_agent` keep their own
+`approval_consume`; without them the node decides each call again, or refuses a paused call, and warns once, naming
+the grant. Single calls under `create_agent` keep their own
 task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.

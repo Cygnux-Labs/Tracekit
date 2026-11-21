@@ -18,7 +18,7 @@ import zipfile
 from unittest import mock
 
 
-from factories import damage_crc, overinflate, patch_env, rewrite_bundle, unverified_bundles
+from factories import damage_crc, overinflate, patch_env, rewrite_bundle, serial, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.demo_server import tamper
@@ -828,6 +828,7 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         self.assert_fails(self.mutate(out, edit=lambda files, m: files.update({"policies/x.json": b"{}"})), "manifest")
 
+    @serial
     def test_a_run_of_tiny_lines_is_refused_before_it_is_parsed(self):
         _, out = self.honest()
 
