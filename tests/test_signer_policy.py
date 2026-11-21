@@ -1688,6 +1688,33 @@ class CodingPack(unittest.TestCase):
                         d = e.decide(tool, args)
                         self.assertNotIn("TK-A041", d["rule_ids"], d)
 
+    def test_a_flush_printf_prints_through_a_plain_format_asks_in_every_pack(self):
+        """TK-A040 (#978): printf with a plain %s format and the flush as its argument is the flush, as a bare
+        printf of it is; another word through the format, or more text after it, is not."""
+        held = [
+            "printf '%s' FLUSHALL | redis-cli",
+            'printf "%s" FLUSHDB | redis-cli -h cache.internal',
+            "printf '%s\\n' FLUSHALL | valkey-cli",
+            "printf %s 'FLUSHDB ASYNC' | redis-cli -n 2",
+        ]
+        routine = [
+            "printf '%s' PING | redis-cli",
+            "printf '%s' 'GET flushall' | redis-cli",
+            "printf '%s %s' FLUSHALL x | redis-cli",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertIn("TK-A040", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertNotIn("TK-A040", d["rule_ids"], d)
+
     def test_a_destructive_statement_through_more_exec_wrappers_ctes_and_clients_asks(self):
         """TK-A039 (1.5.3 sweep): options before a container's `exec`, podman and oc, a shell's -c inside the exec, a
         data-modifying CTE, EXPLAIN ANALYZE (which runs the DELETE), `clickhouse client`, mongo's getCollection,
