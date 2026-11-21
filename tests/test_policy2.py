@@ -3998,6 +3998,28 @@ class ReadAsBash(unittest.TestCase):
                     with self.subTest(backend=backend, line=line):
                         self.assertIn(e.decide("Bash", {"command": line})["verdict"], ("ask", "deny"))
 
+    def test_an_approval_answered_through_hatch_env_run_is_denied(self):
+        """#983: `hatch env run [OPTIONS] ARGS` runs ARGS as `hatch run` does, in the environments it names, so an
+        approval answered through it is the agent answering its own held call. Its options are read both ways: after
+        `env run`, `-e`, `-i`, `-x` and `-f` take a value (src/hatch/cli/env/run.py), but after a plain `hatch run`
+        each `-x` word is one matrix selector and the next word is the command (src/hatch/cli/run/__init__.py), and
+        both forms share hatch's entry. Reading the runner does not deny a command that isn't tracekit, nor a listing."""
+        aid = "apr-" + "0123456789abcdef" * 2
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
+            for line in (f"hatch env run tracekit approve {aid}",
+                         f"hatch env run -e test tracekit reject {aid}",
+                         f"hatch env run --env test --filter py3 tracekit approvals approve {aid}",
+                         "hatch env run --force-continue tracekit grant add --run r --tool t --payee x",
+                         f"hatch run -e tracekit approve {aid}", f"hatch run -x tracekit reject {aid}"):
+                with self.subTest(backend=backend, line=line):
+                    d = e.decide("Bash", {"command": line})
+                    self.assertEqual((d["verdict"], "TK-D012" in d["rule_ids"]), ("deny", True), d)
+            for line in ("hatch env run pytest", "hatch env run -e test pytest -q",
+                         "hatch env run tracekit approvals list", "hatch env show", "hatch env run --force-continue make"):
+                with self.subTest(backend=backend, line=line):
+                    self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
+
     def test_an_approval_action_through_an_indirect_name_or_a_signer_value_with_a_space(self):
         """An indirect expansion as the action (${!#} is the last positional parameter, ${!1} the
         variable $1 names, ${!appr*} the names that start appr) may be approve; and a --signer value with a space in
