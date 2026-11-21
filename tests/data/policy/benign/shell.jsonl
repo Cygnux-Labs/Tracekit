@@ -341,3 +341,7 @@
 {"tool": "Bash", "args": {"command": "pip uninstall -y requests"}, "expect": "allow", "note": "uninstalling an unrelated package with pip"}
 {"tool": "Bash", "args": {"command": "claude plugin marketplace list"}, "expect": "allow", "note": "listing Claude Code plugin marketplaces"}
 {"tool": "Bash", "args": {"command": "claude plugin marketplace remove other"}, "expect": "allow", "note": "removing an unrelated Claude Code plugin marketplace"}
+{"tool": "Bash", "args": {"command": "parted -l"}, "expect": "allow", "note": "listing partition layout with parted (#998)"}
+{"tool": "Bash", "args": {"command": "sgdisk -p /dev/sdb"}, "expect": "allow", "note": "printing partition table with sgdisk (#998)"}
+{"tool": "Bash", "args": {"command": "blkid /dev/md0"}, "expect": "allow", "note": "inspecting block device attributes with blkid (#998)"}
+{"tool": "Bash", "args": {"command": "mkdosfs disk.img"}, "expect": "allow", "note": "creating a DOS filesystem on a disk image file (#998)"}

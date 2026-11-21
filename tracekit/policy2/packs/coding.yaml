@@ -1282,14 +1282,18 @@ ask:
     rationale: TK-F009 for the shell.
   - id: TK-A079
     class: shell
-    # Wiping a disk or a filesystem (#748): dd whose of= is a block device, mkfs (and mkfs.<type>, mke2fs,
-    # mkswap, newfs*) making a filesystem on one, shred or wipefs erasing one, and diskutil's eraseDisk,
-    # eraseVolume, zeroDisk, secureErase, randomDisk and reformat, the verb in any case. A device is /dev's
-    # sd, hd, vd or xvd disks and their partitions, nvme or mmcblk names, a macOS disk or raw disk name
-    # (disk2, rdisk2), or a device-mapper path. Up to sixteen options may come before the device, as the
-    # tools read them, and the device path may carry extra slashes or a dot (//dev/sda, /dev/./sda). A disk
-    # image file is an ordinary file: dd to one, mkfs on one and shred of a file stay as they are.
-    pattern: '^dd( [^ ]+){0,16}? of=/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:mkfs(?:\.[^ ]+)?|mke2fs|mkswap|newfs[^ ]*)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:shred|wipefs)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^diskutil (?:[Ee][Rr][Aa][Ss][Ee][Dd][Ii][Ss][Kk]|[Ee][Rr][Aa][Ss][Ee][Vv][Oo][Ll][Uu][Mm][Ee]|[Zz][Ee][Rr][Oo][Dd][Ii][Ss][Kk]|[Ss][Ee][Cc][Uu][Rr][Ee][Ee][Rr][Aa][Ss][Ee]|[Rr][Aa][Nn][Dd][Oo][Mm][Dd][Ii][Ss][Kk]|[Rr][Ee][Ff][Oo][Rr][Mm][Aa][Tt])( |$)'
+    # Wiping a disk or a filesystem (#748, #998): dd whose of= is a block device, mkfs (and mkfs.<type>, mke2fs,
+    # mkswap, mkdosfs, mkntfs, newfs*) making a filesystem on one, shred, wipefs or blkdiscard erasing one,
+    # sgdisk zapping or clearing one (--zap-all/-Z, --zap/-z, --clear/-o), parted writing a new label on one
+    # (mklabel, mktable: after the device, as parted reads its commands), sfdisk given its label type
+    # (-X/--label, -Y/--label-nested), and diskutil's eraseDisk, eraseVolume, zeroDisk, secureErase, randomDisk
+    # and reformat, the verb in any case. A device is /dev's sd, hd, vd or xvd disks and their partitions, nvme,
+    # mmcblk, md or dm- names, a /dev/disk/by-*/ link (by-id, by-uuid, by-path, by-label, …), a macOS disk or raw
+    # disk name (disk2, rdisk2), or a device-mapper path. Up to
+    # sixteen options may come before the device, as the tools read them, and the device path may carry extra
+    # slashes or a dot (//dev/sda, /dev/./sda). A disk image file is an ordinary file: dd to one, mkfs on one and
+    # shred of a file stay as they are.
+    pattern: '^dd( [^ ]+){0,16}? of=/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:mkfs(?:\.[^ ]+)?|mke2fs|mkswap|mkdosfs|mkntfs|newfs[^ ]*)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:shred|wipefs|blkdiscard)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^diskutil (?:[Ee][Rr][Aa][Ss][Ee][Dd][Ii][Ss][Kk]|[Ee][Rr][Aa][Ss][Ee][Vv][Oo][Ll][Uu][Mm][Ee]|[Zz][Ee][Rr][Oo][Dd][Ii][Ss][Kk]|[Ss][Ee][Cc][Uu][Rr][Ee][Ee][Rr][Aa][Ss][Ee]|[Rr][Aa][Nn][Dd][Oo][Mm][Dd][Ii][Ss][Kk]|[Rr][Ee][Ff][Oo][Rr][Mm][Aa][Tt])( |$)|^sgdisk( [^ ]+){0,16}? (?:--zap-all|--zap|--clear|-Z|-z|-o)( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^sgdisk( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( [^ ]+){0,16}? (?:--zap-all|--zap|--clear|-Z|-z|-o)( |$)|^parted( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( [^ ]+){0,16}? (?:mklabel|mktable)( |$)|^sfdisk( [^ ]+){0,16}? (?:--label(?:-nested)?(?:=[^ ]+)?|-[XY])( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^sfdisk( [^ ]+){0,16}? /+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)( [^ ]+){0,16}? (?:--label(?:-nested)?(?:=[^ ]+)?|-[XY])( |$)'
     reason: wiping a disk or filesystem
     remedy: Have a person approve the held call, or work on a disk image file instead.
     rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.
@@ -1300,7 +1304,7 @@ ask:
     # device, however the command reaches it (dd's of= in any spelling, a redirection, cp, tee). /dev/null,
     # /dev/stdout and friends are not in the device list, and reading a device (dd if=/dev/sda) writes to
     # the of= file, not to the device.
-    pattern: '^WRITE_TARGET:/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|r?disk[0-9][^ ]*|mapper/[^ ]+)'
+    pattern: '^WRITE_TARGET:/+(?:\./)?dev/+(?:\./)?(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|md[^ ]*|dm-[^ ]*|disk/by-[^/ ]+/[^ ]+|r?disk[0-9][^ ]*|mapper/[^ ]+)'
     reason: wiping a disk or filesystem
     remedy: Have a person approve the held call, or work on a disk image file instead.
     rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.

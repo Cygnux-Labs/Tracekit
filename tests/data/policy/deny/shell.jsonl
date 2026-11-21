@@ -457,3 +457,12 @@
 {"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
 {"tool": "Bash", "args": {"command": "pip uninstall -y tracekit--ai"}, "expect": "ask", "note": "uninstalling Tracekit with doubled separators in package name"}
 {"tool": "Bash", "args": {"command": "claude plugin marketplace remove tracekit"}, "expect": "ask", "note": "removing Tracekit's Claude Code plugin marketplace"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/disk/by-id/ata-X"}, "expect": "ask", "note": "wiping a disk filesystem signatures by-id path (#998)"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/disk/by-uuid/abc"}, "expect": "ask", "note": "wiping a disk filesystem signatures by-uuid path (#998)"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/md0"}, "expect": "ask", "note": "wiping a RAID device filesystem signatures (#998)"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/dm-0"}, "expect": "ask", "note": "wiping a device-mapper device filesystem signatures (#998)"}
+{"tool": "Bash", "args": {"command": "blkdiscard /dev/sdb"}, "expect": "ask", "note": "discarding sectors on a block device (#998)"}
+{"tool": "Bash", "args": {"command": "sgdisk --zap-all /dev/sdb"}, "expect": "ask", "note": "zapping partition structures with sgdisk (#998)"}
+{"tool": "Bash", "args": {"command": "parted -s /dev/sdb mklabel gpt"}, "expect": "ask", "note": "writing a new disk label with parted (#998)"}
+{"tool": "Bash", "args": {"command": "mkdosfs /dev/sdb1"}, "expect": "ask", "note": "creating a DOS filesystem on a block device (#998)"}
+{"tool": "Bash", "args": {"command": "mkntfs /dev/sdb1"}, "expect": "ask", "note": "creating an NTFS filesystem on a block device (#998)"}

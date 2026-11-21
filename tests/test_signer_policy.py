@@ -483,15 +483,29 @@ class CodingPack(unittest.TestCase):
                  "diskutil reformat /dev/disk2s1",
                  "dd if=/dev/zero of=//dev/sda", "dd if=/dev/zero of=/dev//sda",
                  "dd if=/dev/zero of=/dev/./sda",
-                 "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"]
+                 "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1",
+                 "wipefs -a /dev/disk/by-id/ata-X", "wipefs -a /dev/disk/by-uuid/abc",
+                 "wipefs -a /dev/md0", "wipefs -a /dev/dm-0", "blkdiscard /dev/sdb",
+                 "sgdisk --zap-all /dev/sdb", "parted -s /dev/sdb mklabel gpt",
+                 "mkdosfs /dev/sdb1", "mkntfs /dev/sdb1",
+                 # #998 review: every /dev/disk/by-* link, sgdisk's other zaps, parted's mktable, sfdisk's label type
+                 "wipefs -a /dev/disk/by-path/pci-0000:00:1f.2-ata-1", "wipefs -a /dev/disk/by-label/data",
+                 "dd if=/dev/zero of=/dev/md127", "mkfs.ext4 /dev/dm-1", "sgdisk -Z /dev/sdb",
+                 "sgdisk /dev/sdb --clear", "sgdisk -o /dev/sdb", "sgdisk -z /dev/sdb",
+                 "parted /dev/sdb --script mktable msdos", "sfdisk --label gpt /dev/sdb", "sfdisk -X dos /dev/sdb",
+                 "sfdisk /dev/sdb --label=gpt", "sfdisk -Y dos /dev/sdb"]
         # The write-target twin (TK-A080) reads the effects, not the command form: any command
         # whose target is a device is held, however it is spelled or reached.
         target_wipes = ["cat ubuntu.iso > /dev/sdb", "cp ubuntu.iso /dev/sdb",
-                        "head -c 1G /dev/zero > /dev/sda", "tee /dev/sda < image.bin"]
+                        "head -c 1G /dev/zero > /dev/sda", "tee /dev/sda < image.bin",
+                        "cat ubuntu.iso > /dev/md0", "cp ubuntu.iso /dev/dm-0", "tee /dev/disk/by-id/ata-X < image.bin"]
         benign = ["dd if=disk.img of=backup.img bs=4M", "dd if=/dev/urandom of=key.bin bs=32 count=1",
                   "mkfs.ext4 disk.img", "shred -u secrets.txt", "lsblk", "diskutil list",
                   "dd if=/dev/sda of=backup.img bs=4M", "wipefs backup.img",
-                  "dd if=/dev/zero of=/dev/null bs=1M count=1", "echo hello > /dev/stdout"]
+                  "dd if=/dev/zero of=/dev/null bs=1M count=1", "echo hello > /dev/stdout",
+                  "parted -l", "sgdisk -p /dev/sdb", "blkid /dev/md0", "mkdosfs disk.img",
+                  "parted /dev/sdb print", "parted /dev/sdb name 1 label", "sfdisk -l /dev/sdb",
+                  "sfdisk --label gpt disk.img", "fdisk -l /dev/sdb", "sgdisk -o disk.img"]
         for pack, backend, engine in self.every_pack():
             for command in wipes + benign:
                 with self.subTest(pack=pack, backend=backend, command=command):
