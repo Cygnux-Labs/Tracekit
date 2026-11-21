@@ -3246,6 +3246,116 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_powershell_cmdlets_on_harness_settings_ask_and_on_credentials_files_deny_in_every_pack(self):
+        # #992: Kiro CLI's execute_pwsh is decided as Bash, and Claude Code's PowerShell tool also as a shell line, but
+        # TK-F015 reads bash's writers and TK-S004 bash's argv, where an unquoted `\` is gone: a cmdlet writing or
+        # deleting a harness file or a profile was allowed, and Get-Content of a credentials file only flagged
+        held = (r"Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r"Set-Content -Path $env:USERPROFILE\Documents\PowerShell\profile.ps1 -Value x",
+                r'remove-item "$Env:UserProfile\.KIRO\hooks\tracekit.json" -Force',
+                "'exit' | Out-File -FilePath $PROFILE -Append", "Add-Content $PROFILE.CurrentUserAllHosts 'exit'",
+                "New-Item -ItemType File -Path $PROFILE -Force", r"ni ~\.claude\settings.json -Force",
+                "del ${env:USERPROFILE}/.codex/config.toml", r"cpi x.json $HOME\.cursor\mcp.json",
+                r"Move-Item x $HOME\.config\opencode\opencode.json", r"rni $env:USERPROFILE\.gemini\settings.json old.json",
+                r"sc -Path:$HOME\.claude.json -Value '{}'", r"ac ~/Documents/WindowsPowerShell/profile.ps1 exit",
+                r'Set-Content -Path "$env:USERPROFILE\OneDrive - Contoso\Dokumente\PowerShell\profile.ps1" -Value exit',
+                # the review of #992: PowerShell's other aliases and redirections, and quoted `;`, `|`, `&` or a long
+                # value before the path
+                r"rm $env:USERPROFILE\.kiro\hooks\tracekit.json", r"rmdir $env:USERPROFILE\.kiro\hooks",
+                r"rd $env:USERPROFILE\.kiro\hooks", r"erase $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r"cp x.json $env:USERPROFILE\.claude\settings.json", r"copy x.json $env:USERPROFILE\.claude\settings.json",
+                r"move x.json $env:USERPROFILE\.claude\settings.json", r"mv x.json $env:USERPROFILE\.claude\settings.json",
+                r"ren $env:USERPROFILE\.claude\settings.json old.json", r"'{}' > $env:USERPROFILE\.claude\settings.json",
+                r"'exit' >> $env:USERPROFILE\Documents\PowerShell\profile.ps1", r"rm ~\.kiro\hooks\tracekit.json",
+                r"'exit' | Tee-Object -FilePath $env:USERPROFILE\Documents\PowerShell\profile.ps1",
+                r"'exit' | tee $env:USERPROFILE\Documents\PowerShell\profile.ps1", r"clc $HOME\.kiro\hooks\tracekit.json",
+                r"Clear-Content $HOME\.kiro\hooks\tracekit.json", r'Set-Content -Value "x|y" -Path $PROFILE',
+                r"Set-Content -Value 'a;b' -Path $env:USERPROFILE\.claude\settings.json",
+                r"Set-Content -Value '&' $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                "Set-Content -Value '" + "b" * 260 + r"' -Path $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                # the second review: a here-string, mixed slashes, a block, iex, a module-qualified name, the path first
+                "Set-Content -Value @'\n{\"hooks\": {}}\n'@ -Path $HOME\\.claude\\settings.json",
+                "Set-Content -Value @\"\nx\n\"@ -Path $env:USERPROFILE\\.claude\\settings.json",
+                "Write-Host hi\r\nRemove-Item $HOME\\.kiro\\hooks\\tracekit.json",
+                r"cp x.json ~/.claude\settings.json", r"'{}' > ~/.claude\settings.json", r"rm ~/.kiro\hooks\tracekit.json",
+                r"rm $HOME/.claude\settings.json", r"if (Test-Path x) { Remove-Item $HOME\.kiro\hooks\tracekit.json }",
+                r"1 | ForEach-Object { ri $HOME\.kiro\hooks\tracekit.json }",
+                r"Invoke-Command { Remove-Item $HOME\.kiro\hooks\tracekit.json }",
+                r"Start-Job { Remove-Item $HOME\.kiro\hooks\tracekit.json }", r"(Remove-Item $HOME\.kiro\hooks\tracekit.json)",
+                r'Invoke-Expression "Remove-Item $HOME\.kiro\hooks\tracekit.json"', r'iex "ri $HOME\.kiro\hooks\tracekit.json"',
+                r"Microsoft.PowerShell.Management\Remove-Item $HOME\.kiro\hooks\tracekit.json",
+                r"Get-ChildItem $HOME\.kiro\hooks | Remove-Item", r"ri x.txt,$HOME\.kiro\hooks\tracekit.json",
+                r"cmd /c del %USERPROFILE%\.kiro\hooks\tracekit.json",
+                # the third review: options before the path are words, not characters
+                'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $env:USERPROFILE\\.kiro\\hooks',
+                'Set-Content -Encoding UTF8 -Force -NoNewline -Confirm:$false -Path $env:USERPROFILE\\.claude\\settings.json -Value x',
+                'Copy-Item -Path C:\\Users\\dev\\projects\\myrepo\\config\\settings.json -Destination $env:USERPROFILE\\.claude\\settings.json -Force',
+                # the CI run of #992: the cmdlet after the path ends at a `;`; a name with an expansion bash reads as empty
+                r"time { Get-ChildItem $HOME\.kiro\hooks | Remove-Item; }",
+                r"1 | ForEach-Object { r${X}i $HOME\.kiro\hooks\tracekit.json }",
+                r"cmd /${X}c del %USERPROFILE%\.kiro\hooks\tracekit.json",
+                # the review of the split: a lone CR ends a statement in PowerShell; `.` runs a command as `&` does
+                "Write-Host hi\rRemove-Item $env:USERPROFILE\\.kiro\\hooks\\tracekit.json",
+                r". Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r". Set-Content -Path $env:USERPROFILE\.claude\settings.json -Value x",
+                # each pattern's own cases (no other of the five holds them): TK-A091's path first in `/` form or
+                # $PROFILE, TK-A092's PowerShell form first, then an alias bash has too or a write after `(`
+                r"Get-Item $PROFILE | Remove-Item", r"Get-ChildItem ~/.kiro/hooks | Remove-Item",
+                r"Get-ChildItem $env:USERPROFILE\.kiro\hooks | rm", r"Get-ChildItem $HOME\.kiro\hooks | (Remove-Item)")
+        family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
+        denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
+                  r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
+                  r"cat ${env:USERPROFILE}\.git-credentials",
+                  # the review of #992: any command naming the file, as TK-S004 reads one
+                  r"Copy-Item $env:USERPROFILE\.aws\credentials C:\temp\c.txt", r"cp $env:USERPROFILE\.aws\credentials C:\t\c",
+                  r"Select-String -Path $env:USERPROFILE\.aws\credentials -Pattern key",
+                  r"sls $env:USERPROFILE\.aws\credentials key", r"more $env:USERPROFILE\.aws\credentials",
+                  r"Get-Item $env:USERPROFILE\.aws\credentials | Get-Content",
+                  r"Get-Content -Encoding 'utf8;' $env:USERPROFILE\.aws\credentials",
+                  r"Get-Content ~/.aws\credentials", r"Get-Content $HOME/.aws\credentials",
+                  r"cmd /c type %USERPROFILE%\.aws\credentials")
+        benign = ("Get-Content README.md", "Set-Content out.txt x", "Remove-Item build -Recurse",
+                  r"Get-Content $env:USERPROFILE\.kiro\hooks\tracekit.json", r"Get-Content $env:USERPROFILE\.ssh\id_rsa.pub",
+                  r"Remove-Item $env:USERPROFILE\.kiro-backup\x", "Set-Content $PROFILES x", "Get-Content $PROFILE",
+                  r"Copy-Item $env:USERPROFILE\Documents\PowerShell\Modules\a.psm1 .",
+                  r"rm build\out.txt",
+                  r"copy x.json config\settings.json", r"ren notes.txt old.txt", r"'{}' > settings.json",
+                  r"'x' | Tee-Object -FilePath out.txt", r"Clear-Content build\log.txt", r"Set-Content -Value 'a;b' -Path out.txt",
+                  r"Select-String -Path README.md -Pattern key", r"more $env:USERPROFILE\.aws\config",
+                  # bash's own forms stay TK-F015's and TK-S004's: Claude Code's memory notes aren't held
+                  "rm ~/.claude/projects/x/memory/a.md", "echo x > ~/.claude/projects/x/memory/a.md",
+                  "cp ~/.aws/credentials.bak ./x", "cat ~/.aws/config",
+                  "Set-Content -Value @'\nhello\n'@ -Path notes.txt", "if (Test-Path build) { Remove-Item build -Recurse }",
+                  r'iex "Remove-Item build\out.txt"', r"Get-Content $HOME\.kiro\hooks\tracekit.json",
+                  r"Get-Content ~/.aws\config", r"cp x.json ~/backup\settings.json",
+                  r"cmd /c type %USERPROFILE%\Documents\notes.txt", r"cmd /c del %userprofile%\build\out.txt", ". ./build.ps1",
+                  # prose quoting a write and a harness path in bash's `/` form
+                  'git commit -m "copy ~/.codex/config.toml into the image"',
+                  'echo "move ~/.claude/settings.json later"',
+                  "gh pr create --title x --body 'del ~/.cursor/mcp.json manually after upgrade'",
+                  'git commit -m "docs (ren ~/.gemini/settings.json)"',
+                  "Set-Content README.md 'Settings live in ~/.claude/settings.json'")
+        for pack, engine, e in self.every_pack():
+            credentials = any(r["id"] == "TK-S004" for r in e.policy["deny"])   # the server packs' parts
+            for tool in ("Bash", "PowerShell"):
+                for command in held:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertEqual((d["verdict"], bool(family & set(d["rule_ids"]))), ("ask", True), d)
+                # `& cmd` runs a command too (held; strict denies the line bash can't read)
+                d = svc.evaluate(e, tool, {"command": r"& Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json"})[0]
+                self.assertTrue(family & set(d["rule_ids"]) and d["verdict"] in ("ask", "deny"), d)
+                for command in denied if credentials else ():
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertEqual((d["verdict"], "TK-S007" in d["rule_ids"]), ("deny", True), d)
+                for command in benign:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertFalse((family | {"TK-S007"}) & set(d["rule_ids"]), d)
+                        if tool == "Bash" and command in benign[:3]:
+                            self.assertNotIn(d["verdict"], ("ask", "deny"), d)
+
     def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
         # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
         # and 36 of 39 TK-F015 flags on maintainers' sessions; a file there is judged as it is in the worktree
