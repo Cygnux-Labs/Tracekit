@@ -558,7 +558,8 @@ class Engine:
             # identity TK-A070 reads (_harness), so a rule on `claude plugin …` reads `npx @anthropic-ai/claude-code
             # plugin …` and `node node_modules/.bin/claude plugin …` too
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
-            return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
+            quoted = any(_QUOTED_HELP.search(r) for r in Engine._subjects(cls, "command", args, fields, parsed))
+            return _slashes(list(dict.fromkeys([_help_marked(c, quoted) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
@@ -2765,11 +2766,30 @@ def _reading(argv):
     return None
 
 
+_QUOTED_HELP = re.compile(r"""[\"'\\]--help|--help[\"']""")
+_TAKES_INPUT = {"xargs", "gxargs", "parallel"}
+
+
+def _help_marked(command, quoted):
+    """A command's words as one subject. A last word `--help` that more words may follow (xargs gives its input to the
+    command; a line that quotes `--help` somewhere is not read word by word) gets UNKNOWN_WORD after it, so a rule's
+    exemption for the exact line `<program> <verb> --help` (TK-A054, TK-A057) does not cover it."""
+    argv = command["argv"]
+    if argv[-1:] == ["--help"] and (quoted or _TAKES_INPUT & set(command["via"])):
+        argv = argv + [UNKNOWN_WORD]
+    return " ".join(argv)
+
+
 _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY", "evaluate"}}
+# of those, the names of functions and classes: each holds its module's globals (`f.__globals__`, gc.get_referents(f))
+_SIGNER_CODE = r"\b(?:RPCError|compared|model_names|load_policy|evaluate)\b"
+# what reaches a module through an object that holds it: a dunder attribute (a space or a backslash-newline may follow
+# the dot), the inspect, gc and sys.modules lookups
+_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b(?:inspect|gc|sys\s*\.\s*modules)\b")
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
@@ -2778,11 +2798,11 @@ def _runs_signer(code):
     """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
     other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
-    reached by its full name. `evaluate` is a function: code that names it and reaches into one (a dunder attribute,
-    inspect) may get to its module."""
+    reached by its full name. A function or class it may read (_SIGNER_CODE) holds its module: code that names one and
+    reaches through an object (_PY_REACH) may get to the module."""
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
             re.search(r"\btracekit\.signer\.\w+\.\w", code) or \
-            re.search(r"\bevaluate\b", code) and re.search(r"\.\s*__|\binspect\b", code):
+            re.search(_SIGNER_CODE, code) and _PY_REACH.search(code):
         return True
     aliases = {}   # a name the code gives one of the signer's modules -> that module
     # an import list ends where its statement does: a parenthesised one at its `)` (a comment in it may hold one), any

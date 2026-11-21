@@ -130,6 +130,35 @@ class FalseStops(unittest.TestCase):
             "python3 - <<'EOF'\nfrom tracekit.signer import service as svc\nprint(svc._dotenv)\nEOF",
             "python3 -c \"from tracekit.signer.service import dev_data_dir; print(dev_data_dir(create=False))\"")
 
+    def test_a_function_the_signer_gives_still_holds_its_module(self):
+        # main denied these only because it read the next line as part of the import list: each reaches the service
+        # module (SignerService) through a function imported from it
+        self.assert_denied(
+            "TK-D007",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\ng = evaluate.\\\n__globals__\n"
+            "print(g['SignerService'])\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\ng = evaluate . __globals__\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy\n"
+            "print(load_policy.__globals__['SignerService'])\nEOF",
+            "python3 -c \"import gc\nfrom tracekit.signer.service import evaluate\n"
+            "print([d for d in gc.get_referents(evaluate) if type(d) is dict][0]['SignerService'])\"",
+            "python3 -c \"import gc\nfrom tracekit.signer.service import load_policy\nprint(gc.get_objects())\"",
+            "python3 -c \"import sys\nfrom tracekit.signer.service import evaluate\n"
+            "sys.modules['tracekit.signer.service'].SignerService\"",
+            "python3 -c \"from tracekit.signer.service import load_policy\nprint(vars(load_policy))\"",
+            "python3 -c \"from tracekit.signer.service import evaluate\nprint(getattr(evaluate, '__glob' 'als__'))\"",
+            "python3 -c \"import importlib\nfrom tracekit.signer.service import evaluate\nimportlib.reload(1)\"",
+            "python3 -c \"import inspect\nfrom tracekit.signer.reconcile import compared\ninspect.getmodule(compared)\"",
+            "python3 -c \"from tracekit.signer.rpc_schema import RPCError\nprint(RPCError.__init__.__globals__)\"")
+
+    def test_a_module_that_only_shares_a_name_with_the_signer_is_no_reach(self):
+        self.assert_open(
+            "python3 - <<'EOF'\nimport gc\nfrom mylib.metrics import evaluate\n"
+            "print(evaluate.__doc__, gc.get_objects()[:1])\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nprint(evaluate(None, 'Bash', {}))\nEOF",
+            "python3 -c \"from tracekit.signer.service import evaluate\nimport unittest\n"
+            "class T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(evaluate)\"")
+
     def test_curl_in_a_path_is_no_download(self):
         self.assert_open(
             "gh api \"repos/curl/curl/contents/docs/options-in-versions?ref=curl-8_23_0\" --jq .content | base64 -d "
@@ -179,8 +208,11 @@ class FalseStops(unittest.TestCase):
         # after --, or as the value of another option, --help is an argument, and the command runs
         self.assert_held("TK-A054", "tracekit uninstall -- --help", "tracekit uninstall --help; tracekit uninstall",
                          "tracekit uninstall --help && tracekit uninstall", "tracekit down",
-                         "tracekit uninstall --keep-data --help", "tracekit uninstall \"x --help\"")
-        self.assert_held("TK-A057", "tracekit init -- --help", "tracekit init --dir --help", "tracekit init \"x --help\"")
+                         "tracekit uninstall --keep-data --help", "tracekit uninstall \"x --help\"",
+                         "tracekit uninstall \"--help\"", "tracekit uninstall '--help'",
+                         "xargs tracekit uninstall --help < f", "echo y | xargs tracekit uninstall --help")
+        self.assert_held("TK-A057", "tracekit init -- --help", "tracekit init --dir --help", "tracekit init \"x --help\"",
+                         "tracekit init \"--help\"", "xargs tracekit init --help < f")
         self.assert_held("TK-A033", "gh pr merge 42 --body --help", "gh pr merge -- --help")
 
     def test_a_git_editor_that_does_nothing_is_no_command(self):
@@ -194,6 +226,8 @@ class FalseStops(unittest.TestCase):
             "git -c core.editor='true && sh -c id' commit -m x",
             "git -c core.editor=truex commit", "git -c core.editor=tru commit", "git -c core.editor= commit",
             "git -c core.editor=True commit", "git -c core.editor=/tmp/true commit",
+            "git -c sequence.editor=true rebase -i HEAD~2", "git -c editor=true commit",
+            "git -c a.core.editor=true commit", "git -c core.editors.editor=true commit",
             "git -c core.editor=true --upload-pack=x fetch", "git -c core.editor=true -c alias.ci='!sh -c id' ci",
             names=("dev", "server", "strict"))
 
