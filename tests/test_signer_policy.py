@@ -4016,7 +4016,8 @@ class CodingPack(unittest.TestCase):
             "chattr +i -R -- /etc", "chattr -R +i /tmp/x /etc", "mv -t /tmp /etc", "mv --backup=numbered /etc /tmp/x",
             "mv -S .bak /etc /tmp/x", "mv /etc /tmp/x -v", "mv /tmp/a /etc /tmp/b/", "rsync -a --delete empty/ /etc/ -v",
             "rsync -a --del empty/ /etc/", "rsync --delete-after -a empty/ /etc", "chattr -R +i /mnt/c/Windows",
-            "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/")
+            "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/",
+            "rsync -a empty/ --delete /etc/", "mv /etc -f /tmp/x")
         for pack, engine, e in self.every_pack():
             for command in commands:
                 with self.subTest(pack=pack, engine=engine, command=command):
