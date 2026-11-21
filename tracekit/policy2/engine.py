@@ -2751,8 +2751,8 @@ def _reading(argv):
     program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
     name, args = argv[0], argv[1:]
     if name == "sed":
-        script = shell._sed_scripts(args)
-        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+        scripts = {shell._sed_options(args, bsd)[0] for bsd in (False, True)}   # (as GNU sed and BSD sed read it)
+        return "read" if "-n" in args and None not in scripts and all(map(shell._sed_prints, scripts)) and all(
             _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
     if name in ("grep", "egrep", "fgrep"):
         return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
