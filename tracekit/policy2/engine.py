@@ -559,7 +559,8 @@ class Engine:
             # plugin …` and `node node_modules/.bin/claude plugin …` too
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
-                h for c in parsed[0] if (h := _as_harness(c["argv"]))] + [
+                h for c in parsed[0] if (h := _as_harness(
+                    [c.get("word", c["argv"][0]), *c["argv"][1:]] if c.get("word", "").startswith("@") else c["argv"]))] + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
@@ -870,6 +871,12 @@ def _harness(argv):
     one by it: claude-code@latest), a script under a harness package a JavaScript runtime runs (after any options:
     node -r x …/cli.js), or one it runs by the harness's name (node_modules/.bin/claude, `"$(which claude)"`), or a
     module python -m runs; else None."""
+    if argv and argv[0].startswith("@"):
+        pkg = re.sub(r"(?<=.)@[^@]*$", "", argv[0]).replace("\\", "/")
+        m = _HARNESS_PACKAGE.search(pkg)
+        found = m and next((g for g in m.groups() if g), None)
+        if found:
+            return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
     name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
     name = _HARNESS_NAMES.get(name, name)
     if name in _HARNESS_CLIS:
@@ -1005,7 +1012,10 @@ def _harness_launches(commands, refs=(), learned=None):
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
-    if not any(_harness(c["argv"]) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
+    def _cmd_argv(c):
+        return [c.get("word", c["argv"][0]), *c["argv"][1:]] if c.get("word", "").startswith("@") else c["argv"]
+
+    if not any(_harness(_cmd_argv(c)) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
         return []
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
@@ -1018,7 +1028,7 @@ def _harness_launches(commands, refs=(), learned=None):
         f"|\\$\\{{?{re.escape(n)}\\b" for n in sorted(unknown) if n != "*") + (r"|\$" if "*" in unknown else ""))
     out = []
     for command in commands:
-        argv = command["argv"]
+        argv = _cmd_argv(command)
         at = _env_chdir(argv)[1] if argv[0] == "env" else None
         if at and _harness(argv[at:]):   # env's own words, before the harness it runs
             own = argv[1:at]
