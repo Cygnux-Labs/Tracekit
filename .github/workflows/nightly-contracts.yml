@@ -44,6 +44,7 @@ jobs:
     needs: [python, typescript]
     if: failure()
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       issues: write
     steps:
