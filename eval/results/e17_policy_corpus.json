@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:ae3c07e759e8a5f8d03b324e11d69943e33c696caaacc2ca0f8238325c59ff7f",
+  "policy_hash": "sha256:379579b1b77004e4c2f576524524577e50312b482c499c3dbecbe844a03a633f",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -60,8 +60,8 @@
       "fp": 0
     },
     "shell": {
-      "deny": 456,
-      "caught": 456,
+      "deny": 478,
+      "caught": 478,
       "benign": 340,
       "fp": 0
     },
@@ -981,6 +981,28 @@
     "deny/shell:454": "ask TK-A080",
     "deny/shell:455": "ask TK-A080",
     "deny/shell:456": "ask TK-A079",
+    "deny/shell:457": "deny TK-D002 TK-F001 TK-F007 TK-F012",
+    "deny/shell:458": "deny TK-D002 TK-F001 TK-F007 TK-F012",
+    "deny/shell:459": "deny TK-D002 TK-F001 TK-F007 TK-F012",
+    "deny/shell:460": "deny TK-D002 TK-F001 TK-F007 TK-F012",
+    "deny/shell:461": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:462": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:463": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:464": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:465": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:466": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:467": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:468": "deny TK-D002 TK-F001 TK-F011 TK-F025 TK-F012",
+    "deny/shell:469": "deny TK-D002 TK-F001 TK-F011 TK-F025 TK-F012",
+    "deny/shell:470": "deny TK-D002 TK-F001 TK-F011 TK-F025 TK-F012",
+    "deny/shell:471": "deny TK-D002 TK-F001 TK-F011 TK-F025 TK-F012",
+    "deny/shell:472": "deny TK-D002 TK-F001 TK-F004 TK-F003 TK-F012",
+    "deny/shell:473": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:474": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:475": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:476": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012",
+    "deny/shell:477": "deny TK-D002 TK-F001 TK-F012 TK-F013",
+    "deny/shell:478": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",

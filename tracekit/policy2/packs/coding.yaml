@@ -57,10 +57,12 @@ deny:
   - id: TK-D002
     class: shell
     field: code
-    # curl or wget as a word of its own, or by a path where a command starts (the line's start or after a separator,
-    # after up to four keywords, assignments or wrappers, as TK-A046 reads it): a word that is a path's part or holds
-    # the name (repos/curl/curl, curl-8, pycurl) isn't the program
-    pattern: '(?:(^|[^\w/.:@%~-])|(^|[|;&({!`\n]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}[^\s|;&(){}`]{0,256}/)(curl|wget)\b(?:(?:[^-;&\n][^;&\n]*)?\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0)\s*(?:[;&|)>\n]|$)|\s*(?:[;&|)>\n]|$))|(?:[^-;&\n][^;&\n]*)?\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0))?\s*(?:[;&|)>\n]|$)|(?:[^-;&\n][^;&\n]*)?\|\s*(sudo\s+)?(\S*/)?[gnm]?awk\b[^\n]*?(\bsystem\s*\(|\|&?\s*")|(?:[^-;&\n][^;&\n]*)?\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(?:[^-;\n][^;\n]*)?(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(?:[^-;\n][^;\n]*)?(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(?:[^-;\n][^;\n]*)?(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+)|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
+    # curl or wget as a word of its own, or ending a path word (/usr/bin/curl), wherever it stands: in a crontab line,
+    # an `at` job, a startup file, an alias, a wrapper's arguments. What follows the name keeps out a path part or a
+    # host (repos/curl/curl/contents, curl.se), a version (curl-8_23_0) and another program (pycurl, libcurl); the
+    # first character of what follows is read, not consumed, so `curl;` and `curl&&` still count, as do
+    # `curl.exe` and `curl-impersonate-chrome`
+    pattern: '\b(curl|wget)(?:-impersonate[\w-]*|\.exe)?\b(?:(?:[^-/.;&\n][^;&\n]*)?\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0)\s*(?:[;&|)>\n]|$)|\s*(?:[;&|)>\n]|$))|(?:[^-/.;&\n][^;&\n]*)?\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0))?\s*(?:[;&|)>\n]|$)|(?:[^-/.;&\n][^;&\n]*)?\|\s*(sudo\s+)?(\S*/)?[gnm]?awk\b[^\n]*?(\bsystem\s*\(|\|&?\s*")|(?:[^-/.;&\n][^;&\n]*)?\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(?:[^-/.;\n][^;\n]*)?(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(?:[^-/.;\n][^;\n]*)?(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(?:[^-/.;\n][^;\n]*)?(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+)|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
     remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.
