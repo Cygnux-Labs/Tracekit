@@ -3294,7 +3294,11 @@ class CodingPack(unittest.TestCase):
                 # the review of the split: a lone CR ends a statement in PowerShell; `.` runs a command as `&` does
                 "Write-Host hi\rRemove-Item $env:USERPROFILE\\.kiro\\hooks\\tracekit.json",
                 r". Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
-                r". Set-Content -Path $env:USERPROFILE\.claude\settings.json -Value x")
+                r". Set-Content -Path $env:USERPROFILE\.claude\settings.json -Value x",
+                # each pattern's own cases (no other of the five holds them): TK-A091's path first in `/` form or
+                # $PROFILE, TK-A092's PowerShell form first, then an alias bash has too or a write after `(`
+                r"Get-Item $PROFILE | Remove-Item", r"Get-ChildItem ~/.kiro/hooks | Remove-Item",
+                r"Get-ChildItem $env:USERPROFILE\.kiro\hooks | rm", r"Get-ChildItem $HOME\.kiro\hooks | (Remove-Item)")
         family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
         denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
                   r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
