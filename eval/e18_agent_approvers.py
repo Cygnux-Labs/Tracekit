@@ -349,7 +349,7 @@ def tainted_run(w):
     w.precedent({"command": INDEX.format("a")})
     early = w.ask({"command": INDEX.format("b")})
     before = w.approve_all()   # approved while the agent's runs were clean
-    w.ask({"command": "cat ~/.aws/credentials"})   # then one of them reads a secret
+    w.ask({"command": "cat .env"})   # then one of them reads a secret
     late = w.ask({"command": INDEX.format("c")}, run=w.new_run())
     after = w.approve_all()
     a = w.s.log.approvals[early]

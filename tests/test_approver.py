@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import unittest
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -35,6 +36,8 @@ AGENT = ts.ME   # the agent's own user: it owns the project the reviewer reads
 REVIEWER, ALICE = CallerIdentity("uid", "990299", True), CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
 INDEX = "pip install --index-url https://pypi.internal/simple {}"
+# a hold of a reviewed rule alone that sends nothing: after a secret read, an install (a send) is also TK-Q001's
+HELD = "$X run"
 TWO = {"answers": [{"model": "m-a", "decision": "approve"}, {"model": "m-b", "decision": "approve"}]}
 _ids = itertools.count()
 
@@ -355,11 +358,11 @@ class TestPrecedent(Case):
 
     def test_an_answer_is_no_precedent_unless_a_clean_runs_and_a_persons(self):
         run = self.register()
-        self.ask("cat ~/.aws/credentials", run=run)   # denied, and the run now carries secrets_access
-        aid, a = self.ask(run=run)
+        self.ask("cat .env", run=run)   # a secret read: the run now carries secrets_access
+        aid, a = self.ask(HELD, run=run)
         self.assertEqual((a["ai"]["clean"], a["ai"]["labels"]), (False, ["secrets_access"]))
         self.person(aid)
-        _, a = self.ask()
+        _, a = self.ask(HELD)
         self.assertEqual(a["ai"]["precedents"]["approve"], [])   # a person's answer in a run that read a secret
         self.assertEqual(self.s.log.agent["precedents"], {})
 
@@ -406,7 +409,7 @@ class TestPrecedent(Case):
     def test_a_secret_read_before_the_person_answered_makes_no_precedent(self):
         aid, a = self.ask(run=self.register())
         self.assertTrue(a["ai"]["clean"])   # clean when asked
-        self.ask("cat ~/.aws/credentials")   # then a run of the same requester reads a secret
+        self.ask("cat .env")   # then a run of the same requester reads a secret
         self.person(aid)
         self.assertEqual(self.s.log.agent["precedents"], {})
         [ans] = [e["data"] for e in self.events() if e["type"] == "approval" and e["data"]["approval_id"] == aid]
@@ -414,23 +417,23 @@ class TestPrecedent(Case):
 
 class TestRunBound(Case):
     def test_a_run_that_read_a_secret_sends_every_hold_to_people(self):
-        self.precedent()
+        self.precedent(HELD)
         reader = self.register()
-        self.ask("cat ~/.aws/credentials", run=reader)
-        aid, a = self.ask()
+        self.ask("cat .env", run=reader)
+        aid, a = self.ask(HELD)
         self.assertEqual(a["agent"]["reason"], "the run carries secrets_access: people answer it")
         for continues in (False, True):   # any run of the requester, afresh or not
             with self.subTest(continues=continues):
-                _, a = self.ask(run=self.register(**({"continues": True} if continues else {})))
+                _, a = self.ask(HELD, run=self.register(**({"continues": True} if continues else {})))
                 self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
         with mock.patch.object(svc, "SECRETS_S", 0):   # while the run that read it is open, whatever the window
-            _, a = self.ask(run=self.register())
+            _, a = self.ask(HELD, run=self.register())
         self.assertEqual(a["ai"]["labels"], ["secrets_access"])
         self.s.call(AGENT, "close_run", {"request_id": rid(), **reader[0]})
-        _, a = self.ask(run=self.register())   # and for SECRETS_S after it closed
+        _, a = self.ask(HELD, run=self.register())   # and for SECRETS_S after it closed
         self.assertEqual(a["ai"]["labels"], ["secrets_access"])
         with mock.patch.object(svc, "SECRETS_S", 0):   # the window past: clean again
-            _, a = self.ask(run=self.register())
+            _, a = self.ask(HELD, run=self.register())
         self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
         other = CallerIdentity("uid", "990777", True)   # another requester's runs don't carry it
         r = self.s.call(other, "register_run", {"request_id": rid(), "agent": {"name": "x"}})
@@ -443,12 +446,12 @@ class TestRunBound(Case):
     def principal_switch(self, first, then):
         """A secret read in a run registered with `first`, then a hold in a fresh run registered with `then`."""
         self.s.oidc = mock.Mock(validate=lambda t: CallerIdentity("oidc", "iss/" + t, True, {"person": "oidc:" + t}))
-        self.precedent()
+        self.precedent(HELD)
         reader, fresh = self.register(**first), None
-        self.ask("cat ~/.aws/credentials", run=reader)
+        self.ask("cat .env", run=reader)
         fresh = self.register(**then)
         people = [self.s.log.runs[("default", r[0]["run_id"])]["people"][1] for r in (reader, fresh)]
-        _, a = self.ask(run=fresh)
+        _, a = self.ask(HELD, run=fresh)
         return people, a
 
     def test_a_secret_read_under_a_principal_holds_the_requesters_runs_without_one(self):
@@ -462,20 +465,20 @@ class TestRunBound(Case):
         self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
 
     def test_events_a_run_lost_send_every_hold_of_the_requester_to_people(self):
-        self.precedent()
+        self.precedent(HELD)
         run, seq = self.register()
         next(seq)
         next(seq)   # client_seq 0 and 1 never reach the signer: a client_counter_gap
-        aid, a = self.ask(run=(run, seq))
+        aid, a = self.ask(HELD, run=(run, seq))
         self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
-        _, a = self.ask(run=self.register())
+        _, a = self.ask(HELD, run=self.register())
         self.assertFalse(a["agent"]["eligible"])
 
     def test_a_label_taken_after_the_ai_approved_withdraws_it_before_it_runs(self):
         self.precedent()
         aid, _ = self.ask()
         self.assertEqual(self.ai(aid)["state"], "approved")
-        self.ask("cat ~/.aws/credentials")
+        self.ask("cat .env")
         out = self.consume(aid)
         self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-REJECTED"]))
         self.assertIn("the run carries secrets_access now", out["reason"])
@@ -487,7 +490,7 @@ class TestRunBound(Case):
         self.precedent()
         aid, a = self.ask()
         self.assertTrue(a["agent"]["eligible"])
-        self.ask("cat ~/.aws/credentials")
+        self.ask("cat .env")
         msg = self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), "approval_id": aid,
                                                                       "decision": "approve", "ai": TWO})
         self.assertIn("the run carries secrets_access now", msg)
@@ -539,7 +542,7 @@ class TestTenantsAnAppAsserts(Case):
         return s
 
     def test_a_secret_read_in_one_tenant_holds_the_requesters_runs_in_every_tenant(self):
-        self.ask("cat ~/.aws/credentials")   # tenant default
+        self.ask("cat .env")   # tenant default
         for tenant in ("t2", "default"):
             with self.subTest(tenant):
                 r = self.s.call(AGENT, "register_run", {"request_id": rid(), "agent": {"name": "x"}, "tenant": tenant})
@@ -564,10 +567,10 @@ class TestDelegatedRuns(Case):
         return {"run_id": r["run_id"], "run_token": tok["run_token"]}, itertools.count()
 
     def test_a_secret_read_in_a_run_handed_to_the_agent_holds_the_agents_own_runs(self):
-        self.precedent()
+        self.precedent(HELD)
         handed = self.delegated()
-        self.ask("cat ~/.aws/credentials", run=handed)   # the agent reads a secret in the run it was handed
-        _, a = self.ask()   # and asks in its own run
+        self.ask("cat .env", run=handed)   # the agent reads a secret in the run it was handed
+        _, a = self.ask(HELD)   # and asks in its own run
         self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
                          (f"uid:{AGENT.subject}", False, ["secrets_access"]))
 
@@ -577,10 +580,10 @@ class TestDelegatedRuns(Case):
         self.assertEqual(pipeline.requesters({"owner": None, "writers": {}}), set())
 
     def test_a_secret_the_agent_read_holds_a_run_handed_to_it(self):
-        self.precedent()
+        self.precedent(HELD)
         handed = self.delegated()
-        self.ask("cat ~/.aws/credentials")   # in its own run
-        _, a = self.ask(run=handed)   # then asks in the run it was handed, owned by another identity
+        self.ask("cat .env")   # in its own run
+        _, a = self.ask(HELD, run=handed)   # then asks in the run it was handed, owned by another identity
         self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
                          (f"uid:{AGENT.subject}", False, ["secrets_access"]))
 
@@ -778,7 +781,7 @@ class TestReplayAndView(Case):
         aid, _ = self.ask()
         self.ai(aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
-        self.ask("cat ~/.aws/credentials")
+        self.ask("cat .env")
         keys = ("precedents", "demoted", "playbook", "tainted")
         before = json.loads(json.dumps({k: self.s.log.agent[k] for k in keys}))
         self.restart()
@@ -1003,9 +1006,10 @@ class TestWhatTheKeyShows(Case):
         self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X\nAPI_PIN=[REDACTED:dotenv]"]})
         _, a = self.ask("pip install --index-url https://dl.cloudsmith.io/AbCdEf0123456789/acme/simple/ x")
         self.assertEqual(a["ai"]["key"]["target"], {"TK-A025": ["pip --index-url https://dl.cloudsmith.io/…"]})
-        _, a = self.ask("$X --env-file .env\nDB_HOST_PIN=correct-horse-battery-staple")   # TK-F005: a secret read
-        self.assertEqual((a["ai"]["clean"], a["ai"]["key"]["target"]), (False, {}))
-        _, a = self.ask()   # and the requester's next call
+        _, a = self.ask("$X --env-file .env\nDB_HOST_PIN=correct-horse-battery-staple")   # names .env, reads nothing
+        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X --env-file .env\nDB_HOST_PIN=[REDACTED:dotenv]"]})
+        self.ask("cat .env")   # a secret read
+        _, a = self.ask(HELD)   # and the requester's next call
         self.assertEqual((a["ai"]["clean"], a["ai"]["key"]["target"]), (False, {}))
         text = json.dumps([e for e in self.events() if e["type"] == "approval.request"])
         self.assertNotIn("correct-horse-battery-staple", text)
@@ -1118,21 +1122,29 @@ class TestTheReviewersUser(unittest.TestCase):
             svc.SignerService(d, policy=engine(), identity=AGENT, approvals=conf)
 
 
-class TestTheRunBoundOffline(TestEvidence):
+class TestTheRunBoundOffline(Case):
+    bundle = TestEvidence.bundle
+
     @pytest.mark.unverified_bundles
     def test_an_ai_yes_in_a_labelled_run_fails_without_its_policy_snapshot(self):
         """A bundle can leave its policy snapshot out, never the signed records that cite it: an AI yes in a labelled
         run whose snapshot is missing fails the `AI run bound` line, as one its run bound refused does."""
         import test_ts_verifier as tv
-        aid, _ = self.ask(tcid="tc-1")
-        self.person(aid)
-        self.ask("cat ~/.aws/credentials", tcid="tc-secret")
+        self.precedent(HELD)   # in a run of its own: the same call again in one run reuses its approval
+        self.ask("cat .env", tcid="tc-secret")
         with mock.patch.object(svc.SignerService, "_unclean", lambda s, run: []):   # a signer that let it through
-            aid2, _ = self.ask(tcid="tc-2")
+            aid2, _ = self.ask(HELD, tcid="tc-2")
             self.ai(aid2)
         path, trust = self.bundle()
-        bare = os.path.join(self.dir, "bare.tkb")   # the same run, exported without its policy snapshots
-        export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], bare)
+        bare = os.path.join(self.dir, "bare.tkb")   # the same bundle, its policy snapshots left out
+        with zipfile.ZipFile(path) as z:
+            files = {n: z.read(n) for n in z.namelist() if not n.startswith("policies/")}
+        manifest = json.loads(files["manifest.json"])
+        manifest["files"] = {k: v for k, v in manifest["files"].items() if not k.startswith("policies/")}
+        files["manifest.json"] = json.dumps(manifest).encode()
+        with zipfile.ZipFile(bare, "w") as z:
+            for n, b in files.items():
+                z.writestr(n, b)
         for bundle, words in ((path, "which the policy's run bound names"), (bare, "whose snapshot the bundle doesn't")):
             with self.subTest(words):
                 rep, code = v2.verify(bundle, trust)
