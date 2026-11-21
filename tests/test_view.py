@@ -775,9 +775,13 @@ class View(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.r, name)
 
+        me = threading.current_thread()
+
         def reader(cfg, **kw):
-            opened.append(1)
             r = real_reader(cfg, **kw)
+            if threading.current_thread() is not me:   # the feed's own threads open readers too: not this request's
+                return r
+            opened.append(1)
             return Behind(r) if len(opened) == 1 else r
         with mock.patch.object(view, "reader", side_effect=reader):
             self.assertIsNotNone(feed.rows(observe.ALL, *key))
