@@ -24,5 +24,14 @@
                "tool_use_id": "call_4", "tool_input": {"questions": []}},
    "decision": "allow",
    "request": {"tool": "question", "tool_call_id": "call_4", "args": {"questions": []}},
-   "exit": 0, "stdout": ""}
+   "exit": 0, "stdout": ""},
+  {"name": "an http(s) image of experimental_image_generate is decided as a fetch",
+   "payload": {"session_id": "oc-1", "cwd": "/w", "hook_event_name": "tool.execute.before",
+               "tool_name": "experimental_image_generate", "tool_use_id": "call_5",
+               "tool_input": {"prompt": "a cat", "images": ["https://x.example/cat.png"], "path": "/w/out"}},
+   "decision": "deny",
+   "request": {"tool": "WebFetch", "tool_call_id": "call_5",
+               "args": {"prompt": "a cat", "images": ["https://x.example/cat.png"], "path": "/w/out", "file_path": "/w/out",
+                        "paths": [], "url": "https://x.example/cat.png"}},
+   "exit": 2, "stdout": ""}
 ]
