@@ -122,7 +122,7 @@ class Signer:
         for rid in {ev["tracekit"]["run_id"] for ev in run.events if ev.get("tracekit")}:
             recs.update(import_v2.store_records(os.path.join(self.d, "data"), rid))
         run = load_run(import_v2.import_records(recs, why_dir, {})[0])
-        run.signed = import_v2.signed(run, recs)[0]   # the arguments aren't checked: E28 reads no content
+        run.signed, _, run.join_alerts = import_v2.signed(run, recs)   # arguments unchecked: E28 reads no content
         return run
 
     def close(self):

@@ -116,6 +116,9 @@ class Run:
     signed: FrozenSet[Tuple[str, Any, Any, Any, str]] = frozenset()
     # of those calls, the ones whose arguments in the log were checked against the arguments their signed decision kept
     bound: FrozenSet[str] = frozenset()
+    # what that check of the log against the signer's records found wrong (import_v2.check's alerts), as a merge puts
+    # them on an import
+    join_alerts: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def start(self) -> Dict[str, Any]:

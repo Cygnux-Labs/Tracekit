@@ -25,7 +25,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
-from .. import privacy
+from .. import privacy, provenance
 from ..format.canon import event_hash as jcs_hash
 from ..policy2.engine import Engine
 from .core import COMMITTED, GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
@@ -193,18 +193,38 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
 
 def signed(run: Run, records: Dict[str, List[Dict[str, Any]]]):
     """(the exact edges the signer's `records` back in why run `run`, influence.signed_edges; the run_seq of each such
-    call's signed decision, by its node) over records the caller read and checked: none when the log fails merge's
-    check against them (a citation that doesn't match its record or its agent's run, a record cited twice, one the log
-    owes and doesn't cite, a run it cites that isn't among them). A call's record is the one it cites, and a result is
-    the call of the decision it names."""
+    call's signed decision, by its node; merge's alerts on the log) over records the caller read and checked: no edges
+    when the log fails merge's check against them (a citation that doesn't match its record or its agent's run, a
+    record cited twice, one the log owes and doesn't cite, a run it cites that isn't among them). A call's record is the
+    one it cites, and a result is the call of the decision it names. An edge stays only where the source's content in
+    the log holds the call's argument in the log, as the index reads values: a log that gives a call another call's
+    citation (merge's check can't tell) otherwise traces it to content its argument isn't in. A call whose arguments are
+    only their commitment (an import of its records alone) has no argument in the log to say otherwise."""
     from .influence import signed_edges
-    if check(run, records)[1]:   # its alerts: each problem of an event is one too
-        return frozenset(), {}
+    alerts = check(run, records)[1]   # each problem of an event is an alert too
+    if alerts:
+        return frozenset(), {}, alerts
     decision_of, record, decision = lookups(records)
-    edges = signed_edges(run, decision_of, record)
+    by_id = run.by_id()
+    edges = frozenset(e for e in signed_edges(run, decision_of, record) if _logged(run, by_id, *e))
     calls = {e[0] for e in edges}
     return edges, {"ev:" + ev["id"]: (ev["tracekit"]["run_id"], decision(ev["tracekit"]["run_id"], ev["tracekit"]["run_seq"]))
-                   for ev in run.of_type("action") if "ev:" + ev["id"] in calls}
+                   for ev in run.of_type("action") if "ev:" + ev["id"] in calls}, []
+
+
+def _logged(run: Run, by_id: Dict[str, Dict[str, Any]], call: str, field: Any, kind: Any, _seq: Any, src: str) -> bool:
+    """Whether the content source event `src` brought, in the log, holds argument `field` of `call` in the log as a
+    value of `kind` the index reads (a call's arguments as the signer reads them, without an address's host); true for
+    a call whose arguments are only their commitment."""
+    args = run.value(by_id[call[3:]].get("args_ref"))
+    if isinstance(args, dict) and args.get("content") == COMMITTED:
+        return True
+    ev = by_id[src[3:]]
+    held = run.value(ev.get("ref") if ev["type"] in ("input", "message") else ev.get("result_ref"))
+    if not isinstance(args, dict) or field not in args or isinstance(held, dict) and held.get("content") == COMMITTED:
+        return False
+    return bool({(k, v) for k, v in provenance.values(args[field], email_hosts=False)[0] if k == kind}
+                & set(provenance.values(held)[0]))
 
 
 def lookups(records: Dict[str, List[Dict[str, Any]]]):

@@ -115,8 +115,9 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
     with before_seq past the end of the log. Each atom is read as the signer's index reads values (_holds). Untrusted
     content also brought an atom when it holds a value of it that no trusted content holds (an IBAN's digits written in
     groups, a URL's host), read wider than the index reads untrusted content (_wide), or when two untrusted texts hold
-    its two halves (_split). A trusted call's result holds nothing an earlier call's arguments carried any of: an echo
-    of the agent's own value (a lookup's error naming it, a validator returning it whole) didn't bring it.
+    its two halves (_split). A trusted call's result holds nothing an earlier call's arguments named (all of it, or its
+    longest digit run): an echo of the agent's own value (a lookup's error naming it, a validator returning it whole)
+    didn't bring it.
     texts: _texts(run); memo: the readings of the run's content and calls, kept across its calls."""
     rows = []
     if _committed(args):   # a signed run's arguments: only their commitment, which is no argument value
@@ -131,7 +132,9 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
             continue
         atom = _atom(a)
         p, word, vals, _ = atom
-        echo = next((seq for seq, plain, cv, cw in calls if _holds(atom, plain, cv) or (cv | cw) & vals), None)
+        # what names the value, not a part of it others share: all of it, or its longest digit run (an IBAN's account)
+        names = atom[3] | set(sorted((v for v in vals if v[0] == "digits"), key=lambda v: len(v[1]))[-1:])
+        echo = next((seq for seq, plain, cv, cw in calls if _holds(atom, plain, cv) or (cv | cw) & names), None)
 
         def counts(i: int) -> bool:   # trusted content that may be this value's source: not a call's echo of it
             ev, trust = reads[i][:2]
@@ -140,7 +143,8 @@ def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[
         if word is not None:
             held |= {i for i in range(k) if p in reads[i][3] and word.search(reads[i][3])}
         trusted_vals = {v for v in vals for i in by_val.get(v, ()) if i < k and counts(i)}
-        halves = _split(atom, [i for i in range(k) if reads[i][1] != "trusted"], reads)
+        halves = _split(atom, [i for i in range(k) if reads[i][1] != "trusted"],
+                        [i for i in range(k) if reads[i][1] == "trusted"], reads)
         srcs = []
         for i in sorted(held | halves):
             ev, trust, label, plain, rv, wide = reads[i]
@@ -235,16 +239,21 @@ def _wide(text: str) -> Set[Tuple[str, str]]:
     return out
 
 
-def _split(atom, untrusted: List[int], reads) -> Set[int]:
-    """The untrusted contents (`untrusted`: their indices in reads) that hold free-string atom `atom` in two halves of 4
-    or more characters, each a whole token (a value given in two mails), when it is one word of 8 or more."""
+def _split(atom, untrusted: List[int], trusted: List[int], reads) -> Set[int]:
+    """The untrusted contents (`untrusted`, `trusted`: indices in reads) that hold free-string atom `atom` in two halves
+    of 4 or more characters, each a whole token of a different one (a value given in two mails), when it is one word of
+    8 or more and no trusted content (the task included) holds both halves as tokens (a name the task gives, written as
+    one word)."""
     p = atom[0]
     if atom[1] is None or len(p) < 8 or " " in p:
         return set()
     for cut in range(4, len(p) - 3):
-        first = [i for i in untrusted if _token(p[:cut], reads[i][3])]
-        last = [i for i in untrusted if _token(p[cut:], reads[i][3])] if first else []
-        if last:
+        a, b = p[:cut], p[cut:]
+        if any(_token(a, reads[i][3]) for i in trusted) and any(_token(b, reads[i][3]) for i in trusted):
+            continue
+        first = [i for i in untrusted if _token(a, reads[i][3])]
+        last = [i for i in untrusted if _token(b, reads[i][3])] if first else []
+        if any(i != j for i in first for j in last):
             return set(first + last)
     return set()
 
@@ -387,7 +396,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
     problems = integrity(run)
     if problems:
         out.append({"severity": "high", "title": "Log failed integrity check", "detail": problems[0], "node": None})
-    for e in (run.start.get("meta") or {}).get("evidence_alerts") or []:  # e.g. Tracekit capture gaps
+    for e in [*((run.start.get("meta") or {}).get("evidence_alerts") or []), *run.join_alerts]:  # capture gaps, a join
         out.append({"severity": "high", "title": e.get("title", "Evidence problem"), "detail": e.get("detail", ""),
                     "node": None})
     from . import influence
@@ -737,11 +746,11 @@ def broken_summary(path: str, err: Exception) -> Dict[str, Any]:
 def analyse(path: str, verify: Optional[Callable[[Run], Any]] = None) -> Dict[str, Any]:
     """What the workspace needs of one run folder: run, graph (no inferred edges), alerts and summary; or, for a run
     that cannot be analysed, its broken summary (listed with why, never dropped from the view). `verify`: the run's
-    (Run.signed, Run.bound) from signed records the caller holds; none without it."""
+    (Run.signed, Run.bound, Run.join_alerts) from signed records the caller holds; none without it."""
     try:
         run = load_run(path)
         if verify is not None:
-            run.signed, run.bound = verify(run)
+            run.signed, run.bound, run.join_alerts = verify(run)
         return analysed_run(run, build_graph(run, infer=False))
     except Exception as e:
         if os.path.exists(os.path.join(path, "events.jsonl")) or not isinstance(e, FileNotFoundError):

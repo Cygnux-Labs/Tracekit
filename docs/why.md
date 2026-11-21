@@ -250,7 +250,7 @@ they are known (`tracekit/why/influence.py`):
 
 | Grade | It says | Comes from | Drawn |
 |---|---|---|---|
-| **exact** | this untrusted record holds the argument's value, and nothing the signer indexed as trusted does | the signer's provenance index, read from the signed records themselves: in `tracekit view`, the records it verified, joined as `tracekit why import` merges a log (each citation matches its record and its agent's run, no record is cited twice, every record the log owes is cited, else nothing joins); the call's signed decision names the source record, and the run's event that cites that record is it. Where the viewer kept the decision's arguments, they must be the log's; where it didn't, the words say the log's arguments weren't checked | solid |
+| **exact** | this untrusted record holds the argument's value, and nothing the signer indexed as trusted does | the signer's provenance index, read from the signed records themselves: in `tracekit view`, the records it verified, joined as `tracekit why import` merges a log (each citation matches its record and its agent's run, no record is cited twice, every record the log owes is cited, else nothing joins); the call's signed decision names the source record, and the run's event that cites that record is it. Where the viewer kept the decision's arguments, they must be the log's; where it didn't, the source's content in the log must hold the call's argument in the log, and the words say the log's arguments weren't checked. What the check finds wrong is said on the run once the log has ended | solid |
 | **claimed** | the why log says so | a why log's own `provenance` field (or a run that only says it is an import) with no verified signed record behind it: shown, never used for a finding, the chain or the order of the answers; `tracekit why` without the signer's records shows every edge so | none |
 | **measured** | removing this source changed whether the call happened | a replay test (`tracekit why test`, FIND THE CAUSE): verdict causal, its target matching this call alone in the run | double |
 | **seen** | the source was in the context of the model call that asked for the call | the agent's runtime's record of its context; for a signed run, the LLM gateway's record of the results a request sent (the rest of an imported run's context is everything the run observed before the model call) | thin |
@@ -267,9 +267,10 @@ value (the string a JSON result holds). Untrusted content also brought a value w
 trusted content holds (an IBAN's digits written in groups, a URL's host). There the search reads wider than the
 signer's index, so it stops more, never fewer: digit runs across any short run of other characters (slashes, dashes,
 commas, spaces) and in other scripts' digits, addresses spelled out ("audit at outside dot example"), and a one-word
-value whose two halves two untrusted texts hold. A trusted call's result holds nothing an earlier call's arguments
-carried any of: an echo of the agent's own value (a lookup's error naming it, a validator returning it whole) didn't
-bring it.
+value whose two halves two different untrusted texts hold as words, when no trusted content (the task included) holds
+both. A trusted call's result holds nothing an earlier call's arguments named: all of it, or its longest digit run (a
+lookup's error naming it, a validator returning it whole) is an echo of the agent's own value, not its source; a
+domain or another part is not (a directory looked up by the domain the mail names still gives the address).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.

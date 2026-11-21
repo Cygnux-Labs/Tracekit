@@ -255,8 +255,8 @@ class Store:
             a = hit[1]
             if a.get("run") is not None and hit[2] != version:   # the signed records changed: join the run again
                 joined = self._verify(a["run"])
-                if joined != (a["run"].signed, a["run"].bound):
-                    a["run"].signed, a["run"].bound = joined
+                if joined != (a["run"].signed, a["run"].bound, a["run"].join_alerts):
+                    a["run"].signed, a["run"].bound, a["run"].join_alerts = joined
                     a = {**a, **analysed_run(a["run"], a["graph"])}
                 self._cache[path] = (st, a, version)
             return self._cache[path][1]
@@ -273,11 +273,13 @@ class Store:
         self._cache[path] = (st, a, version)
         return a
 
-    def _verify(self, run) -> Tuple[FrozenSet[Tuple], FrozenSet[str]]:
-        """(the run's exact influence edges, the calls whose arguments in the log were checked) from the signed records
-        this viewer verified (its feed's signed_runs), joined as a merge checks a log against them (import_v2.signed): a
-        run id two tenants share joins nothing. A call whose signed decision kept its arguments (a row the tape shows
-        them on) is checked when they are the log's, and loses its edges when they aren't."""
+    def _verify(self, run) -> Tuple[FrozenSet[Tuple], FrozenSet[str], List[Dict[str, Any]]]:
+        """(the run's exact influence edges, the calls whose arguments in the log were checked, what the check found
+        wrong) from the signed records this viewer verified (its feed's signed_runs), joined as a merge checks a log
+        against them (import_v2.signed): a run id two tenants share joins nothing. A call whose signed decision kept its
+        arguments (a row the tape shows them on) is checked when they are the log's, and loses its edges when they
+        aren't. What the check found wrong is said once the log has ended and this viewer holds records of a run it
+        cites (or of two runs under its id): a log still being written may be behind its records."""
         with self.out.lock:
             runs = dict(getattr(self.out, "signed_runs", {}))
             kept = {(r.get("tenant"), r.get("session_id"), r["v2"].get("run_seq")): r.get("tool_input")
@@ -288,7 +290,13 @@ class Store:
             tenants.setdefault(rid, []).append(tenant)
         cited = {ev["tracekit"].get("run_id") for ev in run.events if isinstance(ev.get("tracekit"), dict)}
         mine = {rid: tenants[rid][0] for rid in cited if len(tenants.get(rid, ())) == 1}
-        edges, decisions = import_v2.signed(run, {rid: runs[(t, rid)] for rid, t in mine.items()})
+        shared = sorted(rid for rid in cited if len(tenants.get(rid, ())) > 1)
+        edges, decisions, alerts = import_v2.signed(run, {rid: runs[(t, rid)] for rid, t in mine.items()})
+        ended = bool(run.events) and run.events[-1]["type"] == "run.end"
+        said = [{"title": "Two tenants of the store have a run this log cites",
+                 "detail": f"run {rid}: a why log names no tenant, so which one's records it cites can't be told"}
+                for rid in shared] + [a for a in alerts if not any(rid in a["detail"] for rid in shared)] \
+            if ended and (mine or shared) else []   # the tenant alert says why a shared run's records aren't joined
         by_id, bound, wrong = run.by_id(), set(), set()
         for nid, (rid, seq) in decisions.items():
             args = kept.get((mine[rid], rid, seq))
@@ -296,7 +304,7 @@ class Store:
                 same = json.dumps(args, sort_keys=True) == json.dumps(run.value(by_id[nid[3:]].get("args_ref")),
                                                                       sort_keys=True)
                 (bound if same else wrong).add(nid)
-        return frozenset(e for e in edges if e[0] not in wrong), frozenset(bound)
+        return frozenset(e for e in edges if e[0] not in wrong), frozenset(bound), said
 
     def _changed(self, path: str, announce: bool) -> None:
         """A run's log grew: recompute its alerts and announce the new ones (each one once)."""

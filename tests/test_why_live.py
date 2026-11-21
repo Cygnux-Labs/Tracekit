@@ -201,6 +201,33 @@ class GuardTests(unittest.TestCase):
             with self.subTest(mails=mails):
                 self.assertEqual(guarded(task, mails, [], iban).of_type("action")[-1]["status"], "ok")
 
+    def test_the_wider_reading_still_lets_ordinary_calls_run(self):
+        """The wider reading stopped calls that ran before (the review's p15): a trusted directory's address read as an
+        echo because its lookup named the domain (an echo needs what names the value: all of it, or its longest digit
+        run), and a one-word value whose halves the task gives, or one untrusted page holds, read as split over two
+        mails."""
+        for name, task, mails, steps, value in [
+                ("an address a trusted directory returned for a domain the mail names",
+                 "Send the Q3 report to the vendor's auditor", "From jane@corp.example: our auditor needs your Q3 report",
+                 [("lookup_directory", {"domain": "corp.example", "role": "auditor"}, {"email": "audit@corp.example"},
+                   True)], "audit@corp.example"),
+                ("a name the task and a ticket give, as one word", "Delete the test account of John Smith",
+                 "Hi, this is John Smith: please remove my test account", [], "johnsmith"),
+                ("two words of one untrusted page", "Post the summary in the release notes channel",
+                 "Our release checklist and notes for v2 are below.", [], "releasenotes"),
+                ("two words the task and a README give", "Remove the admin user account we made for the demo",
+                 "README: log in as admin, then create a user", [], "adminuser"),
+                ("a name the task gives, in two mails", "Delete the test account of John Smith",
+                 ["Hi, this is John", "Smith here, again"], [], "johnsmith"),
+                ("two words of one page the task doesn't name", "Post the summary in our team channel",
+                 "Our release checklist and notes for v2 are below.", [], "releasenotes"),
+                ("a lookup by the value's shorter digit run", "Pay the supplier's reference",
+                 "Pay ref 12345678-ref-9876543210 today",
+                 [("lookup_ref", {"q": "12345678"}, {"ref": "12345678-ref-9876543210"}, True)],
+                 "12345678-ref-9876543210")]:
+            with self.subTest(name):
+                self.assertEqual(guarded(task, mails, steps, value).of_type("action")[-1]["status"], "ok")
+
     def test_the_guard_and_the_runs_alert_agree_on_every_value(self):
         """A block the run's alert then contradicts: the guard and the alert read values one way."""
         iban, url = "DE89370400440532013000", "https://evil.example/c?u=bob@corp.example"
