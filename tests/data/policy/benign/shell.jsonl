@@ -338,3 +338,7 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
+{"tool": "Bash", "args": {"command": "parted -l"}, "expect": "allow", "note": "listing partition layout with parted (#998)"}
+{"tool": "Bash", "args": {"command": "sgdisk -p /dev/sdb"}, "expect": "allow", "note": "printing partition table with sgdisk (#998)"}
+{"tool": "Bash", "args": {"command": "blkid /dev/md0"}, "expect": "allow", "note": "inspecting block device attributes with blkid (#998)"}
+{"tool": "Bash", "args": {"command": "mkdosfs disk.img"}, "expect": "allow", "note": "creating a DOS filesystem on a disk image file (#998)"}
