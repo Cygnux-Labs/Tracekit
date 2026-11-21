@@ -207,3 +207,16 @@ class DocTableCells(unittest.TestCase):
                             bad.append(f"{os.path.relpath(path, ROOT)}:{j + 1}")
                         j += 1
         self.assertEqual(bad, [])
+
+
+class VaultDocs(unittest.TestCase):
+    def test_the_docs_do_not_ask_for_a_restart_after_a_vault_change(self):
+        """#986: the gateway re-reads the vault's state every interval, so the restart these pages asked for is no
+        longer what an operator has to do."""
+        self.assertNotIn("Restart the gateway after you turn the vault on",
+                         read(os.path.join(ROOT, "docs", "gateway.md")))
+        rows = [line for line in read(os.path.join(ROOT, "docs", "limits.md")).splitlines()
+                if "not_retained" in line and "`status`" in line]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("restart it after turning the vault on or off", rows[0])
+        self.assertIn("minute", rows[0])   # and says what an operator should allow instead

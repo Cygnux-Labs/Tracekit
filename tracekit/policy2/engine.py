@@ -2226,6 +2226,35 @@ def _awk_outputs(args):
 _OUTPUT_OPTION = {"sort": ("-o", "--output"), "iconv": ("-o", "--output"), "gpg": ("-o", "--output"),
                   "gpg2": ("-o", "--output"), "openssl": ("-out",), "patch": ("-o", "--output"),
                   "base64": ("-o", "--output"), "uudecode": ("-o", "--output-file")}
+# ssh-keygen's options that take a value (its getopt string, OpenSSH 10.2), and its modes that do not make -f a file
+# the write rules read. Reading: -i and -e export to stdout, -y prints the public key, -l and -B a fingerprint, -F finds
+# a host in known_hosts, -r prints a fingerprint resource, -L shows a certificate, -Q checks a KRL, -M screen and every
+# -Y mode read -f (an input file, a key that signs, allowed signers). -R is here because removing a host from
+# known_hosts is not a write the rules read: the row at docs/limits.md and
+# test_a_host_key_appended_to_known_hosts_is_its_only_write_not_denied record known_hosts as the exception (appending a
+# host key there is ordinary work, so naming it is not a write). Every other mode writes what -f names (no mode at all:
+# a new key pair; -p and -c rewrite the key in place; -H rewrites known_hosts; -k a KRL; -A host keys under it), and a
+# mode this list does not name is read as writing.
+_SSH_KEYGEN_VALUED = frozenset("CDEFIMNOPRVYZabfgmnrstwz")
+_SSH_KEYGEN_READS = frozenset("ieylBFrLQRMY")
+
+
+def _ssh_keygen_writes(args):
+    """The files `ssh-keygen ARGS` writes by -f, its options read as getopt reads them (a cluster's letters, a valued
+    option's value attached or the next word, options after operands too, none after `--`): none in a reading mode."""
+    modes, files, i = set(), [], 0
+    while i < len(args) and args[i] != "--":
+        a = args[i]
+        for j, ch in enumerate(a[1:] if a.startswith("-") else "", 1):
+            modes.add(ch)
+            if ch in _SSH_KEYGEN_VALUED:   # the rest of the word, else the next word, is its value
+                value = a[j + 1:] or (args[i + 1] if i + 1 < len(args) else "")
+                i += not a[j + 1:]
+                if ch == "f" and value:
+                    files.append(value)
+                break
+        i += 1
+    return [] if modes & _SSH_KEYGEN_READS else files
 _OUTPUT_OPERAND = {"uniq": 1, "xxd": 1, "sponge": 0, "patch": 0, "ed": 0, "red": 0, "ex": 0, "vim": 0, "vi": 0,
                    "nvim": 0, "emacs": 0}
 _EDITS_ALL = ("ed", "red", "ex", "vim", "vi", "nvim", "emacs")   # an editor: every file it is given
@@ -2673,6 +2702,8 @@ def _command_effects(commands):
                                if not a.startswith("-") and "=" not in a)
         elif exe in ("curl", "wget"):   # each file a download writes, by all its options (shell.download_writes)
             out.extend("WRITE_TARGET:" + path for path in shell.download_writes([exe, *args])[0])
+        elif exe == "ssh-keygen":   # -f names what a writing mode creates or rewrites (above)
+            out.extend("WRITE_TARGET:" + path for path in _ssh_keygen_writes(args))
         elif exe in _OUTPUT_OPTION or exe in _OUTPUT_OPERAND:
             out.extend("WRITE_TARGET:" + path for path in _outputs(exe, args))
         elif exe in ("sqlite3", "sqlite"):

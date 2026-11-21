@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -992,6 +994,18 @@ class Harnesses(DaemonCase):
                          [("call_01", True), ("call_03", False)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "allow", "allow", "allow", "deny"])
+
+    def test_opencode_2_v1_records_no_unverified_prompt_and_ends_a_deleted_session(self):
+        # #989: v1 has no untrusted prompt observation, so OpenCode 2.x's prompts (nothing says a person typed them)
+        # aren't recorded as the person's; a deleted session ends its run
+        base = {"session_id": "oc2-v1", "cwd": self.d}
+        call = {**base, "tool_name": "bash", "tool_use_id": "c1", "tool_input": {"command": "ls"}}
+        self.assertEqual(self.hook("opencode", call, "tool.execute.before")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", {**base, "prompt": "keep away from prod"}, "session.prompt")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", base, "session.deleted")[:2], (0, ""))
+        types = [e["type"] for e in self.events("oc2-v1")]
+        self.assertNotIn("user.prompt", types)
+        self.assertIn("run.end", types)
 
     def test_cline_answers_in_json_at_exit_0_and_a_denied_call_is_cancelled(self):
         # Cline reads a hook's answer only from its JSON ({"cancel": true} stops the task) and runs the call on any
@@ -2402,6 +2416,7 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(mapped, name)
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
+    @pytest.mark.serial
     def test_a_long_run_of_spaces_takes_linear_time(self):
         # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
         line = "a" + " " * 40_000 + "b"
@@ -3046,6 +3061,33 @@ class HarnessList(unittest.TestCase):
                 self.assertIn(ok, [r[0] for r in rows if r[1].startswith("PowerShell's execution policy")])
 
 
+class QwenHome(unittest.TestCase):
+    """#973: Qwen Code reads a user's settings from $QWEN_HOME in place of ~/.qwen (qwen-code 0.28.0
+    getGlobalQwenDirLite): init wrote ~/.qwen/settings.json, which that Qwen Code never reads, so no hook ran."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.qwen = os.path.join(self.d, "x")
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
+
+    def test_init_and_uninstall_write_qwen_home(self):
+        from tracekit import cli, install
+        path = os.path.join(self.qwen, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(install, "init_dev",
+                                                                         return_value={"socket": "s"}):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIn("PreToolUse", json.load(f)["hooks"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".qwen")))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIsNone(agent_hooks._version(f.read()))
+        # a project's, and another user's, are where they were
+        self.assertEqual(agent_hooks.config_path("qwen", "/repo"), os.path.join("/repo", ".qwen", "settings.json"))
+        self.assertEqual(agent_hooks.config_path("qwen", home="/h"), os.path.join("/h", ".qwen", "settings.json"))
+
+
 class Installer(unittest.TestCase):
     def test_openhands_hooks_json_keeps_the_form_it_is_written_in(self):
         # #563 review: OpenHands reads hooks.json as {"hooks": {...}}, or the event map itself with Claude Code's names
@@ -3114,6 +3156,90 @@ class Installer(unittest.TestCase):
                 agent_hooks.install("copilot", d, v2=True)
             self.assertIn(".git/info/exclude", out.getvalue())
             self.assertIn("usually committed", out.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(d, ".git")))   # outside git: advice only, no exclude file
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_keeps_the_file_out_of_git(self):
+        # #1000: in a checkout, init adds the file to the exclude file once, uninstall takes the line out
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            exclude = os.path.join(d, ".git", "info", "exclude")
+            with open(exclude, "a") as f:
+                f.write("*.mine")   # the person's own line, with no newline after it
+
+            def lines():
+                with open(exclude) as f:
+                    return f.read().splitlines()
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_hooks.install("copilot", d, v2=True)
+                agent_hooks.install("copilot", d, v2=True)
+            self.assertEqual(lines().count("/.github/hooks/tracekit.json"), 1)
+            self.assertIn("*.mine", lines())
+            self.assertEqual(out.getvalue().count("added to"), 1)
+            self.assertNotIn("usually committed", out.getvalue())
+            status = subprocess.run(["git", "-C", d, "status", "--porcelain", "--untracked-files=all"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertNotIn("tracekit.json", status)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", d, uninstall=True)
+            self.assertNotIn("/.github/hooks/tracekit.json", lines())
+            self.assertIn("*.mine", lines())
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_in_a_subfolder_and_a_worktree(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, wt = os.path.join(d, "repo"), os.path.join(d, "wt")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo]
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run([*git, "worktree", "add", "-q", wt], check=True)
+            sub = os.path.join(repo, "app[1]")   # a pattern character in the path: matched as written
+            os.makedirs(sub)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", sub, v2=True)
+                agent_hooks.install("copilot", wt, v2=True)
+            for top in (repo, wt):
+                status = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=all"],
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertNotIn("tracekit.json", status)
+            with open(os.path.join(repo, ".git", "info", "exclude")) as f:
+                self.assertIn("/app\\[1]/.github/hooks/tracekit.json", f.read().splitlines())
+
+    def test_copilot_init_says_when_claude_codes_project_hook_also_runs(self):
+        # #1000: Copilot CLI runs a repository's .claude hooks, so Tracekit's Claude Code hook there decides each call too
+        from tracekit import install
+        with tempfile.TemporaryDirectory() as d:
+            for local in (False, True):
+                with self.subTest(local=local):
+                    shutil.rmtree(os.path.join(d, ".claude"), ignore_errors=True)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertNotIn("recorded twice", out.getvalue())
+                    name = "settings.local.json" if local else "settings.json"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_hooks(os.path.join(d, ".claude", name))
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertIn("recorded twice", out.getvalue())
+                    self.assertIn(name, out.getvalue())
+            patch_env(self, HOME=d, USERPROFILE=d, COPILOT_HOME=None)
+            work = os.path.join(d, "work")
+            os.makedirs(os.path.join(work, ".claude"))
+            shutil.copy(os.path.join(d, ".claude", "settings.local.json"), os.path.join(work, ".claude"))
+            cwd = os.getcwd()
+            try:
+                for where, said in ((work, True), (d, False)):   # a user install reads the working directory's, not ~/.claude
+                    os.chdir(where)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", v2=True)
+                    self.assertEqual("recorded twice" in out.getvalue(), said)
+            finally:
+                os.chdir(cwd)   # out of `d` before it is removed
 
     def test_copilot_user_hooks_follow_copilot_home(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3663,7 +3789,7 @@ class Installer(unittest.TestCase):
         import site
         from tracekit import install
         user = os.path.join(site.getusersitepackages(), "tracekit", "__init__.py")   # pip install --user, which -I hides
-        events = ("tool.execute.before", "tool.execute.after")
+        events = ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")
         with mock.patch("importlib.util.find_spec", return_value=mock.Mock(origin=user)):
             plugin = agent_hooks._opencode_plugin(None, False)
             want = {ev: install._dev_hook_argv("tracekit.agent_hooks", "entry", ("opencode", ev)) for ev in events}
@@ -3735,7 +3861,8 @@ class Installer(unittest.TestCase):
                     plugin = f.read()
                 # the same plugin, whose hook is told it runs for Kilo, and whose batch block names Kilo Code's config
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
-                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo")
+                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace('"opencode", "session.', '"kilo", "session.')
+                    .replace("--agent opencode", "--agent kilo")
                     .replace("OpenCode's experimental batch", "Kilo Code's experimental batch").replace(
                         "batch_tool in opencode.json", "batch_tool in kilo.json"))
                 self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
@@ -3940,6 +4067,7 @@ class Installer(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(agent_hooks.kiro_version())
 
+    @pytest.mark.serial
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)
