@@ -16,3 +16,15 @@ allowPrivilegeEscalation: false
 capabilities: {drop: [ALL]}
 seccompProfile: {type: RuntimeDefault}
 {{- end -}}
+
+{{- /* "4" or "6" for an IPv4 or IPv6 address (no prefix length), "" for anything else. */ -}}
+{{- define "tc.ipFamily" -}}
+{{- $octet := `(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])` -}}
+{{- $groups := `([0-9A-Fa-f]{1,4}(:[0-9A-Fa-f]{1,4})*)?` -}}
+{{- if regexMatch (printf `^%s(\.%s){3}$` $octet $octet) . -}}4
+{{- else if regexMatch (printf `^%s(::%s)?$` $groups $groups) . -}}
+{{- /* eight groups, or fewer with one "::" */ -}}
+{{- $n := len (regexFindAll `[0-9A-Fa-f]+` . -1) -}}
+{{- if ternary (lt $n 8) (eq $n 8) (contains "::" .) -}}6{{- end -}}
+{{- end -}}
+{{- end -}}
