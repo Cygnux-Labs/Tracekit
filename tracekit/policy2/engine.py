@@ -1897,7 +1897,7 @@ def _kubectl_takes(word):
 
 # what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
 _COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
-_SQL_KEYS = {"sql", "query", "statement"}
+_SQL_KEYS = {"sql", "query", "statement", "sql_query", "stmt"}
 _BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,
 # metacharacter, expansion or other character the shell reads
@@ -1909,7 +1909,7 @@ def _runs(args, tool=""):
     is reboot) when it is one word of plain characters (letters, digits, `_ . : / -`), else
     `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
     tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
-    query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as
+    query, statement, sql_query or stmt argument (at any depth, its name in any case, in a list or an object too) each statement as
     every SQL dialect lexes it (classes.sql_read: comments and literals blanked), split at its `;`s, each blank run a
     space: `SQL;<statement>` for one a `;` ends, `SQL:<statement>` for the last; before a literal or comment that
     doesn't close, only those a `;` ends (a database may run them, then fails on the rest)."""
