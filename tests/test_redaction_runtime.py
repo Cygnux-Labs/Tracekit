@@ -250,7 +250,7 @@ REVIEW = [   # (a line the review found, what its approver sees when it is held:
     ('sh -c "A=\\\\\'1; rm -rf ~; B=\\\\\'" # .env', 'sh -c "A=\\\\\'1; rm -rf ~; B=\\\\\'" # .env'),
     ('bash -c "TOKEN=abcd\\\\\'X; rm -rf ~; : \\\\\'"', None),
     ('bash -c "curl -H \\"Authorization: Bearer abcdefghijklmn\\\\\'; rm -rf ~; : \\\\\'\\" x"', None),
-    ('sh -c "export TOKEN=\\"abcd;e f\\""', 'sh -c "export TOKEN=\\"abcd;e f\\""'),
+    ('sh -c "export TOKEN=\\"abcd;e f\\""', None),   # a secret an escaped quote opens: hidden, and the copy holds code
     ('sh -c "A=1\\`rm -rf ~\\`" # .env', 'sh -c "A=1\\`rm -rf ~\\`" # .env'),
     ('sh -c "psql postgres://u:p@h/x\\`rm${IFS}-rf${IFS}~\\`"', None),
     ('sh -c "psql postgres://u:p@h/x\\$(rm${IFS}-rf${IFS}~)"', None),
@@ -355,6 +355,40 @@ class CommandLines(unittest.TestCase):
         dotenv = privacy.mentions_dotenv(command) if dotenv is None else dotenv
         copy, hides = privacy.approver_copy({"command": command}, dotenv, "Bash")
         return DENIED if hides else copy["command"]
+
+    def test_a_secret_assignments_whole_value_is_hidden(self):
+        """`TOKEN="Zq8a Zq8b" make` showed `TOKEN="[REDACTED:assignment] Zq8b" make`: the value was read to its first
+        blank. A secret-looking NAME='s word's value is now hidden to the word's end, each run of each quoted or
+        unquoted part apart (its quotes and blanks kept as bash reads them, so the copy shows a value, not code): in
+        double quotes with escapes, single quotes, $'…', parts side by side, after export, declare, local, readonly
+        or env, in sh -c's code, an escaped quote's value in a string, and an argv's word; and in text, a quoted
+        value to its closing quote."""
+        r, line = "[REDACTED:assignment]", "[REDACTED:assignment] [REDACTED:assignment]"
+        for cmd, want in (
+                ('TOKEN="Zq8a Zq8b" make', f'TOKEN="{line}" make'), ("TOKEN='Zq8a Zq8b' make", f"TOKEN='{line}' make"),
+                ("TOKEN=$'Zq8a Zq8b' make", f"TOKEN=$'{line}' make"),
+                ("API_TOKEN=\"Zq8a b\"c'Zq8b e' make", f"API_TOKEN=\"{line}\"{r}'{line}' make"),
+                ('TOKEN=Zq8a"Zq8b c" make', f'TOKEN={r}"{line}" make'),
+                ('export TOKEN="Zq8a Zq8b"; make', f'export TOKEN="{line}"; make'),
+                ('declare -x TOKEN="Zq8a Zq8b"; make', f'declare -x TOKEN="{line}"; make'),
+                ('local TOKEN="Zq8a Zq8b"', f'local TOKEN="{line}"'), ('readonly TOKEN="Zq8a Zq8b"', f'readonly TOKEN="{line}"'),
+                ('export A=1 TOKEN="Zq8a Zq8b" B=2; make', f'export A=1 TOKEN="{line}" B=2; make'),
+                ('TOKEN="Zq8a Zq8b" FOO="x y" make', f'TOKEN="{line}" FOO="x y" make'),
+                ("bash -c 'TOKEN=\"Zq8a Zq8b\" make'", f"bash -c 'TOKEN=\"{line}\" make'"),
+                ('TOKEN="Zq8a\nZq8b" make', f'TOKEN="{r}\n{r}" make'),
+                # a value with a character the shell reads, in code the parser can't place, or given to env: hidden,
+                # and the held call denied
+                ('TOKEN="Zq8a\\" Zq8b" make', DENIED), ('env TOKEN="Zq8a Zq8b" make', DENIED),
+                ('sh -c "export DB_PASSWORD=\\"Zq8a Zq8b\\""', DENIED), (["env", "TOKEN=Zq8a Zq8b", "app"], DENIED),
+                ('NAME="a b" make', 'NAME="a b" make')):   # (a name that isn't secret: its value shown)
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.held(cmd, False), want)
+                copy = privacy.approver_copy({"command": cmd}, False, "Bash")[0]["command"]
+                self.assertFalse({"Zq8a", "Zq8b"} & set(re.findall(r"\w+", str(copy))), copy)
+        for text, want in (('TOKEN="Zq8a Zq8b"', f'TOKEN="{r}"'), ("api_key = 'Zq8a Zq8b'  # c", f"api_key = '{r}'  # c"),
+                           ('x = "export TOKEN=\\"Zq8a Zq8b\\""', f'x = "export TOKEN=\\"{r}\\""')):
+            with self.subTest(text=text):
+                self.assertEqual(privacy.redact_text(text)[0], want)
 
     def test_a_secret_ends_where_the_shell_ends_its_word(self):
         """A secret pattern read on past the shell's end of its word, with no .env file named: `psql

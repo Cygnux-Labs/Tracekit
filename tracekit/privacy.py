@@ -38,9 +38,10 @@ DOTENV_LINE = re.compile(r"(?m)^([ \t]*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=
 DOTENV_PATH = re.compile(r"(^|[/\s'\"=@<])\.env(\.[A-Za-z0-9_-]+)?\b")
 # KEY=value / key: value assignments whose key looks secret (.env files, configs, commands), the value in quotes too
 # (a shell's $'...' as well)
-ASSIGNMENT = re.compile(
-    r"(?im)\b([A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*)"
-    r"(\s*[=:]\s*)((?:\$'|[\"'])?)([^\s\"'#]{4,})")
+_SECRET_NAME = r"[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*"
+ASSIGNMENT = re.compile(r"(?im)\b(" + _SECRET_NAME + r")(\s*[=:]\s*)((?:\$'|\\?[\"'])?)([^\s\"'#]{4,})")
+SECRET_NAME_EQ = re.compile(r"(?i)" + _SECRET_NAME + "=")   # a shell word's secret-looking NAME=
+_RUN = re.compile(r"\S+")   # a value's run between blanks
 
 
 # cheap literal pre-checks (lower-cased) so a pattern only runs when its text could be present
@@ -167,7 +168,7 @@ def _redact_jwts(run, s):
     return _marked(s, _jwts(run, s), "jwt")
 
 
-_AFTER = re.compile(r"(\s*[=:]\s*)((?:\$'|[\"'])?)([^\s\"'#]{4,})")
+_AFTER = re.compile(r"(\s*[=:]\s*)((?:\$'|\\?[\"'])?)([^\s\"'#]{4,})")   # (a quote escaped in a string too)
 _IDCH = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_")
 
 
@@ -207,10 +208,26 @@ def _assignments(s, end=None, stop=None):
                 last = e
 
 
+def _quoted_end(s, m):
+    """Where a value _AFTER's match `m` found ends: at its closing quote on its line when a quote opens it (`"…"`,
+    `'…'`, `$'…'`, a backslash keeping the character after it in the first and the last), else at its match's end."""
+    if not m.group(2):
+        return m.end(3)
+    q, k = m.group(2)[-1], m.end(3)
+    if m.group(2)[0] == "\\":   # an escaped quote in a string: to its escaped closing one
+        k = m.start(3)
+        while k < len(s) and s[k] != "\n" and not s.startswith(m.group(2), k):
+            k += 1
+        return k
+    while k < len(s) and s[k] not in (q, "\n"):
+        k += 2 if s[k] == "\\" and m.group(2) != "'" and s[k + 1:k + 2] != "\n" else 1
+    return min(k, len(s))
+
+
 def _redact_assignments(s, counts=None):
-    """Same result as ASSIGNMENT.subn(...) (_assignments). `counts`: as for redact_text."""
+    """ASSIGNMENT's values hidden (_assignments), a quoted one to its closing quote. `counts`: as for redact_text."""
     out, last, n = [], 0, 0
-    for v, e in _assignments(s):
+    for v, e in _assignments(s, lambda b, m: _quoted_end(s, m)):
         out += [s[last:v], "[REDACTED:assignment]"]
         if counts is not None and _hides(s[v:e]):
             counts["assignment"] += 1
@@ -504,7 +521,7 @@ _CASE = re.compile(r"case(?=[ \t\n;&|<>()]|\Z)")
 _NAME_EQ = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*=")   # a word's KEY=, named as DOTENV_LINE names it
 _ARRAY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\+?=")   # what an array's (…) follows: x=(1 2), x+=(3)
 _LEAD = re.compile(r"[ \t]*(?:export\s+)?")   # what DOTENV_LINE reads before a KEY
-_SEP = re.compile(r"\s*[=:]\s*(?:\$'|[\"'])?")   # what ASSIGNMENT reads between a name and its value
+_SEP = re.compile(r"\s*[=:]\s*(?:\$'|\\?[\"'])?")   # what ASSIGNMENT reads between a name and its value
 # what on a line may give a program's name another meaning (a function, an alias, `hash -p`, PATH however it is set,
 # a file it sources) or send what a program prints to one that runs it (>(…), a coprocess, a named pipe): no heredoc
 # on it is data, and no program on it is one of DATA_READERS
@@ -1106,7 +1123,25 @@ def _marks(cmd, r, dotenv, own, expands):
         m = _SEP.match(cmd, b)
         return cut.find(1, m.end()) if m else b
 
-    found = [(v, e, "assignment") for v, e in _assignments(cmd, lambda b, m: value(b, m.start(3), m.end(3)), stop)]
+    def escaped(b, m):   # a value an escaped quote opens in a string (`sh -c "K=\\"v w\\""`): to its escaped close
+        k = cmd.find(m.group(2), m.start(3), stop(b)) if m.group(2)[:1] == "\\" else -1
+        return value(b, m.start(3), m.end(3) if k < 0 else k)
+
+    found = [(v, e, "assignment") for v, e in _assignments(cmd, escaped, stop)]
+    for p in r.starts if expands else [0]:   # a word NAME=value with a secret-looking NAME (export's, declare's,
+        # env's too; an argv's word is one word): all its value, to the word's end or code in it, each run of a quoted
+        # or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
+        if not (m := SECRET_NAME_EQ.match(cmd, p)):
+            continue
+        end = cut.find(1, m.end())
+        end, runs, k = len(cmd) if end < 0 else end, [], m.end()
+        while k < end:
+            q = quote.find(1, k, end)
+            q = end if q < 0 else q
+            runs += [(w.start(), w.end()) for w in _RUN.finditer(cmd, k, q)]
+            k = q + 1 + cmd.startswith("$'", q)
+        if sum(b - a for a, b in runs) >= 4:   # (as ASSIGNMENT's value: four characters at least)
+            found += [(a, x, "assignment") for a, b in runs if (x := bounded(a, b))]
     for v, e, name in _secret_spans(cmd):
         if e := e if name == "private_key" else bounded(v, e):   # a private key whole: every line of it
             found.append((v, e, name))
