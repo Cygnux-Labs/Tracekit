@@ -543,7 +543,7 @@ class CodingPack(unittest.TestCase):
                 "A='(s)' DOCKER_HOST=unix:///x pytest", "X={a,b} DOCKER_HOST=unix:///x pytest",
                 "A=\"it's\" DOCKER_HOST=unix:///x pytest", "A=$(id)${B} DOCKER_HOST=unix:///x pytest",
                 "env -u X -C /tmp DOCKER_HOST=unix:///x pytest", "timeout -s KILL 1.5m env DOCKER_HOST=unix:///x pytest",
-                "export DOCKER_HOST=unix:///x && pytest"]
+                "export DOCKER_HOST=unix:///x && pytest", "/usr/bin/timeout 5 env DOCKER_HOST=unix:///x pytest"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
