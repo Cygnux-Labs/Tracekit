@@ -2052,7 +2052,7 @@ def _exit(harness, code, is_pre):
 
 def _reply(harness, stdout, allowed, msg, is_pre):
     # a block message in at most 500 characters. The hook's outcome, its last line and the lines that go on from it
-    # (claude_code.stopped's), goes first (before a waiting line), and in it the person's commands right after its first
+    # (sdk.client.stopped's), goes first (before a waiting line), and in it the person's commands right after its first
     # line, which names the rule ids: a longer one loses the end of its reasons and of the agent's line, marked
     lines = msg.split("\n")
     start = max((i for i, x in enumerate(lines) if not x.startswith(STOPPED_LINES)), default=0)

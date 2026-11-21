@@ -5,7 +5,7 @@ call before it runs (an `ask` waits for a person) and records the outcome after.
     agent = Agent(model=..., tools=[...], hooks=[Tracekit(run)])
 
 The signer decides the model's own call (its toolUseId and input) in a BeforeToolCallEvent callback that runs before
-every other hook. A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
+every other hook; a `shell` call is decided as the commands its shell runs (_as_run). A refused call never runs: `cancel_tool` gives the model Tracekit's reason as an error tool result and
 the run goes on. A second callback, after every other hook, keeps that refusal if a hook cleared it, and refuses an
 allowed call whose input or tool a hook changed after the decision. The AfterToolCallEvent callback, after every other
 hook, records the result the model reads; a call a hook changed after Tracekit's last look is recorded as an error, and
@@ -17,7 +17,9 @@ recorded only warns.
 """
 import asyncio
 import copy
+import json
 import math
+import shlex
 import threading
 import warnings
 
@@ -30,6 +32,7 @@ from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
 BACKGROUND = "_background_execution"   # the flag Strands strips from a call's input before it runs (background_tasks)
+SHELL_OPTIONS = ("parallel", "ignore_errors", "timeout", "work_dir")   # what strands_tools' shell reads beside command
 
 
 class Tracekit(HookProvider):
@@ -64,15 +67,17 @@ class Tracekit(HookProvider):
         with self._lock:   # a sync tool's sub-agent, or agents in other threads, may share this provider
             attempt = self._attempts.get(call_id, 0)
             self._attempts[call_id] = attempt + 1
-        d, why = await gate_call(self.run, call_id, attempt, use["name"], use.get("input") or {},
-                                 cancelled=event.agent.cancel_signal)
-        self._decided[id(event)] = d, attempt, why, copy.deepcopy(use) if d else None, event.selected_tool
+        seen = copy.deepcopy(use)   # the call as decided: a later hook may change the event's
+        args, source = _as_run(seen["name"], event.selected_tool, seen.get("input") or {})
+        d, why = await gate_call(self.run, call_id, attempt, use["name"], args, cancelled=event.agent.cancel_signal,
+                                 **source)
+        self._decided[id(event)] = d, attempt, why, seen if d else None, event.selected_tool, args
         if why is not None:
             event.cancel_tool = why
 
     def _hold(self, event):
         call = self._decided.pop(id(event))
-        d, _, why, use, tool = call
+        d, _, why, use, tool, _ = call
         if why is not None:
             event.cancel_tool = why   # a hook before this one doesn't undo Tracekit's refusal
         elif d is not None and not event.cancel_tool and (event.tool_use != use or event.selected_tool is not tool):
@@ -83,7 +88,7 @@ class Tracekit(HookProvider):
         call = self._running.pop(event.tool_use["toolUseId"], None)
         if call is None:   # nothing decided: run unrecorded, the signer unreachable and the run failing open
             return
-        d, _, why, use, tool = call
+        d, _, why, use, tool, _ = call
         r, e = event.result, event.exception
         if event.cancel_message is not None:   # not run
             if why is None:   # refused after the decision, by another hook or by Tracekit's own check
@@ -98,12 +103,11 @@ class Tracekit(HookProvider):
             await self._complete(call, "error", error=out[:4096])
 
     async def _complete(self, call, status, **fields):
-        d, attempt, why, use, _ = call
+        d, attempt, why, use, _, args = call
         try:
             if why is not None:   # refused, and run all the same (a hook cleared the refusal): RunHandle keeps no
                 # denied decision to name, so name it, and the signer signs the run as executed against policy
-                fields.update(decision_id=d["decision_id"],
-                              args_digest=event_hash({"tool": use["name"], "args": use.get("input") or {}}))
+                fields.update(decision_id=d["decision_id"], args_digest=event_hash({"tool": use["name"], "args": args}))
             await asyncio.to_thread(self.run.complete, use["toolUseId"], status, attempt=attempt, **fields)
         except Exception as e:   # the call is over: what the model reads is unchanged
             warnings.warn(f"tracekit: the outcome of {use['toolUseId']} was not recorded: {type(e).__name__}: {e}",
@@ -122,6 +126,46 @@ def _said(content):
             yield said.call(u.get("toolUseId"), u.get("name"), u.get("input") or {})
         elif b.get("text"):
             yield said.text(b["text"])
+
+
+def _as_run(name, tool, args):
+    """(the arguments the signer decides a call by, decide's args_source for them), for a call to tool `name`, `tool`
+    the selected one. strands_tools' shell (0.1 to 0.8, told by its function's module) runs its `command` as commands,
+    each by /bin/sh -c (dash on Debian and Ubuntu, where bash's `&>` runs what follows it): a string, each entry of a
+    list (a string or a {"command": ...}), one {"command": ...}, and a string that is a JSON array as its entries. Its
+    call is decided as `commands`, which the policy reads each on its own and joined (Engine._parse), each as
+    `sh -c '…'`, which reads it as a POSIX shell does, with only the other options its shell reads. Strands' vended
+    shell (strands.vended_tools, by any name) runs its `command` string by its sandbox's `sh -c`: decided so too. Another
+    tool named `shell` may be a copy of strands_tools', loaded by path or kept in ./tools/ (a module of its own name), or
+    a tool that runs its string by bash or takes an argv: its string, its list of strings or a string that is a JSON
+    array of them is decided both ways, as the signer reads its `command` and each entry as `sh -c '…'`, so no command
+    hides from a rule whichever way it runs.
+    Labelled coerced: reconcile doesn't hold them to the model's tool use. An entry the shell can't run is left out. Any
+    other call as it is."""
+    module = getattr(getattr(tool, "_tool_func", None), "__module__", None) or ""
+    command = args.get("command") if isinstance(args, dict) else None
+    if module.startswith("strands.vended_tools.shell"):   # (a list it refuses: nothing runs, decided as it is)
+        return ({**{k: args[k] for k in ("timeout",) if k in args}, "commands": [shlex.join(["sh", "-c", command])]},
+                {"args_source": "coerced"}) if isinstance(command, str) else (args, {})
+    if name != "shell" or command is None:
+        return args, {}
+    known, entries = module == "strands_tools.shell", command
+    if isinstance(command, str) and command.strip().startswith("[") and command.strip().endswith("]"):
+        try:   # as strands_tools' shell reads it
+            entries = json.loads(command)
+        except (ValueError, RecursionError):
+            pass
+    if isinstance(entries, str) or known and not isinstance(entries, list):
+        entries = [entries]
+    if not isinstance(entries, list) or not known and not all(isinstance(e, str) for e in entries):
+        return args, {}
+    runs = [e if isinstance(e, str) else e.get("command") if isinstance(e, dict) else None for e in entries]
+    lines = [shlex.join(["sh", "-c", e]) for e in runs if isinstance(e, str)]
+    if known:
+        return {**{k: args[k] for k in SHELL_OPTIONS if k in args}, "commands": lines}, {"args_source": "coerced"}
+    as_given = command if isinstance(command, str) else shlex.join(command)
+    return ({**{k: v for k, v in args.items() if k != "command"}, "commands": [as_given, *lines]},
+            {"args_source": "coerced"})
 
 
 def _plain(use):
