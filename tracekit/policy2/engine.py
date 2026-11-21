@@ -2787,10 +2787,17 @@ _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY", "evaluate"}}
 # of those, the names of functions and classes: each holds its module's globals (`f.__globals__`, gc.get_referents(f))
 _SIGNER_CODE = r"\b(?:RPCError|compared|model_names|load_policy|evaluate)\b"
-# what reaches a module through an object that holds it: a dunder attribute (a space or a backslash-newline may follow
-# the dot), the inspect, gc and sys.modules lookups
-_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b(?:inspect|gc|sys\s*\.\s*modules)\b")
-_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
+# what reaches a module through an object that holds it: any dunder (quoted too: a name given to getattr or an
+# attrgetter; not `__name__` or `__main__`, which hold no module's globals), an attribute after a dot and a
+# backslash-newline or a space, a function that reads an attribute by name (getattr, vars, attrgetter, methodcaller), a
+# frame or traceback (an exception's `tb_frame.f_globals`, sys.exc_info, traceback.walk_tb), and the inspect, gc and
+# sys.modules lookups
+_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
+                       r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
+                       r"walk_tb|walk_stack|inspect|gc)\b|\bsys\s*\.\s*modules\b")
+# a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name)
+_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
+                        r"marshal|copyreg|pkgutil|resolve_name|find_class)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
