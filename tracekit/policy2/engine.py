@@ -2953,7 +2953,7 @@ def _help_marked(command, quoted):
     command; a line that quotes `--help` somewhere is not read word by word) gets UNKNOWN_WORD after it, so a rule's
     exemption for the exact line `<program> <verb> --help` (TK-A054, TK-A057) does not cover it."""
     argv = command["argv"]
-    if argv[-1:] == ["--help"] and (quoted or _TAKES_INPUT & set(command["via"])):
+    if argv[-1:] == ["--help"] and (quoted or any(v.split()[0] in _TAKES_INPUT for v in command["via"] if v)):
         argv = argv + [UNKNOWN_WORD]
     return " ".join(argv)
 
@@ -2984,7 +2984,7 @@ _PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b
 # in it may hold one, and ends at its line's end: one way to match each `#`; any other list at its line's end unless a
 # backslash goes on)
 _SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer\.rpc_schema\s+import\s+"
-                            r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)\)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+                            r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)(?:\)|\Z)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
 _RPC_DATA = {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN"}
 _RPC_CATCH = re.compile(r"\bexcept\s+$|\bexcept\s*\((?:[^()]*,)?\s*$")
 _RPC_TEST = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
@@ -2994,20 +2994,23 @@ def _without_rpc_catch(code):
     """The code less its statements importing RPCError (and rpc_schema's tables) by name, when it uses RPCError only to
     catch it (`except RPCError`, `except (…, RPCError)`) or test for it (`isinstance(x, RPCError)`): such a script
     reaches nothing of the schema's module; else the code as it is. A call, a raise, a subclass or another use of the
-    class holds its module, as do names read any other way (_runs_signer)."""
+    class holds its module, as do names read any other way (_runs_signer). The statements are read in the code without
+    its comments and string literals: a `# except (` or `"except ("` before a use makes it no catch."""
+    text = _py_code(code)
     spans = []
-    for m in _SIGNER_IMPORT.finditer(code):
-        items = [x.strip() for x in re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(1) or m.group(2)).replace("\n", " ").split(",")]
+    for m in _SIGNER_IMPORT.finditer(text):
+        items = [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", m.group(1) or m.group(2)).replace("\n", " ").split(",")]
         if "RPCError" not in items or any(i not in _RPC_DATA | {"RPCError"} for i in items if i):
             return code
         spans.append(m.span())
     if not spans:
         return code
-    for m in re.finditer(r"\bRPCError\b", code):
+    for m in re.finditer(r"\bRPCError\b", text):
         if not any(a <= m.start() < b for a, b in spans) and not (
-                _RPC_CATCH.search(code[:m.start()][-80:]) and re.match(r"\s*(?:[,):]|as\b)", code[m.end():]) or
-                _RPC_TEST.search(code[:m.start()][-80:]) and re.match(r"\s*\)", code[m.end():])):
+                _RPC_CATCH.search(text[:m.start()][-80:]) and re.match(r"\s*(?:[,):]|as\b)", text[m.end():]) or
+                _RPC_TEST.search(text[:m.start()][-80:]) and re.match(r"\s*\)", text[m.end():])):
             return code
+    spans = [m.span() for m in _SIGNER_IMPORT.finditer(code)]
     return "".join(code[a:b] for a, b in zip([0] + [s[1] for s in spans], [s[0] for s in spans] + [len(code)]))
 
 
