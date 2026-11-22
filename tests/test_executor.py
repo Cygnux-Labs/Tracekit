@@ -275,7 +275,9 @@ class Executor(unittest.TestCase):
         cfg["actions"][0]["settings"] = {"x-api-version": "2022-06-28"}
         with open(self.cfg, "w") as f:
             json.dump(cfg, f)
-        pay = executor.serve(executor.load_config(self.cfg), self.signer).executor["actions"]["pay"]
+        srv = executor.serve(executor.load_config(self.cfg), self.signer)
+        self.addCleanup(srv.server_close)
+        pay = srv.executor["actions"]["pay"]
         self.assertEqual(pay["headers"], {"x-api-version": "2022-06-28", "authorization": API_KEY})
         self.assertNotIn("2022-06-28", pay["cut"])
         self.assertIn(API_KEY, pay["cut"])
