@@ -267,7 +267,7 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   a file, a substitution or anything but a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the
   folder a `cd` enters where every command only reads or lists. Any other program's words are `ACT:`.
   `SIGNER_MODULE:` an `ACT:` text whose code reaches more of `tracekit.signer` than `rpc_schema`'s tables,
-  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names. A
+  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names; `RPCError` only caught or tested for with `isinstance`. A
   tagged subject's tag doesn't count toward its size.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`

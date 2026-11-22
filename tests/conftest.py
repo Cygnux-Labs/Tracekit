@@ -1,4 +1,3 @@
-import collections
 import gc
 import glob
 import io
@@ -59,8 +58,27 @@ if sys.version_info < (3, 13):
 
 def pytest_addoption(parser):
     parser.addoption("--shard", default=None, metavar="I/N",
-                     help="run only shard I of N (0-based): whole test files, packed by size so the shards are even, so "
+                     help="run only shard I of N (0-based): whole test files, packed by recorded duration so the shards are even, so "
                           "CI can split the suite over runners; every test is in exactly one shard")
+
+
+def _durations():
+    with open(os.path.join(TESTS, "data", "shard_durations.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def pack_shards(paths, n, durations):
+    """file -> shard in range(n): largest file first, onto the lightest shard. A file's weight is its recorded seconds,
+    the median of the recorded ones when it has none (a new file), so the packing depends only on the paths and the data.
+    lean: the recorded seconds are one CI run's; refresh them with tests/data/refresh_shard_durations.py RUN_ID when the
+    shards drift apart (a shard's job taking over 1.5x the quickest's) or after files are added or split."""
+    default = sorted(durations.values())[len(durations) // 2] if durations else 1
+    weight = {p: durations.get(p, default) for p in paths}
+    load, where = [0] * n, {}
+    for path in sorted(weight, key=lambda p: (-weight[p], p)):
+        where[path] = load.index(min(load))
+        load[where[path]] += weight[path]
+    return where
 
 
 def _shard(config):
@@ -88,13 +106,7 @@ def pytest_collection_modifyitems(config, items):
     the test files of one shard (a file's tests stay together)."""
     shard = _shard(config)
     if shard:
-        # lean: balanced by test count, not by time; upgrade to recorded durations if one shard stays the slowest
-        sizes = collections.Counter(i.nodeid.split("::")[0] for i in items)
-        load = [0] * shard[1]
-        where = {}
-        for path, n in sorted(sizes.items(), key=lambda kv: (-kv[1], kv[0])):   # largest file first, onto the lightest
-            where[path] = load.index(min(load))
-            load[where[path]] += n
+        where = pack_shards({i.nodeid.split("::")[0] for i in items}, shard[1], _durations())
         mine = [where[i.nodeid.split("::")[0]] == shard[0] for i in items]
         config.hook.pytest_deselected(items=[i for i, m in zip(items, mine) if not m])
         items[:] = [i for i, m in zip(items, mine) if m]

@@ -7,12 +7,14 @@ import bisect
 import collections
 import fnmatch
 import functools
+import io
 import itertools
 import json
 import posixpath
 import re
 import shlex
 import time
+import tokenize
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
@@ -589,7 +591,8 @@ class Engine:
             # the install's options (_install_sources), as TK-D021 reads a URL source, and a go install or go get on a
             # line that turns Go's checks off as the direct version-control fetch it is (_go_unchecked), for TK-A028
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
-            return _slashes(list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
+            quoted = any(_QUOTED_HELP.search(r) for r in Engine._subjects(cls, "command", args, fields, parsed))
+            return _slashes(list(dict.fromkeys([_help_marked(c, quoted) for c in parsed[0]] + [
                 h for c in parsed[0] if (h := _as_harness(c["argv"], c.get("word", "")))] + [
                 s for c in parsed[0] for s in _install_sources(c["argv"])] + _go_unchecked(parsed[0], parsed[2]) + [
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
@@ -2943,13 +2946,86 @@ def _reading(argv):
     return None
 
 
+_QUOTED_HELP = re.compile(r"""[\"'\\]--help|--help[\"']""")
+_TAKES_INPUT = {"xargs", "gxargs", "parallel"}
+
+
+def _help_marked(command, quoted):
+    """A command's words as one subject. A last word `--help` that more words may follow (xargs gives its input to the
+    command; a line that quotes `--help` somewhere is not read word by word) gets UNKNOWN_WORD after it, so a rule's
+    exemption for the exact line `<program> <verb> --help` (TK-A054, TK-A057) does not cover it."""
+    argv = command["argv"]
+    if argv[-1:] == ["--help"] and (quoted or any(v.split()[0] in _TAKES_INPUT for v in command["via"] if v)):
+        argv = argv + [UNKNOWN_WORD]
+    return " ".join(argv)
+
+
 _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
-_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
+# a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
+# pydoc.locate, mock.patch's get_original and temp_original), reads a field of an object by its name (string.Formatter) or runs code
+# (ctypes, code.InteractiveInterpreter, doctest)
+_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
+                        r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|"
+                        r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original|temp_original|doctest|DocTestParser|"
+                        r"DocTestRunner)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
+
+
+# a function or class the signer's code may be read for holds its module's globals, and a call of one runs in the agent's
+# process, whose frames hold them too: code that names one and reaches through an object (a dunder, even quoted; an
+# attribute read by name; a frame, traceback or trace hook; inspect, gc, sys.modules) may get to the module
+_SIGNER_CODE = re.compile(r"\b(?:RPCError|compared|model_names|load_policy)\b")
+_FSTRING_TOKENS = {getattr(tokenize, n) for n in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END") if hasattr(tokenize, n)}
+_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
+                       r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
+                       r"walk_tb|walk_stack|settrace|setprofile|gettrace|getprofile|inspect|gc)\b|\bsys\s*\.\s*modules\b")
+# a statement importing from the signer: its list ends where its statement does (a parenthesised one at its `)`, a comment
+# in it may hold one, and ends at its line's end: one way to match each `#`; any other list at its line's end unless a
+# backslash goes on)
+_SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer\.rpc_schema\s+import\s+"
+                            r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)(?:\)|\Z)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+_RPC_DATA = {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN"}
+_RPC_CATCH = re.compile(r"\bexcept\s+$|\bexcept\s*\((?:[^()]*,)?\s*$")
+_RPC_TEST = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
+
+
+def _rpc_items(listed):
+    return [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", listed).replace("\n", " ").split(",")]
+
+
+def _without_rpc_catch(code):
+    """The code less its statements importing RPCError (and rpc_schema's tables) by name, when it uses RPCError only to
+    catch it (`except RPCError`, `except (…, RPCError)`) or test for it (`isinstance(x, RPCError)`): such a script
+    reaches nothing of the schema's module; else the code as it is. A call, a raise, a subclass or another use of the
+    class holds its module, as do names read any other way (_runs_signer). The statements are read in the code with its
+    comments and string literals blanked by Python's tokenizer (_py_blanked): a `# except (` or `"except ("` before a
+    use makes it no catch, and an import written in a comment or a string is none, so cuts nothing. Code that can't be
+    read so is left as it is, which is main's decision; the allowance only ever loosens one."""
+    text = _py_blanked(code)
+    if text is None:
+        return code
+    spans = []
+    for m in _SIGNER_IMPORT.finditer(text):
+        listed = m.group(1) if m.group(1) is not None else m.group(2)
+        items = _rpc_items(listed)
+        if "RPCError" not in items or any(i not in _RPC_DATA | {"RPCError"} for i in items if i):
+            return code
+        raw = _SIGNER_IMPORT.match(code, m.start())   # (the code itself reads as the same import)
+        if raw is None or raw.span() != m.span() or _rpc_items(raw.group(1) if raw.group(1) is not None else raw.group(2)) != items:
+            return code
+        spans.append(m.span())
+    if not spans:
+        return code
+    for m in re.finditer(r"\bRPCError\b", text):
+        if not any(a <= m.start() < b for a, b in spans) and not (
+                _RPC_CATCH.search(text[:m.start()][-80:]) and re.match(r"\s*(?:[,):]|as\b)", text[m.end():]) or
+                _RPC_TEST.search(text[:m.start()][-80:]) and re.match(r"\s*\)", text[m.end():])):
+            return code
+    return "".join(code[a:b] for a, b in zip([0] + [s[1] for s in spans], [s[0] for s in spans] + [len(code)]))
 
 
 def _runs_signer(code):
@@ -2958,15 +3034,19 @@ def _runs_signer(code):
     other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
     reached by its full name."""
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
-            re.search(r"\btracekit\.signer\.\w+\.\w", code):
+            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code):
         return True
+    code = _without_rpc_catch(code)
     aliases = {}   # a name the code gives one of the signer's modules -> that module
-    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+\(?([\w\s,*]+)", code):
-        for item in m.group(2).replace("\n", " ").split(","):
+    # (a backslash continues a list; a parenthesised one runs to its `)`, a comment in it may hold one)
+    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
+                         r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)|((?:[\w\s,*]|\\(?:\r\n?|\n))+))", code):
+        listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) if m.group(2) is not None else m.group(3))
+        for item in listed.replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))
             if not name:
                 continue
-            if m.group(1) is None and name in _SIGNER_READS:
+            if m.group(1) is None and name in _SIGNER_READS and len(alias.split()) <= 1:   # (more: the next line's words)
                 aliases[alias or name] = name
             elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
                 return True
@@ -2987,7 +3067,7 @@ _SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__)
 _SDK_READS = {"status", "Hung", "SignerUnavailable", "Incompatible"}
 # where a Python comment or string literal may start, and the rest of each kind of literal: its text (a backslash
 # escapes any character, a newline too) up to its closing quote, or to its line's end (the code's, triple-quoted)
-_PY_OPEN = re.compile(r"#|(?<![\w])([rRbBuUfF]{0,2})(\"\"\"|'''|\"|')")
+_PY_OPEN = re.compile(r"#|(?:(?<![\w])([rRbBuUfF]{1,2}))?(\"\"\"|'''|\"|')")
 _PY_REST = {'"""': re.compile(r'(?:[^\\"]|\\[\s\S]|"(?!""))*(?:"""|\Z)'),
             "'''": re.compile(r"(?:[^\\']|\\[\s\S]|'(?!''))*(?:'''|\Z)"),
             '"': re.compile(r'(?:[^\\"\n]|\\[\s\S])*"?'), "'": re.compile(r"(?:[^\\'\n]|\\[\s\S])*'?")}
@@ -3005,9 +3085,34 @@ def _py_code(code):
             i = len(code) if nl < 0 else nl
             continue
         rest = _PY_REST[m.group(2)].match(code, m.end())
-        out.append(rest.group() if "f" in m.group(1).lower() else "''")
+        out.append(rest.group() if "f" in (m.group(1) or "").lower() else "''")
         i = rest.end()
     return "".join(out) + code[i:]
+
+
+def _py_blanked(code):
+    """The code with each comment and string literal blanked to spaces (newlines kept, so every offset is the code's
+    own), read with Python's own tokenizer; None where that can't be trusted to read as Python does: it raises, yields an
+    error token, the code holds a line break other than \\n (a bare \\r ends a line in Python), or a string is an
+    f-string (3.12 tokenizes its fields, 3.9 does not)."""
+    if re.search("[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", code):
+        return None
+    starts = [0]
+    for line in code.split("\n")[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    blank = list(code)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            kind = tok.type
+            if kind == tokenize.ERRORTOKEN or kind in _FSTRING_TOKENS or kind == tokenize.STRING and re.match(
+                    r"[A-Za-z]*[fF]", tok.string):
+                return None
+            if kind in (tokenize.COMMENT, tokenize.STRING):
+                a, b = starts[tok.start[0] - 1] + tok.start[1], starts[tok.end[0] - 1] + tok.end[1]
+                blank[a:b] = [c if c == "\n" else " " for c in code[a:b]]
+    except (tokenize.TokenError, SyntaxError, ValueError, IndexError):
+        return None
+    return "".join(blank)
 
 
 _SDK_PATH = re.compile(r"\b(?:dev_data_dir|data_dir_at)\b")
@@ -3247,7 +3352,7 @@ def _tracekit(parsed, finds, work):
     SIGNER_MODULE: an ACT text whose code reaches more of Tracekit's signer than it may read (_runs_signer), or its
     data or lifecycle through the SDK (_reaches_sdk). Each also normalised and casefolded as a path is (_path_forms).
     `work`: the decision's budget, which this reading spends (shell.charge)."""
-    commands, refs, written = parsed[0], parsed[2], set(parsed[3])
+    commands, refs, written = parsed[0], parsed[2], set(parsed[3]) - {"/dev/null"}   # (a redirection there keeps nothing)
     learned = parsed[5] if len(parsed) > 5 else None
     kinds = [_reading(c["argv"]) for c in commands]
     roams = not written and all(k or c["argv"][0] in _NAVIGATE for c, k in zip(commands, kinds))
@@ -3284,7 +3389,7 @@ def _tracekit(parsed, finds, work):
             named += [posixpath.join(s, p) for a, p in zip(c["argv"], c["argv"][1:])
                       if a in ("-path", "-wholename", "-ipath", "-iwholename", "-name", "-iname") for s in starts]
         feeds = feeding.get(c["pipeline"], -1) > c.get("stage", 0) or \
-            bool({"$()", "``", "<()"} & set(c["via"])) or bool(c.get("out"))
+            bool({"$()", "``", "<()"} & set(c["via"])) or bool(set(c.get("out", ())) - {"/dev/null"})
         if c["argv"][0] in _NAVIGATE:
             if roams:
                 deep += at(named)
@@ -3307,6 +3412,7 @@ def _tracekit(parsed, finds, work):
     def tag(name, texts):
         return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
+    act = [unicodedata.normalize("NFKC", s) for s in act]   # (Python reads a name so: `ｓigner` is `signer`)
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
         (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or

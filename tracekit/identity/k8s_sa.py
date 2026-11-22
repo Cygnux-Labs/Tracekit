@@ -62,10 +62,10 @@ def _https(method, url, ctx, body=None, headers=None):
     c = http.client.HTTPSConnection(u.hostname, u.port, context=ctx, timeout=TIMEOUT_S)
     try:
         c.request(method, (u.path or "/") + (f"?{u.query}" if u.query else ""), body, headers or {})
-        r = c.getresponse()
-        if not 200 <= r.status < 300:
-            raise ValueError(f"{url}: HTTP {r.status}")
-        return json.loads(r.read(FETCH_MAX))
+        with c.getresponse() as r:   # closed on every path: an unread one holds the socket open
+            if not 200 <= r.status < 300:
+                raise ValueError(f"{url}: HTTP {r.status}")
+            return json.loads(r.read(FETCH_MAX))
     finally:
         c.close()
 
