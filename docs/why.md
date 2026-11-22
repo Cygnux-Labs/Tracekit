@@ -264,29 +264,31 @@ content that holds an equal one (a look-alike `bob@corp.co` is not `bob@corp.com
 `…/3AbCdEf`, nor an account `44851234` part of the task's `4485-1234-5566`); a free string by content whose text holds
 it as a whole token, read as the index reads text (an IBAN the task writes in groups is the task's), or as a whole value
 (the string a JSON result holds). Content is read as it was when the call was made: an untrusted tool's result is
-untrusted from when it was observed so, and only that call's result (a trusted lookup that returned the same content
-stays trusted). Untrusted content also brought an identifier (anything but text a model wrote: white space and two or
-more words under a key no word of which names a destination, such as recipient, to, cc, payee, account, iban, url, host,
-destination, channel, path, file, email, number, id or ref) when it holds a part of it that no trusted content holds (an
-IBAN's digits written in groups, a URL's host), or all of it without its white space (base64 a model broke over lines);
-a recipient or a `payee_comment` stays an identifier whatever words are around it. There the search reads wider than the
-signer's index, so it stops more, never fewer: a free string joined to another word by `_` (`External_…` holds
-`External`), digit runs across any characters but letters (slashes, dashes, commas, ` // `, line breaks), in other
-scripts' digits or written as words ("six zero one six"), addresses spelled out ("audit at outside dot example"), and a
-one-word value in parts that different untrusted texts hold as words: two parts, or more that each hold a digit (an
-account in three mails, not a name made of three words), when some part is one no trusted content (the task included)
-holds. Text a model wrote (a message body) is read for its addresses and URLs, and each host and digit run in it is a
-value of its own: a body that quotes one only untrusted content gave gets a review alert naming it, not the high one. An
-alert names the part untrusted content held (`its 77812290 appears only in mail:1`), and the content read latest first.
-A trusted call's result holds nothing an earlier call's arguments named (all of it, or its longest digit run) unless
-trusted content gave each argument that named it: a lookup's error naming the mail's IBAN, or a validator returning it
-whole, is an echo of the agent's own value, not its source; a lookup by an account the task gives is a source, and a
-domain or another part names nothing (a directory looked up by the domain the mail names still gives the address). A
-trusted call's result is untrusted content when the values of its arguments that were traced came only from untrusted
-content, one at least (a value the model made up, such as a charset, doesn't count): a decoder, a reverser or a
-calculator given what the mail wrote, and a lookup by a key only the mail gave (the mail chose the record). The alert
-says what the call was given and where that came from (`crm_lookup's answer counts as untrusted: it was called with
-'60161331926819', which came only from mail:inbox`).
+untrusted from when it was observed so, and only that call's result: a value a trusted lookup gave stays the lookup's
+when the same content arrives later through an untrusted tool (1.7 read it as untrusted, the lookup named as its
+source). Untrusted content also brought an identifier (anything but text a model wrote: white space and two or more
+words under a key that is no identifier's, one with a word that names a destination, such as recipient, to, payee, iban,
+url, host, destination, channel, path, file, email, number, id or ref, unless its last word is a free-text word, such as
+body, message, comment, html, status or title) when it holds a part of it that no trusted content holds (an IBAN's
+digits written in groups, a URL's host), or all of it without its white space (base64 a model broke over lines); a
+`recipient`, `to_email` or `payee_iban` stays an identifier whatever words are around it, and an `email_body` or a
+`payee_comment` is text. There the search reads wider than the signer's index, so it stops more, never fewer: a free
+string joined to another word by `_` (`External_…` holds `External`), digit runs across any characters but letters
+(slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words ("six zero one six"),
+addresses spelled out ("audit at outside dot example"), and a one-word value in parts that different untrusted texts
+hold as words: two parts, or more that each hold a digit (an account in three mails, not a name made of three words),
+when some part is one no trusted content (the task included) holds. Text a model wrote (a message body) is read for its
+addresses and URLs, and each host and digit run in it is a value of its own: a body that quotes one only untrusted
+content gave gets a review alert naming it, not the high one. An alert names the part untrusted content held (`its
+77812290 appears only in mail:1`), and the content read latest first. A trusted call's result holds nothing an earlier
+call's arguments named (all of it, or its longest digit run) unless trusted content gave each argument that named it: a
+lookup's error naming the mail's IBAN, or a validator returning it whole, is an echo of the agent's own value, not its
+source; a lookup by an account the task gives is a source, and a domain or another part names nothing (a directory
+looked up by the domain the mail names still gives the address). A trusted call's result is untrusted content when the
+values of its arguments that were traced came only from untrusted content, one at least (a value the model made up, such
+as a charset, doesn't count): a decoder, a reverser or a calculator given what the mail wrote, and a lookup by a key
+only the mail gave (the mail chose the record). The alert says what the call was given and where that came from
+(`crm_lookup's answer counts as untrusted: it was called with '60161331926819', which came only from mail:inbox`).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.

@@ -332,13 +332,21 @@ _KEY_WORD = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
 DESTINATION = frozenset(("recipient", "to", "cc", "bcc", "payee", "account", "iban", "url", "uri", "link", "host",
                          "domain", "destination", "target", "channel", "path", "file", "address", "email", "phone",
                          "number", "id", "ref"))
+FREE_TEXT = frozenset(("body", "text", "message", "content", "summary", "description", "subject", "note", "comment",
+                       "html", "markdown", "caption", "reply", "status", "title", "msg"))
 
 
-def _destination(key: Any) -> bool:
-    """Whether an argument's key names where a call goes or what it acts on: a word of it (`payee_comment`,
-    `recipientEmail`, `cc`, `file_ids`) one of DESTINATION."""
+def _identifier_key(key: Any) -> bool:
+    """Whether an argument's key names where a call goes or what it acts on: a word of it one of DESTINATION and its
+    last word no free-text word (FREE_TEXT). `recipient`, `to_email`, `payee_iban` and `destination` do; `email_body`,
+    `payee_comment`, `msg`, `status` and `title` don't (words in either set count in the plural too)."""
     words = [w.lower() for w in _KEY_WORD.findall(key)] if isinstance(key, str) else []
-    return any(w in DESTINATION or w.endswith("s") and w[:-1] in DESTINATION for w in words)
+    return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(_one_of(w, DESTINATION) for w in words)
+
+
+def _one_of(word: str, names: frozenset) -> bool:
+    return word in names or any(word.endswith(end) and word[:-len(end)] + add in names
+                                for end, add in (("s", ""), ("es", ""), ("ies", "y")))
 
 
 def _prose(s: str) -> bool:
@@ -348,9 +356,9 @@ def _prose(s: str) -> bool:
 
 
 def _text_leaves(args: Any) -> Set[str]:
-    """The string arguments read as text a model wrote: prose (_prose) under a key that names no destination
-    (_destination: a body, a message, a title, a status), and under no key that does. Anything else (a recipient, an
-    account, a destination, a channel, a path, a payee's comment) is an identifier, whatever words are around it."""
+    """The string arguments read as text a model wrote: prose (_prose) under a key that is no identifier's
+    (_identifier_key: a body, a message, a title, an email_body, a payee_comment), and under no key that is. Anything
+    else (a recipient, an account, a destination, a channel, a path) is an identifier, whatever words are around it."""
     text: Set[str] = set()
     other: Set[str] = set()
 
@@ -362,7 +370,7 @@ def _text_leaves(args: Any) -> Set[str]:
             for x in v:
                 walk(x, key)
         elif isinstance(v, str):
-            (text if not _destination(key) and _prose(v) else other).add(v)
+            (text if not _identifier_key(key) and _prose(v) else other).add(v)
 
     walk(args, None)
     return text - other
