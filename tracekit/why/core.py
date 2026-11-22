@@ -866,11 +866,13 @@ class Agent:
 
     def record_action(self, tool: str, args: Optional[dict], result: Any, *, decision: Optional[Ref] = None,
                       sensitive: Optional[bool] = None, duration_ms: Optional[float] = None,
-                      status: Optional[str] = None, check: Any = None) -> Ref:
+                      status: Optional[str] = None, check: Any = None, untrusted: bool = False) -> Ref:
         """Record a tool call your own code executed (adapters use this). Pass the `check` you got
         from check() so the guard's verdict is stored with the action; a blocked check records the
-        call as blocked. In a replay the call your code ran was real: it is recorded as live (an off-tape action),
-        with a warning; run tools through act() (or TracedMessages.run_tool) for the tape to serve them."""
+        call as blocked. `untrusted=True`: its result is untrusted content (the call's entry says so, as act() writes
+        it; observe the result as `tool:<name>` after it). In a replay the call your code ran was real: it is
+        recorded as live (an off-tape action), with a warning; run tools through act() (or TracedMessages.run_tool) for
+        the tape to serve them."""
         rt = self.rt
         if rt.tape is not None or not rt.live_tools:
             warnings.warn(f"tracekit why: {tool} ran for real during a replay (your code ran it and recorded it with "
@@ -881,6 +883,8 @@ class Agent:
         if status is None:
             status = "blocked" if blocked else _status(result)
         extra = {"guard": check.record()} if check is not None and check.alerts else {}
+        if untrusted and not blocked:
+            extra["trust"] = "untrusted"
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status,
                       mode="blocked" if blocked else "live",

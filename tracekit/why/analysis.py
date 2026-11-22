@@ -5,10 +5,12 @@ Everything here is derived from the log and the tests recorded against it. Nothi
 from __future__ import annotations
 
 import bisect
+import json
 import os
 import re
 import sys
 import unicodedata
+import urllib.parse
 from collections import deque
 from itertools import islice
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
@@ -45,32 +47,53 @@ def is_sensitive(run: Run, ev: Dict[str, Any]) -> Optional[str]:
 # --------------------------------------------------------------------------- argument provenance
 
 def atoms(args: Any) -> List[str]:
-    """Values worth tracing back: addresses, URLs, whole string arguments of 6+ characters and numbers the signer's
-    index reads (a digit run of 8 or more)."""
+    """Values worth tracing back (_leaves: JSON and query strings in values read too): the addresses and URLs in each
+    string argument, the whole string when it has 6+ characters, and numbers the signer's index reads (a digit run of 8
+    or more)."""
     out: List[str] = []
-
-    def walk(v: Any) -> None:
-        if isinstance(v, dict):
-            for x in v.values():
-                walk(x)
-        elif isinstance(v, list):
-            for x in v:
-                walk(x)
-        elif isinstance(v, str):
-            found = _EMAIL.findall(v) + _URL.findall(v)
-            out.extend(found)
-            if not found and len(v) >= 6:
+    for _, v in _leaves(args):
+        if isinstance(v, str):
+            out.extend(_EMAIL.findall(v) + _URL.findall(v))
+            if len(v) >= 6:
                 out.append(v)
         elif isinstance(v, (int, float)) and not isinstance(v, bool) and provenance.values(v)[0]:
             out.append(str(v))
+    return list(dict.fromkeys(out))
 
-    walk(args)
-    seen, uniq = set(), []
-    for a in out:
-        if a not in seen:
-            seen.add(a)
-            uniq.append(a)
-    return uniq
+
+_QUERY = re.compile(r"[\w.\[\]-]+=[^&\s]*(?:&[\w.\[\]-]+=[^&\s]*)*")
+
+
+def _leaves(args: Any) -> Iterator[Tuple[Tuple[Any, ...], Any]]:
+    """Each leaf of a call's arguments, in order, with the keys above it: dicts, lists and tuples walked, and a string
+    that holds a JSON object or array, or a query string (`to=…&amount=…`), walked too under its own keys (the string
+    is a leaf as well), three strings deep at most."""
+    stack: List[Tuple[Tuple[Any, ...], Any, int]] = [((), args, 0)]
+    while stack:
+        path, v, depth = stack.pop()
+        if isinstance(v, dict):
+            stack.extend((path + (k,), x, depth) for k, x in reversed(list(v.items())))
+        elif isinstance(v, (list, tuple)):
+            stack.extend((path, x, depth) for x in reversed(v))
+        else:
+            yield path, v
+            inner = _parsed(v) if isinstance(v, str) and depth < 3 else None
+            if inner is not None:
+                stack.append((path, inner, depth + 1))
+
+
+def _parsed(s: str) -> Any:
+    """What a string argument holds when it is a JSON object or array, or a query string (a list of one-key dicts);
+    else None."""
+    t = s.strip()
+    if t[:1] in ("{", "[") and len(t) <= provenance.MAX_TEXT:
+        try:
+            return json.loads(t)
+        except ValueError:
+            return None
+    if "=" in t and _QUERY.fullmatch(t):
+        return [{k: v} for k, v in urllib.parse.parse_qsl(t, keep_blank_values=True)]
+    return None
 
 
 def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], memo: Optional[Dict[Any, Any]] = None
@@ -150,7 +173,7 @@ def value_provenance(run: Run, args: Any, before_seq: int, memo: Optional[Dict[A
     ix = _index(run, memo)
     while True:   # a reading that met calls not yet read reads them (_settle), then reads again
         need: Set[int] = set()
-        rows = _rows(run, memo, ix, args, before_seq, need)
+        rows, _ = _rows(run, memo, ix, args, before_seq, need)
         if not need:
             return rows
         _settle(run, memo, ix, need)
@@ -160,7 +183,7 @@ def _settle(run: Run, memo: Dict[Any, Any], ix: "_Index", need: Set[int]) -> Non
     """Reads the arguments of calls `need` (indices of the index's calls) into memo["rows"] (by the call's seq), and
     first those of the earlier calls each reading meets: the earliest first, so a chain of calls (each given the last
     one's result) is read without recursing as deep as it is long."""
-    done, calls = memo.setdefault("rows", {}), ix.calls
+    done, shorts, calls = memo.setdefault("rows", {}), memo.setdefault("short", {}), ix.calls
     stack = sorted(need)
     while stack:
         j = stack[-1]
@@ -168,29 +191,30 @@ def _settle(run: Run, memo: Dict[Any, Any], ix: "_Index", need: Set[int]) -> Non
             stack.pop()
             continue
         more: Set[int] = set()
-        rows = _rows(run, memo, ix, run.value(calls[j][4].get("args_ref")), calls[j][0], more)
+        rows, short = _rows(run, memo, ix, run.value(calls[j][4].get("args_ref")), calls[j][0], more)
         more = {m for m in more if calls[m][0] not in done}
         if more:   # earlier calls, read first; then this one again
             stack += sorted(more)
         else:
-            done[calls[j][0]] = rows
+            done[calls[j][0]], shorts[calls[j][0]] = rows, short
             stack.pop()
 
 
 def _tainted(rows: List[Dict[str, Any]]) -> bool:
-    """Whether a call's arguments (their rows) were untrusted content's: some traced value came only from it, and none
-    from trusted content (a value the model made up, or a hashed one, traces to nothing)."""
+    """Whether a call's arguments (their rows, and their short keys' rows) were untrusted content's: some traced value
+    came only from it, and none from trusted content (a value the model made up, or a hashed one, traces to nothing)."""
     return any(r["status"] == "untrusted-only" for r in rows) and not any(r["status"] == "trusted" for r in rows)
 
 
 def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: int, need: Set[int]
-          ) -> List[Dict[str, Any]]:
-    """value_provenance's rows of `args` before `before_seq`; each earlier call whose rows (memo["rows"]) the reading
-    needed and didn't have is added to `need`, and the rows are then provisional."""
+          ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """value_provenance's rows of `args` before `before_seq`, and those of its short keys (_short_key), which only say
+    whether a trusted call's answer counts as untrusted; each earlier call whose rows (memo["rows"]) the reading needed
+    and didn't have is added to `need`, and the rows are then provisional."""
     if _committed(args):
-        return []
+        return [], []
     reads, calls = ix.reads, ix.calls
-    done = memo.setdefault("rows", {})
+    done, shorts = memo.setdefault("rows", {}), memo.setdefault("short", {})
     hashed = (run.start.get("meta") or {}).get("content_capture") == "hashed"
     k = bisect.bisect_left(ix.seqs, before_seq)   # the content before the call
     trust_of: Dict[int, str] = {}
@@ -204,7 +228,7 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
                     t = "untrusted"
                 elif calls[j][0] not in done:
                     need.add(j)
-                elif _tainted(done[calls[j][0]]):
+                elif _tainted(done[calls[j][0]] + shorts.get(calls[j][0], [])):
                     t = "untrusted"
                     tainted.add(i)
             trust_of[i] = t
@@ -219,6 +243,9 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
             continue
         atom = _atom(a, text.get(a))
         p, free, vals, whole = atom
+        part = a not in text   # an identifier, which a part only untrusted content holds came from that content
+        if part:   # its digits as untrusted content is read: across any separator (`+1 (415) 555-0134`, `GB29/NWBK/…`)
+            vals = vals | {v for v in _wide(a) if v[0] == "digits"}
         # what names the value, not a part of it others share: all of it, or its longest digit run (an IBAN's account)
         names = whole | set(sorted((v for v in vals if v[0] == "digits"), key=lambda v: len(v[1]))[-1:])
         echo = None
@@ -236,7 +263,14 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         def counts(i: int) -> bool:   # trusted content that may be this value's source: not a call's echo of it
             ev = reads[i][0]
             return trust(i) == "trusted" and (ev["type"] != "action" or echo is None or ev["seq"] < echo)
+        def has(i: int, values: Set[Tuple[str, str]]) -> Set[Tuple[str, str]]:   # those of `values` content i holds
+            _, _, _, plain, rv, wide = reads[i]
+            got = (rv | wide) & values
+            if i in ix.truncated:   # more values than were read: the rest from its text
+                got |= {v for v in values if _bounded(_plain(v[1]), plain, True)}
+            return got
         held = {i for v in vals for i in ix.by_val.get(v, ()) if i < k}   # what may hold it: a value of it, or its text
+        held |= {i for i in ix.truncated if i < k and has(i, vals)}
         if free:
             held.update(i for i in _token_holders(ix, p, k) if i < k)
         tv: Dict[Tuple[str, str], bool] = {}
@@ -245,7 +279,6 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
             if v not in tv:
                 tv[v] = any(counts(i) for i in ix.by_val.get(v, ()) if i < k)
             return tv[v]
-        part = a not in text   # an identifier, which a part only untrusted content holds came from that content
         halves, pieces = _split(p, k, ix, trust) if free else (set(), [])
         # an identifier with white space in it, compared without (a decoder reads base64 broken over lines as it was)
         bare = _atom(_SPACE_RUN.sub("", a)) if part and " " in p else None
@@ -260,7 +293,7 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
             if t == "trusted":
                 if not (counts(i) and (_holds(atom, plain, rv) or bare is not None and _holds(bare, plain, rv))):
                     continue
-            elif not _holds(atom, plain, rv, wide=True):
+            elif not (_holds(atom, plain, rv, wide=True) or i in ix.truncated and has(i, whole)):
                 if not part:
                     continue
                 if i in halves:
@@ -268,13 +301,14 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
                 elif bare is not None and _holds(bare, plain, rv, wide=True):
                     found = bare[0]
                 else:
-                    found = next((v for _, v in sorted((rv | wide) & vals) if not trusted_val((_, v))), None)
+                    found = next((v for _, v in sorted(has(i, vals)) if not trusted_val((_, v))), None)
                     if found is None:
                         continue
             src = {"node": "ev:" + ev["id"], "label": label, "trust": t, "seq": ev["seq"],
                    **({"part": found} if found is not None else {})}
             if i in tainted:   # a trusted call's answer to what only untrusted content gave it: what that was
-                given = next(r for r in done[calls[ix.call_of[i]][0]] if r["status"] == "untrusted-only")
+                seq = calls[ix.call_of[i]][0]
+                given = next(r for r in done[seq] + shorts.get(seq, []) if r["status"] == "untrusted-only")
                 came = sorted(given["sources"], key=lambda x: -x["seq"])   # the latest first
                 src["given"] = {"value": given["value"],
                                 "from": list(dict.fromkeys(x["label"] for x in came)),
@@ -288,7 +322,25 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         else:
             status = "trusted"
         rows.append({"value": a, "status": status, "sources": srcs, **({"in_text": True} if in_text else {})})
-    return rows
+    short = []
+    for _, v in _leaves(args):
+        token = _short_key(v)
+        if token is not None:
+            came = [{"node": "ev:" + reads[i][0]["id"], "label": reads[i][2], "trust": trust(i),
+                     "seq": reads[i][0]["seq"]} for i in ix.alnums.get(token, ()) if i < k]
+            short.append({"value": str(v), "sources": came, "status": "generated" if not came else "trusted" if any(
+                x["trust"] == "trusted" for x in came) else "untrusted-only"})
+    return rows, short
+
+
+def _short_key(v: Any) -> Optional[str]:
+    """A key too short to be an atom, read plain (4 or 5 letters and digits, or a number of 4 to 7 digits: `7781`,
+    `A7781`, `Emma`), which a lookup may be given: content that holds it as a word says where it came from."""
+    if isinstance(v, bool) or not isinstance(v, (str, int)):
+        return None
+    t = _plain(str(v))
+    ok = 4 <= len(t) <= 7 and t.isdigit() if isinstance(v, int) else 4 <= len(v) < 6 and t.isalnum() and t.isascii()
+    return t if ok else None
 
 
 def _naming(ix: "_Index", atom, names: Set[Tuple[str, str]]) -> List[int]:
@@ -338,20 +390,31 @@ DESTINATION = frozenset(("recipient", "to", "cc", "bcc", "payee", "account", "ib
                          "number", "id", "beneficiary", "receiver", "creditor", "dest", "wallet", "payto", "endpoint",
                          "webhook", "bucket", "server", "repo", "remote", "addr", "acct", "routing", "swift", "bic",
                          "sortcode"))
-IDENTIFIER_ENDS = frozenset(("name", "info", "details", "number", "code", "id"))
+FREE_TEXT = frozenset(("body", "text", "message", "content", "summary", "description", "subject", "note", "comment",
+                       "html", "markdown", "caption", "reply", "status", "title", "msg", "template", "draft", "readme",
+                       "payload", "script", "topic", "label", "motd", "bio", "headline", "post", "prompt", "memo"))
+REFERENCE = frozenset(("ref", "reference"))
+
+
+def _key_words(key: Any) -> List[str]:
+    return [w.lower() for w in _KEY_WORD.findall(key)] if isinstance(key, str) else []
 
 
 def _identifier_key(key: Any) -> bool:
-    """Whether an argument's key names where a call goes or what it acts on: its last word, or its last two words
-    together, one of DESTINATION (`recipient`, `body_recipient`, `notes_iban`, `toAccount`, `sort_code`, `pay_to`), or
-    a last word of IDENTIFIER_ENDS after a destination word (`beneficiary_details`, `recipient_name`). Any other key
-    holds text (`email_body`, `payee_comment`, `repo_readme`, `webhook_payload`, `display_name`). Words count in the
+    """Whether an argument's key names where a call goes or what it acts on: a word of it, or two together, one of
+    DESTINATION (`recipient`, `account_no`, `pay_to_the_order_of`, `sort_code`, `creditor_reference`), unless its last
+    word is a free-text word (FREE_TEXT: `email_body`, `payee_comment`, `repo_readme`, `iban_note`). Words count in the
     plural too."""
-    words = [w.lower() for w in _KEY_WORD.findall(key)] if isinstance(key, str) else []
-    if not words:
-        return False
-    return _one_of(words[-1], DESTINATION) or len(words) > 1 and _one_of(words[-2] + words[-1], DESTINATION) or \
-        _one_of(words[-1], IDENTIFIER_ENDS) and any(_one_of(w, DESTINATION) for w in words[:-1])
+    words = _key_words(key)
+    return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(
+        _one_of(w, DESTINATION) for w in words + [a + b for a, b in zip(words, words[1:])])
+
+
+def _text_key(key: Any) -> bool:
+    """Whether an argument's key names text whatever its value (its last word a free-text word, or a reference:
+    `subject`, `payment_ref`), when it is no identifier's."""
+    words = _key_words(key)
+    return bool(words) and _one_of(words[-1], FREE_TEXT | REFERENCE)
 
 
 def _one_of(word: str, names: frozenset) -> bool:
@@ -366,23 +429,16 @@ def _prose(s: str) -> bool:
 
 
 def _text_leaves(args: Any) -> Set[str]:
-    """The string arguments read as text a model wrote: prose (_prose) under a key that is no identifier's
-    (_identifier_key: a body, a message, a title, an email_body, a payee_comment), and under no key that is. Anything
-    else (a recipient, an account, a destination, a channel, a path) is an identifier, whatever words are around it."""
+    """The string arguments read as text a model wrote, and under no key above them that is an identifier's
+    (_identifier_key: `{"recipient": {"note": …}}` is an identifier): any value under a text key (_text_key: a subject,
+    a body, a payment_ref), and prose (_prose) under another. Anything else (a recipient, an account, a destination, a
+    channel, a path, a lone token under a key of no kind) is an identifier, whatever words are around it."""
     text: Set[str] = set()
     other: Set[str] = set()
-
-    def walk(v: Any, key: Any) -> None:
-        if isinstance(v, dict):
-            for k, x in v.items():
-                walk(x, k)
-        elif isinstance(v, list):
-            for x in v:
-                walk(x, key)
-        elif isinstance(v, str):
-            (text if not _identifier_key(key) and _prose(v) else other).add(v)
-
-    walk(args, None)
+    for path, v in _leaves(args):
+        if isinstance(v, str):
+            is_text = not any(_identifier_key(k) for k in path) and (bool(path) and _text_key(path[-1]) or _prose(v))
+            (text if is_text else other).add(v)
     return text - other
 
 
@@ -468,6 +524,7 @@ class _Index:
         self.call_ix: Dict[int, int] = {}
         self.call_of: Dict[int, int] = {}
         self.bound: Dict[int, int] = {}
+        self.truncated: Set[int] = set()   # content with more values than were read (provenance.MAX_VALUES, MAX_TEXT)
         # in a log written before calls said their own trust: (agent, content, `tool:<name>`) -> the results not yet
         # observed, and the seq that content was first observed as untrusted at; from then on every result of it is
         self.recorded: Dict[Tuple[Any, ...], List[int]] = {}
@@ -483,7 +540,7 @@ class _Index:
             self._content(ev, ev.get("trust", "trusted"), "task" if ev.get("kind") == "task" else
                           ev.get("source", "input"), _read(run, memo, ev, True))
         elif ev["type"] == "action":
-            plain, cv, cw = _read(run, memo, ev, False)
+            plain, cv, cw, _ = _read(run, memo, ev, False)
             j = len(self.calls)
             self.calls.append((ev["seq"], plain, cv, cw, ev))
             self.call_ix[id(ev)] = j
@@ -503,6 +560,9 @@ class _Index:
 
     def _content(self, ev: Dict[str, Any], trust: str, label: str, read: Tuple) -> None:
         i = len(self.reads)
+        if read[3]:
+            self.truncated.add(i)
+        read = read[:3]
         self.reads.append((ev, trust, label, *read))
         self.seqs.append(ev["seq"])
         for v in read[1] | read[2]:
@@ -520,6 +580,7 @@ def _index(run: Run, memo: Dict[Any, Any]) -> _Index:
     if ix is None or len(run.events) < ix.n or ix.n and run.events[ix.n - 1] is not ix.last:
         ix = memo["index"] = _Index()
         memo.pop("rows", None)
+        memo.pop("short", None)
     for ev in run.events[ix.n:]:
         ix.add(run, memo, ev)
     ix.n, ix.last = len(run.events), run.events[-1] if run.events else None
@@ -527,19 +588,20 @@ def _index(run: Run, memo: Dict[Any, Any]) -> _Index:
 
 
 def _read(run: Run, memo: Dict[Any, Any], ev: Dict[str, Any], content: bool
-          ) -> Tuple[str, Set[Tuple[str, str]], Set[Tuple[str, str]]]:
-    """(the text read plain, the values the index reads, the values _wide reads) of the content an event brought
-    (`content`: an input's, a call's result), or of a call's arguments, each read once into `memo`; committed content
-    has none."""
+          ) -> Tuple[str, Set[Tuple[str, str]], Set[Tuple[str, str]], bool]:
+    """(the text read plain, the values the index reads, the values _wide reads, whether it holds more values than the
+    index reads) of the content an event brought (`content`: an input's, a call's result), or of a call's arguments,
+    each read once into `memo`; committed content has none."""
     key = ("read" if content else "args", ev["id"])
     if key not in memo:
         v = run.value(ev.get("args_ref") if not content else ev.get("ref") if ev["type"] == "input" else
                       ev.get("result_ref"))
         if _committed(v):
-            memo[key] = "", set(), set()
+            memo[key] = "", set(), set(), False
         else:
             t = _text(v)
-            memo[key] = _plain(t), set(provenance.values(v)[0]), _wide(t.lower() if content else t)
+            vals, over = provenance.values(v)
+            memo[key] = _plain(t), set(vals), _wide(t.lower() if content else t), over
     return memo[key]
 
 

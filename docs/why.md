@@ -266,17 +266,20 @@ it as a whole token, read as the index reads text (an IBAN the task writes in gr
 (the string a JSON result holds). Content is read as it was when the call was made: an untrusted tool's result is
 untrusted from when it was observed so, and only that call's result: a value a trusted lookup gave stays the lookup's
 when the same content arrives later through an untrusted tool (1.7 read it as untrusted, the lookup named as its
-source). Untrusted content also brought an identifier (anything but text a model wrote: white space and two or more
-words under a key that is no identifier's: one whose last word, or last two words, name a destination, such as
-recipient, to, payee, beneficiary, iban, wallet, url, host, destination, channel, path, file, email, number, id or
-sort_code, or that ends in name, info, details, number, code or id after such a word (`beneficiary_details`); an
-`email_body`, a `payee_comment`, a `repo_readme` or a reference such as `payment_ref` is text) when it holds a part of
-it that no trusted content holds (an IBAN's digits written in groups, a URL's host), or all of it without its white
-space (base64 a model broke over lines); a `recipient`, `to_email` or `payee_iban` stays an identifier whatever words
-are around it, and an `email_body` or a `payee_comment` is text. There the search reads wider than the signer's index,
-so it stops more, never fewer: a free string joined to another word by `_` (`External_…` holds `External`), digit runs
-across any characters but letters (slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as
-words ("six zero one six"), addresses spelled out ("audit at outside dot example"), and a one-word value in parts that
+source). A call's arguments are read whole and in their parts, nested objects, lists and tuples under the keys above
+them, and a string that holds JSON or a query string (`to=…&amount=…`) under its own keys. Untrusted content also
+brought an identifier (anything but text a model wrote) when it holds a part of it that no trusted content holds (an
+IBAN's digits written in groups, a URL's host; the call's own digits read across any separator, `+1 (415) 555-0134`), or
+all of it without its white space (base64 a model broke over lines). A value is an identifier under a key, or a key
+above it, with a word (or two together) that names a destination, such as recipient, to, payee, beneficiary, account,
+iban, wallet, url, host, destination, channel, path, file, email, number, id or sort_code, unless the key's last word is
+a free-text word (`account_no`, `to_whom`, `{"recipient": {"note": …}}` are identifiers; `email_body`, `payee_comment`,
+`repo_readme` are text); any value under a key whose last word is a free-text word or a reference (`subject`,
+`payment_ref`) is text, and prose under any other key. Untrusted content that holds more values than the index reads
+(its 4,096) is read for the rest from its text. There the search reads wider than the signer's index, so it stops more,
+never fewer: a free string joined to another word by `_` (`External_…` holds `External`), digit runs across any
+characters but letters (slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words
+("six zero one six"), addresses spelled out ("audit at outside dot example"), and a one-word value in parts that
 different untrusted texts hold as words: two parts, or more that each hold a digit (an account in three mails, not a
 name made of three words), when some part is one no trusted content (the task included) holds. Text a model wrote (a
 message body) is read for its addresses and URLs, and each host and digit run in it is a value of its own: a body that
