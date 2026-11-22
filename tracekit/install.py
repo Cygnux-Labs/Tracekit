@@ -1828,6 +1828,14 @@ def _v2_hooks_in(path):
         return False
 
 
+def _v1_hooks_in(path):
+    """Whether the Claude Code settings file `path` has Tracekit's v1 hooks (not when it's missing or unreadable)."""
+    try:
+        return "v1" in _hook_summary(json.loads(agent_file(path)))["versions"]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return False
+
+
 def _same_file(a, b):
     """Whether paths `a` and `b` name one existing file, however each is spelled (a home that is a symlink, say)."""
     try:
@@ -1923,6 +1931,94 @@ def uninstall_system_v2(purge=False):
                 subprocess.run(cmd, check=False)
         return []
     return [V2_DATA, *users]
+
+
+def uninstall_system(purge=False, user=None):
+    """`tracekit uninstall --system` as root: remove what `init` as root without `--v2` wrote — the hook group it put in
+    the managed settings file or in the agent's own, the units or plists it started, and the v1 keys of the system client
+    config with /opt/tracekit (unless v2 system mode still uses them). purge: also the signer's data dir (its keys and
+    log). user: the agent user, needed only when the client config records no managed hooks — a plain v1 install wrote
+    that user's ~/.claude/settings.json and the user itself is recorded nowhere (init_system drops target_user), so it
+    cannot be found without being named. Returns what was kept."""
+    darwin = _require_system(True, ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its "
+                                    "hooks out and tracekit down stops its signer")
+    sc = client.system_config() or {}
+    if "socket" not in sc and "mode" not in sc:   # neither generation installed here
+        raise SystemExit("v1 system mode is not installed: no client config records it, so there is nothing to remove")
+    flags = sc.get("init_flags") or []
+    signer = sc.get("signer")
+    v1_keys = ("socket", "signer_home", "signer_isolation", "mode", "fail_mode", "policy", "proxy", "proxy_url",
+               "init_flags")
+    kept = []
+    # hooks: what init wrote, read from init_flags rather than assumed
+    settings = None
+    owner = None
+    if "--no-hooks" not in flags:
+        if "--managed" in flags or "--managed-only" in flags:
+            settings = MANAGED_SETTINGS["darwin" if darwin else "linux"]
+            if _v1_hooks_in(settings):
+                install_managed(sc.get("proxy_url"), "--managed-only" in flags, settings, OPT_PYTHON, uninstall=True,
+                                signer=signer)
+        else:
+            project = flags[flags.index("--project") + 1] if "--project" in flags else None
+            if project:
+                settings = os.path.join(project, ".claude", "settings.json")
+            elif user:
+                try:
+                    owner = pwd.getpwnam(user)
+                except KeyError:
+                    raise SystemExit(f"no user {user!r} on this machine, so its Claude Code settings file cannot be "
+                                     "found to take Tracekit's hooks out of it")
+                settings = os.path.join(owner.pw_dir, ".claude", "settings.json")
+            else:
+                raise SystemExit("this install wrote Tracekit's hooks into the agent user's own "
+                                 "~/.claude/settings.json, and v1 init did not record which user that was. Re-run with "
+                                 "--user NAME to name it, or --project DIR if the hooks went into a project's settings")
+            if owner is not None:
+                if files.as_user(owner, _v1_hooks_in, settings):
+                    install_hooks(settings, uninstall=True, owner=owner, signer=signer)
+            elif _v1_hooks_in(settings):
+                install_hooks(settings, uninstall=True, signer=signer)
+    # services: the signer's, the proxy's (only with --proxy) and the helper's (only when a harness was registered)
+    if darwin:
+        plists = [os.path.join(LAUNCHD_DIR, label + ".plist") for label in ("dev.tracekit.tracekitd", "dev.tracekit.proxy",
+                                                                          HELPER_LABEL)]
+        for p in plists:
+            if os.path.exists(p):
+                subprocess.run(["launchctl", "bootout", "system", p], check=False)
+        removed = [p for p in plists if os.path.exists(p)]
+    else:
+        units = [os.path.join(SYSTEMD_DIR, n) for n in ("tracekitd.service", "tracekit-proxy.service",
+                                                        V1_HELPER + ".socket", V1_HELPER + ".service")]
+        for name in ("tracekitd", "tracekit-proxy", V1_HELPER + ".socket", V1_HELPER):
+            if os.path.exists(os.path.join(SYSTEMD_DIR, name.split(".")[0] + ".service")) or \
+                    os.path.exists(os.path.join(SYSTEMD_DIR, name + ".socket")):
+                subprocess.run(["systemctl", "disable", "--now", name], check=False)
+        removed = [p for p in units if os.path.exists(p)]
+        if removed:
+            subprocess.run(["systemctl", "daemon-reload"], check=False)
+    # files: the v1 keys of the system config, and what only v1 uses
+    rest = {k: v for k, v in sc.items() if k not in v1_keys}
+    if rest.get("signer") or rest.get("hooks") or rest.get("tailer"):   # v2 system mode keeps its keys
+        _write_system_client_config(rest)
+        kept += [OPT, client.SYSTEM_CONFIG]
+    else:
+        removed += [client.SYSTEM_CONFIG, OPT]
+    if owner is not None:
+        removed.append(os.path.join(owner.pw_dir, ".tracekit-client"))
+    for p in removed:
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        elif os.path.lexists(p):
+            os.remove(p)
+    try:
+        os.rmdir(os.path.dirname(client.SYSTEM_CONFIG))
+    except OSError:
+        pass   # not empty: v2 system mode or a policy lives there
+    if purge:
+        shutil.rmtree(SYS_HOME, ignore_errors=True)
+        return kept
+    return [SYS_HOME, *kept]
 
 
 def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_service=False, proxy=False, proxy_port=8787,

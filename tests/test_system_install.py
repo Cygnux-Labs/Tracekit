@@ -839,5 +839,99 @@ class ActionInputs(unittest.TestCase):
                                 rejected_v1_trust.stdout + rejected_v1_trust.stderr)
 
 
+@unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
+class UninstallV1System(unittest.TestCase):
+    """#948: `tracekit uninstall --system` removes what a v1 root init wrote, and keeps v2's and the signer's keys."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.me = install.pwd.getpwuid(os.getuid())
+        self.home = os.path.join(self.d, "agent-home")
+        os.makedirs(self.home)
+        self.opt = os.path.join(self.d, "opt")
+        os.makedirs(self.opt)
+        self.sys_home = os.path.join(self.d, "sys-home")
+        os.makedirs(self.sys_home)
+        self.units = os.path.join(self.d, "units")
+        os.makedirs(self.units)
+        self.managed = os.path.join(self.d, "claude-code", "managed-settings.json")
+        os.makedirs(os.path.dirname(self.managed))
+        self.cfg = os.path.join(self.d, "client.json")
+        self.written = {}
+        for k, v in {"OPT": self.opt, "SYS_HOME": self.sys_home, "SYSTEMD_DIR": self.units}.items():
+            p = mock.patch.object(install, k, v)
+            p.start()
+            self.addCleanup(p.stop)
+        for p in (as_root_on_linux(), mock.patch.object(install.client, "SYSTEM_CONFIG", self.cfg),
+                  mock.patch.object(install, "_write_root_file", lambda path, data: self.written.update({path: data})),
+                  mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed),
+                  mock.patch.object(install.subprocess, "run", mock.Mock(return_value=mock.Mock(returncode=0)))):
+            p.__enter__()
+            self.addCleanup(p.__exit__, None, None, None)
+
+    def v1_config(self, *flags):
+        cfg = {"socket": os.path.join(self.sys_home, "tracekitd.sock"), "signer_home": self.sys_home,
+               "signer_isolation": "separate-user", "mode": "system", "fail_mode": "closed",
+               "init_flags": list(flags)}
+        p = mock.patch.object(install.client, "system_config", return_value=cfg)
+        p.start()
+        self.addCleanup(p.stop)
+        return cfg
+
+    def test_managed_install_loses_hooks_unit_and_opt_but_keeps_the_keys(self):
+        """#948 test 1: no v1 hooks, no init-set allowManagedHooksOnly, no unit, no /opt/tracekit; keys and log stay."""
+        self.v1_config("--managed", "--managed-only")
+        install.install_managed(None, True, self.managed, install.OPT_PYTHON)
+        unit = os.path.join(self.units, "tracekitd.service")
+        open(unit, "w").close()
+        with contextlib.redirect_stdout(io.StringIO()):
+            kept = install.uninstall_system()
+        with open(self.managed, encoding="utf-8") as f:
+            settings = json.load(f)
+        self.assertNotIn("hooks", settings)
+        self.assertNotIn("allowManagedHooksOnly", settings)
+        self.assertFalse(os.path.exists(unit))
+        self.assertFalse(os.path.exists(self.opt))
+        self.assertFalse(os.path.exists(self.cfg))
+        self.assertEqual(kept, [self.sys_home])
+        self.assertTrue(os.path.isdir(self.sys_home))
+
+    def test_a_v2_install_on_the_same_machine_keeps_its_hooks_opt_and_keys(self):
+        """#948 test 2: v2's hooks, /opt/tracekit and the v2 keys of the client config stay."""
+        cfg = self.v1_config("--managed")
+        cfg.update(signer="/run/tracekit-signer/signer.sock", hooks={"user": "agent"}, tailer={"user": "agent"})
+        install.install_managed(None, True, self.managed, install.OPT_PYTHON)
+        with contextlib.redirect_stdout(io.StringIO()):
+            kept = install.uninstall_system()
+        self.assertEqual(sorted(kept), sorted([self.sys_home, self.opt, self.cfg]))
+        self.assertTrue(os.path.isdir(self.opt))
+        written = json.loads(self.written[self.cfg].decode())
+        self.assertEqual(written.get("signer"), "/run/tracekit-signer/signer.sock")  # v2's keys survive
+        self.assertEqual(written.get("hooks"), {"user": "agent"})
+        self.assertEqual(written.get("tailer"), {"user": "agent"})
+        for gone in ("socket", "signer_home", "mode", "init_flags"):
+            self.assertNotIn(gone, written)
+        with open(self.managed, encoding="utf-8") as f:
+            groups = [g for gs in json.load(f).get("hooks", {}).values() for g in gs]
+        self.assertEqual(groups, [], "the v1 hook groups are gone from the managed file")
+
+    def test_purge_also_removes_the_signers_data_dir(self):
+        """#948 test 3: with --purge the signer's data dir goes too."""
+        self.v1_config("--no-hooks", "--no-service")
+        with contextlib.redirect_stdout(io.StringIO()):
+            kept = install.uninstall_system(purge=True)
+        self.assertEqual(kept, [])
+        self.assertFalse(os.path.exists(self.sys_home))
+
+    def test_a_plain_install_refuses_without_the_agent_user_it_never_recorded(self):
+        """#948: v1 init drops target_user, so a plain install's settings file can only be found by --user."""
+        self.v1_config()
+        with self.assertRaises(SystemExit) as cm:
+            install.uninstall_system()
+        self.assertIn("--user NAME", str(cm.exception))
+        self.assertTrue(os.path.isdir(self.opt))   # nothing was removed by the refused run
+
+
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])
