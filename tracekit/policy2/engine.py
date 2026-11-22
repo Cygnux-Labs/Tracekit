@@ -2048,7 +2048,7 @@ def _walk(parsed, work):
         new = [d for cur in folders for g in commands[i:j] if g["argv"][0] != "popd"
                for d in _destinations(next((a for a in g["argv"][1:] if a == "-" or not a.startswith("-")), None),
                                       cur, homes, oldpwd, cdpath)]
-        shell.charge(work, sum(min(len(d), 64) + 1 for d in dict.fromkeys(new)))   # (a long folder costs no more than 64)
+        shell.charge(work, len(set(new)) // 4 + 1)   # (at most _FOLDERS_MAX x the readings of a cd: a few units a step)
         folders = list(dict.fromkeys([*folders, *new]))
         if len(folders) > _FOLDERS_MAX:
             folders, held = folders[-_FOLDERS_MAX:], True
@@ -2082,10 +2082,41 @@ def _write_effects(parsed, work):
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
 
 
+def _sets_environment(parsed):
+    """Whether the line sets or may set a variable (an assignment, export, read, printf -v, eval, env NAME=…) or loads an environment
+    (source, `.`, direnv): what a tool's index, configuration or Python then is isn't the line's to say."""
+    learned = parsed[5] if len(parsed) > 5 else {}
+    return bool(parsed[2] or learned.get("any_set") or any(
+        c["argv"] and (_program(c["argv"]) in ("source", ".", "direnv", "read", "export", "declare", "typeset", "eval", "mapfile",
+                                                "readarray", "set") or shell._sets_with_v(c["argv"])
+                       or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) for a in c["argv"][1:]))
+        for c in parsed[0]))
+
+
+def _git_fetches_foreign(commands):
+    """Whether a line fetches an explicit repository (a URL or a path), or adds or changes a remote: what git writes in a work
+    tree after it may be that repository's."""
+    for c in commands:
+        if _program(c["argv"]) != "git":
+            continue
+        args = c["argv"][1:]
+        i = shell._git_sub(args)
+        if i is None:
+            continue
+        rest = [a for a in args[i + 1:] if not a.startswith("-")]
+        if args[i] == "remote" and rest[:1] in (["add"], ["set-url"], ["rename"]):
+            return True
+        if args[i] in ("fetch", "pull") and any(re.search(r"[/:]|^[.~]", w) for w in rest[:1]):
+            return True
+    return False
+
+
 def _collect_effects(parsed, work, tags, learned):
     """_write_effects' reading, appending each effect to `tags` as it is read."""
     env = [f"--{opt}={v}" for var, opt in (("GIT_DIR", "git-dir"), ("GIT_WORK_TREE", "work-tree"))
            for v in _variable(parsed, var)]
+    if _git_fetches_foreign(parsed[0]):   # content another repository gave the line: each git after it is read as given it
+        env = [*env, "--tracekit-foreign"]
     if env:   # git given another repository or work tree by the environment is read as given them by option
         parsed = ([dict(c, argv=[c["argv"][0], *env, *c["argv"][1:]]) if _program(c["argv"]) == "git" else c
                    for c in parsed[0]], *parsed[1:])
@@ -2157,9 +2188,12 @@ def _collect_effects(parsed, work, tags, learned):
     every = [i for i, c in enumerate(parsed[0]) if c["argv"] and (
         _program(c["argv"]) == "pipx" and "upgrade-all" in c["argv"] or _program(c["argv"]) == "uv" and "tool" in c["argv"]
         and "upgrade" in c["argv"] and any(a in ("--all", "-a") for a in c["argv"]))]
-    if every and (any(_variable(parsed, n) for n in _UPGRADE_SETTINGS) or any(where[i] for i in every) or any(
+    if every and (_sets_environment(parsed) or any(
+            f for i in every for f in where[i] if not f.startswith(("~", "$HOME", "${HOME}"))) or any(
             a.startswith(("--config-file", "--directory", "--project", "--index", "--default-index", "--python"))
-            for i in every for a in parsed[0][i]["argv"])):
+            for i in every for a in parsed[0][i]["argv"]) or any(   # (and `env -C /tmp/proj uv tool upgrade --all`)
+            c["argv"][:1] == ["env"] and (_env_chdir(c["argv"])[0] or "~").startswith(("/", "$", ".", "..")) and
+            not _env_chdir(c["argv"])[0].startswith(("~", "$HOME", "${HOME}")) for c in parsed[0] if c["argv"])):
         tags.append("ROOT_TARGET:upgrade-all setting")
     # the environment a pip, uv pip or interpreter module installs into, named by a VIRTUAL_ENV the line gives
     if any(c["argv"][0] == "uv" for c in parsed[0]):   # uv syncs, runs and installs into a project's environment
@@ -2229,6 +2263,7 @@ def _collect_effects(parsed, work, tags, learned):
     # protected path
     resolved = [(k, path) for k, _, path in (t.partition(":") for t in tags)]
     tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _names_root(p)]
+    tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _inside_protected(p)]
     tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "INSIDE_TARGET" and _names_root(p, along=False)]
     tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "INTO_TARGET" and _holds_protected(p.rpartition("/")[0])] + [
         t for k, p in resolved if k in ("TREE_TARGET", "WORKTREE_TARGET") for t in [
@@ -2517,6 +2552,21 @@ def _under_roots(path, home=False, one_part=True):
 def _roots_below(path, home=False, one_part=True):
     """The trust roots a delete or move of `path` takes (_under_roots), each as a path."""
     return [path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path, home, one_part)]
+
+
+_ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES for k in range(1, len(place) + 1))
+# a harness's own folders and files: _PROTECTED_PATHS but for the general ones (.config, .github, .agents) and the folders along a root
+_SETTINGS_CHAINS = tuple(dict.fromkeys(
+    chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
+    if chain not in _ROOT_CHAINS and chain not in ((".config",), (".github",), (".agents",))))
+
+
+def _inside_protected(path):
+    """Whether `path` is, or is inside, a folder or file of a harness that _SETTINGS_CHAINS lists (.claude, .codex,
+    .cursor/hooks.json, .config/opencode): a program the parser doesn't know that names one may write it, which the rules on a
+    write to one read."""
+    parts = tuple(_normal(path).casefold().split("/"))
+    return any(parts[j:j + len(chain)] == chain for chain in _SETTINGS_CHAINS for j in range(len(parts) - len(chain) + 1))
 
 
 def _names_root(path, along=True):
@@ -3260,14 +3310,22 @@ def _effects_of(command, prints, work):
             out.extend("WRITE_TARGET:" + a for a in operands)
     out.extend(_tree_writes(exe, args, work))
     out.extend(_installs(command, exe, args))
+    if exe in ("mkdir", "touch"):   # a file or folder made inside a root may shadow a module its Python imports (a folder along one is fine)
+        out.extend("INSIDE_TARGET:" + a for a in args if not a.startswith("-"))
+    if exe in ("npm", "pnpm", "yarn", "gem", "cargo", "bundle") and any(a in ("--force", "-f") for a in args):
+        # --force replaces what is there, as `uv tool install --force` does: the folder it installs into is named, along a root too
+        out.extend("NAMED_TARGET:" + v for v in _option_values(args, *_LOCATION_OPTIONS, "--install-dir", "--root"))
     if not _known_program(exe):   # a program the parser doesn't know: held where its words name a trust root
         out.extend("NAMED_TARGET:" + w for w in _named_words(args))
         out.extend("INSIDE_TARGET:" + w for w in _assigned_words(args))
-    out.extend("NAMED_TARGET:" + w for w in _side_outputs(exe, args, command))
+    sides = _side_outputs(exe, args, command)
+    out.extend("NAMED_TARGET:" + w for w in sides)   # (a folder along a root, a harness's path too)
+    if exe not in ("awk", "gawk", "mawk", "nawk", "docker", "podman"):   # (those name files they may only read)
+        out.extend("WRITE_TARGET:" + w for w in sides)
     return out
 
 
-_NAME_VALUE = re.compile(r"(?:-D)?[A-Za-z_][A-Za-z0-9_.]*=")
+_NAME_VALUE = re.compile(r"(?:-D)?[A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z]+)?=")
 
 
 def _named_words(args):
@@ -3281,7 +3339,7 @@ def _named_words(args):
             skip = True
         elif a.startswith("--"):
             out += [a.partition("=")[2]] * ("=" in a and a.partition("=")[0] not in _LOCATION_OPTIONS)
-        elif a.startswith("-") and len(a) > 2:   # an attached value (`-o~/.local/bin/x`, `-C~/x`, `-v~/a:/m`)
+        elif a.startswith("-") and len(a) > 2 and not _NAME_VALUE.match(a):   # an attached value (`-o~/.local/bin/x`, `-C~/x`)
             out += _pieces(a[2:].lstrip("="))
         elif not a.startswith("-") and not _NAME_VALUE.match(a):
             out += _pieces(a)
@@ -3328,7 +3386,8 @@ _SQLITE_FILE = re.compile(r"(?i)\.(?:output|once|backup|save|import|read|dump|cl
 
 def _side_outputs(exe, args, command):
     """The files a known program may write by an option or a script that _command_effects doesn't read (each held as
-    NAMED_TARGET where it names a trust root): mktemp's template and -p, sed's `w` and `W`, awk's string literals, sqlite3's
+    WRITE_TARGET, so each rule on a write reads them; an awk program's string literals as NAMED_TARGET, held where one names a
+    trust root): mktemp's template and -p, sed's `w` and `W`, awk's string literals, sqlite3's
     .output, .backup, .trace, .log and attach and `vacuum into`, git's archive -o, bundle, format-patch -o and --output (past
     its own options), tree -o, less -o, uv export and pip compile -o, pip download -d and wheel -w, zstd's and brotli's -o,
     an archive a tar, zip, 7z, pax, jar or ar creates, an editor's `:w`, `saveas` and write-file."""
@@ -3382,7 +3441,8 @@ def _side_outputs(exe, args, command):
         return _option_values(args, "-d", "--dest") + _option_values(args, "-w", "--wheel-dir") if any(
             w in ("download", "wheel") for w in words) else []
     if exe in ("docker", "podman"):   # a volume or mount that makes a folder of the host writable in the container
-        return [p for a in _option_values(args, "-v", "--volume", "--mount") for p in _pieces(a)]
+        return [p for a in _option_values(args, "-v", "--volume", "--mount")
+                if not re.search(r"(?:^|[:,])(?:ro|readonly)(?:$|[:,=])", a) for p in _pieces(a)]
     return []
 
 
@@ -3394,6 +3454,12 @@ def _literal_effects(command):
     argv = command["argv"]
     exe, args = _program(argv), argv[1:]
     words = [a for a in args if not a.startswith("-")]
+    try:   # (a tree writer, as _tree_writes reads it: its folders, a few of them)
+        written = _tree_writes(exe, args, [0])
+    except shell.ParseError:
+        written = []
+    if written:
+        return written
     if exe in ("rm", "unlink", "shred"):
         return ["DELETE_TARGET:" + w for w in words]
     if exe in ("truncate", "tee"):
@@ -3451,7 +3517,7 @@ _GIT_READS = frozenset(("status", "log", "diff", "show", "ls-files", "ls-tree", 
                         "blame", "grep", "cat-file", "show-ref", "shortlog", "name-rev", "version", "help"))
 
 
-_GIT_MAGIC = re.compile(r":[/!^(]|:\(|\*|\.\.?$|\[|\?")
+_GIT_MAGIC = re.compile(r":[/!^(]|:\(|\*|\.\.?$|\[|\?|^[/~$]|\$\(|`")
 
 
 def _git_foreign(sub, args, after):
@@ -3459,7 +3525,8 @@ def _git_foreign(sub, args, after):
     --work-tree, `-c core.worktree`, a repository operand on pull, --separate-git-dir), a patch (apply, am), a tree it
     checks out whole (read-tree -u, checkout-index -a, --pathspec-from-file) or a whole-tree or magic pathspec (`.`,
     `:/`, `*`, `:(top)`, `:!x`) that may name any path."""
-    return (any(a.startswith(("--git-dir", "--work-tree", "--separate-git-dir", "--pathspec-from-file")) or
+    return ("--tracekit-foreign" in args or any("FETCH_HEAD" in w for w in after)
+            or any(a.startswith(("--git-dir", "--work-tree", "--separate-git-dir", "--pathspec-from-file")) or
                 a in ("--git-dir", "--work-tree", "--separate-git-dir") for a in args)
             or any(a.startswith("core.worktree") for a in args) or sub in ("apply", "am")
             or sub == "pull" and any(re.search(r"[/:]|^[.~]", w) for w in after[:1])
@@ -3482,9 +3549,6 @@ def _normalise_name(word):
 
 
 _QUIET = ("-q", "-v", "--quiet", "--verbose", "--no-progress", "--no-cache", "--include-injected", "--color=never", "--native-tls")
-# what changes the index, the configuration or the Python an upgrade of every tool uses
-_UPGRADE_SETTINGS = ("UV_PYTHON", "UV_CONFIG_FILE", "UV_PROJECT", "UV_WORKING_DIR", "UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_EXTRA_INDEX_URL",
-                     "UV_INDEX", "PIP_CONFIG_FILE", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIPX_DEFAULT_PYTHON")
 
 
 def _installs(command, exe, args):
@@ -3667,7 +3731,8 @@ def _tree_writes(exe, args, work):
             return []
         into = ([a for a in args if not a.startswith("-")][-1:] if passing else ["."]) + [
             w for a in args for w in re.findall(r"(?:~|/)[^\s,'\"]*", a)] + [
-            b for a, b in zip(args, args[1:]) if a in ("-D", "--directory")]
+            b for a, b in zip(args, args[1:]) if a in ("-D", "--directory")] + [
+            a.partition("=")[2] for a in args if a.startswith("--directory=")]
     elif exe == "patch":   # the files its diff names, in -d's folder (here by default)
         if any(a in ("--dry-run", "-C", "--check") for a in args):
             return []
@@ -3685,7 +3750,8 @@ def _tree_writes(exe, args, work):
         elif exe == "jar":
             if not any("x" in a for a in args[:1]):
                 return []
-            into = [b for a, b in zip(args, args[1:]) if a == "-C"]
+            into = [b for a, b in zip(args, args[1:]) if a in ("-C", "--dir")] + [
+                a.partition("=")[2] for a in args if a.startswith("--dir=")]
         elif exe in ("lha", "lzh"):
             if not any(re.match(r"-?[xe]", a) for a in args[:1]):
                 return []
@@ -3693,7 +3759,7 @@ def _tree_writes(exe, args, work):
         elif exe == "unrar":
             if args[:1] not in (["x"], ["e"]):
                 return []
-            into = words[2:3]
+            into = words[2:3] + [a[3:] for a in args if a.startswith("-op") and len(a) > 3]   # (-op<folder>)
         elif exe == "ar" and not any("x" in a for a in args[:1]):
             return []
     elif exe == "hdiutil" and args[:1] == ["attach"]:   # a disk image mounted over a folder

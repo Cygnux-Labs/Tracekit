@@ -188,3 +188,14 @@ tree -L 2 -o tree.txt .
 cd ~ && git worktree list
 cd ~ && git submodule status
 uv tool install --force ruff	TK-F015
+cmake -B build -DCMAKE_INSTALL_PREFIX=~/.local
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$HOME/.local
+cmake -B build -DCMAKE_PREFIX_PATH=$HOME/.local
+cmake -B build -DCMAKE_INSTALL_PREFIX:PATH=$HOME/.local
+docker run --rm -v ~/.local/share/uv:/root/.local/share/uv:ro img uv sync
+docker run --rm -v ~/.local/bin:/opt/bin:ro img ls /opt/bin
+cd ~/proj && uv tool upgrade --all
+gem install --bindir ~/.local/bin evilgem
+npm i -g --prefix ~/.local x
+mkdir -p ~/.local/share/myapp
+touch ~/.local/bin/mytool
