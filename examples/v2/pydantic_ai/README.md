@@ -9,7 +9,7 @@ records the outcome after ([the integration page](../../../docs/integrations/pyd
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install tracekit-ai "pydantic-ai-slim>=2.57,<2.58"   # from a checkout: pip install .
+pip install tracekit-ai "pydantic-ai-slim>=2.57,<3"   # from a checkout: pip install .
 python examples/v2/pydantic_ai/agent.py --scripted
 ```
 

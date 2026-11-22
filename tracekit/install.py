@@ -29,6 +29,7 @@ except ImportError:
 from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
+from . import yamlmini
 from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1561,13 +1562,55 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), 
                                                 f"      script: {q(h['script'])}"] if h.get("script")
                                                else [f"    {q(h['name'])}: {q(h['exe'])}"])] if harnesses else []
     return "\n".join([
-        "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
+        "# written by `tracekit init --v2`; a re-run writes its own keys again and keeps the others", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", *([f"  {q(f'uid:{egress_uid}')}: {tenant}"] if egress_uid is not None else []),
         "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
         "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]",
         *([f"  {q(f'uid:{egress_uid}')}: [observe_effect]"] if egress_uid is not None else []), f"policy: {q(policy)}",
         *binding, *(['witnesses: ["public"]'] if public_witness else []), ""])
+
+
+V2_INIT_KEYS = ("data_dir", "socket", "socket_mode", "tenant", "tenants", "approvals", "authorize", "policy",
+                "harness_binding", "witnesses")
+
+
+def hand_keys(old):
+    """The top-level keys of signer.yaml text `old`, read by yamlmini as the signer reads it, that init doesn't write,
+    and a `witnesses:` list other than init's own `["public"]`: (their signer.yaml lines, written as JSON, and their
+    names). ValueError names what can't be kept: a key the signer doesn't know, or a value that wouldn't load back as
+    it is."""
+    from .signer.service import CONFIG_KEYS
+    cfg = yamlmini.loads(old) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("it is not a mapping of keys")
+    kept = {k: v for k, v in cfg.items()
+            if k not in V2_INIT_KEYS or k == "witnesses" and v not in (None, ["public"])}
+    unknown = sorted(str(k) for k in kept if k not in CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"the signer doesn't know {', '.join(unknown)}")
+    lines = "".join(f"{json.dumps(k)}: {json.dumps(v)}\n" for k, v in kept.items())
+    back = yamlmini.loads(lines) or {}
+    for k, v in kept.items():
+        if json.dumps(back.get(k)) != json.dumps(v) or back.get(k) != v:
+            raise ValueError(f"{k} would not be written back as it is")
+    return lines, list(kept)
+
+
+def _old_hand_keys():
+    """hand_keys of the signer.yaml an earlier init wrote, read as a regular file in a root-owned directory, without
+    following a symlink; ("", []) when there is none. SystemExit when it can't be kept."""
+    d = None
+    try:
+        d = files.open_dir(os.path.dirname(V2_CONFIG), {0})
+        old = files.read(d, os.path.basename(V2_CONFIG))
+        return hand_keys(old.decode("utf-8")) if old else ("", [])
+    except FileNotFoundError:
+        return "", []
+    except (files.UnsafePath, NotADirectoryError, ValueError) as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    finally:
+        files.close(d)
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1704,6 +1747,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
+    hand, kept = _old_hand_keys()   # before any change: a file it can't keep stops init here
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1727,8 +1771,14 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
               "records a tailer_lost gap instead of its transcript")
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                system_witness(public_witness), observer and observer.pw_uid).encode())
+    config = v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
+                            system_witness(public_witness), observer and observer.pw_uid)
+    if "witnesses" in kept:   # a list of the operator's own replaces init's
+        config = "".join(line for line in config.splitlines(keepends=True) if not line.startswith("witnesses:"))
+    config += hand
+    if kept:
+        print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
+    _write_root_file(V2_CONFIG, config.encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"

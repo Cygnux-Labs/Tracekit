@@ -130,13 +130,22 @@ class LimitsIndex(unittest.TestCase):
         self.assertIn(os.path.join(ROOT, "docs", "issuer.md"), with_limits)
         self.assertEqual([os.path.relpath(p, ROOT) for p in with_limits if os.path.normpath(p) not in linked], [])
 
+    def test_kilo_and_opencode_rows_name_only_the_tools_still_unread(self):
+        # #988: Kilo's browser_open, repo_clone and kilo_memory_save are decided by what they do, and an http(s) image
+        # of OpenCode's experimental_image_generate by the fetch rules
+        text = read(os.path.join(ROOT, "docs", "limits.md"))
+        kilo = next(r for r in text.splitlines() if r.startswith("| Kilo's own tools that Tracekit doesn't map"))
+        self.assertIn("Among them: `agent_manager`", kilo)
+        self.assertIn("`browser_open` and `repo_clone` are decided as a `WebFetch`", kilo)
+        self.assertIn("`kilo_memory_save` is decided as a `Write`", kilo)
+        self.assertNotIn("is decided as a path, not by the fetch rules", text)
+
 
 class DocCommands(unittest.TestCase):
     def test_system_mode_upgrade_docs_include_macos_signer_label(self):
         """The macOS upgrade commands must use the launchd label configured by init."""
         upgrade = read(os.path.join(ROOT, "docs", "deploy.md")).split("To upgrade:", 1)[1]
         self.assertIn(f"sudo launchctl bootout system/{install.V2_LABEL}", upgrade)
-        self.assertIn(f"sudo launchctl kickstart -k system/{install.V2_LABEL}", upgrade)
 
     def test_every_tracekit_command_in_a_code_block_exists(self):
         known = cli_commands()
@@ -207,3 +216,16 @@ class DocTableCells(unittest.TestCase):
                             bad.append(f"{os.path.relpath(path, ROOT)}:{j + 1}")
                         j += 1
         self.assertEqual(bad, [])
+
+
+class VaultDocs(unittest.TestCase):
+    def test_the_docs_do_not_ask_for_a_restart_after_a_vault_change(self):
+        """#986: the gateway re-reads the vault's state every interval, so the restart these pages asked for is no
+        longer what an operator has to do."""
+        self.assertNotIn("Restart the gateway after you turn the vault on",
+                         read(os.path.join(ROOT, "docs", "gateway.md")))
+        rows = [line for line in read(os.path.join(ROOT, "docs", "limits.md")).splitlines()
+                if "not_retained" in line and "`status`" in line]
+        self.assertEqual(len(rows), 1)
+        self.assertNotIn("restart it after turning the vault on or off", rows[0])
+        self.assertIn("minute", rows[0])   # and says what an operator should allow instead

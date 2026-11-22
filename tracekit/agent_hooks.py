@@ -8,7 +8,7 @@ Interpreter, on the Claude Code pipeline.
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
     tracekit init --dev --agent kilo         # ~/.config/kilo/plugin/tracekit.js (project: .kilo/plugin/tracekit.js)
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
-    tracekit init --dev --agent qwen         # ~/.qwen/settings.json
+    tracekit init --dev --agent qwen         # ~/.qwen/settings.json ($QWEN_HOME/settings.json)
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
@@ -399,10 +399,22 @@ OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath"
                      "experimental_image_generate": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+# an experimental_image_generate image OpenCode downloads rather than reads (readImage's /^https?:\/\//i)
+IMAGE_URL = re.compile(r"https?://", re.I)
 # Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
-# plus its own; those that run a command or read or write a file are mapped here (packages/opencode/src/kilocode/tool)
+# plus its own; those that run a command, read or write a file or fetch a URL are mapped here
+# (packages/opencode/src/kilocode/tool): browser_open on its `url`, repo_clone on the URL it clones (tool()).
+# agent_manager stays an unknown tool: it starts or prompts Agent Manager sessions with a prompt, names, branches and
+# a model, and names no file, command or URL; each session's own calls run the plugin's hooks
 KILO_TOOLS = {**OPENCODE_TOOLS, "background_process": "Bash", "notebook_read": "Read", "notebook_edit": "NotebookEdit",
-              "send_file": "Read", "generate_image": "Write"}
+              "send_file": "Read", "generate_image": "Write", "browser_open": "WebFetch", "repo_clone": "WebFetch"}
+# kilo_memory_save's files (kilo-memory's storage/paths.ts and tool.ts): a remember writes project.md, a correct
+# corrections.md, and a forget edits all three, in $XDG_DATA_HOME/kilo/memory/<project>-<hash>/, which later sessions
+# read back; a skip writes nothing (an unknown tool)
+# lean: the <project>-<hash> folder (a sha1 of the project's root) isn't worked out; the path is the memory folder's
+KILO_MEMORY = "~/.local/share/kilo/memory/"
+KILO_MEMORY_FILES = {"remember": ("project.md",), "correct": ("corrections.md",),
+                     "forget": ("project.md", "environment.md", "corrections.md")}
 KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "notebook_edit", "send_file", "generate_image"),
                                                       "path")}
 # Kilo's notebook_execute (VS Code, experimental.native_notebook_tools) runs a cell in the live kernel: the cell's code
@@ -787,6 +799,38 @@ def _gptme_tool(name, ti):
     return name, kwargs if kwargs is not None else ti
 
 
+def _jcode_dispatch_name(server, called):
+    """jcode's `dispatch_name` (crates/jcode-base/src/mcp/tool.rs): each character outside [A-Za-z0-9_] becomes `_`; a
+    name over 64 characters is cut to leave room for `_` and the 8 hex digits of the FNV-1a hash of server, NUL, tool."""
+    name = re.sub(r"[^A-Za-z0-9_]", "_", f"mcp__{server}__{called}")
+    if len(name) > 64:
+        h = 0x811c9dc5
+        for b in (server + "\0" + called).encode():
+            h = (h ^ b) * 0x01000193 & 0xFFFFFFFF
+        name = f"{name[:55]}_{h:08x}"
+    return name
+
+
+def _kilo_remote(repository):
+    """The URL Kilo's repo_clone clones `repository` from (Repository.parse, packages/core/src/repository.ts): a URL as
+    given (a git+ prefix dropped), scp-style [user@]host:path as ssh://, split at its first ':' as git splits it, and
+    host/path, GitHub's owner/repo and github:owner/repo as https. One Kilo refuses (a file: URL, or no form it reads)
+    is decided as sent.
+    lean: KILO_REPO_CLONE_GITHUB_BASE_URL, which moves GitHub's clones to another host, isn't read"""
+    s = re.sub(r"/+\Z", "", re.sub(r"#[^\n\r\u2028\u2029]*\Z", "", re.sub(r"\Agit\+", "", repository.strip(JS_SPACE))))
+    if "://" in s:
+        return s
+    gh = re.fullmatch(r"github:([^/\s]+/[^/\s]+)", s)
+    if not gh and re.fullmatch(r"(?:[^@/\s]+@)?[^:/\s]+:.+", s):   # git splits scp-style at the first ':'
+        host, path = s.split(":", 1)
+        return f"ssh://{host}/{path}"
+    parts = [p for p in (re.sub(r"\.git\Z", "", x.strip(JS_SPACE)) for x in ("github.com/" + gh[1] if gh else s).split("/"))
+             if p]
+    if len(parts) >= 2 and ("." in parts[0] or ":" in parts[0] or parts[0] == "localhost"):
+        return f"https://{parts[0].lower()}/{'/'.join(parts[1:])}.git"
+    return f"https://github.com/{'/'.join(parts)}.git" if len(parts) == 2 else s
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
@@ -865,11 +909,9 @@ def tool(harness, name, ti):
             return name, ti
         if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
             # the tool it calls, on its own arguments
-            # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
-            # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
             server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
             if isinstance(server, str) and server and isinstance(called, str) and called:
-                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
+                return _jcode_dispatch_name(server, called), dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
             return name, ti
         if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
             # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would
@@ -1008,14 +1050,29 @@ def tool(harness, name, ti):
         if (harness, name) in (("kilo", "generate_image"), ("opencode", "experimental_image_generate")):
             ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
             # Kilo's `image` and OpenCode 2.x's `images`, files read and sent to the image provider: decided as a Read
-            # of each, with the `path` it writes (an image extension is given to it)
-            # lean: an http(s) image OpenCode downloads is decided as a path, not by the fetch rules
+            # of each, with the `path` it writes (an image extension is given to it). OpenCode downloads an http(s) one
+            # instead (readImage, under webfetch's permission): images that are all URLs are decided as a WebFetch of
+            # each, and a call with both is denied in the hook (_blocked)
+            # lean: the `path` a WebFetch writes is not decided; OpenCode gives it an image extension
             images = ti.get("image" if harness == "kilo" else "images")
             images = [i for i in (images if isinstance(images, list) else [images]) if isinstance(i, str)]
+            urls = [i for i in images if harness == "opencode" and IMAGE_URL.match(i)]
+            if urls:
+                ti.pop("urls", None)
+                return "WebFetch", {**ti, "url": urls[0], **({"urls": urls} if len(urls) > 1 else {})}
             if images:
                 ti["file_path"] = images[0]
                 ti["paths"] = images + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
+        if harness == "kilo" and name == "repo_clone":   # the URL it clones, never a decoy `url` beside it
+            ti.pop("urls", None)
+            ti["url"] = _kilo_remote(ti["repository"]) if isinstance(ti.get("repository"), str) else None
+        if harness == "kilo" and name == "kilo_memory_save" and isinstance(ti.get("action"), str) \
+                and ti["action"] in KILO_MEMORY_FILES:
+            paths = [KILO_MEMORY + f for f in KILO_MEMORY_FILES[ti["action"]]]
+            ti.pop("content", None)   # what a remember or a correct writes is its `text` (a forget's is a query)
+            text = {"content": ti["text"]} if ti["action"] != "forget" and isinstance(ti.get("text"), str) else {}
+            return "Edit" if ti["action"] == "forget" else "Write", {**ti, "file_path": paths[0], "paths": paths, **text}
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
@@ -1373,6 +1430,11 @@ def normalise(harness, p):
             if ev == "tool.execute.after":
                 out["tool_response"] = p.get("tool_response")
             return out
+        if ev == "session.prompt":   # OpenCode 2.x's prompt hook: also a command's or a plugin's prompt, and a
+            # subagent's, with nothing in it that says a person typed it (the TUI sends no metadata): untrusted
+            return dict(out, hook_event_name="UserPromptSubmit", prompt=p.get("prompt"), source="prompt")
+        if ev == "session.deleted":   # OpenCode 2.x: the session was deleted
+            return dict(out, hook_event_name="SessionEnd", reason="session deleted")
         return None
     if harness == "goose":
         # goose names its event `event`, not `hook_event_name` (the v2 hook's command-line event arrives as the
@@ -1570,11 +1632,20 @@ def _blocked_kiro(tool_name, raw=""):
     return None
 
 
+def _opencode_batch_reason(harness):
+    """Reason for blocking OpenCode's and Kilo Code's experimental batch tool (shared by the plugin and _blocked_tool)."""
+    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
+    return (f"Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, "
+            f"so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.")
+
+
 def _blocked_tool(harness, tool_name, raw=""):
     """The reason a tool call is denied in the hook itself, else None: a tool that runs calls the hook never sees, or
     a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
     is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
+    if harness in ("opencode", "kilo") and tool_name == "batch":
+        return _opencode_batch_reason(harness)
     if harness == "openhands" and tool_name in OPENHANDS_SUBAGENTS:
         return (f"Blocked by Tracekit: OpenHands' {tool_name} runs a sub-agent whose tool calls run no hooks, so "
                 "Tracekit can't decide them; make each call itself instead.")
@@ -1755,6 +1826,12 @@ def _blocked(harness, p, raw="", line=None):
                        "can read, so it can't decide what the workflow will run; send the file's text.")
         return why
     name = _named(harness, str(p.get("tool_name") or ""))
+    images = _input(p.get("tool_input")).get("images") if (harness, name) == ("opencode", "experimental_image_generate") \
+        else None
+    if isinstance(images, list) and len({bool(IMAGE_URL.match(i)) for i in images if isinstance(i, str)}) > 1:
+        return ("Blocked by Tracekit: OpenCode's experimental_image_generate call downloads some of its images and "
+                "reads others from disk, and Tracekit decides a call as a fetch or as a read, not both; download the "
+                "image to a file first (a fetch Tracekit decides), then pass only files.")
     if harness == "kiro" and name in KIRO_DECIDED_ON:
         v = _input(p.get("tool_input")).get(KIRO_DECIDED_ON[name])
         if not (isinstance(v, str) and v):
@@ -1976,7 +2053,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE) or (
         harness == "openhands" and not p.get("hook_event_name") and p.get("event_type") in PRE)
     q = normalise(harness, p)
-    if harness == "gptme" and q and q["hook_event_name"] == "PromptObserved":
+    if q and (harness == "gptme" and q["hook_event_name"] == "PromptObserved" or
+              harness in PLUGIN_TOOLS and q["hook_event_name"] == "UserPromptSubmit"):
         q = None   # v1 has no untrusted prompt observation
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
@@ -2033,7 +2111,7 @@ def _exit(harness, code, is_pre):
 
 def _reply(harness, stdout, allowed, msg, is_pre):
     # a block message in at most 500 characters. The hook's outcome, its last line and the lines that go on from it
-    # (claude_code.stopped's), goes first (before a waiting line), and in it the person's commands right after its first
+    # (sdk.client.stopped's), goes first (before a waiting line), and in it the person's commands right after its first
     # line, which names the rule ids: a longer one loses the end of its reasons and of the agent's line, marked
     lines = msg.split("\n")
     start = max((i for i, x in enumerate(lines) if not x.startswith(STOPPED_LINES)), default=0)
@@ -2086,6 +2164,10 @@ def config_path(harness, project=None, home=None):
     # Open Interpreter, a Codex fork, reads $INTERPRETER_HOME in place of ~/.openinterpreter, and never CODEX_HOME
     oi = os.path.realpath(os.environ["INTERPRETER_HOME"]) \
         if not (project or home) and os.environ.get("INTERPRETER_HOME") else os.path.join(base, ".openinterpreter")
+    # Qwen Code reads a user's settings from $QWEN_HOME, ~ expanded, in place of ~/.qwen (qwen-code 0.28.0
+    # getGlobalQwenDirLite)
+    qwen = os.path.abspath(os.path.expanduser(os.environ["QWEN_HOME"])) \
+        if not (project or home) and os.environ.get("QWEN_HOME") else os.path.join(base, ".qwen")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
     # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
@@ -2097,7 +2179,7 @@ def config_path(harness, project=None, home=None):
             "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
-            "qwen": os.path.join(base, ".qwen", "settings.json"),
+            "qwen": os.path.join(qwen, "settings.json"),
             "droid": os.path.join(base, ".factory", "hooks.json"),
             "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
                            os.path.join(base, ".gemini", "config", "hooks.json"),
@@ -2280,15 +2362,16 @@ def _opencode_plugin(python, v2, harness="opencode"):
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
-                _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
-    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
+                _dev_hook_argv(module, "entry", (harness, ev))
+                for ev in ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")}
+    batch_error = json.dumps(_opencode_batch_reason(harness))
     return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
 // other coding agents' pre-tool timeout: a hook still running then hung, so it is killed and its call blocked
 const KILL_MS = 600000;
 
-async function tracekit(event, input, toolInput, toolResponse) {{
+async function tracekit(event, input, toolInput, toolResponse, more) {{
   const payload = {{
     hook_event_name: event,
     session_id: input.sessionID,
@@ -2297,6 +2380,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
     tool_input: toolInput,
     tool_response: toolResponse,
     cwd: input.cwd,
+    ...more,
   }};
   let timer, killed = false;
   try {{
@@ -2321,8 +2405,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     if (input.tool === "batch") {{   // OpenCode runs the calls inside a batch with no plugin hooks
-      throw new Error("Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, " +
-        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.");
+      throw new Error({batch_error});
     }}
     const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run
@@ -2352,6 +2435,37 @@ export default {{
                                     event.status === "completed" ? event.result : {{ error: event.error }});
       if (result.code !== 0) console.error(result.message);
     }});
+    try {{   // registered after the tool hooks: an OpenCode without these hooks still decides each call
+      // each prompt as OpenCode admits it, once per message (a concurrent submission of one id runs the hook again).
+      // The draft is only read, never changed, and a hook that fails never stops the prompt
+      // lean: the ids live as long as the server, one per prompt
+      const prompted = new Set();
+      await ctx.session.hook("prompt", async (event) => {{
+        try {{
+          if (prompted.has(event.messageID)) return;
+          prompted.add(event.messageID);
+          const result = await tracekit("session.prompt", {{ sessionID: event.sessionID, cwd: ctx.location.directory }},
+                                        undefined, undefined, {{ prompt: event.prompt.text }});
+          if (result.code !== 0) console.error(result.message);
+        }} catch (error) {{
+          console.error(`[tracekit] the prompt was not recorded (${{error}})`);
+        }}
+      }});
+      // a deleted session is over, so its run closes; OpenCode 2.x sends plugins no other session end
+      const ended = new AbortController();
+      (async () => {{
+        for await (const event of ctx.event.subscribe({{ types: ["session.deleted"], signal: ended.signal }})) {{
+          const result = await tracekit("session.deleted", {{ sessionID: event.data.sessionID,
+                                                              cwd: ctx.location.directory }});
+          if (result.code !== 0) console.error(result.message);
+        }}
+      }})().catch((error) => {{
+        if (!ended.signal.aborted) console.error(`[tracekit] session ends are not recorded (${{error}})`);
+      }});
+      return () => ended.abort();
+    }} catch (error) {{
+      console.error(`[tracekit] prompts and session ends are not recorded (${{error}})`);
+    }}
   }},
 }};
 '''
@@ -3059,6 +3173,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if harness == "kiro":
         return _install_kiro(path, uninstall, v2, python)
     if harness in ("droid", "copilot") and uninstall and not os.path.exists(path):   # nothing to remove: no file made
+        if harness == "copilot" and project:
+            _copilot_exclude(path, project, uninstall, False)
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
         legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
@@ -3164,11 +3280,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError:   # a config.toml init can't have written to
             pass
     _said(path, removed, uninstall, v2)
-    if harness == "copilot" and project and changed and not uninstall:   # said when the file is written
-        print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
-              "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out of "
-              "the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your user "
-              "instead (the same command without --project)")
+    if harness == "copilot" and project:
+        _copilot_exclude(path, project, uninstall, changed)
+    if harness == "copilot" and not uninstall:
+        _copilot_claude_hooks(project)
     if kept:
         print(f"{path} kept: {kept}. Droid runs the hooks in it, and those in {settings} only once it is gone: move "
               f"any you want into {settings}, then delete it")
@@ -3179,6 +3294,67 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 print(f"read_config_from.claude stays false in {devin_rc}: set it to true there for Devin to read "
                       "Claude Code's hooks, rules, skills, commands and MCP servers again")
     return path
+
+
+def _copilot_exclude(path, project, uninstall, changed):
+    """Keep `path`, a project's Copilot hooks file (it names this machine's Python, and .github/ is usually committed),
+    out of git: init adds its line to the checkout's exclude file (which its worktrees share), uninstall removes it.
+    Outside a git checkout init says how."""
+    import subprocess
+    try:
+        top, exclude = subprocess.run(["git", "-C", project, "rev-parse", "--show-toplevel", "--git-path", "info/exclude"],
+                                      capture_output=True, text=True, timeout=15, check=True).stdout.splitlines()
+    except (OSError, subprocess.SubprocessError, ValueError):   # no git, or not a checkout
+        if changed and not uninstall:
+            print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
+                  "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out "
+                  "of the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your "
+                  "user instead (the same command without --project)")
+        return
+    exclude = os.path.join(project, exclude)   # --git-path is relative to the directory git ran in
+    rel = os.path.relpath(os.path.join(os.path.realpath(project), os.path.relpath(path, project)), os.path.realpath(top))
+    line = "/" + re.sub(r"([\\*?\[])", r"\\\1", rel.replace(os.sep, "/"))   # a pattern: a folder's `[1]` as written
+    try:
+        with open(exclude, encoding="utf-8", errors="surrogateescape", newline="") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+    lines = text.splitlines(keepends=True)
+    if uninstall:
+        kept = [x for x in lines if x.rstrip("\r\n") != line]
+        if kept != lines:
+            with open(exclude, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+                f.write("".join(kept))
+            print(f"{line} removed from {exclude}")
+        return
+    if {line, line[1:]} & {x.rstrip("\r\n") for x in lines}:   # init's line, or the one its advice named
+        return
+    os.makedirs(os.path.dirname(exclude), exist_ok=True)
+    with open(exclude, "a", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.write(("\n" if text and not text.endswith("\n") else "") + line + "\n")
+    print(f"{path} names this machine's Python: {line} added to {exclude}, so git leaves it out of commits (uninstall "
+          "removes the line)")
+
+
+def _copilot_claude_hooks(project):
+    """Say when the project's Claude Code settings (the working directory's, for a user install) hold Tracekit's hook:
+    Copilot CLI runs a repository's .claude hooks too."""
+    from .install import _hook_summary
+    root = project or os.getcwd()
+    if not project and os.path.realpath(root) == os.path.realpath(os.path.expanduser("~")):   # ~/.claude: the user's
+        return
+    for name in ("settings.json", "settings.local.json"):
+        p = os.path.join(root, ".claude", name)
+        try:
+            with open(p, encoding="utf-8") as f:
+                ours = _hook_summary(json.load(f))["events"]
+        except (OSError, ValueError, AttributeError, TypeError):   # absent, or not a settings object
+            continue
+        if ours:
+            print(f"{p} holds Tracekit's Claude Code hook, and Copilot CLI runs a repository's .claude hooks too: each "
+                  "Copilot call here is decided and recorded twice, under two agent names. Install Tracekit's hook "
+                  "for one of the two in this project, or both for your user")
+            return
 
 
 def _devin_claude_off(s, path):

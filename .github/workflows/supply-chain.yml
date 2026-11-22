@@ -16,6 +16,7 @@ concurrency:   # a new push to a pull request cancels its older run; runs on mai
 jobs:
   codeql:
     runs-on: ubuntu-latest
+    timeout-minutes: 15   # runs in 1-2 min; a hang fails here, not at six hours
     permissions:
       contents: read
       security-events: write
@@ -34,6 +35,7 @@ jobs:
   pip-audit:
     # the dependency set a release installs: tracekit-ai with every extra, resolved and frozen
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # runs in under a minute
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -49,6 +51,7 @@ jobs:
   dependency-review:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 10   # runs in under a minute
     permissions:
       contents: read
       pull-requests: write

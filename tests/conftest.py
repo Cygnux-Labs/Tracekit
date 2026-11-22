@@ -1,3 +1,4 @@
+import gc
 import glob
 import io
 import json
@@ -29,6 +30,8 @@ MARKERS = {
     "nightly": "too slow for every push; runs on the nightly schedule",
     "perf": "performance measurement",
     "quickstart": "builds the wheel into a fresh venv and runs docs/quickstart-v2.md (TRACEKIT_QUICKSTART=1)",
+    "serial": "can't share the machine with other tests (a wall-clock budget, a shared port or path): CI runs the "
+              "rest in parallel (`-n auto -m 'not serial'`), then these on their own (`-m serial`)",
     "unverified_bundles": "exports v2 bundles the verifier rejects on purpose (a tampered or synthetic store, a "
                           "forged line), or that need a pinned issuer; skips the every-export-verifies check",
 }
@@ -37,7 +40,9 @@ MARKERS = {
 SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME", "TRACEKIT_APPROVAL_WAIT",
              "CLAUDE_CONFIG_DIR", "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "XDG_CONFIG_HOME",
              "CODEX_HOME", "CODEBUDDY_CONFIG_DIR", "CODEBUDDY_PROJECT_CONFIG_DIR", "GEMINI_CLI_HOME", "JCODE_HOME",
-             "INTERPRETER_HOME", "QWEN_HOME", "QWEN_RUNTIME_DIR")
+             "INTERPRETER_HOME", "QWEN_HOME", "QWEN_RUNTIME_DIR", "QWEN_CODE_SYSTEM_SETTINGS_PATH",
+             "QWEN_CODE_SYSTEM_DEFAULTS_PATH", "GEMINI_CLI_TRUSTED_FOLDERS_PATH", "QWEN_CODE_TRUSTED_FOLDERS_PATH",
+             "GEMINI_CLI_TRUST_WORKSPACE", "GEMINI_RESTRICTED_MODE")
 PROXIES = urllib.request.getproxies()
 
 # A test's servers stop when it ends, and shutdown() returns once serve_forever sees it: after up to a poll interval
@@ -45,14 +50,69 @@ PROXIES = urllib.request.getproxies()
 _serve_forever = socketserver.BaseServer.serve_forever
 socketserver.BaseServer.serve_forever = lambda self, poll_interval=0.5: _serve_forever(self, min(poll_interval, 0.02))
 
+# Python 3.13 raised the youngest generation's collection threshold from 700 to 2000. At 700, the slowest test files
+# run about four times as many collections, and the full ones walk the whole heap. 3.9 and 3.12 take 3.13's (#722).
+if sys.version_info < (3, 13):
+    gc.set_threshold(2000, 10, 10)
+
+
+def pytest_addoption(parser):
+    parser.addoption("--shard", default=None, metavar="I/N",
+                     help="run only shard I of N (0-based): whole test files, packed by recorded duration so the shards are even, so "
+                          "CI can split the suite over runners; every test is in exactly one shard")
+
+
+def _durations():
+    with open(os.path.join(TESTS, "data", "shard_durations.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def pack_shards(paths, n, durations):
+    """file -> shard in range(n): largest file first, onto the lightest shard. A file's weight is its recorded seconds,
+    the median of the recorded ones when it has none (a new file), so the packing depends only on the paths and the data.
+    lean: the recorded seconds are one CI run's; refresh them with tests/data/refresh_shard_durations.py RUN_ID when the
+    shards drift apart (a shard's job taking over 1.5x the quickest's) or after files are added or split."""
+    default = sorted(durations.values())[len(durations) // 2] if durations else 1
+    weight = {p: durations.get(p, default) for p in paths}
+    load, where = [0] * n, {}
+    for path in sorted(weight, key=lambda p: (-weight[p], p)):
+        where[path] = load.index(min(load))
+        load[where[path]] += weight[path]
+    return where
+
+
+def _shard(config):
+    spec = config.getoption("--shard")
+    if spec is None:
+        return None
+    try:
+        i, n = map(int, spec.split("/"))
+    except ValueError:
+        i = n = 0
+    if not 0 <= i < n:
+        raise pytest.UsageError(f"--shard={spec}: expected I/N with 0 <= I < N")
+    return i, n
+
 
 def pytest_configure(config):
+    _shard(config)
     for name, doc in MARKERS.items():
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
+@pytest.hookimpl(tryfirst=True)   # before -m selects: it reads the marker
 def pytest_collection_modifyitems(config, items):
-    """perf tests run only when asked for: `pytest -m perf`."""
+    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`; --shard=I/N keeps
+    the test files of one shard (a file's tests stay together)."""
+    shard = _shard(config)
+    if shard:
+        where = pack_shards({i.nodeid.split("::")[0] for i in items}, shard[1], _durations())
+        mine = [where[i.nodeid.split("::")[0]] == shard[0] for i in items]
+        config.hook.pytest_deselected(items=[i for i, m in zip(items, mine) if not m])
+        items[:] = [i for i, m in zip(items, mine) if m]
+    for item in items:
+        if getattr(getattr(item, "function", None), "serial", False):
+            item.add_marker(pytest.mark.serial)
     if "perf" in (config.getoption("-m") or ""):
         return
     for item in items:
@@ -137,14 +197,34 @@ def _no_real_home_dirs(request):
 
 
 def pytest_sessionfinish(session):
-    made = _made(set(_HOME_DIRS_BEFORE))
-    if made:
-        print(f"\nthis session made {made} in the real home folder, outside any test", file=sys.stderr)
+    errors = _WORKER_ERRORS   # on pytest-xdist's controller, which runs no tests: what its workers found
+    if not session.config.pluginmanager.has_plugin("dsession"):
+        made = _made(set(_HOME_DIRS_BEFORE))
+        if made:
+            errors.append(f"this session made {made} in the real home folder, outside any test")
+        if _LEFT_RUNNING:
+            errors.append(f"a dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}")
+    worker = getattr(session.config, "workeroutput", None)
+    if worker is not None:   # an xdist worker's exit status is not the run's: the controller fails the run for it
+        worker["tracekit"] = {"errors": errors, "bundles": [_BUNDLES["count"], _BUNDLES["seconds"]]}
+        return
+    for e in errors:
+        print("\n" + e, file=sys.stderr)
+    if errors:
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
-    if _LEFT_RUNNING:
-        print(f"\na dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}",
-              file=sys.stderr)
-        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
+_WORKER_ERRORS = []
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node, error):
+    """pytest-xdist's controller, as each worker ends: the errors and bundle count its pytest_sessionfinish passed on."""
+    out = getattr(node, "workeroutput", {}).get("tracekit")
+    if out:
+        _WORKER_ERRORS.extend(out["errors"])
+        _BUNDLES["count"] += out["bundles"][0]
+        _BUNDLES["seconds"] += out["bundles"][1]
 
 
 # Every v2 bundle a test exports in this process is verified against the log key that signed its checkpoint: an honest

@@ -4324,14 +4324,22 @@
         + `<div class="tsave"><span>GIVEN TO<b>${esc(plural(x.effect.given, "session"))}</b>signed: each session's tracekit:lessons record names it</span>` + lessonEffect(x) + `</div>`
         + `<div class="dim">${esc(x.effect.basis)}</div>` + lessonCmd(x.retire) + `</section>`;
     }
+    function lessonRetired(x) {
+      const rb = x.retired_because;
+      return `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.id)} · ${esc(rb ? rb.why : "Retired")}${rb && rb.state === "signed"
+        ? ` <a href="#" data-lrec="${esc(rb.run)}" data-lseq="${esc(rb.seq)}" title="${esc(`run ${rb.run} record ${rb.seq}`)}">OPEN</a>`
+        : ""}</span></div>`;
+    }
     function renderLessons(L, days) {
       const head = `<div class="tsrc">LESSONS · what your coding agents keep relearning, from signed records · a person approves each one</div>`;
       if (!L || !L.ok) return head + `<section class="tcard tno"><div class="tst">${esc(L?.why || "No lessons here.")}</div></section>`;
       const nope = L.not_proposed, more = L.not_proposed_n - nope.length;
+      const retired = (L.earlier || []).filter(x => x.status === "retired");
       return head + `<div class="lgrid"><div>`
         + (L.waiting.length ? `<div class="tsrc">WAITING FOR YOUR OK ${esc(L.waiting.length)}</div>` + L.waiting.map(x => lessonCard(x, days)).join("")
           : `<section class="tcard tno"><div class="tst">Nothing waits for your OK: no lookup, fix or instruction repeats enough in the signed records to propose.</div></section>`)
         + (L.active.length ? `<div class="tsrc">IN USE ${esc(L.active.length)} · each session of its project reads them at its first prompt</div>` + L.active.map(lessonUse).join("") : "")
+        + (retired.length ? `<section class="tcard tno"><div class="tsrc">RETIRED ${esc(retired.length)}</div>` + retired.map(lessonRetired).join("") + `</section>` : "")
         + `</div><div><section class="tcard tno"><div class="tsrc">HOW THEY ARE GIVEN</div><div class="tst">${esc(`At each Claude Code session's first prompt, and again after a compaction or a resume, within ${L.budget.toLocaleString("en-US")} bytes, the ones that bear on the prompt first. The session's run signs which ones it got, by id and the block's hash, never the text. Off: ${L.off}.`)}</div></section>`
         + `<section class="tcard tno"><div class="tsrc">NOT PROPOSED ${esc(L.not_proposed_n)}</div>` + (nope.length ? nope.map(x => `<div class="lrow"><b>${esc(x.name)}</b> <span class="dim">${esc(x.why)}</span></div>`).join("")
           + (more > 0 ? `<div class="dim">${esc(`and ${more} more (tracekit tips --json)`)}</div>` : "") : `<div class="tst">Nothing left out.</div>`) + `</section>`

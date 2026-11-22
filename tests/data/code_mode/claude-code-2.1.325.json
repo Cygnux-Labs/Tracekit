@@ -1,0 +1,498 @@
+{
+ "claude_code": "2.1.325",
+ "os": "Windows 11",
+ "model": "Opus 5.5",
+ "code_mode": "CLAUDE_CODE_EXPERIMENTAL_CODE_MODE=1, interactive, auto mode",
+ "note": "Recorded with a stand-in hook that logged every PreToolUse, PostToolUse and PostToolUseFailure payload and exited 0, except exit 2 for a call containing deny-me: in run refused_script on the REPL call, in run refused_inner_call on calls from code only. hook_exit is what it returned. Redacted: <home>, <test> (the test folder), <python>, <user>; only these fields are kept. No PostToolUseFailure came in any run. The MCP tools (mcp__*) in tool_globals' tools.list() result are left out.",
+ "runs": {
+  "refused_script": [
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01YQ78i3BMJAWZtVPE13c5CU",
+    "tool_input": {
+     "code": "const r = {};\ntry { r.notes = await file('notes.txt').text(); } catch (e) { r.notes = 'ERROR: ' + e.message; }\ntry { r.sub = await $`ls -la sub`.nothrow(); r.sub = r.sub.output; } catch (e) { r.sub = 'ERROR: ' + e.message; }\ntry { const o = await $`echo hello`.nothrow(); r.hello = {exit: o.exitCode, out: o.stdout, error: o.error}; } catch (e) { r.hello = 'ERROR: ' + e.message; }\ntry { const o = await $`echo deny-me`.nothrow(); r.denyMe = {exit: o.exitCode, out: o.stdout, error: o.error}; } catch (e) { r.denyMe = 'ERROR: ' + e.message; }\nr",
+     "description": "Read notes, list sub, run two echoes"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 2
+   }
+  ],
+  "inner_calls": [
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01Rw321msw8Q4iwqdaTJHBTU",
+    "tool_input": {
+     "code": "const r2 = {};\ntry { r2.notes = await file('notes.txt').text(); } catch (e) { r2.notes = 'ERROR: ' + e.message; }\ntry { r2.sub = (await $`ls -la sub`.nothrow()).output; } catch (e) { r2.sub = 'ERROR: ' + e.message; }\ntry { const o = await $`echo hello`.nothrow(); r2.hello = {exit: o.exitCode, out: o.stdout, error: o.error}; } catch (e) { r2.hello = 'ERROR: ' + e.message; }\nr2",
+     "description": "Read notes, list sub, echo hello"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_use_id": "repl_0c6de688-f3b1-4b5c-8d0c-3ef4c9b930b1",
+    "tool_input": {
+     "file_path": "<test>\\notes.txt"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Read",
+    "tool_use_id": "repl_0c6de688-f3b1-4b5c-8d0c-3ef4c9b930b1",
+    "tool_input": {
+     "file_path": "<test>\\notes.txt"
+    },
+    "tool_response": {
+     "type": "text",
+     "file": {
+      "filePath": "<test>\\notes.txt",
+      "content": "hello from notes\nsecond line\n",
+      "numLines": 3,
+      "startLine": 1,
+      "totalLines": 3
+     }
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_46ec3ffc-d886-4d98-b9d9-75afe6a7193e",
+    "tool_input": {
+     "command": "ls -la sub"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_46ec3ffc-d886-4d98-b9d9-75afe6a7193e",
+    "tool_input": {
+     "command": "ls -la sub"
+    },
+    "tool_response": {
+     "stdout": "total 6\ndrwxr-xr-x 1 <user> 0 Nov 16 19:52 .\ndrwxr-xr-x 1 <user> 0 Nov 16 19:55 ..\n-rw-r--r-- 1 <user> 2 Nov 16 19:52 a.txt\n-rw-r--r-- 1 <user> 2 Nov 16 19:52 b.txt",
+     "stderr": "",
+     "interrupted": false,
+     "isImage": false,
+     "noOutputExpected": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_12fc6bf8-3166-404b-97b7-8d36e60e45a3",
+    "tool_input": {
+     "command": "echo hello"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_12fc6bf8-3166-404b-97b7-8d36e60e45a3",
+    "tool_input": {
+     "command": "echo hello"
+    },
+    "tool_response": {
+     "stdout": "hello",
+     "stderr": "",
+     "interrupted": false,
+     "isImage": false,
+     "noOutputExpected": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01Rw321msw8Q4iwqdaTJHBTU",
+    "tool_input": {
+     "code": "const r2 = {};\ntry { r2.notes = await file('notes.txt').text(); } catch (e) { r2.notes = 'ERROR: ' + e.message; }\ntry { r2.sub = (await $`ls -la sub`.nothrow()).output; } catch (e) { r2.sub = 'ERROR: ' + e.message; }\ntry { const o = await $`echo hello`.nothrow(); r2.hello = {exit: o.exitCode, out: o.stdout, error: o.error}; } catch (e) { r2.hello = 'ERROR: ' + e.message; }\nr2",
+     "description": "Read notes, list sub, echo hello"
+    },
+    "tool_response": {
+     "code": "<as tool_input.code>",
+     "result": "{\n  notes: 'hello from notes\\nsecond line\\n',\n  sub: 'total 6\\n' +\n    'drwxr-xr-x 1 <user> 0 Nov 16 19:52 .\\n' +\n    'drwxr-xr-x 1 <user> 0 Nov 16 19:55 ..\\n' +\n    '-rw-r--r-- 1 <user> 2 Nov 16 19:52 a.txt\\n' +\n    '-rw-r--r-- 1 <user> 2 Nov 16 19:52 b.txt',\n  hello: { exit: 0, out: 'hello', error: undefined }\n}",
+     "stdout": "",
+     "stderr": "âš  This REPL context is new: variables, functions and timers from earlier scripts in this conversation don't exist in it, even those a compaction summary lists as still defined.",
+     "toolsUsed": [
+      "Bash",
+      "Read"
+     ]
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   }
+  ],
+  "refused_inner_call": [
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01SPLtZZKJWWRpxL6TeBmXGM",
+    "tool_input": {
+     "code": "const r3 = {};\nfor (const [k, cmd] of [['first', 'echo first'], ['denyMe', 'echo deny-me'], ['last', 'echo last']]) {\n  try { const o = await $(cmd).nothrow(); r3[k] = {exit: o.exitCode, stdout: o.stdout, stderr: o.stderr, error: o.error}; }\n  catch (e) { r3[k] = {thrown: e.message}; }\n}\nr3",
+     "description": "Run three echo commands, capture each"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_5e2424c3-e54c-4781-96a8-d3400812660b",
+    "tool_input": {
+     "command": "echo first"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_5e2424c3-e54c-4781-96a8-d3400812660b",
+    "tool_input": {
+     "command": "echo first"
+    },
+    "tool_response": {
+     "stdout": "first",
+     "stderr": "",
+     "interrupted": false,
+     "isImage": false,
+     "noOutputExpected": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_502428af-cc1c-4bd7-8af0-346eef1ddc64",
+    "tool_input": {
+     "command": "echo deny-me"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 2
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_67131f15-75a4-4c16-a71f-3dd75ed1844b",
+    "tool_input": {
+     "command": "echo last"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_use_id": "repl_67131f15-75a4-4c16-a71f-3dd75ed1844b",
+    "tool_input": {
+     "command": "echo last"
+    },
+    "tool_response": {
+     "stdout": "last",
+     "stderr": "",
+     "interrupted": false,
+     "isImage": false,
+     "noOutputExpected": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01SPLtZZKJWWRpxL6TeBmXGM",
+    "tool_input": {
+     "code": "const r3 = {};\nfor (const [k, cmd] of [['first', 'echo first'], ['denyMe', 'echo deny-me'], ['last', 'echo last']]) {\n  try { const o = await $(cmd).nothrow(); r3[k] = {exit: o.exitCode, stdout: o.stdout, stderr: o.stderr, error: o.error}; }\n  catch (e) { r3[k] = {thrown: e.message}; }\n}\nr3",
+     "description": "Run three echo commands, capture each"
+    },
+    "tool_response": {
+     "code": "<as tool_input.code>",
+     "result": "{\n  first: { exit: 0, stdout: 'first', stderr: '', error: undefined },\n  denyMe: {\n    exit: 1,\n    stdout: '',\n    stderr: 'Permission denied for Bash: PreToolUse:Bash hook error: [\"<python>\" \"<test>/log_hook.py\"]: refused by the #862 test hook: the command contains deny-me\\r\\n',\n    error: 'Permission denied for Bash: PreToolUse:Bash hook error: [\"<python>\" \"<test>/log_hook.py\"]: refused by the #862 test hook: the command contains deny-me\\r\\n'\n  },\n  last: { exit: 0, stdout: 'last', stderr: '', error: undefined }\n}",
+     "stdout": "",
+     "stderr": "",
+     "refusedCalls": "Tool calls that were refused while this script ran:\n- \"Bash\", refused: \"Permission denied for Bash: PreToolUse:Bash hook error: [\\\"<python>\\\" \\\"<test>/log_hook.py\\\"]: refused by the #862 test hook: the command contains deny-me\\n\""
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   }
+  ],
+  "sandbox": [
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01SdpUGHwVSAfjMUu7bTPBfa",
+    "tool_input": {
+     "code": "const r = {};\nconst t = (k, f) => { try { r[k] = f(); } catch (e) { r[k] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); } };\nr.types = { require: typeof require, process: typeof process, fetch: typeof fetch, Bun: typeof Bun, Deno: typeof Deno };\nt('1_read', () => require('fs').readFileSync('notes.txt', 'utf8'));\nt('2_list', () => require('fs').readdirSync('sub'));\nt('3_exec', () => require('child_process').execSync('echo direct').toString());\ntry { const res = await fetch('https://example.com'); r['4_fetch'] = res.status + ' ' + (await res.text()).slice(0, 100); }\ncatch (e) { r['4_fetch'] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); }\nr"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01SdpUGHwVSAfjMUu7bTPBfa",
+    "tool_input": {
+     "code": "const r = {};\nconst t = (k, f) => { try { r[k] = f(); } catch (e) { r[k] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); } };\nr.types = { require: typeof require, process: typeof process, fetch: typeof fetch, Bun: typeof Bun, Deno: typeof Deno };\nt('1_read', () => require('fs').readFileSync('notes.txt', 'utf8'));\nt('2_list', () => require('fs').readdirSync('sub'));\nt('3_exec', () => require('child_process').execSync('echo direct').toString());\ntry { const res = await fetch('https://example.com'); r['4_fetch'] = res.status + ' ' + (await res.text()).slice(0, 100); }\ncatch (e) { r['4_fetch'] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); }\nr"
+    },
+    "tool_response": {
+     "code": "<as tool_input.code>",
+     "result": null,
+     "stdout": "",
+     "stderr": "",
+     "error": "Error: Module loading (require) is not available in REPL — the vm context is sealed. Use the tool globals instead: await Read({file_path: '...'}), await Glob({pattern: '...'}), the registered shell tool, etc.",
+     "plainErrorLine": {
+      "text": "Nothing ran: import and require aren't available here",
+      "replaces": "Error: Module loading (require) is not available in REPL — the vm context is sealed. Use the tool globals instead: await Read({file_path: '...'}), await Glob({pattern: '...'}), the registered shell tool, etc."
+     }
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_011o8gVTFmbsrMHY8TbrzrBe",
+    "tool_input": {
+     "code": "const r2 = {};\nconst g = globalThis;\nconst req = g['req' + 'uire'];\nconst t2 = (k, f) => { try { r2[k] = f(); } catch (e) { r2[k] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); } };\nr2.types = { require: typeof req, process: typeof g['process'], fetch: typeof g['fetch'], Bun: typeof g['Bun'], Deno: typeof g['Deno'] };\nt2('1_read', () => req('fs').readFileSync('notes.txt', 'utf8'));\nt2('2_list', () => req('fs').readdirSync('sub'));\nt2('3_exec', () => req('child_process').execSync('echo direct').toString());\ntry { const res = await g['fetch']('https://example.com'); r2['4_fetch'] = res.status + ' ' + (await res.text()).slice(0, 100); }\ncatch (e) { r2['4_fetch'] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); }\nr2"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_011o8gVTFmbsrMHY8TbrzrBe",
+    "tool_input": {
+     "code": "const r2 = {};\nconst g = globalThis;\nconst req = g['req' + 'uire'];\nconst t2 = (k, f) => { try { r2[k] = f(); } catch (e) { r2[k] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); } };\nr2.types = { require: typeof req, process: typeof g['process'], fetch: typeof g['fetch'], Bun: typeof g['Bun'], Deno: typeof g['Deno'] };\nt2('1_read', () => req('fs').readFileSync('notes.txt', 'utf8'));\nt2('2_list', () => req('fs').readdirSync('sub'));\nt2('3_exec', () => req('child_process').execSync('echo direct').toString());\ntry { const res = await g['fetch']('https://example.com'); r2['4_fetch'] = res.status + ' ' + (await res.text()).slice(0, 100); }\ncatch (e) { r2['4_fetch'] = 'ERROR: ' + (e && e.name) + ': ' + (e && e.message); }\nr2"
+    },
+    "tool_response": {
+     "code": "<as tool_input.code>",
+     "result": "{\n  types: {\n    require: 'undefined',\n    process: 'undefined',\n    fetch: 'undefined',\n    Bun: 'undefined',\n    Deno: 'undefined'\n  },\n  '1_read': `ERROR: TypeError: req is not a function. (In 'req(\"fs\")', 'req' is undefined)`,\n  '2_list': `ERROR: TypeError: req is not a function. (In 'req(\"fs\")', 'req' is undefined)`,\n  '3_exec': `ERROR: TypeError: req is not a function. (In 'req(\"child_process\")', 'req' is undefined)`,\n  '4_fetch': `ERROR: TypeError: g[\"fetch\"] is not a function. (In 'g[\"fetch\"](\"https://example.com\")', 'g[\"fetch\"]' is undefined)`\n}",
+     "stdout": "",
+     "stderr": ""
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   }
+  ],
+  "tool_globals": [
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01Vo44U5Wor1tFZoox1JwzCh",
+    "tool_input": {
+     "code": "const cwd = '<test>';\nconst p = n => cwd + '\\\\' + n;\nconst out = {};\nconst tryit = async (k, f) => { try { out[k] = await f(); } catch (e) { out[k] = {threw: String(e?.message ?? e)}; } };\nconst list = tools.list();\nawait tryit('Read', () => Read({file_path: p('notes.txt')}));\nawait tryit('Glob', () => Glob({pattern: 'sub/*', path: cwd}));\nawait tryit('Write', () => Write({file_path: p('written.txt'), content: 'hi\\n'}));\nawait tryit('Edit', () => Edit({file_path: p('written.txt'), old_string: 'hi', new_string: 'hello'}));\nconst shellName = list.includes('PowerShell') ? 'PowerShell' : 'Bash';\nawait tryit('shell_' + shellName, () => globalThis[shellName]({command: 'echo globals', description: 'Echo a test string'}));\nconst toolish = Object.getOwnPropertyNames(globalThis).filter(n => /^[A-Z]/.test(n) && typeof globalThis[n] === 'function' && list.includes(n));\n({out, list, toolish});",
+     "description": "Call tool globals directly and report"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Read",
+    "tool_use_id": "repl_78b8691b-9427-404d-bc3e-0a3147f4cf1c",
+    "tool_input": {
+     "file_path": "<test>\\notes.txt"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Read",
+    "tool_use_id": "repl_78b8691b-9427-404d-bc3e-0a3147f4cf1c",
+    "tool_input": {
+     "file_path": "<test>\\notes.txt"
+    },
+    "tool_response": {
+     "type": "text",
+     "file": {
+      "filePath": "<test>\\notes.txt",
+      "content": "hello from notes\nsecond line\n",
+      "numLines": 3,
+      "startLine": 1,
+      "totalLines": 3
+     }
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Glob",
+    "tool_use_id": "repl_4bc7771a-4a64-4963-9ee9-876772d407b1",
+    "tool_input": {
+     "pattern": "sub/*",
+     "path": "<test>"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Glob",
+    "tool_use_id": "repl_4bc7771a-4a64-4963-9ee9-876772d407b1",
+    "tool_input": {
+     "pattern": "sub/*",
+     "path": "<test>"
+    },
+    "tool_response": {
+     "filenames": [
+      "sub\\a.txt",
+      "sub\\b.txt"
+     ],
+     "durationMs": 46,
+     "numFiles": 2,
+     "truncated": false,
+     "totalMatches": 2,
+     "countIsComplete": true
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "repl_9aea1a3b-441f-460c-8fd7-1f438cb1ae9c",
+    "tool_input": {
+     "file_path": "<test>\\written.txt",
+     "content": "hi\n"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Write",
+    "tool_use_id": "repl_9aea1a3b-441f-460c-8fd7-1f438cb1ae9c",
+    "tool_input": {
+     "file_path": "<test>\\written.txt",
+     "content": "hi\n"
+    },
+    "tool_response": {
+     "type": "create",
+     "filePath": "<test>\\written.txt",
+     "content": "hi\n",
+     "structuredPatch": [],
+     "originalFile": null,
+     "userModified": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "repl_c3c01c6c-8061-45c0-8715-d5a2fe7e2c45",
+    "tool_input": {
+     "file_path": "<test>\\written.txt",
+     "old_string": "hi",
+     "new_string": "hello",
+     "replace_all": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Edit",
+    "tool_use_id": "repl_c3c01c6c-8061-45c0-8715-d5a2fe7e2c45",
+    "tool_input": {
+     "file_path": "<test>\\written.txt",
+     "old_string": "hi",
+     "new_string": "hello",
+     "replace_all": false
+    },
+    "tool_response": {
+     "filePath": "<test>\\written.txt",
+     "oldString": "hi",
+     "newString": "hello",
+     "originalFile": "hi\n",
+     "structuredPatch": [
+      {
+       "oldStart": 1,
+       "oldLines": 1,
+       "newStart": 1,
+       "newLines": 1,
+       "lines": [
+        "-hi",
+        "+hello"
+       ]
+      }
+     ],
+     "userModified": false,
+     "replaceAll": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PreToolUse",
+    "tool_name": "PowerShell",
+    "tool_use_id": "repl_3edd3f8a-803d-4b40-a120-9174eb59182a",
+    "tool_input": {
+     "command": "echo globals",
+     "description": "Echo a test string"
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "PowerShell",
+    "tool_use_id": "repl_3edd3f8a-803d-4b40-a120-9174eb59182a",
+    "tool_input": {
+     "command": "echo globals",
+     "description": "Echo a test string"
+    },
+    "tool_response": {
+     "stdout": "globals",
+     "stderr": "",
+     "interrupted": false,
+     "isImage": false
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   },
+   {
+    "hook_event_name": "PostToolUse",
+    "tool_name": "REPL",
+    "tool_use_id": "toolu_01Vo44U5Wor1tFZoox1JwzCh",
+    "tool_input": {
+     "code": "const cwd = '<test>';\nconst p = n => cwd + '\\\\' + n;\nconst out = {};\nconst tryit = async (k, f) => { try { out[k] = await f(); } catch (e) { out[k] = {threw: String(e?.message ?? e)}; } };\nconst list = tools.list();\nawait tryit('Read', () => Read({file_path: p('notes.txt')}));\nawait tryit('Glob', () => Glob({pattern: 'sub/*', path: cwd}));\nawait tryit('Write', () => Write({file_path: p('written.txt'), content: 'hi\\n'}));\nawait tryit('Edit', () => Edit({file_path: p('written.txt'), old_string: 'hi', new_string: 'hello'}));\nconst shellName = list.includes('PowerShell') ? 'PowerShell' : 'Bash';\nawait tryit('shell_' + shellName, () => globalThis[shellName]({command: 'echo globals', description: 'Echo a test string'}));\nconst toolish = Object.getOwnPropertyNames(globalThis).filter(n => /^[A-Z]/.test(n) && typeof globalThis[n] === 'function' && list.includes(n));\n({out, list, toolish});",
+     "description": "Call tool globals directly and report"
+    },
+    "tool_response": {
+     "code": "<as tool_input.code>",
+     "result": "{\n  out: {\n    Read: {\n      type: 'text',\n      file: {\n        filePath: '<test>\\\\notes.txt',\n        content: 'hello from notes\\nsecond line\\n',\n        numLines: 3,\n        startLine: 1,\n        totalLines: 3\n      }\n    },\n    Glob: {\n      filenames: [ 'sub\\\\a.txt', 'sub\\\\b.txt' ],\n      durationMs: 46,\n      numFiles: 2,\n      truncated: false,\n      totalMatches: 2,\n      countIsComplete: true\n    },\n    Write: {\n      type: 'create',\n      filePath: '<test>\\\\written.txt',\n      content: 'hi\\n',\n      structuredPatch: [],\n      originalFile: null,\n      userModified: false\n    },\n    Edit: {\n      filePath: '<test>\\\\written.txt',\n      oldString: 'hi',\n      newString: 'hello',\n      originalFile: 'hi\\n',\n      structuredPatch: [\n        {\n          oldStart: 1,\n          oldLines: 1,\n          newStart: 1,\n          newLines: 1,\n          lines: [ '-hi', '+hello' ]\n        }\n      ],\n      userModified: false,\n      replaceAll: false\n    },\n    shell_PowerShell: {\n      stdout: 'globals',\n      stderr: '',\n      interrupted: false,\n      returnCodeInterpretation: undefined,\n      isImage: false,\n      persistedOutputPath: undefined,\n      persistedOutputSize: undefined,\n      gitOperation: undefined\n    }\n  },\n  list: [\n    'Agent',\n    'Artifact',\n    'ArtifactComments',\n    'ArtifactData',\n    'AskUserQuestion',\n    'CronCreate',\n    'CronDelete',\n    'CronList',\n    'DesignSync',\n    'Edit',\n    'EndConversation',\n    'EnterPlanMode',\n    'EnterWorktree',\n    'ExitPlanMode',\n    'ExitWorktree',\n    'ListAgents',\n    'Monitor',\n    'Poll',\n    'PushNotification',\n    'RemoteTrigger',\n    'ReportFindings',\n    'ScheduleWakeup',\n    'SendFeedback',\n    'SendMessage',\n    'Skill',\n    'TaskStop',\n    'ToolSearch',\n    'WebFetch',\n    'WebSearch',\n    'Write',\n    'Read',\n    'Glob',\n    'Grep',\n    'Bash',\n    'PowerShell',\n    'NotebookEdit'\n  ],\n  toolish: [\n    'Agent',            'Artifact',\n    'ArtifactComments', 'ArtifactData',\n    'AskUserQuestion',  'CronCreate',\n    'CronDelete',       'CronList',\n    'DesignSync',       'Edit',\n    'EndConversation',  'EnterPlanMode',\n    'EnterWorktree',    'ExitPlanMode',\n    'ExitWorktree',     'ListAgents',\n    'Monitor',          'Poll',\n    'PushNotification', 'RemoteTrigger',\n    'ReportFindings',   'ScheduleWakeup',\n    'SendFeedback',     'SendMessage',\n    'Skill',            'TaskStop',\n    'ToolSearch',       'WebFetch',\n    'WebSearch',        'Write',\n    'Read',             'Glob',\n    'Grep',             'Bash',\n    'PowerShell',       'NotebookEdit'\n  ]\n}",
+     "stdout": "",
+     "stderr": "",
+     "toolsUsed": [
+      "Edit",
+      "Glob",
+      "PowerShell",
+      "Read",
+      "Write"
+     ]
+    },
+    "permission_mode": "auto",
+    "hook_exit": 0
+   }
+  ]
+ }
+}

@@ -10,10 +10,12 @@ itself is not changed.
 ## Install
 
 ```bash
-pip install tracekit-ai "strands-agents>=1.61,<1.62"
+pip install tracekit-ai "strands-agents>=1.61,<2"
 ```
 
-Tested with Strands Agents 1.61, which needs Python 3.10+, in an environment of its own: Strands needs `mcp` below 2.2,
+Tested with Strands Agents 1.61 and 1.65. A later 1.x installs, the hook says once that it is untested, and CI runs
+the newest 1.x on every change.
+Strands needs Python 3.10+ and an environment of its own: it needs `mcp` below 2.2,
 and Tracekit's other integrations are tested with `mcp` 2.3. Add the extra for your model provider
 (`strands-agents[openai]`, `[anthropic]`, ...); Bedrock needs none.
 
@@ -44,6 +46,20 @@ scripted model, no API key): [`examples/v2/strands`](../../examples/v2/strands/R
   the call's `toolUseId`, tool name and `input`: the arguments as Strands parsed them from the model, missing or empty
   ones as `{}`. An approval is bound to those arguments and used once. Under the [executor](../executor.md) (T2), a
   call whose approved arguments are not the model's is refused, not run with either.
+- **Decides each command of a shell list.** `strands_tools`' shell (0.1 to 0.8, told by its function's module) runs
+  each command of its `command` (a string, each entry of a list, a `{"command": ...}`, a string that is a JSON array
+  as its entries) with `/bin/sh -c`, which is dash on Debian and Ubuntu. Its call is decided as a `commands` list:
+  each command as `sh -c '…'`, read as a POSIX shell reads it (bash's `&>`, which dash reads as `&` and so runs what
+  follows, is held), on its own and all of them joined, so an open quote or a here-document in one can't hide the
+  next; with only the other options its shell reads (`parallel`, `ignore_errors`, `timeout`, `work_dir`). Another tool
+  named `shell` (a copy of `strands_tools`' shell loaded by path or kept in `./tools/` is a module of its own name, or
+  a tool that takes an argv) given a string, a list of strings or a string that is a JSON array of them is decided
+  both ways: as the signer reads its `command` (a string as bash, a list as one argv) and each entry as `sh -c '…'`;
+  the stricter stands. These
+  arguments are labelled `args_source: coerced`: they are the commands that run, not the model's `command` as written.
+  Strands' vended shell (`strands.vended_tools`) runs its `command` string with its sandbox's `sh -c`, so that string is
+  decided as `sh -c '…'` too (`echo hi &>/dev/null sudo id` is held), also labelled `coerced`. Codex's and OpenAI
+  Agents' `shell` calls are decided as they are (their list is one argv).
 - **Never runs a refused call.** A deny, a rejected or unanswered approval, a refused consume, a signer refusal, an
   outage under a closed fail mode and any error of Tracekit's own all set `cancel_tool`: the model reads Tracekit's
   reason as an error tool result and the run goes on. Under an open fail mode a call runs unrecorded during an outage,
@@ -95,6 +111,10 @@ signature or redacted content), text and tool uses under their `toolUseId`s. The
   refused, its run is not recorded. Strands' internal tool middleware can replace a call unseen.
 - Strands parses the model's arguments before any hook runs: arguments that aren't JSON reach the hooks, and the tool,
   as `{}`, and the signer decides `{}`.
+- Behind the LLM gateway, a `shell` call decided as a `commands` list (above: `strands_tools`' and the vended shell's)
+  reads as `reconcile.args_mismatch` "(the decide says a framework coerced them)": reconcile holds a decide to the
+  gateway's record of the model's call (the `coerced` label is the agent's word), and the list it decided is not the
+  model's `command` as written.
 - With `background_tasks`, a background tool another hook asks to retry (`AfterToolCallEvent.retry`) runs again with
   no `BeforeToolCallEvent`: that run is neither decided nor recorded.
 - With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content blocks

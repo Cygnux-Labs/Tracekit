@@ -19,6 +19,8 @@ import unittest
 import urllib.parse
 from unittest import mock
 
+import pytest
+
 from tracekit import agent_hooks, constraints
 from tracekit.integrations import hermes
 from tracekit.policy2 import classes, compile as pc, engine as engine_module, shell
@@ -255,11 +257,13 @@ class Routes(unittest.TestCase):
                               "hermes plugins disable -a", "python3 -m hermes_cli plugins disable --all",
                               "claude plugin disable --all", "claude plugin disable -as user",
                               "claude plugin uninstall ./plugin/tracekit/", "claude plugin remove TRACEKIT@tracekit",
+                              "claude plugin marketplace remove tracekit", "claude plugin marketplace rm tracekit",
                               "npx -y @anthropic-ai/claude-code plugin uninstall tracekit",
                               "node node_modules/.bin/claude plugin disable tracekit",
                               "\"$(which claude)\" plugin uninstall tracekit"), "ask", "TK-A054")
         self.expect(self.bash("hermes plugins list", "hermes plugins disable other-plugin",
                               "hermes config get approvals.mode", "claude plugin disable other@market",
+                              "claude plugin marketplace list", "claude plugin marketplace remove other",
                               "npx -y @anthropic-ai/claude-code plugin uninstall other@market",
                               "node scripts/claude.js plugin uninstall tracekit"), "allow")
 
@@ -424,6 +428,43 @@ class Routes(unittest.TestCase):
         self.assertEqual(newer - set(shell._CURL_VALUED) - set(shell._CURL_BARE), set())
         self.assertFalse(newer & (valued | bare))
 
+    def test_the_download_option_table_is_wgets_own(self):
+        # #979: the wget tables were written from GNU wget 1.21's manual, and the comment at _WGET_VALUED said no
+        # binary had checked them. GNU Wget 1.25.0's own `--help` is kept beside this test
+        # (tests/data/wget-1.25.0-help.txt, "GNU Wget 1.25.0 built on mingw32"): every option it prints is in a table
+        # with the arity it prints, every short letter is _WGET_SHORT's, and each -n<letter> form is _WGET_N's.
+        #
+        # Two sets are named rather than derived, both measured against wget 1.25.0 itself:
+        # HELP_OMITS_ITS_ARGUMENT -- the help prints these three without `=ARG`, and the binary refuses each without a
+        # value ("wget: option requires an argument -- max-redirect"), so they take one and stay in _WGET_VALUED. A
+        # test that trusted `=ARG` alone would mark them bare, and a bare `--hsts-file` followed by `-O FILE` would
+        # read the `-O` as an output option: the direction that misses a write.
+        # TABLE_ONLY_* -- options the tables keep from the manual that this help no longer prints; keeping them only
+        # ever makes the reader stricter (an option the tables don't hold would hold the line as unread).
+        HELP_OMITS_ITS_ARGUMENT = {"max-redirect", "hsts-file", "preferred-location"}
+        TABLE_ONLY_VALUED = {"egd-file"}
+        TABLE_ONLY_BARE = {"check-certificate", "hsts", "iri", "passive-ftp", "xattr"}
+        valued, bare, short, nforms = set(), set(), {}, {}
+        with open(os.path.join(os.path.dirname(__file__), "data", "wget-1.25.0-help.txt"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"\s{1,8}(?:-(\w+),\s+)?--([\w.-]+)(=\S+)?", line)
+                if not m:
+                    continue
+                letters, name, arg = m.group(1), m.group(2), m.group(3)
+                (valued if arg or name in HELP_OMITS_ITS_ARGUMENT else bare).add(name)
+                if letters and len(letters) == 1:
+                    short[letters] = name
+                elif letters and letters[0] == "n":   # -nd, -nc, -nH, -np, -nv: -n with a letter
+                    nforms[letters[1]] = name
+        self.assertEqual((len(valued), len(bare), len(short) + len(nforms)), (85, 74, 44))
+        self.assertEqual(valued - set(shell._WGET_VALUED), set())
+        self.assertEqual(set(shell._WGET_VALUED) - TABLE_ONLY_VALUED, valued)
+        self.assertEqual(set(shell._WGET_BARE) - TABLE_ONLY_BARE, bare)
+        self.assertEqual(shell._WGET_SHORT, short)
+        self.assertEqual(shell._WGET_N, nforms)
+        # every option whose value is a file wget writes is one that takes a value
+        self.assertLessEqual(shell._WGET_WRITES, set(shell._WGET_VALUED))
+
     def test_writers_that_name_their_file_another_way_reach_the_rules(self):
         # env -C's folder, awk's FILENAME, patch's file after its valued options (and in its -d folder), a vi run
         # that isn't read-only, and xargs fed by printf's text or by a stage that may print a protected name
@@ -446,6 +487,37 @@ class Routes(unittest.TestCase):
                               "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
                               "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
                     "allow")
+
+    def test_ssh_keygen_writes_the_file_its_f_mode_names(self):
+        """#980 item 3: `-f` is the file a writing mode creates or rewrites, so a key written into `~/.ssh` is the
+        shell write the file rules read. The reading modes keep the verdicts they had before this change — `-f` there
+        names a file they only read (ssh-keygen's own usage lists -i, -e, -y, -l, -B, -F, -r, -L, -Q, -M screen and
+        -Y) — and a mode the list does not name is read as writing, which denies rather than waves through."""
+        self.expect(self.bash("ssh-keygen -f ~/.ssh/known", "ssh-keygen -t ed25519 -f ~/.ssh/id_x",
+                              "ssh-keygen -q -t rsa -b 4096 -f /root/.ssh/deploy",
+                              "ssh-keygen -p -f ~/.ssh/id_ed25519",
+                              # options read as getopt reads them: -f in a cluster, a value that looks like a reading
+                              # mode (a comment, a passphrase), a word after `--`
+                              "ssh-keygen -qf ~/.ssh/id_x -t ed25519", "ssh-keygen -t ed25519 -C -l -f ~/.ssh/id_x",
+                              "ssh-keygen -t ed25519 -Clol -f ~/.ssh/id_x", "ssh-keygen -N -y -f ~/.ssh/id_x",
+                              "ssh-keygen -t ed25519 -f ~/.ssh/id_x -- -l"),
+                    "deny", "TK-D023")
+        # -f is an input there: the key that signs, the allowed signers, the candidates screened; -R's host attached
+        self.spare(self.bash("ssh-keygen -Y sign -n file -f ~/.ssh/id_ed25519 data.txt",
+                             "ssh-keygen -Y verify -f ~/.ssh/allowed_signers -I a -n file -s data.sig",
+                             "ssh-keygen -M screen -f ~/.ssh/moduli.candidates moduli",
+                             "ssh-keygen -Rhost.example -f ~/.ssh/known_hosts"), "TK-D023")
+        # as before this change: a flag from the egress and env-tamper rules, not a write. -R is here with the reading
+        # modes because known_hosts is the exception the limits row records — appending a host key is ordinary work, so
+        # naming that file is not a write these rules read
+        self.expect(self.bash("ssh-keygen -l -f ~/.ssh/id_ed25519.pub", "ssh-keygen -B -f ~/.ssh/id_ed25519.pub",
+                              "ssh-keygen -lf ~/.ssh/id_ed25519.pub", "ssh-keygen -F host.example -f ~/.ssh/known_hosts",
+                              "ssh-keygen -R host.example -f ~/.ssh/known_hosts"),
+                    "flag", "TK-F005")
+        # -y prints a private key's public half: dev, server and strict already deny reading one (their credential rule)
+        # and coding only flags it, so this change must not move either verdict
+        self.expect(self.bash("ssh-keygen -y -f ~/.ssh/id_ed25519"),
+                    {"dev": "deny", "coding": "flag", "server": "deny", "strict": "deny"})
 
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
@@ -487,6 +559,7 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("ls -l ~/.ssh/id_*", "chmod 600 ~/.ssh/id_*"), "flag", packs=("dev", "coding"))
         self.expect(self.bash("ls -l ~/.ssh/id_*", "chmod 600 ~/.ssh/id_*"), "flag", packs=("strict",))
 
+    @pytest.mark.serial
     def test_a_pattern_is_matched_in_time_linear_in_its_length(self):
         # a run of stars is one star: 30 and 60 of them took 61 s and over 90 s, the signer stalled meanwhile
         e = self.engines[("coding", BACKENDS[0])]
@@ -711,7 +784,15 @@ class Routes(unittest.TestCase):
             "printf -v HOME %s /tmp/h; claude -p x", "readonly HOME=/tmp/h; claude -p x",
             "claude -p x $(echo --settings) s.json", "echo --settings s.json | xargs claude -p x", "claude --bare -p x",
             "CLAUDE_CODE_SIMPLE=1 claude -p x", "codex exec -c sandbox_workspace_write.network_access=true x",
-            "codex --profile other exec x", "env -u CODEX_HOME codex exec x"), "ask", "TK-A070")
+            "codex --profile other exec x", "env -u CODEX_HOME codex exec x",
+            "HOME=/tmp/x npx @kilocode/cli", "HOME=/tmp/x npx @kilocode/cli@latest",
+            "HOME=/tmp/x bunx @kilocode/cli", "HOME=/tmp/x bunx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpm dlx @kilocode/cli", "HOME=/tmp/x pnpm dlx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpx @kilocode/cli", "npx @kilocode/cli --config k.json"), "ask", "TK-A070")
+        # a scoped package's word names Kilo Code; a bare `cli`, or another scope's, is no harness
+        self.expect(self.bash("npx @kilocode/cli", "HOME=/tmp/x npx @some-other/cli", "HOME=/tmp/x cli"), "allow")
+        # `npx owner/repo` fetches a GitHub repository and runs it: held as outside code (#1057), not as Kilo Code
+        self.expect(self.bash("HOME=/tmp/x npx some-other/cli"), "ask", "TK-A046")
 
     def test_a_harness_is_read_with_every_way_the_line_sets_its_settings(self):
         # codex's own hooks off (--disable is -c features.<name>=false; features disable saves it), a variable set by
@@ -1196,6 +1277,7 @@ class WindowsPaths(unittest.TestCase):
         d = svc.evaluate(e, "Bash", {"command": command})[0]
         return d["verdict"], d["rule_ids"]
 
+    @pytest.mark.serial
     def test_a_windows_path_is_held_as_its_slash_twin(self):
         for template, rule in self.CASES:
             twin = template.format(q="'", u=self.U.format(s="/"), s="/")
@@ -1284,6 +1366,7 @@ class WindowsPrograms(unittest.TestCase):
         d = svc.evaluate(e, "Bash", {"command": command})[0]
         return d["verdict"], d["rule_ids"]
 
+    @pytest.mark.serial
     def test_a_windows_program_or_home_is_held_as_its_posix_twin(self):
         pairs = [(t.format(q=q, s=s), t.format(q="'", s="/"), rule) for t, rule in self.CASES
                  for q, s in self.SPELLINGS] + [(w, twin, "TK-D004") for w, twin in self.MORE]
@@ -1328,6 +1411,17 @@ class WindowsPrograms(unittest.TestCase):
                 with self.subTest(engine=backend, command=command):
                     got = svc.evaluate(e, "run_task", {"command": command})[0]
                     self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
+
+    def test_an_unmapped_tools_sql_behind_explain_analyze_or_a_paren_is_held(self):
+        # #975, through the signer's own reading: EXPLAIN ANALYZE runs the statement, and sql_query and stmt name SQL
+        for backend in BACKENDS:
+            e = self.engines[("dev", backend)]
+            for args in ({"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"}, {"stmt": "DROP TABLE users;"},
+                         {"sql_query": "DROP TABLE users;"},
+                         {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"}):
+                with self.subTest(engine=backend, args=args):
+                    got = svc.evaluate(e, "acme_runner", args)[0]
+                    self.assertEqual((got["verdict"], "TK-A062" in got["rule_ids"]), ("ask", True), got)
 
     def test_base_name(self):
         for word, name in (("C:\\Git\\bin\\Bash.EXE", "bash"), ("/usr/bin/git", "git"), (".\\x.sh", "x.sh"),

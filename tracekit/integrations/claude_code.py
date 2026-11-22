@@ -28,7 +28,10 @@ signer unreachable: the run's fail mode for the tool's class, from register_run 
 rate limit (quota_exceeded with retry_after_ms) is waited out within the client's timeout (HookClient). A signer
 refusal, a failure while a call waits for its approval, or any other error: blocked. A call allowed here that gets no
 PostToolUse (declined in the harness's own permission prompt, interrupted, or an unreadable payload) is completed as
-an error at SessionEnd; one that is never completed is the signer's decided_not_completed gap.
+an error at SessionEnd; one that is never completed is the signer's decided_not_completed gap. In Code Mode (#862)
+each tool call the code makes is a call of its own here (a `repl_` id), the script its REPL call: a call from code
+another hook refused is completed at its REPL's PostToolUse with the error the code saw, when that call is certain
+(_refused_inner), and a script refused as a whole at SessionEnd with NO_POST_REPL.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript the hook payloads name, from the
 run's first event: it records the model's tool uses, thinking and text, and the user's prompts (as commitments, with
@@ -102,15 +105,23 @@ from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, Incompatible, RunHandle, SignerUnavailable, fail_open, named_rules, sendable
+from tracekit.sdk.client import Client, Incompatible, RunHandle, SignerUnavailable, fail_open, sendable, stopped
+from tracekit.sdk.client import stop_rules as _rules
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import INSTEAD, RPCError
+from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 # the error a call that got no PostToolUse is completed with (_unfinished)
 NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
            "interrupted, or its payload was unreadable")
+# the same for a Code Mode script (Claude Code 2.1.325+: its REPL tool), refused as a whole or unfinished (#862)
+NO_POST_REPL = ("no PostToolUse came by the end of the session for this Code Mode script: refused as a whole (another "
+                "hook, the harness), interrupted, or it didn't finish")
+REPL = "REPL"   # Claude Code's Code Mode tool: its code's own tool calls reach the hooks as calls of their own
+# a call Code Mode refused while its script ran, one line of the REPL's tool_response.refusedCalls (2.1.325):
+# - "Bash", refused: "<the error the code saw, JSON-quoted>"
+REFUSED_LINE = re.compile(r'- "([^"]+)", refused: (".*")')
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
 FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
 ENDED = "ended"   # _state(sid, ENDED): a SessionEnd of the session came; kept as the session's state is (_prune)
@@ -215,36 +226,6 @@ def _skew(client, sid):
     return notice
 
 
-def stopped(head, reason=None, person=None, agent=None):
-    """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way: _block
-    for Claude Code, agent_hooks._reply for the others): `head` (with _rules), the signer's `reason` (Why) and, after
-    its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does
-    (`agent`, else: with `person`, ask them approve or skip and not reword the call around the hold, but take an
-    Instead step that is the agent's own, first since agent_hooks._reply may cut the end, and, once approved, make the
-    identical call again; without, tell the person). An Instead step may be the person's (check the payee before
-    approving): the agent takes only its own."""
-    why, _, instead = (reason or "").partition(INSTEAD)
-    own = " If the Instead line is a step you can take yourself, you may take it and say so." if instead else ""
-    if agent is None and person:   # the Instead step is in the rule itself, inside _reply's 500 characters (#816 review)
-        agent = ("ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's "
-                 "yours and say so; otherwise wait for their answer." if instead else
-                 "ask the person: approve this call or skip it? Don't reword the call to get past the hold; wait for "
-                 "their answer.") + (" Pass on the Person line and say what the call was for; a subagent puts both in "
-                                     "its final report. Once it is approved, make the identical call again.")
-    else:
-        agent = (agent or "tell the person what you were doing and why it was blocked.") + own
-    return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
-                      *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
-                      f"Agent: {agent} Never hide what a call runs to get past the policy: every call is signed and "
-                      "kept."])
-
-
-def _rules(rule_ids):
-    """The rule ids a stop names (named_rules), in brackets after a space, or nothing."""
-    rules = named_rules(rule_ids)
-    return f" ({rules})" if rules else ""
-
-
 def _block(msg):
     """Block a call with `msg` (stopped): on stderr, and for Claude Code also as its JSON deny, whose reason the model
     reads (in place of the hook's command line and stderr) and whose systemMessage the person sees. -> 2, the exit
@@ -256,16 +237,24 @@ def _block(msg):
     return 2
 
 
-def approvals_cmd(signer):
+def approvals_cmd(signer, use_interpreter=False):
     """`tracekit approvals`, for a person to run, naming `signer` when there is one: a named signer (system mode's,
     $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
     Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
     a quote (PowerShell's curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left
-    for the person to fill in."""
+    for the person to fill in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have
+    `tracekit` on PATH) with `-I`: the person runs it in the agent's working folder, where `-m` would first import a
+    `tracekit` package found there; on Windows Codex runs it under PowerShell, which runs a quoted program only through
+    `&`, so a path that needs no quotes goes bare, as agent_hooks does for Codex's hook command."""
     unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
     named = signer and (shlex.quote(signer) if os.name != "nt" else
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
-    return "tracekit approvals" + (f" --signer {named}" if named else "")
+    command = "tracekit approvals" + (f" --signer {named}" if named else "")
+    if use_interpreter:
+        exe = (shlex.quote(sys.executable) if os.name != "nt" else sys.executable
+               if re.fullmatch(r"[A-Za-z0-9_.:\\-]+", sys.executable) else f'& "{sys.executable}"')
+        command = f"{exe} -I -m {command}"
+    return command
 
 
 def _utc(ts):
@@ -723,7 +712,7 @@ def _approval_command_prefix(agent, signer):
         return ""
     if agent == "claude-code":
         return "! "
-    if agent == "gemini-cli":
+    if agent in ("gemini-cli", "codex"):
         return "!"
     return ""
 
@@ -763,7 +752,7 @@ def _pre(client, p, sid, tid, end=None):
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
             asked = run.call("approval_request", tool_call_id=tid)
             aid, state = asked["approval_id"], asked["state"]
-            cmd = approvals_cmd(client.signer)
+            cmd = approvals_cmd(client.signer, use_interpreter=AGENT == "codex")
             wait_s = approval_wait_s()
             # the commands before the reasons, as in the held line: a harness that cuts the message keeps them
             if state == "requested" and wait_s:
@@ -788,7 +777,7 @@ def _pre(client, p, sid, tid, end=None):
         if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
             _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
-            # Claude Code's `! ` and Gemini CLI's `!` command run as the person's OS user;
+            # Claude Code's `! `, and Gemini CLI's and Codex's `!`, command run as the person's OS user;
             # with a named signer, that user is the agent's, whom the signer refuses.
             bang = _approval_command_prefix(AGENT, client.signer)
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
@@ -814,7 +803,7 @@ def _pre(client, p, sid, tid, end=None):
         args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
-                                        "args_digest": event_hash({"tool": tool, "args": args}),
+                                        "args_digest": event_hash({"tool": tool, "args": args}), "tool": tool,
                                         "send_result": d.get("send_result", False),
                                         **({"approval_id": aid} if d["decision"] == "ask" else {})})
     return 0
@@ -843,7 +832,58 @@ def _not_run(client, sid, tid, msg, digest, refused=None):
     os.remove(path)
 
 
+def _refused_calls(resp):
+    """The calls Code Mode refused while a script ran, from its REPL's PostToolUse `tool_response` (refusedCalls, text):
+    [(tool, error)], each error as the code saw it; none when there is no such list or no line reads as one."""
+    text = resp.get("refusedCalls") if isinstance(resp, dict) else None
+    out = []
+    for line in text.splitlines() if isinstance(text, str) else ():
+        m = REFUSED_LINE.fullmatch(line.strip())
+        if m:
+            try:
+                error = json.loads(m.group(2))
+            except ValueError:
+                error = m.group(2)[1:-1]
+            out.append((m.group(1), str(error).strip()))
+    return out
+
+
+def _refused_inner(client, sid, resp):
+    """Complete each call a Code Mode script made that another hook refused (it gets no PostToolUse) as an error with
+    the line its REPL's result names it by (_refused_calls), when that is certain: the line has no call id, so only
+    when exactly one call of its tool from code (a `repl_` id) is still open in the session and one line names that
+    tool. Two open calls of the tool (one may still be running when the script ends) leave both to SessionEnd's
+    NO_POST, and so does a line of this hook's own block ([tracekit]): the call it blocked was never left open."""
+    refused, st = [(t, e) for t, e in _refused_calls(resp) if "[tracekit] " not in e], _load(_state(sid))
+    if not refused or not st:
+        return
+    open_calls = {}
+    for path in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + ".*.json"):
+        call = _load(path)
+        if call and call.get("run_id") == st["run_id"] and str(call.get("tool_call_id", "")).startswith("repl_"):
+            open_calls.setdefault(call.get("tool"), []).append((path, call))
+    named = [t for t, _ in refused]
+    for tool, error in refused:
+        if named.count(tool) != 1 or len(open_calls.get(tool, ())) != 1:
+            continue
+        path, call = open_calls[tool][0]
+        try:
+            _run(client, sid, register=False, send="complete", tool_call_id=call["tool_call_id"],
+                 decision_id=call["decision_id"], args_digest=call["args_digest"], status="error",
+                 error=error[:4096] or "refused while its Code Mode script ran")
+        except SignerUnavailable:   # SessionEnd completes it
+            return
+        except RPCError:   # its run ended, or its PostToolUse came meanwhile
+            pass
+        try:
+            os.remove(path)
+        except FileNotFoundError:
+            pass
+
+
 def _post(client, p, sid, tid):
+    if AGENT == "claude-code" and p.get("tool_name") == REPL:   # first: the script's calls ended before it
+        _refused_inner(client, sid, p.get("tool_response"))
     path = _state(sid, tid)
     call, st = _load(path), _load(_state(sid))
     if not call or not st or call["run_id"] != st["run_id"]:
@@ -1129,7 +1169,8 @@ def _unfinished(client, sid):
         if call and st and call.get("run_id") == st["run_id"] and "tool_call_id" in call:
             try:
                 _run(client, sid, register=False, send="complete", tool_call_id=call["tool_call_id"],
-                     decision_id=call["decision_id"], args_digest=call["args_digest"], status="error", error=NO_POST)
+                     decision_id=call["decision_id"], args_digest=call["args_digest"], status="error",
+                     error=NO_POST_REPL if call.get("tool") == REPL else NO_POST)
             except SignerUnavailable:   # the next of these events tries again
                 return
             except RPCError:   # its run ended, or its PostToolUse came meanwhile
@@ -1219,7 +1260,7 @@ def _handle(client, p, event, sid, tid, end=None):
     if event == "SessionStart":
         _prune()
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers
-        source = p.get("source") if AGENT == "claude-code" else None
+        source = p.get("source") if AGENT in ("claude-code", "opencode", "kilo") else None   # OpenCode's: normalise
         # a program's prompt through Claude Code's SDK is recorded as the request it is, under a source of its own:
         # only what a person typed is `<agent>:UserPromptSubmit` (TIPS' TOLD lessons read that alone)
         typed_by = f"{AGENT}:sdk:UserPromptSubmit" if source == "sdk" else f"{AGENT}:UserPromptSubmit"
@@ -1242,8 +1283,11 @@ def _handle(client, p, event, sid, tid, end=None):
         finally:
             errors = []
             try:
-                _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
-                     value=typed)
+                # OpenCode 2.x proves no prompt typed: an empty one would read as the person's prompt
+                # (findings_v2's hooked, hook_seqs), so only its untrusted record is kept
+                if typed or AGENT not in ("opencode", "kilo"):
+                    _run(client, sid, send="observe", transcript=transcript, source=typed_by, trust="trusted",
+                         value=typed)
             except Exception as e:
                 errors.append(e)
             grouped = {}
