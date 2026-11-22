@@ -23,7 +23,7 @@
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { Agent, request } from "node:https";
 import { createConnection, type Socket } from "node:net";
@@ -32,7 +32,7 @@ import { basename, extname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { TracekitAgents } from "./adapters/openai-agents.js";
 import { tracekitAI } from "./adapters/vercel-ai.js";
-import { argsDigest } from "./jcs.js";
+import { argsDigest, canonicalize } from "./jcs.js";
 import { INSTALL_HINT, signerCommand, signerEnv } from "./launcher.js";
 import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
 import { validate } from "./validate.js";
@@ -662,6 +662,9 @@ export interface Decision extends Frame {
 const NEW_WORK = new Set(["decide", "model_event", "observe", "state_write"]);   // to the current run
 const BY_CALL = new Set(["complete", "approval_request", "approval_consume"]);   // to the run the call was decided in
 const KEEP = 4096;   // tool calls and approvals whose run is remembered
+const TRANSFER = "a2a:transfer";   // the tool RunHandle.transfer decides
+const TRANSFER_FIELDS = ["sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"];
+const MAX_LINE = 1 << 20;   // bytes of one transport frame (MAX_LINE in tracekit/signer/quotas.py)
 
 function remember<K, V>(m: Map<K, V>, k: K, v: V): void {
   m.delete(k);
@@ -808,6 +811,50 @@ export class RunHandle {
       warn(`tracekit: ${tool} is blocked: approval_consume failed: ${why}`);
       return { ok: false, rule_ids: [], reason: `approval_consume failed: ${why}`.slice(0, 1024) };
     }
+  }
+
+  /** Experimental, as Python's `RunHandle.transfer` (docs/c2c.md#runtransfer): records and gates a transfer from `sender`
+   * to `receiver` before it happens, as the tool a2a:transfer. `payload` is hashed here: the signer gets its size and
+   * sha256 digest, never the payload. `measured` adds fields the caller computed itself and may not reuse the transfer's
+   * own (it throws). An `ask` waits up to 300 s for a person. Fails closed: with the signer unreachable the transfer
+   * may not happen, whatever the run's fail modes. Resolves the decision with `ok`, whether the transfer may happen now
+   * (and `reason` when it may not for one the signer gave); one that may is recorded as made before this resolves.
+   * `keep`: the payload (hex) goes in the result, for a signer keeping content. */
+  async transfer(sender: string, receiver: string, payload: string | Uint8Array, modality: string,
+    { projector, measured, keep = false }: { projector?: string; measured?: Frame; keep?: boolean } = {}): Promise<Decision & { ok: boolean; reason?: string }> {
+    const data = Buffer.from(payload);
+    const more = measured ?? {};
+    const collision = TRANSFER_FIELDS.filter((k) => Object.hasOwn(more, k));
+    if (collision.length) throw new Error(`measured keys replace reserved transfer fields: ${collision.sort().join(", ")}`);
+    const head: Frame = { sender, receiver, modality, ...(projector ? { projector } : {}) };
+    const args = { ...head, claimed: Object.keys(head).sort(), size: data.length, digest: `sha256:${createHash("sha256").update(data).digest("hex")}`,
+      // in Python's order, by code point (UTF-8 bytes): sort() alone compares UTF-16 units
+      ...more, measured: ["size", "digest", ...Object.keys(more)].sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b))) };
+    const toolCallId = `tx-${randomBytes(16).toString("hex")}`;
+    const d = await this.decide(toolCallId, TRANSFER, args);
+    if (d.unavailable || d.decision === "deny") return { ...d, ok: false };
+    let hint: string | undefined;
+    if (d.decision === "ask") {
+      hint = (await this.approvalRequest(toolCallId)).approval_id as string;
+      const state = (await this.approvalWait(hint, 300_000)).state;
+      if (state !== "approved") {
+        if (state === "requested")   // unanswered: withdrawn, so no one approves a transfer that is gone
+          await this.call("approval_abandon", { approval_id: hint, reason: "no answer within run.transfer's wait" });
+        return { ...d, ok: false, reason: `approval ${state}` };
+      }
+    }
+    const c = await this.approvalConsume(toolCallId, TRANSFER, args, hint);
+    if (c.ok) {
+      let kept: Frame | undefined = keep ? { payload: data.toString("hex") } : undefined;
+      // lean: up to a quarter frame of payload (its hex in half a frame) is kept; send it in parts, each a record of its
+      // own, once larger caches must be kept
+      if (kept && canonicalize(kept).length > MAX_LINE / 2) {
+        warn(`tracekit: transfer ${toolCallId} is recorded but not kept: its ${data.length} bytes are more than one frame carries (about ${MAX_LINE / 4}); keep a smaller one`);
+        kept = undefined;
+      }
+      await this.complete(toolCallId, "ok", kept ? { result: kept } : {});
+    }
+    return { ...d, ok: c.ok, ...(c.reason ? { reason: c.reason } : {}) };
   }
 
   /** Records content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched) for
