@@ -99,12 +99,17 @@ class Packs(unittest.TestCase):
         self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-5:-1]],
                          [("line", False), ("target", True), ("target", False), (None, False)])   # F005: the templates'
         self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-5:-1]))
-        self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
+        # dev's TK-F013 is the coding pack's, less traffic to this machine alone (an egress label TK-Q001 would read)
+        f013 = next(r for r in dev["flag"] if r["id"] == "TK-F013")
+        self.assertEqual({**f013, "unless": coding["TK-F013"]["unless"]}, coding["TK-F013"])
+        self.assertTrue(f013["unless"].startswith(coding["TK-F013"]["unless"] + "|"))
+        self.assertEqual([r for r in dev["flag"] if r["id"] in wide and r["id"] != "TK-F013"],
+                         [coding[i] for i in wide if i != "TK-F013"])
         mine = [r for r in server["flag"] if r["id"] not in (*wide, "TK-F028")]   # the laptop has no TK-F028
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
         # and what sets the run labels its run conditions read (docs/policy-v2.md#run-conditions)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
-                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 46))])
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 48))])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
         self.assertNotIn("sequences", dev)
