@@ -5123,6 +5123,11 @@ class CodingPack(unittest.TestCase):
             "cd ~/proj && uv tool upgrade --all", "uv tool upgrade --all", "mkdir -p ~/.local/bin", "mkdir -p ~/.local/share/myapp",
             "touch ~/.local/bin/mytool", "gem install --bindir ~/.local/bin evilgem", "npm i -g --prefix ~/.local x", "npm i -g --force x",
             "gcc -L$HOME/.local/lib -I$HOME/.local/include -o app main.c", "pandoc README.md -o README.pdf", "foo -o out.txt")
+        for cmd in ("tar -cf ~/.local/bin/tracekit /tmp/e", "git archive -o ~/.local/bin/tracekit HEAD", "sed -n 'w ~/.local/bin/tracekit' f",
+                    f"zip {root}/lib/python3.12/site-packages/x.pth /tmp/e", "vim -es -c 'w! ~/.local/bin/tracekit' -c q! f"):
+            for pack, engine, e in self.every_pack():   # (an output into a root is a write: denied, not only held)
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertIn("TK-D007", e.decide("Bash", {"command": cmd})["rule_ids"])
         spenders = []
         chains = ["cd /a && " + " ".join(f"cd d{i};" for i in range(n)) for n in (400, 1000)] + [
             "cd /a && " + " ".join(f"cd {'long' * 10}{i:04d};" for i in range(300))]

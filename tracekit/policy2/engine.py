@@ -2095,8 +2095,7 @@ def _sets_environment(parsed):
     learned = parsed[5] if len(parsed) > 5 else {}
     return bool(parsed[2] or learned.get("any_set") or any(
         c["argv"] and (_program(c["argv"]) in ("source", ".", "direnv", "read", "export", "declare", "typeset", "eval", "mapfile",
-                                                "readarray", "set") or shell._sets_with_v(c["argv"])
-                       or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) for a in c["argv"][1:]))
+                                                "readarray", "set") or shell._sets_with_v(c["argv"]))
         for c in parsed[0]))
 
 
@@ -3327,7 +3326,7 @@ def _effects_of(command, prints, work):
         out.extend("INSIDE_TARGET:" + w for w in _assigned_words(args))
     sides = _side_outputs(exe, args, command)
     out.extend("NAMED_TARGET:" + w for w in sides)   # (a folder along a root, a harness's path too)
-    if exe not in ("awk", "gawk", "mawk", "nawk", "docker", "podman"):   # (those name files they may only read)
+    if exe not in ("awk", "gawk", "mawk", "nawk"):   # (an awk program's literals name files it may only read)
         out.extend("WRITE_TARGET:" + w for w in sides)
     return out
 
@@ -3461,12 +3460,6 @@ def _literal_effects(command):
     argv = command["argv"]
     exe, args = _program(argv), argv[1:]
     words = [a for a in args if not a.startswith("-")]
-    try:   # (a tree writer, as _tree_writes reads it: its folders, a few of them)
-        written = _tree_writes(exe, args, [0])
-    except shell.ParseError:
-        written = []
-    if written:
-        return written
     if exe in ("rm", "unlink", "shred"):
         return ["DELETE_TARGET:" + w for w in words]
     if exe in ("truncate", "tee"):
