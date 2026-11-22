@@ -260,11 +260,13 @@ class Routes(unittest.TestCase):
                               "hermes plugins disable -a", "python3 -m hermes_cli plugins disable --all",
                               "claude plugin disable --all", "claude plugin disable -as user",
                               "claude plugin uninstall ./plugin/tracekit/", "claude plugin remove TRACEKIT@tracekit",
+                              "claude plugin marketplace remove tracekit", "claude plugin marketplace rm tracekit",
                               "npx -y @anthropic-ai/claude-code plugin uninstall tracekit",
                               "node node_modules/.bin/claude plugin disable tracekit",
                               "\"$(which claude)\" plugin uninstall tracekit"), "ask", "TK-A054")
         self.expect(self.bash("hermes plugins list", "hermes plugins disable other-plugin",
                               "hermes config get approvals.mode", "claude plugin disable other@market",
+                              "claude plugin marketplace list", "claude plugin marketplace remove other",
                               "npx -y @anthropic-ai/claude-code plugin uninstall other@market",
                               "node scripts/claude.js plugin uninstall tracekit"), "allow")
 
@@ -786,7 +788,15 @@ class Routes(unittest.TestCase):
             "printf -v HOME %s /tmp/h; claude -p x", "readonly HOME=/tmp/h; claude -p x",
             "claude -p x $(echo --settings) s.json", "echo --settings s.json | xargs claude -p x", "claude --bare -p x",
             "CLAUDE_CODE_SIMPLE=1 claude -p x", "codex exec -c sandbox_workspace_write.network_access=true x",
-            "codex --profile other exec x", "env -u CODEX_HOME codex exec x"), "ask", "TK-A070")
+            "codex --profile other exec x", "env -u CODEX_HOME codex exec x",
+            "HOME=/tmp/x npx @kilocode/cli", "HOME=/tmp/x npx @kilocode/cli@latest",
+            "HOME=/tmp/x bunx @kilocode/cli", "HOME=/tmp/x bunx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpm dlx @kilocode/cli", "HOME=/tmp/x pnpm dlx @kilocode/cli@latest",
+            "HOME=/tmp/x pnpx @kilocode/cli", "npx @kilocode/cli --config k.json"), "ask", "TK-A070")
+        # a scoped package's word names Kilo Code; a bare `cli`, or another scope's, is no harness
+        self.expect(self.bash("npx @kilocode/cli", "HOME=/tmp/x npx @some-other/cli", "HOME=/tmp/x cli"), "allow")
+        # `npx owner/repo` fetches a GitHub repository and runs it: held as outside code (#1057), not as Kilo Code
+        self.expect(self.bash("HOME=/tmp/x npx some-other/cli"), "ask", "TK-A046")
 
     def test_a_harness_is_read_with_every_way_the_line_sets_its_settings(self):
         # codex's own hooks off (--disable is -c features.<name>=false; features disable saves it), a variable set by
@@ -1405,6 +1415,17 @@ class WindowsPrograms(unittest.TestCase):
                 with self.subTest(engine=backend, command=command):
                     got = svc.evaluate(e, "run_task", {"command": command})[0]
                     self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
+
+    def test_an_unmapped_tools_sql_behind_explain_analyze_or_a_paren_is_held(self):
+        # #975, through the signer's own reading: EXPLAIN ANALYZE runs the statement, and sql_query and stmt name SQL
+        for backend in BACKENDS:
+            e = self.engines[("dev", backend)]
+            for args in ({"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"}, {"stmt": "DROP TABLE users;"},
+                         {"sql_query": "DROP TABLE users;"},
+                         {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"}):
+                with self.subTest(engine=backend, args=args):
+                    got = svc.evaluate(e, "acme_runner", args)[0]
+                    self.assertEqual((got["verdict"], "TK-A062" in got["rule_ids"]), ("ask", True), got)
 
     def test_base_name(self):
         for word, name in (("C:\\Git\\bin\\Bash.EXE", "bash"), ("/usr/bin/git", "git"), (".\\x.sh", "x.sh"),

@@ -296,9 +296,16 @@ class Hook(Tools):
                 return {"state": "approved"}
             return {"approval_request": {"approval_id": "apr-1"}, "approval_abandon": {}, "model_event": {}}[method]
         r.call.side_effect = call
-        threading.Timer(0.6, answered.set).start()
+
+        async def go():
+            try:
+                # lean: assumes reaching the ask takes under 1 s (0 of 40 failed at 3x CPU oversubscription); if it
+                # flakes again, cancel the workflow from the fake approval_wait instead of by the timeout
+                await gated(r, self.tool(), timeout=1).run(user_msg="close it")
+            finally:
+                answered.set()
         with self.assertRaises(WorkflowTimeoutError):
-            ask(gated(r, self.tool(), timeout=0.3))   # returns once the approval_wait thread has
+            asyncio.run(go())   # returns once the approval_wait thread has
         r.call.assert_any_call("approval_abandon", approval_id="apr-1",
                                reason="the workflow was cancelled while it waited")
         r.approval_consume.assert_not_called()

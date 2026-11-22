@@ -503,13 +503,14 @@ class TestHeldReason(unittest.TestCase):
         self.assertEqual(res.context_wrapper.context["tracekit"]["reasons"], {"sh-1": self.REASON})
         self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
                                      "decision": "reject"})
-        # call_state gives the held rules' reasons now, not the decision's: each source of the reason shows
+        # a policy reload after the decision changes no reason: call_state answers the decision's, so a resume in
+        # another process tells the model what the same process does
         self.service.policy = self.policy("the rules' reason")
-        for resumed, why in ((tk, self.REASON), (TracekitAgents(self.client, self.run_), "the rules' reason")):
+        for resumed in (tk, TracekitAgents(self.client, self.run_)):
             with self.subTest(same_process=resumed is tk):
                 told = self.told(a, res, resumed)
                 self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): rejected.", told)
-                self.assertIn(f"Why: {why}\n", told)
+                self.assertIn(f"Why: {self.REASON}\n", told)
                 self.assertNotIn("approvals", told)   # the approval commands are the person's
         self.assertEqual(self.ran, [])
 

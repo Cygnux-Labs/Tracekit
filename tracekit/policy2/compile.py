@@ -150,7 +150,8 @@ def policy_hash(pol):
 
 def translate(pattern):
     """Check the lexical subset and return the pattern for the `regex` module: `$` means end of text and `\\s`
-    excludes \\v, as in RE2. Raises PolicyError for syntax RE2 lacks or reads differently."""
+    excludes \\v, as in RE2, and a plain group captures nothing (no match's groups are read, and the module searches
+    faster without: TK-D014's 284, TK-D002's 24). Raises PolicyError for syntax RE2 lacks or reads differently."""
     out, i, n, cls = [], 0, len(pattern), None
     while i < n:
         c = pattern[i]
@@ -177,6 +178,8 @@ def translate(pattern):
             continue
         elif c == "(" and pattern.startswith("(?", i) and not pattern.startswith(("(?:", "(?P<"), i):
             raise PolicyError("only (?: and (?P< groups are allowed (no flags, lookaround or comments)")
+        elif c == "(" and not pattern.startswith("(?", i):
+            c = "(?:"
         elif c == "{" and not re.match(r"\{\d+(,\d*)?\}", pattern[i:]):
             raise PolicyError("a literal { must be escaped, and a repeat needs a lower bound")
         elif c == "$":
