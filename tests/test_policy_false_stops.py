@@ -190,6 +190,12 @@ class FalseStops(unittest.TestCase):
                      "SignerService; print(SignerService)')",
                      "from unittest import mock\nfrom tracekit.signer.rpc_schema import REQUESTS\n"
                      "print(mock.patch.object(REQUESTS, 'get').get_original())",
+                     "from unittest.mock import patch\nfrom tracekit.signer.rpc_schema import REQUESTS\n"
+                     "print(patch.object(REQUESTS, '__' + 'class__').temp_original)",
+                     "from unittest.mock import patch\nfrom tracekit.signer.rpc_schema import REQUESTS\n"
+                     "p = patch.object(REQUESTS, 'get')\nprint(p)",
+                     "import doctest\nfrom tracekit.signer.rpc_schema import REQUESTS\n"
+                     "doctest.DocTestRunner().run(doctest.DocTestParser().get_doctest('>>> import os', {}, 'x', 'x', 0))",
                      "import marshal, copyreg\nimport tracekit.signer.service"):
             self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"",
                                f"python3 -c \"{code.replace(chr(10), '; ')}\"")

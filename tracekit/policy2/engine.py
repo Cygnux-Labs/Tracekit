@@ -2786,11 +2786,12 @@ _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
 # a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
-# pydoc.locate, mock.patch's get_original), reads a field of an object by its name (string.Formatter) or runs code
-# (ctypes, code.InteractiveInterpreter)
+# pydoc.locate, mock.patch's get_original and temp_original), reads a field of an object by its name (string.Formatter) or runs code
+# (ctypes, code.InteractiveInterpreter, doctest)
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
                         r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|"
-                        r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original)\b|\bmock\s*\.\s*patch\b|"
+                        r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original|temp_original|doctest|DocTestParser|"
+                        r"DocTestRunner)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
