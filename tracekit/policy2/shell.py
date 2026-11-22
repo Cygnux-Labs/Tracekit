@@ -1714,13 +1714,18 @@ _TEXT_FILTERS = {"cut", "tr", "nl", "fold", "fmt", "column", "tac", "rev", "past
 NO_FILES = {"cd", "mkdir", "echo", "printf", "true", "false", ":", "sleep", "pwd", "test", "[", "[[", "date"}
 
 
-def reads_only(c, filters=False):
-    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too) or reads no file
-    (NO_FILES), writing nowhere but /dev/null or stderr."""
+def reads_only(c, filters=False, interp=False):
+    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too; with `interp`,
+    an interpreter with an inline program that reads data without evaluating it) or reads no file (NO_FILES),
+    writing nowhere but /dev/null or stderr."""
     name = c["argv"][0]
-    return (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
-        _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
-        name in _TEXT_FILTERS) and all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    if (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
+            _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
+            name in _TEXT_FILTERS):
+        return all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    if interp and _is_data_interpreter(c):
+        return all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+    return False
 
 
 # what else may run on a line whose text written into a data file stays data: commands that only read and print, or
@@ -2615,6 +2620,247 @@ def _loaded(kind, args):
             yield "module", a[2:] or nxt
         elif kind == "python" and (a == "-X" and nxt.startswith("presite") or a.startswith("-Xpresite")):
             yield "held", nxt
+
+
+_SAFE_DATA_MODULES = {"json", "csv", "sys"}
+
+_SAFE_PURE_BUILTINS = {
+    "len", "int", "float", "str", "bool", "list", "dict",
+    "tuple", "set", "range", "enumerate", "min", "max",
+    "sum", "sorted", "any", "all", "zip", "repr",
+}
+
+_SAFE_DATA_CALLS = {
+    "json.load", "json.loads", "json.dumps", "json.dump",
+    "csv.reader", "csv.DictReader",
+    "sys.stdin.read", "sys.stdin.readline", "sys.stdin.readlines",
+    "print",
+} | _SAFE_PURE_BUILTINS
+
+_ALLOWED_SYS_ATTRS = {"stdin", "argv", "stdout", "stderr"}
+_ALLOWED_STDIN_ATTRS = {"read", "readline", "readlines"}
+_ALLOWED_JSON_ATTRS = {"load", "loads", "dumps", "dump"}
+_ALLOWED_CSV_ATTRS = {"reader", "DictReader"}
+
+_SAFE_AST_NODE_TYPES = (
+    ast.Module,
+    ast.Interactive,
+    ast.Expression,
+    ast.Import,
+    ast.ImportFrom,
+    ast.Assign,
+    ast.AugAssign,
+    ast.AnnAssign,
+    ast.Expr,
+    ast.For,
+    ast.While,
+    ast.If,
+    ast.With,
+    ast.withitem,
+    ast.Pass,
+    ast.Break,
+    ast.Continue,
+    ast.Try,
+    ast.ExceptHandler,
+    ast.Call,
+    ast.Attribute,
+    ast.Name,
+    ast.Constant,
+    ast.Subscript,
+    ast.Slice,
+    ast.List,
+    ast.Tuple,
+    ast.Dict,
+    ast.Set,
+    ast.ListComp,
+    ast.DictComp,
+    ast.SetComp,
+    ast.GeneratorExp,
+    ast.comprehension,
+    ast.UnaryOp,
+    ast.UAdd,
+    ast.USub,
+    ast.Not,
+    ast.Invert,
+    ast.BinOp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.FloorDiv,
+    ast.Mod,
+    ast.Pow,
+    ast.LShift,
+    ast.RShift,
+    ast.BitOr,
+    ast.BitXor,
+    ast.BitAnd,
+    ast.BoolOp,
+    ast.And,
+    ast.Or,
+    ast.Compare,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.Is,
+    ast.IsNot,
+    ast.In,
+    ast.NotIn,
+    ast.IfExp,
+    ast.FormattedValue,
+    ast.JoinedStr,
+    ast.Load,
+    ast.Store,
+    ast.Del,
+    ast.alias,
+    ast.arg,
+    ast.arguments,
+) + tuple(getattr(ast, _n) for _n in ("Index", "ExtSlice") if hasattr(ast, _n))
+
+
+def _resolve_call_name(func, import_map):
+    """The qualified or aliased name an expression calls, if resolvable."""
+    if isinstance(func, ast.Name):
+        return import_map.get(func.id, func.id)
+    if isinstance(func, ast.Attribute):
+        base = _resolve_call_name(func.value, import_map)
+        if base is not None:
+            return f"{base}.{func.attr}"
+    return None
+
+
+def _is_safe_open_call(node, import_map):
+    """Whether an open() call only reads a literal path or sys.argv with mode 'r' or 'rb'."""
+    if not node.args and not node.keywords:
+        return False
+    path_arg = node.args[0] if node.args else None
+    mode_arg = node.args[1] if len(node.args) > 1 else None
+    for kw in node.keywords:
+        if kw.arg in ("file", "path"):
+            path_arg = kw.value
+        elif kw.arg == "mode":
+            mode_arg = kw.value
+        elif kw.arg == "encoding":
+            if not (isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str)):
+                return False
+        else:
+            return False
+
+    if path_arg is None:
+        return False
+
+    is_literal_str = isinstance(path_arg, ast.Constant) and isinstance(path_arg.value, str)
+    is_sys_argv = False
+    if isinstance(path_arg, ast.Subscript):
+        val_name = _resolve_call_name(path_arg.value, import_map)
+        if val_name in ("sys.argv", "argv"):
+            is_sys_argv = True
+
+    if not (is_literal_str or is_sys_argv):
+        return False
+
+    if mode_arg is not None:
+        if not (isinstance(mode_arg, ast.Constant) and mode_arg.value in ("r", "rb")):
+            return False
+
+    return len(node.args) <= 2
+
+
+def _is_safe_python_data_eval(code_str: str) -> bool:
+    """Whether python -c code only parses/loads data using a strict AST allowlist."""
+    if not isinstance(code_str, str) or not code_str.strip():
+        return False
+    try:
+        tree = ast.parse(code_str)
+    except Exception:
+        return False
+
+    if not tree.body:
+        return False
+
+    import_map = {}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, _SAFE_AST_NODE_TYPES):
+            return False
+
+        if isinstance(node, ast.Name) and node.id.startswith("__"):
+            return False
+
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            return False
+
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name not in _SAFE_DATA_MODULES:
+                    return False
+                target = alias.asname or alias.name
+                import_map[target] = alias.name
+
+        elif isinstance(node, ast.ImportFrom):
+            if node.level != 0 or node.module not in _SAFE_DATA_MODULES:
+                return False
+            for alias in node.names:
+                if alias.name == "*":
+                    return False
+                target = alias.asname or alias.name
+                import_map[target] = f"{node.module}.{alias.name}"
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            base_name = _resolve_call_name(node.value, import_map)
+            if base_name == "sys" and node.attr not in _ALLOWED_SYS_ATTRS:
+                return False
+            elif base_name == "sys.stdin" and node.attr not in _ALLOWED_STDIN_ATTRS:
+                return False
+            elif base_name == "json" and node.attr not in _ALLOWED_JSON_ATTRS:
+                return False
+            elif base_name == "csv" and node.attr not in _ALLOWED_CSV_ATTRS:
+                return False
+
+        if isinstance(node, ast.Call):
+            call_name = _resolve_call_name(node.func, import_map)
+            if call_name == "open":
+                if not _is_safe_open_call(node, import_map):
+                    return False
+            elif call_name not in _SAFE_DATA_CALLS:
+                return False
+
+    return True
+
+
+def evaluates_code(kind, code):
+    """Whether an inline program text evaluates or imports what it reads, or runs subprocesses."""
+    if kind == "python":
+        return not _is_safe_python_data_eval(code)
+    return True
+
+
+def _is_data_interpreter(c):
+    """Whether an interpreter command only reads and processes data with an inline program (-c)."""
+    if c.get("opaque") or c.get("via"):
+        return False
+    kind = _kind(c["argv"][0])
+    if kind != "python":
+        return False
+    args = c["argv"][1:]
+    if any(_loaded(kind, args)):
+        return False
+    flags = []
+    for a in args:
+        if a == "-c" or a.startswith("-c"):
+            break
+        flags.append(a)
+    for f in flags:
+        if not re.fullmatch(r"-[IBusEqO]+", f):
+            return False
+    code = _code_arg(kind, args)
+    if code is None:
+        return False
+    return _is_safe_python_data_eval(code)
 
 
 def _data_url(url):
