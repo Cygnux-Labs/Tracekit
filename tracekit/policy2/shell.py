@@ -5620,18 +5620,19 @@ def _lines(words, progs):
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
     bare, start = list(words), True
-    for i, w in enumerate(words):
+    for i, w in (enumerate(words) if "case" in words or not KEYWORDS.isdisjoint(words) else ()):
         if start and (w in KEYWORDS or w == "case"):
             bare[i] = ";"
         else:
             start = w in _STAGE_ENDS
 
-    def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q
+    def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q, and
+        # no stage ends between (its name read first, the cheapest)
         name = base_name(words[p])
         runner = name.partition("@")[0]
-        return name in WRAPPERS or runner in RUNNERS and bool(runner_at(runner, words[p + 1:q]))
-    cut = {i for p, q in zip(at, at[1:]) if not _STAGE_ENDS.intersection(words[p + 1:q]) and runs(p, q)
-           for i in range(p, q)}
+        return (name in WRAPPERS or runner in RUNNERS) and not _STAGE_ENDS.intersection(words[p + 1:q]) and (
+            name in WRAPPERS or bool(runner_at(runner, words[p + 1:q])))
+    cut = {i for p, q in zip(at, at[1:]) if runs(p, q) for i in range(p, q)}
     ran = list(low)
     for p, q in zip(at, at[1:]):
         if p in cut and base_name(words[p]) == "hatch":   # hatch run [ENV:]ARGS: the command, not its environment

@@ -68,10 +68,13 @@ _ASCII_FOLDS = str.maketrans("ſK", "sk")
 
 
 def _backend(name):
-    """Return (engine id, compile(pattern, anycase=False), match(compiled, text, full, deadline)); only the fallback
-    uses the deadline: [seconds left] of the 1 s (REGEX_TIMEOUT_S) its regex matches of one decision (or bounds check)
-    share, each spending it by the time it takes. Reading the call (its parse, its subjects) isn't charged to it: that
-    is the same work on either engine, bounded by the input size limits (MAX_SUBJECT, shell.MAX_WORK) as on RE2."""
+    """Return (engine id, compile(pattern, anycase=False, given=False), match(compiled, text, full, deadline)); only the
+    fallback uses the deadline: [seconds left] of the 1 s (REGEX_TIMEOUT_S) its regex matches of one decision (or bounds
+    check) share, each spending it by the time it takes. Reading the call (its parse, its subjects) isn't charged to it:
+    that is the same work on either engine, bounded by the input size limits (MAX_SUBJECT, shell.MAX_WORK) as on RE2.
+    A match is only read as found or not, so a policy's groups capture nothing (RE2's never_capture; the fallback's
+    through compile.translate): each RE2 search returned a span for every group, 4.4 us for TK-D014's 284 and 0.8 us
+    without. A pattern a call gives (`given`: decide's finds) keeps RE2's, so RE2 refuses the same ones by their size."""
     if name != "regex":
         try:
             import re2
@@ -80,9 +83,11 @@ def _backend(name):
                 raise
         else:
             from importlib.metadata import version
-            opts = re2.Options()
-            opts.log_errors = False
-            return (f"re2@{version('google-re2')}", lambda p, anycase=False: re2.compile("(?i)" * anycase + p, opts),
+            opts, bare = re2.Options(), re2.Options()
+            opts.log_errors = bare.log_errors = False
+            bare.never_capture = True
+            return (f"re2@{version('google-re2')}",
+                    lambda p, anycase=False, given=False: re2.compile("(?i)" * anycase + p, opts if given else bare),
                     lambda c, s, full, deadline: (c.fullmatch if full else c.search)(s))
     import regex
     ignorecase = int(regex.IGNORECASE)
@@ -103,7 +108,7 @@ def _backend(name):
             return found
         finally:
             deadline[0] -= time.perf_counter() - start
-    return (f"regex@{regex.__version__}", lambda p, anycase=False: regex.compile(
+    return (f"regex@{regex.__version__}", lambda p, anycase=False, given=False: regex.compile(
                 translate(p), regex.ASCII | regex.V0 | regex.IGNORECASE * anycase), match)
 
 
@@ -130,7 +135,9 @@ class Engine:
         # (768 strings over 300 characters: 0.8 us; the dev pack's rules scanned 688 of them one at a time), so a
         # rule's prefilter is a lookup of its strings' ids (holds() in decide). The Set also holds `^`, which matches
         # every text: a match without it is one RE2 couldn't finish (its DFA out of memory, which the binding doesn't
-        # report), and that text is scanned. The fallback scans: {id(strings): frozenset of their ids}
+        # report), and that text is scanned. The fallback scans: {id(strings): frozenset of their ids}; there a set of
+        # strings two rules share (TK-A088, TK-A089 and TK-A091 the same 34) is scanned for once a text, by its number
+        # here: {id(strings): int}
         self._set, self._ids = None, {}
         if self.engine.startswith("re2@"):
             import re2
@@ -146,6 +153,10 @@ class Engine:
             self._every = self._set.Add("^")
             self._set.Compile()
             self._ids = {id(lits): frozenset(map(index.__getitem__, lits)) for *_, lits, _, _ in self.rules if lits}
+        else:
+            shared = collections.Counter(lits for *_, lits, _, _ in self.rules if lits)
+            number = {lits: n for n, lits in enumerate(x for x, k in shared.items() if k > 1)}
+            self._ids = {id(lits): number[lits] for *_, lits, _, _ in self.rules if lits in number}
         # on the fallback, a pattern whose top level is an alternation of parts that each have a prefilter is searched a
         # part at a time, each only where the subject holds one of its strings: the regex module can't skip ahead in an
         # alternation as it can in one part (TK-S002 took 36 us over a curl line, its parts 9 and 2 us), and a search
@@ -335,12 +346,18 @@ class Engine:
 
         spent = []   # why the engine's reading of the parse stopped (its budget), if it did
         in_set = {}   # (RE2) the ids of the prefilter strings each text holds: one Set search a text
+        scanned = {}   # (the fallback) whether a text holds one of a set of strings two rules share, by (its number, text)
 
         def holds(lits, ids, text):
             """Whether `text` holds one of a rule's prefilter strings `lits` (compile.literals; `ids`: theirs in the RE2
-            Set), so its pattern may match there: a lookup on RE2, a str scan for each on the fallback."""
+            Set, or on the fallback the number of a set two rules share), so its pattern may match there: a lookup on
+            RE2, a str scan for each on the fallback (once a text for a shared set)."""
             if ids is None:
                 return any(map(text.__contains__, lits))
+            if ids.__class__ is int:
+                if (got := scanned.get((ids, text))) is None:
+                    got = scanned[ids, text] = any(map(text.__contains__, lits))
+                return got
             if (have := in_set.get(text)) is None:
                 have = in_set[text] = frozenset(self._set.Match(text))
             return not have.isdisjoint(ids) if self._every in have else any(map(text.__contains__, lits))
@@ -350,14 +367,15 @@ class Engine:
             on re2, within the decision's deadline on the fallback (TimeoutError). One the backend refuses (its syntax,
             its size) may match anything."""
             try:
-                rx = self._compile(pattern, anycase)
+                rx = self._compile(pattern, anycase, True)
             except Exception:   # re2.error, regex.error or compile.PolicyError: whatever the backend can't compile
                 return True
             return any(self._match(rx, t, whole, deadline) for t in texts)
 
-        def hit(entry, parsed, memo, oversize):
+        def hit(entry, parsed, memo, oversize, held=False):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects it can read
-            and one is over MAX_SUBJECT), else None; TimeoutError past the deadline."""
+            and one is over MAX_SUBJECT), else None; TimeoutError past the deadline. `held`: its subjects' joined text
+            is known to hold one of its prefilter strings."""
             sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
@@ -368,8 +386,17 @@ class Engine:
                     subjects, spent[:] = [], [e.cause]
                 memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or holds(lits, ids, joined):
+            if lits is None or held or holds(lits, ids, joined):
+                # a rule matching in any case (rx in __init__) reads an ASCII subject as it reads one of the same lower
+                # case, which _tracekit gives beside it (TK-D007 searched 8 subjects of `rm $env:USERPROFILE\.kiro\…`,
+                # 4 of them twins): each read once
+                folded = set() if (rule.get("class") == "a2a" or rule.get("field") == "tracekit") and \
+                    "from" not in rule else None
                 for subject, low in zip(texts, lows):
+                    if folded is not None and subject.isascii():
+                        if low in folded:
+                            continue
+                        folded.add(low)
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
                     if (lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
@@ -396,12 +423,14 @@ class Engine:
                 self._of[cls, bool(_hidden), low_name] = rules
         for entry in rules:
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
-            # is over MAX_SUBJECT) gives nothing: hit() would match nothing
+            # is over MAX_SUBJECT) gives nothing: hit() would match nothing; one whose subjects hold one, hit() doesn't
+            # look for again
+            held = False
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
-                    not m[0] or entry[5] is not None and not holds(entry[5], entry[9], m[2])):
+                    not m[0] or entry[5] is not None and not (held := holds(entry[5], entry[9], m[2]))):
                 continue
             try:
-                if (found := hit(entry, parsed, memo, oversize)) is not None:
+                if (found := hit(entry, parsed, memo, oversize, held)) is not None:
                     hits[entry[0]].append(found)
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
                 nondeterministic = True
@@ -843,6 +872,7 @@ _HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": 
 _HARNESS_PACKAGE = re.compile(r"(?<![\w.-])(?:@anthropic-ai/(claude-code)|@openai/(codex)|@google/(gemini-cli)|"
                               r"@qwen-code/(qwen-code)|(opencode-ai)|@kilocode/(cli)|(cline)|(hermes-agent)|"
                               r"@github/(copilot)|@tencent-ai/(codebuddy-code))(?:/|$)")
+_AT_VERSION = re.compile(r"(?<=.)@[^@]*$")   # a package's version after its name (claude-code@latest)
 _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # what makes a harness read settings other than the person's, or none: HOME, XDG_CONFIG_HOME, Windows' APPDATA and
 # LOCALAPPDATA (where a harness there keeps its settings), and each harness's own
@@ -874,11 +904,11 @@ def _harness(argv, word=""):
     name, `cli`, alone none), a script under a harness package a JavaScript runtime runs (after any options:
     node -r x …/cli.js), or one it runs by the harness's name (node_modules/.bin/claude, `"$(which claude)"`), or a
     module python -m runs; else None."""
-    m = word.startswith("@") and _HARNESS_PACKAGE.fullmatch(re.sub(r"(?<=.)@[^@]*$", "", word))
+    m = word.startswith("@") and _HARNESS_PACKAGE.fullmatch(_AT_VERSION.sub("", word))
     if m:
         found = next(g for g in m.groups() if g)
         return _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
-    name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
+    name = _AT_VERSION.sub("", _program(argv))
     name = _HARNESS_NAMES.get(name, name)
     if name in _HARNESS_CLIS:
         return name
@@ -906,8 +936,10 @@ def _as_harness(argv, word=""):
     JavaScript runtime's script: _harness; python -m's module with its own options, as the packs read it), else
     None."""
     h = _harness(argv, word)
-    name = re.sub(r"(?<=.)@[^@]*$", "", _program(argv))
-    if not h or name == h:
+    if not h:
+        return None
+    name = _AT_VERSION.sub("", _program(argv))
+    if name == h:
         return None
     if name in _JS_RUNTIMES:
         script = _js_script(argv)
@@ -3572,14 +3604,16 @@ def _download_runs(commands):
     out, host = [], {}   # each URL's host, read once: a line's readings repeat its words
     for c in commands:
         # (uv tool run is read as the uvx it is: shell; a runner at a version, pnpm@9, as that runner)
-        prog, args = _program(c["argv"]).partition("@")[0], c["argv"][1:]
+        prog = _program(c["argv"]).partition("@")[0]
         if prog in _FETCHERS and f"curl | {_FETCHERS[prog][2]} remote" not in out:
-            verbs, sources, kind = _FETCHERS[prog]
+            (verbs, sources, kind), args = _FETCHERS[prog], c["argv"][1:]
             starts = [k for k in shell.runner_at(prog, args) if args[k] in verbs] if verbs else [-1]
             opts = shell.RUNNERS[prog][1] if verbs else shell.WRAPPERS[prog][0]
             if any(_REMOTE_SOURCE.match(w) or kind == "node" and (_NPM_HOSTED.match(w) or _NPM_GITHUB.fullmatch(w))
                    for w in _fetched(args, starts, sources, opts, shell.WRAPPER_FLAGS.get(prog, ()))):
                 out.append(f"curl | {kind} remote")
+    if not any(c["argv"][0] in ("curl", "wget") for c in commands):   # (no download: nothing below reads one)
+        return out
     pipes, first, outs, groups, fed, into = {}, {}, {}, {}, [], []
     for c in commands:
         pipes.setdefault(c["pipeline"], []).append(c)
@@ -3641,6 +3675,8 @@ def _download_runs(commands):
         if anyn and len(ps := anyname.setdefault(tool, set())) < 2:
             ps.add(p)
         lens.setdefault(tool, set()).update(map(len, names))
+    if not lens:   # (no download saves a file a command could run)
+        return out
     lens = {tool: sorted(ks) for tool, ks in lens.items()}
     for c in commands:
         p, word, given = c["pipeline"], c["word"], c["argv"][1:] + list(c.get("in", ()))

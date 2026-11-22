@@ -722,6 +722,64 @@ class Prefilter(unittest.TestCase):
                 self.assertLessEqual(len(scans), 2 if backend == "re2" else 10 ** 6)
                 self.assertGreaterEqual(len(scans), 0 if backend == "re2" else 80)
 
+    def test_a_set_of_strings_rules_share_is_scanned_once_a_text_on_the_fallback(self):
+        """Policy train 4 (#1059): TK-A088, TK-A089 and TK-A091 share 34 prefilter strings, TK-A090 and TK-A092 30, on
+        the same field, so the fallback scanned every shell command for them five times. A set two rules share is
+        scanned for once a text; a rule that holds one of them is read as before. Counted in scans, not time."""
+        words = ["".join(w) for w in itertools.product("bcdfg", "hjklm", "npqrs")][:40]
+        rule = {"class": "shell", "field": "command", "pattern": "(?:" + "|".join(words) + ")"}
+        pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "ONE", **rule}, {"id": "TWO", **rule}]}
+        scans = []
+
+        class Counting(str):
+            def __contains__(self, s):
+                scans.append(s)
+                return str.__contains__(self, s)
+        real = engine._prepare
+
+        def counted(subjects, tag=0):
+            texts, lows, joined, big = real(subjects, tag)
+            return texts, [Counting(t) for t in lows], Counting(joined), big
+        e = Engine(pol, "regex")
+        with mock.patch.object(engine, "_prepare", counted):
+            self.assertEqual(e.decide("Bash", {"command": "echo hello"})["verdict"], "allow")
+            self.assertEqual(len(scans), 40)
+            self.assertEqual(e.decide("Bash", {"command": "echo " + words[7]})["rule_ids"], ["ONE", "TWO"])
+
+    def test_a_rule_matching_in_any_case_reads_an_ascii_subjects_lower_case_twin_once(self):
+        """Policy train 4 (#1059): _tracekit gives each subject as written and casefolded, and TK-D007, which matches
+        in any case, searched both: 8 subjects of `rm $env:USERPROFILE\\.kiro\\hooks\\tracekit.json`, 137 us on the
+        fallback. An ASCII subject reads as its lower-case twin does there, so a twin is searched once; a non-ASCII
+        one (`ſ`, which RE2 folds to s) still is, and the decision is the same."""
+        pol = {"tools": {"Bash": "shell"},
+               "deny": [{"id": "T", "class": "shell", "field": "tracekit", "pattern": r"^ACT:[\w\W]*?stop now$"}]}
+        for backend in BACKENDS:
+            e = Engine(pol, backend)
+            searched, real = [], e._match
+            e._match = lambda c, s, full, deadline: searched.append(s) or real(c, s, full, deadline)
+            with self.subTest(backend=backend):
+                for subjects, want in ((["ACT:x stop now z", "act:x stop now z", "ACT:y STOP now z"], 2),
+                                       (["ACT:x ſtop now z", "act:x ſtop now z", "ACT:x stop NOW"], 3)):
+                    searched.clear()
+                    with mock.patch.object(engine, "_tracekit", lambda *a: subjects):
+                        d = e.decide("Bash", {"command": "true"})
+                    self.assertEqual(len(searched), want)
+                    self.assertEqual(d["rule_ids"], ["T"] if want == 3 else [])
+
+    def test_a_policys_patterns_capture_no_group(self):
+        """Policy train 4 (#1059): a match is only read as found or not, but each RE2 search returned a span for every
+        group: TK-D014's 284 groups took 4.4 us a search on a laptop, 0.8 us without. A policy's patterns compile
+        capturing none, on RE2 (never_capture) and on the fallback (compile.translate), each as written otherwise."""
+        self.assertEqual(pc.translate(r"(a)|[(]b\(c(?:d)(?P<n>e)$"), r"(?:a)|[(]b\(c(?:d)(?P<n>e)\Z")
+        dev = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        for backend in BACKENDS:
+            e = Engine(dev, backend)
+            compiled = [c for _, _, tool, pat, unless, *_ in e.rules for c in (tool, pat, unless) if c is not None]
+            compiled += [rx for parts in e._parts.values() for rx, _ in parts]
+            with self.subTest(backend=backend):
+                self.assertGreater(len(compiled), 150)
+                self.assertEqual([c.pattern[:40] for c in compiled if c.groups], [])
+
     def test_an_alternation_is_searched_a_part_at_a_time_on_the_fallback(self):
         """#605: the regex module can't skip ahead in an alternation as it does in one of its parts, so on the
         fallback a pattern whose top level is an alternation of parts that each have a prefilter is searched a part
