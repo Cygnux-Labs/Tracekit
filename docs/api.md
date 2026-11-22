@@ -1332,7 +1332,8 @@ approvals it revoked.
 The [AI approver](approvals.md#the-ai-approver), for people. `status` lists the rules its circuit breaker dropped to
 shadow, the playbook in force and the entries people's answers propose. `accept` and `retire` change a playbook entry
 (`id`: `P-…`), `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
-breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id`. A signer
+breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id` (and, from
+a break-glass identity, a `reason`). A signer
 without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
 
 **Who may call:** an approver of the caller's tenant (`approvals.approvers` or `break_glass`), with the default grants or

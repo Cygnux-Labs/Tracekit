@@ -77,13 +77,18 @@
   "kit/vectors/ai-approval-30-day-precedent.tkb": "89232f69ef0479a2702b2be03ce3bde9fe3681d4a4067faa63a804437ea6e788",
   "kit/vectors/ai-approval-answered-unclean.tkb": "1f33dcf1d647a76022234329fb95e43e74393d1350c9fb51cb772ea6cf93643d",
   "kit/vectors/ai-approval-break-glass.tkb": "768f250d81ff1cff278c90254c571636b2571ed499ec9bbf165ac8706e0d4387",
+  "kit/vectors/ai-approval-label-before-consume.tkb": "cc76a9ecb8d1155aef6379b3058b2e9ece385f8feb4669b57340ea4d014b2506",
+  "kit/vectors/ai-approval-label-cleared.tkb": "feca7c2e58c992d552ca5a51cd60c630634bf4893cf10aacf83fcda8d2086c19",
   "kit/vectors/ai-approval-listed.tkb": "aa41e79cdcebe309be18fff9b82df5232be48e20fa7f7c07833e3fc8303574f9",
   "kit/vectors/ai-approval-old-precedent.tkb": "8d433c24e89025c54990277c174cb75ee87161e2e4090e8eb3cf81882100c22c",
   "kit/vectors/ai-approval-one-key.tkb": "526f5ceb3f9281285e892b23c62354d6ba1516fb7badac7219a5bc2e277a8dc0",
   "kit/vectors/ai-approval-other-kind.tkb": "458a6f96b6ef4c9134a368446838e5df33e65b540c343c3dd64efe0cf5e37a5e",
+  "kit/vectors/ai-approval-other-policy.tkb": "07bbedd69bafb5d23b4873d2a0e0dbe1bcede820e3ec44a0b4097a15a64412dc",
+  "kit/vectors/ai-approval-recorded-label.tkb": "ed2c8791d24aa1b20d0abe357cfff2f9f5905a484ea39c6f21ba8cd033cf8f04",
   "kit/vectors/ai-approval-revoked-rejection.tkb": "e997cb108d15256b7b174e00e7ad51924f1a834140999292944ceb468ca83e2b",
   "kit/vectors/ai-approval-run-bound-no-snapshot.tkb": "998a12fcb45f4aae40b66e448e14711e6871352b31187feabc3323939c172ba5",
   "kit/vectors/ai-approval-run-bound.tkb": "6687d4a5b97fdb16debf4c2578ad906aaadd9f0ae96782ce69c48a997a959a58",
+  "kit/vectors/ai-approval-run-null.tkb": "92911dde9fa61f7f9cac0d6eb277b9aaa7d22a21fc9092c42b3be2053bbfd1ba",
   "kit/vectors/ai-approval-unlisted.tkb": "62fff4b52af04a27923cd190ab79d0a0ef06817ed337897fc36e632ce86365d2",
   "kit/vectors/ai-approval-unnamed-rejection.tkb": "dbf2069631f0598a8a7e7e4fcd3763f219c6068df402e76d6bcee211925f13bf",
   "kit/vectors/ai-approval.tkb": "b79a10b1050956041440e0a0c73b8f635f9c76ee76e0c16216fe6a2890733f6c",
@@ -1344,6 +1349,74 @@
     "AI run bound"
    ],
    "decided_by": "§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a signed label of the run bound it left out",
+   "input": "kit/vectors/ai-approval-recorded-label.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: the labels an AI yes's run records hold at the yes, replayed)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes after a label of the run bound a person cleared",
+   "input": "kit/vectors/ai-approval-label-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: the run's run.label records replayed in order, a clear ends a label)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes consumed after a signed label of the run bound",
+   "input": "kit/vectors/ai-approval-label-before-consume.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: and at its consume)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes citing another policy than its request's",
+   "input": "kit/vectors/ai-approval-other-policy.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI approvals"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: relied_on.policy_hash is its request's)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "an AI approver's yes in a labelled run, its policy's approval_agent.run null",
+   "input": "kit/vectors/ai-approval-run-null.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "AI run bound"
+   ],
+   "decided_by": "§9 (version table, 1.8.0: a snapshot whose run bound can't be read fails the line)",
    "addon": "AI approvals",
    "needs": "1.8.0"
   },

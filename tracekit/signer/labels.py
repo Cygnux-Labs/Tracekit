@@ -100,9 +100,10 @@ def requesters(run):
     registered it for, `caller`: the gateway's own writes in it are the client's then) and each other stream's writer
     (an identity the run was delegated to, a gateway's caller). The run's labels are each of theirs, and it carries
     each of theirs."""
-    # lean: writers and a gateway's caller are run state (memory and snapshot), as quotas' are: a run replayed from the
-    # log after the last snapshot has its owner alone until its writers write again on a new stream; record them in
-    # the records if delegated or gateway runs must count exactly across a crash
+    # lean: writers are run state (memory and snapshot), as quotas' are: a run replayed from the log after the last
+    # snapshot learns each writer again at its next write, on any stream (a gateway's client is in its run.registered);
+    # a delegate that never writes again counts only for the approvals it requests (SignerService._run_labels). Record
+    # delegations if a run's labels must count every delegate across a crash
     own = run.get("owner") and _who(run["owner"])
     client = run.get("caller") or run.get("owner")
     writers = {_who(w.removesuffix(" through a gateway")) for w in (run.get("writers") or {}).values()}

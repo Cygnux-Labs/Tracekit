@@ -257,10 +257,11 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 answered=_obj(["by", "kind"], by=_str(256), kind={"enum": ["person", "agent"]}),
                 escalation=_obj(["by"], by={"enum": ["agent", "signer"]}, reason=REASON),
                 run_closing={"const": True},   # still requested, but its run is closing: no answer can be acted on
-                # people's view of agent approvers on it, when its request weighed them: how an agent's answer counts
-                # now (`mode`; null: only people answer it) and why, and the latest agent answer (model output): its
-                # decision, mode, who gave it, its reason, and an AI answer's `view`: the view_digest it answered, or
-                # its record's commitment to it once the signer no longer holds the view it served
+                # people's view (approvers and break-glass only) of agent approvers on it, when its request weighed
+                # them: how an agent's answer counts now (`mode`; null: only people answer it) and why, and the latest
+                # agent answer (model output): its decision, mode, who gave it, its reason, and an AI answer's `view`:
+                # the view_digest it answered, or its record's commitment to it once the signer no longer holds the
+                # view it served
                 ai=_obj(["mode", "reason"], mode={"enum": ["enforce", "shadow", None]}, reason=REASON,
                         answer=_obj(["decision", "mode", "by"], decision={"enum": ["approve", "reject", "escalate"]},
                                     mode={"enum": ["enforce", "shadow"]}, by=_str(256), reason=REASON,

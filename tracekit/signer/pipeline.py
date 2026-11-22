@@ -230,7 +230,8 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `label_seq`, the seq of the log's last
+    run.label, an add or a clear (SignerService._ai_state's label epoch). A precedent goes bad when a person revokes it
     (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
     of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an
     answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled restores it
@@ -249,6 +250,8 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
+    if typ == "run.label":
+        set_(ag, "label_seq", e["seq"])
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
             k, now = f"{tenant}\0{r}", pinned(d)
@@ -727,7 +730,9 @@ class RecordLog:
                     run["box"] = e["ext"]["box"]
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
-                open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
+                if "caller" in e["data"]:   # a gateway's run of its client (SignerService._register_run)
+                    run["caller"], run["quota"] = e["data"]["caller"], json.dumps([run["owner"], e["data"]["caller"]])
+                open_runs[run.get("quota", run["owner"])] = open_runs.get(run.get("quota", run["owner"]), 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
                     if "request_id" in e:   # an importer's over RPC (tracekit follow, not OTLP): watched for its beats
@@ -950,11 +955,11 @@ class RecordLog:
                 last = run["streams"].get(req["stream"])
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
-                    if req["stream"] not in run["writers"]:
-                        labels.join(tx.set, self, run, writer(identity, req))
-                        tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
+                if req["stream"] not in run["writers"]:   # a new stream's, or one whose writer a crash took
+                    labels.join(tx.set, self, run, writer(identity, req))
+                    tx.set(run["writers"], req["stream"], writer(identity, req))
         try:
             out = fn(tx, run)
         except RPCError as e:

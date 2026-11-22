@@ -520,8 +520,8 @@ person's. On a laptop the signer also refuses to start with an `approval.agent` 
 [run conditions](policy-v2.md#run-conditions): a call that ran sets them (`secrets_access`: a read of a secret file,
 a stored secret printed; `untrusted_content`: a web page, a mail, a download), and so do events the signer lost,
 since what they did is unknown; the policy records them whenever its run bound names them. They belong to the run's
-requesters (its client, each identity it was delegated to, a gateway's caller) across all of their runs, in any
-tenant and under any principal, while the run that took one is open and for `label_inherit_s` after it ends (an hour
+requesters (its client, each identity it was delegated to, a gateway's caller) and to the identity that asks for the
+approval (counted even when it never wrote the run) across all of their runs, in any tenant and under any principal, while the run that took one is open and for `label_inherit_s` after it ends (an hour
 by default, at most a day), so a run the agent registers afresh or is handed is no way around them. A run that continues an earlier run of its session, whose calls it can't see, carries every label of the
 bound. The bound is as wide as the rules that set a label: a script that opens a secret file itself labels nothing
 ([limits](limits.md#approvals)).
@@ -562,7 +562,8 @@ answer, when, the person's reason), the playbook in force, and the run's last 10
 reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
 `approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
 reviewer for that approval, and only while what the view showed of it (its precedents, the run's labels, the
-playbook) still holds. Otherwise it answers `conflict`, and the reviewer reads the view again at its next poll.
+playbook) still holds and no run label was added or cleared since, anywhere: a label that came and went is a new
+state. Otherwise it answers `conflict`, and the reviewer reads the view again at its next poll.
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
 own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
@@ -572,8 +573,9 @@ in a run that isn't clean it shows no target at all. A person's answer carries `
 and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided
 (`enforce`) or was a suggestion and why (`demoted`), and the reviewer's word: each model's answer. The verifiers' `AI
 approvals` line checks each AI yes against the precedents its bundle holds and against any person's rejection of a
-call like it there. When an AI yes's run carried a label, their `AI run bound` line checks it against the run bound of
-the policy snapshot it names, and fails when the bundle doesn't hold that snapshot: export with the policy snapshots
+call like it there. When an AI yes's run carried a label, by its `relied_on` or by the run's own `run.label` records
+replayed up to the yes and up to its consume, their `AI run bound` line checks it against the run bound of the policy
+snapshot it names (which must be its request's policy), and fails when the bundle doesn't hold that snapshot: export with the policy snapshots
 ([verdicts](verdicts.md)).
 
 **What people see.** `tracekit approvals show` and `list` say what the AI approver did with each approval:
@@ -593,8 +595,8 @@ ai approver doesn't answer it: the run carries secrets_access, so TK-Q001 also m
 
 A rule that joins a call on the signer (a run condition, such as TK-Q001 after a secret read) makes it a person's,
 and its `agent.reason` says which. `approval_get` and `approval_list` carry the same as `ai`: `mode` (enforce, shadow,
-or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view). An agent approver sees
-none of it.
+or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view), to people who answer
+approvals only (`approvals.approvers`, `break_glass`). The requesting agent and agent approvers see none of it.
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
 own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start

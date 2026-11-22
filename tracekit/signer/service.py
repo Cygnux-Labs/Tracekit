@@ -2246,14 +2246,22 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
-    def _summary(self, approval_id, a):
+    def _summary(self, approval_id, a, people):
+        """Approval `a` as approval_get and approval_list show it; `people`: the caller is a person who may answer it
+        (_a_person), who alone sees what agent approvers said of it (`ai`)."""
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
                 **({"agent": True} if a["agent_mode"] == "enforce" else {}),
                 **{k: a[k] for k in ("answered", "escalation") if a.get(k)},
-                **({"ai": a["people_ai"]} if a["people_ai"] else {})}
+                **({"ai": a["people_ai"]} if a["people_ai"] and people else {})}
+
+    def _a_person(self, identity):
+        """Whether `identity` is a person who answers approvals (approvals.approvers or break_glass; a bridge's person
+        too): never the agent whose run it is, which an AI approver's reasons and view would coach."""
+        return self.approvals is not None and (self._in(self._approvers, identity)
+                                               or self._in(self._break_glass, identity))
 
     def _agent_views(self, approval_id, a):
         """(on the writer: they read the run's labels) What approval `a`'s summary shows of agent approvers: `agent_mode`
@@ -2283,7 +2291,7 @@ class SignerService:
                 "an agent or a person did not approve this call in this run: people answer it"
                 if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else
                 f"the run carries {unclean[0]} now, or this signer can't tell: people answer it"
-                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]])) else None)
+                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else None)
 
     def _agent_mode(self, a):
         """How an agent's answer to approval `a` counts now: "enforce" (it decides), "shadow" (an approval.suggested;
@@ -2473,22 +2481,25 @@ class SignerService:
                 "conditions_hash": "sha256:" + hashlib.sha256(canonical([r["approval"]["agent"] for r in rules])).hexdigest(),
                 "spend": spend, **({"target": target, "untrusted": bool(prov)} if target is not None else {})}
 
-    def _run_labels(self, run):
-        """The run labels (docs/policy-v2.md#run-conditions) `run` carries now, never from what a client says: its own
-        (its run.label records), those its requesters carry from another run of theirs (labels.labels_for: its client,
-        delegates and gateway callers, in any tenant and under any principal, while that run is open and for
-        label_inherit_s after it ends), and, for a run registered as continuing an earlier one, whose calls it can't
-        see, every label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around
-        them. On the writer (labels_for)."""
-        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys()
+    def _run_labels(self, run, requester):
+        """The run labels (docs/policy-v2.md#run-conditions) a call of `run` that `requester` asks to have approved
+        carries now, never from what a client says: the run's own (its run.label records), those its requesters carry
+        from another run of theirs (labels.labels_for: its client, delegates and gateway callers, in any tenant and
+        under any principal, while that run is open and for label_inherit_s after it ends), those `requester` carries
+        so (an identity the run was delegated to that never wrote it is none of its requesters, nor one whose stream a
+        crash left unknown), and, for a run registered as continuing an earlier one, whose calls it can't see, every
+        label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around them. On the
+        writer (labels_for)."""
+        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys() | labels.labels_for(
+            self.log, {"owner": requester}).keys()
         if run.get("partial_start"):
             have |= set(self.policy.policy["approval_agent"]["run"]["clean"])
         return sorted(have)
 
-    def _unclean(self, run):
-        """The labels of approval_agent's run bound that `run` carries now (_run_labels): while one is, people answer
-        its holds."""
-        carried = self._run_labels(run)
+    def _unclean(self, run, requester):
+        """The labels of approval_agent's run bound that a call of `run` `requester` asks about carries now
+        (_run_labels): while one is, people answer its holds."""
+        carried = self._run_labels(run, requester)
         return [x for x in self.policy.policy["approval_agent"]["run"]["clean"] if x in carried]
 
     def _precedents(self, tenant, requester, digest):
@@ -2512,10 +2523,10 @@ class SignerService:
         # a commitment under the tenant's own salt: equal keys match, and what redaction or the cut left out of the
         # shown key can't be confirmed by guessing it
         digest = self._commit(f"precedent:{run['tenant']}", plain)
-        unclean, prec = self._unclean(run), self._precedents(run["tenant"], requester, digest)
+        unclean, prec = self._unclean(run, requester), self._precedents(run["tenant"], requester, digest)
         clean = not (unclean or untrusted)
         ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
-               "digest": digest, "labels": self._run_labels(run), "clean": clean, "precedents": prec,
+               "digest": digest, "labels": self._run_labels(run, requester), "clean": clean, "precedents": prec,
                **({"asserted": ["project"]} if project else {})}
         why = (f"the run carries {unclean[0]}: people answer it" if unclean else
                "an argument carries a value only untrusted content brought into the run: people answer it"
@@ -3321,10 +3332,7 @@ class SignerService:
                                                                  or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
-            if caller is not None:
-                # lean: the entry is run state (memory and snapshot), not in run.registered: a run replayed from the
-                # log after the last snapshot counts in its owner's own entry until it closes; record the caller in
-                # run.registered if gateways' runs must count exactly across restarts
+            if caller is not None:   # recorded in run.registered: a replay counts and labels it the same
                 tx.set(run, "quota", count)
                 tx.set(run, "caller", caller)   # whose run it is: its labels are the client's (labels.requesters)
             tx.set(self.log.open_runs, count, n + 1)
@@ -3357,7 +3365,7 @@ class SignerService:
             data = {"agent": req["agent"], "fail_modes": self.fail_modes,
                     "signer_isolation": "unknown" if boxed else self.isolation or self._isolation(identity),
                     "identity": _recorded(identity.claims["daemon"] if boxed else identity)}
-            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
+            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation", "caller") if k in req})
             if up:
                 data.update(parent_run=parent["run_id"], session=run["session"])
             if harness:
@@ -4175,7 +4183,7 @@ class SignerService:
             if held:
                 data["incident_id"] = held
             if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then
-                data["run_clean"] = a["ai"]["clean"] and not self._unclean(run)
+                data["run_clean"] = a["ai"]["clean"] and not self._unclean(run, a["requester"])
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -4230,16 +4238,16 @@ class SignerService:
                     # no view served (the signer restarted since), or its precedents, labels or playbook changed
                     raise RPCError("conflict", f"{aid}: what approval_review showed you is not what holds now: read "
                                                "it again and answer that")
-                prec, carried, book = state
+                prec, carried, book, _ = state
                 pin = pinned({**data, "relied_on": {"playbook": book}})
                 demoted = demoted or next((
                     "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
                     ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
-                ext = {"relied_on": {
-                    "precedents": prec, "playbook": book, "view": self._commit(f"approval.view:{aid}", served[0]),
-                    "policy_hash": a["policy_hash"], "labels": carried,
-                    "mode": "shadow" if shadow or demoted else "enforce", **({"demoted": demoted} if demoted else {}),
-                    **given}}
+                ext = {"relied_on": {   # the reviewer's word first: the signer's own keys are never its
+                    **given, "precedents": prec, "playbook": book,
+                    "view": self._commit(f"approval.view:{aid}", served[0]), "policy_hash": a["policy_hash"],
+                    "labels": carried, "mode": "shadow" if shadow or demoted else "enforce",
+                    **({"demoted": demoted} if demoted else {})}}
                 basis = decision == "approve" and (
                     "an approval needs two independent answers that agree: people answer it"
                     if [x.get("decision") for x in given.get("answers", ())] != ["approve", "approve"] else
@@ -4311,11 +4319,14 @@ class SignerService:
         return {**view, "view_digest": digest}
 
     def _ai_state(self, a, run):
-        """(precedents, labels, playbook {version, digest}) an AI answer to approval `a` relies on, read now: what its
-        view shows of them (_approver_view) and what its record names (_agent_answer), which refuses an answer once they
-        changed since the view it answers was served."""
-        return (self._precedents(run["tenant"], a["requester"], a["ai"]["digest"]), self._run_labels(run),
-                _playbook_ref(self.log.agent["playbook"].get(run["tenant"])))
+        """(precedents, labels, playbook {version, digest}, label epoch) an AI answer to approval `a` relies on, read
+        now: what its view shows of them (_approver_view) and what its record names (_agent_answer), which refuses an
+        answer once they changed since the view it answers was served. The epoch (the seq of the log's last run.label,
+        pipeline.approver_state) moves with any label added or cleared, so a run whose labels came and went is never
+        the state an earlier view showed."""
+        return (self._precedents(run["tenant"], a["requester"], a["ai"]["digest"]),
+                self._run_labels(run, a["requester"]), _playbook_ref(self.log.agent["playbook"].get(run["tenant"])),
+                self.log.agent.get("label_seq"))
 
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
@@ -4325,7 +4336,7 @@ class SignerService:
         _ai_state as the view shows it."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
         state = self._ai_state(a, run)
-        (prec, carried, _), unclean = state, self._unclean(run)
+        (prec, carried, _, _), unclean = state, self._unclean(run, a["requester"])
         found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
         book = self.log.agent["playbook"].get(a["run_key"][0])
         conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label", "passed": x not in unclean}
@@ -4384,6 +4395,8 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not an approver: people who answer approvals run "
                                         "the AI approver")
         tenant, by, action = self._tenant_of(identity), subject(identity)[:256], req["action"]
+        if action != "status" and not req.get("reason") and not self._in(self._approvers, identity):
+            raise RPCError("forbidden", "a break-glass identity changes the AI approver only with a reason: give one")
         reason = {"reason": privacy.redact_text(req["reason"])[0]} if req.get("reason") else {}
         if action == "status":   # read on the writer: committed state only
             def status(tx):
@@ -4428,7 +4441,8 @@ class SignerService:
     def _proposals(self, tenant):
         """{entry id: {text, key}}: the playbook entries the precedents of `tenant` propose now (docs/approvals.md#the-
         playbook): each precedent key with PLAYBOOK_MIN or more people's answers that count, in the last PLAYBOOK_S, all
-        one way, that the playbook doesn't hold; the id is P- and 8 hex digits of the text's sha256."""
+        one way, that the playbook doesn't hold; the id is P- and 32 hex digits (128 bits) of the text's sha256, so an
+        accept names the text it signs."""
         since, groups = time.time() - PLAYBOOK_S, {}
         for p in self.log.agent["precedents"].values():
             if p["tenant"] == tenant and not p.get("bad") and p["at"] > since:
@@ -4443,7 +4457,7 @@ class SignerService:
                 f"{r} {' '.join(v)[:120]}" for r, v in sorted(k["target"].items())) +
                 (f", in {k['project']}" if k["project"] else "") + f": {said} {len(ps)} of {len(ps)}" +
                 (f" (latest reason: {last['reason'][:200]})" if last.get("reason") else ""))
-            pid = "P-" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:8]
+            pid = "P-" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:32]
             if pid not in held:
                 out[pid] = {"text": text, "key": k}
         return out
@@ -4575,7 +4589,7 @@ class SignerService:
             elif a.get("not_before", "") > _iso(time.time()):
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
             elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
-                    f"the run carries {u[0]} now" if (u := self._unclean(run)) else None) or (
+                    f"the run carries {u[0]} now" if (u := self._unclean(run, a["requester"])) else None) or (
                     "a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
                     "no person's answer to a call like this one counts now" if not p["approve"] else None)):
@@ -4627,11 +4641,11 @@ class SignerService:
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         copy.pop("spend", None)
-        return {**self._summary(aid, a), "binding_digest": a["binding_digest"], **copy}
+        return {**self._summary(aid, a, self._a_person(identity)), "binding_digest": a["binding_digest"], **copy}
 
     def _approval_list(self, identity, req):
         identity = self._on_behalf(identity, req)
-        agent_view = self._is_agent(identity)
+        agent_view, people = self._is_agent(identity), self._a_person(identity)
         if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
         # copied on the writer, so only committed states are listed
@@ -4652,7 +4666,7 @@ class SignerService:
                     or req["for"] == "person" and a["agent_mode"] != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
+                s = {**self._summary(aid, a, people), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
                             if agent_view else s)
         return {"approvals": page, "next_cursor": None}

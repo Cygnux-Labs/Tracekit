@@ -393,6 +393,17 @@ class TestPrecedent(Case):
         _, a = self.ask("pip install -i https://pypi.internal/simple x")   # the same option by its short name
         self.assertTrue(a["agent"]["eligible"], a["agent"])
 
+    def test_a_break_glass_change_to_the_approver_needs_a_reason(self):
+        self.s.close()
+        glass = CallerIdentity("uid", "990555", True)
+        self.approvals = {**Case.approvals, "break_glass": [f"uid:{glass.subject}"]}
+        self.s = self.open()
+        req = {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]}
+        self.assertIn("only with a reason", self.refused("forbidden", glass, "approver", req))
+        self.refused("invalid_request", glass, "approver", {**req, "request_id": rid(), "reason": "on call"})   # past it
+        self.refused("invalid_request", ALICE, "approver", {**req, "request_id": rid()})   # an approver needs none
+        self.assertIn("demoted", self.s.call(glass, "approver", {"action": "status"}))   # a read needs none
+
     def test_a_break_glass_answer_is_no_precedent(self):
         self.s.close()
         glass = CallerIdentity("uid", "990555", True)
@@ -564,7 +575,8 @@ class TestTenantsAnAppAsserts(Case):
         for tenant in ("t2", "default"):
             with self.subTest(tenant):
                 r = self.s.call(AGENT, "register_run", {"request_id": rid(), "agent": {"name": "x"}, "tenant": tenant})
-                self.assertEqual(self.s._run_labels(self.s.log.runs[(tenant, r["run_id"])]), ["secrets_access"])
+                self.assertEqual(self.s._run_labels(self.s.log.runs[(tenant, r["run_id"])], f"uid:{AGENT.subject}"),
+                                 ["secrets_access"])
 
 
 class TestDelegatedRuns(Case):
@@ -604,6 +616,95 @@ class TestDelegatedRuns(Case):
         _, a = self.ask(HELD, run=handed)   # then asks in the run it was handed, owned by another identity
         self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
                          (f"uid:{AGENT.subject}", False, ["secrets_access"]))
+
+
+    def handed_unwritten(self):
+        """A run the other identity registers, decides HELD in on its own stream and delegates to the agent, which never
+        writes it: (the agent's view of the run, the held call's id)."""
+        r = self.s.call(self.OTHER, "register_run", {"request_id": rid(), "agent": {"name": "app"}})
+        tok = self.s.call(self.OTHER, "delegate_run", {"run_id": r["run_id"], "run_token": r["run_token"],
+                                                       "identity": f"uid:{AGENT.subject}"})
+        self.s.call(self.OTHER, "decide", {"request_id": rid(), "run_id": r["run_id"], "run_token": r["run_token"],
+                                           "stream": "o", "client_seq": 0, "tool_call_id": "tc-o", "tool": "Bash",
+                                           "args_source": "parsed", "args": {"command": HELD}})
+        return {"run_id": r["run_id"], "run_token": tok["run_token"]}, "tc-o"
+
+    def request(self, run, tcid):
+        aid = self.s.call(AGENT, "approval_request", {"request_id": rid(), **run, "tool_call_id": tcid,
+                                                      "project": "/Users/me/api"})["approval_id"]
+        return aid, self.s.log.approvals[aid]
+
+    def test_a_delegate_that_never_wrote_the_run_asks_with_its_own_labels(self):
+        self.precedent(HELD)
+        handed, tcid = self.handed_unwritten()
+        self.ask("cat .env")   # the agent reads a secret in its own run, then asks in the run it never wrote
+        _, a = self.request(handed, tcid)
+        self.assertEqual((a["requester"], a["agent"]["eligible"], a["ai"]["labels"]),
+                         (f"uid:{AGENT.subject}", False, ["secrets_access"]))
+
+    def test_its_labels_count_at_the_answer_and_at_the_consume(self):
+        self.precedent(HELD)
+        handed, tcid = self.handed_unwritten()
+        aid, a = self.request(handed, tcid)
+        self.assertTrue(a["agent"]["eligible"])
+        served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"]
+        reader = self.register()
+        self.ask("cat .env", run=reader)   # read since the view: its answer is refused
+        msg = self.refused("forbidden", REVIEWER, "approval_decide", {
+            "request_id": rid(), "approval_id": aid, "decision": "approve", "ai": TWO, "view_digest": served,
+            "asserted": {"model": "m-a", "version": "1"}})
+        self.assertIn("the run carries secrets_access now", msg)
+        self.s.call(AGENT, "close_run", {"request_id": rid(), **reader[0]})
+        later = lambda log, run, now=None: real(log, run, now=time.time() + 3601)   # noqa: E731
+        real = labels.labels_for
+        with mock.patch.object(labels, "labels_for", later):   # the window past: the AI may answer again
+            self.ai(aid)
+        self.assertEqual(self.s.log.approvals[aid]["state"], "approved")
+        self.ask("cat .env")   # read before the consume: the approval can't be used
+        out = self.s.call(AGENT, "approval_consume", {"request_id": rid(), **handed, "tool_call_id": tcid, "attempt": 0,
+                                                      "tool": "Bash", "args_source": "parsed",
+                                                      "args": {"command": HELD}})
+        self.assertFalse(out["ok"], out)
+
+    def crash(self):
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"), ignore_errors=True)
+        self.s = self.open()
+
+    def test_after_a_crash_a_delegate_is_a_requester_again_once_it_writes_on_its_old_stream(self):
+        handed = self.delegated()
+        self.ask("ls", run=handed)   # the agent writes the handed run on stream s
+        key = ("default", handed[0]["run_id"])
+        self.crash()
+        self.assertEqual(labels.requesters(self.s.log.runs[key]), {"uid:990777"})   # the crash took its writer
+        self.ask("ls", run=handed)   # its next write, on the same stream
+        self.assertEqual(labels.requesters(self.s.log.runs[key]), {"uid:990777", f"uid:{AGENT.subject}"})
+
+
+class TestAGatewaysRunAfterACrash(Case):
+    GW = CallerIdentity("uid", "990888", True)
+
+    def open(self):
+        s = svc.SignerService(self.dir, policy=engine(**self.policy), identity=AGENT, approvals=self.approvals,
+                              authorize={f"uid:{REVIEWER.subject}": sorted(svc.AGENT_METHODS),
+                                         f"uid:{self.GW.subject}": sorted(svc.DEFAULT_GRANTS)},
+                              gateways=[f"uid:{self.GW.subject}"])
+        self.addCleanup(s.close)
+        return s
+
+    def test_its_client_is_in_its_record(self):
+        r = self.s.call(self.GW, "register_run", {"request_id": rid(), "agent": {"name": "gw"},
+                                                  "caller": f"uid:{AGENT.subject}"})
+        key = ("default", r["run_id"])
+        self.assertEqual(labels.requesters(self.s.log.runs[key]), {f"uid:{AGENT.subject}"})
+        opened = dict(self.s.log.open_runs)
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"), ignore_errors=True)
+        self.s = self.open()
+        self.assertEqual(labels.requesters(self.s.log.runs[key]), {f"uid:{AGENT.subject}"})   # not the gateway
+        self.assertEqual(self.s.log.open_runs, opened)   # and it counts where it did
+        [reg] = [e["data"] for e in self.events() if e["type"] == "run.registered" and e["run_id"] == r["run_id"]]
+        self.assertEqual(reg["caller"], f"uid:{AGENT.subject}")
 
 
 class TestUntrustedContent(Case):
@@ -944,6 +1045,14 @@ class TestEvidence(Case):
                  "a label, no snapshot": ({}, {"labels": ["untrusted_content"], "policy_hash": "sha256:" + "9" * 64},
                                           {}, "whose snapshot the bundle doesn't hold"),
                  "no label, no snapshot": ({}, {"policy_hash": "sha256:" + "9" * 64}, {}, None),
+                 "another policy than the request's": ({}, {}, {}, "not the one its call was held under"),
+                 "a label the run's records add": ({}, {}, {}, "carried at the yes secrets_access, which"),
+                 "a label the run's records add, no snapshot": ({}, {"policy_hash": "sha256:" + "9" * 64}, {},
+                                                                "whose snapshot the bundle doesn't hold"),
+                 "a label the run's records add, then clear": ({}, {}, {}, None),
+                 "a label added before the consume": ({}, {}, {}, "carried at its consume secrets_access"),
+                 "a label added after the consume": ({}, {}, {}, None),
+                 "a label of another run": ({}, {}, {}, None),
                  "after": ({}, {}, {}, "came after the answer"),
                  "revoked": ({}, {}, {}, "was revoked as a precedent"),
                  "a rejection not named": ({}, {}, {}, "a person's rejection of a call like it (p2) counted"),
@@ -952,9 +1061,11 @@ class TestEvidence(Case):
                  "a rejection of another kind": ({}, {}, {}, None),
                  "a rejection in a run that wasn't clean": ({}, {}, {}, None),
                  "fine": ({}, {}, {}, None)}
+        label = {"label": "secrets_access", "action": "add", "by": "signer", "source": 0}
         for name, (pa, x, answer, why) in cases.items():
             with self.subTest(name):
                 runs.clear()
+                held_under = {**relied, **x}["policy_hash"] if "another policy" not in name else "sha256:" + "8" * 64
                 answer = {"approval_id": "p1", "decision": "approve", "run_clean": True, **answer}
                 rec("approval.request", {"approval_id": "p1", "requester": "uid:1", "ai": {**ai, **pa}})
                 if name != "after":
@@ -969,9 +1080,19 @@ class TestEvidence(Case):
                     rec("approval", {"approval_id": "p2", "decision": "reject", "run_clean": "clean" not in name})
                     if name == "a rejection revoked":
                         rec("precedent.revoked", {"approval_id": "p2", "by": "uid:2"}, run="tracekit/signer")
-                rec("approval.request", {"approval_id": "a1", "requester": "uid:1", "ai": ai})
+                rec("approval.request", {"approval_id": "a1", "requester": "uid:1", "ai": ai, "policy_hash": held_under})
+                if "the run's records add" in name or "another run" in name:   # a signed run.label the yes left out
+                    rec("run.label", label, run="other" if "another run" in name else "r")
+                if name.endswith("then clear"):
+                    rec("run.label", {**label, "action": "clear", "by": "person"})
                 rec("approval", {"approval_id": "a1", "decision": "approve", "approver_kind": "agent",
                                  "relied_on": {**relied, **x}})
+                if "consume" in name:
+                    if "before" in name:
+                        rec("run.label", label)
+                    rec("approval.consumed", {"approval_id": "a1"})
+                    if "after" in name:
+                        rec("run.label", label)
                 if name == "after":
                     rec("approval", answer)
                 rep = mock.Mock(checks=[])
@@ -981,10 +1102,43 @@ class TestEvidence(Case):
                 self.assertEqual(all(ok for _, ok, _ in rep.checks), why is None, problems)
                 self.assertTrue(why is None or why in problems[0], problems)
                 self.assertEqual([n for n, _, _ in rep.checks], ["AI approvals"] + ["AI run bound"] * bool(
-                    {**relied, **x}["labels"]))
+                    {**relied, **x}["labels"] or why and "carried" in why or "snapshot" in name and "add" in name))
+
+
+class TestAViewOfAnEarlierState(Case):
+    def open(self):
+        s = svc.SignerService(self.dir, policy=engine(**self.policy), identity=AGENT, approvals=self.approvals,
+                              authorize={f"uid:{REVIEWER.subject}": sorted(svc.AGENT_METHODS),
+                                         f"uid:{ALICE.subject}": ["approval_decide", "run_label_clear"]})
+        self.addCleanup(s.close)
+        return s
+
+    def test_a_label_added_and_cleared_since_the_view_makes_its_answer_a_conflict(self):
+        self.precedent()
+        aid, _ = self.ask()
+        served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"]
+        self.ask("cat .env")   # the run reads a secret; a person clears the label: the labels are as the view showed
+        self.s.call(ALICE, "run_label_clear", {"request_id": rid(), "run_id": self.run["run_id"],
+                                               "label": "secrets_access", "reason": "a test value"})
+        req = {"request_id": rid(), "approval_id": aid, "decision": "approve", "ai": TWO, "view_digest": served,
+               "asserted": {"model": "m-a", "version": "1"}}
+        self.assertIn("read it again", self.refused("conflict", REVIEWER, "approval_decide", req))
+        self.assertEqual(self.ai(aid)["state"], "approved")   # the view read again
 
 
 class TestTheViewItAnswers(Case):
+    def test_relied_on_holds_the_signers_own_reading_whatever_the_reviewer_sends(self):
+        self.precedent()
+        aid, _ = self.ask()
+        served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"]
+        forged = {**TWO, "labels": ["none"], "policy_hash": "sha256:" + "9" * 64, "precedents": {}, "mode": "x"}
+        self.s._agent_answer(REVIEWER, {"request_id": rid(), "approval_id": aid, "decision": "approve", "ai": forged,
+                                        "view_digest": served, "asserted": {"model": "m-a", "version": "1"}})
+        [yes] = [e["data"]["relied_on"] for e in self.events() if e["type"] == "approval"
+                 and e["data"]["approval_id"] == aid]
+        self.assertEqual((yes["labels"], yes["mode"], yes["answers"]), ([], "enforce", TWO["answers"]))
+        self.assertNotEqual(yes["policy_hash"], forged["policy_hash"])
+
     def test_an_ai_answer_names_the_view_approval_review_served_it(self):
         self.precedent()
         aid, _ = self.ask()
@@ -1150,7 +1304,7 @@ class TestTheRunBoundOffline(Case):
         import test_ts_verifier as tv
         self.precedent(HELD)   # in a run of its own: the same call again in one run reuses its approval
         self.ask("cat .env", tcid="tc-secret")
-        with mock.patch.object(svc.SignerService, "_unclean", lambda s, run: []):   # a signer that let it through
+        with mock.patch.object(svc.SignerService, "_unclean", lambda s, run, requester: []):   # a signer that let it through
             aid2, _ = self.ask(HELD, tcid="tc-2")
             self.ai(aid2)
         path, trust = self.bundle()
@@ -1449,6 +1603,7 @@ class TestReviewerOnTheSigner(Case):
         with cli, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(reviewer.main(["status"]), 0)
         pid = next(w for w in out.getvalue().split() if w.startswith("P-"))
+        self.assertRegex(pid, r"^P-[0-9a-f]{32}$")   # 128 bits of the text it names
         with cli, contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(reviewer.main(["accept", pid, "--reason", "reads right"]), 0)
         self.assertIn("accept: done", out.getvalue())
@@ -1499,14 +1654,14 @@ class TestWhatPeopleSee(Case):
     """What `tracekit approvals show` and `list` tell a person of the AI approver: its answer and why (model output),
     the view it answered, and while a call waits, whether it may answer it and, when it may not, why."""
 
-    def tk(self, *argv):
+    def tk(self, *argv, who=ALICE):
         case = self
 
         class Client(As):   # a class: a module the CLI imports under the patch subclasses it
             signer = "signer.sock"   # a named signer: show reads no store of its own
 
             def __init__(self, signer=None):
-                super().__init__(case, ALICE)
+                super().__init__(case, who)
         with mock.patch("tracekit.sdk.client.Client", Client), mock.patch("pydoc.pager", print), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["approvals", *argv]), 0)
@@ -1550,6 +1705,17 @@ class TestWhatPeopleSee(Case):
         self.assertEqual(self.get(aid)["ai"]["answer"]["view"], yes["event"]["data"]["relied_on"]["view"])
         self.assertIn("(its record's commitment to that view_digest: the signer no longer holds the view)",
                       self.tk("show", aid))
+
+    def test_the_requesting_agent_sees_none_of_it(self):
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid, reason="the mirror alice approved")
+        self.assertIn("ai", self.get(aid))
+        mine = self.s.call(AGENT, "approval_get", {"approval_id": aid})   # the run's owner, not a person who answers
+        self.assertEqual(validate(RESPONSES["approval_get"], mine), [])
+        self.assertNotIn("ai", mine)
+        self.assertFalse([x for x in self.s.call(AGENT, "approval_list", {})["approvals"] if "ai" in x])
+        self.assertEqual(self.tk("show", aid, who=AGENT).count("ai approver"), 0)
 
     def test_a_suggestion_and_a_hand_over_to_people(self):
         self.s.close()

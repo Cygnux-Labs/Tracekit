@@ -481,13 +481,19 @@ def vectors():
          {"tool_call_id": "t1"})), t, 0, "VERIFIED", "witnessed", addon="agent approvals",
          decided_by="§11 step 9 (approvals by agents: without the policy snapshot, a warning)")
     # the AI approver (format 1.8.0): a person's answer, then an AI yes that names it as its precedent
-    def ai_run(name, answers=2, other_kind=False, listed=None, labels=(), person=None, rejected=False):
-        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot); `labels`: the
-        run's labels the AI's answer relied on; `person`: fields of the person's answer a0 (and its record's `ts`);
-        `rejected`: a person's rejection of a call like it (a2), named by no precedent list, before the AI's yes."""
+    def ai_run(name, answers=2, other_kind=False, listed=None, labels=(), person=None, rejected=False, recorded=None,
+               cited=None, run_null=False):
+        """`listed`: bundle a policy snapshot whose approval_agent lists these rules (None: no snapshot), its
+        approval_agent.run null with `run_null`; `labels`: the run's labels the AI's answer relied on; `person`: fields of the person's
+        answer a0 (and its record's `ts`); `rejected`: a person's rejection of a call like it (a2), named by no
+        precedent list, before the AI's yes; `recorded`: a signed run.label add of secrets_access its answer left out,
+        before the yes ("yes"; "cleared": and a person's clear after it) or after it and before the yes's consume
+        ("consume"); `cited`: the policy hash the yes
+        cites, when not the request's."""
         pol = {"tools": {"Bash": "shell"}, "ask": [{"id": "TK-A025", "class": "shell", "field": "package_index",
                                                    "pattern": "^"}],
-               "approval_agent": {"mode": "enforce", "rules": listed or [], "run": {"clean": ["secrets_access"]}}}
+               "approval_agent": {"mode": "enforce", "rules": listed or [],
+                                  "run": None if run_null else {"clean": ["secrets_access"]}}}
         ph = H if listed is None else pc.policy_hash(pol)
         kw = {}
         if listed is not None:
@@ -513,6 +519,10 @@ def vectors():
                             "channel": "rpc", "run_clean": True}, {"tool_call_id": "t2"})] if rejected else []
         if rejected == "revoked":
             no.append(("precedent.revoked", {"approval_id": "a2", "by": "uid:502", "reason": "the index is ours"}, {}))
+        label = ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                               "inherited": {"run_id": "run-z", "run_seq": 2}}, {})
+        then = [label, ("approval.consumed", {"approval_id": "a1"}, {"tool_call_id": "t1"})] if recorded == "consume" \
+            else []
         return closed(
             name,
             ("policy.decision", {"tool_use_id": "t0", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d0",
@@ -524,6 +534,9 @@ def vectors():
             *no,
             ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["TK-A025"], "decision_id": "d1",
                                  "policy_hash": ph}, {"tool_call_id": "t1"}),
+            *[label] * (recorded in ("yes", "cleared")),
+            *[("run.label", {"label": "secrets_access", "action": "clear", "by": "person", "identity": "token:ops",
+                             "person": "token:ops"}, {})] * (recorded == "cleared"),
             ("approval.request", {**asked[1], "agent": {"eligible": True, "reason": "x", "rules": ["TK-A025"],
                                                         "conditions_hash": H, "args_key": "hmac-sha256:" + "2" * 64},
                                   "ai": dict(ai, precedents={"approve": ["a0"], "reject": []})},
@@ -532,10 +545,10 @@ def vectors():
                           "channel": "rpc", "approver_kind": "agent",
                           "approver_identity": {"scheme": "uid", "subject": "299", "attested": True},
                           "relied_on": {"precedents": {"approve": ["a0"], "reject": []},
-                                        "playbook": {"version": 0, "digest": H}, "policy_hash": ph,
+                                        "playbook": {"version": 0, "digest": H}, "policy_hash": cited or ph,
                                         "labels": list(labels), "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
                                         "answers": [{"model": "m", "decision": "approve"}] * answers}},
-             {"tool_call_id": "t1"}), **kw)
+             {"tool_call_id": "t1"}), *then, **kw)
     case("an AI approver's yes on a person's precedent in the run", ai_run("ai-approval"), t, 0, "VERIFIED",
          "witnessed", addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: an AI yes carries two answers that approve and a person's precedent)")
@@ -562,6 +575,26 @@ def vectors():
         "ai-approval-run-bound-no-snapshot", labels=["secrets_access"]), t, 1, "FAILED",
          failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)")
+    case("an AI approver's yes after a signed label of the run bound it left out", ai_run(
+        "ai-approval-recorded-label", listed=["TK-A025"], recorded="yes"), t, 1, "FAILED", failed_check=["AI run bound"],
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: the labels an AI yes's run records hold at the yes, replayed)")
+    case("an AI approver's yes after a label of the run bound a person cleared", ai_run(
+        "ai-approval-label-cleared", listed=["TK-A025"], recorded="cleared"), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: the run's run.label records replayed in order, a clear ends a label)")
+    case("an AI approver's yes consumed after a signed label of the run bound", ai_run(
+        "ai-approval-label-before-consume", listed=["TK-A025"], recorded="consume"), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: and at its consume)")
+    case("an AI approver's yes citing another policy than its request's", ai_run(
+        "ai-approval-other-policy", listed=["TK-A025"], cited="sha256:" + "8" * 64), t, 1, "FAILED",
+         failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: relied_on.policy_hash is its request's)")
+    case("an AI approver's yes in a labelled run, its policy's approval_agent.run null", ai_run(
+        "ai-approval-run-null", listed=["TK-A025"], labels=["untrusted_content"], run_null=True), t, 1, "FAILED",
+         failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: a snapshot whose run bound can't be read fails the line)")
     case("an AI approver's yes on a precedent more than 30 days older", ai_run(
         "ai-approval-old-precedent", person={"ts": "2026-09-09T11:59:59.000000Z"}), t, 1, "FAILED",
          failed_check=["AI approvals"], addon="AI approvals", needs="1.8.0",

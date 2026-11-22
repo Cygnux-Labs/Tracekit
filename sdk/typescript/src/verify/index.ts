@@ -1288,25 +1288,55 @@ export const PRECEDENT_S = 30 * 86400;
  * The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
  * `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-breaker
  * records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries `relied_on`
- * with mode enforce, two answers that approve and a person's precedent, and no person's rejection of a call like it;
- * with the snapshot of the policy it names, none of its run's labels is one the policy's approval_agent run bound
- * names: checked on a line of its own, `AI run bound`, when any AI yes carried a label, which also fails when the bundle
- * has no readable snapshot of the policy such a yes cites (a bundle can leave a snapshot out, never its signed records).
- * A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
+ * with mode enforce, two answers that approve and a person's precedent, the request's policy hash, and no person's
+ * rejection of a call like it; with the snapshot of the policy it names, none of the labels its run carried is one the
+ * policy's approval_agent run bound names: those the signer says it read (`relied_on.labels`) and those the run's own
+ * run.label records add and clear, replayed up to the yes and up to its consume. That is checked on a line of its own,
+ * `AI run bound`, when any AI yes had a label either way, which also fails when the bundle has no readable snapshot of
+ * the policy such a yes cites (a bundle can leave a snapshot out, never its signed records; a snapshot whose
+ * approval_agent.run isn't an object can't be read). A precedent it names, when the bundle holds it, and any person's rejection the bundle holds of a call like it,
  * count as the signer counts them: a person's own answer (not a self-approval, not break-glass) to a request with the
  * same precedent key (its digest), tenant and requester, made in a run clean when asked and when answered (run_clean),
  * before the answer and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A
  * named precedent that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't
  * hold (often another run's) is counted, not checked.
  */
+/**
+ * The run bound (approval_agent.run.clean) of policy snapshot `snap`: [] when the policy has no approval_agent; null
+ * when there is no snapshot or it can't be read, `run` included (not an object, its `clean` not a list of strings).
+ */
+function runBound(snap: Uint8Array | undefined, floats: Floats): string[] | null {
+  let aa: J;
+  try {
+    if (!snap) return null;
+    aa = get(strictParseBytes(snap, floats), "approval_agent") ?? null;
+  } catch {
+    return null;
+  }
+  if (aa !== null && !isObj(aa)) return null;
+  const run = aa !== null && has(aa, "run") ? aa.run : {};
+  const clean = isObj(run) ? (has(run, "clean") ? run.clean : []) : null;
+  return Array.isArray(clean) && clean.every((c: J) => typeof c === "string") ? clean : null;
+}
+
 function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
   const events: J[] = [...runs.values()].flatMap((rs) => rs.map((r) => r.event)).sort((a, b) => a.seq - b.seq);
   const asked = new Map<string, J>(), answered = new Map<string, J>(), gone = new Map<string, number>(), broken: string[] = [];
   const boundBroken: string[] = [];
   let yes = 0, shadow = 0, checked = 0, outside = 0, changes = 0, labelled = 0;
   const key = (tenant: J, id: J) => JSON.stringify([tenant ?? null, id ?? null]);
+  // the labels each run's records add and clear, as of each record of note
+  const carried = new Map<string, Set<string>>(), held = new Map<number, Set<string>>();
+  const consumed = new Map<string, Set<string>>();
   for (const e of events) {
     const d = e.data, k = key(get(e, "tenant"), get(d, "approval_id"));
+    const rk = key(get(e, "tenant"), get(e, "run_id"));
+    if (!carried.has(rk)) carried.set(rk, new Set());
+    const have = carried.get(rk)!;
+    if (e.type === "run.label" && typeof get(d, "label") === "string") {
+      if (get(d, "action") === "add") have.add(d.label); else have.delete(d.label);
+    } else if (e.type === "approval") held.set(e.seq, new Set(have));
+    else if (e.type === "approval.consumed" && !consumed.has(k)) consumed.set(k, new Set(have));
     if (e.type === "approval.request" && has(d, "ai")) asked.set(k, e);
     else if (e.type === "approval" && get(d, "approver_kind") !== "agent") answered.set(k, e);
     else if (["playbook.entry", "precedent.revoked", "approver.enabled"].includes(e.type)) {
@@ -1338,25 +1368,25 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
     }
     if (!x.precedents.approve.length || x.precedents.reject.length)
       broken.push(`${where}: an AI yes without a person's precedent, or with a person's rejection of a call like it`);
-    if (x.labels.length) {   // the run bound of the policy it cites decides whether those labels let it answer
+    if (x.policy_hash !== mine.data.policy_hash)
+      broken.push(`${where}: an AI yes that cites policy ${x.policy_hash}, not the one its call was held under`);
+    // the run bound of the policy it cites decides whether the labels the run carried let it answer: those the signer
+    // read, and those the run's own records held at the yes and at its consume
+    const ways: [string, Set<string>][] = [["carried", new Set(x.labels)], ["carried at the yes", held.get(e.seq)!],
+      ["carried at its consume", consumed.get(key(get(e, "tenant"), get(d, "approval_id"))) ?? new Set()]];
+    if (ways.some(([, ls]) => ls.size)) {
       labelled++;
-      const snap = policies.get(x.policy_hash);
-      let bound: J[] | null = null;
-      try {
-        if (snap) {
-          const run = get(get(get(strictParseBytes(snap, floats), "approval_agent") ?? {}, "run") ?? {}, "clean");
-          bound = Array.isArray(run) ? run : [];
-        }
-      } catch {
-        bound = null;
-      }
-      const met = x.labels.filter((l: J) => (bound ?? []).includes(l)).sort();
+      const bound = runBound(policies.get(x.policy_hash), floats);
       if (bound === null) {
-        boundBroken.push(`${where}: an AI yes in a run that carried ${[...x.labels].sort().join(", ")}, under policy `
-          + `${x.policy_hash}, whose snapshot the bundle doesn't hold (or can't be read): export the run with its policy `
-          + "snapshots");
-      } else if (met.length) {
-        boundBroken.push(`${where}: an AI yes in a run that carried ${met[0]}, which the policy's run bound names`);
+        const had = [...new Set(ways.flatMap(([, ls]) => [...ls]))].sort().join(", ");
+        boundBroken.push(`${where}: an AI yes in a run that carried ${had}, under policy ${x.policy_hash}, whose `
+          + "snapshot the bundle doesn't hold (or can't be read): export the run with its policy snapshots");
+      } else {
+        for (const [how, ls] of ways) {
+          const met = [...ls].filter((l) => bound.includes(l)).sort();
+          if (met.length) boundBroken.push(`${where}: an AI yes in a run that ${how} ${met[0]}, which the policy's run `
+            + "bound names");
+        }
       }
     }
     for (const pid of x.precedents.approve) {

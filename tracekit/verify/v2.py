@@ -1287,25 +1287,50 @@ def _approvals(rep, runs, policies):
             f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
 
 
+def _run_bound(snap):
+    """The run bound (approval_agent.run.clean) of policy snapshot `snap` (bytes): () when the policy has no
+    approval_agent; None when there is no snapshot or it can't be read, `run` included (not an object, its `clean` not a
+    list of strings)."""
+    try:
+        aa = loads_strict(snap).get("approval_agent") if snap else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if snap is None or aa is not None and not isinstance(aa, dict):
+        return None
+    run = (aa or {}).get("run", {})
+    clean = run.get("clean", ()) if isinstance(run, dict) else None
+    return tuple(clean) if isinstance(clean, (list, tuple)) and all(isinstance(c, str) for c in clean) else None
+
+
 def _ai_approvals(rep, runs, policies):
-    """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any:
-    the `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and
-    circuit-breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`)
-    carries `relied_on` with mode enforce, two answers that approve and a person's precedent, and no person's
-    rejection of a call like it; with the snapshot of the policy it names, none of its run's labels is one the policy's
-    approval_agent run bound names: checked on a line of its own, `AI run bound`, when any AI yes carried a label,
-    which also fails when the bundle has no readable snapshot of the policy such a yes cites (a bundle can leave a
-    snapshot out, never its signed records). A precedent it names, when the bundle holds it, and any person's
-    rejection the bundle holds of a call like it, count as the signer counts them: a person's own answer (not a
-    self-approval, not break-glass) to a request with the same precedent key (its digest), tenant and requester, made
-    in a run clean when asked and when answered (run_clean), before the answer and at most PRECEDENT_S before it, not
-    revoked as a precedent (precedent.revoked) before it. A named precedent that doesn't count, or a rejection that
-    does, fails the line; a named precedent the bundle doesn't hold (often another run's) is counted, not checked."""
+    """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
+    `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-
+    breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries
+    `relied_on` with mode enforce, two answers that approve and a person's precedent, the request's policy hash, and
+    no person's rejection of a call like it; with the snapshot of the policy it names, none of the labels its run
+    carried is one the policy's approval_agent run bound names: those the signer says it read (`relied_on.labels`)
+    and those the run's own run.label records add and clear, replayed up to the yes and up to its consume. That is
+    checked on a line of its own, `AI run bound`, when any AI yes had a label either way, which also fails when the
+    bundle has no readable snapshot of the policy such a yes cites (a bundle can leave a snapshot out, never its
+    signed records; a snapshot whose approval_agent.run isn't an object can't be read). A precedent it names, when
+    the bundle holds it, and any person's rejection the bundle holds of a call like it, count as the signer counts
+    them: a person's own answer (not a self-approval, not break-glass) to a request with the same precedent key (its
+    digest), tenant and requester, made in a run clean when asked and when answered (run_clean), before the answer
+    and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A named precedent
+    that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't hold (often
+    another run's) is counted, not checked."""
     events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
     asked, answered, gone, broken, bound_broken = {}, {}, {}, [], []
     yes = shadow = checked = outside = changes = labelled = 0
+    carried, held, consumed = {}, {}, {}   # the labels each run's records add and clear, as of each record of note
     for e in events:
         d, key = e["data"], (e.get("tenant"), e["data"].get("approval_id"))
+        have = carried.setdefault((e.get("tenant"), e.get("run_id")), set())
+        if e.get("type") == "run.label" and isinstance(d.get("label"), str):
+            (have.add if d.get("action") == "add" else have.discard)(d["label"])
+        elif e.get("type") in ("approval", "approval.consumed"):
+            (held if e["type"] == "approval" else consumed).setdefault(e["seq"] if e["type"] == "approval" else key,
+                                                                         set(have))
         if e.get("type") == "approval.request" and "ai" in d:
             asked[key] = e
         elif e.get("type") == "approval" and d.get("approver_kind") != "agent":
@@ -1343,19 +1368,23 @@ def _ai_approvals(rep, runs, policies):
             continue
         if not x["precedents"]["approve"] or x["precedents"]["reject"]:
             broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
-        if x["labels"]:   # the run bound of the policy it cites decides whether those labels let it answer
-            labelled, snap = labelled + 1, policies.get(x["policy_hash"])
-            try:
-                bound = (loads_strict(snap).get("approval_agent") or {}).get("run", {}).get("clean", ()) if snap else None
-            except (ValueError, TypeError, AttributeError):
-                bound = None
+        if x["policy_hash"] != mine["data"]["policy_hash"]:
+            broken.append(f"{at}: an AI yes that cites policy {x['policy_hash']}, not the one its call was held under")
+        # the run bound of the policy it cites decides whether the labels the run carried let it answer: those the
+        # signer read, and those the run's own records held at the yes and at its consume
+        ways = (("carried", set(x["labels"])), ("carried at the yes", held[e["seq"]]),
+                ("carried at its consume", consumed.get((e.get("tenant"), d.get("approval_id")), set())))
+        if any(ls for _, ls in ways):
+            labelled, bound = labelled + 1, _run_bound(policies.get(x["policy_hash"]))
             if bound is None:
-                bound_broken.append(f"{at}: an AI yes in a run that carried {', '.join(sorted(x['labels']))}, under "
-                                    f"policy {x['policy_hash']}, whose snapshot the bundle doesn't hold (or can't be "
-                                    "read): export the run with its policy snapshots")
-            elif set(x["labels"]) & set(bound):
-                bound_broken.append(f"{at}: an AI yes in a run that carried {sorted(set(x['labels']) & set(bound))[0]}, "
-                                    "which the policy's run bound names")
+                had = ", ".join(sorted(set().union(*(ls for _, ls in ways))))
+                bound_broken.append(f"{at}: an AI yes in a run that carried {had}, under policy {x['policy_hash']}, "
+                                    "whose snapshot the bundle doesn't hold (or can't be read): export the run with its "
+                                    "policy snapshots")
+            for how, ls in ways if bound is not None else ():
+                if ls & set(bound):
+                    bound_broken.append(f"{at}: an AI yes in a run that {how} {sorted(ls & set(bound))[0]}, which the "
+                                        "policy's run bound names")
         for pid in x["precedents"]["approve"]:
             p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
             if p is None or pa is None:

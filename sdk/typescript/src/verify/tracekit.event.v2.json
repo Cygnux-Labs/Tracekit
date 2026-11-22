@@ -2713,6 +2713,11 @@
           "$ref": "#/$defs/id",
           "description": "a findings run: the run_id of the run of the same tenant it analyses"
         },
+        "caller": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "a gateway's run of the client it serves: that client (scheme:subject), whose run it is"
+        },
         "replay_of": {
           "$ref": "#/$defs/id",
           "description": "a tracekit why replay run: the run_id of the run of the same tenant it replays"
@@ -5318,8 +5323,8 @@
         },
         "id": {
           "type": "string",
-          "pattern": "^P-[0-9a-f]{8}$",
-          "maxLength": 10
+          "pattern": "^P-[0-9a-f]{32}$",
+          "maxLength": 34
         },
         "text": {
           "type": "string",

@@ -1519,6 +1519,7 @@ ENTRIES = {
     "run.label": [registered(), ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
                                                "source": 0}, "run-a")],
     "policy.decision.run_labels": [registered(), decision(run_labels=["secrets_access"])],
+    "run.registered.caller": [registered(caller="uid:501")],
     # the AI approver (1.8.0)
     "approval.request.ai": [registered(), asked(ai=AI_ASKED)],
     "approval.relied_on": [registered(), answered(relied_on=RELIED_ON)],
@@ -1529,7 +1530,8 @@ ENTRIES = {
     "approval.escalated.relied_on": [registered(), ("approval.escalated", {
         "approval_id": "apr-1", "by": "signer", "reason": "two keys", "relied_on": RELIED_ON}, "run-a")],
     "playbook.entry": [registered(), ("playbook.entry", {
-        "action": "accept", "id": "P-0123abcd", "text": "TK-A025 by Bash: approved 3 of 3", "key": AI_ASKED["key"],
+        "action": "accept", "id": "P-0123abcd0123abcd0123abcd0123abcd", "text": "TK-A025 by Bash: approved 3 of 3",
+        "key": AI_ASKED["key"],
         "by": "uid:502"}, "run-a")],
     "precedent.revoked": [registered(), ("precedent.revoked", {"approval_id": "apr-0", "by": "uid:502"}, "run-a")],
     "approver.enabled": [registered(), ("approver.enabled", {"rules": ["TK-A025"], "by": "uid:502"}, "run-a")],
