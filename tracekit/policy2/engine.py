@@ -2802,9 +2802,10 @@ _PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b
                        r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
                        r"walk_tb|walk_stack|settrace|setprofile|gettrace|getprofile|inspect|gc)\b|\bsys\s*\.\s*modules\b")
 # a statement importing from the signer: its list ends where its statement does (a parenthesised one at its `)`, a comment
-# in it may hold one; any other at its line's end unless a backslash goes on)
+# in it may hold one, and ends at its line's end: one way to match each `#`; any other list at its line's end unless a
+# backslash goes on)
 _SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer\.rpc_schema\s+import\s+"
-                            r"(?:\(((?:[^)#]|#[^\n]*)*)\)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+                            r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)\)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
 _RPC_DATA = {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN"}
 _RPC_CATCH = re.compile(r"\bexcept\s+$|\bexcept\s*\((?:[^()]*,)?\s*$")
 _RPC_TEST = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
@@ -2843,7 +2844,7 @@ def _runs_signer(code):
     aliases = {}   # a name the code gives one of the signer's modules -> that module
     # (a backslash continues a list; a parenthesised one runs to its `)`, a comment in it may hold one)
     for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
-                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w\s,*]|\\(?:\r\n?|\n))+))", code):
+                         r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)|((?:[\w\s,*]|\\(?:\r\n?|\n))+))", code):
         listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) or m.group(3))
         for item in listed.replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))

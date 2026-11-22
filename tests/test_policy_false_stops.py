@@ -5,7 +5,10 @@ a download beside an interpreter, a project script or a copy (as 1.5.3 read it),
 runs or an interpreter reads as code."""
 import importlib.util
 import os
+import time
 import unittest
+
+import pytest
 
 from tracekit.policy2 import compile as pc, shell
 from tracekit.policy2.engine import Engine
@@ -190,6 +193,22 @@ class FalseStops(unittest.TestCase):
                      "import marshal, copyreg\nimport tracekit.signer.service"):
             self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"",
                                f"python3 -c \"{code.replace(chr(10), '; ')}\"")
+
+    @pytest.mark.serial
+    def test_a_long_run_of_comment_marks_in_an_import_list_is_read_in_linear_time(self):
+        # the comment in a parenthesised list is matched one way only, so no run of `#` backtracks (60,000 of them: the
+        # largest that is still read, not held as oversize)
+        for module, name in (("rpc_schema", "RPCError"), ("service", "load_policy")):
+            for tail in ("\nSignerService)", "", "\n)"):
+                command = (f"python3 - <<'EOF'\nfrom tracekit.signer.{module} import ({name},  " + "#" * 60000 + tail +
+                           "\nEOF")
+                for key, engine in self.engines.items():
+                    started = time.perf_counter()
+                    decision = svc.evaluate(engine, "Bash", {"command": command})[0]
+                    with self.subTest(pack=key[0], engine=key[1], module=module, tail=tail[:8]):
+                        self.assertLess(time.perf_counter() - started, 1.0)
+                        if "Signer" in tail:   # (read, not skipped as over MAX_SUBJECT: a name the schema may not give)
+                            self.assertEqual(decision["verdict"], "deny", decision)
 
     def test_a_script_that_reads_an_allowed_name_and_uses_it_is_no_reach(self):
         self.assert_open(
