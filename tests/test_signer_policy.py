@@ -5085,6 +5085,9 @@ class CodingPack(unittest.TestCase):
         for pack, engine, e in self.every_pack():
             if pack not in ("coding.yaml", "dev.yaml", "server.yaml"):
                 continue
+            plain = cds + "; cd ~/.local && rm -rf share"   # (`;;` outside a case arm: a line the parser can't read, read as it is)
+            d = e.decide("Bash", {"command": plain})
+            self.assertEqual(d["verdict"], "deny", (pack, engine, d))
             for spender in (pairs, cds):
                 for tail in tails:
                     with self.subTest(pack=pack, engine=engine, spender=spender[:12], tail=tail):

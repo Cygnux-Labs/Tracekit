@@ -2005,6 +2005,7 @@ def _variable(parsed, name):
         for a in c["argv"][1:] if re.match(name + r"\+?=", a)]
 
 
+_READINGS = 4   # the readings of one cd that _walk takes as alternatives
 _FOLDERS_MAX = 16   # the folders one line may be in at a command: past it the line is unread (held)
 _NAVIGATING = ("cd", "pushd", "popd")
 
@@ -2039,13 +2040,15 @@ def _walk(parsed, work):
             out.append(tuple(f for f in folders if f))
             i += 1
             continue
-        j = i   # (a cd's readings share its pipeline: each is a place the line may go)
-        while j < len(commands) and commands[j]["pipeline"] == c["pipeline"] and commands[j]["argv"][0] in _NAVIGATING:
+        j = i   # (a cd's readings share its pipeline: each is a place the line may go; a line the parser can't read gives every
+        # command one, so a group past _READINGS is taken a step at a time, each step over the folders so far)
+        while (j < len(commands) and commands[j]["pipeline"] == c["pipeline"] and commands[j]["argv"][0] in _NAVIGATING
+               and j - i < _READINGS):
             j += 1
         new = [d for cur in folders for g in commands[i:j] if g["argv"][0] != "popd"
                for d in _destinations(next((a for a in g["argv"][1:] if a == "-" or not a.startswith("-")), None),
                                       cur, homes, oldpwd, cdpath)]
-        shell.charge(work, sum(len(d) + 1 for d in dict.fromkeys(new)))
+        shell.charge(work, sum(min(len(d), 64) + 1 for d in dict.fromkeys(new)))   # (a long folder costs no more than 64)
         folders = list(dict.fromkeys([*folders, *new]))
         if len(folders) > _FOLDERS_MAX:
             folders, held = folders[-_FOLDERS_MAX:], True
