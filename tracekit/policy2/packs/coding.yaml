@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-99'
+version: '2026.11-v2-100'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -1182,10 +1182,12 @@ ask:
     # a write (a redirection or tee) into a bash or zsh startup file (TK-F011's: .bashrc, .bash_profile, .bash_login,
     # .profile, .zshrc, .zprofile, .zshenv, .zlogin) whose line holds a network shell: /dev/tcp/ or /dev/udp/, socat,
     # or nc, ncat or netcat with -e, -c, --exec or --sh-exec after up to four of its words, in either order; read in
-    # the raw command and in each line as the parser read it (`tee ${X}-a` is `tee -a`). An rc edit without one stays
-    # unheld. lean: the shell and the write within 128 characters of each other, so the fallback engine scans a
-    # bounded stretch from each; a padded line is still TK-F011's flag; read further if a real one is longer
-    pattern: '(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)[^\n]{0,128}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b[^\n]{0,128}?(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)'
+    # the raw command and in each line as the parser read it (`tee ${X}-a` is `tee -a`). A heredoc written to one
+    # holds its body as lines of its own in its first nine (where the heredoc ends isn't read), as TK-A040 reads a
+    # flush fed through one. An rc edit without one stays unheld. lean: the shell and the write within 128 characters
+    # of each other, so the fallback engine scans a bounded stretch from each; a padded line is still TK-F011's flag;
+    # read further if a real one is longer
+    pattern: '(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)[^\n]{0,128}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b(?:[^\n]{0,128}?|[ \t]*<<-?[ \t]*[''"\\]{0,8}[A-Za-z_][^\n]{0,256}(?:\n[^\n]*){0,8}?\n?[^\n]{0,128}?)(?:[^\w-]/dev/(?:tcp|udp)/|/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)'
     reason: adding a network shell to a shell startup file
     remedy: Have a person add the startup line; a shell that connects out on every login is not part of the task.
     rationale: A startup file runs in every new shell, so a line that opens a connection gives a remote party access each login; a person confirms it.
