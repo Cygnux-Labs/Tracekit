@@ -1265,39 +1265,44 @@ def _unread_query(args):
 # own list (`curl --help all`, kept in tests/data and compared with these) and _CURL_NEWER's, each with the release
 # that added it. A long option the tables don't hold is one the reader can't place (download_writes)
 _CURL_NEWER = {"ech": "8.8.0", "ip-tos": "8.9.0", "vlan-priority": "8.9.0", "keepalive-cnt": "8.9.0", "mptcp": "8.9.0",
-               "show-headers": "8.10.0", "skip-existing": "8.10.0", "ssl-sessions": "8.12.0", "upload-flags": "8.13.0"}
+               "show-headers": "8.10.0", "skip-existing": "8.10.0", "dump-ca-embed": "8.10.0", "tls-earlydata": "8.11.0",
+               "ssl-sessions": "8.12.0", "upload-flags": "8.13.0", "sigalgs": "8.14.0", "out-null": "8.16.0",
+               "parallel-max-host": "8.16.0", "follow": "8.16.0", "knownhosts": "8.17.0", "proxy-http3": "8.21.0",
+               "httpsig-algo": "8.22.0", "httpsig-headers": "8.22.0", "httpsig-key": "8.22.0",
+               "httpsig-keyid": "8.22.0"}
 _CURL_VALUED = frozenset((
     "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
     "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
     "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
     "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
     "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
-    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type krb libcurl limit-rate "
+    "httpsig-algo httpsig-headers httpsig-key httpsig-keyid interface ip-tos ipfs-gateway json keepalive-cnt "
+    "keepalive-time key key-type knownhosts krb libcurl limit-rate "
     "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
-    "oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default "
+    "oauth2-bearer output output-dir parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default "
     "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
     "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
     "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
-    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs "
     "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
     "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
     "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
     "write-out").split())
 _CURL_BARE = frozenset((
     "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
-    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
-    "fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure dump-ca-embed fail fail-early "
+    "fail-with-body false-start follow form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
     "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
     "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
     "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
-    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb out-null parallel "
     "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
-    "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
+    "proxy-digest proxy-http2 proxy-http3 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
     "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
     "remote-time remove-on-error retry-all-errors retry-connrefused sasl-ir show-error show-headers silent "
     "skip-existing socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert "
     "ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen "
-    "tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
+    "tcp-nodelay tftp-no-options tls-earlydata tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
     "verbose version xattr").split())
 _CURL_SHORT = {
     "0": "http1.0", "1": "tlsv1", "2": "sslv2", "3": "sslv3", "4": "ipv4", "6": "ipv6", ":": "next", "#": "progress-bar",
