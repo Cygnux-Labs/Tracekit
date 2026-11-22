@@ -210,7 +210,8 @@ WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it bes
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
 _UV_FLAGS = ("-q", "--quiet", "-v", "--verbose", "--frozen", "--locked", "--no-sync", "--isolated", "--no-project",
              "--offline", "--active", "--all-extras", "--no-dev", "--exact", "--refresh", "-U", "--upgrade", "-n",
-             "--no-cache")
+             "--no-cache", "--native-tls", "--no-native-tls", "--preview", "--no-preview", "--no-progress",
+             "--no-config", "--show-settings", "--managed-python", "--no-managed-python", "--no-python-downloads")
 WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                  "xargs": ("-0", "-r", "-t", "-p", "-x", "-o", "--null", "--no-run-if-empty", "--verbose",
                            "--interactive", "--exit", "--open-tty"),
@@ -252,7 +253,9 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
-           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
+           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1),
+           # Tracekit's srt-proxy decider starts the program its words name, after its options or a `--`
+           "tracekit": (("srt-decider",), ("--allow-domain", "--agent"), 0)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -5375,8 +5378,8 @@ class _Parser:
                         k = next(j for j, a in enumerate(args) if a in ("-exec", "-execdir", "-ok", "-okdir"))
                         cmds += self.emit(["find", *args[:k], "-delete"], pid, via + ["find -exec rm"])
             elif _kind(name):
-                if _kind(name) == "python" and (run := _python_runs(args)) is not None:
-                    cmds += self.emit(run, pid, via + [name])   # Tracekit's CLI, read as the tracekit command
+                if _kind(name) == "python" and (run := _python_runs(args) or _python_tool(args)) is not None:
+                    cmds += self.emit(run, pid, via + [name])   # Tracekit's CLI or a tool's, read as that command
                 # code its other options load: perl's -M (`use X;…`), a module node imports or requires and ruby
                 # requires (a data: URL's code, a file the line writes), python's -X presite (held), each read as code
                 for what, value in _loaded(_kind(name), args):
@@ -6525,14 +6528,14 @@ _TRACEKIT_MODULE = re.compile(r"tracekit(?:\.cli|\.__main__)?")
 _TRACEKIT_SCRIPT = re.compile(r"(?i)(?:.*[/\\])?tracekit(?:\.exe|[/\\](?:__main__|cli)\.py)?[/\\]?")
 
 
-def _python_runs(args, copies=frozenset()):
-    """`tracekit …` where python's `args` run Tracekit's CLI: its module (-m tracekit, tracekit.cli or tracekit.__main__,
-    -mtracekit, -Im, past options with a value: -X 'a b', -W), the one a module runner runs (runpy's first word; the
-    first word not an option after a later -m or --module: cProfile, pdb, trace --module), or a script whose path
-    names Tracekit's entry point (~/.local/bin/tracekit, a tracekit folder, its __main__.py or cli.py); else None.
-    `copies`: the names the line copies or links Tracekit's entry point to (_tracekit_copies), as a script's or a
-    module's (tk.py: -m tk) name."""
-    i, module, rest = 0, None, []
+# tools python runs by their module as their own CLI (`python3 -m uv tool run x` is `uv tool run x`)
+_PYTHON_TOOLS = frozenset(("uv", "pipx", "hatch", "pdm", "poetry", "pipenv"))
+
+
+def _python_module(args):
+    """(the module python's `args` run with -m, past python's options: -X 'a b', -W, -Im, -mX; the words after it), or
+    (None, where its first operand is) for none; None for -c's code."""
+    i = 0
     while i < len(args) and args[i].startswith("-") and args[i] not in ("-", "--"):
         m = re.fullmatch(r"-[bBdEhiIOPqsSuvVx]*([cmWX])(.*)", args[i], re.S)
         if args[i] == "--check-hash-based-pycs" or m and m.group(1) in "WX" and not m.group(2):
@@ -6540,11 +6543,30 @@ def _python_runs(args, copies=frozenset()):
         elif m and m.group(1) == "c":
             return None
         elif m and m.group(1) == "m":
-            module, rest = (m.group(2), args[i + 1:]) if m.group(2) else ((args[i + 1:i + 2] or [None])[0], args[i + 2:])
-            break
+            return (m.group(2), args[i + 1:]) if m.group(2) else ((args[i + 1:i + 2] or [None])[0], args[i + 2:])
         else:
             i += 1
+    return None, i
+
+
+def _python_tool(args):
+    """`<tool> …` where python's `args` run one of _PYTHON_TOOLS by its module, else None."""
+    found = _python_module(args)
+    return [found[0], *found[1]] if found and found[0] in _PYTHON_TOOLS else None
+
+
+def _python_runs(args, copies=frozenset()):
+    """`tracekit …` where python's `args` run Tracekit's CLI: its module (-m tracekit, tracekit.cli or tracekit.__main__,
+    -mtracekit, -Im, past options with a value: -X 'a b', -W), the one a module runner runs (runpy's first word; the
+    first word not an option after a later -m or --module: cProfile, pdb, trace --module), or a script whose path
+    names Tracekit's entry point (~/.local/bin/tracekit, a tracekit folder, its __main__.py or cli.py); else None.
+    `copies`: the names the line copies or links Tracekit's entry point to (_tracekit_copies), as a script's or a
+    module's (tk.py: -m tk) name."""
+    if (found := _python_module(args)) is None:
+        return None
+    module, rest = found
     if module is None:
+        i = rest if isinstance(rest, int) else len(args) - len(rest) - 1
         i += args[i:i + 1] == ["--"]
         return ["tracekit", *args[i + 1:]] if i < len(args) and (
             _TRACEKIT_SCRIPT.fullmatch(args[i]) or _base(args[i]) in copies) else None

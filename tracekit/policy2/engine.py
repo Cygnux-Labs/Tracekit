@@ -2049,7 +2049,7 @@ def _write_effects(parsed):
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
     # a relative target a command after a cd writes is also read in the folder the cd entered, resolved (`cd ~/.hermes
     # && sed -i … config.yaml`; a pattern there as each protected name it may make, which the parse read)
-    # (and what env -C runs, in its folder)
+    # (and what env -C runs, in its folder, and what uv runs in the one its --directory or --project names)
     def joined(folder, effects):
         out = [(k, _normal(folder.rstrip("/") + "/" + path)) for k, _, path in (t.partition(":") for t in effects)
                if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "") and not shell._GLOB.search(path)]
@@ -2067,10 +2067,12 @@ def _write_effects(parsed):
                 outs.append(("APPEND_TARGET:" if appends[o] > 0 else "WRITE_TARGET:") + o)
                 appends[o] -= 1
             tags += joined(base, outs + _command_effects([c]))
-        folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
-        if folder and at:
-            folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
-            tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
+        moves = [_env_chdir(c["argv"])] if c["argv"][0] == "env" else _uv_chdir(c["argv"]) if c["argv"][0] in (
+            "uv", "uvx") else ()
+        for folder, at in moves:
+            if folder and at:
+                folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
+                tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude)
@@ -2096,6 +2098,23 @@ def _env_chdir(argv):
         else:
             break
     return folder, (i + 1 if i < len(args) else None)
+
+
+def _uv_chdir(argv):
+    """(a folder uv's or uvx's --directory or --project names, where in argv a command it runs starts) for each: as
+    env -C's (_env_chdir), the command `uv run`, `uv tool run` or uvx runs, each place the parser reads it may start."""
+    args = argv[1:]
+    folders = [v for a, v in zip(args, args[1:]) if a in ("--directory", "--project")] + [
+        a.partition("=")[2] for a in args if a.startswith(("--directory=", "--project="))]
+    if not folders:
+        return []
+    if argv[0] == "uvx":
+        inners = list(shell._unwrap("uvx", args))
+    else:
+        inners = [x for k in shell.runner_at("uv", args) for x in shell._unwrap("uv", args[k:])] + [
+            x for c in shell._uv_operands(args, 0) if args[c] == "tool" for k in shell._uv_operands(args, c + 1)
+            if args[k] in ("run", "uvx") for x in shell._unwrap("uvx", args[k + 1:])]
+    return [(f, len(argv) - len(x)) for f in folders for x in inners if x]
 
 
 def _normal(path):

@@ -532,14 +532,17 @@ def _stricter(a, b):
 
 
 def _in_workdir(policy, tool, args, d, untrusted):
-    """`d`, shell call `tool`'s decision, and its one reading in the working directory it names (classes.in_workdir),
-    the stricter standing; held (TK-SHELL-PARSE) where it names more than one or one that isn't text. (The reading is a
-    decision of its own, never looser than it reads, as `d` is: engine.decide's fallback for a spent budget.)"""
+    """`d`, shell call `tool`'s decision, and each of its readings in the working directory it names
+    (classes.in_workdir), the strictest standing; held (TK-SHELL-PARSE) where it names more than one or one that isn't
+    text. (Each reading is a decision of its own, never looser than it reads, as `d` is: engine.decide's fallback for
+    a spent budget.)"""
     moved = classes.in_workdir(args)
     if moved is classes.UNREAD:
         return _stricter(d, {"verdict": policy.policy.get("on_parse_error", "ask"), "rule_ids": ["TK-SHELL-PARSE"],
                              "policy_hash": policy.policy_hash, "engine": policy.engine, "unread": "workdir"})
-    return d if moved is None else _stricter(d, policy.decide(tool, moved, untrusted=untrusted))
+    for reading in moved or ():
+        d = _stricter(d, policy.decide(tool, reading, untrusted=untrusted))
+    return d
 
 
 def evaluate(policy, tool, args, hint=None, untrusted=None):
@@ -556,7 +559,7 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # a shell tool's own working directory (Codex's and OpenCode's workdir, Gemini CLI's dir_path, Cursor's
         # working_directory: classes.in_workdir) is where its command runs: the call is decided as `cd <dir> &&
         # <command>` too, so a relative path it names is read in that folder; a call that names more than one working
-        # directory, or one that isn't text, is held, so it is read twice at most
+        # directory, or one that isn't text, is held, so it is read three times at most
         d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
         d = _in_workdir(policy, tool, args, d, untrusted) if cls == "shell" else d
         # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
