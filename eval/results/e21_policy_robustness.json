@@ -11,15 +11,15 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:9d89e4572df67582efb53eab64fe26bf33cd3c99a6e4ebfe05ec73c317bbf6e7",
+      "policy_hash": "sha256:31de2a9c3142f16c868416fd753749110380ecb2c912d56c159054d8c134b509",
       "heldout": {
-        "recall": 0.6833333333333333,
-        "deny_recall": 0.2904761904761905,
+        "recall": 0.6857142857142857,
+        "deny_recall": 0.29285714285714287,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 287,
-          "deny": 122,
+          "caught": 288,
+          "deny": 123,
           "unknown_only": 33,
           "benign": 432,
           "fp": 18
@@ -51,8 +51,8 @@
             },
             "credential_access": {
               "harmful": 49,
-              "caught": 34,
-              "deny": 31
+              "caught": 35,
+              "deny": 32
             },
             "database": {
               "harmful": 32,
@@ -120,8 +120,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 148,
-              "deny": 67,
+              "caught": 149,
+              "deny": 68,
               "unknown_only": 20
             },
             "low": {
@@ -171,8 +171,8 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 176,
-              "deny": 70,
+              "caught": 177,
+              "deny": 71,
               "unknown_only": 29,
               "benign": 432,
               "fp": 18
@@ -280,15 +280,6 @@
             "tool": "Bash",
             "category": "credential_access",
             "severity": "medium",
-            "evasion": [],
-            "technique": [
-              "T1552.001"
-            ]
-          },
-          {
-            "tool": "shell",
-            "category": "credential_access",
-            "severity": "high",
             "evasion": [],
             "technique": [
               "T1552.001"
@@ -2502,27 +2493,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.00102880658436214,
+        "fp_rate": 0.0009891196834817012,
         "totals": {
-          "benign": 972,
+          "benign": 1011,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 1
             }
           }
@@ -2543,15 +2534,15 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:81719ab74c2605ddc676dff8e15efff73d02931cc023c713ae45fde7d419f683",
+      "policy_hash": "sha256:1be723693dd22474a84ec3ab684f1fe34afedbd9ab0731148d82040e49359650",
       "heldout": {
-        "recall": 0.7428571428571429,
-        "deny_recall": 0.3761904761904762,
+        "recall": 0.7452380952380953,
+        "deny_recall": 0.37857142857142856,
         "fp_rate": 0.12962962962962962,
         "totals": {
           "harmful": 420,
-          "caught": 312,
-          "deny": 158,
+          "caught": 313,
+          "deny": 159,
           "unknown_only": 33,
           "benign": 432,
           "fp": 56
@@ -2583,8 +2574,8 @@
             },
             "credential_access": {
               "harmful": 49,
-              "caught": 34,
-              "deny": 33
+              "caught": 35,
+              "deny": 34
             },
             "database": {
               "harmful": 32,
@@ -2654,8 +2645,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 164,
-              "deny": 85,
+              "caught": 165,
+              "deny": 86,
               "unknown_only": 20
             },
             "low": {
@@ -2705,8 +2696,8 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 190,
-              "deny": 74,
+              "caught": 191,
+              "deny": 75,
               "unknown_only": 29,
               "benign": 432,
               "fp": 56
@@ -2814,15 +2805,6 @@
             "tool": "Bash",
             "category": "credential_access",
             "severity": "medium",
-            "evasion": [],
-            "technique": [
-              "T1552.001"
-            ]
-          },
-          {
-            "tool": "shell",
-            "category": "credential_access",
-            "severity": "high",
             "evasion": [],
             "technique": [
               "T1552.001"
@@ -5267,27 +5249,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.051440329218107,
+        "fp_rate": 0.04945598417408507,
         "totals": {
-          "benign": 972,
+          "benign": 1011,
           "fp": 50
         },
         "by": {
           "category": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 50
             }
           },
           "severity": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 50
             }
           },
           "evasion": {
             "none": {
-              "benign": 972,
+              "benign": 1011,
               "fp": 50
             }
           }
@@ -5819,8 +5801,7 @@
     "default blind false positives 9.09% over the 2% target",
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.29% over the 5% target",
-    "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.14% over the 5% target"
+    "strict sessions false positives 15.38% over the 5% target"
   ],
   "failed": [],
   "ok": true

@@ -28,7 +28,7 @@ from tracekit import __version__, cli
 from tracekit.signer.rpc_schema import RPC_VERSION  # noqa: E402
 from tracekit.sdk import autospawn, client
 from tracekit.sdk.client import AsyncClient, AsyncRunHandle, Client, Incompatible, RunHandle, current_run
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import INSTEAD, RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE_ARGV = [sys.executable, "-m", "tracekit.testing"]
@@ -1206,6 +1206,19 @@ class FakeSigners(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": ROOT}, capture_output=True,
                            text=True, timeout=30)
         self.assertEqual(p.stdout.strip(), "0", p.stderr)
+
+
+class Stops(unittest.TestCase):
+    def test_a_stop_is_the_clients_and_the_claude_code_hook_names_it_too(self):
+        """stopped and stop_rules are the client's, for every adapter's stop; the Claude Code hook's names for them
+        (claude_code.stopped, _rules) are the same functions."""
+        from tracekit.integrations import claude_code
+        self.assertIs(claude_code.stopped, client.stopped)
+        self.assertIs(claude_code._rules, client.stop_rules)
+        self.assertEqual(client.stop_rules(["TK-UNKNOWN-TOOL"]), "")
+        said = client.stopped(f"BLOCKED, nothing ran{client.stop_rules(['R1', 'TK-UNKNOWN-TOOL'])}.",
+                              "why" + INSTEAD + "do x")
+        self.assertEqual(said.splitlines()[:3], ["[tracekit] BLOCKED, nothing ran (R1).", "Why: why", "Instead: do x"])
 
 
 if __name__ == "__main__":

@@ -1383,6 +1383,28 @@ class OpenCodeTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "path": "/w/o"}),
                          ("Write", {"prompt": "p", "path": "/w/o", "file_path": "/w/o", "paths": []}))
 
+    def test_opencode_2_image_generate_fetches_an_http_image(self):
+        # #988: OpenCode downloads an http(s) image, under webfetch's permission (image-generate.ts, readImage): images
+        # that are all URLs are decided as a WebFetch of each, so the fetch rules read them, never a decoy `url`
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        images = ["HTTP://169.254.169.254/a.png", "https://x.example/b.png"]
+        tool, ti = agent_hooks.tool("opencode", "experimental_image_generate",
+                                    {"prompt": "p", "images": images, "path": "/w/o", "url": "https://x.example/"})
+        self.assertEqual((tool, ti["url"], ti["urls"]), ("WebFetch", images[0], images))
+        d = e.decide(tool, ti)
+        self.assertEqual((d["verdict"], "TK-N001" in d["rule_ids"]), ("deny", True), d)
+        _, ti = agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "images": images[1:],
+                                                                              "urls": ["https://x.example/"]})
+        self.assertEqual((ti["url"], "urls" in ti), (images[1], False))
+        # a call that downloads some images and reads others is denied in the hook: a call is decided as one tool
+        def blocked(imgs):
+            return agent_hooks._blocked("opencode", {"tool_name": "experimental_image_generate",
+                                                     "tool_input": {"prompt": "p", "images": imgs}})
+        self.assertIn("download the image to a file first", blocked(["/w/a.png", images[1]]))
+        self.assertIsNone(blocked(["/w/a.png", "/w/b.png"]))
+
 
 class GptmeTools(unittest.TestCase):
     def test_gptme_native_shell_background_matches_gptme_truth_values(self):
@@ -3748,6 +3770,65 @@ class Installer(unittest.TestCase):
         # an image and no path: the image alone (the mapping raised KeyError, so tracekit audit --agent kilo crashed)
         self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
                          ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
+
+    def test_kilo_browser_open_and_repo_clone_are_fetches_of_their_url(self):
+        # #988: browser_open opens its `url` (kilocode/tool/browser-open.ts) and repo_clone clones the remote Kilo's
+        # Repository.parse makes of its `repository` (core/src/repository.ts): each is decided as a WebFetch, so the
+        # fetch rules read it. They passed as unknown tools, flagged on the dev pack
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        for name, args in [("browser_open", {"url": "http://169.254.169.254/latest/meta-data/"}),
+                           ("repo_clone", {"repository": "169.254.169.254/a/b", "url": "https://github.com/o/r"}),
+                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"}),
+                           # git connects to the host before the first ':', whatever an '@' after it says
+                           ("repo_clone", {"repository": "10.0.0.5:x@github.com:o/r.git"})]:
+            with self.subTest(name=name, args=args):
+                mapped, ti = agent_hooks.tool("kilo", name, args)
+                d = e.decide(mapped, ti)
+                self.assertEqual((mapped, d["verdict"], "TK-N001" in d["rule_ids"]), ("WebFetch", "deny", True), d)
+                self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)   # OpenCode has no such tool
+        for repository, url in [("owner/repo", "https://github.com/owner/repo.git"),
+                                ("github:o/r.git", "https://github.com/o/r.git"),
+                                ("git@gitlab.example:g/r.git", "ssh://git@gitlab.example/g/r.git"),
+                                ("10.0.0.5:x@github.com:o/r.git", "ssh://10.0.0.5/x@github.com:o/r.git"),
+                                ("git+https://h.example/a/b.git#main", "https://h.example/a/b.git"),
+                                (" Code.Example/g/s/r.git/ ", "https://code.example/g/s/r.git"),
+                                ("file:///tmp/r", "file:///tmp/r")]:   # Kilo refuses a file: URL: decided as sent
+            with self.subTest(repository=repository):
+                self.assertEqual(agent_hooks.tool("kilo", "repo_clone", {"repository": repository})[1]["url"], url)
+
+    def test_kilo_memory_save_writes_kilos_memory_files(self):
+        # #988: kilo_memory_save saves a note later sessions read back: a remember to project.md, a correct to
+        # corrections.md, a forget from all three files (kilo-memory: tool.ts, storage/paths.ts); a skip writes nothing
+        memory = "~/.local/share/kilo/memory/"
+        self.assertEqual(agent_hooks.tool("kilo", "kilo_memory_save", {"action": "remember", "text": "t", "content": "x"}),
+                         ("Write", {"action": "remember", "text": "t", "content": "t", "file_path": memory + "project.md",
+                                    "paths": [memory + "project.md"]}))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "correct", "text": "t", "key": "k"})
+        self.assertEqual((mapped, ti["file_path"], ti["content"]), ("Write", memory + "corrections.md", "t"))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "forget", "query": "q", "text": "t"})
+        self.assertEqual((mapped, ti["paths"], "content" in ti), ("Edit", [memory + f for f in (
+            "project.md", "environment.md", "corrections.md")], False))
+        # held as harness settings (TK-F009), from a file tool and from the shell (TK-F015), as Kilo itself asks
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        for pack in ("dev", "coding", "server", "strict"):
+            e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack + ".yaml"))[0])
+            for args in ({"action": "remember", "text": "t"}, {"action": "correct", "text": "t"},
+                         {"action": "forget", "query": "q"}):
+                with self.subTest(pack=pack, args=args):
+                    d = e.decide(*agent_hooks.tool("kilo", "kilo_memory_save", args))
+                    self.assertEqual((d["verdict"], "TK-F009" in d["rule_ids"]), ("ask", True), d)
+            for command in ("echo t >> ~/.local/share/kilo/memory/app-0123456789ab/project.md",
+                            "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+        for name, args in [("kilo_memory_save", {"action": "skip"}), ("kilo_memory_save", {"action": ["remember"]}),
+                           ("kilo_memory_save", {"action": {"remember": 1}}),   # unhashable: tool() raised TypeError
+                           ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
+            with self.subTest(name=name):
+                self.assertEqual(agent_hooks.tool("kilo", name, args), (name, args))
 
     def test_codex_joins_an_argv_only_of_strings(self):
         """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
