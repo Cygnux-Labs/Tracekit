@@ -2647,6 +2647,10 @@ def _install_gptme(path, uninstall, v2, python):
 JCODE_BEGIN = "# >>> Tracekit's jcode hooks: tracekit uninstall --agent jcode removes this table"
 JCODE_END = "# <<< Tracekit's jcode hooks"
 JCODE_TABLE = re.compile(r"(?m)^" + re.escape(JCODE_BEGIN) + r"\r?\n(?:.*\r?\n)*?" + re.escape(JCODE_END) + r"(?:\r?\n|\Z)")
+# a [hooks] table jcode re-saved: its header, the start of the next table, and one `key = value` entry of its body
+JCODE_HOOKS = re.compile(r'^[ \t]*\[[ \t]*["\']?hooks["\']?[ \t]*\][ \t]*(?:#.*)?\r?\n?$')
+JCODE_TABLE_HEADER = re.compile(r'^[ \t]*\[(?!!)')
+JCODE_ENTRY = re.compile(r'[ \t]*([A-Za-z0-9_-]+|"[^"\r\n]*"|\'[^\'\r\n]*\')[ \t]*=[ \t]*')
 # jcode lets a call run when its gate times out (pre_tool_timeout_ms, 5 s by default): set above the hook's own wait for
 # an approval (claude_code.APPROVAL_WAIT_S). One setting for every gate
 JCODE_TIMEOUT_MS = 600_000
@@ -2677,10 +2681,127 @@ def _jcode_has_hooks(text, path):
         raise SettingsError(f"{path} is not valid TOML; Tracekit did not change it: {e}") from e
 
 
+def _jcode_unmarked_commands():
+    """{hook key: the commands init writes under it}, for both hook versions and both modes: what a config.toml jcode
+    re-saved holds of Tracekit's, its markers gone (Config::save drops every comment)."""
+    from .install import OPT_PYTHON
+    out = {}
+    for v2 in (True, False):
+        for python in (None, OPT_PYTHON):
+            for key, command in _jcode_hooks(v2, python).items():
+                if key != "pre_tool_timeout_ms":
+                    out.setdefault(key, set()).add(command)
+    return out
+
+
+def _jcode_entries(lines, i, end):
+    """Each `key = value` entry of a [hooks] table body (`lines[i:end]`), as (key, its first line's index, the index
+    after its last line, its value): an entry runs to the line that completes its value, an array or a multi-line
+    string over several. None when a line of the body is not part of an entry."""
+    import tomllib
+    entries = []
+    while i < end:
+        if not lines[i].strip() or lines[i].lstrip().startswith("#"):
+            i += 1
+            continue
+        m = JCODE_ENTRY.match(lines[i])
+        if not m:
+            return None
+        key, start, raw, value = m.group(1), i, lines[i][m.end():], None
+        for j in range(i, end):
+            if j > i:
+                raw += lines[j]
+            try:
+                key, value = next(iter(tomllib.loads(f"{key} = {raw}").items()))
+            except (ValueError, StopIteration):
+                value = None
+            if value is not None:
+                break
+        if value is None:
+            return None
+        entries.append((key, start, j + 1, value))
+        i = j + 1
+    return entries
+
+
+def _jcode_line_value(line):
+    """The one value `line` of a [hooks] array sets, else None: several items on it, the array's own brackets and a
+    comment line are not one item."""
+    import tomllib
+    text = line.strip()
+    if text.endswith(","):
+        text = text[:-1].rstrip()
+    try:
+        return next(iter(tomllib.loads("v = " + text).values()))
+    except (ValueError, StopIteration):
+        return None
+
+
+def _jcode_taking(key, value, ours):
+    """The commands among `value` (a command, or a list of them) under the hook `key` that init writes itself."""
+    if key == "pre_tool_timeout_ms":
+        return [value] if value == JCODE_TIMEOUT_MS else []
+    items = value if isinstance(value, list) else [value]
+    return [item for item in items if isinstance(item, str) and item in ours.get(key, ())]
+
+
+def _jcode_strip_unmarked(text):
+    """`text`, jcode's config.toml whose [hooks] table init wrote and jcode re-saved without the markers, with the
+    entries init writes taken out: (the text, the commands taken out), or None when one of them is not a whole line of
+    its own, when the table is written another way, or when there is no TOML parser to check the result (Python 3.9
+    and 3.10): the caller then prints the lines to remove by hand. What comes out is checked with tomllib: it parses,
+    every other setting is unchanged, and its [hooks] is the original's minus Tracekit's entries."""
+    try:
+        import tomllib
+    except ImportError:   # lean: Python 3.9/3.10 have no TOML parser; the lines are printed to remove by hand
+        return None
+    try:
+        before = tomllib.loads(text)
+    except ValueError:
+        return None
+    lines = text.splitlines(keepends=True)
+    header = next((i for i, line in enumerate(lines) if JCODE_HOOKS.match(line)), None)
+    if header is None or not isinstance(before.get("hooks"), dict):
+        return None
+    end = next((i for i in range(header + 1, len(lines)) if JCODE_TABLE_HEADER.match(lines[i])), len(lines))
+    entries = _jcode_entries(lines, header + 1, end)
+    if entries is None:
+        return None
+    ours, take, gone, left = _jcode_unmarked_commands(), set(), [], {}
+    for key, start, last, value in entries:
+        taking = _jcode_taking(key, value, ours)
+        if taking and len(taking) == len(value if isinstance(value, list) else [value]):
+            take.update(range(start, last))   # the whole entry is Tracekit's
+            gone.extend(taking)
+            continue
+        if taking:   # some items of a list: each has to be a line of its own to come out whole
+            item_lines = [i for i in range(start, last) if _jcode_line_value(lines[i]) in taking]
+            if len(item_lines) != len(taking):
+                return None
+            take.update(item_lines)
+            gone.extend(taking)
+        left[key] = value if not taking else [item for item in value if item not in taking]
+    if not gone:
+        return None
+    if not left and not any(lines[i].strip() and not lines[i].lstrip().startswith("#")
+                            for i in range(header + 1, end) if i not in take):
+        take.add(header)   # nothing is left in the table: its header goes too
+    new = "".join(line for i, line in enumerate(lines) if i not in take)
+    expected = {**before, "hooks": left} if left else {k: v for k, v in before.items() if k != "hooks"}
+    try:
+        if tomllib.loads(new) != expected:
+            return None
+    except ValueError:
+        return None
+    return new, gone
+
+
 def _install_jcode(path, uninstall=False, v2=False, python=None):
     """Tracekit's [hooks] table in jcode's config.toml `path`, between its markers: appended, after a backup, when the
     file has no hooks table, else the lines to add are printed and nothing changes (init's own table is replaced);
-    uninstall removes only Tracekit's table. jcode re-reads the table on a config reload. -> the file's path."""
+    uninstall removes only Tracekit's table, and the entries of a table jcode re-saved without the markers when they
+    are exactly commands init writes (_jcode_strip_unmarked). jcode re-reads the table on a config reload. -> the
+    file's path."""
     from .deploy import files
     from .install import SettingsError
     path, name = os.path.abspath(path), os.path.basename(path)
@@ -2692,33 +2813,41 @@ def _install_jcode(path, uninstall=False, v2=False, python=None):
         d = files.open_dir(os.path.dirname(path))
         try:
             raw = files.read(d, name)
-            text = "" if raw is None else raw.decode("utf-8")
-            ours = JCODE_TABLE.search(text)
-            if not ours:
-                unmarked = [line for line in text.splitlines() if _version(line)]
-                if unmarked:
+            before = "" if raw is None else raw.decode("utf-8")
+            text = before
+            ours, stripped = JCODE_TABLE.search(text), None
+            if not ours and any(_version(line) for line in text.splitlines()):   # jcode re-saved it: no markers
+                stripped = _jcode_strip_unmarked(text)
+                if stripped is None:
+                    unmarked = [line for line in text.splitlines() if _version(line)]
                     print(f"{path} has unmarked Tracekit hook commands (jcode's config save removes comments); "
                           "Tracekit did not change it. Remove these Tracekit commands from [hooks] by hand, "
                           "keeping other commands and timeout settings" + (" before running init again" if not uninstall else "")
                           + ":\n  " + "\n  ".join(unmarked))
                     return path
+                text, gone = stripped
+                removed = {_version(c) for c in gone} - {None}
             if ours:
                 removed = {_version(c) for c in re.findall(r'(?m)^\w+ = (".*")$', ours.group())} - {None}
-            rest = text[:ours.start()] + text[ours.end():] if ours else text
+                text = text[:ours.start()] + text[ours.end():]
+            said = None
             if uninstall:
-                new = rest.rstrip("\r\n") + "\n" if rest.strip() else ""
-            elif _jcode_has_hooks(rest, path):
+                new = text.rstrip("\r\n") + "\n" if text.strip() else ""
+            elif _jcode_has_hooks(text, path):
                 # lean: an existing table is left to the person; merge into it with a TOML editor if init must
-                print(f"{path} has a hooks table already; Tracekit did not change it. Add these lines to it, with "
-                      "Tracekit's command last in pre_tool (a gate after it can rewrite the call it decided; make "
-                      "pre_tool a list to keep yours):\n  " + "\n  ".join(_jcode_lines(hooks)) + "\n"
-                      "pre_tool_timeout_ms is the timeout of every jcode gate, not only Tracekit's.")
-                return path
+                said = (f"{path} has a hooks table already; Tracekit did not change it" if stripped is None else
+                        f"{path} has a hooks table already; Tracekit took its own earlier, unmarked commands out of "
+                        "it (jcode's config save removes the markers) and added none") + (
+                    ". Add these lines to it, with Tracekit's command last in pre_tool (a gate after it can rewrite "
+                    "the call it decided; make pre_tool a list to keep yours):\n  "
+                    + "\n  ".join(_jcode_lines(hooks)) + "\n"
+                    "pre_tool_timeout_ms is the timeout of every jcode gate, not only Tracekit's.")
+                new = text
             else:
-                new = (rest.rstrip("\r\n") + "\n\n" if rest.strip() else "") + "\n".join(
+                new = (text.rstrip("\r\n") + "\n\n" if text.strip() else "") + "\n".join(
                     [JCODE_BEGIN, "[hooks]", *_jcode_lines(hooks), JCODE_END]) + "\n"
                 _check_jcode_toml(new, path, hooks)
-            if new != text:
+            if new != before:
                 mode = os.stat(path).st_mode & 0o777 if raw is not None else 0o600
                 if raw is not None:
                     files.backup(d, name, raw)
@@ -2729,6 +2858,9 @@ def _install_jcode(path, uninstall=False, v2=False, python=None):
         raise SettingsError(f"{path}: {e}; Tracekit did not change it.") from e
     except (OSError, UnicodeDecodeError) as e:
         raise SettingsError(f"{path} can't be read ({e}); Tracekit did not change it.") from e
+    if said:
+        print(said)
+        return path
     if not uninstall and not ours:
         print(f"pre_tool_timeout_ms = {JCODE_TIMEOUT_MS} set in {path}: jcode lets a call run when a gate times out, "
               "and the setting is the timeout of every jcode gate, not only Tracekit's")
