@@ -66,10 +66,11 @@ PROMPT = ":UserPromptSubmit"   # the hook's trusted observe of a prompt's typed 
 TYPED = "claude-code:UserPromptSubmit"   # the Claude Code hook's own: the only typed text a TOLD lesson is read from
 TYPES = ("user", "feedback", "project", "reference")
 # keys only Tracekit writes: `tracekit tips add` takes none of them from the person's words
-HOST = ("status", "superseded_by", "retired_from", "supersedes", "origin", "id", "kind", "key", "evidence", "tier",
-        "approved", "before", "signed")
+HOST = ("status", "superseded_by", "retired_from", "retired_because", "supersedes", "origin", "id", "kind", "key",
+        "evidence", "tier", "approved", "before", "signed")
 LESSON_ID = re.compile(r"L-[0-9a-f]{8}")
-SIGNED = re.compile(r"[\w.-]{1,128}:[0-9]{1,12}")   # run:run_seq of the signed record of a person's answer
+# run:run_seq of the signed record of a person's answer; the signer checks a retire's `because` with it too
+SIGNED = re.compile(r"[\w.-]{1,128}:(0|[1-9][0-9]{0,15})", re.ASCII)
 MEASURE = "before and after on the same detector, not a controlled test"
 NOTE_FILE = re.compile(r"(?!MEMORY\.md$)[A-Za-z0-9][A-Za-z0-9._-]{0,95}\.md")
 PROJECT_NAME = re.compile(r"[A-Za-z0-9-][A-Za-z0-9._-]{0,254}")   # never `.` or `..`: it starts with no dot
@@ -296,9 +297,10 @@ def index(notes):
 class Folder:
     """The lessons folder, <dev data dir>/lessons: one git repo, projects/<project>/ holding a project's notes and its
     MEMORY.md. `tracekit tips`' actions, run by a person, are its only writer; a folder that holds a link, or anything
-    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256)`: records a person's
-    answer as a signed observe (source PERSON) once every check has passed, before anything is written, and gives the
-    record's `run:run_seq`, which the note keeps (`signed`); a note without one is never given to an agent."""
+    but folders and regular files, is refused whole, for reading too. `sign(action, id, sha256[, because=RUN:SEQ])`:
+    records a person's answer as a signed observe (source PERSON; a retire's `because` names the record that disproved
+    the lesson) once every check has passed, before anything is written, and gives the record's `run:run_seq`, which
+    the note keeps (`signed`); a note without one is never given to an agent."""
 
     def __init__(self, path, sign=None):
         self.path, self.sign = path, sign
@@ -376,7 +378,7 @@ class Folder:
         except (OSError, ValueError):
             return None
 
-    def _write(self, project, changed, message, lid, action):
+    def _write(self, project, changed, message, lid, action, because=None):
         """Write the notes `changed` of `project` (every one checked: refused, never cut), rebuild its MEMORY.md
         (refused past INDEX_LINES lines or INDEX_BYTES bytes), have the person's answer `action` to the first signed
         (sign), then commit. -> a note when no history was kept."""
@@ -392,7 +394,8 @@ class Folder:
                                         f"{INDEX_BYTES:,} bytes. Retire one first: refused, never cut")
         for signed in (False, True):   # every check, then the signed record, then every check of what it adds
             if signed and self.sign:
-                changed[0]["signed"] = self.sign(action, lid, text_sha(changed[0]))
+                args = (action, lid, text_sha(changed[0]))
+                changed[0]["signed"] = self.sign(*args, because=because) if because else self.sign(*args)
             texts = {n["file"]: render(n) for n in changed}
             for f, text in texts.items():
                 bad = problems(text)
@@ -466,9 +469,12 @@ class Folder:
                if n["file"] in note["supersedes"]]
         return self._write(lesson["project"], [note, *old], f"approve {lesson['id']}", lesson["id"], "approve")
 
-    def retire(self, lid, proposal=None):
+    def retire(self, lid, proposal=None, because=None):
         """Retire the note `lid` (it leaves MEMORY.md and is never given again), or, with the waiting `proposal` of
-        that id, keep it as retired so it is never proposed again."""
+        that id, keep it as retired so it is never proposed again. `because`: the RUN:SEQ of the record that disproved
+        it, kept in the note (`retired_because`), the commit's subject and the signed answer."""
+        if because is not None and not SIGNED.fullmatch(because):
+            raise Refused("because", f"{because!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
         n = self.find(lid)
         if n is None and proposal is None:
             raise Refused("missing", f"no lesson {lid} in use or waiting")
@@ -481,8 +487,9 @@ class Folder:
             raise Refused("status", f"{lid} is retired already")
         else:
             was = "pending" if n["status"] == "pending" else "active"
-        n = dict(n, status="retired", retired_from=was, superseded_by=None)
-        return self._write(n["project"], [n], f"retire {lid}", lid, "retire")
+        n = dict(n, status="retired", retired_from=was, superseded_by=None, retired_because=because)
+        return self._write(n["project"], [n], f"retire {lid}" + (f" (because {because})" if because else ""), lid,
+                           "retire", because=because)
 
     def restore(self, lid):
         """Give a retired note back the status it was retired from: in use, or proposed again (pending)."""
@@ -490,7 +497,8 @@ class Folder:
         if n is None or n["status"] != "retired":
             raise Refused("status", f"no retired lesson {lid}")
         back = "active" if n.get("retired_from") == "active" else "pending"
-        return self._write(n["project"], [dict(n, status=back, retired_from=None)], f"restore {lid}", lid, "restore")
+        return self._write(n["project"], [dict(n, status=back, retired_from=None, retired_because=None)],
+                           f"restore {lid}", lid, "restore")
 
     def add(self, project, body, name=None, description=None, kind_type="feedback", now=None):
         """The person's own lesson, in use at once (origin you): one-line name and description, or the body's first
@@ -1165,6 +1173,29 @@ def signed_state(note, rows, known=None):
                        f"(run {run}, record {seq})."
 
 
+def disproved(note, rows):
+    """A retired note's `retired_because` (RUN:SEQ: the record a person said disproved it) as the page shows it: None
+    when it names none, else {run, seq, state, why}, "signed" only when the signed retire the note names (`signed`, in
+    `rows`) carries this same `because`; "not read" when that record is outside the window read; "changed" else."""
+    ref, sref = note.get("retired_because"), str(note.get("signed") or "")
+    if not isinstance(ref, str) or not SIGNED.fullmatch(ref):
+        return None
+    (run, seq), (srun, _, sseq) = ref.rsplit(":", 1), sref.rpartition(":")
+    out, signed = {"run": run, "seq": int(seq)}, SIGNED.fullmatch(sref)
+    rec = signed and next((r for r in rows if r.get("session_id") == srun and (r.get("v2") or {}).get("run_seq")
+                           == int(sseq) and (r.get("v2") or {}).get("source") == PERSON), None)
+    if signed and rec is None:
+        return dict(out, state="not read", why=f"It names record {seq} of run {run}; the signed retire that would "
+                                               "back it is outside the window read.")
+    v = ((rec or {}).get("v2") or {}).get("value")
+    if not (isinstance(v, dict) and v.get("action") == "retire" and v.get("id") == note.get("id")
+            and v.get("because") == ref):
+        return dict(out, state="changed", why=f"It names record {seq} of run {run}, which no signed retire of this "
+                                              "lesson names: written by hand.")
+    return dict(out, state="signed", why=f"Disproved by run {run} at seq {seq}, a person's word: signed (run {srun}, "
+                                         f"record {sseq}).")
+
+
 def effect(note, idx, occ_sessions, given_to):
     """A lesson in use measured on the detector that found it: `before` as recorded at its approval, `after` over the
     sessions the signed observe proves were given it from then on, for AFTER_S; shown once each side has MIN_EXPOSED
@@ -1243,7 +1274,8 @@ def page(rows, tr, folder, cost=None, now=None, since=None, cwds=None, known=Non
         x["where"] = shown.get(x["project"]) or x["project"]
     return {"ok": True, "folder": folder.path, "commit": folder.head(), "budget": BUDGET, "measure": MEASURE,
             "waiting": waiting, "active": active,
-            "earlier": [{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by")}
+            "earlier": [{**{k: n.get(k) for k in ("id", "kind", "project", "name", "status", "superseded_by")},
+                         "retired_because": disproved(n, rows), "where": shown.get(n["project"]) or n["project"]}
                         for n in notes if n["status"] in ("retired", "superseded")],
             "not_proposed": sorted(nope, key=lambda x: x["rule"] != "tainted")[:40], "not_proposed_n": len(nope),
             "not_proposed_by": dict(collections.Counter(x["rule"] for x in nope).most_common()),

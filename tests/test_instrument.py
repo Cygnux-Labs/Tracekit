@@ -40,6 +40,15 @@ def installed(requirements):
     return sys.version_info >= (3, 10)
 
 
+@contextlib.contextmanager
+def recorded_warnings():
+    """Every warning raised inside but a ResourceWarning: another test's unclosed socket can be collected in here."""
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        warnings.simplefilter("ignore", ResourceWarning)
+        yield w
+
+
 class FakeTracekit:   # stands in for the capability: autowire's isinstance() needs a type, not a mock
     def __init__(self, run):
         self.run = run
@@ -166,10 +175,15 @@ class TestInstrument(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_a_socket_another_test_left_open_is_not_counted(self):
+        with recorded_warnings() as w:
+            warnings.warn("unclosed <ssl.SSLSocket [closed] fd=14>", ResourceWarning)
+            warnings.warn("counted")
+        self.assertEqual([str(x.message) for x in w], ["counted"])
+
     def test_nothing_installed_warns_and_records_nothing(self):
         with mock.patch.object(autowire, "_version", return_value=None), \
-                mock.patch("tracekit.sdk.client.Client") as client, warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+                mock.patch("tracekit.sdk.client.Client") as client, recorded_warnings() as w:
             self.assertIsNone(autowire.instrument())
         client.assert_not_called()
         self.assertEqual(len(w), 1)
@@ -208,8 +222,7 @@ class TestInstrument(unittest.TestCase):
         with mock.patch.object(autowire, "FRAMEWORKS", frameworks), \
                 mock.patch.object(autowire, "_version", side_effect=versions.get), \
                 mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
-                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+                mock.patch("tracekit.autotrace.instrument"), recorded_warnings() as w:
             run = autowire.instrument()
         wired.assert_called_once_with(run)
         msgs = [str(x.message) for x in w]
@@ -244,8 +257,7 @@ class TestInstrument(unittest.TestCase):
                 mock.patch.object(autowire, "_version", side_effect=versions.get), \
                 mock.patch.object(version_check, "_version", side_effect=versions.get), \
                 mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
-                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+                mock.patch("tracekit.autotrace.instrument"), recorded_warnings() as w:
             autowire.instrument()
             if have_mcp:   # TracekitSession is built per session after instrument() returns
                 for _ in range(2):
@@ -264,8 +276,7 @@ class TestInstrument(unittest.TestCase):
                 mock.patch.object(autowire, "_version", side_effect=versions.get), \
                 mock.patch.object(version_check, "_version", side_effect=versions.get), \
                 mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
-                mock.patch("tracekit.autotrace.instrument"), warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
+                mock.patch("tracekit.autotrace.instrument"), recorded_warnings() as w:
             autowire.instrument()
             crewai.hooks(mock.Mock())
         msgs = [str(x.message) for x in w]

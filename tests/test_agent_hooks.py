@@ -995,6 +995,18 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "allow", "allow", "allow", "deny"])
 
+    def test_opencode_2_v1_records_no_unverified_prompt_and_ends_a_deleted_session(self):
+        # #989: v1 has no untrusted prompt observation, so OpenCode 2.x's prompts (nothing says a person typed them)
+        # aren't recorded as the person's; a deleted session ends its run
+        base = {"session_id": "oc2-v1", "cwd": self.d}
+        call = {**base, "tool_name": "bash", "tool_use_id": "c1", "tool_input": {"command": "ls"}}
+        self.assertEqual(self.hook("opencode", call, "tool.execute.before")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", {**base, "prompt": "keep away from prod"}, "session.prompt")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", base, "session.deleted")[:2], (0, ""))
+        types = [e["type"] for e in self.events("oc2-v1")]
+        self.assertNotIn("user.prompt", types)
+        self.assertIn("run.end", types)
+
     def test_cline_answers_in_json_at_exit_0_and_a_denied_call_is_cancelled(self):
         # Cline reads a hook's answer only from its JSON ({"cancel": true} stops the task) and runs the call on any
         # other exit, so every answer is at 0; the event is the hook file's name, on the command line
@@ -1370,6 +1382,28 @@ class OpenCodeTools(unittest.TestCase):
         self.assertEqual(load_policy().decide(tool, ti)["verdict"], "deny")
         self.assertEqual(agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "path": "/w/o"}),
                          ("Write", {"prompt": "p", "path": "/w/o", "file_path": "/w/o", "paths": []}))
+
+    def test_opencode_2_image_generate_fetches_an_http_image(self):
+        # #988: OpenCode downloads an http(s) image, under webfetch's permission (image-generate.ts, readImage): images
+        # that are all URLs are decided as a WebFetch of each, so the fetch rules read them, never a decoy `url`
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        images = ["HTTP://169.254.169.254/a.png", "https://x.example/b.png"]
+        tool, ti = agent_hooks.tool("opencode", "experimental_image_generate",
+                                    {"prompt": "p", "images": images, "path": "/w/o", "url": "https://x.example/"})
+        self.assertEqual((tool, ti["url"], ti["urls"]), ("WebFetch", images[0], images))
+        d = e.decide(tool, ti)
+        self.assertEqual((d["verdict"], "TK-N001" in d["rule_ids"]), ("deny", True), d)
+        _, ti = agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "images": images[1:],
+                                                                              "urls": ["https://x.example/"]})
+        self.assertEqual((ti["url"], "urls" in ti), (images[1], False))
+        # a call that downloads some images and reads others is denied in the hook: a call is decided as one tool
+        def blocked(imgs):
+            return agent_hooks._blocked("opencode", {"tool_name": "experimental_image_generate",
+                                                     "tool_input": {"prompt": "p", "images": imgs}})
+        self.assertIn("download the image to a file first", blocked(["/w/a.png", images[1]]))
+        self.assertIsNone(blocked(["/w/a.png", "/w/b.png"]))
 
 
 class GptmeTools(unittest.TestCase):
@@ -3144,6 +3178,90 @@ class Installer(unittest.TestCase):
                 agent_hooks.install("copilot", d, v2=True)
             self.assertIn(".git/info/exclude", out.getvalue())
             self.assertIn("usually committed", out.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(d, ".git")))   # outside git: advice only, no exclude file
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_keeps_the_file_out_of_git(self):
+        # #1000: in a checkout, init adds the file to the exclude file once, uninstall takes the line out
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            exclude = os.path.join(d, ".git", "info", "exclude")
+            with open(exclude, "a") as f:
+                f.write("*.mine")   # the person's own line, with no newline after it
+
+            def lines():
+                with open(exclude) as f:
+                    return f.read().splitlines()
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_hooks.install("copilot", d, v2=True)
+                agent_hooks.install("copilot", d, v2=True)
+            self.assertEqual(lines().count("/.github/hooks/tracekit.json"), 1)
+            self.assertIn("*.mine", lines())
+            self.assertEqual(out.getvalue().count("added to"), 1)
+            self.assertNotIn("usually committed", out.getvalue())
+            status = subprocess.run(["git", "-C", d, "status", "--porcelain", "--untracked-files=all"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertNotIn("tracekit.json", status)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", d, uninstall=True)
+            self.assertNotIn("/.github/hooks/tracekit.json", lines())
+            self.assertIn("*.mine", lines())
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_in_a_subfolder_and_a_worktree(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, wt = os.path.join(d, "repo"), os.path.join(d, "wt")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo]
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run([*git, "worktree", "add", "-q", wt], check=True)
+            sub = os.path.join(repo, "app[1]")   # a pattern character in the path: matched as written
+            os.makedirs(sub)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", sub, v2=True)
+                agent_hooks.install("copilot", wt, v2=True)
+            for top in (repo, wt):
+                status = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=all"],
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertNotIn("tracekit.json", status)
+            with open(os.path.join(repo, ".git", "info", "exclude")) as f:
+                self.assertIn("/app\\[1]/.github/hooks/tracekit.json", f.read().splitlines())
+
+    def test_copilot_init_says_when_claude_codes_project_hook_also_runs(self):
+        # #1000: Copilot CLI runs a repository's .claude hooks, so Tracekit's Claude Code hook there decides each call too
+        from tracekit import install
+        with tempfile.TemporaryDirectory() as d:
+            for local in (False, True):
+                with self.subTest(local=local):
+                    shutil.rmtree(os.path.join(d, ".claude"), ignore_errors=True)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertNotIn("recorded twice", out.getvalue())
+                    name = "settings.local.json" if local else "settings.json"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_hooks(os.path.join(d, ".claude", name))
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertIn("recorded twice", out.getvalue())
+                    self.assertIn(name, out.getvalue())
+            patch_env(self, HOME=d, USERPROFILE=d, COPILOT_HOME=None)
+            work = os.path.join(d, "work")
+            os.makedirs(os.path.join(work, ".claude"))
+            shutil.copy(os.path.join(d, ".claude", "settings.local.json"), os.path.join(work, ".claude"))
+            cwd = os.getcwd()
+            try:
+                for where, said in ((work, True), (d, False)):   # a user install reads the working directory's, not ~/.claude
+                    os.chdir(where)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", v2=True)
+                    self.assertEqual("recorded twice" in out.getvalue(), said)
+            finally:
+                os.chdir(cwd)   # out of `d` before it is removed
 
     def test_copilot_user_hooks_follow_copilot_home(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3653,6 +3771,65 @@ class Installer(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
                          ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
 
+    def test_kilo_browser_open_and_repo_clone_are_fetches_of_their_url(self):
+        # #988: browser_open opens its `url` (kilocode/tool/browser-open.ts) and repo_clone clones the remote Kilo's
+        # Repository.parse makes of its `repository` (core/src/repository.ts): each is decided as a WebFetch, so the
+        # fetch rules read it. They passed as unknown tools, flagged on the dev pack
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        for name, args in [("browser_open", {"url": "http://169.254.169.254/latest/meta-data/"}),
+                           ("repo_clone", {"repository": "169.254.169.254/a/b", "url": "https://github.com/o/r"}),
+                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"}),
+                           # git connects to the host before the first ':', whatever an '@' after it says
+                           ("repo_clone", {"repository": "10.0.0.5:x@github.com:o/r.git"})]:
+            with self.subTest(name=name, args=args):
+                mapped, ti = agent_hooks.tool("kilo", name, args)
+                d = e.decide(mapped, ti)
+                self.assertEqual((mapped, d["verdict"], "TK-N001" in d["rule_ids"]), ("WebFetch", "deny", True), d)
+                self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)   # OpenCode has no such tool
+        for repository, url in [("owner/repo", "https://github.com/owner/repo.git"),
+                                ("github:o/r.git", "https://github.com/o/r.git"),
+                                ("git@gitlab.example:g/r.git", "ssh://git@gitlab.example/g/r.git"),
+                                ("10.0.0.5:x@github.com:o/r.git", "ssh://10.0.0.5/x@github.com:o/r.git"),
+                                ("git+https://h.example/a/b.git#main", "https://h.example/a/b.git"),
+                                (" Code.Example/g/s/r.git/ ", "https://code.example/g/s/r.git"),
+                                ("file:///tmp/r", "file:///tmp/r")]:   # Kilo refuses a file: URL: decided as sent
+            with self.subTest(repository=repository):
+                self.assertEqual(agent_hooks.tool("kilo", "repo_clone", {"repository": repository})[1]["url"], url)
+
+    def test_kilo_memory_save_writes_kilos_memory_files(self):
+        # #988: kilo_memory_save saves a note later sessions read back: a remember to project.md, a correct to
+        # corrections.md, a forget from all three files (kilo-memory: tool.ts, storage/paths.ts); a skip writes nothing
+        memory = "~/.local/share/kilo/memory/"
+        self.assertEqual(agent_hooks.tool("kilo", "kilo_memory_save", {"action": "remember", "text": "t", "content": "x"}),
+                         ("Write", {"action": "remember", "text": "t", "content": "t", "file_path": memory + "project.md",
+                                    "paths": [memory + "project.md"]}))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "correct", "text": "t", "key": "k"})
+        self.assertEqual((mapped, ti["file_path"], ti["content"]), ("Write", memory + "corrections.md", "t"))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "forget", "query": "q", "text": "t"})
+        self.assertEqual((mapped, ti["paths"], "content" in ti), ("Edit", [memory + f for f in (
+            "project.md", "environment.md", "corrections.md")], False))
+        # held as harness settings (TK-F009), from a file tool and from the shell (TK-F015), as Kilo itself asks
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        for pack in ("dev", "coding", "server", "strict"):
+            e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack + ".yaml"))[0])
+            for args in ({"action": "remember", "text": "t"}, {"action": "correct", "text": "t"},
+                         {"action": "forget", "query": "q"}):
+                with self.subTest(pack=pack, args=args):
+                    d = e.decide(*agent_hooks.tool("kilo", "kilo_memory_save", args))
+                    self.assertEqual((d["verdict"], "TK-F009" in d["rule_ids"]), ("ask", True), d)
+            for command in ("echo t >> ~/.local/share/kilo/memory/app-0123456789ab/project.md",
+                            "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+        for name, args in [("kilo_memory_save", {"action": "skip"}), ("kilo_memory_save", {"action": ["remember"]}),
+                           ("kilo_memory_save", {"action": {"remember": 1}}),   # unhashable: tool() raised TypeError
+                           ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
+            with self.subTest(name=name):
+                self.assertEqual(agent_hooks.tool("kilo", name, args), (name, args))
+
     def test_codex_joins_an_argv_only_of_strings(self):
         """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
         so tracekit audit --agent codex crashed."""
@@ -3693,7 +3870,7 @@ class Installer(unittest.TestCase):
         import site
         from tracekit import install
         user = os.path.join(site.getusersitepackages(), "tracekit", "__init__.py")   # pip install --user, which -I hides
-        events = ("tool.execute.before", "tool.execute.after")
+        events = ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")
         with mock.patch("importlib.util.find_spec", return_value=mock.Mock(origin=user)):
             plugin = agent_hooks._opencode_plugin(None, False)
             want = {ev: install._dev_hook_argv("tracekit.agent_hooks", "entry", ("opencode", ev)) for ev in events}
@@ -3765,7 +3942,8 @@ class Installer(unittest.TestCase):
                     plugin = f.read()
                 # the same plugin, whose hook is told it runs for Kilo, and whose batch block names Kilo Code's config
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
-                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo")
+                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace('"opencode", "session.', '"kilo", "session.')
+                    .replace("--agent opencode", "--agent kilo")
                     .replace("OpenCode's experimental batch", "Kilo Code's experimental batch").replace(
                         "batch_tool in opencode.json", "batch_tool in kilo.json"))
                 self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
