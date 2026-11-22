@@ -1666,6 +1666,21 @@ class HeldCalls(unittest.TestCase):
         self.assertTrue(why.startswith("moving money"), why)
         self.assertIn("; the policy can't read what this shell command runs. ", why)
 
+    def test_a_denied_call_names_only_the_denys_reason_and_remedy_beside_a_hold(self):
+        """A write of a sitecustomize.py into the tool venv is denied (TK-D013) and held (TK-A067), and its message said
+        "no one can approve it" beside "Have a person approve the held call": a deny's reason and remedy are all it shows."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        me = types.SimpleNamespace(policy=pol)
+        why = service.SignerService._reasons(me, ["TK-D013", "TK-A067"])
+        self.assertIn("writing Tracekit's own files", why)
+        self.assertNotIn(".pth", why)
+        self.assertNotIn("approve", why)
+        held = service.SignerService._reasons(me, ["TK-A067"])   # (a hold alone keeps its own)
+        self.assertIn(".pth", held)
+        self.assertIn("approve", held)
+        mixed = service.SignerService._reasons(me, ["TK-SHELL-PARSE", "TK-D007"])   # an engine hold beside a deny: the deny's
+        self.assertNotIn("can't read", mixed)
+
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
         held."""

@@ -2206,6 +2206,8 @@ class SignerService:
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
         INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
+        but when a deny rule is among `ids` only the deny rules' (a call that is denied cannot be approved, so the
+        message of a hold beside it would say otherwise),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
         so its label is no reason it was denied or held."""
         engine_reasons = {**policy_compile.ENGINE_REASONS}
@@ -2213,6 +2215,9 @@ class SignerService:
             engine_reasons["TK-SHELL-PARSE"] = cause
         by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
+        denied = {r["id"] for sec, r, *_ in self.policy.rules if sec == "deny"} & set(ids)
+        if denied:   # no one can approve a deny: a hold's reason and remedy ("have a person approve") would contradict it
+            rules = [r for r in rules if r.get("id") in denied]
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
         return (why + INSTEAD * bool(why and instead) + instead)[:1024]
