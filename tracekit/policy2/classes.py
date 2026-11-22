@@ -18,19 +18,34 @@ SHELL_KEYS = ("command", "cmd", "commands")
 WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir")
 
 
+UNREAD = object()   # workdir's and in_workdir's: a working directory no one reading places
+
+
+def workdir(args):
+    """The working directory a shell call's arguments name (WORKDIR_KEYS, in any case): None for none (or an empty
+    one); UNREAD for more than one (each key, any case, counts) or one that isn't text."""
+    named = [v for k, v in args.items() if isinstance(k, str) and k.casefold() in WORKDIR_KEYS and v is not None]
+    if not named or named == [""]:
+        return None
+    return named[0] if len(named) == 1 and isinstance(named[0], str) else UNREAD
+
+
 def in_workdir(args):
-    """Each reading of a shell call run in a working directory its arguments name (WORKDIR_KEYS): its arguments with
-    the command as `cd <dir> && <command>` (an argv as the line it is, a `commands` list as its lines), so a relative
-    path it names is read in that folder; none for a call with no such directory or no command."""
+    """A shell call's arguments as run in the working directory they name (workdir): the command as `cd <dir> &&
+    <command>` (an argv as the line it is; each entry of a `commands` list, which may each run in a shell of their
+    own, as `cd <dir> && <entry>`), so a relative path it names is read in that folder. None for a call that names
+    none, or has no command; UNREAD for one whose working directory workdir can't place."""
+    if (d := workdir(args)) is None or d is UNREAD:
+        return d
     key = next((k for k in SHELL_KEYS if k in args), None)
-    command = args.get(key)
-    if isinstance(command, list) and all(isinstance(w, str) for w in command):
-        command = "\n".join(command) if key == "commands" else shlex.join(command)
-    if not isinstance(command, str):
-        return []
+    command, cd = args.get(key), f"cd {shlex.quote(d)} && "
     rest = {k: v for k, v in args.items() if k != key}
-    return [{**rest, "command": f"cd {shlex.quote(v)} && {command}"} for k, v in args.items()
-            if isinstance(v, str) and v and k.casefold() in WORKDIR_KEYS]
+    if isinstance(command, list) and command and all(isinstance(w, str) for w in command):
+        return {**rest, "commands": [cd + w for w in command]} if key == "commands" else \
+            {**rest, "command": cd + shlex.join(command)}
+    return {**rest, "command": cd + command} if isinstance(command, str) else None
+
+
 PATH_KEYS = ("file_path", "notebook_path", "path")
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on

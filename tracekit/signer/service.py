@@ -531,6 +531,17 @@ def _stricter(a, b):
     return d
 
 
+def _in_workdir(policy, tool, args, d, untrusted):
+    """`d`, shell call `tool`'s decision, and its one reading in the working directory it names (classes.in_workdir),
+    the stricter standing; held (TK-SHELL-PARSE) where it names more than one or one that isn't text. (The reading is a
+    decision of its own, never looser than it reads, as `d` is: engine.decide's fallback for a spent budget.)"""
+    moved = classes.in_workdir(args)
+    if moved is classes.UNREAD:
+        return _stricter(d, {"verdict": policy.policy.get("on_parse_error", "ask"), "rule_ids": ["TK-SHELL-PARSE"],
+                             "policy_hash": policy.policy_hash, "engine": policy.engine, "unread": "workdir"})
+    return d if moved is None else _stricter(d, policy.decide(tool, moved, untrusted=untrusted))
+
+
 def evaluate(policy, tool, args, hint=None, untrusted=None):
     """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
     hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
@@ -542,18 +553,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
     its type), logged with its traceback, never an exception that drops the connection and lets the call run
     unrecorded; a RecursionError is the request's nesting, which call() refuses."""
     try:
-        d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
         # a shell tool's own working directory (Codex's and OpenCode's workdir, Gemini CLI's dir_path, Cursor's
-        # working_directory: classes.WORKDIR_KEYS) is where its command runs: decided as `cd <dir> && <command>` too, so
-        # a relative path it names is read in that folder
-        for moved in classes.in_workdir(args) if cls == "shell" else ():
-            d = _stricter(d, policy.decide(tool, moved, untrusted=untrusted))
+        # working_directory: classes.in_workdir) is where its command runs: the call is decided as `cd <dir> &&
+        # <command>` too, so a relative path it names is read in that folder; a call that names more than one working
+        # directory, or one that isn't text, is held, so it is read twice at most
+        d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        d = _in_workdir(policy, tool, args, d, untrusted) if cls == "shell" else d
         # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
-            for moved in classes.in_workdir(args) if policy.tool_class(listed) == "shell" else ():
-                d = _stricter(d, policy.decide(listed, moved, untrusted=untrusted))
+            d = _in_workdir(policy, listed, args, d, untrusted) if policy.tool_class(listed) == "shell" else d
         if tool in FILE_TOOLS and cls == "unknown":
             d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
         # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text

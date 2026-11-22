@@ -7259,3 +7259,49 @@ class ShellWorkingDirectory(unittest.TestCase):
                         twin = svc.evaluate(e, tool, {**args, key: "/tmp/project"})[0]
                         alone = svc.evaluate(e, tool, {k: v for k, v in args.items() if k != key})[0]
                         self.assertEqual((twin["verdict"], twin["rule_ids"]), (alone["verdict"], alone["rule_ids"]))
+
+    def test_each_entry_of_a_commands_list_runs_in_the_working_directory(self):
+        """`{"commands": ["cd /tmp", "printf '{}' > settings.json"], "workdir": "~/.claude"}` was allowed: the list
+        was read as one line after the `cd` into the working directory, so the first entry's `cd /tmp` moved the
+        second, though each entry may run in a shell of its own, which starts there. Each entry is now read as
+        `cd <dir> && <entry>`."""
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0])
+        home = os.path.expanduser("~")
+        for args, rule in (({"commands": ["cd /tmp", "printf '{}' > settings.json"],
+                             "workdir": os.path.join(home, ".claude")}, "TK-F015"),
+                           ({"commands": ["cd /tmp", "cp /tmp/x key"],
+                             "dir_path": os.path.join(home, ".local", "share", "tracekit")}, "TK-D007")):
+            with self.subTest(args=args):
+                d = svc.evaluate(e, "Bash", args)[0]
+                self.assertEqual((d["verdict"] in ("ask", "deny"), rule in d["rule_ids"]), (True, True), d)
+
+    def test_a_call_naming_more_than_one_working_directory_is_held(self):
+        """Each working-directory key, in any case (`workdir`, `Workdir`, `WORKDIR` …), was a reading of the whole
+        command of its own: 64 of them on a 60 KB line took 52 s. A call is now read in one working directory at most:
+        one that names more than one (each key counts, the same value too) or one that isn't text is held
+        (TK-SHELL-PARSE, cause workdir); none, an empty one or None reads as the command alone."""
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0])
+        for extra in ({"workdir": "/tmp/a", "Workdir": "/tmp/a"}, {"cwd": "/tmp/a", "dir_path": "/tmp/b"},
+                      {"workdir": "/tmp/a", "CWD": ""}, {"workdir": ["/tmp/a"]}, {"cwd": 5}):
+            with self.subTest(extra=extra):
+                d = svc.evaluate(e, "Bash", {"command": "ls", **extra})[0]
+                self.assertEqual((d["verdict"], d["rule_ids"], d.get("unread")), ("ask", ["TK-SHELL-PARSE"], "workdir"))
+        for extra in ({"workdir": "/tmp/a"}, {"workdir": ""}, {"cwd": None}, {}):
+            with self.subTest(extra=extra):
+                self.assertEqual(svc.evaluate(e, "Bash", {"command": "ls", **extra})[0]["verdict"], "allow")
+
+    @pytest.mark.serial
+    def test_many_working_directory_keys_take_one_reading_s_time(self):
+        """(as above) 64 spellings of `workdir` on a ~60 KB line: decided in about the time the line alone takes."""
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0])
+        cmd = ("f(){ g; }; " * 6000)[:60000]
+        keys = ["".join(c.upper() if b >> i & 1 else c for i, c in enumerate("workdir")) for b in range(64)]
+
+        def took(args):
+            t = time.thread_time()
+            d = svc.evaluate(e, "Bash", args)[0]
+            return time.thread_time() - t, d
+        alone, _ = took({"command": cmd})
+        spent, d = took({"command": cmd, **dict.fromkeys(keys, "/tmp")})
+        self.assertEqual((d["verdict"], "TK-SHELL-PARSE" in d["rule_ids"]), ("ask", True))
+        self.assertLess(spent, 3 * alone + 0.5, (spent, alone))

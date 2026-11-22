@@ -62,6 +62,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "typed": {"reason": "it is text typed into a command already running, a key, or a line "
                                                "left open, which runs with what came before or comes after it",
                                      "remedy": "Send the whole command in one call, on lines it closes."},
+                           "workdir": {"reason": "its arguments name more than one working directory, or one that "
+                                                 "isn't text",
+                                       "remedy": "Name one working directory, as text."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
