@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import unittest
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,7 +25,7 @@ from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as pc
 from tracekit.policy2.engine import Engine
-from tracekit.signer import pipeline
+from tracekit.signer import labels, pipeline
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RESPONSES, RPCError, validate
 from tracekit.verify import v2
@@ -426,15 +427,6 @@ class TestRunBound(Case):
             with self.subTest(continues=continues):
                 _, a = self.ask(HELD, run=self.register(**({"continues": True} if continues else {})))
                 self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
-        with mock.patch.object(svc, "SECRETS_S", 0):   # while the run that read it is open, whatever the window
-            _, a = self.ask(HELD, run=self.register())
-        self.assertEqual(a["ai"]["labels"], ["secrets_access"])
-        self.s.call(AGENT, "close_run", {"request_id": rid(), **reader[0]})
-        _, a = self.ask(HELD, run=self.register())   # and for SECRETS_S after it closed
-        self.assertEqual(a["ai"]["labels"], ["secrets_access"])
-        with mock.patch.object(svc, "SECRETS_S", 0):   # the window past: clean again
-            _, a = self.ask(HELD, run=self.register())
-        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
         other = CallerIdentity("uid", "990777", True)   # another requester's runs don't carry it
         r = self.s.call(other, "register_run", {"request_id": rid(), "agent": {"name": "x"}})
         run = {"run_id": r["run_id"], "run_token": r["run_token"]}
@@ -442,6 +434,32 @@ class TestRunBound(Case):
                                       "tool": "Bash", "args_source": "parsed", "args": {"command": INDEX.format("o1")}})
         aid = self.s.call(other, "approval_request", {"request_id": rid(), **run, "tool_call_id": "o1"})["approval_id"]
         self.assertEqual(self.s.log.approvals[aid]["ai"]["labels"], [])
+
+    def test_a_run_that_continues_an_earlier_one_carries_every_label_of_the_bound(self):
+        self.precedent(HELD)
+        _, a = self.ask(HELD, run=self.register(continues=True))   # it can't see what the earlier run read
+        clean = self.s.policy.policy["approval_agent"]["run"]["clean"]
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, sorted(clean)))
+        _, a = self.ask(HELD, run=self.register())
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
+
+    def test_the_label_holds_for_label_inherit_s_after_the_run_that_read_ends(self):
+        self.precedent(HELD)
+        reader = self.register()
+        self.ask("cat .env", run=reader)
+        real = labels.labels_for
+        later = lambda log, run, now=None: real(log, run, now=time.time() + 3601)   # noqa: E731
+        heir = self.register()
+        with mock.patch.object(labels, "labels_for", later):   # while the run that read it is open, whatever the window
+            _, a = self.ask(HELD, run=heir)
+        self.assertEqual(a["ai"]["labels"], ["secrets_access"])
+        for run in (reader, heir):   # a run that inherited it carries it on while open, too
+            self.s.call(AGENT, "close_run", {"request_id": rid(), **run[0]})
+        with mock.patch.object(labels, "labels_for", later):   # past it (an hour by default): clean again
+            _, a = self.ask(HELD, run=self.register())
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
+        _, a = self.ask(HELD, run=self.register())   # within it: held
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
 
     def principal_switch(self, first, then):
         """A secret read in a run registered with `first`, then a hold in a fresh run registered with `then`."""
@@ -575,9 +593,9 @@ class TestDelegatedRuns(Case):
                          (f"uid:{AGENT.subject}", False, ["secrets_access"]))
 
     def test_a_runs_requesters_are_its_owner_and_its_writers(self):
-        self.assertEqual(pipeline.requesters({"owner": "uid:1", "writers": {"s": "uid:2", "g": "uid:3 through a gateway"}}),
+        self.assertEqual(labels.requesters({"owner": "uid:1", "writers": {"s": "uid:2", "g": "uid:3 through a gateway"}}),
                          {"uid:1", "uid:2", "uid:3"})   # a gateway's caller as the identity it calls for
-        self.assertEqual(pipeline.requesters({"owner": None, "writers": {}}), set())
+        self.assertEqual(labels.requesters({"owner": None, "writers": {}}), set())
 
     def test_a_secret_the_agent_read_holds_a_run_handed_to_it(self):
         self.precedent(HELD)
@@ -588,16 +606,18 @@ class TestDelegatedRuns(Case):
                          (f"uid:{AGENT.subject}", False, ["secrets_access"]))
 
 
-class TestUntrustedUnread(Case):
+class TestUntrustedContent(Case):
     policy = {"run": {"clean": ["untrusted_content", "secrets_access"]}}
 
-    def test_a_bound_on_a_label_this_signer_cant_read_sends_every_hold_to_people(self):
-        aid, _ = self.ask()
-        self.person(aid)
+    def test_a_run_that_read_untrusted_content_sends_every_hold_to_people(self):
+        self.precedent()
         _, a = self.ask()
-        self.assertIn("names untrusted_content, which this signer doesn't read yet", a["agent"]["reason"])
-        self.assertEqual((a["ai"]["labels"], a["ai"]["clean"]), ([], False))   # no label claimed, no precedent
-        self.assertEqual(self.s.log.agent["precedents"], {})
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
+        self.s.call(AGENT, "observe", {"request_id": rid(), **self.run, "stream": "s", "client_seq": next(self.seq),
+                                       "source": "web:1", "trust": "untrusted", "value": "a page"})
+        _, a = self.ask()
+        self.assertEqual((a["agent"]["reason"], a["ai"]["labels"]),
+                         ("the run carries untrusted_content: people answer it", ["untrusted_content"]))
 
 
 class TestVeto(Case):
@@ -781,8 +801,7 @@ class TestReplayAndView(Case):
         aid, _ = self.ask()
         self.ai(aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
-        self.ask("cat .env")
-        keys = ("precedents", "demoted", "playbook", "tainted")
+        keys = ("precedents", "demoted", "playbook")
         before = json.loads(json.dumps({k: self.s.log.agent[k] for k in keys}))
         self.restart()
         self.assertEqual({k: self.s.log.agent[k] for k in keys}, before)
@@ -790,7 +809,6 @@ class TestReplayAndView(Case):
         self.restart()
         self.assertEqual({k: self.s.log.agent[k] for k in keys}, before)
         self.assertIn(p, before["precedents"])
-        self.assertEqual(list(before["tainted"]), [f"uid:{AGENT.subject}"])
 
     def test_the_review_view_shows_precedents_labels_and_recent_calls(self):
         bidi = "/Users/me/api" + chr(0x202E)   # a right-to-left override the reviewer must see escaped
@@ -1433,6 +1451,41 @@ class TestReviewerOnTheSigner(Case):
         with cli, contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(reviewer.main(["enable", "TK-A025"]), 1)
         self.assertIn("has not dropped it", err.getvalue())
+
+
+class TestTheRunBoundsLabels(Case):
+    """The run bound's labels, under a policy with no run condition of its own: the signer records them because
+    approval_agent's run bound names them, and lost events set every one; both verifiers replay them the same."""
+    bundle = TestEvidence.bundle
+
+    def open(self):
+        pol = {**laptop(), "ask": [r for r in DEV_POLICY["ask"] if "when" not in r]}
+        s = svc.SignerService(self.dir, policy=Engine(pol), identity=AGENT, approvals=self.approvals,
+                              authorize={f"uid:{REVIEWER.subject}": sorted(svc.AGENT_METHODS)})
+        self.addCleanup(s.close)
+        return s
+
+    def verified(self):
+        import test_ts_verifier as tv
+        path, trust = self.bundle()
+        rep, code = v2.verify(path, trust)
+        got = {c["check"]: c["status"] for c in rep.checks}
+        self.assertEqual((code, got["run labels"]), (0, "pass"), rep.checks)
+        if not tv.SKIP:
+            self.assertEqual({c["check"]: c["status"] for c in tv.ts_verify(path, trust)["checks"]}, got)
+
+    def test_a_secret_read_labels_the_run_for_the_run_bound_alone(self):
+        self.ask("cat .env")
+        _, a = self.ask(HELD)
+        self.assertEqual((a["ai"]["labels"], a["agent"]["reason"]),
+                         (["secrets_access"], "the run carries secrets_access: people answer it"))
+        self.verified()
+
+    def test_events_the_signer_never_got_set_every_label(self):
+        next(self.seq)   # client_seq 0 never reaches the signer
+        _, a = self.ask(HELD)
+        self.assertEqual(a["ai"]["labels"], ["secrets_access"])
+        self.verified()
 
 
 class TestWhatPeopleSee(Case):

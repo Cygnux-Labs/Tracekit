@@ -354,9 +354,9 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, SECRETS_S, RecordLog, approval,
+from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog, approval,
                                       constraint_state, cooldown_key, degrade, epoch, final_run, owner,
-                                      person_only_keys, pinned, ran, requesters, salt_label, skipped, subject, writer)
+                                      person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -430,10 +430,8 @@ AGENT_CONSUME_S, AGENT_TIMEOUT_S = 300, 600
 # lean: fixed caps; make them approvals.* keys if deployments need others
 AGENT_REVIEWS_PER_RUN, AGENT_REVIEWS_PER_TENANT, AGENT_REVIEWS_WINDOW_S = 10, 1000, 3600
 RECENT_CALLS = 10   # the run's last calls an AI approver's review shows (tool, decision, rule ids)
-# the AI approver (docs/approvals.md#the-ai-approver): the run labels this signer reads for approval_agent's run bound
-# (_run_labels), the precedents a request or answer names per decision, and the playbook's window and the human
-# answers, all one way, a proposal needs
-RUN_LABELS_READ = ("secrets_access",)
+# the AI approver (docs/approvals.md#the-ai-approver): the precedents a request or answer names per decision, and the
+# playbook's window and the human answers, all one way, a proposal needs
 PRECEDENTS_NAMED, PLAYBOOK_S, PLAYBOOK_MIN = 8, 7 * 86400, 3
 # characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
 # and line/paragraph separators
@@ -1255,8 +1253,7 @@ class SignerService:
                 raise ValueError(why)
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
-                                 detect.Detector.of(policy), labels.Sources.of(policy), frozenset(
-                                     r["id"] for _, r, *_ in policy.rules if r.get("label") == "secrets_access"))
+                                 detect.Detector.of(policy), labels.Sources.of(policy))
         except BaseException:
             storage.close()
             raise
@@ -2254,9 +2251,14 @@ class SignerService:
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if self._agent_mode(a) == "enforce" else {}),
+                **({"agent": True} if a["agent_mode"] == "enforce" else {}),
                 **{k: a[k] for k in ("answered", "escalation") if a.get(k)},
-                **({"ai": self._ai(approval_id, a)} if a.get("agent") else {})}
+                **({"ai": a["people_ai"]} if a["people_ai"] else {})}
+
+    def _agent_views(self, approval_id, a):
+        """(on the writer: they read the run's labels) What approval `a`'s summary shows of agent approvers: `agent_mode`
+        (_agent_mode) and `people_ai` (_ai, or None when its request didn't weigh them)."""
+        return {"agent_mode": self._agent_mode(a), "people_ai": self._ai(approval_id, a) if a.get("agent") else None}
 
     def _ai(self, approval_id, a):
         """People's view of agent approvers on approval `a`, whose request weighed them (its `agent`): `mode`, how an
@@ -2472,26 +2474,22 @@ class SignerService:
                 "spend": spend, **({"target": target, "untrusted": bool(prov)} if target is not None else {})}
 
     def _run_labels(self, run):
-        """The labels of `run` that approval_agent's run bound reads, as this signer has them (RUN_LABELS_READ), read for
-        each of its requesters (pipeline.requesters: its owner and the identities it was delegated to, as precedents
-        match them) across all of the runs each spoke in, delegated ones too, in every tenant it asserts and whatever
-        principal each attested, never from what a client says: secrets_access while one of them that had a call
-        decided under a rule labelled secrets_access (TK-F005 and its kin, as detection counts the label; a denied or
-        held call too) or lost events the signer never got (a client_counter_gap: what they held is unknown) is open,
-        and for SECRETS_S after it closed; and for a run registered as continuing an earlier one. A run the agent
-        registers afresh or is handed is no way around it. untrusted_content is not read yet: a bound that names it
-        sends every hold to people (_unclean)."""
-        # lean: untrusted_content is unread until run labels are signed records (1.8 A's run.label); read it here then
-        since = time.time() - SECRETS_S
-        ends = [t for k in requesters(run) for t in (self.log.agent["tainted"].get(k) or {}).values()]
-        return ["secrets_access"] if run.get("partial_start") or any(t is None or t > since for t in ends) else []
+        """The run labels (docs/policy-v2.md#run-conditions) `run` carries now, never from what a client says: its own
+        (its run.label records), those its requesters carry from another run of theirs (labels.labels_for: its client,
+        delegates and gateway callers, in any tenant and under any principal, while that run is open and for
+        label_inherit_s after it ends), and, for a run registered as continuing an earlier one, whose calls it can't
+        see, every label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around
+        them. On the writer (labels_for)."""
+        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys()
+        if run.get("partial_start"):
+            have |= set(self.policy.policy["approval_agent"]["run"]["clean"])
+        return sorted(have)
 
     def _unclean(self, run):
-        """The labels of approval_agent's run bound that `run` carries now, or that this signer can't read: while one
-        is, people answer its holds."""
-        labels = self._run_labels(run)
-        return [x for x in self.policy.policy["approval_agent"]["run"]["clean"]
-                if x in labels or x not in RUN_LABELS_READ]
+        """The labels of approval_agent's run bound that `run` carries now (_run_labels): while one is, people answer
+        its holds."""
+        carried = self._run_labels(run)
+        return [x for x in self.policy.policy["approval_agent"]["run"]["clean"] if x in carried]
 
     def _precedents(self, tenant, requester, digest):
         """{approve, reject}: the approval ids of people's answers that count as precedents for a call of `requester`
@@ -2519,8 +2517,7 @@ class SignerService:
         ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
                "digest": digest, "labels": self._run_labels(run), "clean": clean, "precedents": prec,
                **({"asserted": ["project"]} if project else {})}
-        why = (f"the run carries {unclean[0]}: people answer it" if unclean and unclean[0] in RUN_LABELS_READ else
-               f"the run bound names {unclean[0]}, which this signer doesn't read yet: people answer it" if unclean else
+        why = (f"the run carries {unclean[0]}: people answer it" if unclean else
                "an argument carries a value only untrusted content brought into the run: people answer it"
                if untrusted else
                "no person has answered a call like this one (the same rules, tool, target and project) in a clean run: "
@@ -4233,14 +4230,14 @@ class SignerService:
                     # no view served (the signer restarted since), or its precedents, labels or playbook changed
                     raise RPCError("conflict", f"{aid}: what approval_review showed you is not what holds now: read "
                                                "it again and answer that")
-                prec, labels, book = state
+                prec, carried, book = state
                 pin = pinned({**data, "relied_on": {"playbook": book}})
                 demoted = demoted or next((
                     "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
                     ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
                 ext = {"relied_on": {
                     "precedents": prec, "playbook": book, "view": self._commit(f"approval.view:{aid}", served[0]),
-                    "policy_hash": a["policy_hash"], "labels": labels,
+                    "policy_hash": a["policy_hash"], "labels": carried,
                     "mode": "shadow" if shadow or demoted else "enforce", **({"demoted": demoted} if demoted else {}),
                     **given}}
                 basis = decision == "approve" and (
@@ -4296,7 +4293,7 @@ class SignerService:
                           for c, ok in self.policy.bounds(r, real, deadline)]
         except TimeoutError:
             conditions = [{"rule": "", "condition": "a bound's pattern ran out of time", "passed": False}]
-        more = self._approver_view(a, copy) if a.get("ai") else {}
+        more = self.log.write(lambda tx: self._approver_view(a, copy)) if a.get("ai") else {}
         conditions, state = conditions + more.pop("conditions", []), more.pop("state", None)
         view = {"approval_id": aid, "tool": a["tool"], "expires_at": a["expires_at"],
                 "rules": [{"id": r["id"], **{k: r[k][:1024] for k in ("reason", "rationale") if k in r}} for r in rules],
@@ -4328,18 +4325,17 @@ class SignerService:
         _ai_state as the view shows it."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
         state = self._ai_state(a, run)
-        (prec, labels, _), unclean = state, self._unclean(run)
+        (prec, carried, _), unclean = state, self._unclean(run)
         found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
         book = self.log.agent["playbook"].get(a["run_key"][0])
-        conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label" + (
-            "" if x in RUN_LABELS_READ else " (this signer doesn't read it yet)"), "passed": x not in unclean}
+        conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label", "passed": x not in unclean}
             for x in self.policy.policy["approval_agent"]["run"]["clean"]] + [
             {"rule": "approval_agent", "condition": "a person answered a call like this one (the same rules, tool, "
                                                     "target and project) in a clean run", "passed": bool(found)},
             {"rule": "approval_agent", "condition": "people's answers to calls like this one agree",
              "passed": not (prec["approve"] and prec["reject"])}]
         return {"state": "sha256:" + hashlib.sha256(canonical(state)).hexdigest(), "conditions": conditions, "ai": {
-                "target": _escaped(ap["key"]), "labels": labels,
+                "target": _escaped(ap["key"]), "labels": carried,
                 "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
                                 **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
                 "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in
@@ -4626,7 +4622,8 @@ class SignerService:
 
     def _approval_get(self, identity, req):
         identity, aid = self._on_behalf(identity, req), req["approval_id"]
-        a = self.log.write(lambda tx: dict(self._visible(identity, aid)))   # committed state only
+        a = self.log.write(lambda tx: {**self._visible(identity, aid),   # committed state only
+                                       **self._agent_views(aid, self.log.approvals[aid])})
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         copy.pop("spend", None)
@@ -4639,7 +4636,8 @@ class SignerService:
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
         # copied on the writer, so only committed states are listed
         items = iter(self.log.write(lambda tx: [
-            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"]})
+            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"],
+                   **self._agent_views(aid, a)})
             for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
@@ -4650,8 +4648,8 @@ class SignerService:
         for aid, a in items:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
             if req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
                     req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a) and (
-                    "for" not in req or req["for"] == "agent" and self._agent_mode(a) is not None
-                    or req["for"] == "person" and self._agent_mode(a) != "enforce"):
+                    "for" not in req or req["for"] == "agent" and a["agent_mode"] is not None
+                    or req["for"] == "person" and a["agent_mode"] != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
                 s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}

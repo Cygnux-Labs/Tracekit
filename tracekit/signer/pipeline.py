@@ -72,10 +72,9 @@ CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "
              "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "run_labels")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
-# the AI approver (approver_state): how long a person's answer counts as a precedent, and a requester's runs carry
-# secrets_access after its labelled run closed; the circuit breaker's agreement of AI suggestions with people's answers,
-# over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
-PRECEDENT_S, SECRETS_S = 30 * 86400, 86400
+# the AI approver (approver_state): how long a person's answer counts as a precedent; the circuit breaker's agreement of
+# AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
+PRECEDENT_S = 30 * 86400
 AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
@@ -174,8 +173,7 @@ def degrade(tx, prov, state, reason):
 
 def new_agent():
     """The agent-approval state (agent_state), empty."""
-    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
-            "tainted": {}}
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -232,13 +230,8 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `tainted` (each of requesters(run), as
-    precedents match them -> {run id: None while open, else when it closed} of the runs it spoke in that had a call
-    decided under a rule labelled secrets_access, `log.secret_rules`, or lost events the signer never got, for
-    SECRETS_S after each closed: the run bound reads it across all of the requester's runs, delegated ones too, in
-    every tenant it asserts (multi_tenant_apps) and whatever principal each attested, so a run it registers afresh or
-    is handed is no way around it). A precedent goes bad when a person revokes it (precedent.revoked), an incident
-    opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}). A precedent goes bad when a person revokes it
+    (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
     of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an
     answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled restores it
     (the pin stays the answer's that changed it)."""
@@ -256,16 +249,6 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"precedent {aid} went bad: {why}")
     ap = (a or {}).get("ai")
-    # lean: a stand-in for 1.8 A's requester labels (`labels_for`, same window); swap it in once A lands, read for
-    # every requester of the run across all its principals as here
-    labelled = (typ == "policy.decision" and log.secret_rules.intersection(d.get("rule_ids") or ())
-                or typ == "capture.gap" and d.get("kind") == "client_counter_gap")
-    for k in sorted(requesters(run)):
-        held = ag["tainted"].get(k) or {}
-        if labelled or typ == "run.closing" and held.get(e["run_id"], 0) is None:
-            now = epoch(e["ts"])
-            live = {r: t for r, t in held.items() if t is None or t > now - SECRETS_S}
-            set_(ag["tainted"], k, {**live, e["run_id"]: now if run.get("closed") else None})
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
             k, now = f"{tenant}\0{r}", pinned(d)
@@ -327,16 +310,6 @@ def pinned(d):
 
 def new_contain():
     return {"incidents": {}, "cooldown": {}, "paused": {}, "enforcing": {}}
-
-
-def requesters(run):
-    """Who may request an approval in `run`, as precedents name a requester: its owner and each stream's writer (an
-    identity the run was delegated to, a gateway's caller). The AI approver's run bound taints and reads each."""
-    # lean: writers are run state (memory and snapshot), as quotas' are: a run replayed from the log after the last
-    # snapshot has its owner alone until its writers write again on a new stream; record the writer of each stream in
-    # the records if delegated runs must count exactly across a crash
-    return {w.removesuffix(" through a gateway") for w in (run.get("writers") or {}).values()} | (
-        {run["owner"]} if run.get("owner") else set())
 
 
 def cooldown_key(tenant, run):
@@ -580,14 +553,14 @@ class Tx:
 
 class RecordLog:
     def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None,
-                 labels=None, secret_rules=frozenset()):
+                 labels=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
         signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing.
-        `labels`: a labels.Sources, or None when the policy has no run condition (its runs carry no label).
+        `labels`: a labels.Sources, or None when the policy reads no label (its runs carry none).
         `respond(tx, run, e, incident)`, set by the service: writes an enforced incident.opened that record `e` fired
         and acts on it, or (incident None) acts on a decision `e` whose detection state is unavailable."""
         self.detector, self.labels, self.respond = detector, labels, None
@@ -603,7 +576,6 @@ class RecordLog:
         # SignerService.flush_refusals writes them as late_activity (memory only)
         self.late = {}
         self.handoff = lambda tool: False   # the policy's handoffs (SignerService sets it): see reconcile.observe
-        self.secret_rules = secret_rules   # the policy's rules labelled secrets_access (approver_state's `tainted`)
         self.down, self._last_try = None, 0.0
         self._replay()
         if bridge and self.head["seq"]:
@@ -836,8 +808,7 @@ class RecordLog:
             if "calls" in run:   # a final run's state keeps none
                 outcome(run["calls"], e)
             if not run["final"]:
-                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent,
-                                                                    secret_rules=self.secret_rules), run, e)
+                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
                 labels.state(dict.__setitem__, run, e)

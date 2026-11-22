@@ -516,14 +516,15 @@ of its own, and `TK-SHELL-PARSE` where `on_parse_error` denies. A call also held
 person's. On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
 `executor: t2` (a warning on a server).
 
-**The run.** While the run carries a label `run.clean` names, people answer every hold. The signer reads labels for
-the requester (its identity, as precedents match it) across all of its runs, in every tenant it asserts and whatever
-principal each attested, so a run the agent registers afresh is no way around them. `secrets_access`: a call of one of those runs was decided under a rule labelled `secrets_access` (a
-credentials file, an env file, a key), or the signer lost events of one of them; the label holds while that run is
-open and for 24 hours after it closes. A run that continues an earlier run of its session, whose calls it can't see,
-carries it too. The bound is as wide as the rules labelled `secrets_access`: a script that opens a secret file
-itself labels nothing. `untrusted_content` isn't read by this signer yet: a bound that names it sends every hold to
-people ([limits](limits.md#approvals)).
+**The run.** While the run carries a label `run.clean` names, people answer every hold. These are the run labels of
+[run conditions](policy-v2.md#run-conditions): a call that ran sets them (`secrets_access`: a read of a secret file,
+a stored secret printed; `untrusted_content`: a web page, a mail, a download), and so do events the signer lost,
+since what they did is unknown; the policy records them whenever its run bound names them. They belong to the run's
+requesters (its client, each identity it was delegated to, a gateway's caller) across all of their runs, in any
+tenant and under any principal, while the run that took one is open and for `label_inherit_s` after it ends (an hour
+by default, at most a day), so a run the agent registers afresh or is handed is no way around them. A run that continues an earlier run of its session, whose calls it can't see, carries every label of the
+bound. The bound is as wide as the rules that set a label: a script that opens a secret file itself labels nothing
+([limits](limits.md#approvals)).
 
 **Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target,
 the same project and the same requesting identity. The target: for `TK-A025`, each package source and how it was
