@@ -69,22 +69,27 @@ _QUERY = re.compile(r"[\w.\[\]-]+=[^&\s]*(?:&[\w.\[\]-]+=[^&\s]*)*")
 def _leaves(args: Any) -> Iterator[Tuple[Tuple[Any, ...], Any]]:
     """Each leaf of a call's arguments, in order, with the keys above it: dicts, lists and tuples walked, and a string
     that holds a JSON object or array, or a query string (`to=…&amount=…`), walked too under its own keys (the string
-    is a leaf as well), three strings deep at most. Arguments that hold themselves are refused (ValueError)."""
+    is a leaf as well), three strings deep at most. A name/value pair's value is under the key the pair names
+    (`{"field": "code", "value": …}` is `{"code": …}`, _pair_key). Arguments that hold themselves are refused
+    (ValueError)."""
     stack: List[Any] = [((), args, 0)]
-    inside: Set[int] = set()   # the containers being walked; a container met again inside itself is a cycle
+    # the containers being walked, kept alive so no other takes an id of theirs; one met inside itself is a cycle
+    inside: Dict[int, Any] = {}
     while stack:
         item = stack.pop()
         if isinstance(item, int):
-            inside.discard(item)
+            del inside[item]
             continue
         path, v, depth = item
         if isinstance(v, (dict, list, tuple)):
             if id(v) in inside:
                 raise ValueError("the call's arguments hold themselves")
-            inside.add(id(v))
+            inside[id(v)] = v
             stack.append(id(v))
             if isinstance(v, dict):
-                stack.extend((path + (k,), x, depth) for k, x in reversed(list(v.items())))
+                name = _pair_key(v)
+                stack.extend((path + (name if name is not None and k in _VALUES else k,), x, depth)
+                             for k, x in reversed(list(v.items())))
             else:
                 stack.extend((path, x, depth) for x in reversed(v))
         else:
@@ -98,9 +103,10 @@ def _parsed(s: str) -> Any:
     """What a string argument holds when it is a JSON object or array, or a query string (a list of one-key dicts);
     else None."""
     t = s.strip()
-    if t[:1] in ("{", "[") and len(t) <= provenance.MAX_TEXT and not _too_deep(t):
+    if t[:1] in ("{", "[") and len(t) <= provenance.MAX_TEXT:
+        t = _shallow(t)
         try:
-            return json.loads(t)
+            return json.loads(t) if t is not None else None
         except ValueError:
             return None
     if "=" in t and _QUERY.fullmatch(t):
@@ -108,22 +114,44 @@ def _parsed(s: str) -> Any:
     return None
 
 
-def _too_deep(t: str) -> bool:
-    """Whether JSON text `t` nests brackets more than 64 deep (outside its strings): such text is read as the text it
-    is, never parsed (json.loads recurses as deep as the text nests, and how deep it may depends on the caller's)."""
-    depth, in_string, escaped = 0, False, False
-    for c in t:
-        if in_string:
-            escaped, in_string = (False, True) if escaped else (c == "\\", c != '"')
-        elif c == '"':
-            in_string = True
-        elif c in "[{":
+def _shallow(t: str) -> Optional[str]:
+    """JSON text `t` with each array or object nested more than 64 deep in place of a string of its text, so its keys
+    above are read and the deeper part as the text it is (json.loads recurses as deep as the text nests, and how deep
+    it may depends on the caller's); None when a part that deep never closes."""
+    if t.count("[") + t.count("{") <= 64:
+        return t
+    out: List[str] = []
+    depth, cut, last = 0, 0, 0
+    for m in _JSON_TOKEN.finditer(t):
+        c = m.group()
+        if c in "[{":
             depth += 1
-            if depth > 64:
-                return True
+            if depth == 65:
+                cut = m.start()
         elif c in "]}":
+            if depth == 65:
+                out += [t[last:cut], json.dumps(t[cut:m.end()])]
+                last = m.end()
             depth -= 1
-    return False
+    return None if depth >= 65 else "".join(out) + t[last:]
+
+
+_JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]')   # a string, or a bracket outside one
+_NAMES = frozenset(("field", "fieldname", "propertyname", "property", "name", "key", "attribute", "column"))
+_VALUES = frozenset(("value", "values"))
+
+
+def _pair_key(d: Dict[Any, Any]) -> Optional["_Field"]:
+    """The key a name/value pair names (`{"field": "code", "operator": "EQ", "value": …}`, `{"propertyName": …}`):
+    the one string under a naming key, when the dict has a `value` or `values`."""
+    names = [x for k, x in d.items() if isinstance(k, str) and k.replace("_", "").lower() in _NAMES]
+    return _Field(names[0]) if len(names) == 1 and isinstance(names[0], str) and any(k in d for k in _VALUES) \
+        else None
+
+
+class _Field(str):
+    """A key a name/value pair gave (_pair_key): a filter's value whose field the word lists don't name is read as what a
+    lookup is by (_lookup_key)."""
 
 
 def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], memo: Optional[Dict[Any, Any]] = None
@@ -361,22 +389,52 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         kept_text = {v for path, v in _leaves(args) if isinstance(v, str) and not (path and _filter_key(path[-1]))}
         kept |= set(_mentions({t: vals for t, vals in text.items() if t in kept_text}))
         by = [r for r in rows if r["value"] in kept]
-    for path, v in _leaves(args):
-        token = _short_key(path, v)
-        if token is not None:
-            came = [{"node": "ev:" + reads[i][0]["id"], "label": reads[i][2], "trust": trust(i),
-                     "seq": reads[i][0]["seq"]} for i in _key_holders(ix, token, k)]
-            by.append({"value": str(v), "sources": came, "status": "generated" if not came else "trusted" if any(
-                x["trust"] == "trusted" for x in came) else "untrusted-only"})
+    asked = dict(x for path, v in _leaves(args) if path for x in _keys(path[-1], v))
+    holders = _key_holders(ix, set(asked.values()), k)
+    for shown, token in asked.items():
+        came = [{"node": "ev:" + reads[i][0]["id"], "label": reads[i][2], "trust": trust(i),
+                 "seq": reads[i][0]["seq"]} for i in holders[token]]
+        by.append({"value": shown, "sources": came, "status": "generated" if not came else "trusted" if any(
+            x["trust"] == "trusted" for x in came) else "untrusted-only"})
     return rows, by
 
 
-def _short_key(path: Tuple[Any, ...], v: Any) -> Optional[str]:
+def _keys(key: Any, v: Any) -> List[Tuple[str, str]]:
+    """What a lookup is by in an argument under `key`, each as (the value, read plain): its short key (_short_key), and
+    under a query's key (_query_key: `query`, `q`, `sql`, `where`, `filter`) the literals of its text (_literals)."""
+    out = []
+    t = _short_key(key, v)
+    if t is not None:
+        out.append((str(v), t))
+    if isinstance(v, str) and _query_key(key):
+        # lean: a query's first 64 literals are read (each search is one pass of a pattern of them all over each
+        # content); a literal past them isn't. Read them all when a query that long is seen in use.
+        out += [(x, _plain(x)) for x in _literals(v)[:64]]
+    return [(shown, t) for shown, t in out if sum(map(len, _KEY_PART.findall(t))) >= 3]
+
+
+def _literals(s: str) -> List[str]:
+    """The literals of a query or a filter's expression: the value of each `field:value` or `field = value` (`==`,
+    `eq`, `is`, `like`) whose field is no filter's (_filter_key), then each quoted string and each word with a digit
+    in it (`ACME-7781`, `7781`)."""
+    out: List[str] = []
+
+    def pair(m: "re.Match[str]") -> str:
+        if not _filter_key(m.group(1)):
+            out.append(m.group(2).strip("'\""))
+        return " "
+    rest = _PAIR.sub(pair, s)
+    out += [a or b for a, b in _QUOTED.findall(rest)]
+    out += _NUMBERED.findall(_QUOTED.sub(" ", rest))
+    return list(dict.fromkeys(out))
+
+
+def _short_key(key: Any, v: Any) -> Optional[str]:
     """A key too short to be an atom (3 to 5 characters with 3 or more letters and digits, or a number of 3 to 7
     digits: `781`, `#7781`, `A-781`, `Eve`, `José`, `7781.0`) under a key a lookup is by (_lookup_key: `id`, `name`,
     `supplier_code`, `account`), read plain: content that holds its letters and digits as a token (_key_holders) says
     where it came from."""
-    if not path or not _lookup_key(path[-1]):
+    if not _lookup_key(key):
         return None
     if isinstance(v, float) and v.is_integer():
         v = int(v)
@@ -385,20 +443,38 @@ def _short_key(path: Tuple[Any, ...], v: Any) -> Optional[str]:
         return t if 3 <= len(t) <= 7 else None
     if not isinstance(v, str) or len(v) >= 6:   # 6 or more characters: an atom
         return None
-    t = _plain(v)
-    return t if sum(map(len, _KEY_PART.findall(t))) >= 3 else None
+    return _plain(v)
 
 
-def _key_holders(ix: "_Index", t: str, k: int) -> List[int]:
-    """The contents before index `k` that hold short key `t` (_short_key) as a token in their text, its runs of
-    letters and of digits with or without one character between (`A-781` holds `A781`, and `A781` `A-781`), each
-    content read once for each key."""
-    n, hits = ix.keys.get(t, (0, []))
-    if n < k:
-        pat = re.compile(r"(?<![^\W_])" + r"[\W_]?".join(map(re.escape, _KEY_PART.findall(t))) + r"(?![^\W_])")
-        hits = hits + [i for i in range(n, k) if pat.search(ix.reads[i][3])]
-        ix.keys[t] = (k, hits)
-    return [i for i in hits if i < k]
+def _key_holders(ix: "_Index", tokens: Iterable[str], k: int) -> Dict[str, List[int]]:
+    """For each of a call's keys (_keys, read plain), the contents before index `k` that hold it as a token in their
+    text, its runs of letters and of digits with or without one character between (`A-781` holds `A781`, and `A781`
+    `A-781`): by one pass over each content of a pattern of them all (a key found in it leaves the pattern, and the
+    content is read again for the rest, which a key it matched may hold: `A-781` holds `781` too), each content read
+    once for each key."""
+    todo: Dict[Tuple[str, ...], List[str]] = {}
+    for t in tokens:
+        todo.setdefault(tuple(_KEY_PART.findall(t)), []).append(t)
+    read = {p: ix.keys.get(p, (0, []))[0] for p in todo}
+    hits = {p: list(ix.keys.get(p, (0, []))[1]) for p in todo}
+    for i in range(min(read.values(), default=k), k):
+        left = sorted(p for p in todo if read[p] <= i)
+        while left:
+            pat = re.compile(r"(?<![^\W_])(?:" + "|".join(r"[\W_]?".join(map(re.escape, p)) for p in left)
+                             + r")(?![^\W_])")
+            got = {tuple(_KEY_PART.findall(m.group())) for m in pat.finditer(ix.reads[i][3])}
+            if not got & set(left):
+                break
+            for p in got & set(left):
+                hits[p].append(i)
+            left = [p for p in left if p not in got]
+    out: Dict[str, List[int]] = {}
+    for p, ts in todo.items():
+        if read[p] < k:
+            ix.keys[p] = (k, hits[p])
+        for t in ts:
+            out[t] = [i for i in hits[p] if i < k]
+    return out
 
 
 def _naming(ix: "_Index", atom, names: Set[Tuple[str, str]]) -> List[int]:
@@ -456,6 +532,7 @@ REFERENCE = frozenset(("ref", "reference"))
 LOOKUP = frozenset(("name", "code", "number", "num", "no", "nr", "ref", "reference", "key", "handle", "identifier",
                     "user", "username", "login", "customer", "client", "supplier", "vendor", "contact", "member",
                     "employee", "sku", "query", "q", "search", "term", "who"))
+QUERY = frozenset(("query", "q", "sql", "where", "filter", "search", "expression", "condition", "criteria"))
 FILTER = frozenset(("status", "state", "format", "type", "kind", "year", "month", "day", "date", "sort", "limit",
                     "page", "offset", "size", "lang", "language", "locale", "mode", "period", "since", "until",
                     "currency"))
@@ -484,9 +561,19 @@ def _filter_key(key: Any) -> bool:
 
 def _lookup_key(key: Any) -> bool:
     """Whether an argument's key names what a lookup is by: its last word one of LOOKUP (`id`, `name`, `supplier_code`,
-    `customer`, `query`) or an identifier's key (_identifier_key: `account`, `iban`), and no filter's (`account_type`)."""
+    `customer`, `query`), an identifier's key (_identifier_key: `account`, `iban`), or a name/value pair's field the
+    word lists don't name (_Field); and no filter's (`account_type`)."""
+    if _filter_key(key):
+        return False
     words = _key_words(key)
-    return bool(words) and not _filter_key(key) and (_one_of(words[-1], LOOKUP) or _identifier_key(key))
+    return isinstance(key, _Field) or bool(words) and (_one_of(words[-1], LOOKUP) or _identifier_key(key))
+
+
+def _query_key(key: Any) -> bool:
+    """Whether an argument's key names a query or a filter's expression (its last word one of QUERY: `query`, `q`,
+    `sql`, `where`, `filter`), whose literals a lookup is by (_literals)."""
+    words = _key_words(key)
+    return bool(words) and _one_of(words[-1], QUERY)
 
 
 def _text_key(key: Any) -> bool:
@@ -520,7 +607,7 @@ def _text_leaves(args: Any) -> Set[str]:
         if not isinstance(v, str):
             continue
         key = path[-1] if path else None
-        if _identifier_key(key) or _text_key(key) and _lone_identifier(v):
+        if _identifier_key(key) or _text_key(key) and not _reference_key(key) and _lone_identifier(v):
             other.add(v)
         elif _text_key(key) or not any(_identifier_key(k) for k in path) and _prose(v):
             text.add(v)
@@ -529,11 +616,39 @@ def _text_leaves(args: Any) -> Set[str]:
     return text - other
 
 
+def _reference_key(key: Any) -> bool:
+    """Whether an argument's key names a reference (its last word `ref` or `reference`: `payment_ref`), which quotes an
+    identifier by design."""
+    words = _key_words(key)
+    return bool(words) and _one_of(words[-1], REFERENCE)
+
+
 def _lone_identifier(v: str) -> bool:
-    """Whether text `v` is all one identifier, after a label (`IBAN:`, `Account no.:`): an address, URL, host or digit
-    run (read plain: `+44 7700 900123`), or an IBAN (`GB29 NWBK 6016 1331 9268 19`)."""
-    t = _LABEL.sub("", v.strip(), count=1).lstrip("+")
-    return bool(t) and (_IBAN.fullmatch(t.upper()) is not None or not _atom(t)[1])
+    """Whether text `v` is identifiers only, in punctuation or not, after a label of up to four words or not (`IBAN`,
+    `IBAN:`, `IBAN —`, `Backup host is`): IBANs written in groups or not (`GB29 NWBK …`), addresses, URLs and hosts, one
+    or more (`GB29… / DE89…`), and digit runs written in groups or not (`+44 7700 900123`) alone or after a label that
+    ends in `:`, `#` or a dash (`Acct # 6016 …`; `about order 77812290` is text)."""
+    t = v.strip(_AROUND)
+    label = _LABEL.match(t)
+    return _identifiers(t, True) or label is not None and _identifiers(
+        t[label.end():], label.group().rstrip()[-1] in ":#-–—")
+
+
+def _identifiers(t: str, digits: bool) -> bool:
+    """Whether text `t` holds identifiers (_lone_identifier; digit runs too when `digits`) and nothing else but
+    separators (white space, `,` `;` `|` `&`, and ` / `, ` and `, ` or ` between words)."""
+    rest, n = _IBANS.subn(" ", t)
+    if digits:
+        rest, m = _DIGIT_GROUPS.subn(" ", rest)
+        n += m
+    for x in _SEPARATED.split(rest):   # the first word that is no identifier ends it (a long body at once)
+        w = x.strip(_AROUND)
+        if w:
+            _, free, _, whole = _atom(w)
+            if free or not digits and any(k == "digits" for k, _ in whole):
+                return False
+            n += 1
+    return n > 0
 
 
 def _mentions(text: Dict[str, Set[Tuple[str, str]]]) -> List[str]:
@@ -594,8 +709,15 @@ def _joins(c: str, wide: bool) -> bool:
 _WORDS4 = re.compile(r"\w{4,}")
 _ALNUMS4 = re.compile(r"[^\W_]{4,}")
 _ALNUM = re.compile(r"[^\W_]{4,}")
-_LABEL = re.compile(r"[^\W\d_]+(?:[ .][^\W\d_]+){0,2}\.?\s*:\s*")
-_IBAN = re.compile(r"[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){2,7}(?:\s?[A-Z0-9]{1,3})?")
+_AROUND = " \t\r\n.,;:!?()[]{}<>\"'"
+_LABEL = re.compile(r"(?:(?!https?:)[^\W\d_]+\.?(?:\s*[:#\-–—]+\s*|\s+)){1,4}")
+_IBANS = re.compile(r"(?<![^\W_])[A-Za-z]{2}\d{2}(?:\s?[A-Za-z0-9]{4}){2,7}(?:\s?[A-Za-z0-9]{1,3})?(?![^\W_])")
+_DIGIT_GROUPS = re.compile(r"(?<![^\W_])\+?\d(?:[\s.-]?\d){7,}(?![^\W_])")
+_SEPARATED = re.compile(r"\s+(?:/|and|or)\s+|\s*[,;|&]\s*|\s+")
+_PAIR = re.compile(r"([^\W\d][\w.]*)\s*(?:[:=]=?|\b(?:eq|is|like)\b)\s*(?!//)('[^']*'|\"[^\"]*\"|[^\s'\"(),;]+)",
+                   re.I)
+_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
+_NUMBERED = re.compile(r"[^\s'\"(),;=:<>]*\d[^\s'\"(),;=:<>]*")
 _KEY_PART = re.compile(r"[^\W\d_]+|\d+")   # a run of letters, or of digits
 
 
@@ -625,7 +747,7 @@ class _Index:
         self.call_ix: Dict[int, int] = {}
         self.call_of: Dict[int, int] = {}
         self.bound: Dict[int, int] = {}
-        self.keys: Dict[str, Tuple[int, List[int]]] = {}   # _key_holders: a short key's holders, read so far
+        self.keys: Dict[Tuple[str, ...], Tuple[int, List[int]]] = {}   # _key_holders: a key's holders, read so far
         self.truncated: Set[int] = set()   # content with more values than were read (provenance.MAX_VALUES, MAX_TEXT)
         self.held: Dict[Tuple[int, Tuple[str, str], bool], bool] = {}   # full(): what their text was found to hold
         # in a log written before calls said their own trust: (agent, content, `tool:<name>`) -> the results not yet
