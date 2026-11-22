@@ -208,26 +208,64 @@ def _assignments(s, end=None, stop=None):
                 last = e
 
 
-def _quoted_end(s, m):
-    """Where a value _AFTER's match `m` found ends: at its closing quote on its line when a quote opens it (`"…"`,
-    `'…'`, `$'…'`, a backslash keeping the character after it in the first and the last), else at its match's end."""
-    if not m.group(2):
-        return m.end(3)
-    q, k = m.group(2)[-1], m.end(3)
-    if m.group(2)[0] == "\\":   # an escaped quote in a string: to its escaped closing one
-        k = m.start(3)
-        while k < len(s) and s[k] != "\n" and not s.startswith(m.group(2), k):
-            k += 1
-        return k
-    while k < len(s) and s[k] not in (q, "\n"):
-        k += 2 if s[k] == "\\" and m.group(2) != "'" and s[k + 1:k + 2] != "\n" else 1
-    return min(k, len(s))
+_QUOTING = re.compile(r"[\n\"'\\]")
+_TEXT_STOP = {"": re.compile(r"[\s\"'\\]"), '"': re.compile(r'[\n"\\]'), "'": re.compile(r"[\n']"),
+              "$'": re.compile(r"[\n'\\]")}
+
+
+def _text_end(s):
+    """end(b, m) for _assignments in text `s` (content, a heredoc's body): where a value _AFTER's match `m` found
+    after a name ending at `b` ends, read on its line as a shell reads a word, so no part of it stays in view. Inside
+    a quote an earlier word on its line left open at the name (`-H "X-Api-Token: a b"`, `echo 'token: a b'`), at that
+    quote's close; else at its own quote's close (`"a b"`, `'a b'`, `$'a b'`; a backslash keeping the character after
+    it but in '…'), or, out of quotes, at a blank, a quote or a backslash's character joining the word (`a"b c"`,
+    `a\\ b`), and a closing quote that a quote or a letter or digit follows going on (`"a"' b'`, `"a b"c`); one an
+    escaped quote opens (`\\"a b\\"`, in a string) at its escaped close. A quote opens a quote on a line only where
+    no letter or digit stands before it (an apostrophe doesn't). Each line is read once up to each name: linear."""
+    read = [0, ""]   # how far `s` is read for the quote its lines leave open, and that quote
+
+    def end(b, m, limit=len(s)):   # (`limit`: where it ends at the latest)
+        g, v = m.group(2), m.start(3)
+        if g[:1] == "\\":
+            k, n = s.find(g, v, limit), s.find("\n", v, limit)
+            return min(x for x in (k, n, limit) if x >= 0)
+        k, q = read
+        skip = k
+        for x in _QUOTING.finditer(s, k, b):
+            i, c = x.start(), x.group()
+            if i < skip:
+                continue
+            if c == "\n":
+                q = ""
+            elif c == "\\":
+                skip = i + 2 if q != "'" else skip
+            elif c == q:
+                q = ""
+            elif not q and not s[i - 1:i].isalnum():
+                q = c
+        read[:] = max(b, skip), q
+        outer, q, k = q, g or q, v
+        while x := _TEXT_STOP[q].search(s, k, limit):
+            i, c = x.start(), x.group()
+            if c == "\n" or not q and c.isspace() or c == "\\" and s[i + 1:i + 2] == "\n":
+                return i
+            if c == "\\":
+                k = i + 2
+            elif not q:
+                q, k = c, i + 1
+            elif outer or not (s[i + 1:i + 2] in ("'", '"') or s[i + 1:i + 2].isalnum()):
+                return i
+            else:
+                q, k = ("", i + 1) if s[i + 1:i + 2].isalnum() else (s[i + 1], i + 2)
+        return limit
+    return end
 
 
 def _redact_assignments(s, counts=None):
-    """ASSIGNMENT's values hidden (_assignments), a quoted one to its closing quote. `counts`: as for redact_text."""
+    """ASSIGNMENT's values hidden (_assignments), each as a shell reads it on its line (_text_end). `counts`: as for
+    redact_text."""
     out, last, n = [], 0, 0
-    for v, e in _assignments(s, lambda b, m: _quoted_end(s, m)):
+    for v, e in _assignments(s, _text_end(s)):
         out += [s[last:v], "[REDACTED:assignment]"]
         if counts is not None and _hides(s[v:e]):
             counts["assignment"] += 1
@@ -1123,23 +1161,42 @@ def _marks(cmd, r, dotenv, own, expands):
         m = _SEP.match(cmd, b)
         return cut.find(1, m.end()) if m else b
 
-    def escaped(b, m):   # a value an escaped quote opens in a string (`sh -c "K=\\"v w\\""`): to its escaped close
-        k = cmd.find(m.group(2), m.start(3), stop(b)) if m.group(2)[:1] == "\\" else -1
-        return value(b, m.start(3), m.end(3) if k < 0 else k)
+    text = _text_end(cmd)
 
-    found = [(v, e, "assignment") for v, e in _assignments(cmd, escaped, stop)]
+    def whole(b, m):
+        """Where ASSIGNMENT's value ends as a whole: one an escaped quote opens in a string (`sh -c "K=\\"v w\\""`) at
+        its escaped close; an argv's word's at the word's end; one in quotes (`--password="v w"`, `-H 'X-Api-Token:
+        v w'`, `echo "token: v w"`) at the quote that closes them; one in a heredoc's text as a shell reads a word on
+        its line (_text_end); else its first run. Hidden a run at a time (below)."""
+        v = m.start(3)
+        if m.group(2)[:1] == "\\":
+            k = cmd.find(m.group(2), v, stop(b))
+            return value(b, v, m.end(3) if k < 0 else k)
+        if not expands:
+            return value(b, v, len(cmd))
+        if inq[v] and (q := quote.find(1, v)) >= 0:
+            return value(b, v, q)
+        return value(b, v, text(b, m, len(cmd) if (k := cut.find(1, v)) < 0 else k) if r.body[v] else m.end(3))
+
+    # each run between blanks apart, the blanks kept (so the copy shows a value, not code: _SEEN)
+    found = [(w.start(), w.end(), "assignment") for v, e in _assignments(cmd, whole, stop)
+             for w in _RUN.finditer(cmd, v, e)]
     for p in r.starts if expands else [0]:   # a word NAME=value with a secret-looking NAME (export's, declare's,
-        # env's too; an argv's word is one word): all its value, to the word's end or code in it, each run of a quoted
-        # or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
+        # env's too; an argv's word is one word): all its value, to the word's end (past code in it: `T="a$(x)b"`),
+        # each run of a quoted or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
         if not (m := SECRET_NAME_EQ.match(cmd, p)):
             continue
-        end = cut.find(1, m.end())
-        end, runs, k = len(cmd) if end < 0 else end, [], m.end()
-        while k < end:
-            q = quote.find(1, k, end)
-            q = end if q < 0 else q
-            runs += [(w.start(), w.end()) for w in _RUN.finditer(cmd, k, q)]
-            k = q + 1 + cmd.startswith("$'", q)
+        runs, k = [], m.end()
+        while k < len(cmd):
+            end = cut.find(1, k)
+            while k < end:
+                q = quote.find(1, k, end)
+                q = end if q < 0 else q
+                runs += [(w.start(), w.end()) for w in _RUN.finditer(cmd, k, q)]
+                k = q + 1 + cmd.startswith("$'", q)
+            if not (expands and cmd.startswith("$(", end)):
+                break
+            k = _past(cmd, end + 2, ")", "(")   # (a substitution in the word: its code stays in view)
         if sum(b - a for a, b in runs) >= 4:   # (as ASSIGNMENT's value: four characters at least)
             found += [(a, x, "assignment") for a, b in runs if (x := bounded(a, b))]
     for v, e, name in _secret_spans(cmd):
@@ -1244,15 +1301,19 @@ def redact_command(cmd, dotenv=False, own=True, how="line", unclean=None, budget
     character the shell reads, or starting a word of its own). `budget`: the call's Budget for the parser's readings."""
     r = _read_shell(cmd) if how == "line" else _Reading(cmd)
     marks, crossed = _marks(cmd, r, dotenv, own, how == "line")
+    facts = None
+    if how == "line" and (marks or _kw_hits(cmd)):
+        # what the parser reads as code, read as such (sh -c's script, a heredoc bash reads: a value ends at its `;`,
+        # an assignment there is a word), whether a caller screens the copy or not: the marks are the same
+        facts = _Facts.of(cmd, budget=budget)
+        if facts.sure and facts.placed:
+            r = _read_shell(cmd, facts)
+            marks, crossed = _marks(cmd, r, dotenv, own, True)
     if unclean is not None and marks:
         if how != "line":
             dirty = how != "word" or any(_CODE_LIKE.search(cmd, v, e) or v in crossed for v, e, _ in marks)
         else:
-            facts = _Facts.of(cmd, budget=budget)
-            if facts.sure and facts.placed:   # what the parser reads as code, read as such: sh -c's value ends at `;`
-                r = _read_shell(cmd, facts)
-                marks, crossed = _marks(cmd, r, dotenv, own, True)
-            dirty = bool(marks) and not _clean(cmd, r, marks, crossed, facts)
+            dirty = not _clean(cmd, r, marks, crossed, facts)
         if dirty:
             unclean.append(True)
     out, last = [], 0

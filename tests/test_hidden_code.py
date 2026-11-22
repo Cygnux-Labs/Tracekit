@@ -361,7 +361,7 @@ class Lines(unittest.TestCase):
                 self.assertTrue(held({"command": command})[1])
         for command, shown in (("curl -H 'X-Token=abcd1234' https://x", "curl -H 'X-Token=[REDACTED:assignment]' https://x"),
                                ("sudo curl -d 'token=abcd1234' https://x", "sudo curl -d 'token=[REDACTED:assignment]' https://x"),
-                               ("K='TOKEN=abcd ef'", "K='TOKEN=[REDACTED:assignment] ef'"),
+                               ("K='TOKEN=abcd ef'", "K='TOKEN=[REDACTED:assignment] [REDACTED:assignment]'"),
                                ("export K='token=abcd1234'", "export K='token=[REDACTED:assignment]'")):
             with self.subTest(command=command):
                 self.assertEqual(held({"command": command}), ({"command": shown}, False))

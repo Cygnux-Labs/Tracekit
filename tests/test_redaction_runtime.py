@@ -390,6 +390,35 @@ class CommandLines(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(privacy.redact_text(text)[0], want)
 
+    def test_every_part_of_a_quoted_value_is_hidden_on_every_surface(self):
+        """A value hidden whole only where a caller screened the copy: v1's approval summary, `tracekit migrate` and
+        the OTLP receiver redact a command without `unclean` and showed `bash -c 'TOKEN="[REDACTED:assignment] Zq8b"
+        …'`; and an option's, a colon's or a quote opened before the name (`--password="…"`, `-H 'X-Api-Token: …'`,
+        `echo "token: …"`, a script heredoc's `-H "X-Api-Token: …"`), a value with code in it (`TOKEN="a$(x)b"`), and
+        in content a word's joined parts (`TOKEN=a\\ b`, `"a"' b'`, `"a\\"b c"`, `x"a b"`) kept a part in view.
+        Every part is now hidden in a command, screened or not, in an argv's word, and in content."""
+        held = {"decision": "ask", "rule_ids": ["T"], "reasons": ["held"], "flags": []}
+        for cmd in ("bash -c 'TOKEN=\"Zq8a Zq8b\" ./run'", "sh -c 'export API_KEY=\"Zq8a Zq8b\"; ./deploy'",
+                    "ssh host 'PGPASSWORD=\"Zq8a Zq8b\" psql -h db'", "bash <<'E'\nTOKEN=\"Zq8a Zq8b\" ./run\nE",
+                    '--password="Zq8a Zq8b"', 'mysql --password="Zq8a Zq8b" -h db', 'echo "token: Zq8a Zq8b"',
+                    "curl -H 'X-Api-Token: Zq8a Zq8b' https://x",
+                    "kubectl create secret generic s --from-literal='password=Zq8a Zq8b'",
+                    "helm upgrade app ./c --set 'db.password=Zq8a Zq8b'", "terraform apply -var 'db_password=Zq8a Zq8b'",
+                    "cat > cfg.yml <<'E'\ntoken: \"Zq8a Zq8b\"\nE", "cat > s.sh <<'E'\ncurl -H \"X-Api-Token: Zq8a Zq8b\" x\nE",
+                    'TOKEN="Zq8a$(echo hi)Zq8b" ./run', "TOKEN=Zq8a\\ Zq8b ./run", "PASSWORD=\"Zq8a\"' Zq8b' ./run",
+                    'TOKEN="Zq8a\\"Zq8b c" ./run', 'TOKEN=prefix"Zq8a Zq8b" ./run'):
+            ti = {"command": cmd}
+            with self.subTest(cmd=cmd):
+                for shown in (privacy.redact_command(cmd)[0], privacy.tool_input("Bash", ti, "hashed")["command"]["value"],
+                              privacy.approval_summary("Bash", privacy.tool_input("Bash", ti, "full")),
+                              str(privacy.screened(held, "Bash", ti, privacy.tool_input("Bash", ti, "hashed", []), [])),
+                              privacy.approver_copy(ti, False, "Bash")[0]["command"], privacy.redact({"note": cmd})[0]["note"]):
+                    self.assertNotIn("Zq8", shown)
+        for argv in (["mysql", "--password=Zq8a Zq8b", "-h", "db"], ["env", "TOKEN=Zq8a Zq8b", "./run"]):
+            with self.subTest(argv=argv):
+                self.assertNotIn("Zq8", str(privacy.approver_copy({"cmd": argv}, False, "Bash")[0]))
+                self.assertNotIn("Zq8", str(privacy.tool_input("Bash", {"cmd": argv}, "hashed")))
+
     def test_a_secret_ends_where_the_shell_ends_its_word(self):
         """A secret pattern read on past the shell's end of its word, with no .env file named: `psql
         postgres://u:p@h/db;aws${IFS}s3${IFS}cp${IFS}db${IFS}s3://x` was shown as `psql [REDACTED:connection_string]`
