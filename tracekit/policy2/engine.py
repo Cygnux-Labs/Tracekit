@@ -2561,10 +2561,16 @@ def _roots_below(path, home=False, one_part=True):
 
 
 _ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES for k in range(1, len(place) + 1))
-# a harness's own folders and files: _PROTECTED_PATHS but for the general ones (.config, .github, .agents) and the folders along a root
+# the settings, hooks and plugins of a harness (its session logs are none): _PROTECTED_PATHS' parts of two or more
+# but for the folders along a trust root, and the files each harness reads its settings from
 _SETTINGS_CHAINS = tuple(dict.fromkeys(
-    chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
-    if chain not in _ROOT_CHAINS and chain not in ((".config",), (".github",), (".agents",))))
+    [chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
+     if len(chain) > 1 and chain not in _ROOT_CHAINS] + [tuple(c.split("/")) for c in (
+        ".claude/settings.json", ".claude/settings.local.json", ".claude/plugins", ".claude/hooks", ".claude/agents",
+        ".claude/skills", ".claude/commands", ".claude.json", ".mcp.json", ".codex/config.toml", ".codex/hooks.json",
+        ".codex/hooks", ".gemini/settings.json", ".cursor/hooks.json", ".cursor/mcp.json", ".cursor/plugins", ".qwen/settings.json",
+        ".factory/settings.json", ".kilocode/settings.json", ".goose/config.yaml", ".kiro/settings", ".devin/config.json",
+        ".opencode/opencode.json", ".openhands/settings.json")]))
 
 
 def _inside_protected(path):
