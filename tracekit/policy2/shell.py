@@ -437,9 +437,10 @@ def _reads_only(cmds, ctx):
 
 
 # NAME OP after a ${: a parameter (a special one, an array element, an indirect name too) with a default or an
-# assignment (-, =), an alternate (+), each with or without the colon, or a pattern substitution (/, //, /#, /%): its
-# word follows. Matched on the pieces dquote reads, one character each (\x01 for an expansion or quoted text)
-_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|/[/#%]?)")
+# assignment (-, =), an alternate (+), each with or without the colon, a prefix or suffix removal (#, ##, %, %%) or
+# a pattern substitution (/, //, /#, /%): its word follows. Matched on the pieces dquote reads, one character each
+# (\x01 for an expansion or quoted text)
+_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|##?|%%?|/[/#%]?)")
 
 
 def _assignments(ways):
@@ -5502,9 +5503,16 @@ class _Parser:
         # pattern matches all of it (the pattern ends at its first / outside quotes and nested expansions, a / first in
         # it its own; a bare & is the text matched, read as nothing; without a /, the matches are removed). Each is one
         # more value (`values`, with as written and empty where those may be), its own expansions read each way too
-        # lean: a value made from the variable's own (#, %, a replacement's &, ^, ",", @Q and the other @ transforms,
+        # lean: a value made from the variable's own (a replacement's &, ^, ",", @Q and the other @ transforms,
         # a substring) is read as written and as nothing, as an unknown one, also of a variable the line gives a
-        # literal (D=xy; ${D#x} isn't read as y); compute them on the literals if real commands need it
+        # literal; a # or % removal with a literal pattern is computed on the literals (D=xy; ${D#x} is y), a glob
+        # in the pattern keeps today's reading; compute the rest on the literals if real commands need it
+        if op and not plain and op.group(1) in ("#", "##", "%", "%%"):
+            # a removal is read this way only, never the generic word's readings below (those would add the pattern
+            # itself as a value the expansion may take); not computed, it keeps today's reading (as written, empty)
+            if (values := self._removal(op.group(1), op, pieces)) is not None:
+                expansion.values = values
+            op = None
         if op and not plain:
             kind = op.group(1)
             end = next((i for i, p in enumerate(pieces) if i and type(p) is str and p == "/"), None)
@@ -5535,6 +5543,43 @@ class _Parser:
             else:
                 self.ctx["assigns"] = True
         return expansion
+
+    def _removal(self, kind, op, pieces):
+        """The values `${NAME#pat}`, `${NAME##pat}`, `${NAME%pat}` or `${NAME%%pat}` expands to, when the line gives
+        NAME a literal and the pattern is literal (no *, ?, [ in it, nothing in it an expansion makes): the literal
+        with its matching prefix or suffix removed (for a literal pattern # and ##, % and %% remove the same: the
+        pattern itself, once, where the value starts or ends with it), each literal the line may have given it; None
+        otherwise (an indirect name, a subscript, a glob in the pattern, a value that isn't a literal, or a variable
+        the line doesn't know: read as written and empty, as today). A quoted piece of the pattern is literal text,
+        even a * in quotes."""
+        name = op.group(0)
+        if name.startswith("!"):
+            return None
+        name = name[:-len(kind)]
+        if not re.fullmatch(r"[A-Za-z_]\w*", name or ""):
+            return None
+        pattern = []
+        for p in pieces:
+            if isinstance(p, _Expansion):
+                return None
+            if isinstance(p, _Quoted):
+                pattern.append(str(p))
+            elif type(p) is str and not re.search(r"[*?\[]", p):
+                pattern.append(p)
+            else:
+                return None
+        pattern = "".join(pattern)
+        known = {} if self.ctx["any_set"] else self.known
+        values = known.get(name, ()) if known.get(name) and not self.ctx["ifs_named"] and \
+            name not in self.ctx["reassigned"] else ()
+        if self.ctx["defaults"] or self.ctx["given"]:
+            values = (*values, *self.ctx["defaults"].get(name, ()), *self.maybe(name, known))
+        values = tuple(dict.fromkeys(values))
+        if not values or any(not isinstance(v, str) for v in values):
+            return None
+        if kind[0] == "#":
+            return tuple(dict.fromkeys(v[len(pattern):] if v.startswith(pattern) else v for v in values))
+        return tuple(dict.fromkeys(v[:-len(pattern)] if pattern and v.endswith(pattern) else v for v in values))
 
     def backtick(self):
         m = re.compile(r"((?:\\.|[^`\\])*)`", re.S).match(self.s, self.i + 1)
