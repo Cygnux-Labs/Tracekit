@@ -5678,8 +5678,6 @@ class SourceReader(unittest.TestCase):
 
     def test_match_comprehension_and_condition_targets_are_forgotten(self):
         for code, cause in [
-                ('match input():\n    case url:\n        pass\ngoto_url(url)', "arg"),
-                ('match input():\n    case press_key:\n        pass\npress_key("Enter")', "call"),
                 ('[url] = [input()]\ngoto_url(url)', "arg"),
                 ('for url in [input()]:\n    pass\ngoto_url(url)', "arg"),
                 ('[goto_url(url) for url in [input()]]', "arg"),
@@ -5690,6 +5688,15 @@ class SourceReader(unittest.TestCase):
                 ('if input():\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg"),
                 ('try:\n    url = "https://docs.python.org/"\n'
                  'except Exception:\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], cause))
+
+    @unittest.skipUnless(sys.version_info >= (3, 10), "match statement")
+    def test_a_match_capture_target_is_forgotten(self):
+        for code, cause in [
+                ('match input():\n    case url:\n        pass\ngoto_url(url)', "arg"),
+                ('match input():\n    case press_key:\n        pass\npress_key("Enter")', "call")]:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], cause))
@@ -6017,8 +6024,15 @@ class CellSource(unittest.TestCase):
                      'd[goto_url("file:///etc/passwd")] += 1',
                      'x: goto_url("file:///etc/passwd") = 1',
                      'def f(a: goto_url("file:///etc/passwd")):\n    pass',
-                     'def f() -> goto_url("file:///etc/passwd"):\n    pass',
-                     'class C[T: goto_url("file:///etc/passwd")]:\n    pass',
+                     'def f() -> goto_url("file:///etc/passwd"):\n    pass'):
+            with self.subTest(code=code):
+                d = self.cell(self.browser, code)
+                self.assertEqual(d["verdict"], "deny")
+                self.assertIn("TK-B001", d["rule_ids"])
+
+    @unittest.skipUnless(sys.version_info >= (3, 12), "PEP 695 syntax")
+    def test_a_call_in_a_type_parameter_bound_is_decided(self):
+        for code in ('class C[T: goto_url("file:///etc/passwd")]:\n    pass',
                      'class C[T: goto_url("file:///etc/passwd")]:\n    pass\nC.__type_params__[0].__bound__'):
             with self.subTest(code=code):
                 d = self.cell(self.browser, code)
