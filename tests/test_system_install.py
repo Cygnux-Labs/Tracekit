@@ -1103,6 +1103,10 @@ class UninstallV1System(unittest.TestCase):
                                  "didn't write them (a dev init did, or a system init before 0.3.0)",
                                  f"found no system mode hooks in {own}: if init set up another user, run this again "
                                  "with --user NAME"])
+        install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK)   # a v2 init replaced them
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(install.uninstall_system(user="agent")[2], [], "the agent's file: no wrong-user note")
+        self.assertTrue(install._v2_hooks_in(own))
 
     def test_a_project_an_unrecorded_init_used_is_named_with_project(self):
         project = os.path.join(self.d, "proj")

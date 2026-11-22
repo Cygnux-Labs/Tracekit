@@ -2000,6 +2000,8 @@ def uninstall_system(purge=False, user=None, project=None):
         elif files.as_user(owner, _v1_hooks_in, settings):
             notes.append(f"left the v1 hooks in {settings}: they don't run {OPT_PYTHON}, so system mode didn't write "
                          "them (a dev init did, or a system init before 0.3.0)")
+        elif files.as_user(owner, _v2_hooks_in, settings):
+            found = True   # the agent's: a v2 init replaced v1's hooks here
     if mine and not found and not managed and flags is not None and "--no-hooks" not in flags:
         notes.append(f"found no system mode hooks in {' or '.join(mine)}: " + (
             "if init set up another user, run this again with --user NAME" + (f" --project {project}" if project else "")
