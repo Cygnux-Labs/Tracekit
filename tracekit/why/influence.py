@@ -36,7 +36,7 @@ import heapq
 import os
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from .analysis import _committed, _ended, _short, _texts, arg_provenance, atoms, is_sensitive
+from .analysis import _committed, _ended, _short, arg_provenance, atoms, is_sensitive
 from .core import OWNER, Run
 from .graph import Graph, nodes_matching, target_hits
 
@@ -236,10 +236,9 @@ def chain(g: Graph, nid: str, keys: Set[str], goal: Set[str], memo=None) -> Tupl
         x = nxt
 
 
-def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = None, texts=None,
-                   memo=None) -> Dict[str, Any]:
+def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = None, memo=None) -> Dict[str, Any]:
     """Graded edges, hints, chain, goal and what the call serves, for call node `nid`. `memo`: model calls' contexts
-    already read (_context), shared by the calls of a run."""
+    and the run's values (arg_provenance) already read, shared by the calls of a run."""
     goal = goals(run, g) if goal is None else goal
     memo = {} if memo is None else memo
     gs = set(goal)
@@ -260,7 +259,7 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
     steps, cut = chain(g, nid, {e["src"] for e in edges if e["grade"] in ("exact", "measured")},
                        gs if serves == "task" else set(), memo)
     step = next((s for s in steps if g.nodes[s]["type"] == "decision"), None) if serves == "task" else None
-    prov = arg_provenance(run, g, ev, texts, memo)
+    prov = arg_provenance(run, g, ev, memo)
     hinted = hints(g, nid, prov, {e["src"] for e in edges if e["grade"] in ("exact", "measured")})
     u = untrusted(edges)
     args = run.value(ev.get("args_ref"))
@@ -388,17 +387,16 @@ def words(inf: Dict[str, Any]) -> str:
     return f"{head}: {tested}.{around} Chain: {path}.{note}"
 
 
-def influences(run: Run, g: Graph, texts=None, risky: bool = False) -> List[Dict[str, Any]]:
+def influences(run: Run, g: Graph, risky: bool = False) -> List[Dict[str, Any]]:
     """call_influence() of every consequential call of the run, in log order; `risky`: the calls stopped or flagged,
     with an exact or measured edge, that serve no step of the task, or whose model call had untrusted content in its
     context, whatever their tool."""
     goal, memo = goals(run, g), {}
-    texts = _texts(run) if texts is None else texts   # read once for every call's hints
 
     def shown(nid: str, ev: Dict[str, Any]) -> bool:
         got, dec = graded(g, nid, seen=False), _decision(g, ev)
         return bool(_ended(ev)) or drifted(got, goal) or any(e["grade"] in ("exact", "measured") for e in got["edges"]) \
             or bool(dec and _context(g, dec, memo)[1])
-    return [call_influence(run, g, nid, goal, texts, memo) for nid, n in
+    return [call_influence(run, g, nid, goal, memo) for nid, n in
             sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"])
             if n["type"] == "action" and (shown(nid, n["event"]) if risky else consequential(run, n["event"]))]

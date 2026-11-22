@@ -854,11 +854,11 @@ class ImportWithoutWhyLog(unittest.TestCase):
     def test_committed_arguments_trace_to_nothing(self):
         """The why view of a signed run grew with the square of its calls: each call's committed arguments (the same
         placeholder text and a commitment) were traced as values to every earlier result. They are no values."""
-        from tracekit.why.analysis import _texts, arg_provenance
-        g, texts = build_graph(self.imported), _texts(self.imported)
-        self.assertEqual({str(arg_provenance(self.imported, g, e, texts)) for e in self.imported.of_type("action")},
+        from tracekit.why.analysis import _index, arg_provenance
+        g, memo = build_graph(self.imported), {}
+        self.assertEqual({str(arg_provenance(self.imported, g, e, memo)) for e in self.imported.of_type("action")},
                          {"[]"})
-        self.assertEqual({t for _, t, _, _ in texts}, {""})
+        self.assertEqual({r[3] for r in _index(self.imported, memo).reads}, {""})
 
     def test_a_held_call_nobody_approved_is_held_not_blocked(self):
         titles = [a["title"] for a in alerts(self.imported, build_graph(self.imported))]

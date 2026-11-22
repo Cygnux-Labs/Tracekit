@@ -120,8 +120,7 @@ class Guard:
         prov = []
         if sensitive:
             with self._read:   # one check at a time reads a runtime's memo
-                memo = self._memos.setdefault(rt, {})
-                memo.pop("index", None)   # the log grew since the last check: its index is read again
+                memo = self._memos.setdefault(rt, {})   # its index reads on from where the last check stopped
                 prov = value_provenance(run, args, len(run.events), memo=memo)
         if sensitive and self.builtin:   # the alert's rule (analysis.alerts), on the same reading of each value
             bad = [p for p in prov if p["status"] == "untrusted-only" and not p.get("in_text")]

@@ -263,9 +263,12 @@ Why's search reads each argument value as the signer's index reads values. An ad
 by content that holds an equal one (a look-alike `bob@corp.co` is not `bob@corp.com`, nor `…/3abcdef` the task's
 `…/3AbCdEf`, nor an account `44851234` part of the task's `4485-1234-5566`); a free string by content whose text holds
 it as a whole token, read as the index reads text (an IBAN the task writes in groups is the task's), or as a whole
-value (the string a JSON result holds). Untrusted content also brought an identifier (anything but text a model wrote:
-white space and two or more words) when it holds a part of it that no trusted content holds (an IBAN's digits written
-in groups, a URL's host). There the search reads wider than the signer's index, so it stops more, never fewer: a free
+value (the string a JSON result holds). Content is read as it was when the call was made: a tool result is untrusted
+content when its content was observed as untrusted before the call (an untrusted tool's result is recorded so).
+Untrusted content also brought an identifier (anything but text a model wrote: white space and two or more words in a
+free-text field, one whose key ends in body, text, message, content, summary, description, subject, note or comment)
+when it holds a part of it that no trusted content holds (an IBAN's digits written in groups, a URL's host); a
+recipient, account, destination or channel stays an identifier whatever words are around it. There the search reads wider than the signer's index, so it stops more, never fewer: a free
 string joined to another word by `_` (`External_…` holds `External`), digit runs across any characters but letters
 (slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words ("six zero one six"),
 addresses spelled out ("audit at outside dot example"), and a one-word value in parts that different untrusted texts
@@ -277,8 +280,9 @@ arguments named (all of it, or its longest digit run) unless trusted content gav
 lookup's error naming the mail's IBAN, or a validator returning it whole, is an echo of the agent's own value, not its
 source; a lookup by an account the task gives is a source, and a domain or another part names nothing (a directory
 looked up by the domain the mail names still gives the address). A trusted call's result is untrusted content when
-only untrusted content brought every value of its arguments: a decoder, a reverser or a calculator given what the mail
-wrote, and a lookup by a key only the mail gave (the mail chose the record). The alert says what the call was given and
+the values of its arguments that were traced came only from untrusted content, one at least (a value the model made
+up, such as a charset, doesn't count): a decoder, a reverser or a calculator given what the mail wrote, and a lookup by
+a key only the mail gave (the mail chose the record). The alert says what the call was given and
 where that came from (`crm_lookup's answer counts as untrusted: it was called with '60161331926819', which came only
 from mail:inbox`).
 
