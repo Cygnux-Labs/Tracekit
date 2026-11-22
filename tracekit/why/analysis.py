@@ -89,6 +89,21 @@ def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], texts: Optiona
     return memo["rows"][ix[3][j][0]]
 
 
+def only_untrusted(row: Dict[str, Any]) -> str:
+    """What an alert says of a value only untrusted content supplied (a row of value_provenance): where it appears, and
+    for a trusted call's answer that counts as untrusted, what the call was given and where that came from (through
+    other such calls: the content it started from), so a person approving the call knows untrusted content chose
+    the answer."""
+    said = f"'{row['value']}' appears only in " + ", ".join(s["label"] for s in row["sources"]) + "."
+    src = next((s for s in row["sources"] if "given" in s), None)
+    if src:
+        given = src["given"]
+        said += (f" {src['label']}'s answer counts as untrusted: it was called with '{given['value']}', which came "
+                 f"only from {', '.join(given['from'])}" + (f", and that only from {', '.join(given['origin'])}"
+                                                            if given["origin"] != given["from"] else "") + ".")
+    return said
+
+
 def _committed(v: Any) -> bool:
     """A signed run's content, imported as only its commitment: the same placeholder everywhere, no value to trace."""
     return isinstance(v, dict) and v.get("content") == COMMITTED
@@ -234,7 +249,14 @@ def _rows(run: Run, memo: Dict[Any, Any], ix, args: Any, before_seq: int, need: 
             elif not (_holds(atom, plain, rv, wide=True) or part and (
                     i in halves or any(not trusted_val(v) for v in (rv | wide) & vals))):
                 continue
-            srcs.append({"node": "ev:" + ev["id"], "label": label, "trust": t})
+            src = {"node": "ev:" + ev["id"], "label": label, "trust": t}
+            if t != reads[i][1]:   # a trusted call's answer to what only untrusted content gave it: what that was
+                given = done[calls[call_of[i]][0]][0]
+                src["given"] = {"value": given["value"],
+                                "from": list(dict.fromkeys(x["label"] for x in given["sources"])),
+                                "origin": list(dict.fromkeys(o for x in given["sources"] for o in (
+                                    x["given"]["origin"] if "given" in x else [x["label"]])))}
+            srcs.append(src)
         if not srcs:
             status = "hashed" if hashed else "generated"  # with hashed capture there is no text to search
         elif all(s["trust"] == "untrusted" for s in srcs):
@@ -595,16 +617,14 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
         elif sens and bad:
             out.append({**base, "severity": "high",
                         "title": f"{ev['tool']} used a value that only untrusted content supplied",
-                        "detail": f"'{bad[0]['value']}' appears only in " +
-                                  ", ".join(s["label"] for s in bad[0]["sources"]) + "."})
+                        "detail": only_untrusted(bad[0])})
         elif got and influence.drifted(got, goal):
             out.append({**base, "severity": "review", "title": f"{ev['tool']} serves no step of the task",
                         "detail": "A replay without the task kept it. See INFLUENCE for what it came from."})
         elif sens and quoted:
             out.append({**base, "severity": "review",
                         "title": f"{ev['tool']}'s text quotes a value that only untrusted content supplied",
-                        "detail": f"'{quoted[0]['value']}' appears only in " +
-                                  ", ".join(s["label"] for s in quoted[0]["sources"]) + "."})
+                        "detail": only_untrusted(quoted[0])})
         elif u:
             out.append({**base, "severity": "review",
                         "title": f"{ev['tool']}'s `{u['field']}` traced to untrusted content" if u["grade"] == "exact"

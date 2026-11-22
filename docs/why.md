@@ -278,7 +278,9 @@ lookup's error naming the mail's IBAN, or a validator returning it whole, is an 
 source; a lookup by an account the task gives is a source, and a domain or another part names nothing (a directory
 looked up by the domain the mail names still gives the address). A trusted call's result is untrusted content when
 only untrusted content brought every value of its arguments: a decoder, a reverser or a calculator given what the mail
-wrote, and a lookup by a key only the mail gave.
+wrote, and a lookup by a key only the mail gave (the mail chose the record). The alert says what the call was given and
+where that came from (`crm_lookup's answer counts as untrusted: it was called with '60161331926819', which came only
+from mail:inbox`).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.

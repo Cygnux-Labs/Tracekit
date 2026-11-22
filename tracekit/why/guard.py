@@ -32,7 +32,7 @@ import weakref
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from .analysis import SENSITIVE_HINT, value_provenance
+from .analysis import SENSITIVE_HINT, only_untrusted, value_provenance
 from .core import Ref, Run
 
 MODES = ("off", "alert", "block")
@@ -129,13 +129,11 @@ class Guard:
             if bad:
                 c.alerts.append({"severity": "high", "rule": "untrusted-value",
                                  "title": f"{tool} would use a value that only untrusted content supplied",
-                                 "detail": f"'{bad[0]['value']}' appears only in "
-                                           + ", ".join(s["label"] for s in bad[0]["sources"]) + "."})
+                                 "detail": only_untrusted(bad[0])})
             elif quoted:
                 c.alerts.append({"severity": "review", "rule": "untrusted-quote",
                                  "title": f"{tool}'s text would quote a value that only untrusted content supplied",
-                                 "detail": f"'{quoted[0]['value']}' appears only in "
-                                           + ", ".join(s["label"] for s in quoted[0]["sources"]) + "."})
+                                 "detail": only_untrusted(quoted[0])})
             elif decision is not None and decision.trust == "untrusted":
                 c.alerts.append({"severity": "review", "rule": "untrusted-upstream",
                                  "title": f"Sensitive call {tool} was decided with untrusted content in context",
