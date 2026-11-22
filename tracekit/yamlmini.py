@@ -92,24 +92,41 @@ def _scalar(tok, lineno):
     return t
 
 
+def _quoted(s):
+    """For each character of flow text `s`, whether it is part of a quoted string; and whether one is still open at the
+    end. A quote opens a string only where an item starts (_OPENS); `''` goes on with a single-quoted string, and a
+    backslash escapes the next character in a double-quoted one."""
+    marks, q, last, i = [], None, "", 0
+    while i < len(s):
+        c = s[i]
+        marks.append(bool(q) or (c in "'\"" and last in _OPENS))
+        if q:
+            if (q == '"' and c == "\\") or (q == c == "'" and s[i + 1:i + 2] == "'"):
+                marks.append(True)
+                i += 1
+            elif c == q:
+                q, last = None, c
+        elif marks[-1]:
+            q = c
+        elif not c.isspace():
+            last = c
+        i += 1
+    return marks[:len(s)], q is not None
+
+
 def _split_flow(s, lineno):
     """The comma-separated items of a flow list or mapping body, nested [] and {} kept whole."""
-    parts, cur, q, depth, esc, last = [], [], None, 0, False, ""
-    for c in s:
-        if q:
-            cur.append(c)
-            esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
-            q = None if end else q
-        elif c in "'\"" and last in _OPENS:
-            q = c; cur.append(c)
-        elif c == "," and not depth:
-            parts.append("".join(cur)); cur = []
-        else:
-            depth += (c in "[{") - (c in "]}")
-            cur.append(c)
-        last = c if not c.isspace() else last
-    if q:
+    marks, open_ = _quoted(s)
+    if open_:
         raise YAMLError(f"line {lineno}: unterminated string in flow list")
+    parts, cur, depth = [], [], 0
+    for c, quoted in zip(s, marks):
+        if not quoted and c == "," and not depth:
+            parts.append("".join(cur)); cur = []
+            continue
+        if not quoted:
+            depth += (c in "[{") - (c in "]}")
+        cur.append(c)
     parts.append("".join(cur))
     return parts
 
@@ -149,16 +166,8 @@ def _unclosed(text, lineno):
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
         return False
-    depth, q, esc, last = 0, None, False, ""
-    for c in v:
-        if q:
-            esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
-            q = None if end else q
-        elif c in "'\"" and last in _OPENS:
-            q = c
-        else:
-            depth += (c in "[{") - (c in "]}")
-        last = c if not c.isspace() else last
+    marks, _ = _quoted(v)
+    depth = sum((c in "[{") - (c in "]}") for c, quoted in zip(v, marks) if not quoted)
     return depth > 0
 
 

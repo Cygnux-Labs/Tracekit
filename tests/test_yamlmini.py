@@ -1,5 +1,7 @@
 """tracekit.yamlmini, the YAML subset used when PyYAML is not installed (the signer container has none)."""
+import json
 import os
+import random
 import unittest
 from unittest import mock
 
@@ -28,6 +30,48 @@ class FlowMappings(unittest.TestCase):
         self.assertEqual(yamlmini.loads('m: {"a": "x\\"]",\n  "b": 2}\n'), {"m": {"a": 'x"]', "b": 2}})
         # a quote inside a plain item opens no string (as in PyYAML), so its backslash escapes nothing
         self.assertEqual(yamlmini.loads('content: {b: [a"x\\"y]}\n'), {"content": {"b": ['a"x\\"y']}})
+
+    def test_a_doubled_single_quote_goes_on_with_the_string(self):
+        for text, want in (("k: ['a'', b', c]", {"k": ["a', b", "c"]}), ("k: ['it''s, ok']", {"k": ["it's, ok"]}),
+                           ("k: {a: 'don''t, stop'}", {"k": {"a": "don't, stop"}}),
+                           ("deny: ['it''s [x']", {"deny": ["it's [x"]})):
+            with self.subTest(text):
+                self.assertEqual(yamlmini.loads(text + "\n"), want)
+
+    def test_flow_quoting_reads_as_pyyaml_reads_it(self):
+        """Differential, from a fixed seed: flow lists and mappings mixing plain items, '' in single-quoted strings,
+        backslash escapes in double-quoted ones, commas, brackets and #. Where both parse, they agree."""
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        r = random.Random(1074)
+
+        def atom():
+            body = "".join(r.choice("ab ,[]{}#'\"\\x") for _ in range(r.randrange(6)))
+            return r.choice(["'" + body.replace("'", "''") + "'", json.dumps(body),
+                             r.choice(["a", "b c", "a#b", 'x"y', "it's", 'a"x\\"y', "q #z"])])
+
+        def flow(d=0):
+            items = [flow(d + 1) if d < 2 and r.random() < 0.25 else atom() for _ in range(r.randrange(4))]
+            if r.random() < 0.5:
+                return "[" + ", ".join(items) + "]"
+            return "{" + ", ".join(f"k{i}: {v}" for i, v in enumerate(items)) + "}"
+
+        both = 0
+        for _ in range(5000):
+            doc = "v: " + flow() + "\n"
+            try:
+                mine = yamlmini.loads(doc)
+            except yamlmini.YAMLError:
+                continue
+            try:
+                theirs = yaml.safe_load(doc)
+            except yaml.YAMLError:
+                continue
+            both += 1
+            self.assertEqual(mine, theirs, doc)
+        self.assertGreater(both, 4000)
 
     def test_a_flow_item_that_is_not_key_value_is_an_error(self):
         with self.assertRaises(yamlmini.YAMLError):
