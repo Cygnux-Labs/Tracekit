@@ -84,9 +84,10 @@ VERSIONS = {
     # assurance dev, which a verifier before 1.6.0 can't see
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
-    # run labels (docs/policy-v2.md#run-conditions): a run.label record, and the labels a decision's run conditions
-    # applied under
-    "1.8.0": {"types": ["run.label"], "fields": {"policy.decision": ["run_labels"]}, "values": {}},
+    # run labels (docs/policy-v2.md#run-conditions): a run.label record, the labels a decision's run conditions
+    # applied under, and a run's requesters: a run.writer record and run.registered's caller
+    "1.8.0": {"types": ["run.label", "run.writer"],
+              "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"]}, "values": {}},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain

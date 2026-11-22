@@ -273,6 +273,20 @@ class Translate(unittest.TestCase):
             "inherited from run r0, of the same requester: a later call a run condition reads it for is held for a "
             "person (recorded only, under a rule in shadow)"])
 
+    def test_a_self_cleared_label_is_a_warning(self):
+        # a dev signer's own user cleared it: whom the agent runs as, so it may have been the agent
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:501", "person": "uid:501", "self_cleared": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL SELF-CLEARED · secrets_access")])
+        self.assertIn("the run's own user on a dev signer", rows[0]["text"])
+
+    def test_a_run_writer_is_a_row_in_words(self):
+        rows = self.feed(v2rec(1, "run.writer", {"identity": "uid:990777", "stream": "s2", "gateway": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"], r["text"]) for r in rows],
+                         [("SIGNER", "info", "RUN WRITER · uid:990777",
+                           "writes stream s2 through a gateway: the labels this run carries are its as well")])
+
     def test_live_constraints_are_rows_and_head_the_run_review(self):
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),

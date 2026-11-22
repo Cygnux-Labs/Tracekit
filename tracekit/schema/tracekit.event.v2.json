@@ -145,6 +145,7 @@
         "effect.observed",
         "constraint.added",
         "run.label",
+        "run.writer",
         "ext"
       ]
     },
@@ -1212,6 +1213,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/run_label"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.writer"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_writer"
           }
         }
       }
@@ -2707,6 +2724,12 @@
               "const": false
             }
           }
+        },
+        "caller": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "format 1.8: the client a gateway registered the run for (scheme:subject): the run's labels are the client's"
         }
       }
     },
@@ -4981,6 +5004,30 @@
           }
         }
       ]
+    },
+    "run_writer": {
+      "description": "format 1.8: an identity other than the run's owner writes a stream of the run for the first time (one it was delegated to, or a gateway's caller), by the signer before that write's records: the run's labels are its too (docs/policy-v2.md#run-conditions), and a signer restarted from its records knows it",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "stream"
+      ],
+      "properties": {
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300,
+          "description": "the writer, scheme:subject, as the transport established it"
+        },
+        "stream": {
+          "$ref": "#/$defs/id"
+        },
+        "gateway": {
+          "const": true,
+          "description": "it wrote through a gateway (a request's caller)"
+        }
+      }
     },
     "ext_name": {
       "type": "string",

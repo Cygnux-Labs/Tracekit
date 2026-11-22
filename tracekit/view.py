@@ -697,6 +697,10 @@ class Translator(observe.Translator):
                          + (": the file is committed, not named" if d.get("object_commitment") else ""), "HOLD",
                          constraint=d.get("kind"))
         if t == "run.label":   # a run label (docs/policy-v2.md#run-conditions): what the run's conditions read
+            if d.get("action") == "clear" and d.get("self_cleared"):   # a dev signer's own user: maybe the agent
+                return alert("med", f"RUN LABEL SELF-CLEARED · {d.get('label')}",
+                             f"by {d.get('identity')}, the run's own user on a dev signer, whom the agent runs as"
+                             + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
             if d.get("action") == "clear":
                 return alert("info", f"RUN LABEL CLEARED · {d.get('label')}",
                              f"by {d.get('person') or d.get('identity')}"
@@ -705,6 +709,10 @@ class Translator(observe.Translator):
                 if "inherited" in d else f"set by this run's record {d.get('source')}"
             return alert("med", f"RUN LABEL · {d.get('label')}", f"{how}: a later call a run condition reads it "
                          "for is held for a person (recorded only, under a rule in shadow)", "HOLD")
+        if t == "run.writer":   # a requester of the run besides its owner: the run's labels are its too
+            return alert("info", f"RUN WRITER · {d.get('identity')}",
+                         f"writes stream {d.get('stream')}{' through a gateway' if d.get('gateway') else ''}: the "
+                         "labels this run carries are its as well", "SIGNER")
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")

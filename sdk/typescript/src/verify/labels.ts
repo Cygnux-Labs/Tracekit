@@ -9,6 +9,8 @@ type J = any;
 const SECTIONS = ["deny", "ask", "flag"];
 const UNTRUSTED = "untrusted_content";
 const UNREAD = "TK-OVERSIZE";   // a call the policy couldn't read: it sets every label the policy reads
+// tracekit/signer/labels.py LOST: the gaps of calls the signer never decided
+const LOST = ["client_counter_gap", "signer_unavailable", "tailer_lost", "observer_lost"];
 // tracekit/policy2/compile.py CLASSES: an `untrusted` entry that names one is a class, any other a tool name glob
 const CLASSES = ["shell", "fs", "http", "sql", "payment", "email", "mcp", "browser", "a2a", "app", "unknown", "harness"];
 const cut = (s: string, n: number) => [...s].slice(0, n).join("");
@@ -26,6 +28,8 @@ export class Sources {
   when = new Map<string, Set<string>>();
   tracked = new Set<string>();
   label = new Map<string, string>();
+  allLabels = new Map<string, string>();
+  onLabels: [string, RegExp, string | null][] = [];
   untrusted: string[];
   tools: Record<string, string>;
   spelled = new Map<string, string[]>();
@@ -37,6 +41,13 @@ export class Sources {
     for (const ls of this.when.values()) for (const x of ls) this.tracked.add(x);
     for (const x of policy.approval_agent?.run?.clean ?? []) this.tracked.add(x);   // the AI approver's run bound
     for (const r of rules) if (this.tracked.has(r.label)) this.label.set(r.id, r.label);
+    for (const r of rules) if (typeof r.label === "string") this.allLabels.set(r.id, r.label);
+    for (const r of rules)
+      if (r.field === "labels" && Object.hasOwn(r, "when") && !Object.hasOwn(r, "tool")) {
+        try {
+          this.onLabels.push([r.id, new RegExp(r.pattern), r.class ?? null]);
+        } catch { /* read otherwise than RE2: labels.py skips it too */ }
+      }
     this.untrusted = policy.untrusted ?? [];
     this.tools = policy.tools ?? {};
     this.classes = new Detector(policy);
@@ -72,7 +83,7 @@ export class Sources {
       : t === "capture.gap" && d.kind === "executed_against_policy" ? decided(e.tool_call_id ?? null) : undefined;
     if (call) return this.ofCall(call.tool, call.rule_ids);
     if (t === "input.observed" && d.trust === "untrusted" && this.tracked.has(UNTRUSTED)) return new Set([UNTRUSTED]);
-    if (t === "capture.gap" && d.kind === "client_counter_gap") return new Set(this.tracked);   // calls never got
+    if (t === "capture.gap" && LOST.includes(d.kind) || t === "reconcile.hook_missing") return new Set(this.tracked);
     return new Set();
   }
 }
@@ -100,12 +111,15 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
   const problems: string[] = [], carried = new Set<string>(), asked = new Map<J, J>(), decided = new Map<J, J>();
   const seqs = new Map<number, J>(), at = policiesAt(events, srcs);
   let owed = new Map<string, number>(), may = new Map<string, number>(), owner: string | null = null;
+  const callers = new Set<J>();
   for (const [n, e] of events.entries()) {
     const t = e.type, d = e.data, where = `seq ${str(e.seq)}`, cands = at[n], src = cands[0];
     if (!Number.isInteger(e.run_seq)) continue;   // schema-invalid: its schema check fails it
     seqs.set(e.run_seq, e.seq ?? null);
     if (t === "run.registered" && typeof d.identity === "object" && d.identity !== null && !Array.isArray(d.identity))
       owner = `${str(d.identity.scheme ?? null)}:${str(d.identity.subject ?? null)}`;
+    // the client a gateway registered it for, a writer: requesters of the run
+    if (t === "run.registered" || t === "run.writer") callers.add(t === "run.registered" ? d.caller : d.identity);
     if (t === "run.label") {
       const x = key(d.label);
       if (d.action === "add") {
@@ -126,6 +140,8 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
       } else if (x === null || !carried.has(x)) problems.push(`${where}: clears ${cut(str(x), 32)}, which the run doesn't carry`);
       else if ((d.identity ?? null) === owner && d.self_cleared !== true)
         problems.push(`${where}: ${cut(str(x), 32)} cleared by the run's own owner`);
+      else if (callers.has(d.identity) && d.self_cleared !== true)
+        problems.push(`${where}: ${cut(str(x), 32)} cleared by a requester of the run (a writer or a gateway's caller)`);
       else carried.delete(x);
       continue;
     }
@@ -144,6 +160,17 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
       for (const i of ids)
         if (src.when.has(i) && ![...src.when.get(i)!].every((x) => used.has(x)))
           problems.push(`${where}: ${i} applied without run_labels naming ${[...src.when.get(i)!].sort(byCodePoint).join(", ")}`);
+      // a run condition on the labels field, replayed from the call's rule ids (labels.py, verify/v2.py _run_labels)
+      const subject = [...new Set(ids.filter((i) => src.allLabels.has(i)).map((i) => src.allLabels.get(i)!))]
+        .sort(byCodePoint).join(" ");
+      const tool = typeof d.tool === "string" ? d.tool : null;
+      if (!decided.has(key(e.tool_call_id ?? null)) && tool && src.classes.toolClass(tool) !== "harness")
+        for (const [rid, rx, cls] of src.onLabels)
+          if (!ids.includes(rid) && [...src.when.get(rid)!].every((x) => have.has(x))
+            && (cls === null || cls === src.classes.toolClass(tool)) && rx.test(subject))
+            problems.push(`${where}: ${rid} applies (the call's labels ${subject}; the run carried `
+              + `${[...src.when.get(rid)!].sort(byCodePoint).join(", ")}) but the decision doesn't name it`);
+      if (typeof d.caller === "string") callers.add(d.caller);
       decided.set(key(e.tool_call_id ?? null), { tool: d.tool ?? null, rule_ids: ids });
     } else if (t === "approval.request" && typeof d.binding === "object" && d.binding !== null && !Array.isArray(d.binding))
       asked.set(key(d.approval_id ?? null), { tool: d.binding.tool ?? null, rule_ids: ids });

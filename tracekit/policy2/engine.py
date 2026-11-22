@@ -688,7 +688,9 @@ class Engine:
                 " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
-                         for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])])))
+                         for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])] + [
+                # a command xargs or parallel runs gets words from its input the line doesn't show
+                " ".join([*c["argv"], UNKNOWN_WORD]) for c in parsed[0] if {"xargs", "parallel"} & set(c["via"])])))
         if cls == "shell" and field == "line":   # (and each publish as its program's: _published)
             return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1]) + list(dict.fromkeys(
                 p for c in parsed[0] if (p := _published(c["argv"]))))
@@ -761,7 +763,9 @@ class Engine:
         tool = fields.get("tool")
         call = _acted_on(args, _carried(tool if isinstance(tool, str) else "")) if cls == "mcp" else args
         strings = _strings(call)
-        paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
+        paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] + [
+            f for k in classes.PATH_KEYS if isinstance(call, dict) and isinstance(call.get(k), str)
+            for f in classes.fs_forms(call[k])] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
 
@@ -3102,7 +3106,8 @@ def _runs_signer(code):
 
 # the SDK names that find the dev signer's data or start and stop it (tracekit.signer's own are _runs_signer's), the
 # CLI's modules code may run it through, and the ones of its autospawn module code may use
-_SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__)\b|\btracekit\.cli\b|\bimport\s+cli\b")
+_SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__|run_label_clear)\b|\btracekit\.cli\b"
+                  r"|\bimport\s+cli\b")
 _SDK_READS = {"status", "Hung", "SignerUnavailable", "Incompatible"}
 # where a Python comment or string literal may start, and the rest of each kind of literal: its text (a backslash
 # escapes any character, a newline too) up to its closing quote, or to its line's end (the code's, triple-quoted)
@@ -3146,6 +3151,10 @@ def _reaches_sdk(code, work):
     if _PY_LOOKUP.search(code) and re.search(r"(?<!/)\bautospawn\b(?!\.py)", code):
         return True
     raw, code = code, _py_code(code)
+    # the run_label_clear RPC named in code that imports Tracekit (Client(...).call('run_label_clear', ...)): a dev
+    # signer takes it from its one user, whom the agent runs as
+    if re.search(r"\brun_label_clear\b", raw) and re.search(r"\b(?:import|from)\s+tracekit\b", code):
+        return True
     if (re.search(r"\b(?:import|from)\s+tracekit\.__main__\b|\bfrom\s+tracekit\s+import\s+[\w\s,()]*?\b__main__\b",
                   code) or re.search(r"\bmain\s*\(", code) and re.search(
                       r"\b(?:import|from)\s+tracekit\.cli\b|\bfrom\s+tracekit\s+import\s+[\w\s,()]*?\bcli\b", code) or

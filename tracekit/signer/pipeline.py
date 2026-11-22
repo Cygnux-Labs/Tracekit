@@ -613,6 +613,8 @@ class RecordLog:
                 run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
+                if "caller" in e["data"]:   # a gateway's run of a client (SignerService._register_run)
+                    run["caller"], run["quota"] = e["data"]["caller"], json.dumps([run["owner"], e["data"]["caller"]])
                 h = e["data"].get("harness")
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
@@ -621,7 +623,7 @@ class RecordLog:
                     run["box"] = e["ext"]["box"]
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
-                open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
+                open_runs[run.get("quota", run["owner"])] = open_runs.get(run.get("quota", run["owner"]), 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
                     if "request_id" in e:   # an importer's over RPC (tracekit follow, not OTLP): watched for its beats
@@ -706,8 +708,11 @@ class RecordLog:
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
                 labels.state(dict.__setitem__, run, e)
-                labels.carry(dict.__setitem__, types.SimpleNamespace(carry=carry, labels=self.labels), run, e,
-                             lambda d, k: d.pop(k, None))
+                labels.carry(dict.__setitem__, types.SimpleNamespace(carry=carry, labels=self.labels, runs=runs), run,
+                             e, lambda d, k: d.pop(k, None))
+            if e["type"] == "run.writer":   # after labels.carry, which carries the run's labels to the new writer
+                run["writers"][e["data"]["stream"]] = e["data"]["identity"] + (
+                    " through a gateway" if e["data"].get("gateway") else "")
         for run in runs.values():   # a run's last result had no executed_against_policy gap after it
             if run.get("ran_under"):
                 run["decisions"].pop(run.pop("ran_under")[1], None)
@@ -845,7 +850,10 @@ class RecordLog:
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
                     if req["stream"] not in run["writers"]:
-                        labels.join(tx.set, self, run, writer(identity, req))
+                        if owner(identity) != run["owner"]:   # a requester of the run (labels.requesters): recorded
+                            tx.emit(run, "run.writer", {"identity": owner(identity), "stream": req["stream"],
+                                                        **({"gateway": True} if "caller" in req else {})},
+                                    source="signer")
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")

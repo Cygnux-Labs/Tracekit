@@ -222,8 +222,10 @@ call it lets run (a `policy.decision` of `allow` or `flag`; the `approval.consum
 `rule_ids` its `approval.request` names; its `capture.gap{executed_against_policy}`, for its latest decision): the
 `label` of each of its rules that is a run label, and `untrusted_content` when the policy's `untrusted` list names the
 tool (as the provenance index reads it); a call the policy couldn't read (`TK-OVERSIZE`) sets every label the policy
-reads. An `input.observed` with `trust: untrusted` sets `untrusted_content`, and a
-`capture.gap{client_counter_gap}` (events the signer never got) every label the policy reads.
+reads. An `input.observed` with `trust: untrusted` sets `untrusted_content`, and a call the signer never decided
+every label the policy reads: a `capture.gap` of kind `client_counter_gap` (events the signer never got),
+`signer_unavailable`, `tailer_lost` or `observer_lost`, and a `reconcile.hook_missing`. A counter gap's labels apply to
+the decision that shows it (its run conditions read them), as its `capture.gap` and `run.label` come before it.
 `run.label{label, action: add, by: signer, inherited: {run_id, run_seq}}`: a label one of the run's requesters (its
 client: its owner, or the client a gateway registered it for; an identity it was delegated to; a gateway's caller)
 carries from another run of theirs, in any tenant and under any principal, open or ended within the policy's
@@ -231,12 +233,18 @@ carries from another run of theirs, in any tenant and under any principal, open 
 add (its tenant isn't named). A bundle holds one run, so an inherited label is signer-asserted (the other run's
 bundle shows its add).
 `run.label{label, action: clear, by: person, identity, person, reason?, break_glass?, self_cleared?}`: a person ended
-the label (`run_label_clear`), for the run and its client's runs in its tenant, never the run's owner, principal or
+the label (`run_label_clear`), for the run and its client's ended runs in its tenant (an open run that carries it
+keeps it, and passes it on, until it is cleared there), never the run's owner, principal or
 requester, but on a signer with no `approvals` config (a dev signer, whose one user answers their own run's
-approvals), where any identity of the run's tenant may, its owner too, `self_cleared: true`; a later record that sets
-it sets it again. A
+approvals), where any identity of the run's tenant may, its owner too, `self_cleared: true` (for that run only: the
+run's own user may be the agent, so the assurance is `dev`, `labels: self-cleared`, as for a self-approval); a later
+record that sets it sets it again. A
 `policy.decision` whose run conditions applied names the labels that made them apply (`run_labels`): each one the run
-carried, or one a rule of the call itself sets. A bundle with either needs `verifier_min_version` 1.8.0.
+carried, or one a rule of the call itself sets. A run's requesters are in its records: `run.registered{caller}`,
+the client a gateway registered the run for, and `run.writer{identity, stream, gateway?}`, by the signer before the
+first write of a stream of the run by an identity other than its owner (one it was delegated to; `gateway: true`, a
+gateway's caller); a clear by one of them fails as one by the owner does. A bundle with any of these needs
+`verifier_min_version` 1.8.0.
 
 Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
 and then never heard about. All are `capture.gap` records with `source: signer`.
@@ -606,7 +614,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
 | 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
-| 1.8.0 | `run.label` | `policy.decision`: `run_labels` | — | — |
+| 1.8.0 | `run.label`, `run.writer` | `policy.decision`: `run_labels`; `run.registered`: `caller` | — | — |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -774,8 +782,11 @@ line and verdict is in [verdicts](verdicts.md).
    first one's before any) and, between two decisions under different policies, the next one's too, owing what both
    set and free to add what either does: each label a record sets is added by a `run.label` before the run's next `policy.decision` or `approval.consumed` (or its end); each add
    cites a record that sets that label and that the run didn't carry; a clear is of a label the run carries and its
-   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`) unless it is `self_cleared`; a decision's `run_labels` were
-   carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold (`run
+   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`) nor another requester (`run.registered`'s `caller`, a `run.writer`'s `identity`, a decision's `caller`) unless it is `self_cleared`; a decision's `run_labels` were
+   carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold; its
+   `rule_ids` hold each run condition rule on the `labels` field (no `tool`, of the call's class or none) whose `when`
+   the run's labels meet and whose pattern matches the labels of its `rule_ids` (sorted, space-joined), but for a
+   decision of a `tool_call_id` decided before or of a harness tool (`run
    labels`); an inherited add (`inherited`) is of a label the policy reads, and signer-asserted.
    Without one of its policies the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle
    nor the trust config carries is a `label policies` warning, labels or none: a signer that left every label and the

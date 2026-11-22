@@ -2803,7 +2803,7 @@ class SignerService:
                   if a["run_key"][0] == tenant and a["run_key"][1] in run_ids}
         for rid in run_ids:
             r = self.log.runs.get((tenant, rid)) or {}
-            theirs |= {r.get("owner"), r.get("principal"), *r.get("people", ())}
+            theirs |= {r.get("owner"), r.get("principal"), *r.get("people", ()), *labels.requesters(r)}
         theirs |= {self._persons.get(x) for x in theirs}
         if {sub, owner(identity), who, self._persons.get(sub)} & (theirs - {None}):
             raise RPCError("forbidden", f"{sub[:256]} is the owner, principal or requester of a run this concerns: "
@@ -3078,10 +3078,7 @@ class SignerService:
                                                                  or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
-            if caller is not None:
-                # lean: the entry is run state (memory and snapshot), not in run.registered: a run replayed from the
-                # log after the last snapshot counts in its owner's own entry until it closes; record the caller in
-                # run.registered if gateways' runs must count exactly across restarts
+            if caller is not None:   # run.registered records it (a restart's replay sets both again)
                 tx.set(run, "quota", count)
                 tx.set(run, "caller", caller)   # whose run it is: its labels are the client's (labels.requesters)
             tx.set(self.log.open_runs, count, n + 1)
@@ -3114,7 +3111,7 @@ class SignerService:
             data = {"agent": req["agent"], "fail_modes": self.fail_modes,
                     "signer_isolation": "unknown" if boxed else self.isolation or self._isolation(identity),
                     "identity": _recorded(identity.claims["daemon"] if boxed else identity)}
-            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
+            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation", "caller") if k in req})
             if up:
                 data.update(parent_run=parent["run_id"], session=run["session"])
             if harness:
@@ -3242,7 +3239,10 @@ class SignerService:
                     if label not in have:
                         tx.emit(run, "run.label", {"label": label, "action": "add", "by": "signer",
                                                    "inherited": {"run_id": rid, "run_seq": seq}}, source="signer")
-                d = self.policy.condition(d, run.get("labels") or ())
+                # and every label the policy reads when this request skips client_seq values: its gap, written before
+                # the decision (Tx.event), sets them, as calls the signer never got may have done anything
+                lost = self.log.labels.tracked if self.log.labels and skipped(run, req) else ()
+                d = self.policy.condition(d, {*(run.get("labels") or ()), *lost})
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
                 both = list(dict.fromkeys(both + rule_ids))
                 if d.get("run_labels"):
@@ -4284,8 +4284,8 @@ class SignerService:
             for s in req.get("last_client_seq", ()):
                 stream, end = s["stream"], s["client_seq"]
                 last = max(streams.get(stream, -1), tails.get(stream, -1))
-                # only the closer's own streams, one that never reached the signer, or one whose writer a restart
-                # forgot (writers are not in the records): a gap then rather than none
+                # only the closer's own streams, one that never reached the signer, or an owner's stream a restart
+                # forgot (run.writer records only another writer's): a gap then rather than none
                 if writers.get(stream, who) != who or end <= last:
                     continue
                 tx.emit(into, "capture.gap", {

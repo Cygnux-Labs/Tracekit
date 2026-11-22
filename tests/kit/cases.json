@@ -94,8 +94,11 @@
   "kit/vectors/retire-self-signed.tkb": "c33f9ed5549c282c2f5fddb0ac8177497e44b4621890371a1f1e735a77db89f5",
   "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
   "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
+  "kit/vectors/run-label-caller-cleared.tkb": "7f867d51df182c4a2b1946781160bb9fbd32e20411e802ede5a6825ac5674825",
   "kit/vectors/run-label-inherited-untracked.tkb": "76ccb51e1a19666d7c774a9c259b4656f796260a0cd59e8ffded16181a568225",
   "kit/vectors/run-label-inherited.tkb": "b8b80a42b4425a806ee846c72c4b8775d4d15668eb121b4c5a890802780f3d33",
+  "kit/vectors/run-label-lost-unnamed.tkb": "3cfabf7322235c1efb7cc50fcde0fdc39fd1e8411ccee09c917804d89425ea62",
+  "kit/vectors/run-label-lost.tkb": "2dc64c505be2f7f9894b4430d9cf976a6a029dd222b0f5e60d7d4136d6ffc892",
   "kit/vectors/run-label-omitted-trusted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
   "kit/vectors/run-label-omitted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
   "kit/vectors/run-label-owner-cleared.tkb": "94233a7354003e8300aef55cea801ebb49f67d2ae4e87d8e1969e66d184ed899",
@@ -103,9 +106,11 @@
   "kit/vectors/run-label-two-policies-omitted.tkb": "433b1c5ff5f1d873e603dfab8c03e884339a87cf605803fc92b2bab317889393",
   "kit/vectors/run-label-two-policies.tkb": "483dbf07d7b27b70993cef425d6a3512754d639eb54209a8c1d1bbf15ecb0543",
   "kit/vectors/run-label-unset.tkb": "3568120c790ea55ac856cf81c8146cb7e425a18a7089e94c3184d0dcfae91f77",
+  "kit/vectors/run-label-writer-cleared.tkb": "94d7b8c9e1613113cfcaed10efff8d52eb8dd3c36a60ec8c3e0865ba34317262",
   "kit/vectors/run-label.tkb": "b7ec4eea11d8522f58d17b14fb1ebe253f4dbc242911c9d0cf7107adf6a76536",
   "kit/vectors/run-seq-written-0.tkb": "85a6cacbf2346cc88fb4154e20a1d6dbc5fd171f01f559b9550d73d3bb5eba9f",
   "kit/vectors/run-set-open-only.tkb": "e61809464ed089a0f749735c5fd7db4343e28ccf9f5652b1695b6a30f8a0e6ad",
+  "kit/vectors/run-writer.tkb": "cc8db9af4a77e04393f6b41bc5871176146aee1a3382f254d1ec28f00826e692",
   "kit/vectors/signature-s-plus-l.tkb": "9be85507ea5c6b888dee292c426eda0509a3d519b0be3d84e976918265ac7464",
   "kit/vectors/signer-run.tkb": "57f724ec696e3fc69b8d398e4c291236ccb374e8f1b723bab827aecedc4d402c",
   "kit/vectors/tree-size-written-4-0.tkb": "3d9b4d9b331642d691a7738b4fbff6a059ecb78c00aa1d7fdc27f73825765595",
@@ -1183,9 +1188,9 @@
    "trust": "kit/vectors/trust.json",
    "exit": 0,
    "verdict": "VERIFIED",
-   "level": "witnessed",
+   "level": "dev",
    "failed_check": null,
-   "decided_by": "§3 (run labels: a dev signer's self_cleared), §11 step 9",
+   "decided_by": "§3 (run labels: a dev signer's self_cleared, assurance dev), §11 step 9",
    "addon": "run labels",
    "needs": "1.8.0"
   },
@@ -1212,6 +1217,72 @@
    "level": "witnessed",
    "failed_check": null,
    "decided_by": "§3 (run labels), §11 step 9 (each record under the policy its decision names)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a lost call sets, and the send after it",
+   "input": "kit/vectors/run-label-lost.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a call the signer never decided sets every label the policy reads), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a send after a lost call that doesn't name its run condition",
+   "input": "kit/vectors/run-label-lost-unnamed.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels), §11 step 9 (a run condition on the labels field, replayed from the rule ids)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a gateway's caller cleared",
+   "input": "kit/vectors/run-label-caller-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a run's writer, recorded",
+   "input": "kit/vectors/run-writer.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a run's requesters)",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label a run's writer cleared",
+   "input": "kit/vectors/run-label-writer-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9",
    "addon": "run labels",
    "needs": "1.8.0"
   },

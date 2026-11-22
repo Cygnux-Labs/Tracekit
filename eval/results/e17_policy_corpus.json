@@ -1,8 +1,8 @@
 {
-  "policy_hash": "sha256:0674d52ebe13aef7466cad17ffbfe33b62ea95c316740d28690a3d3ca8868f0e",
+  "policy_hash": "sha256:6560acd4d0d2e320948e0bc271f93b870c591525ae285eeecd6f2ffa3ffe03b6",
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.9.29"
+    "regex@2026.11.15"
   ],
   "classes": {
     "browser": {
