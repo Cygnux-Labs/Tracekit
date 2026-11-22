@@ -130,6 +130,16 @@ class LimitsIndex(unittest.TestCase):
         self.assertIn(os.path.join(ROOT, "docs", "issuer.md"), with_limits)
         self.assertEqual([os.path.relpath(p, ROOT) for p in with_limits if os.path.normpath(p) not in linked], [])
 
+    def test_kilo_and_opencode_rows_name_only_the_tools_still_unread(self):
+        # #988: Kilo's browser_open, repo_clone and kilo_memory_save are decided by what they do, and an http(s) image
+        # of OpenCode's experimental_image_generate by the fetch rules
+        text = read(os.path.join(ROOT, "docs", "limits.md"))
+        kilo = next(r for r in text.splitlines() if r.startswith("| Kilo's own tools that Tracekit doesn't map"))
+        self.assertIn("Among them: `agent_manager`", kilo)
+        self.assertIn("`browser_open` and `repo_clone` are decided as a `WebFetch`", kilo)
+        self.assertIn("`kilo_memory_save` is decided as a `Write`", kilo)
+        self.assertNotIn("is decided as a path, not by the fetch rules", text)
+
 
 class DocCommands(unittest.TestCase):
     def test_system_mode_upgrade_docs_include_macos_signer_label(self):

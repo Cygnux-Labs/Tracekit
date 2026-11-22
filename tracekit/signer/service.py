@@ -2203,16 +2203,16 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         return evaluate(self.policy, tool, args, hint, untrusted)
 
-    def _reasons(self, ids, unread=None):
+    def _reasons(self, ids, unread=None, policy=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
         INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
-        so its label is no reason it was denied or held."""
+        so its label is no reason it was denied or held. `policy`: the Engine whose rules these are (this signer's)."""
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
-        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
+        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in (policy or self.policy).rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
@@ -2453,6 +2453,16 @@ class SignerService:
                 pass
         self._kept[policy_hash] = kept
         return kept
+
+    def _recorded_reason(self, call):
+        """The reason of decision `call` as its record gives it (replayed, pipeline.CALL_KEYS): the reasons signed with
+        it, then for a deny or ask its rules' reasons in the policy it was decided under (none when that one isn't
+        kept). What decide said from memory only is not in the record: a person's earlier no, a constraint's text (a
+        name out of the call's arguments), a containment's, the cause of a TK-SHELL-PARSE."""
+        policy = self.policy if call.get("policy_hash") in (None, self.policy.policy_hash) else \
+            self._kept_policy(call["policy_hash"])
+        rules = policy and call["decision"] in ("deny", "ask") and self._reasons(call["rule_ids"], policy=policy)
+        return "; ".join(x for x in (*(call.get("reasons") or ()), rules) if x)[:1024]
 
     def _untrusted_results(self, tool, policy_hash):
         """Whether `tool`'s results are untrusted under this signer's policy or the one its call was decided under
@@ -3268,6 +3278,7 @@ class SignerService:
                 out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
+            tx.set(run["calls"][tcid], "reason", out.get("reason", ""))   # what call_state answers
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
                 out["send_result"] = True
             return out
@@ -4972,11 +4983,12 @@ class SignerService:
         return {"events": events, "next_seq": next_seq}
 
     def _call_state(self, identity, req):
-        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
-        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
-        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
-        nothing."""
+        """What the signer recorded of the latest attempt of a call of the run: its decision and the reason decide gave,
+        its approval and whether this attempt consumed it, a refused consume, and its result; {} for a call never
+        decided. The LangChain gate reads it to go on with a ToolNode's calls when the node runs again after a resume,
+        in any process. Writes nothing."""
         key, tcid = self._authorize(identity, req), req["tool_call_id"]
+        replayed = []   # the call, replayed from its record (a crash since the last snapshot)
 
         def state(tx):
             call = self.log.runs[key].get("calls", {}).get(tcid)
@@ -4985,8 +4997,10 @@ class SignerService:
             attempt = call["attempt"]
             out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
                    "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
-            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
-                out["reason"] = why
+            if call.get("reason") is None:
+                replayed.append(call)
+            elif call["reason"]:
+                out["reason"] = call["reason"]
             if call.get("tool") and self.policy.untrusted_results(call["tool"]):
                 out["send_result"] = True
             if "args_digest" in req:
@@ -5001,7 +5015,10 @@ class SignerService:
             if call.get("ended"):
                 out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
             return out
-        return self.log.write(state)
+        out = self.log.write(state)
+        if replayed and (why := self._recorded_reason(replayed[0])):   # off the writer: it may load a kept policy
+            out["reason"] = why
+        return out
 
     def _call_claim(self, identity, req):
         """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
