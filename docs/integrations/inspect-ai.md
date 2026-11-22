@@ -32,6 +32,17 @@ with Client().run(agent="my-eval") as run:
     eval(task, model="openai/gpt-5", approval=[ApprovalPolicy(tracekit(run), "*")])
 ```
 
+Or pass a client and ask for one run per sample, so two samples with the same tool-call ids no longer share a run:
+
+```python
+eval(task, model="openai/gpt-5", approval=[ApprovalPolicy(tracekit(client=Client(), per_sample=True), "*")])
+```
+
+A sample's run opens on its first approved call and closes when the sample ends; a sample that makes no tool calls gets
+no run. The approver tells samples apart by Inspect's own sample identity (`inspect_ai.log._samples.sample_active()`),
+so this reads a private part of Inspect and is pinned to the tested inspect-ai 0.3.x in `pyproject.toml`. A call it
+cannot attribute to a sample is refused.
+
 The same policy works from `Task(approval=...)` and the `approval()` context manager. Put Tracekit's approver first, or
 alone: it approves every call it allows, which ends Inspect's chain, so an approver listed after it (`human`, say)
 never sees the call. To keep another approver in front, have it `escalate` what it doesn't decide.
@@ -71,8 +82,11 @@ Importing the module registers one Inspect hook for the process. It does nothing
   packs' `tools:` lists. The dev and coding packs only flag them (`unknown_tools: flag`), and the server packs hold them
   for a person. A `bash_session` call's `input` is typed into a shell but isn't read as shell code, so on the dev pack
   it runs with only a flag. List them in your policy to give them a class.
-- **One run per eval.** Every sample and epoch records into the run you gave the approver, and the hook finds a call by
-  Inspect's tool-call id, so a call whose id is still open is refused. A run per sample is not supported yet.
+- **One run per eval, or one per sample.** By default every sample and epoch records into the run you gave the
+  approver, and the hook finds a call by Inspect's tool-call id, so a call whose id is still open is refused. With
+  `tracekit(client=Client(), per_sample=True)` each sample gets its own run, opened on its first approved call and
+  closed when the sample ends, and the hook finds a call by its run and id. A retry keeps its sample's run; each epoch
+  is a separate sample execution with its own run. A call the approver cannot attribute to a sample is refused.
 - **The trio backend.** With `INSPECT_ASYNC_BACKEND=trio`, the approver's asyncio calls fail, so every call is refused.
 - **An escalated call.** A Tracekit `ask` is never turned into Inspect's `escalate`: the person's answer goes to
   `tracekit approvals`, not to Inspect's human approver.
