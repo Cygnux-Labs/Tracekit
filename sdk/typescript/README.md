@@ -71,6 +71,10 @@ await client.close();                                     // waits for what is i
 - **Fail modes:** only when the signer cannot be reached does `decide` return the run's fail mode for the tool class
   (`fields.tool_class_hint`, from `register_run`'s `fail_modes`, default closed) with `unavailable: true`. A refusal
   from the signer rejects with `RPCError`, never an allow.
+- **Transfers (experimental):** `await run.transfer(sender, receiver, payload, modality, { projector, measured, keep })`
+  records and gates a hand-off of a model's internal state between agents before it happens, as Python's
+  `RunHandle.transfer` does ([latent transfers](../../docs/c2c.md#runtransfer)). It resolves the decision with `ok`: hand
+  the payload over only when `ok` is true. With the signer unreachable it is not ok, whatever the run's fail modes.
 - **Serverless:** `client.waitUntil(promise)` and `await client.flush()` before the host freezes the process.
 - `withRun(run, fn)` makes `run` the `currentRun()` of everything `fn` awaits (AsyncLocalStorage).
 - `argsDigest(tool, args)`, `canonicalize`, `strictParse`: JCS (RFC 8785) and the strict parser, byte-identical to

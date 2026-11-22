@@ -68,6 +68,7 @@ from . import pg_schema
 
 SCHEMA, VERSION = pg_schema.SCHEMA, pg_schema.VERSION
 GRANTS, READ_GRANTS = pg_schema.GRANTS, pg_schema.READ_GRANTS   # the roles' grants (docs, deploy compose)
+VAULT_GRANTS = pg_schema.VAULT_GRANTS
 
 PAGE = 1000
 LOCK_CLASS = 0x746b   # the advisory lock's first key: "tk"
@@ -109,12 +110,22 @@ def migrate(dsn):
     return VERSION
 
 
+def version(dsn):
+    """The store's schema version, None before migrate()."""
+    with _connect(dsn) as conn:
+        return _version(conn)
+
+
+def _version(conn):
+    try:
+        return conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()[0]
+    except errors.UndefinedTable:
+        return None
+
+
 def _check_version(conn, need=1):
     """Refuse a store whose schema is not version `need` to VERSION (1 lacks only the content vault's tables)."""
-    try:
-        version = conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()[0]
-    except errors.UndefinedTable:
-        version = None
+    version = _version(conn)
     if version is not None and version < need:
         raise ValueError(f"the Postgres store's schema is version {version}; the content vault (content.retain) needs "
                          f"version {need}: run `tracekit signer migrate --config signer.yaml`")
