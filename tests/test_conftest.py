@@ -2,6 +2,7 @@
 worker's session left running fails the run, as it does in one process. xdist's controller takes no exit status from
 its workers, so the conftest passes each worker's findings to it."""
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -89,6 +90,9 @@ class Shard(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         shutil.copy(os.path.join(TESTS, "conftest.py"), d)
+        os.mkdir(os.path.join(d, "data"))
+        with open(os.path.join(d, "data", "shard_durations.json"), "w", encoding="utf-8") as f:
+            json.dump({"test_a.py": 50, "test_b.py": 30, "test_c.py": 30}, f)   # test_d.py has no record: the median, 30
         for name, n in (("a", 5), ("b", 3), ("c", 3), ("d", 1)):
             with open(os.path.join(d, f"test_{name}.py"), "w", encoding="utf-8") as f:
                 f.write("".join(f"def test_{k}():\n    pass\n\n\n" for k in range(n)))
@@ -109,6 +113,38 @@ class Shard(unittest.TestCase):
                 p = self.collect(d, f"--shard={spec}")
                 self.assertNotEqual(p.returncode, 0)
                 self.assertIn("expected I/N with 0 <= I < N", p.stdout + p.stderr)
+
+
+class Packing(unittest.TestCase):
+    def setUp(self):
+        import conftest
+        self.pack = conftest.pack_shards
+        with open(os.path.join(TESTS, "data", "shard_durations.json"), encoding="utf-8") as f:
+            self.durations = json.load(f)
+
+    def test_it_depends_only_on_the_paths_and_the_data(self):
+        paths = list(self.durations)
+        self.assertEqual(self.pack(paths, 3, self.durations), self.pack(reversed(paths), 3, self.durations))
+        self.assertEqual(self.pack(set(paths), 3, self.durations), self.pack(paths, 3, self.durations))
+
+    def test_every_file_is_in_exactly_one_shard(self):
+        paths = [*self.durations, "tests/test_new_file.py"]
+        where = self.pack(paths, 3, self.durations)
+        self.assertEqual(sorted(where), sorted(paths))
+        self.assertTrue(all(i in range(3) for i in where.values()))
+
+    def test_a_file_with_no_record_weighs_the_median(self):
+        self.assertEqual(self.pack(["a.py", "b.py", "c.py"], 3, {"a.py": 1, "b.py": 7, "z.py": 9}),
+                         {"b.py": 0, "c.py": 1, "a.py": 2})
+        self.assertEqual(self.pack(["x.py", "y.py"], 2, {}), {"x.py": 0, "y.py": 1})
+
+    def test_the_committed_data_packs_within_5_percent_of_even(self):
+        for n in (2, 3, 4):
+            with self.subTest(n=n):
+                load = [0] * n
+                for path, i in self.pack(self.durations, n, self.durations).items():
+                    load[i] += self.durations[path]
+                self.assertLessEqual(max(load), 1.05 * sum(load) / n, load)
 
 
 if __name__ == "__main__":
