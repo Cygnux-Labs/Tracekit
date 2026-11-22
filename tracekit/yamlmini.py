@@ -19,9 +19,6 @@ _INT = re.compile(r"^[-+]?\d+$")
 _FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
 
 
-_OPENS = ("", ":", "-", "[", ",", "{")   # a quote opens a string only after one of these (or at the start)
-
-
 def _strip_comment(line, depth=0):
     """`line` without its comment; `depth`: the flow brackets an earlier line left open. A quote opens a string only where a scalar starts (the line's start, after `- `,
     `: `, a flow `[`, `{` or `,`, or a quoted key's `:`); inside a plain scalar it is text, as in PyYAML."""
@@ -107,23 +104,27 @@ def _scalar(tok, lineno):
 
 
 def _quoted(s):
-    """For each character of flow text `s`, whether it is part of a quoted string; and whether one is still open at the
-    end. A quote opens a string only where an item starts (_OPENS); `''` goes on with a single-quoted string, and a
-    backslash escapes the next character in a double-quoted one."""
-    marks, q, last, i = [], None, "", 0
+    """Per character of flow text `s`: part of a quoted string? And is one still open at the end."""
+    marks, q, start, closed, prev, i = [], None, True, False, "", 0
     while i < len(s):
         c = s[i]
-        marks.append(bool(q) or (c in "'\"" and last in _OPENS))
+        marks.append(bool(q) or (c in "'\"" and start))
         if q:
             if (q == '"' and c == "\\") or (q == c == "'" and s[i + 1:i + 2] == "'"):
                 marks.append(True)
                 i += 1
             elif c == q:
-                q, last = None, c
-        elif marks[-1]:
+                q, closed = None, True
+            i += 1
+            continue
+        if marks[-1]:
             q = c
-        elif not c.isspace():
-            last = c
+        elif c.isspace():
+            start = start or prev == ":"
+        else:
+            start = c in "[{," or (c == ":" and closed)
+        closed = False
+        prev = c if not c.isspace() else prev
         i += 1
     return marks[:len(s)], q is not None
 
@@ -146,6 +147,8 @@ def _split_flow(s, lineno):
         parts.pop()
     if any(not x.strip() for x in parts):
         raise YAMLError(f"line {lineno}: empty item in flow list")
+    if any(x.strip().startswith("#") for x in parts):
+        raise YAMLError(f"line {lineno}: a flow item can't start with #")
     return parts
 
 
@@ -174,7 +177,9 @@ def _unclosed(text, lineno):
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
         return 0
-    marks, _ = _quoted(v)
+    marks, open_ = _quoted(v)
+    if open_:
+        raise YAMLError(f"line {lineno}: a quoted string in a flow list ends on its line")
     return max(0, sum((c in "[{") - (c in "]}") for c, quoted in zip(v, marks) if not quoted))
 
 

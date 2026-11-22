@@ -50,7 +50,7 @@ class FlowMappings(unittest.TestCase):
         def atom():
             body = "".join(r.choice("ab ,[]{}#'\"\\x") for _ in range(r.randrange(6)))
             return r.choice(["'" + body.replace("'", "''") + "'", json.dumps(body),
-                             r.choice(["a", "b c", "a#b", 'x"y', "it's", 'a"x\\"y', "q #z"])])
+                             r.choice(["a", "b c", "a#b", 'x"y', "it's", 'a"x\\"y', "q #z", "rm-'rf", "a:'b", 'x-"y', "a - 'b"])])
 
         def key(i):
             return r.choice([f"k{i}", f"'k''{i}'", f'"k\\"{i}"'])
@@ -143,12 +143,17 @@ class FlowMappings(unittest.TestCase):
 
         def quoted():
             v = "".join(r.choice("ab ,:#[]{}'\"\\-x\u00e9") for _ in range(r.randint(0, 7)))
-            return ("'" + v.replace("'", "''") + "'") if r.random() < 0.5 else json.dumps(v)
+            text = ("'" + v.replace("'", "''") + "'") if r.random() < 0.5 else json.dumps(v)
+            if len(text) > 3 and r.random() < 0.05:   # a string over two lines, which yamlmini refuses
+                text = text[:2] + "\n  " + text[2:]
+                spans.append(text)
+            return text
 
         def scalar(flow):
             if flow or r.random() < 0.6:
                 return quoted()
-            return r.choice(["abc", "a b", "x-y", "a.b", "path/to", "12", "true", "null", "a#b", "it's", 'say "hi"'])
+            return r.choice(["abc", "a b", "x-y", "a.b", "path/to", "12", "true", "null", "a#b", "it's", 'say "hi"',
+                             "rm-'rf", "a:'b", 'x-"y'])
 
         def comment():
             return r.choice(["", "", " # note", "  # a 'quoted' # thing", ' #"x'])
@@ -170,16 +175,31 @@ class FlowMappings(unittest.TestCase):
                     out.append(f"k{i}:" + "".join(f"\n  - {scalar(False)}{comment()}" for _ in range(r.randint(1, 3))))
             return "\n".join(out) + "\n"
 
-        both = 0
+        both, spans = 0, []
         for _ in range(3000):
+            del spans[:]
             d = doc()
             try:
                 theirs = yaml.safe_load(d)
             except yaml.YAMLError:
                 continue
             both += 1
-            self.assertEqual(yamlmini.loads(d), theirs, d)
+            try:
+                mine = yamlmini.loads(d)
+            except ValueError:   # refused, never misread: only a quoted string over lines may be
+                self.assertTrue(spans, d)
+                continue
+            self.assertEqual(mine, theirs, d)
         self.assertGreater(both, 2000)
+
+    def test_a_quote_inside_a_plain_flow_item_is_text(self):
+        self.assertEqual(yamlmini.loads("deny: [rm-'rf, curl']\n"), {"deny": ["rm-'rf", "curl'"]})
+        self.assertEqual(yamlmini.loads("k: {x: a-'b, y: c'}\n"), {"k": {"x": "a-'b", "y": "c'"}})
+
+    def test_a_quoted_string_over_lines_and_a_flow_item_starting_with_hash_are_refused(self):
+        for text, why in (("k: ['a\n  b #c',\n  'd']\n", "ends on its line"), ("k: [a,#c\n  b]\n", "start with #")):
+            with self.subTest(text), self.assertRaisesRegex(yamlmini.YAMLError, why):
+                yamlmini.loads(text)
 
     def test_a_single_quoted_key_takes_a_doubled_quote(self):
         self.assertEqual(yamlmini.loads("v: {'it''s': 1}\n'a''b': 2\n"), {"v": {"it's": 1}, "a'b": 2})
