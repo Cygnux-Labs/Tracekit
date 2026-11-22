@@ -15,15 +15,15 @@ a missing session or tool call id blocks the call. Only the reply differs: each 
 
 What the model said (docs/reasoning.md) is recorded before each event is handled, as model_event responses on the
 session's stream (tracekit.integrations.said): Codex's reasoning items, messages and tool calls from its rollout,
-Gemini CLI's thoughts and text from its chat recording and Qwen Code's from its chat file (the transcript the payload names; each hook reads the lines
-written since the session's last one, a resumed session's first from where it ended at SessionStart), the text of
-Cursor's afterAgentThought and afterAgentResponse events, and the last_assistant_message of Crush's TurnEnd event. Each
-Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook is decided (agent_hooks.tool)
-with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning before it is linked to the
-decision and reconciliation pairs the two; Gemini CLI, Qwen Code, Cursor and Crush name no call id in what they send here, so
-theirs is not linked, and their messages are sent `said_only`: the signer reads no call from them, so it never takes
-the calls their hooks decide for calls no model asked for. Recording
-never changes a hook's answer: a failure prints a line and the hook goes on.
+Gemini CLI's thoughts and text from its chat recording and Qwen Code's from its chat file (the transcript the payload
+names; each hook reads the lines written since the session's last one, a resumed session's first from where it ended at
+SessionStart), the text of Cursor's afterAgentThought and afterAgentResponse events, and the last_assistant_message of
+Crush's TurnEnd event. Each Codex tool call in the rollout is a tool use under its call_id, named as its PreToolUse hook
+is decided (agent_hooks.tool) with its arguments `coerced` (Codex rewrites them for the hook), so the model's reasoning
+before it is linked to the decision and reconciliation pairs the two; Gemini CLI, Qwen Code, Cursor and Crush name no
+call id in what they send here, so theirs is not linked, and their messages are sent `said_only`: the signer reads no
+call from them, so it never takes the calls their hooks decide for calls no model asked for. Recording never changes a
+hook's answer: a failure prints a line and the hook goes on.
 """
 import contextlib
 import json

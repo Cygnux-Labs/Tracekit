@@ -596,15 +596,15 @@ to, or with the plugin enabled in the user's settings (unless they set it; `--no
 `tracekit uninstall` removes it again while it's still `true`): without it Claude Code keeps the model's thinking
 only sealed. For headless runs pass `claude -p --thinking-display summarized`. `tracekit analyze --v2`
 ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)) and `tracekit view --dev` read
-them. **Codex, Gemini CLI, Qwen Code, Cursor and Crush:** each v2 hook first records what the model said since the session's last hook:
-Codex's reasoning summaries (and the sealed `encrypted_content`), messages and tool calls from its rollout file, linked
-to the calls by `call_id`; Gemini CLI's thought summaries and text from its chat recording; Qwen Code's thought and
-text parts from its chat file (the `transcript_path` its hooks send; empty, and nothing recorded, when chat recording is
-off); Cursor's thinking and
-response text from its `afterAgentThought` and `afterAgentResponse` hooks; Crush's `last_assistant_message` from its
-`TurnEnd` hook (the turn's last step's first text part, with no reasoning or earlier steps' text; init installs those
-hooks). Gemini CLI, Qwen Code, Cursor and Crush carry no call id in what sends the text, so their text is not linked to a call;
-Gemini CLI writes its thoughts, and Crush fires `TurnEnd`, after the calls ran.
+them. **Codex, Gemini CLI, Qwen Code, Cursor and Crush:** each v2 hook first records what the model said since the
+session's last hook: Codex's reasoning summaries (and the sealed `encrypted_content`), messages and tool calls from its
+rollout file, linked to the calls by `call_id`; Gemini CLI's thought summaries and text from its chat recording; Qwen
+Code's thought and text parts from its chat file (the `transcript_path` its hooks send; empty, and nothing recorded,
+when chat recording is off); Cursor's thinking and response text from its `afterAgentThought` and `afterAgentResponse`
+hooks; Crush's `last_assistant_message` from its `TurnEnd` hook (the turn's last step's first text part, with no
+reasoning or earlier steps' text; init installs those hooks). Gemini CLI, Qwen Code, Cursor and Crush carry no call id
+in what sends the text, so their text is not linked to a call; Gemini CLI writes its thoughts, and Crush fires
+`TurnEnd`, after the calls ran.
 `tracekit init --v2 --agent codex` also sets `model_reasoning_summary = "auto"` as the first line of Codex's
 `config.toml` (unless it sets one; `--no-thinking-summaries` leaves it alone; `tracekit uninstall --agent codex` removes
 the line while it's unchanged): Codex's current models default to `none`, which keeps the
