@@ -178,20 +178,51 @@ class FalseStops(unittest.TestCase):
                      "import dill\nfrom tracekit.signer.service import evaluate\ndill.dumps(evaluate)"):
             self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
 
+    def test_a_signer_function_passed_on_as_a_value_stays_denied(self):
+        # a function or class of the signer may be called; anything that holds it (a ctypes call, a format field, a
+        # locate or Formatter lookup) can read its module's globals, so any other use is denied
+        imp = "from tracekit.signer.service import evaluate\n"
+        for code in (
+                "import ctypes\n" + imp + "g = ctypes.pythonapi.PyFunction_GetGlobals\ng.restype = ctypes.py_object\n"
+                "g.argtypes = [ctypes.py_object]\nprint(g(evaluate)['SignerService'])",
+                "import string\n" + imp + "print(string.Formatter().get_field('0._' + '_globals__', (evaluate,), {})[0])",
+                "import pydoc\n" + imp + "m = pydoc.locate('operator.method' + 'caller')\n"
+                "print(m('_' + '_getattribute__', '_' + '_globals__')(evaluate)['SignerService'])",
+                imp + "print(('{0._' + '_globals__[SignerService]}').format(evaluate))",
+                imp + "f = evaluate\nprint(f)",
+                imp + "print(evaluate)",
+                "from tracekit.signer.rpc_schema import RPCError\nclass E(RPCError):\n    pass",
+                "from tracekit.signer.rpc_schema import RPCError\nprint(RPCError)",
+                "import pydoc\nprint(pydoc.locate('tracekit.signer.ser' + 'vice.SignerService'))",
+                "import logging.config\nprint(logging.config.BaseConfigurator({}).resolve('tracekit.signer.ser' + "
+                "'vice.SignerService'))",
+                "import code\ncode.InteractiveInterpreter().runsource('from tracekit.signer.ser' + 'vice import "
+                "SignerService; print(SignerService)')"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"",
+                               f"python3 -c \"{code.replace(chr(10), '; ')}\"")
+
+    def test_a_signer_function_called_or_an_exception_caught_is_no_reach(self):
+        self.assert_open(
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
+            "except RPCError as e:\n    print(e)\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
+            "except (ValueError, RPCError):\n    raise RPCError('x', 'y')\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\nprint(isinstance(1, RPCError))\nEOF",
+            "python3 -c \"from tracekit.signer.service import evaluate; print(evaluate(None, 'Bash', {}))\"")
+
     def test_a_module_that_only_shares_a_name_with_the_signer_is_no_reach(self):
         self.assert_open(
             "python3 - <<'EOF'\nimport gc\nfrom mylib.metrics import evaluate\n"
             "print(evaluate.__doc__, gc.get_objects()[:1])\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nprint(evaluate(None, 'Bash', {}))\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nprint(evaluate)\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import REQUESTS\nprint(sorted(REQUESTS)[:3])\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nif __name__ == '__main__':\n"
-            "    print(evaluate)\nEOF",
+            "    print(evaluate(None, 'Bash', {}))\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy, DEFAULT_POLICY\n"
             "print(load_policy(DEFAULT_POLICY))\nEOF",
-            "python3 -c \"import sys\nfrom tracekit.signer.service import evaluate\nprint(sys.argv, evaluate)\"",
+            "python3 -c \"import sys\nfrom tracekit.signer.service import evaluate\nprint(sys.argv, evaluate(None, 'x', {}))\"",
             "python3 -c \"from tracekit.signer.service import evaluate\nimport unittest\n"
-            "class T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(evaluate)\"")
+            "class T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(evaluate(None, 'x', {}))\"")
 
     def test_curl_in_a_path_is_no_download(self):
         self.assert_open(

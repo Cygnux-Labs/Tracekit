@@ -2795,10 +2795,38 @@ _SIGNER_CODE = r"\b(?:RPCError|compared|model_names|load_policy|evaluate)\b"
 _PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
                        r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
                        r"walk_tb|walk_stack|inspect|gc)\b|\bsys\s*\.\s*modules\b")
-# a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name)
+# a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
+# pydoc.locate), or reads a field of an object by its name (string.Formatter), or runs code (ctypes, code.InteractiveInterpreter)
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
-                        r"marshal|copyreg|pkgutil|resolve_name|find_class)\b|"
+                        r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|format_map|"
+                        r"BaseConfigurator|InteractiveInterpreter|runsource)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
+
+
+# where one of those names may stand outside its import: called, and RPCError (an exception) also caught (`except`
+# alone or in a tuple), raised, or tested for with isinstance. Any other use passes the function or class on as a value,
+# and what holds it holds its module.
+_RPC_CAUGHT = re.compile(r"\b(?:except|raise)\s+$")
+_RPC_IN_TUPLE = re.compile(r"\bexcept\s*\((?:[^()]*,)?\s*$")
+_RPC_TESTED = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
+# a statement importing from the signer: its list ends where its statement does (a parenthesised one at its `)`, a comment
+# in it may hold one; any other at its line's end unless a backslash goes on)
+_SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
+                            r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w,*]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+
+
+def _signer_code_as_value(code):
+    """Whether code uses a name of _SIGNER_CODE other than to call it (or, for RPCError, to catch, raise or test for it)
+    outside the statements that import it."""
+    spans = [m.span() for m in _SIGNER_IMPORT.finditer(code)]
+    for m in re.finditer(_SIGNER_CODE, code):
+        before, after = code[:m.start()][-80:], code[m.end():]
+        if any(a <= m.start() < b for a, b in spans) or re.match(r"\s*\(", after) or m.group() == "RPCError" and (
+                _RPC_CAUGHT.search(before) or _RPC_IN_TUPLE.search(before) and re.match(r"\s*[,)]", after) or
+                _RPC_TESTED.search(before) and re.match(r"\s*\)", after)):
+            continue
+        return True
+    return False
 
 
 def _runs_signer(code):
@@ -2806,16 +2834,15 @@ def _runs_signer(code):
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
     other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
     reached by its full name. A function or class it may read (_SIGNER_CODE) holds its module: code that names one and
-    reaches through an object (_PY_REACH) may get to the module."""
+    reaches through an object (_PY_REACH), or uses it other than called (_signer_code_as_value), may get to the module."""
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
             re.search(r"\btracekit\.signer\.\w+\.\w", code) or \
-            re.search(_SIGNER_CODE, code) and _PY_REACH.search(code):
+            re.search(_SIGNER_CODE, code) and (_PY_REACH.search(code) or _signer_code_as_value(code)):
         return True
     aliases = {}   # a name the code gives one of the signer's modules -> that module
     # an import list ends where its statement does: a parenthesised one at its `)` (a comment in it may hold one), any
     # other at its line's end unless a backslash goes on
-    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
-                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w,*]|[^\S\r\n]|\\(?:\r\n?|\n))+))", code):
+    for m in _SIGNER_IMPORT.finditer(code):
         listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) or m.group(3) or "")
         for item in listed.replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))
