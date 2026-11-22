@@ -1566,11 +1566,15 @@ def _home_readings(ctx):
                 re.fullmatch(r"-\w*s\w*|--symbolic", a) for a in argv[1:]):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
-            printed[c["pipeline"]] = (c.get("stage", 0), ops)
+            for p, s in dict.fromkeys([(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]):
+                printed.setdefault(p, []).append((s, ops))
         elif argv[0] in ("xargs", "gxargs"):
             fed = c
-        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
-            argv = argv + printed[c["pipeline"]][1]
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
+            extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
+            if extra:
+                argv = argv + extra
         if c["via"][-1:] in (["xargs"], ["gxargs"]):
             argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
