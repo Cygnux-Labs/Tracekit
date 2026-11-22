@@ -124,6 +124,10 @@ UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "
            "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
            "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
            "--only-group", "--no-editable-package")
+# npm 11's options that take a value and have a short form (@npmcli/config's definitions.js: -p is --parseable, a
+# flag; --package has none), and npx's: its own -p (--package), -c (--call) and -n (--node-arg) besides (bin/npx-cli.js)
+_NPM_OPTS = ("-c", "--call", "-C", "--prefix", "-L", "--location", "-m", "--message", "-w", "--workspace", "--package")
+_NPX_OPTS = _NPM_OPTS + ("-p", "-n", "--node-arg")
 # wrapper -> (options that take a value, positional arguments before the command); an option not named is read both
 # ways (_unwrap)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
@@ -155,8 +159,9 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "unbuffer": ((), 0), "fakeroot": (("-l", "-s", "-i", "-b", "--lib", "--faked"), 0),
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
-            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
-            "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
+            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (_NPX_OPTS, 0),
+            # pnpm dlx's and pnpm's own (pnpm 11: -p is --parseable, a flag)
+            "pnpx": (("-C", "--dir", "-F", "--filter", "--package", "--allow-build"), 0), "corepack": ((), 0),
             # cmd.exe's switches start with / (// where MSYS rewrites one: cmd //c); wsl runs its words in its distro's
             # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
             "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
@@ -203,7 +208,12 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                            "--close", "--no-fork", "--verbose"),
                  "setsid": ("-c", "-f", "-w", "--ctty", "--fork", "--wait"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
-                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
+                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z"),
+                 # yarn's before its subcommand, workspaces foreach's (berry: -p there is --parallel; after dlx, the
+                 # option RUNNERS names, --package)
+                 "yarn": ("-A", "--all", "-R", "--recursive", "-W", "--worktree", "-v", "--verbose", "-p", "--parallel",
+                          "-i", "--interlaced", "-t", "--topological", "--topological-dev", "-n", "--dry-run",
+                          "--no-private")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
@@ -218,14 +228,18 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
            "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
            "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
-           "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
+           "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
-           "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0),
+           "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
+           "bun": (("x",), ("-p", "--package"), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
            "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
+# a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
+# (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
+RUNNER_LEADS = {"hatch": ("env",)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -251,7 +265,10 @@ SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".spl
 KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r", "lua": "e"}
+# each interpreter's options whose value is its code (php's -B, -R and -E run code before, for and after each line of
+# stdin), the first its usual one, and their long forms
+CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
+LONG_CODE = {"node": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
                      "--experimental-loader"}
@@ -1312,7 +1329,8 @@ _CURL_SHORT = {
     "Z": "parallel"}
 _CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
                 "hsts", "alt-svc", "ssl-sessions"}
-# wget's, as GNU wget 1.21's manual lists them (its option index; no binary here checked them), read as getopt_long
+# wget's, checked against GNU Wget 1.25.0's own `--help` (tests/data/wget-1.25.0-help.txt, compared with these by
+# test_the_download_option_table_is_wgets_own), read as getopt_long
 # reads them: a long option by any unique prefix, with its value after `=` or as the next word; the short letters as
 # long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value is a file it writes, and those
 # that make it write files the reader can't name (a URL list or metalink file, a wgetrc command or file, a name the
@@ -1532,10 +1550,11 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
-    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
+    and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
+    TK-D004 reads them as that home or root, and TK-D014 as a system folder.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
-    where, links, printed = None, {}, {}
+    where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
         argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
         if argv[0] in ("find", "rsync") and argv != c["argv"]:
@@ -1548,8 +1567,12 @@ def _home_readings(ctx):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
+        elif argv[0] in ("xargs", "gxargs"):
+            fed = c
         if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -1562,6 +1585,23 @@ def _home_readings(ctx):
             read.append(a)
         if read != c["argv"]:
             ctx["cmds"].append({**c, "argv": read, "via": c["via"] + ["read at home"]})
+
+
+def _xargs_here_words(xargs, c):
+    """The words of a here-string or heredoc that `xargs` (its own command, which the parser lists just before) gives
+    c, the command it runs (`xargs rm -rf <<< /etc`): split at blanks, as xargs reads its input unless an option says
+    otherwise (-0, -d, -a, -E, -e, -I, -i, -J or their long forms: then none), and only those that are a path from /
+    in letters, digits and `_./:-` (the parser doesn't expand or unquote what xargs reads)."""
+    n = len(c["argv"])   # (the program by its base name in c, as written in xargs's words)
+    if xargs is None or len(xargs["argv"]) <= n or xargs["argv"][len(xargs["argv"]) - n + 1:] != c["argv"][1:]:
+        return []
+    for a in xargs["argv"][1:len(xargs["argv"]) - n]:
+        name = a.split("=")[0]
+        if len(name) > 2 and any(o.startswith(name) for o in ("--null", "--delimiter", "--arg-file", "--eof",
+                                                                "--replace")) \
+                or re.match(r"-[^-LlnPs0adEeIiJ]*[0adEeIiJ]", a):   # (L, l, n, P and s take the rest as a value)
+            return []
+    return [w for s in c.get("stdin", ()) for w in s.split() if re.fullmatch(r"/[A-Za-z0-9_./:-]*", w)]
 
 
 def hidden_commands(cmds, refs):
@@ -2029,12 +2069,12 @@ def _brace(word, charge, room=MAX_BRACE, depth=0):
 
 
 # the names the shipped rules protect that a pattern may stand for (`~/.bashr?`, `authorized_key?`, `.git/hook?/x`,
-# `id_*`)
+# `id_*`; app.env for any secrets file named *.env: `./*env`)
 GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshenv", ".zshrc", ".zprofile",
-              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "id_rsa", "id_ed25519",
-              "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc", ".netrc",
-              ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini", ".hermes",
-              "docker.sock")
+              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "app.env", "id_rsa",
+              "id_ed25519", "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc",
+              ".netrc", ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini",
+              ".hermes", "docker.sock")
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 
@@ -2333,25 +2373,35 @@ def _gh_order(args):
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
-    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`; one that may be an option's
-    value is read both ways (`uv --directory run run x`). Each word read once: linear; [] for none (`npm test`)."""
+    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`. The value of an option its
+    table names (RUNNERS: `uv --directory run run x`) is never the subcommand, and a flag WRAPPER_FLAGS names takes
+    none, here before the subcommand where both name it (yarn's -p); one that may be another option's value is read
+    both ways. Each word read once: linear; [] for none (`npm test`)."""
+    opts, flags = RUNNERS[name][1], WRAPPER_FLAGS.get(name, ())
     at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
         a = args[i]
+        lead = RUNNER_LEADS.get(name)
+        if lead and a in lead and i + 1 < len(args) and args[i + 1] in RUNNERS[name][0]:
+            at.append(i + 1)   # the subcommand's own word last: `hatch env run a-command` is `run a-command`
+            if not valued:
+                return at
+            i, valued = i + 2, False
+            continue
         if a in RUNNERS[name][0]:
             at.append(i)
             if not valued:
                 return at
             i, valued = i + 1, False
             continue
-        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") else \
-            1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
+        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") or \
+            a in opts and a not in flags else 1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
         if skip:
             i, valued = i + skip, False
             continue
         if not a.startswith("-") and not valued:
             return at
-        valued = a.startswith("-") and a != "--"
+        valued = a.startswith("-") and a != "--" and "=" not in a and a not in flags
         i += 1
     return at
 
@@ -2385,6 +2435,8 @@ def _unwrap(name, args):
             starts.append(i)
         elif a is None or name == "command" and a in ("-v", "-V"):   # the end, or a lookup, not a run
             starts.append(None)
+        elif name == "uv" and a == "-":   # `uv run -`: the Python script it reads from stdin
+            starts.append(i)
         elif a.startswith("-") or name == "cmd" and a.startswith("/"):   # a bare `-` too (env - cmd: an empty environment)
             todo += [i + n for n in reversed(_takes(a, opts, WRAPPER_FLAGS.get(name, ())))]
         elif assigns(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
@@ -2397,6 +2449,12 @@ def _unwrap(name, args):
             inner = inner[1:]
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+        if name == "uv" and inner[:1] == ["-"]:   # `uv run -` is `python -`
+            inner = ["python"] + inner
+        if name == "dotenv" and inner[:1] == ["run"]:   # python-dotenv's: dotenv [-f FILE] run [--[no-]override] CMD
+            yield inner
+            k = next((k for k, w in enumerate(inner) if k and w not in ("--override", "--no-override")), len(inner))
+            inner = inner[k + (inner[k:k + 1] == ["--"]):]
         yield inner
 
 
@@ -2501,15 +2559,17 @@ def _foreign_runs_text(shell, args):
     return True
 
 
-def _npm_call(args):
-    """The script of npm exec's (npx's) -c/--call, among the options before the command it runs, or None."""
-    i = 0
-    while i < len(args) and args[i].startswith("-") and args[i] != "--":
-        if args[i] in ("-c", "--call"):
-            return args[i + 1] if i + 1 < len(args) else ""
-        if args[i].startswith("--call="):
-            return args[i][7:]
-        i += 2 if args[i] in ("-p", "--package", "-w", "--workspace") else 1
+def _npm_call(name, args):
+    """The script of npx's -c/--call, or npm exec's after its own options (each place runner_at reads its subcommand:
+    `npm -w a exec -c …`), among the options before the command it runs, or None."""
+    opts, starts = (_NPX_OPTS, [0]) if name == "npx" else (_NPM_OPTS, [k + 1 for k in runner_at("npm", args)])
+    for i in starts:   # (each scan stops at a word runner_at reads no further than: linear)
+        while i < len(args) and args[i].startswith("-") and args[i] != "--":
+            if args[i] in ("-c", "--call"):
+                return args[i + 1] if i + 1 < len(args) else ""
+            if args[i].startswith("--call="):
+                return args[i][7:]
+            i += 2 if args[i] in opts else 1
     return None
 
 
@@ -2577,11 +2637,11 @@ def _code_arg(kind, args):
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
-    flags = CODE_FLAGS[kind]
+    flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
     for i, a in enumerate(args):
-        if kind == "node" and a in ("--eval", "--print"):
+        if a in long:
             return args[i + 1] if i + 1 < len(args) else None
-        if kind == "node" and a.startswith(("--eval=", "--print=")):
+        if a.partition("=")[0] in long:
             return a.split("=", 1)[1]
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
@@ -3567,9 +3627,10 @@ class _Parser:
                 if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
                     header += self.header_pattern(text)
                     continue
-                # a word whose every expansion is a variable's one known literal (word(): given) is that literal
-                header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
-                              else text)
+                # a word whose every expansion is a variable's one known literal (word(): given) is that literal; one
+                # with none is its text, a `$` or backquote it quotes too (`for u in 'http://…$X'`: what curl gets)
+                header.append(None if g or self.exps and (re.search(r"[$`]", text) or re.search(r"[$`]", raw) and
+                                                          not self.given) else text)
                 if header[-1] is None and self.readings:   # (a word with a blank an expansion joins: track_values)
                     header_blank += [r for r in self.readings if re.search(r"[ \t\n]", r) and
                                      not any(e in r for e in self.exps)]   # (none of its expansions as written)
@@ -4474,8 +4535,7 @@ class _Parser:
                 argv, via, unreadable = ["env", *split], via + ["env -S"], [False] * (1 + len(split))
                 self.charge(len(argv))
                 continue
-            elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
-                    (script := _npm_call(args if name == "npx" else args[1:])) is not None:
+            elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
@@ -5548,16 +5608,38 @@ PIECE_ROOM = 128
 
 def _lines(words, progs):
     """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
-    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), so a
-    rule that reads the command after a pipe, or where one starts, reads what the wrapper runs."""
+    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), and a
+    runner's where its subcommand runs one (`uv -q run python …`, `poetry run python …` are `python …`: runner_at), so
+    a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs; and again
+    with each reserved word where a command starts (do, then, else, {, !, and case, which the parser gives right
+    before its first arm's commands, its word and patterns left out, and each ;;, ;& or ;;& as a `;`) as a `;`, so it
+    reads a loop's, a group's or a case arm's commands as it reads them alone (`for h in x; do echo FLUSHDB |
+    redis-cli; done` and `case x in x) echo FLUSHDB | redis-cli;; esac` hold `echo FLUSHDB | redis-cli`)."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
-    cut = {i for p, q in zip(at, at[1:]) if base_name(words[p]) in WRAPPERS and
-           not _STAGE_ENDS.intersection(words[p + 1:q]) for i in range(p, q)}
+    bare, start = list(words), True
+    for i, w in (enumerate(words) if "case" in words or not KEYWORDS.isdisjoint(words) else ()):
+        if start and (w in KEYWORDS or w == "case"):
+            bare[i] = ";"
+        else:
+            start = w in _STAGE_ENDS
+
+    def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q, and
+        # no stage ends between (its name read first, the cheapest)
+        name = base_name(words[p])
+        runner = name.partition("@")[0]
+        return (name in WRAPPERS or runner in RUNNERS) and not _STAGE_ENDS.intersection(words[p + 1:q]) and (
+            name in WRAPPERS or bool(runner_at(runner, words[p + 1:q])))
+    cut = {i for p, q in zip(at, at[1:]) if runs(p, q) for i in range(p, q)}
+    ran = list(low)
+    for p, q in zip(at, at[1:]):
+        if p in cut and base_name(words[p]) == "hatch":   # hatch run [ENV:]ARGS: the command, not its environment
+            ran[q] = ran[q].split(":", 1)[-1]
     return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
-        [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
+        [" ".join(w for i, w in enumerate(ran) if i not in cut)] if cut else []) + (
+        [" ".join(bare)] if bare != words else [])
 
 
 _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage

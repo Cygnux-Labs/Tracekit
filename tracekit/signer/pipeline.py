@@ -65,9 +65,11 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
               "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
 # `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result;
-# `run_labels`: the run labels that made its run condition rules apply (a retry's decision records them again)
+# `reason`: the one decide gave ("" for none), which call_state answers, None for a call replayed from its record, whose
+# call_state reads `reasons` (its record's) and its policy's instead (SignerService._recorded_reason); `run_labels`: the
+# run labels that made its run condition rules apply (a retry's decision records them again)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended", "policy_hash", "run_labels")
+             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "run_labels")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 # the AI approver (approver_state): how long a person's answer counts as a precedent, and a requester's runs carry
@@ -619,7 +621,8 @@ class RecordLog:
 
     def _state(self):
         """The run state as replay rebuilds it, as JSON: no deny sets, args digests, pending arguments or claims
-        (SignerService._call_claim); monotonic times as wall clock times."""
+        (SignerService._call_claim); monotonic times as wall clock times; and a call's reason as decide gave it, which
+        replay can't (CALL_KEYS)."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
             r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov", "claims")}
@@ -646,6 +649,7 @@ class RecordLog:
             if not tx.records and not self.down:
                 if self.detector:
                     self.detector.prune(self.det, time.time())
+                labels.prune(self, time.time())
                 self.storage.snapshot_put(self._state())
         self.write(fn)
 
@@ -687,13 +691,14 @@ class RecordLog:
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                     r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
                     calls = [c for c in (*r["calls"].values(), *r["decisions"].values())
-                             if c and not {"tool", "policy_hash"} <= c.keys()]
-                    if calls:   # before 1.7 a call had no tool or policy_hash: its decision's record names them
+                             if c and not {"tool", "policy_hash", "reasons"} <= c.keys()]
+                    if calls:   # before 1.7 a call had no tool or policy_hash, up to 1.7.2 no reasons: its record has them
                         named = {x["event"]["data"].get("decision_id"): x["event"]["data"]
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
                             d = named.get(c["decision_id"]) or {}
-                            c["tool"], c["policy_hash"] = d.get("tool"), d.get("policy_hash")
+                            c["tool"], c["policy_hash"], c["reasons"] = (d.get("tool"), d.get("policy_hash"),
+                                                                         d.get("reasons"))
                     if any("ended" not in c for c in r["calls"].values()):   # before call_state (RPC 24)
                         for x in s.iter_run(r["tenant"], r["run_id"]):
                             outcome(r["calls"], x["event"])
@@ -776,7 +781,7 @@ class RecordLog:
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
                         "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash"),
-                        "run_labels": d.get("run_labels")}
+                        "reasons": d.get("reasons"), "run_labels": d.get("run_labels")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -975,6 +980,7 @@ class RecordLog:
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
                     if req["stream"] not in run["writers"]:
+                        labels.join(tx.set, self, run, writer(identity, req))
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")

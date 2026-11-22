@@ -307,6 +307,10 @@ LABELLED_BYTES = json.dumps({"tools": {"read_file": "fs"},
                                       "when": {"run_has": ["secrets_access"]}}]},
                             sort_keys=True, separators=(",", ":")).encode()
 LABELLED_HASH = "sha256:" + hashlib.sha256(LABELLED_BYTES).hexdigest()
+# the same rules under another policy_hash (a signer restarted with another label_inherit_s)
+LABELLED2_BYTES = json.dumps({**json.loads(LABELLED_BYTES), "label_inherit_s": 60}, sort_keys=True,
+                             separators=(",", ":")).encode()
+LABELLED2_HASH = "sha256:" + hashlib.sha256(LABELLED2_BYTES).hexdigest()
 V = "§11 step 11"
 VECTOR_CASES = []
 
@@ -413,8 +417,9 @@ def vectors():
          "witnessed", addon="run labels", needs="1.8.0", decided_by="§3 (run labels), §11 step 9")
     policies = os.path.join(VECTORS, ".stores", "policies")
     os.makedirs(policies)
-    with open(os.path.join(policies, LABELLED_HASH.removeprefix("sha256:") + ".json"), "wb") as f:
-        f.write(LABELLED_BYTES)
+    for h, text in ((LABELLED_HASH, LABELLED_BYTES), (LABELLED2_HASH, LABELLED2_BYTES)):
+        with open(os.path.join(policies, h.removeprefix("sha256:") + ".json"), "wb") as f:
+            f.write(text)
     case("a run label its cited record doesn't set", closed(
         "run-label-unset", (secret[0], {**secret[1], "rule_ids": []}, secret[2]), added, policy_dir=policies), t, 1,
          "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
@@ -441,7 +446,28 @@ def vectors():
     case("an inherited label no run condition reads", closed("run-label-inherited-untracked", untracked, plain,
                                                              policy_dir=policies),
          t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
-         decided_by="§3 (run labels: only those the policy's run conditions read), §11 step 9")
+         decided_by="§3 (run labels: only those the policy reads), §11 step 9")
+    cleared = ("run.label", {"label": "secrets_access", "action": "clear", "by": "person", "identity": "token:svc",
+                             "person": "token:svc"}, {})
+    case("a label its run's own owner cleared on a dev signer", closed(
+        "run-label-self-cleared", secret, added, (cleared[0], {**cleared[1], "self_cleared": True}, {}),
+        policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a dev signer's self_cleared), §11 step 9")
+    case("a label its run's own owner cleared, not self_cleared", closed(
+        "run-label-owner-cleared", secret, added, cleared, policy_dir=policies), t, 1, "FAILED",
+         failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never the run's owner, but a dev signer's self_cleared), §11 step 9")
+    first = ("policy.decision", {"tool_use_id": "t0", "decision": "allow", "rule_ids": [], "tool": "read_file",
+                                 "policy_hash": LABELLED_HASH}, {"tool_call_id": "t0"})
+    after = lambda r: (r[0], {**r[1], "policy_hash": LABELLED2_HASH}, r[2])   # noqa: E731
+    case("a run decided under two policies, its labels added", closed(
+        "run-label-two-policies", first, after(secret), (added[0], {**added[1], "source": 2}, {}), after(sent),
+        policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (each record under the policy its decision names)")
+    case("a label left out in a run decided under two policies", closed(
+        "run-label-two-policies-omitted", first, after(secret), after(sent), policy_dir=policies), t, 1, "FAILED",
+         failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (each record under the policy its decision names)")
     case("an agent's approval", closed(
         "agent-approval",
         ("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["PAY"], "decision_id": "d1",

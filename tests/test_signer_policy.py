@@ -14,6 +14,8 @@ import tracemalloc
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import SLOWER
 from tracekit import schema
 from tracekit.format.canon import event_hash
@@ -93,16 +95,16 @@ class Packs(unittest.TestCase):
         # the laptop counts no sequence (its TK-Q001 is a run condition), and has the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
-        self.assertEqual([r["id"] for r in server["flag"][-4:]], list(wide))
-        self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-4:]],
+        self.assertEqual([r["id"] for r in server["flag"][-5:]], [*wide, "TK-F028"])   # TK-F028: the server pack's own
+        self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-5:-1]],
                          [("line", False), ("target", True), ("target", False), (None, False)])   # F005: the templates'
-        self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-4:]))
+        self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-5:-1]))
         self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
-        mine = [r for r in server["flag"] if r["id"] not in wide]
+        mine = [r for r in server["flag"] if r["id"] not in (*wide, "TK-F028")]   # the laptop has no TK-F028
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
         # and what sets the run labels its run conditions read (docs/policy-v2.md#run-conditions)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
-                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 42))])
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 46))])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
         self.assertNotIn("sequences", dev)
@@ -141,7 +143,7 @@ class Packs(unittest.TestCase):
                 ("mcp__claude-in-chrome__read_page", {"tabId": 7}, ("allow", [])),
                 ("mcp__github__list_issues", {"owner": "o", "repo": "r"}, ("allow", [])),
                 ("mcp__claude-in-chrome__navigate", {"url": "https://example.com/?q=1", "tabId": 7}, ("flag", ["TK-F012"])),
-                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006"])),
+                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006", "TK-F044"])),
                 ("RemoteTrigger", {"action": "create", "body": {}}, ("ask", ["TK-A081", "TK-UNKNOWN-TOOL"]))):
             with self.subTest(tool=tool, args=args):
                 d = svc.evaluate(e, tool, args)[0]
@@ -487,15 +489,29 @@ class CodingPack(unittest.TestCase):
                  "diskutil reformat /dev/disk2s1",
                  "dd if=/dev/zero of=//dev/sda", "dd if=/dev/zero of=/dev//sda",
                  "dd if=/dev/zero of=/dev/./sda",
-                 "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"]
+                 "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1",
+                 "wipefs -a /dev/disk/by-id/ata-X", "wipefs -a /dev/disk/by-uuid/abc",
+                 "wipefs -a /dev/md0", "wipefs -a /dev/dm-0", "blkdiscard /dev/sdb",
+                 "sgdisk --zap-all /dev/sdb", "parted -s /dev/sdb mklabel gpt",
+                 "mkdosfs /dev/sdb1", "mkntfs /dev/sdb1",
+                 # #998 review: every /dev/disk/by-* link, sgdisk's other zaps, parted's mktable, sfdisk's label type
+                 "wipefs -a /dev/disk/by-path/pci-0000:00:1f.2-ata-1", "wipefs -a /dev/disk/by-label/data",
+                 "dd if=/dev/zero of=/dev/md127", "mkfs.ext4 /dev/dm-1", "sgdisk -Z /dev/sdb",
+                 "sgdisk /dev/sdb --clear", "sgdisk -o /dev/sdb", "sgdisk -z /dev/sdb",
+                 "parted /dev/sdb --script mktable msdos", "sfdisk --label gpt /dev/sdb", "sfdisk -X dos /dev/sdb",
+                 "sfdisk /dev/sdb --label=gpt", "sfdisk -Y dos /dev/sdb"]
         # The write-target twin (TK-A080) reads the effects, not the command form: any command
         # whose target is a device is held, however it is spelled or reached.
         target_wipes = ["cat ubuntu.iso > /dev/sdb", "cp ubuntu.iso /dev/sdb",
-                        "head -c 1G /dev/zero > /dev/sda", "tee /dev/sda < image.bin"]
+                        "head -c 1G /dev/zero > /dev/sda", "tee /dev/sda < image.bin",
+                        "cat ubuntu.iso > /dev/md0", "cp ubuntu.iso /dev/dm-0", "tee /dev/disk/by-id/ata-X < image.bin"]
         benign = ["dd if=disk.img of=backup.img bs=4M", "dd if=/dev/urandom of=key.bin bs=32 count=1",
                   "mkfs.ext4 disk.img", "shred -u secrets.txt", "lsblk", "diskutil list",
                   "dd if=/dev/sda of=backup.img bs=4M", "wipefs backup.img",
-                  "dd if=/dev/zero of=/dev/null bs=1M count=1", "echo hello > /dev/stdout"]
+                  "dd if=/dev/zero of=/dev/null bs=1M count=1", "echo hello > /dev/stdout",
+                  "parted -l", "sgdisk -p /dev/sdb", "blkid /dev/md0", "mkdosfs disk.img",
+                  "parted /dev/sdb print", "parted /dev/sdb name 1 label", "sfdisk -l /dev/sdb",
+                  "sfdisk --label gpt disk.img", "fdisk -l /dev/sdb", "sgdisk -o disk.img"]
         for pack, backend, engine in self.every_pack():
             for command in wipes + benign:
                 with self.subTest(pack=pack, backend=backend, command=command):
@@ -540,7 +556,16 @@ class CodingPack(unittest.TestCase):
                 "nice -n5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "nice --adjustment=5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "nohup nice env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
-                "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remotex ps"]
+                "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remotex ps",
+                "env -u X DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                "timeout 5 env DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                "export DOCKER_HOST=unix:///var/run/docker.sock; pytest",
+                "A='(x)' DOCKER_HOST=unix:///var/run/docker.sock pytest",
+                # #995 review: each group read one way, quotes resolved as main reads them
+                "A='(s)' DOCKER_HOST=unix:///x pytest", "X={a,b} DOCKER_HOST=unix:///x pytest",
+                "A=\"it's\" DOCKER_HOST=unix:///x pytest", "A=$(id)${B} DOCKER_HOST=unix:///x pytest",
+                "env -u X -C /tmp DOCKER_HOST=unix:///x pytest", "timeout -s KILL 1.5m env DOCKER_HOST=unix:///x pytest",
+                "export DOCKER_HOST=unix:///x && pytest", "/usr/bin/timeout 5 env DOCKER_HOST=unix:///x pytest"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
@@ -561,7 +586,10 @@ class CodingPack(unittest.TestCase):
                   "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps",
                   "grep CONTAINER_HOST=unix:// compose.yaml",
                   "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remote ps",
-                  "CONTAINER_HOST=unix:///run/podman/podman.sock /usr/bin/podman-remote info"]
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock /usr/bin/podman-remote info",
+                  "env -u X pytest",
+                  "export DOCKER_HOST=tcp://build:2375; echo ok", "export DOCKER_HOST=unix:///x",
+                  "export DOCKER_HOST=unix:///x; docker ps", "timeout 5 env DOCKER_HOST=unix:///x docker ps"]
         rules = {"TK-A071", "TK-A072", "TK-A073"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
@@ -1238,7 +1266,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, args=args):
                     d = e.decide("send_email", args)
                     self.assertEqual((d["verdict"], "TK-M003" in d["rule_ids"]),
-                                     ("ask", True) if args in held else ("allow", False), d)
+                                     ("ask", True) if args in held else ("flag", False), d)   # TK-F028: an email send is egress
 
     def test_deleting_container_volumes_asks_in_every_pack(self):
         """TK-A048: deleting Docker or Podman volumes, where a project's database usually lives, is held for a person;
@@ -1380,6 +1408,14 @@ class CodingPack(unittest.TestCase):
             ("Write", {"file_path": "/w/models/model.ckpt", "content": "w"}),
             ("Edit", {"file_path": "/w/models/model.safetensors", "old_string": "a", "new_string": "b"}),
             ("MultiEdit", {"file_path": "/w/models/model.safetensors", "edits": []}),
+            # #999: the other formats in a model folder, and a harness's Delete, which arrives as an Edit
+            ("Write", {"file_path": "/w/models/prod.onnx", "content": "w"}),
+            ("Write", {"file_path": "/w/models/v2/prod.h5", "content": "w"}),
+            ("Write", {"file_path": "/w/model/prod.keras", "content": "w"}),
+            ("Write", {"file_path": "/w/Models/prod.TFLITE", "content": "w"}),
+            ("Write", {"file_path": "models/prod.mlmodel", "content": "w"}),
+            ("Write", {"file_path": "/w/models/flax_model.msgpack", "content": "w"}),
+            ("Edit", {"file_path": "/w/models/prod.onnx", "old_string": "a", "new_string": ""}),
         ]
         held_shell = [
             "cp new.safetensors /srv/models/prod/model.safetensors",
@@ -1391,6 +1427,19 @@ class CodingPack(unittest.TestCase):
             "cp x 'a\nb.safetensors'",
             "echo x > MODEL.SAFETENSORS",
             "python train.py > out.pt",
+            # #999: the other formats in a model folder, and deletes
+            "cp new.onnx models/prod.onnx",
+            "mv new.h5 models/prod.h5",
+            "cp a.keras /srv/models/prod/v2/a.keras",
+            "cp a.tflite model/a.tflite",
+            "cp a.mlmodel MODELS/A.MLMODEL",
+            "cp a.msgpack models/flax_model.msgpack",
+            "rm models/prod.safetensors",
+            "rm -f out.pt",
+            "git rm models/prod.safetensors",
+            "mv models/prod.onnx /tmp/",
+            # the site-packages .pth exemption is per file: a weights .pth deleted beside one is still held
+            "rm models/prod.pth .venv/lib/python3.12/site-packages/x.pth",
         ]
         # TK-A060: publishing to a model hub
         held_hub = [
@@ -1408,6 +1457,9 @@ class CodingPack(unittest.TestCase):
             ("Read", {"file_path": "/w/models/model.safetensors"}),
             ("Write", {"file_path": "/w/models/config.json", "content": "{}"}),
             ("Write", {"file_path": "/w/models/model.safetensors.bak", "content": "w"}),
+            ("Write", {"file_path": "/w/data/results.h5", "content": "w"}),
+            ("Write", {"file_path": "/w/models/README.md", "content": "w"}),
+            ("Edit", {"file_path": "/w/mymodels/cache.msgpack", "old_string": "a", "new_string": ""}),
         ]
         benign_shell = [
             "ls models/",
@@ -1419,6 +1471,14 @@ class CodingPack(unittest.TestCase):
             "ollama pull acme/model",
             "ollama run acme/model",
             "cp model.safetensors model.safetensors.bak",
+            "cp data.csv data/backup.csv",
+            "rm build/out.o",
+            "cp results.h5 data/results.h5",
+            "rm cache/state.msgpack",
+            "cp new.bin models/pytorch_model.bin",
+            "ls models/prod.onnx",
+            # a .pth deleted from site-packages is a Python path file (TK-A068's), not weights, as a write there is
+            "rm .venv/lib/python3.12/site-packages/distutils-precedence.pth",
         ]
         for pack, engine, e in self.every_pack():
             for tool, args in held_fs:
@@ -1692,6 +1752,33 @@ class CodingPack(unittest.TestCase):
                         d = e.decide(tool, args)
                         self.assertNotIn("TK-A041", d["rule_ids"], d)
 
+    def test_a_flush_printf_prints_through_a_plain_format_asks_in_every_pack(self):
+        """TK-A040 (#978): printf with a plain %s format and the flush as its argument is the flush, as a bare
+        printf of it is; another word through the format, or more text after it, is not."""
+        held = [
+            "printf '%s' FLUSHALL | redis-cli",
+            'printf "%s" FLUSHDB | redis-cli -h cache.internal',
+            "printf '%s\\n' FLUSHALL | valkey-cli",
+            "printf %s 'FLUSHDB ASYNC' | redis-cli -n 2",
+        ]
+        routine = [
+            "printf '%s' PING | redis-cli",
+            "printf '%s' 'GET flushall' | redis-cli",
+            "printf '%s %s' FLUSHALL x | redis-cli",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertIn("TK-A040", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertNotIn("TK-A040", d["rule_ids"], d)
+
     def test_a_destructive_statement_through_more_exec_wrappers_ctes_and_clients_asks(self):
         """TK-A039 (1.5.3 sweep): options before a container's `exec`, podman and oc, a shell's -c inside the exec, a
         data-modifying CTE, EXPLAIN ANALYZE (which runs the DELETE), `clickhouse client`, mongo's getCollection,
@@ -1728,6 +1815,39 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-A039", e.decide("Bash", {"command": command})["rule_ids"])
 
+    def test_a_destructive_statement_after_an_abbreviated_long_option_asks_in_every_pack(self):
+        """TK-A039 (#978): psql's --command and mysql's or mariadb's --execute by any prefix (--co, --ex) carry the
+        statement as the full option does, as psql's getopt_long and MariaDB's clients take a unique prefix (Oracle
+        MySQL's mysql takes none: there it only holds more); another option that shares the prefix (mysql
+        --comments, --compress) is not the statement flag."""
+        held = [
+            "psql --comm 'DROP TABLE users;' mydb",
+            "psql --co 'DROP TABLE users;' mydb",
+            "psql --comman='DELETE FROM users' mydb",
+            "mysql --exec 'DROP TABLE users;' shop",
+            "mariadb --ex='TRUNCATE orders' shop",
+            "docker exec db psql --comm 'DROP TABLE users'",
+            'psql --command"DROP TABLE users;"',   # the full name glued to its value, held before the prefixes too
+        ]
+        routine = [
+            "psql --comm 'SELECT 1;' mydb",
+            "mysql --exec 'SELECT 1' shop",
+            "mysql --comments -e 'SELECT 1' shop",
+            "mysql --compress --exec 'SELECT 1' shop",
+            "psql --csv -c 'SELECT 1'",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertIn("TK-A039", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        self.assertNotIn("TK-A039", e.decide("Bash", {"command": cmd})["rule_ids"])
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})
@@ -1753,6 +1873,32 @@ class CodingPack(unittest.TestCase):
         for args in ({"command": "npm test", "additional_permissions": {"network": False, "fileSystem": {"read": []}}},
                      {"command": "npm test", "additional_permissions": {}}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
+
+    def test_a_destructive_statement_after_a_hash_comment_line_asks_in_every_pack(self):
+        """TK-A039 (#978): mysql and mariadb read `#` to the end of a line as a comment, so a `#` line before the
+        destructive keyword no longer hides it; a comment that only names one, or a read after it, is not held."""
+        held = [
+            "mysql -e '# c\nDROP TABLE users;'",
+            "mysql -e '# cleanup\nDELETE FROM users;' shop",
+            'mariadb -e "SELECT 1;\n# then\nTRUNCATE orders" shop',
+            "mysql -e '#note\\nDROP TABLE users'",
+        ]
+        routine = [
+            "mysql -e '# c\nSELECT 1;'",
+            "mysql -e '# DROP TABLE users\nSELECT 1;'",
+            "mysql -e 'SELECT 1 # DROP TABLE users'",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertIn("TK-A039", d["rule_ids"], d)
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                for cmd in routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        self.assertNotIn("TK-A039", e.decide("Bash", {"command": cmd})["rule_ids"])
 
     def test_writes_to_autostart_locations_and_git_hooks_ask(self):
         self.verdicts([({"file_path": "/Users/dev/Library/LaunchAgents/com.example.helper.plist"}, "TK-A010"),
@@ -3195,6 +3341,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    @pytest.mark.serial
     def test_powershell_profile_changes_are_harness_config_in_every_pack(self):
         # #559: PowerShell runs the user's profile before a hook it starts without -NoProfile, so a profile that exits
         # ends the hook before Tracekit runs; a write to one (5.1's or 7's, OneDrive's Documents, $PSHOME's) or to
@@ -3248,6 +3395,124 @@ class CodingPack(unittest.TestCase):
             for tool, args in benign:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_powershell_cmdlets_on_harness_settings_ask_and_on_credentials_files_deny_in_every_pack(self):
+        # #992: Kiro CLI's execute_pwsh is decided as Bash, and Claude Code's PowerShell tool also as a shell line, but
+        # TK-F015 reads bash's writers and TK-S004 bash's argv, where an unquoted `\` is gone: a cmdlet writing or
+        # deleting a harness file or a profile was allowed, and Get-Content of a credentials file only flagged
+        held = (r"Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r"Set-Content -Path $env:USERPROFILE\Documents\PowerShell\profile.ps1 -Value x",
+                r'remove-item "$Env:UserProfile\.KIRO\hooks\tracekit.json" -Force',
+                "'exit' | Out-File -FilePath $PROFILE -Append", "Add-Content $PROFILE.CurrentUserAllHosts 'exit'",
+                "New-Item -ItemType File -Path $PROFILE -Force", r"ni ~\.claude\settings.json -Force",
+                "del ${env:USERPROFILE}/.codex/config.toml", r"cpi x.json $HOME\.cursor\mcp.json",
+                r"Move-Item x $HOME\.config\opencode\opencode.json", r"rni $env:USERPROFILE\.gemini\settings.json old.json",
+                r"sc -Path:$HOME\.claude.json -Value '{}'", r"ac ~/Documents/WindowsPowerShell/profile.ps1 exit",
+                r'Set-Content -Path "$env:USERPROFILE\OneDrive - Contoso\Dokumente\PowerShell\profile.ps1" -Value exit',
+                # the review of #992: PowerShell's other aliases and redirections, and quoted `;`, `|`, `&` or a long
+                # value before the path
+                r"rm $env:USERPROFILE\.kiro\hooks\tracekit.json", r"rmdir $env:USERPROFILE\.kiro\hooks",
+                r"rd $env:USERPROFILE\.kiro\hooks", r"erase $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r"cp x.json $env:USERPROFILE\.claude\settings.json", r"copy x.json $env:USERPROFILE\.claude\settings.json",
+                r"move x.json $env:USERPROFILE\.claude\settings.json", r"mv x.json $env:USERPROFILE\.claude\settings.json",
+                r"ren $env:USERPROFILE\.claude\settings.json old.json", r"'{}' > $env:USERPROFILE\.claude\settings.json",
+                r"'exit' >> $env:USERPROFILE\Documents\PowerShell\profile.ps1", r"rm ~\.kiro\hooks\tracekit.json",
+                r"'exit' | Tee-Object -FilePath $env:USERPROFILE\Documents\PowerShell\profile.ps1",
+                r"'exit' | tee $env:USERPROFILE\Documents\PowerShell\profile.ps1", r"clc $HOME\.kiro\hooks\tracekit.json",
+                r"Clear-Content $HOME\.kiro\hooks\tracekit.json", r'Set-Content -Value "x|y" -Path $PROFILE',
+                r"Set-Content -Value 'a;b' -Path $env:USERPROFILE\.claude\settings.json",
+                r"Set-Content -Value '&' $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                "Set-Content -Value '" + "b" * 260 + r"' -Path $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                # the second review: a here-string, mixed slashes, a block, iex, a module-qualified name, the path first
+                "Set-Content -Value @'\n{\"hooks\": {}}\n'@ -Path $HOME\\.claude\\settings.json",
+                "Set-Content -Value @\"\nx\n\"@ -Path $env:USERPROFILE\\.claude\\settings.json",
+                "Write-Host hi\r\nRemove-Item $HOME\\.kiro\\hooks\\tracekit.json",
+                r"cp x.json ~/.claude\settings.json", r"'{}' > ~/.claude\settings.json", r"rm ~/.kiro\hooks\tracekit.json",
+                r"rm $HOME/.claude\settings.json", r"if (Test-Path x) { Remove-Item $HOME\.kiro\hooks\tracekit.json }",
+                r"1 | ForEach-Object { ri $HOME\.kiro\hooks\tracekit.json }",
+                r"Invoke-Command { Remove-Item $HOME\.kiro\hooks\tracekit.json }",
+                r"Start-Job { Remove-Item $HOME\.kiro\hooks\tracekit.json }", r"(Remove-Item $HOME\.kiro\hooks\tracekit.json)",
+                r'Invoke-Expression "Remove-Item $HOME\.kiro\hooks\tracekit.json"', r'iex "ri $HOME\.kiro\hooks\tracekit.json"',
+                r"Microsoft.PowerShell.Management\Remove-Item $HOME\.kiro\hooks\tracekit.json",
+                r"Get-ChildItem $HOME\.kiro\hooks | Remove-Item", r"ri x.txt,$HOME\.kiro\hooks\tracekit.json",
+                r"cmd /c del %USERPROFILE%\.kiro\hooks\tracekit.json",
+                # the third review: options before the path are words, not characters
+                'Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $env:USERPROFILE\\.kiro\\hooks',
+                'Set-Content -Encoding UTF8 -Force -NoNewline -Confirm:$false -Path $env:USERPROFILE\\.claude\\settings.json -Value x',
+                'Copy-Item -Path C:\\Users\\dev\\projects\\myrepo\\config\\settings.json -Destination $env:USERPROFILE\\.claude\\settings.json -Force',
+                # the CI run of #992: the cmdlet after the path ends at a `;`; a name with an expansion bash reads as empty
+                r"time { Get-ChildItem $HOME\.kiro\hooks | Remove-Item; }",
+                r"1 | ForEach-Object { r${X}i $HOME\.kiro\hooks\tracekit.json }",
+                r"cmd /${X}c del %USERPROFILE%\.kiro\hooks\tracekit.json",
+                # the review of the split: a lone CR ends a statement in PowerShell; `.` runs a command as `&` does
+                "Write-Host hi\rRemove-Item $env:USERPROFILE\\.kiro\\hooks\\tracekit.json",
+                r". Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json",
+                r". Set-Content -Path $env:USERPROFILE\.claude\settings.json -Value x",
+                # each pattern's own cases (no other of the five holds them): TK-A091's path first in `/` form or
+                # $PROFILE, TK-A092's PowerShell form first, then an alias bash has too or a write after `(`
+                r"Get-Item $PROFILE | Remove-Item", r"Get-ChildItem ~/.kiro/hooks | Remove-Item",
+                r"Get-ChildItem $env:USERPROFILE\.kiro\hooks | rm", r"Get-ChildItem $HOME\.kiro\hooks | (Remove-Item)",
+                # a loop's `do`, a branch's `then` and `else` start a command as `;` does, for TK-A088's write and for
+                # TK-A091's write after a path (#1057's loop test wraps every corpus row in a loop)
+                r"for x in a; do Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; done",
+                r"if true; then Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; fi",
+                r"if false; then :; else Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json; fi",
+                "for p in '$PROFILE'; do Set-Content -Value x -Path \"$p\"; done",
+                "if true; then echo $PROFILE; Set-Content -Value x o; fi",
+                "if false; then :; else echo '$PROFILE'; Set-Content x; fi")
+        family = {"TK-A088", "TK-A089", "TK-A090", "TK-A091", "TK-A092"}   # the rule as five patterns
+        denied = (r"Get-Content $env:USERPROFILE\.aws\credentials", r"gc ~\.ssh\id_ed25519",
+                  r"type $env:USERPROFILE\.kube\config", r'Get-Content -Raw "$HOME\.aws\credentials"',
+                  r"cat ${env:USERPROFILE}\.git-credentials",
+                  # the review of #992: any command naming the file, as TK-S004 reads one
+                  r"Copy-Item $env:USERPROFILE\.aws\credentials C:\temp\c.txt", r"cp $env:USERPROFILE\.aws\credentials C:\t\c",
+                  r"Select-String -Path $env:USERPROFILE\.aws\credentials -Pattern key",
+                  r"sls $env:USERPROFILE\.aws\credentials key", r"more $env:USERPROFILE\.aws\credentials",
+                  r"Get-Item $env:USERPROFILE\.aws\credentials | Get-Content",
+                  r"Get-Content -Encoding 'utf8;' $env:USERPROFILE\.aws\credentials",
+                  r"Get-Content ~/.aws\credentials", r"Get-Content $HOME/.aws\credentials",
+                  r"cmd /c type %USERPROFILE%\.aws\credentials")
+        benign = ("Get-Content README.md", "Set-Content out.txt x", "Remove-Item build -Recurse",
+                  r"Get-Content $env:USERPROFILE\.kiro\hooks\tracekit.json", r"Get-Content $env:USERPROFILE\.ssh\id_rsa.pub",
+                  r"Remove-Item $env:USERPROFILE\.kiro-backup\x", "Set-Content $PROFILES x", "Get-Content $PROFILE",
+                  r"Copy-Item $env:USERPROFILE\Documents\PowerShell\Modules\a.psm1 .",
+                  r"rm build\out.txt",
+                  r"copy x.json config\settings.json", r"ren notes.txt old.txt", r"'{}' > settings.json",
+                  r"'x' | Tee-Object -FilePath out.txt", r"Clear-Content build\log.txt", r"Set-Content -Value 'a;b' -Path out.txt",
+                  r"Select-String -Path README.md -Pattern key", r"more $env:USERPROFILE\.aws\config",
+                  # bash's own forms stay TK-F015's and TK-S004's: Claude Code's memory notes aren't held
+                  "rm ~/.claude/projects/x/memory/a.md", "echo x > ~/.claude/projects/x/memory/a.md",
+                  "cp ~/.aws/credentials.bak ./x", "cat ~/.aws/config",
+                  "Set-Content -Value @'\nhello\n'@ -Path notes.txt", "if (Test-Path build) { Remove-Item build -Recurse }",
+                  r'iex "Remove-Item build\out.txt"', r"Get-Content $HOME\.kiro\hooks\tracekit.json",
+                  r"Get-Content ~/.aws\config", r"cp x.json ~/backup\settings.json",
+                  r"cmd /c type %USERPROFILE%\Documents\notes.txt", r"cmd /c del %userprofile%\build\out.txt", ". ./build.ps1",
+                  # prose quoting a write and a harness path in bash's `/` form
+                  'git commit -m "copy ~/.codex/config.toml into the image"',
+                  'echo "move ~/.claude/settings.json later"',
+                  "gh pr create --title x --body 'del ~/.cursor/mcp.json manually after upgrade'",
+                  'git commit -m "docs (ren ~/.gemini/settings.json)"',
+                  "Set-Content README.md 'Settings live in ~/.claude/settings.json'")
+        for pack, engine, e in self.every_pack():
+            credentials = any(r["id"] == "TK-S004" for r in e.policy["deny"])   # the server packs' parts
+            for tool in ("Bash", "PowerShell"):
+                for command in held:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertEqual((d["verdict"], bool(family & set(d["rule_ids"]))), ("ask", True), d)
+                # `& cmd` runs a command too (held; strict denies the line bash can't read)
+                d = svc.evaluate(e, tool, {"command": r"& Remove-Item $env:USERPROFILE\.kiro\hooks\tracekit.json"})[0]
+                self.assertTrue(family & set(d["rule_ids"]) and d["verdict"] in ("ask", "deny"), d)
+                for command in denied if credentials else ():
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertEqual((d["verdict"], "TK-S007" in d["rule_ids"]), ("deny", True), d)
+                for command in benign:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        d = svc.evaluate(e, tool, {"command": command})[0]
+                        self.assertFalse((family | {"TK-S007"}) & set(d["rule_ids"]), d)
+                        if tool == "Bash" and command in benign[:3]:
+                            self.assertNotIn(d["verdict"], ("ask", "deny"), d)
 
     def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
         # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
@@ -3393,6 +3658,7 @@ class CodingPack(unittest.TestCase):
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         self.assertEqual((server.decide("Foo", {})["verdict"], self.e.decide("Foo", {})["verdict"]), ("ask", "flag"))
 
+    @pytest.mark.serial
     def test_a_long_option_word_after_git_push_is_decided_without_the_fallback_timeout(self):
         # TK-A002's short-option cluster backtracked over a long word: the regex fallback ran out of time and denied
         d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
@@ -3427,10 +3693,12 @@ class CodingPack(unittest.TestCase):
             d = self.e.decide("Bash", {"command": command})
             self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"]), ("ask", True), command)
 
+    @pytest.mark.serial
     def test_a_long_command_after_terraform_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terraform apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    @pytest.mark.serial
     def test_a_long_command_after_terragrunt_is_decided_without_the_fallback_timeout(self):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
@@ -3660,7 +3928,11 @@ class CodingPack(unittest.TestCase):
                    {"command": "gcloud secrets list"},
                    {"cli_command": "op item list"},
                    {"cli_command": "bw list folders"},
-                   {"cmd": "lpass ls"},]
+                   {"cmd": "lpass ls"},
+                   # the scan stops at the end of the JSON value, so a command split across two arguments
+                   # (`aws` in command, its `secretsmanager` in params) isn't read as one
+                   {"command": "aws --profile",
+                    "params": "prod secretsmanager get-secret-value --secret-id x"},]
         for pack, engine, e in self.every_pack():
             for tool in tools:
                 for args in held + routine:
@@ -3672,6 +3944,7 @@ class CodingPack(unittest.TestCase):
             # a tool not named for running a command is left to TK-A037 and TK-A038 (docs/limits.md)
             self.assertNotIn("TK-A036", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
 
+    @pytest.mark.serial
     def test_every_command_tk_a035_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
         """TK-A036 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
         newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
@@ -3851,6 +4124,7 @@ class CodingPack(unittest.TestCase):
                     if pack == "coding.yaml" and tool.startswith("mcp"):   # dev.yaml has TK-S002 since #604
                         self.assertEqual(d["verdict"], "flag", d)
 
+    @pytest.mark.serial
     def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
             # and of TK-C002's own words: each `grant` read on to the end, from every place a role word stood (8 s)
@@ -3869,6 +4143,7 @@ class CodingPack(unittest.TestCase):
         ids = {id(t): r["id"] for _, r, t, *_ in e.rules if t is not None}
         self.assertEqual(({"TK-A036", "TK-A037"} & {ids.get(id(c)) for c in searched}), {"TK-A036"})
 
+    @pytest.mark.serial
     def test_a_long_command_after_aws_ssm_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
             with self.subTest(pack=pack, engine=engine):
@@ -3909,6 +4184,7 @@ class CodingPack(unittest.TestCase):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "flag")
 
+    @pytest.mark.serial
     def test_a_force_push_is_read_in_its_own_command(self):
         # TK-D003 matched the normalised line, which joins commands with ` ; `: a later command's `-f`, `--m` or `+`
         # denied a plain push, a commit message naming a force push was denied, a flag after an argument with a newline
@@ -3979,21 +4255,98 @@ class CodingPack(unittest.TestCase):
     def test_deleting_or_locking_a_system_folder_is_denied(self):
         # #749: each was only flagged (TK-F003), or allowed (find, git clean); TK-D014 reads the folder as TK-D004
         # reads a home
-        self.every_pack_verdicts([(c, "TK-D014") for c in (
+        commands = (
             "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
             "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
             "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
             "rm -rf /mnt/c/Windows", "rm -rf /cygdrive/c/Windows",
             "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
             "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
-            'bash -c "chown -R me:me /lib"')])
+            'bash -c "chown -R me:me /lib"',
+            # #810 items 1-3: parenthesised find filters, destructive -exec and a literal xargs here-string.
+            r"find /etc \( -type f -o -type d \) -delete",
+            r"find /usr \( -type d -o -type f \) -delete",
+            r"find /etc \( -type f -o -type d \) -exec rm {} +",
+            "find /etc -exec rm {} +", "find /usr -type f -exec rm -f {} +",
+            "find /etc -exec chmod -R 777 {} +", "find /var -exec chown -R root {} +",
+            "find /etc -execdir /bin/rm {} +", "find /etc -exec chgrp -R staff {} +",
+            "find /etc -exec chattr -R +i {} +", r"find /etc -exec /bin/rm {} \;",
+            "xargs rm -rf <<< /etc", "xargs -r rm -rf <<< /usr",
+            "gxargs rm -rf <<< /var",
+            # #810 item 6: policy decisions by command, with matching benign twins below.
+            "chgrp -R staff /etc", "chgrp staff -R /usr", "chgrp -R staff /",
+            "chattr -R +i /etc", "chattr -R +a /usr", "chattr -R =i /var", "chattr -R =a /etc",
+            "chattr -R +Ai /etc", "find /etc -exec chattr -R =Aa {} +",
+            "mv /etc /tmp/etc.bak", "mv -f /usr /tmp/usr.bak", "mv -- /etc /tmp/etc.bak",
+            "rsync -a --delete empty/ /etc/", "rsync --delete empty/ /usr/", "rsync -a empty/ /etc/ --delete",
+            # #810 item 5: one child then '..' resolves back to the system folder.
+            "rm -rf /etc/ssh/..", "rm -rf /usr/local/..", "rm -rf /var/tmp/../.",
+            "rm -rf /etc/.ssh/..", "rm -rf /etc/.cache/..",
+            "chmod -R 777 /etc/ssh/..", "chown -R root /usr/local/..",
+            "find /etc/ssh/.. -delete", "git -C /usr/local/.. clean -fdx",
+            # the #932 review's spellings: find already walks the tree, so -exec needs no -R; any xargs option that
+            # keeps its input split at blanks; chattr's words before the folder; mv's other source forms; rsync's
+            # options after the destination and --del
+            "find /etc -exec chmod 777 {} +", "find /etc -exec chown nobody {} +", "find /etc -exec chgrp staff {} +",
+            "find /etc -exec chattr +i {} +", "xargs -n1 rm -rf <<< /etc", "xargs -n 1 rm -rf <<< /etc",
+            "xargs -t rm -rf <<< /etc", "xargs -P4 rm -rf <<< /etc", "xargs -L1 rm -rf <<< /etc",
+            "xargs --no-run-if-empty rm -rf <<< /etc", "xargs rm -rf <<EOF\n/etc\nEOF", "chattr -R +i -- /etc",
+            "chattr +i -R -- /etc", "chattr -R +i /tmp/x /etc", "mv -t /tmp /etc", "mv --backup=numbered /etc /tmp/x",
+            "mv -S .bak /etc /tmp/x", "mv /etc /tmp/x -v", "mv /tmp/a /etc /tmp/b/", "rsync -a --delete empty/ /etc/ -v",
+            "rsync -a --del empty/ /etc/", "rsync --delete-after -a empty/ /etc", "chattr -R +i /mnt/c/Windows",
+            "mv /cygdrive/c/Windows /tmp/w", "mv /etc/ssh/.. /tmp/x", "rsync -a --delete empty/ /mnt/c/Windows/",
+            "rsync -a empty/ --delete /etc/", "mv /etc -f /tmp/x", r"find /etc -ok rm {} \;")
+        for pack, engine, e in self.every_pack():
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D014", d["rule_ids"], d)
         self.not_in_every_pack("TK-D014", (
             "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
             'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
             "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
             "rm -rf /mnt/c/Users/build", "rm -rf /cygdrive/c/Users/build",
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
-            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
+            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"',
+            # #810 benign counterparts: same verbs on project paths or inside /var/tmp and /usr/local.
+            r"find ./etc \( -type f -o -type d \) -delete",
+            r"find /var/tmp/x \( -type f -o -type d \) -delete",
+            r"find /etc \( -name '*.log' -o -type d \) -delete",
+            "find ./etc -exec rm {} +", "find /var/tmp/x -type f -exec rm {} +",
+            "find /etc -name '*.log' -exec rm {} +",
+            "find ./etc -exec chmod -R 777 {} +", "find /usr/local/x -exec chown -R me {} +",
+            "find ./etc -execdir /bin/rm {} +", "find /var/tmp/x -exec chgrp -R staff {} +",
+            "find ./etc -exec chattr -R +i {} +", r"find ./etc -exec /bin/rm {} \;",
+            "xargs rm -rf <<< ./etc", "xargs -0 rm -rf <<< /etc",
+            "xargs rm -rf <<< ./etc | xargs -0 rm -rf <<< /etc",
+            'xargs rm -rf <<< ./etc | xargs -d " " rm -rf <<< /etc',
+            "gxargs rm -rf <<< ./var", "xargs rm -rf <<< /usr/local/x",
+            "chgrp -R staff ./etc", "chgrp staff -R /usr/local/x", "chgrp -R staff ./",
+            "chattr -R +i ./etc", "chattr -R -i /etc", "chattr -R +a /usr/local/x", "chattr -R =a ./etc",
+            "chattr -R +A /etc", "chattr -R =A /etc", "chattr -R +I /etc", "chattr -R =I /etc",
+            "find /etc -exec chattr -R +A {} +", "find /etc -exec chattr -R =A {} +",
+            "find /etc -exec chattr -R +I {} +", "find /etc -exec chattr -R =I {} +",
+            "mv ./etc /tmp/etc.bak", "mv /usr/local/x /tmp/x.bak", "mv -- ./etc /tmp/etc.bak",
+            "rsync -a --delete empty/ ./etc/", "rsync --delete /etc/ ./backup/", "rsync -a empty/ ./etc/ --delete",
+            r"find ./usr \( -type d -o -type f \) -delete",
+            r"find ./etc \( -type f -o -type d \) -exec rm {} +",
+            "find ./usr -type f -exec rm -f {} +", "find ./var -exec chown -R root {} +",
+            "xargs -r rm -rf <<< ./usr", "chattr -R =i ./var", "mv -f ./usr /tmp/usr.bak",
+            "rm -rf ./usr/local/..", "rm -rf ./var/tmp/../.",
+            "rm -rf ./etc/.ssh/..", "rm -rf ./etc/.cache/..",
+            "chmod -R 777 ./etc/ssh/..", "chown -R root ./usr/local/..", "find ./etc/ssh/.. -delete",
+            # Project-local twins, Windows non-system folders, and children not resolving to the root.
+            "rm -rf ./etc/ssh/..", "rm -rf /etc/ssh/../nginx", "rm -rf /usr/local/x",
+            "rm -rf /var/tmp/../x",
+            "chmod -R 777 /etc/ssh/../nginx", "find /etc/ssh/../nginx -delete",
+            "chown -R me ./usr/local/..", "git -C ./usr/local/.. clean -fdx",
+            # one rsync operand only lists it; mv into a system folder (-t) moves something else; a command find -exec
+            # runs through xargs (it has no pipeline stage: this raised KeyError)
+            "rsync --delete -a /etc", "rsync -a --delete /etc/", "mv -t /etc x.conf", "mv -ft /etc x.conf",
+            "mv --target-directory /etc x.conf", "mv x.conf /etc/", "rsync -a --delay-updates empty/ /etc/",
+            "find . -name '*.txt' -exec xargs grep foo {} \\;", "bash -c 'find . -exec xargs echo {} +'",
+            "find . -execdir xargs ls {} \\;", "find . -ok xargs ls {} \\;"))
 
     def test_a_system_folder_is_read_past_plain_words_dot_steps_and_case(self):
         # #783 review: each was only flagged: more than 16 plain words before the folder (TK-D004 reads any number
@@ -4306,6 +4659,7 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "echo " + "x" * (64 * 1024)})
         self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-OVERSIZE"))
 
+    @pytest.mark.serial
     def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
         """The new rules alone, on the fallback engine."""
         policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
@@ -4593,17 +4947,26 @@ class CodingPack(unittest.TestCase):
                        ("gh auth token -h ghe.corp", "TK-A021"), ("gh auth token; echo --help", "TK-A021"),
                        ("gh auth token && echo --help", "TK-A021"), ("gh auth token | tee x --help", "TK-A021"),
                        ("gh auth status --show-token", "TK-A021"), ("gh auth status -t", "TK-A021"),
-                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021")])
+                       ("gh auth status -h github.com -t", "TK-A021"), ("gh auth status -th ghe.corp", "TK-A021"),
+                       ("git credential fill", "TK-A021"), ("git credential-store get", "TK-A021"),
+                       ("git credential-manager get", "TK-A021"), ("git -C repo credential fill", "TK-A021"),
+                       ("git credential-store --file f get", "TK-A021"), ("git-credential fill", "TK-A021"),
+                       ("git-credential-libsecret get", "TK-A021"), ("gh auth git-credential get", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
                         "keepassxc-cli search Github", "keepassxc-cli db-info passwords.kdbx", "keepassxc-cli --help",
                         "keepassxc-cli -v", "gh auth status", "gh auth status -h github.com", "gh auth login",
                         "gh auth refresh", "gh auth switch", "gh auth token --help", "gh auth status --help",
-                        "gh auth status -t --help"):
-            with self.subTest(command=command):
-                d = self.e.decide("Bash", {"command": command})
-                self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
+                        "gh auth status -t --help", "git credential approve", "git credential reject",
+                        "git credential-store store", "git credential-store erase", "git credential",
+                        "git config credential.helper", "git credentials fill", "gh auth git-credential",
+                        "gh auth git-credential store", "gh auth git-credential erase",
+                        "gh auth git-credential --help", "gh auth git-credentials get"):
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
 
     def every_pack_verdicts(self, cases):
         for pack, engine, e in self.every_pack():
@@ -4616,12 +4979,17 @@ class CodingPack(unittest.TestCase):
         # the 1.5.3 sweep: uninstalling Tracekit, stopping it or editing its installed engine, signer or hooks was
         # allowed (only its packs were protected), and a help request through python -m was denied
         removals = ("tracekit uninstall --agent claude", "tracekit down", "python3 -m tracekit down",
-                    "pip uninstall -y tracekit-ai", "uv tool uninstall tracekit-ai", "pipx uninstall tracekit-ai",
+                    "pip uninstall -y tracekit-ai", "pip uninstall -y tracekit--ai",
+                    "uv tool uninstall tracekit-ai", "pipx uninstall tracekit-ai",
                     "claude plugin uninstall tracekit", "claude plugin disable tracekit@cygnux",
+                    "claude plugin marketplace remove tracekit", "claude plugin marketplace rm tracekit",
                     "systemctl --user stop tracekit",
                     # the last review: any number of options before the subcommand (a bound let 17 through)
-                    "pip " + "-v " * 17 + "uninstall -y tracekit-ai", "python3 -m pip " + "-q " * 17 + "uninstall tracekit-ai",
-                    "claude " + "-d " * 17 + "plugin uninstall tracekit", "systemctl " + "--user " * 17 + "stop tracekit")
+                    "pip " + "-v " * 17 + "uninstall -y tracekit-ai", "pip " + "-v " * 17 + "uninstall -y tracekit--ai",
+                    "python3 -m pip " + "-q " * 17 + "uninstall tracekit-ai",
+                    "claude " + "-d " * 17 + "plugin uninstall tracekit",
+                    "claude " + "-d " * 17 + "plugin marketplace remove tracekit",
+                    "systemctl " + "--user " * 17 + "stop tracekit")
         installed = ("sed -i s/deny/allow/ .venv/lib/python3.11/site-packages/tracekit/policy2/engine.py",
                      "cp evil.py /usr/lib/python3/dist-packages/tracekit/hook.py")
         for pack, engine, e in self.every_pack():
@@ -4638,6 +5006,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, path=path):
                     self.assertIn("TK-D013", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
             for command in ("tracekit up", "pip uninstall -y requests", "claude plugin uninstall other",
+                            "claude plugin marketplace list", "claude plugin marketplace remove other",
                             "python3 -m tracekit.signer --help", "systemctl --user stop other"):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
@@ -5532,6 +5901,7 @@ class GuardrailsAndPushes(unittest.TestCase):
             "npm install")], "flag")
         self.verdicts([("Bash", {"command": c}) for c in ("git status", "git log push", "helm template a b")], "allow")
 
+    @pytest.mark.serial
     def test_a_long_push_option_decides_in_time(self):
         for e in self.engines:
             d = e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
@@ -5701,6 +6071,51 @@ class GuardrailsAndPushes(unittest.TestCase):
                     self.assertEqual(d["verdict"], "ask", d)
                     self.assertIn(rule, d["rule_ids"], d)
 
+    def test_sql_behind_explain_analyze_or_a_paren_or_under_sql_query_or_stmt_is_held(self):
+        """#975: EXPLAIN with ANALYZE runs the statement on PostgreSQL, as coding.yaml's database-client rule reads it,
+        a statement may open with `(`, and `sql_query` and `stmt` name SQL arguments too. Plain EXPLAIN, an
+        unterminated SELECT and a search tool's `q` stay flagged."""
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN ANALYZE DELETE FROM users;"},
+            {"statement": "EXPLAIN (ANALYZE) DELETE FROM users;"},
+            {"statement": "explain (analyse, buffers) delete from users"},
+            {"statement": "EXPLAIN ANALYZE VERBOSE DROP TABLE users"},
+            {"statement": "(WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d);"},
+            {"statement": "( ( DROP TABLE users"},
+            {"statement": "EXPLAIN(ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (FORMAT JSON, COSTS OFF, BUFFERS ON, ANALYZE) DELETE FROM users"},
+            {"statement": "EXPLAIN (ANALYZE, COSTS OFF, VERBOSE, BUFFERS, FORMAT JSON, SETTINGS, WAL, TIMING, SUMMARY)"
+                          " DELETE FROM users"},
+            {"statement": "EXPLAIN ANALYZE (WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d)"},
+            {"sql_query": "DROP TABLE users;"},
+            {"stmt": "DROP TABLE users;"},
+            {"Stmt": {"text": "TRUNCATE users"}})], "ask", "TK-A062")
+        # an MCP database tool's statements are read the same way (TK-A086), under the new names too
+        self.verdicts([("mcp__postgres__query", args) for args in (
+            {"sql_query": "DROP TABLE users"}, {"stmt": "DELETE FROM users"})], "ask", "TK-A086")
+        self.verdicts([("acme_runner", args) for args in (
+            {"statement": "EXPLAIN SELECT 1;"},
+            {"statement": "EXPLAIN DELETE FROM users"},
+            {"statement": "(SELECT 1)"},
+            {"sql_query": "SELECT 1"},
+            {"q": "delete from users"})], "flag", "TK-UNKNOWN-TOOL")
+
+    @pytest.mark.serial
+    def test_a_long_explain_or_paren_lead_decides_in_time(self):
+        # #975: the lead TK-A062 reads before a statement has bounded repeats, so the fallback engine stays in time.
+        # The later statements hold the words a held statement needs (DELETE FROM), so the engine's prefilter
+        # (compile.requirements) doesn't skip the search: with `[^;)]*` around ANALYZE the last two took the fallback's
+        # whole second
+        for statement in ("(" * 60000, "( " * 30000, "EXPLAIN (" + "a" * 60000, "EXPLAIN (" + "ANALYZE " * 7000,
+                          "EXPLAIN ANALYZE " * 3500, "(" * 60000 + " DELETE FROM x",
+                          "EXPLAIN ANALYZE " + "( " * 30000 + "DELETE FROM x", "EXPLAIN(" + "ANALYZE, DELETE FROM " * 2700,
+                          "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800,
+                          "(" * 8 + "EXPLAIN (" + "ANALYZE DELETE FROM " * 2800 + ")"):
+            for e in self.engines:
+                with self.subTest(engine=e.engine, statement=statement[:12]):
+                    d = e.decide("acme_runner", {"statement": statement})
+                    self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+
     def test_a_harness_or_mcp_tool_is_not_read_as_an_unmapped_one(self):
         """Review of #605, through the signer's own reading (evaluate): TK-A062 held Claude Code's ToolSearch, Skill
         and SlashCommand, Anthropic's text-editor and memory tools (a `command` of `view` or `create`), a Gemini CLI or
@@ -5867,6 +6282,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                         self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
         self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
 
+    @pytest.mark.serial
     def test_a_nested_argument_is_read_once(self):
         """Final review of #605: TK-A062 read each string under a sql, query or statement argument once for each such
         argument above it, and wrote a command argument's value out again for each command argument above it, so a
@@ -6150,6 +6566,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                                             "refUpdates:[{name:\"refs/heads/main\",afterOid:\"x\"}]}){clientMutationId}}'"})],
                       "ask", "TK-A056")
 
+    @pytest.mark.serial
     def test_an_over_cap_calls_sql_isnt_lexed_and_its_verdict_stands(self):
         """Sixth review of #605: TK-A062's SQL reading and the sql class's lexed every dialect of a call over MAX_SUBJECT,
         which every pack that reads them holds unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
@@ -6199,6 +6616,7 @@ class GuardrailsAndPushes(unittest.TestCase):
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --delete origin feature"})], "ask", "TK-A002")
         self.verdicts([("Bash", {"command": "git --attr-source HEAD config core.hooksPath /tmp/h"})], "ask", "TK-A013")
 
+    @pytest.mark.serial
     def test_the_second_reviews_ways_to_main(self):
         """Second review of #605: GitHub reads a percent-encoded path as decoded; a -c remote.<name>.push picks the
         push's target; GraphQL and the contents API write a branch; Jujutsu takes -bmain, exact: and glob:; git-town
@@ -6344,6 +6762,26 @@ class StrictPack(unittest.TestCase):
                         "openssl rand -hex 16", "go test ./...", "cargo build", "httpie --version", "tee out.txt"):
             with self.subTest(command=command):
                 self.assertEqual(self.e.decide("Bash", {"command": command})["verdict"], "allow")
+
+    def test_an_install_after_options_is_held_as_one_before_them(self):
+        """#957: TK-F004 read `npm install` but not an install after an option (npm --prefix x install, npm -g
+        install), so strict allowed it and the other packs did not flag it."""
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            want = "ask" if pack == "strict.yaml" else "flag"
+            for command in ("npm --prefix x install left-pad", "npm -g install left-pad", "pnpm --dir x add left-pad",
+                            "yarn --cwd x add left-pad", "bun --cwd x install", "npm -g i left-pad",
+                            "npm --loglevel=silent ci", "npm install --prefix x left-pad",
+                            # several options, each with or without a value, up to eight as a publish
+                            "pnpm -C x --silent --filter app add left-pad",
+                            "npm --json --silent --yes --force --foreground-scripts --ignore-scripts --no-audit "
+                            "--no-fund install left-pad"):
+                with self.subTest(pack=pack, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-F004" in d["rule_ids"]), (want, True), d)
+            for command in ("npm --prefix x init", "npm --prefix x run build", "npm -g ls", "pnpm --dir x test"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertEqual(e.decide("Bash", {"command": command})["verdict"], "allow")
 
     def test_benign_false_positives_on_e17_are_at_most_six_percent(self):
         # the pack holds every install, push, docker run and network command by design: E17's benign `npm ci`, `npm

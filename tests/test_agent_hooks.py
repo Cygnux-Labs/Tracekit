@@ -15,6 +15,8 @@ import time
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -869,6 +871,26 @@ class Harnesses(DaemonCase):
         self.assertNotIn("Blocked by tracekit policy", err)   # the hook's own block, not a policy decision
         self.assertEqual(agent_hooks._blocked_tool("opencode", "notebook_execute"), None)   # not OpenCode's tool
 
+    def test_opencode_and_kilo_batch_is_denied_in_the_hook(self):
+        # OpenCode's and Kilo's experimental batch tool runs nested calls with no plugin hooks; the plugin blocks it
+        # first and _blocked_tool returns the exact same reason so Python hooks and `tracekit audit` agree.
+        for harness, agent, config in (("opencode", "OpenCode", "opencode.json"), ("kilo", "Kilo Code", "kilo.json")):
+            reason = agent_hooks._blocked_tool(harness, "batch")
+            self.assertIsNotNone(reason, harness)
+            self.assertIn(agent, reason)
+            self.assertIn(f"(experimental.batch_tool in {config})", reason)
+            self.assertIn(json.dumps(reason), agent_hooks._opencode_plugin(None, False, harness))
+            code, out, err = self.hook(harness, {"session_id": f"{harness}-b", "cwd": self.d,
+                                                 "hook_event_name": "tool.execute.before",
+                                                 "tool_name": "batch", "tool_use_id": "b1",
+                                                 "tool_input": {"tool_calls": []}},
+                                       "tool.execute.before")
+            self.assertEqual((code, out), (2, ""))
+            self.assertIn(f"experimental.batch_tool in {config}", err)
+            self.assertNotIn("Blocked by tracekit policy", err)
+        for other in ("claude", "codex", "cursor", "goose", "kiro", "crush"):
+            self.assertIsNone(agent_hooks._blocked_tool(other, "batch"), other)
+
     def test_goose_maps_tools_records_results_and_blocks_denied_calls(self):
         # goose's payload names its event `event` and its working directory `working_dir`, and carries a stable
         # tool_call_id; it sends no tool result or error text, so a PostToolUse records no output and a
@@ -972,6 +994,18 @@ class Harnesses(DaemonCase):
                          [("call_01", True), ("call_03", False)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
                          ["allow", "allow", "allow", "allow", "deny"])
+
+    def test_opencode_2_v1_records_no_unverified_prompt_and_ends_a_deleted_session(self):
+        # #989: v1 has no untrusted prompt observation, so OpenCode 2.x's prompts (nothing says a person typed them)
+        # aren't recorded as the person's; a deleted session ends its run
+        base = {"session_id": "oc2-v1", "cwd": self.d}
+        call = {**base, "tool_name": "bash", "tool_use_id": "c1", "tool_input": {"command": "ls"}}
+        self.assertEqual(self.hook("opencode", call, "tool.execute.before")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", {**base, "prompt": "keep away from prod"}, "session.prompt")[:2], (0, ""))
+        self.assertEqual(self.hook("opencode", base, "session.deleted")[:2], (0, ""))
+        types = [e["type"] for e in self.events("oc2-v1")]
+        self.assertNotIn("user.prompt", types)
+        self.assertIn("run.end", types)
 
     def test_cline_answers_in_json_at_exit_0_and_a_denied_call_is_cancelled(self):
         # Cline reads a hook's answer only from its JSON ({"cancel": true} stops the task) and runs the call on any
@@ -1348,6 +1382,28 @@ class OpenCodeTools(unittest.TestCase):
         self.assertEqual(load_policy().decide(tool, ti)["verdict"], "deny")
         self.assertEqual(agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "path": "/w/o"}),
                          ("Write", {"prompt": "p", "path": "/w/o", "file_path": "/w/o", "paths": []}))
+
+    def test_opencode_2_image_generate_fetches_an_http_image(self):
+        # #988: OpenCode downloads an http(s) image, under webfetch's permission (image-generate.ts, readImage): images
+        # that are all URLs are decided as a WebFetch of each, so the fetch rules read them, never a decoy `url`
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        images = ["HTTP://169.254.169.254/a.png", "https://x.example/b.png"]
+        tool, ti = agent_hooks.tool("opencode", "experimental_image_generate",
+                                    {"prompt": "p", "images": images, "path": "/w/o", "url": "https://x.example/"})
+        self.assertEqual((tool, ti["url"], ti["urls"]), ("WebFetch", images[0], images))
+        d = e.decide(tool, ti)
+        self.assertEqual((d["verdict"], "TK-N001" in d["rule_ids"]), ("deny", True), d)
+        _, ti = agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "images": images[1:],
+                                                                              "urls": ["https://x.example/"]})
+        self.assertEqual((ti["url"], "urls" in ti), (images[1], False))
+        # a call that downloads some images and reads others is denied in the hook: a call is decided as one tool
+        def blocked(imgs):
+            return agent_hooks._blocked("opencode", {"tool_name": "experimental_image_generate",
+                                                     "tool_input": {"prompt": "p", "images": imgs}})
+        self.assertIn("download the image to a file first", blocked(["/w/a.png", images[1]]))
+        self.assertIsNone(blocked(["/w/a.png", "/w/b.png"]))
 
 
 class GptmeTools(unittest.TestCase):
@@ -1802,6 +1858,58 @@ class JcodeTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("jcode", "mcp_call", call), ("mcp__rec__echo", {"text": "hi"}))
         self.assertEqual(agent_hooks.tool("jcode", "mcp", {"action": "search", "query": "x"})[0], "mcp")
         self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "rec"})[0], "mcp_call")
+
+        # jcode dispatch_name turns characters outside [A-Za-z0-9_] into _
+        cases = [
+            ({"server": "my-server", "tool": "get.x", "arguments": {}}, "mcp__my_server__get_x", {}),
+            ({"server": "git-hub", "tool": "search-issues", "arguments": {"q": "bug"}},
+             "mcp__git_hub__search_issues", {"q": "bug"}),
+            ({"server": "srv.test-1", "tool": "tool:run@v1", "arguments": None},
+             "mcp__srv_test_1__tool_run_v1", {}),
+            ({"server": "already_valid_123", "tool": "valid_tool_456", "arguments": {"a": 1}},
+             "mcp__already_valid_123__valid_tool_456", {"a": 1}),
+        ]
+        for payload, expected_name, expected_args in cases:
+            with self.subTest(payload=payload):
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp_call", payload),
+                    (expected_name, expected_args),
+                )
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp", {"action": "call", **payload}),
+                    (expected_name, expected_args),
+                )
+
+        # a name over 64 characters is cut and ends in the hash of server and tool, as jcode's dispatch_name does it
+        long_name = "mcp__srv__" + "t" * 54
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "srv", "tool": "t" * 54})[0], long_name)
+        long_call = {"server": "my-server", "tool": "get.x" + "y" * 60}
+        for route in (("mcp_call", long_call), ("mcp", {"action": "call", **long_call})):
+            name = agent_hooks.tool("jcode", *route)[0]
+            self.assertEqual(len(name), 64)
+            self.assertTrue(name.startswith("mcp__my_server__get_xyyy"), name)
+            self.assertRegex(name[55:], r"^_[0-9a-f]{8}$")
+        self.assertEqual(agent_hooks.tool("jcode", "mcp_call", {"server": "a", "tool": "b" * 70})[0][55:], "_" + "%08x" % 0x71695508)
+
+        # Invalid or missing server/tool fields fall back gracefully without crashing
+        for invalid_payload in (
+            {"tool": "get.x"},
+            {"server": "my-server"},
+            {"server": "", "tool": "get.x"},
+            {"server": "my-server", "tool": ""},
+            {"server": None, "tool": "get.x"},
+            {"server": "my-server", "tool": 123},
+            {},
+        ):
+            with self.subTest(invalid=invalid_payload):
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp_call", invalid_payload),
+                    ("mcp_call", invalid_payload),
+                )
+                self.assertEqual(
+                    agent_hooks.tool("jcode", "mcp", {"action": "call", **invalid_payload}),
+                    ("mcp", {"action": "call", **invalid_payload}),
+                )
 
     def test_batch_is_decided_as_the_tools_it_runs(self):
         # each call in it reaches its own gate: its arguments are decided there, not again on the batch
@@ -2330,6 +2438,7 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(mapped, name)
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
+    @pytest.mark.serial
     def test_a_long_run_of_spaces_takes_linear_time(self):
         # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
         line = "a" + " " * 40_000 + "b"
@@ -2974,6 +3083,33 @@ class HarnessList(unittest.TestCase):
                 self.assertIn(ok, [r[0] for r in rows if r[1].startswith("PowerShell's execution policy")])
 
 
+class QwenHome(unittest.TestCase):
+    """#973: Qwen Code reads a user's settings from $QWEN_HOME in place of ~/.qwen (qwen-code 0.28.0
+    getGlobalQwenDirLite): init wrote ~/.qwen/settings.json, which that Qwen Code never reads, so no hook ran."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.qwen = os.path.join(self.d, "x")
+        patch_env(self, HOME=self.d, USERPROFILE=self.d, XDG_DATA_HOME=self.d, LOCALAPPDATA=self.d, QWEN_HOME=self.qwen)
+
+    def test_init_and_uninstall_write_qwen_home(self):
+        from tracekit import cli, install
+        path = os.path.join(self.qwen, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(install, "init_dev",
+                                                                         return_value={"socket": "s"}):
+            self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIn("PreToolUse", json.load(f)["hooks"])
+        self.assertFalse(os.path.exists(os.path.join(self.d, ".qwen")))
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall", "--agent", "qwen"]), 0)
+        with open(path) as f:
+            self.assertIsNone(agent_hooks._version(f.read()))
+        # a project's, and another user's, are where they were
+        self.assertEqual(agent_hooks.config_path("qwen", "/repo"), os.path.join("/repo", ".qwen", "settings.json"))
+        self.assertEqual(agent_hooks.config_path("qwen", home="/h"), os.path.join("/h", ".qwen", "settings.json"))
+
+
 class Installer(unittest.TestCase):
     def test_openhands_hooks_json_keeps_the_form_it_is_written_in(self):
         # #563 review: OpenHands reads hooks.json as {"hooks": {...}}, or the event map itself with Claude Code's names
@@ -3042,6 +3178,90 @@ class Installer(unittest.TestCase):
                 agent_hooks.install("copilot", d, v2=True)
             self.assertIn(".git/info/exclude", out.getvalue())
             self.assertIn("usually committed", out.getvalue())
+            self.assertFalse(os.path.exists(os.path.join(d, ".git")))   # outside git: advice only, no exclude file
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_keeps_the_file_out_of_git(self):
+        # #1000: in a checkout, init adds the file to the exclude file once, uninstall takes the line out
+        with tempfile.TemporaryDirectory() as d:
+            subprocess.run(["git", "init", "-q", d], check=True)
+            exclude = os.path.join(d, ".git", "info", "exclude")
+            with open(exclude, "a") as f:
+                f.write("*.mine")   # the person's own line, with no newline after it
+
+            def lines():
+                with open(exclude) as f:
+                    return f.read().splitlines()
+
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_hooks.install("copilot", d, v2=True)
+                agent_hooks.install("copilot", d, v2=True)
+            self.assertEqual(lines().count("/.github/hooks/tracekit.json"), 1)
+            self.assertIn("*.mine", lines())
+            self.assertEqual(out.getvalue().count("added to"), 1)
+            self.assertNotIn("usually committed", out.getvalue())
+            status = subprocess.run(["git", "-C", d, "status", "--porcelain", "--untracked-files=all"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertNotIn("tracekit.json", status)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", d, uninstall=True)
+            self.assertNotIn("/.github/hooks/tracekit.json", lines())
+            self.assertIn("*.mine", lines())
+
+    @unittest.skipUnless(shutil.which("git"), "needs git")
+    def test_copilot_project_init_in_a_subfolder_and_a_worktree(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo, wt = os.path.join(d, "repo"), os.path.join(d, "wt")
+            git = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-C", repo]
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+            subprocess.run([*git, "worktree", "add", "-q", wt], check=True)
+            sub = os.path.join(repo, "app[1]")   # a pattern character in the path: matched as written
+            os.makedirs(sub)
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("copilot", sub, v2=True)
+                agent_hooks.install("copilot", wt, v2=True)
+            for top in (repo, wt):
+                status = subprocess.run(["git", "-C", top, "status", "--porcelain", "--untracked-files=all"],
+                                        capture_output=True, text=True, check=True).stdout
+                self.assertNotIn("tracekit.json", status)
+            with open(os.path.join(repo, ".git", "info", "exclude")) as f:
+                self.assertIn("/app\\[1]/.github/hooks/tracekit.json", f.read().splitlines())
+
+    def test_copilot_init_says_when_claude_codes_project_hook_also_runs(self):
+        # #1000: Copilot CLI runs a repository's .claude hooks, so Tracekit's Claude Code hook there decides each call too
+        from tracekit import install
+        with tempfile.TemporaryDirectory() as d:
+            for local in (False, True):
+                with self.subTest(local=local):
+                    shutil.rmtree(os.path.join(d, ".claude"), ignore_errors=True)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertNotIn("recorded twice", out.getvalue())
+                    name = "settings.local.json" if local else "settings.json"
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        install.install_hooks(os.path.join(d, ".claude", name))
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", d, v2=True)
+                    self.assertIn("recorded twice", out.getvalue())
+                    self.assertIn(name, out.getvalue())
+            patch_env(self, HOME=d, USERPROFILE=d, COPILOT_HOME=None)
+            work = os.path.join(d, "work")
+            os.makedirs(os.path.join(work, ".claude"))
+            shutil.copy(os.path.join(d, ".claude", "settings.local.json"), os.path.join(work, ".claude"))
+            cwd = os.getcwd()
+            try:
+                for where, said in ((work, True), (d, False)):   # a user install reads the working directory's, not ~/.claude
+                    os.chdir(where)
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("copilot", v2=True)
+                    self.assertEqual("recorded twice" in out.getvalue(), said)
+            finally:
+                os.chdir(cwd)   # out of `d` before it is removed
 
     def test_copilot_user_hooks_follow_copilot_home(self):
         with tempfile.TemporaryDirectory() as d:
@@ -3551,6 +3771,65 @@ class Installer(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
                          ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
 
+    def test_kilo_browser_open_and_repo_clone_are_fetches_of_their_url(self):
+        # #988: browser_open opens its `url` (kilocode/tool/browser-open.ts) and repo_clone clones the remote Kilo's
+        # Repository.parse makes of its `repository` (core/src/repository.ts): each is decided as a WebFetch, so the
+        # fetch rules read it. They passed as unknown tools, flagged on the dev pack
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        for name, args in [("browser_open", {"url": "http://169.254.169.254/latest/meta-data/"}),
+                           ("repo_clone", {"repository": "169.254.169.254/a/b", "url": "https://github.com/o/r"}),
+                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"}),
+                           # git connects to the host before the first ':', whatever an '@' after it says
+                           ("repo_clone", {"repository": "10.0.0.5:x@github.com:o/r.git"})]:
+            with self.subTest(name=name, args=args):
+                mapped, ti = agent_hooks.tool("kilo", name, args)
+                d = e.decide(mapped, ti)
+                self.assertEqual((mapped, d["verdict"], "TK-N001" in d["rule_ids"]), ("WebFetch", "deny", True), d)
+                self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)   # OpenCode has no such tool
+        for repository, url in [("owner/repo", "https://github.com/owner/repo.git"),
+                                ("github:o/r.git", "https://github.com/o/r.git"),
+                                ("git@gitlab.example:g/r.git", "ssh://git@gitlab.example/g/r.git"),
+                                ("10.0.0.5:x@github.com:o/r.git", "ssh://10.0.0.5/x@github.com:o/r.git"),
+                                ("git+https://h.example/a/b.git#main", "https://h.example/a/b.git"),
+                                (" Code.Example/g/s/r.git/ ", "https://code.example/g/s/r.git"),
+                                ("file:///tmp/r", "file:///tmp/r")]:   # Kilo refuses a file: URL: decided as sent
+            with self.subTest(repository=repository):
+                self.assertEqual(agent_hooks.tool("kilo", "repo_clone", {"repository": repository})[1]["url"], url)
+
+    def test_kilo_memory_save_writes_kilos_memory_files(self):
+        # #988: kilo_memory_save saves a note later sessions read back: a remember to project.md, a correct to
+        # corrections.md, a forget from all three files (kilo-memory: tool.ts, storage/paths.ts); a skip writes nothing
+        memory = "~/.local/share/kilo/memory/"
+        self.assertEqual(agent_hooks.tool("kilo", "kilo_memory_save", {"action": "remember", "text": "t", "content": "x"}),
+                         ("Write", {"action": "remember", "text": "t", "content": "t", "file_path": memory + "project.md",
+                                    "paths": [memory + "project.md"]}))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "correct", "text": "t", "key": "k"})
+        self.assertEqual((mapped, ti["file_path"], ti["content"]), ("Write", memory + "corrections.md", "t"))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "forget", "query": "q", "text": "t"})
+        self.assertEqual((mapped, ti["paths"], "content" in ti), ("Edit", [memory + f for f in (
+            "project.md", "environment.md", "corrections.md")], False))
+        # held as harness settings (TK-F009), from a file tool and from the shell (TK-F015), as Kilo itself asks
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        for pack in ("dev", "coding", "server", "strict"):
+            e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack + ".yaml"))[0])
+            for args in ({"action": "remember", "text": "t"}, {"action": "correct", "text": "t"},
+                         {"action": "forget", "query": "q"}):
+                with self.subTest(pack=pack, args=args):
+                    d = e.decide(*agent_hooks.tool("kilo", "kilo_memory_save", args))
+                    self.assertEqual((d["verdict"], "TK-F009" in d["rule_ids"]), ("ask", True), d)
+            for command in ("echo t >> ~/.local/share/kilo/memory/app-0123456789ab/project.md",
+                            "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+        for name, args in [("kilo_memory_save", {"action": "skip"}), ("kilo_memory_save", {"action": ["remember"]}),
+                           ("kilo_memory_save", {"action": {"remember": 1}}),   # unhashable: tool() raised TypeError
+                           ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
+            with self.subTest(name=name):
+                self.assertEqual(agent_hooks.tool("kilo", name, args), (name, args))
+
     def test_codex_joins_an_argv_only_of_strings(self):
         """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
         so tracekit audit --agent codex crashed."""
@@ -3591,7 +3870,7 @@ class Installer(unittest.TestCase):
         import site
         from tracekit import install
         user = os.path.join(site.getusersitepackages(), "tracekit", "__init__.py")   # pip install --user, which -I hides
-        events = ("tool.execute.before", "tool.execute.after")
+        events = ("tool.execute.before", "tool.execute.after", "session.prompt", "session.deleted")
         with mock.patch("importlib.util.find_spec", return_value=mock.Mock(origin=user)):
             plugin = agent_hooks._opencode_plugin(None, False)
             want = {ev: install._dev_hook_argv("tracekit.agent_hooks", "entry", ("opencode", ev)) for ev in events}
@@ -3663,7 +3942,8 @@ class Installer(unittest.TestCase):
                     plugin = f.read()
                 # the same plugin, whose hook is told it runs for Kilo, and whose batch block names Kilo Code's config
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
-                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo")
+                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace('"opencode", "session.', '"kilo", "session.')
+                    .replace("--agent opencode", "--agent kilo")
                     .replace("OpenCode's experimental batch", "Kilo Code's experimental batch").replace(
                         "batch_tool in opencode.json", "batch_tool in kilo.json"))
                 self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
@@ -3868,6 +4148,7 @@ class Installer(unittest.TestCase):
         with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
             self.assertIsNone(agent_hooks.kiro_version())
 
+    @pytest.mark.serial
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)

@@ -1596,9 +1596,9 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
       + "records cite)", [...unbundled].sort(byCodePoint).slice(0, 20), true);
 }
 
-/** The `run labels` line, as verify/v2.py's _labels: each run's labels replayed under the compiled policy of its one
- * policy_hash (the bundle's or the trust config's), an inherited one signer-asserted; a `label policies` warning for
- * each policy a decision names that neither carries. */
+/** The `run labels` line, as verify/v2.py's _labels: each run's labels replayed under the compiled policies of the
+ * policy_hashes its decisions name (the bundle's or the trust config's), each record under its own; an inherited one
+ * signer-asserted; a `label policies` warning for each policy a decision names that neither carries. */
 function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
   const problems: string[] = [], unbundled = new Set<string>(), inherited: [string, string, J][] = [];
   let checked = 0, asserted = 0;
@@ -1609,20 +1609,19 @@ function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
     const hashes = new Set(events.filter((e) => e.type === "policy.decision" && Object.hasOwn(e.data, "policy_hash"))
       .map((e) => str(e.data.policy_hash)));
     for (const h of hashes) if (!policies.has(h)) unbundled.add(cut(h, 80));
-    const data = hashes.size === 1 ? policies.get([...hashes][0]) : undefined;
-    if (!data) {
+    if (!hashes.size || [...hashes].some((h) => !policies.has(h))) {
       if (marked) asserted++;
       continue;
     }
-    const src = new Sources(strictParseBytes(data, floats));
-    if (marked || src.tracked.size) {
+    const srcs = new Map([...hashes].sort(byCodePoint).map((h) => [h, new Sources(strictParseBytes(policies.get(h)!, floats))]));
+    if (marked || [...srcs.values()].some((src) => src.tracked.size)) {
       checked++;
-      extend(problems, runLabels(events, src, inherited));
+      extend(problems, runLabels(events, srcs, inherited));
     }
   }
   if (checked || asserted)
-    rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policy, `
-      + `${asserted} signer-asserted (under several policies, or a policy not in the bundle)`
+    rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policies, `
+      + `${asserted} signer-asserted (under a policy not in the bundle)`
       + (inherited.length ? `; ${inherited.length} label(s) inherited from another run of the requester, `
         + "signer-asserted (that run's bundle shows its add)" : ""), "run labels"),
     problems.slice(0, 20));

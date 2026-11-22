@@ -158,7 +158,8 @@ def policy_hash(pol):
 
 def translate(pattern):
     """Check the lexical subset and return the pattern for the `regex` module: `$` means end of text and `\\s`
-    excludes \\v, as in RE2. Raises PolicyError for syntax RE2 lacks or reads differently."""
+    excludes \\v, as in RE2, and a plain group captures nothing (no match's groups are read, and the module searches
+    faster without: TK-D014's 284, TK-D002's 24). Raises PolicyError for syntax RE2 lacks or reads differently."""
     out, i, n, cls = [], 0, len(pattern), None
     while i < n:
         c = pattern[i]
@@ -185,6 +186,8 @@ def translate(pattern):
             continue
         elif c == "(" and pattern.startswith("(?", i) and not pattern.startswith(("(?:", "(?P<"), i):
             raise PolicyError("only (?: and (?P< groups are allowed (no flags, lookaround or comments)")
+        elif c == "(" and not pattern.startswith("(?", i):
+            c = "(?:"
         elif c == "{" and not re.match(r"\{\d+(,\d*)?\}", pattern[i:]):
             raise PolicyError("a literal { must be escaped, and a repeat needs a lower bound")
         elif c == "$":
@@ -486,9 +489,7 @@ def _lint(pol, path):
     for x in pol.get("explains", []):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
-        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and two or more "
-                   "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
-                   if _loose_host(h)]
+        errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
     return errors + _lint_detect(pol, path) + _lint_approver(pol, path)
 
 
@@ -579,14 +580,32 @@ def _lint_remedy(text, sec):
                                     "should, could or might do")) if bad]
 
 
+# lean: a short built-in list of public suffixes of two or more labels (from the Public Suffix List,
+# publicsuffix.org); vendor the full list once a policy needs a suffix that isn't here
+PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "com.au", "co.jp", "com.br", "co.in",
+    "github.io", "githubusercontent.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "herokuapp.com",
+    "azurewebsites.net", "cloudfront.net", "appspot.com", "s3.amazonaws.com"})
+
+
 def _loose_host(glob):
-    """Whether host glob `glob` is too loose: not an exact host, nor a dot and two or more labels after its last
-    wildcard."""
+    """Why host glob `glob` is too loose, or None: an exact host is not; a glob needs a dot and two or more labels
+    after its last wildcard, and those labels must not be a public suffix anyone can register under, nor a parent of
+    one (`*` spans dots when an explains host is matched, so `*.amazonaws.com` covers `*.s3.amazonaws.com`)."""
     if not re.search(r"[*?[]", glob):
-        return False
+        return None
     tail = re.split(r"[*?\]]", glob)[-1]
     labels = tail.split(".")[1:]
-    return not tail.startswith(".") or len(labels) < 2 or "" in labels
+    if not tail.startswith(".") or len(labels) < 2 or "" in labels:
+        return ("after its last wildcard it needs a dot and two or more labels (*.pythonhosted.org, not *.com or "
+                "*pypi.org); or name the hosts")
+    t = tail[1:].lower()
+    covered = sorted(s for s in PUBLIC_SUFFIXES if s == t or s.endswith("." + t))
+    if covered:
+        what = (f"{t} is a public suffix" if covered == [t] else
+                f"{t} covers the public suffix {', '.join(covered)}, which")
+        return f"{what} anyone can register under; name the hosts, or a suffix one owner holds (*.cdn.example.co.uk)"
+    return None
 
 
 def _int(v, lo=0, hi=float("inf")):

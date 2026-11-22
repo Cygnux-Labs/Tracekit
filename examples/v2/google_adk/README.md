@@ -9,7 +9,7 @@ How: `plugins=[Tracekit(run)]` on the ADK `App`. Its `before_tool_callback` deci
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install tracekit-ai "google-adk>=2.12,<2.13"   # from a checkout: pip install .
+pip install tracekit-ai "google-adk>=2.12,<3"   # from a checkout: pip install .
 python examples/v2/google_adk/agent.py --scripted
 ```
 

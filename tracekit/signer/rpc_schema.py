@@ -8,8 +8,9 @@ playbook and recent calls of such an approval), `approver` (people: the circuit 
 accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped) and an approval's `ai` (what
 people see of agent approvers on it: whether one may answer it now and why, and the latest agent answer). Version 27 adds
 `run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
-the signer records as theirs; a run's own owner, principal or requester can't. Version 26 adds register_run's
-`continues` (a later run of an
+the signer records as theirs; a run's own owner, principal or requester can't (a dev signer's own, self_cleared), and
+decide's `recorded` (the rules in shadow that would hold the call). Version 26 adds register_run's `continues` (a
+later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -560,6 +561,8 @@ RESPONSES = {
                    # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
                    # redacts it, commits to it and indexes its values for provenance), not a digest of it
                    send_result={"const": True},
+                   # rules in shadow (mode: shadow) that would hold the call: it runs, recorded (`reason` says why)
+                   recorded=RULE_IDS,
                    incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
@@ -675,7 +678,7 @@ RESPONSES = {
     # frame (the transport's 1 MiB)
     "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
                        data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
-    # {} when the run never decided the call; else its latest attempt's decision (as decide answered it), whether
+    # {} when the run never decided the call; else its latest attempt's decision and reason (as decide answered), whether
     # `args_digest` opens it (`same_args`), its approval and whether this attempt consumed it, a refused consume's rule
     # ids, and its tool.result
     "call_state": _obj([], attempt=SEQ, decision={"enum": ["allow", "deny", "ask"]}, decision_id=ID,

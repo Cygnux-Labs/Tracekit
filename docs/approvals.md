@@ -455,6 +455,7 @@ gateway: https://gateway.internal:8080     # the LLM gateway in front of Anthrop
 model: claude-opus-5-5                      # the default
 poll_s: 5
 timeout_s: 120                              # one model call; past it the reviewer escalates
+state_file: reviewer.state                  # optional: answered approval ids, kept across a restart
 tenants:                                    # it serves these tenants and no other
   acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
 ```
@@ -472,6 +473,12 @@ listener serves), since it sends its tokens there. `run_token_file` is an ordina
 links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
 The reviewer sends the redacted arguments of the tenants it serves to the model provider
 ([privacy](privacy.md#what-leaves-the-machine)).
+
+`state_file` is optional. Without it the reviewer remembers the approvals it answered only in memory, so after a
+restart a shadow-mode approval, which stays listed, gets a second model call and a second `approval.suggested`. With
+it the ids are written there (a JSON list, replaced whole on each change, mode 0600) and read back at start; a
+missing, unreadable or malformed file starts empty, and so does a symlink or anything but a regular file, which the
+reviewer neither reads nor writes (it says so once, in its log).
 
 **Before you enforce: eval, then shadow.**
 

@@ -1476,10 +1476,11 @@ def _incidents(rep, runs, policies):
 
 
 def _labels(rep, runs, policies):
-    """The `run labels` line (module docstring): each run's labels replayed from its records under the compiled policy
-    the bundle (or the trust config) carries for the run's one policy_hash; signer-asserted without it, and so is each
-    label a run inherits (the run it names is another bundle's). A `label policies` warning names each policy a run was
-    decided under that neither carries: its labels, or one a signer left out, can't be replayed."""
+    """The `run labels` line (module docstring): each run's labels replayed from its records under the compiled
+    policies the bundle (or the trust config) carries for the policy_hashes its decisions name, each record under its
+    own (_policies_at); signer-asserted when one is missing, and so is each label a run inherits (the run it names is
+    another bundle's). A `label policies` warning names each policy a run was decided under that neither carries: its
+    labels, or one a signer left out, can't be replayed."""
     from tracekit.signer import detect, labels
     problems, checked, asserted, unbundled, inherited = [], 0, 0, set(), []
     for rs in runs.values():
@@ -1489,18 +1490,17 @@ def _labels(rep, runs, policies):
         hashes = {str(e["data"]["policy_hash"]) for e in events if e.get("type") == "policy.decision"
                   and "policy_hash" in e["data"]}
         unbundled |= {h[:80] for h in hashes if h not in policies}
-        snap = policies.get(next(iter(hashes))) if len(hashes) == 1 else None
-        if snap is None:
+        if not hashes or not hashes <= policies.keys():
             asserted += marked
             continue
-        src = labels.Sources(detect.Rules(loads_strict(snap)))
-        if marked or src.tracked:
+        srcs = {h: labels.Sources(detect.Rules(loads_strict(policies[h]))) for h in sorted(hashes)}
+        if marked or any(src.tracked for src in srcs.values()):
             checked += 1
-            problems += _run_labels(events, src, inherited)
+            problems += _run_labels(events, srcs, inherited)
     if checked or asserted:
-        rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policy, "
-                                                               f"{asserted} signer-asserted (under several policies, "
-                                                               "or a policy not in the bundle)"
+        rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policies, "
+                                                               f"{asserted} signer-asserted (under a policy not in "
+                                                               "the bundle)"
                                                      + (f"; {len(inherited)} label(s) inherited from another run of "
                                                         "the requester, signer-asserted (that run's bundle shows its "
                                                         "add)" if inherited else ""), "run labels"),
@@ -1513,16 +1513,38 @@ def _labels(rep, runs, policies):
                   warn=True)
 
 
-def _run_labels(events, src, inherited):
-    """The problems of one run's labels under labels.Sources `src`: a label a record sets that no run.label adds before
-    the run's next decision or consume (or its end); an add the record it cites doesn't set, or of a label carried; an
-    inherited add of a label no run condition reads; a clear of a label not carried, or by the run's owner; a decision
-    whose run_labels the run didn't carry (nor its own rules set) or that don't cover each run condition rule it names.
-    Each inherited add of a label its policy reads goes to `inherited`, (where, label, the add it cites)."""
-    problems, carried, owed, asked, decided, owner, seqs = [], set(), {}, {}, {}, None, {}
+def _policies_at(events, srcs):
+    """The policies (labels.Sources) each of a run's records is replayed under, `srcs` {policy_hash: Sources} holding
+    each one its decisions name: a decision's own; another record's, that of the decision before it (the first one's
+    before any) and, between two decisions under different policies, the next one's too (the signer restarted under
+    another policy somewhere between them)."""
+    if len(srcs) == 1:
+        return [list(srcs.values())] * len(events)
+    named = [str(e["data"]["policy_hash"]) if e.get("type") == "policy.decision" and "policy_hash" in e["data"]
+             else None for e in events]
+    after, nxt = None, []
+    for h in reversed(named):
+        after = h or after
+        nxt.append(after)
+    before, out = None, []
+    for h, n in zip(named, reversed(nxt)):
+        before = h or before
+        out.append([srcs[x] for x in dict.fromkeys((before or n, n or before))])
+    return out
+
+
+def _run_labels(events, srcs, inherited):
+    """The problems of one run's labels under labels.Sources `srcs` (policy_hash -> Sources), each record replayed under
+    its policy (_policies_at): a label a record sets that no run.label adds before the run's next decision or consume
+    (or its end), where a record replayed under two policies owes only what both set and may add what either does; an
+    add the record it cites doesn't set, or of a label carried; an inherited add of a label no run condition reads; a
+    clear of a label not carried, or by the run's owner; a decision whose run_labels the run didn't carry (nor its own
+    rules set) or that don't cover each run condition rule it names. Each inherited add of a label its policy reads goes
+    to `inherited`, (where, label, the add it cites)."""
+    problems, carried, owed, may, asked, decided, owner, seqs = [], set(), {}, {}, {}, {}, None, {}
     key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
-    for e in events:
-        t, d, where = e.get("type"), e["data"], f"seq {e.get('seq')}"
+    for e, cands in zip(events, _policies_at(events, srcs)):
+        t, d, where, src = e.get("type"), e["data"], f"seq {e.get('seq')}", cands[0]
         if not isinstance(e.get("run_seq"), int):   # schema-invalid: its schema check fails it
             continue
         seqs[e["run_seq"]] = e.get("seq")
@@ -1533,28 +1555,28 @@ def _run_labels(events, src, inherited):
             if d.get("action") == "add":
                 if x is not None and x in carried:
                     problems.append(f"{where}: adds {x[:32]}, which the run carries already")
-                elif "inherited" in d and x in src.tracked:
+                elif "inherited" in d and any(x in c.tracked for c in cands):
                     inherited.append((where, x, d["inherited"]))
                 elif "inherited" in d:
-                    problems.append(f"{where}: inherits {str(x)[:32]}, which no run condition of the run's policy "
-                                    "reads")
-                elif x is None or x not in owed or owed[x] != d.get("source"):
+                    problems.append(f"{where}: inherits {str(x)[:32]}, which the run's policy doesn't read")
+                elif x is None or d.get("source") not in (owed.get(x), may.get(x)) or d.get("source") is None:
                     problems.append(f"{where}: adds {str(x)[:32]} citing run_seq {str(d.get('source'))[:20]}, which "
                                     "doesn't set it under the run's policy")
                 if x is not None:
                     owed.pop(x, None)
+                    may.pop(x, None)
                     carried.add(x)
             elif x not in carried:
                 problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
-            elif d.get("identity") == owner:
+            elif d.get("identity") == owner and d.get("self_cleared") is not True:
                 problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
             else:
                 carried.discard(x)
             continue
-        if owed and t in ("policy.decision", "approval.consumed"):
+        if t in ("policy.decision", "approval.consumed"):
             problems += [f"seq {seqs.get(s)}: sets {x}, which no run.label adds before {where}" for x, s in owed.items()]
             carried |= owed.keys()
-            owed = {}
+            owed, may = {}, {}
         ids = [i for i in d.get("rule_ids") if isinstance(i, str)] if isinstance(d.get("rule_ids"), list) else []
         if t == "policy.decision":
             have = carried | {src.label[i] for i in ids if i in src.label}
@@ -1567,9 +1589,12 @@ def _run_labels(events, src, inherited):
         elif t == "approval.request" and isinstance(d.get("binding"), dict):
             asked[key(d.get("approval_id"))] = {"tool": d["binding"].get("tool"), "rule_ids": ids}
         call = {**d, "rule_ids": ids} if t == "policy.decision" else d
-        for x in sorted(src.sets({**e, "data": call}, lambda a: asked.get(key(a)), lambda c: decided.get(key(c)))
-                        - carried - owed.keys()):
+        sets = [c.sets({**e, "data": call}, lambda a: asked.get(key(a)), lambda c: decided.get(key(c))) for c in cands]
+        need = set.intersection(*sets)
+        for x in sorted(need - carried - owed.keys()):
             owed[x] = e["run_seq"]
+        for x in sorted(set.union(*sets) - need - carried - owed.keys() - may.keys()):
+            may[x] = e["run_seq"]
     return problems + [f"seq {seqs.get(s)}: sets {x}, which no run.label adds" for x, s in owed.items()]
 
 

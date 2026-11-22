@@ -214,20 +214,27 @@ directory's commitment is to its name and a slash (`legacy/`), and a call breaks
 `verifier_min_version` 1.4.0.
 
 Run labels (format 1.8, [policy](policy-v2.md#run-conditions)): what a run has done that a run condition rule reads,
-of a closed set: `secrets_access` and `untrusted_content`. A run carries only the labels its policy's run conditions
-name. `run.label{label, action: add, by: signer, source}` (`source: signer`): the signer adds a label right after the
+of a closed set: `secrets_access` and `untrusted_content`. A run carries only the labels its policy reads: those its
+run conditions name and those its AI approver's run bound names (`approval_agent.run.clean`).
+`run.label{label, action: add, by: signer, source}` (`source: signer`): the signer adds a label right after the
 record that sets it (`source`, that record's `run_seq`), before the run's next decision. A record sets the labels of a
 call it lets run (a `policy.decision` of `allow` or `flag`; the `approval.consumed` of its approval, for the tool and
 `rule_ids` its `approval.request` names; its `capture.gap{executed_against_policy}`, for its latest decision): the
 `label` of each of its rules that is a run label, and `untrusted_content` when the policy's `untrusted` list names the
-tool (as the provenance index reads it). An `input.observed` with `trust: untrusted` sets `untrusted_content`.
-`run.label{label, action: add, by: signer, inherited: {run_id, run_seq}}`: a label the run's requester (its tenant,
-owner and attested principal) carries from another run of theirs, open or ended within the policy's `label_inherit_s`
-(default 3600 s), added before the run's next decision; `inherited` names that run's `run.label` add. A bundle holds
-one run, so an inherited label is signer-asserted (the other run's bundle shows its add).
-`run.label{label, action: clear, by: person, identity, person, reason?, break_glass?}`: a person ended the label
-(`run_label_clear`), for the run and its requester, never the run's owner, principal or requester; a later record that
-sets it sets it again. A
+tool (as the provenance index reads it); a call the policy couldn't read (`TK-OVERSIZE`) sets every label the policy
+reads. An `input.observed` with `trust: untrusted` sets `untrusted_content`, and a
+`capture.gap{client_counter_gap}` (events the signer never got) every label the policy reads.
+`run.label{label, action: add, by: signer, inherited: {run_id, run_seq}}`: a label one of the run's requesters (its
+client: its owner, or the client a gateway registered it for; an identity it was delegated to; a gateway's caller)
+carries from another run of theirs, in any tenant and under any principal, open or ended within the policy's
+`label_inherit_s` (default 3600 s), added before the run's next decision; `inherited` names that run's `run.label`
+add (its tenant isn't named). A bundle holds one run, so an inherited label is signer-asserted (the other run's
+bundle shows its add).
+`run.label{label, action: clear, by: person, identity, person, reason?, break_glass?, self_cleared?}`: a person ended
+the label (`run_label_clear`), for the run and its client's runs in its tenant, never the run's owner, principal or
+requester, but on a signer with no `approvals` config (a dev signer, whose one user answers their own run's
+approvals), where any identity of the run's tenant may, its owner too, `self_cleared: true`; a later record that sets
+it sets it again. A
 `policy.decision` whose run conditions applied names the labels that made them apply (`run_labels`): each one the run
 carried, or one a rule of the call itself sets. A bundle with either needs `verifier_min_version` 1.8.0.
 
@@ -786,13 +793,15 @@ line and verdict is in [verdicts](verdicts.md).
    self-approved) with the incident id; no consume under a hold but of such an approval, none under a quarantine; no
    `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
    (`incidents`).
-   **Run labels**: a run decided under one policy the bundle carries is replayed under it (§3): each label a record
-   sets is added by a `run.label` before the run's next `policy.decision` or `approval.consumed` (or its end); each add
+   **Run labels**: a run decided under policies the bundle (or the trust config) carries is replayed under them (§3),
+   each `policy.decision` under the one it names and each other record under that of the decision before it (the
+   first one's before any) and, between two decisions under different policies, the next one's too, owing what both
+   set and free to add what either does: each label a record sets is added by a `run.label` before the run's next `policy.decision` or `approval.consumed` (or its end); each add
    cites a record that sets that label and that the run didn't carry; a clear is of a label the run carries and its
-   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`); a decision's `run_labels` were
+   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`) unless it is `self_cleared`; a decision's `run_labels` were
    carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold (`run
-   labels`); an inherited add (`inherited`) is of a label the policy's run conditions read, and signer-asserted.
-   Without the policy the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle
+   labels`); an inherited add (`inherited`) is of a label the policy reads, and signer-asserted.
+   Without one of its policies the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle
    nor the trust config carries is a `label policies` warning, labels or none: a signer that left every label and the
    snapshot out would otherwise pass unseen.
 10. **Ext** (records with an `ext` field or of type `ext`, §9). Each ext name the key and run records carry, in

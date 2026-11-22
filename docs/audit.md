@@ -32,7 +32,7 @@ denied and held calls (--all for every call):
 (The numbers above are an example, not a measurement.)
 
 - `ROOT` is a Claude Code transcripts' folder (Codex's with `--agent codex`, Cursor's with `--agent cursor`,
-  Cline's with `--agent cline`, Gemini CLI's with `--agent gemini`, Qwen Code's with `--agent qwen`, and another agent's once it has a reader); a folder that doesn't exist is
+  Cline's with `--agent cline`, Gemini CLI's with `--agent gemini`, Qwen Code's with `--agent qwen`, OpenCode's data folder with `--agent opencode`, and another agent's once it has a reader); a folder that doesn't exist is
   an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
   (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
@@ -41,13 +41,13 @@ denied and held calls (--all for every call):
   follows none), or another file that isn't regular, such as `/dev/null`.
 - `--agent NAME` takes an agent's name as `tracekit init --agent` does (`claude`, `codex`, `cursor`, `gemini`,
   `qwen`, `opencode`, ...). With `--calls`, each call is decided as that agent's Tracekit hook would decide it: a call the hook
-  denies before it maps it (Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent`, `agentic_fetch`, `agent_dispatch` and `agent_send`, a Devin
+  denies before it maps it (OpenCode's and Kilo's `batch`, Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent`, `agentic_fetch`, `agent_dispatch` and `agent_send`, a Devin
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
-  `--calls`. An agent with no reader (every agent but `claude`, `codex`, `cursor`, `cline`, `gemini` and `qwen`)
-  needs `--calls FILE`, and `--agent claude`, `codex`, `cursor`, `cline`, `gemini` or `qwen` a ROOT or `--calls FILE`:
+  `--calls`. An agent with no reader (every agent but `claude`, `codex`, `cursor`, `cline`, `gemini`, `qwen` and `opencode`)
+  needs `--calls FILE`, and `--agent claude`, `codex`, `cursor`, `cline`, `gemini`, `qwen` or `opencode` a ROOT or `--calls FILE`:
   without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
@@ -82,6 +82,7 @@ One reader per agent, each with its default folder:
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 | `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
 | `qwen` | `$QWEN_RUNTIME_DIR/projects` when it is set, else `$QWEN_HOME/projects`, else `~/.qwen/projects` |
+| `opencode` | `$XDG_DATA_HOME/opencode` when it is set, else `~/.local/share/opencode` (`opencode.db`) |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`. An
@@ -148,6 +149,19 @@ telemetry holds counts as well, and one both hold counts once. Each call is deci
 decides it, so `run_shell_command` is decided as `Bash`. A line that isn't JSON, or a record of the wrong shape, counts
 as one malformed entry; a session file with no Qwen Code record in it (an empty file, or one that isn't Qwen Code's)
 is reported unreadable, never read as a session with no calls.
+
+OpenCode's reader reads the `part` table of its SQLite database, `opencode.db`, as OpenCode 1.x writes it (give
+OpenCode's data folder, `~/.local/share/opencode`, as ROOT; any other folder is refused, naming what to give). The
+database is opened read only, so OpenCode may be running. A call is a `part` whose JSON has `"type":"tool"` and whose
+state isn't `pending`, at the time it started (its own `time.start`, else the part's), counted under its session's
+root session (a subagent's session has a `parent_id`). A call counts once by its call id, tool, arguments and start
+time, not by its session: a forked session copies every part of its parent, and counts under the first session that
+holds it. A part without a call id is always counted. Each call is decided as OpenCode's Tracekit hook decides it, so
+`bash` is decided as `Bash`. A part with `"type":"tool"` that isn't a tool call's shape counts as one malformed entry;
+other parts are not read. A file that isn't an OpenCode database is refused, and so is OpenCode 2.x's (it keeps its
+sessions in `session_v2` (and from 2.3 `session_part`), even in a database upgraded from 1.x): use `--calls`.
+With no ROOT, an OpenCode folder that holds no database yet (OpenCode creates the folder before its first session) is
+listed as unreadable and the other agents' folders are still read.
 
 Two kinds of Gemini CLI session aren't in the default folder. When Gemini CLI runs in its macOS Seatbelt sandbox (turned
 on with `-s` or `GEMINI_SANDBOX`, which sets `SANDBOX=sandbox-exec` inside it), its runtime state, sessions included, is

@@ -23,7 +23,7 @@
 # the coding pack flags an MCP call: the server parts' rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-12'
+version: '2026.11-dev-14'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -44,9 +44,9 @@ tools:
   # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
   # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
   # are a subagent's answer in its caller's schema), so one given a `command` or `sql` field, which TK-A062 held as an
-  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay
-  # unmapped: their writes publish to claude.ai or send files off the machine to the user's Claude app, so they keep the
-  # unknown tool's flag. RemoteTrigger is held (TK-A081)
+  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay unmapped: their writes publish to
+  # claude.ai or send files off the machine to the user's Claude app, so they keep the unknown tool's flag.
+  # RemoteTrigger is held (TK-A081)
   TaskStop: app              # stops a background task or agent by its id
   TaskCreate: app            # the session's task list
   TaskUpdate: app
@@ -94,16 +94,16 @@ ask:
     # its argv: publishing a package (npm, pnpm, yarn or bun publish, npm's pu, pub, publ or publi, which it runs as
     # publish, yarn's `npm publish`, uv, poetry or cargo
     # publish, gem push, twine upload, also as any runner's `-m twine`), pushing an image or a chart (docker or podman
-    # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or
-    # upgrade, kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`),
-    # each after up to eight options with a value or not; a gh or hub api call naming main's or master's ref
-    # (git/refs/heads/main, ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or
-    # putting or deleting a file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path,
-    # `PUSH:merge-upstream` for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target
-    # the line can't tell), read percent-decoded as GitHub reads its path; `gh repo sync <owner/repo>` into main or
-    # master (engine._gh_repo_sync's `PUSH:repo-sync`); a GraphQL updateRef or updateRefs, mergeBranch or
-    # createCommitOnBranch, read as TK-A002 reads deleteRef; Sapling's `sl push --to main`, `git town ship` (or
-    # git-town), and Jujutsu's `jj git push` with no arguments,
+    # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or upgrade,
+    # kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`), each after
+    # up to eight options with a value or not; a gh or hub api call naming main's or master's ref (git/refs/heads/main,
+    # ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or putting or deleting a
+    # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, `PUSH:merge-upstream`
+    # for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target the line can't
+    # tell), read percent-decoded as GitHub reads its path; `gh repo sync <owner/repo>` into main or master
+    # (engine._gh_repo_sync's `PUSH:repo-sync`);
+    # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
+    # Sapling's `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments,
     # --all, --tracked, a main or master bookmark (exact: too) or a glob:. And a platform CLI's production deploy, each
     # form read from the CLI's own docs (#892): `vercel --prod` or `--environment production` (`deploy` may be left
     # out) and `vercel promote`, `netlify deploy --prod` or `--prod-if-unlocked`, `fly` or `flyctl deploy`, `wrangler
@@ -139,21 +139,27 @@ ask:
     tool: '(?:[^Ppm][\w\W]*|[Pp](?:[^Oo][\w\W]*|[Oo](?:[^Ww][\w\W]*|[Ww](?:[^Ee][\w\W]*|[Ee](?:[^Rr][\w\W]*|[Rr](?:[^Ss][\w\W]*|[Ss](?:[^Hh][\w\W]*|[Hh](?:[^Ee][\w\W]*|[Ee](?:[^Ll][\w\W]*|[Ll](?:[^Ll][\w\W]*|[Ll](?:[\w\W]+))?)?)?)?)?)?)?)?)?|m(?:[^c][\w\W]*|c(?:[^p][\w\W]*|p(?:[^_][\w\W]*|_(?:[^_][\w\W]*)?)?)?)?)?'
     field: run
     # what a tool no pack maps (unknown_tools flags it) is given to run (engine._runs): `CMD:<value>` for each argument
-    # TK-S010 reads as a command (command, commands, cmd, cmds, script or shell_command, in any case, at any depth),
-    # and each statement under a sql, query or statement argument as every SQL dialect lexes it (classes.sql_read:
-    # comments and literals blanked, every blank run a space), `SQL;` before one a `;` ends and `SQL:` before the
-    # last. A command line is any value but one plain word (`WORD:<its last /-part>`; letters, digits, `_ . : / -`: a
-    # list or an object, a blank, a shell metacharacter or expansion makes one), and a plain word that changes the
-    # machine on its own: reboot, shutdown, halt, poweroff or killall5 (every other program needs arguments to do harm).
-    # A statement is held when it writes or changes the schema or access (INSERT, REPLACE or MERGE INTO; UPDATE x
-    # [alias] SET; DELETE FROM, DELETE x FROM, DELETE x; DROP an object; TRUNCATE x; ALTER an object; CREATE USER or
-    # ROLE; GRANT or REVOKE on or to something; COPY to or from a program or a file; a CTE; DO), or is a SELECT, CREATE,
-    # EXEC or CALL a `;` ends. What the tool runs it on, and how, is its own, so no rule reads its effect; the server
-    # pack holds every unmapped tool, the laptop these.
+    # TK-S010 reads as a command (command, commands, cmd, cmds, script or shell_command, in any case, at any depth), and
+    # each statement under a sql, query, statement, sql_query or stmt argument as every SQL dialect lexes it
+    # (classes.sql_read: comments and literals blanked, every blank run a space), `SQL;` before one a `;` ends and
+    # `SQL:` before the last. A command line is any value but one plain word (`WORD:<its last /-part>`; letters, digits,
+    # `_ . : / -`: a list or an object, a blank, a shell metacharacter or expansion makes one), and a plain word that
+    # changes the machine on its own: reboot, shutdown, halt, poweroff or killall5 (every other program needs arguments
+    # to do harm). A statement is held when it writes or changes the schema or access (INSERT, REPLACE or MERGE INTO;
+    # UPDATE x [alias] SET; DELETE FROM, DELETE x FROM, DELETE x; DROP an object; TRUNCATE x; ALTER an object; CREATE
+    # USER or ROLE; GRANT or REVOKE on or to something; COPY to or from a program or a file; a CTE; DO), or is a SELECT,
+    # CREATE, EXEC or CALL a `;` ends.
+    # A statement may open with up to eight `(`, and with EXPLAIN and ANALYZE, which runs it (`EXPLAIN ANALYZE [VERBOSE]`,
+    # `EXPLAIN (ANALYZE, …)` or `EXPLAIN(…)` with up to 256 characters of options on each side of ANALYZE, `analyse`
+    # too) and up to eight more `(` after it, as TK-A039 reads it; plain EXPLAIN doesn't run it. Each run is bounded,
+    # so the fallback engine stays linear on a long one.
+    # What the tool runs it on, and how, is its own, so no rule reads its effect; the server pack holds every
+    # unmapped tool, the laptop these.
     # lean: a search in English shaped like one of these (`delete file from repo`, `truncate text`) is held too, and a
-    # statement under another argument name (input, text, q) or behind a leading `(` or EXPLAIN is flagged, not held,
-    # as is a bare SELECT; name such a tool in a policy of your own (`tools:` sql) if it runs SQL
-    pattern: '^MCPCMD:|^CMD:|^WORD:(?:[Rr][Ee][Bb][Oo][Oo][Tt]|[Ss][Hh][Uu][Tt][Dd][Oo][Ww][Nn]|[Hh][Aa][Ll][Tt]|[Pp][Oo][Ww][Ee][Rr][Oo][Ff][Ff]|[Kk][Ii][Ll][Ll][Aa][Ll][Ll]5)$|^SQL[:;](?:[Ii][Nn][Ss][Ee][Rr][Tt]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee])(?: (?:[Ii][Gg][Nn][Oo][Rr][Ee]|[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Dd][Ee][Ll][Aa][Yy][Ee][Dd]|[Hh][Ii][Gg][Hh]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy])| [Oo][Rr] [A-Za-z]+)* [Ii][Nn][Tt][Oo]\b|^SQL[:;][Mm][Ee][Rr][Gg][Ee] [Ii][Nn][Tt][Oo]\b|^SQL[:;][Uu][Pp][Dd][Aa][Tt][Ee](?: (?:[Oo][Nn][Ll][Yy]|[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Ii][Gg][Nn][Oo][Rr][Ee])| [Oo][Rr] [A-Za-z]+)* [^ ,;]+(?: (?:[Aa][Ss] )?[^ ,;]+)? [Ss][Ee][Tt]\b|^SQL[:;][Dd][Ee][Ll][Ee][Tt][Ee](?: (?:[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Qq][Uu][Ii][Cc][Kk]|[Ii][Gg][Nn][Oo][Rr][Ee]))* (?:[Ff][Rr][Oo][Mm]\b|[^ ,;]+(?: ?, ?[^ ,;]+)* [Ff][Rr][Oo][Mm]\b|[^ ,;]+(?: [Ww][Hh][Ee][Rr][Ee]\b|$))|^SQL[:;][Dd][Rr][Oo][Pp] (?:[Tt][Ee][Mm][Pp][Oo][Rr][Aa][Rr][Yy] )?(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Oo][Ww][Nn][Ee][Dd]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Yy][Pp][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Ee][Vv][Ee][Nn][Tt]|[Ll][Oo][Gg][Ii][Nn]|[Ii][Ff])\b|^SQL[:;][Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee] (?:[Tt][Aa][Bb][Ll][Ee] )?(?:[Oo][Nn][Ll][Yy] )?[^ ,;]+|^SQL[:;][Aa][Ll][Tt][Ee][Rr] (?:[Tt][Aa][Bb][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee])\b|^SQL[:;][Cc][Rr][Ee][Aa][Tt][Ee] (?:[Oo][Rr] [Rr][Ee][Pp][Ll][Aa][Cc][Ee] )?(?:[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b|^SQL[:;][Gg][Rr][Aa][Nn][Tt] (?:[^ ]+ ){0,16}?[Oo][Nn]\b|^SQL[:;][Gg][Rr][Aa][Nn][Tt] [^ ,;]+(?: ?, ?[^ ,;]+)* [Tt][Oo]\b|^SQL[:;][Rr][Ee][Vv][Oo][Kk][Ee] (?:[^ ]+ ){0,16}?[Oo][Nn]\b|^SQL[:;][Rr][Ee][Vv][Oo][Kk][Ee] [^ ,;]+(?: ?, ?[^ ,;]+)* [Ff][Rr][Oo][Mm]\b|^SQL[:;][Cc][Oo][Pp][Yy] (?:[^ ]+ ){0,64}?(?:[Tt][Oo]|[Ff][Rr][Oo][Mm]) (?:[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\b|'''')|^SQL[:;][Ww][Ii][Tt][Hh] (?:[Rr][Ee][Cc][Uu][Rr][Ss][Ii][Vv][Ee] )?[^ ,;]+(?: ?\([^)]*\))? [Aa][Ss] ?\(|^SQL[:;][Dd][Oo] (?:[Ll][Aa][Nn][Gg][Uu][Aa][Gg][Ee] [^ ]+ )?''''|^SQL;(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Ee][Xx][Ee][Cc]|[Ee][Xx][Ee][Cc][Uu][Tt][Ee]|[Cc][Aa][Ll][Ll])\b'
+    # statement under another argument name (input, text, q), behind plain EXPLAIN, more than eight `(` or longer
+    # EXPLAIN options is flagged, not held, as is a bare SELECT; name such a tool in a policy of your own (`tools:` sql)
+    # if it runs SQL
+    pattern: '^MCPCMD:|^CMD:|^WORD:(?:[Rr][Ee][Bb][Oo][Oo][Tt]|[Ss][Hh][Uu][Tt][Dd][Oo][Ww][Nn]|[Hh][Aa][Ll][Tt]|[Pp][Oo][Ww][Ee][Rr][Oo][Ff][Ff]|[Kk][Ii][Ll][Ll][Aa][Ll][Ll]5)$|^SQL[:;](?:\( ?){0,8}(?:[Ee][Xx][Pp][Ll][Aa][Ii][Nn](?: ?\([^;)]{0,256}[Aa][Nn][Aa][Ll][Yy][SsZz][Ee][^;)]{0,256}\)| [Aa][Nn][Aa][Ll][Yy][SsZz][Ee](?: [Vv][Ee][Rr][Bb][Oo][Ss][Ee])?) ?(?:\( ?){0,8})?(?:(?:[Ii][Nn][Ss][Ee][Rr][Tt]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee])(?: (?:[Ii][Gg][Nn][Oo][Rr][Ee]|[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Dd][Ee][Ll][Aa][Yy][Ee][Dd]|[Hh][Ii][Gg][Hh]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy])| [Oo][Rr] [A-Za-z]+)* [Ii][Nn][Tt][Oo]\b|[Mm][Ee][Rr][Gg][Ee] [Ii][Nn][Tt][Oo]\b|[Uu][Pp][Dd][Aa][Tt][Ee](?: (?:[Oo][Nn][Ll][Yy]|[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Ii][Gg][Nn][Oo][Rr][Ee])| [Oo][Rr] [A-Za-z]+)* [^ ,;]+(?: (?:[Aa][Ss] )?[^ ,;]+)? [Ss][Ee][Tt]\b|[Dd][Ee][Ll][Ee][Tt][Ee](?: (?:[Ll][Oo][Ww]_[Pp][Rr][Ii][Oo][Rr][Ii][Tt][Yy]|[Qq][Uu][Ii][Cc][Kk]|[Ii][Gg][Nn][Oo][Rr][Ee]))* (?:[Ff][Rr][Oo][Mm]\b|[^ ,;]+(?: ?, ?[^ ,;]+)* [Ff][Rr][Oo][Mm]\b|[^ ,;]+(?: [Ww][Hh][Ee][Rr][Ee]\b|$))|[Dd][Rr][Oo][Pp] (?:[Tt][Ee][Mm][Pp][Oo][Rr][Aa][Rr][Yy] )?(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Oo][Ww][Nn][Ee][Dd]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Yy][Pp][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Ee][Vv][Ee][Nn][Tt]|[Ll][Oo][Gg][Ii][Nn]|[Ii][Ff])\b|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee] (?:[Tt][Aa][Bb][Ll][Ee] )?(?:[Oo][Nn][Ll][Yy] )?[^ ,;]+|[Aa][Ll][Tt][Ee][Rr] (?:[Tt][Aa][Bb][Ll][Ee]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ss][Yy][Ss][Tt][Ee][Mm]|[Dd][Ee][Ff][Aa][Uu][Ll][Tt]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Tt][Yy][Pp][Ee]|[Ss][Ee][Rr][Vv][Ee][Rr]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee])\b|[Cc][Rr][Ee][Aa][Tt][Ee] (?:[Oo][Rr] [Rr][Ee][Pp][Ll][Aa][Cc][Ee] )?(?:[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b|[Gg][Rr][Aa][Nn][Tt] (?:[^ ]+ ){0,16}?[Oo][Nn]\b|[Gg][Rr][Aa][Nn][Tt] [^ ,;]+(?: ?, ?[^ ,;]+)* [Tt][Oo]\b|[Rr][Ee][Vv][Oo][Kk][Ee] (?:[^ ]+ ){0,16}?[Oo][Nn]\b|[Rr][Ee][Vv][Oo][Kk][Ee] [^ ,;]+(?: ?, ?[^ ,;]+)* [Ff][Rr][Oo][Mm]\b|[Cc][Oo][Pp][Yy] (?:[^ ]+ ){0,64}?(?:[Tt][Oo]|[Ff][Rr][Oo][Mm]) (?:[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\b|'''')|[Ww][Ii][Tt][Hh] (?:[Rr][Ee][Cc][Uu][Rr][Ss][Ii][Vv][Ee] )?[^ ,;]+(?: ?\([^)]*\))? [Aa][Ss] ?\(|[Dd][Oo] (?:[Ll][Aa][Nn][Gg][Uu][Aa][Gg][Ee] [^ ]+ )?'''')|^SQL;(?:\( ?){0,8}(?:[Ee][Xx][Pp][Ll][Aa][Ii][Nn](?: ?\([^;)]{0,256}[Aa][Nn][Aa][Ll][Yy][SsZz][Ee][^;)]{0,256}\)| [Aa][Nn][Aa][Ll][Yy][SsZz][Ee](?: [Vv][Ee][Rr][Bb][Oo][Ss][Ee])?) ?(?:\( ?){0,8})?(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Ee][Xx][Ee][Cc]|[Ee][Xx][Ee][Cc][Uu][Tt][Ee]|[Cc][Aa][Ll][Ll])\b'
     reason: an unmapped tool given a command or a SQL statement to run
     remedy: Have a person approve the held call, or map the tool in a policy of your own (`tools:`), to `shell` or `sql` so the rules read what it runs, or to `app` if it runs nothing.
     rationale: Tracekit can't read what an unmapped tool does with a command or a query, and the server pack holds every unmapped tool; a person confirms these.
@@ -177,10 +183,10 @@ ask:
     rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
   - id: TK-Q001
     # a run condition (docs/policy-v2.md#run-conditions): a call labelled egress (TK-F012 a URL, TK-F013 a network
-    # command, TK-F024 an upload, TK-F037 to TK-F041 below) once the run carries secrets_access (a read of a secret
-    # ran in it or in another run of its requester, this call included: a command that reads a secret and sends it, or
-    # a credential store read with a person's approval; below). The server pack records the same pair as its TK-Q001
-    # sequence. A run that read no secret sends as before.
+    # command, TK-F024 an upload, TK-F037 to TK-F041 and TK-F044 below) once the run carries secrets_access (a read
+    # of a secret ran in it or in another run of its requesters, this call included: a command that reads a secret
+    # and sends it, or a credential store read with a person's approval; below). The server pack records the same pair
+    # as its TK-Q001 sequence. A run that read no secret sends as before.
     # In shadow (1.8): each such call is recorded with TK-Q001 and its run_labels, as a flag, and runs; it becomes an
     # ask once a week of normal projects measures what its holds cost (docs/limits.md#run-conditions-18)
     field: labels
@@ -192,7 +198,8 @@ ask:
     rationale: A secret the agent read can leave in any request it sends afterwards; a person confirms each send in such a run.
   - id: TK-Q002
     # a send from a process left running in the background: a call labelled egress that is also labelled
-    # background_spawn (TK-F007 nohup, setsid, disown and the like, TK-F014 a trailing &, TK-F008 run_in_background),
+    # background_spawn (TK-F007 nohup, setsid, disown and the like, TK-F014 a trailing &, TK-F008 run_in_background,
+    # TK-F045 launchctl submit),
     # whatever the run carries: decided now, it may run after the run reads a secret (run labels apply in the order
     # calls are decided: docs/limits.md#run-conditions-18). In shadow with TK-Q001, and enforced with it
     field: labels
@@ -242,9 +249,9 @@ flag:
   # coding pack's (TK-F012 a URL, TK-F013 a network command, TK-F024 an upload). secrets_access is set by a read of
   # a secret: a file one is kept in (.env and its kind, .envrc, .netrc, a credentials file, .ssh/, .aws/, .gnupg/,
   # .npmrc, .pypirc, gh's hosts.yml, an SSH private key's id_rsa, id_dsa, id_ecdsa or id_ed25519 anywhere) read by a
-  # tool that reads it (TK-F033), a command that prints or copies it (TK-F034) or a redirection into a command
-  # (TK-F035); a credential store's (TK-F031, TK-F036, and the coding
-  # pack's held reads: TK-A020, TK-A021, TK-A035 to TK-A038, TK-A052, TK-A053, once a person approves one). A call
+  # tool that reads it (TK-F033, Grep's glob TK-F042, an MCP server's file read TK-F043), a command that prints or
+  # copies it (TK-F034) or a redirection into a command (TK-F035); a credential store's (TK-F031, TK-F036, and the
+  # coding pack's held reads: TK-A020, TK-A021, TK-A035 to TK-A038, TK-A052, TK-A053, once a person approves one). A call
   # that only names such a file (ls, git check-ignore, ssh-keygen -R, a write) is TK-F005's, which sets no run label.
   # Files never secret are left out: in .ssh/, known_hosts, config, authorized_keys and a public key (*.pub, and an
   # SSH key's .pub anywhere); a template (.env.example, .env.sample, .env.template, .env.dist); prose named for
@@ -291,11 +298,16 @@ flag:
     # names what it matches), as any operand but the last of one that copies it (cp, mv, ln, install, rsync, scp: the
     # last is where it goes), or anywhere in an interpreter's words (python -c, node -e, a script's arguments). One
     # read of one file never secret (above), after options and a grep-like's pattern, or a copy of one, is exempt.
+    # Also PowerShell's Get-Content (gc, type) and Select-String (sls), git's show, cat-file, diff, log, blame and
+    # grep of one (HEAD:.env), a find whose -name, -path or -wholename names one and that runs a reader on what it
+    # finds (-exec, -execdir, -ok, -okdir, within eight words), and a grep-like whose file glob names one (-g, --glob,
+    # --iglob, --include: `rg -uu -g .env`, `grep -r --include=.env`); an empty grep pattern (`grep '' .env`) is a
+    # pattern word too.
     # lean: a pattern file (grep -f .env) is read as the pattern word, and a copy into .ssh/, .aws/ or .gnupg/ labels
     # as a copy out of one (a folder's name is read up to its separator, which keeps the search linear); an
     # exemption reads at most 16 options and a path word of 1,000 characters (a longer one is labelled)
-    pattern: '^(?:cat|tac|nl|less|more|most|head|tail|bat|batcat|view|vi|vim|nvim|nano|emacs|ed|cut|sort|uniq|strings|od|xxd|hexdump|base64|base32|basenc|uuencode|jq|yq|diff|cmp|comm|paste|join|column|fold|fmt|iconv|dd|dotenv|env-cmd|tar|zip|gzip|bzip2|xz|zstd|7z|openssl|gpg|gpg2|age|curl|wget|http|https|xh|pbcopy|xclip|wl-copy)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:source|\.)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[^ ]+){0,16} [^- ][^ ]* (?:[^\n]*?[ =@/\\])?(?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255})) [^ ])|^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|osascript|pwsh|powershell|Rscript|lua)(?: [^\n]*?)?[/\s\"''=:@(](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?:$|[/\s\"''\\),;]))'
-    unless: '^[A-Za-z0-9_.-]+(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc))) [^ ]+$|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[A-Za-dg-z0-9=]+){0,16} [^- ][^ ]*(?: -[A-Za-dg-z0-9=]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$'
+    pattern: '^(?:cat|tac|nl|less|more|most|head|tail|bat|batcat|view|vi|vim|nvim|nano|emacs|ed|cut|sort|uniq|strings|od|xxd|hexdump|base64|base32|basenc|uuencode|jq|yq|diff|cmp|comm|paste|join|column|fold|fmt|iconv|dd|dotenv|env-cmd|tar|zip|gzip|bzip2|xz|zstd|7z|openssl|gpg|gpg2|age|curl|wget|http|https|xh|pbcopy|xclip|wl-copy|[Gg][Ee][Tt]\-[Cc][Oo][Nn][Tt][Ee][Nn][Tt]|gc|type|[Ss][Ee][Ll][Ee][Cc][Tt]\-[Ss][Tt][Rr][Ii][Nn][Gg]|sls)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:source|\.)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[^ ]+){0,16} (?:[^- ][^ ]*)? (?:[^\n]*?[ =@/\\])?(?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: [^\n]*?)?[ =@/\\](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255})) [^ ])|^(?:python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|osascript|pwsh|powershell|Rscript|lua)(?: [^\n]*?)?[/\s\"''=:@(](?:(?:\.ssh|\.aws|\.gnupg)[/\\]|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?:$|[/\s\"''\\),;]))|^git(?: -[^ ]+(?: [^- ][^ ]*)?){0,8}? (?:show|cat-file|diff|log|blame|grep)(?: [^\n]*?)?[ =:@/\\](?:(?:\.ssh|\.aws|\.gnupg)(?:[/\\]| |$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))(?: |$))|^find(?: [^\n]*?)? -(?:i?name|i?path|i?wholename) (?:[^ ]{0,1000}[/*])?(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))\*?(?: [^ ]+){0,8}? -(?:exec|execdir|ok|okdir) (?:cat|tac|nl|less|more|most|head|tail|bat|batcat|view|vi|vim|nvim|nano|emacs|ed|cut|sort|uniq|strings|od|xxd|hexdump|base64|base32|basenc|uuencode|jq|yq|diff|cmp|comm|paste|join|column|fold|fmt|iconv|dd|dotenv|env-cmd|tar|zip|gzip|bzip2|xz|zstd|7z|openssl|gpg|gpg2|age|curl|wget|http|https|xh|pbcopy|xclip|wl-copy|grep|egrep|fgrep|rg)(?: |$)|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack)(?: [^\n]*?)? (?:-g|--glob|--iglob|--include)[ =](?:[^ ]{0,1000}[/{,*])?(?:(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))|\*\.?env)[*?,}]?(?: |$)'
+    unless: '^[A-Za-z0-9_.-]+(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$|^(?:cp|mv|ln|install|rsync|scp|ditto)(?: -[A-Za-z0-9=-]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc))) [^ ]+$|^(?:grep|egrep|fgrep|zgrep|rg|ag|ack|sed|awk|gawk|mawk|nawk)(?: -[A-Za-dg-z0-9=]+){0,16} (?:[^- ][^ ]*)?(?: -[A-Za-dg-z0-9=]+){0,16} (?:[^ ]{0,1000}[/\\])?(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/ ]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$'
     label: secrets_access
   - id: TK-F035
     class: shell
@@ -316,11 +328,14 @@ flag:
     label: secrets_access
   - id: TK-F037
     class: shell
-    # a send through a command the coding pack doesn't count as a network one: gh gist create, release upload, an issue
-    # or pull request's create, comment, edit or review with a body file (-F, --body-file), gh api with -X/--method
-    # POST, PUT or PATCH or an --input body; any git push (and send-pack); ping, traceroute, tracepath, mtr or arping of
-    # a name a substitution or variable builds (the name a DNS lookup sends)
-    pattern: '^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:gist create|release upload)(?: |$)|^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:issue|pr) (?:create|comment|edit|review)(?: [^ ]+){0,32}? (?:-F|--body-file)(?:[ =]|$)|^gh(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? api(?: [^ ]+){0,32}? (?:(?:-X|--method)[ =]?(?:POST|PUT|PATCH|[Pp]ost|[Pp]ut|[Pp]atch)|--input)(?:[ =]|$)|^git(?: -[^ ]{1,32}(?: [^- ][^ ]{0,90})?){0,8}? (?:push|send-pack)(?: |$)|^(?:ping6?|traceroute6?|tracepath|mtr|arping)(?: [^ ]+){0,32}? [^ ]{0,1000}[$\x60]'
+    # a send through a command the coding pack doesn't count as a network one: gh gist create, release upload, secret
+    # and variable set, repo create with --push, an issue or pull request's create, comment, edit or review, gh api
+    # with -X/--method POST, PUT or PATCH or an --input body, a REST endpoint given a field (-f, -F, --field,
+    # --raw-field: gh POSTs them) and a GraphQL mutation (a GraphQL query only reads);
+    # any git push (and send-pack); PowerShell's Invoke-WebRequest, Invoke-RestMethod (iwr, irm), Send-MailMessage and
+    # Start-BitsTransfer, whatever their URL; ping, traceroute, tracepath, mtr or arping of a name a substitution or
+    # variable builds (the name a DNS lookup sends)
+    pattern: '^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8}? (?:(?:gist create|release upload|secret set|variable set|(?:issue|pr) (?:create|comment|edit|review))(?: |$)|repo create(?: [^ ]+){0,32}? --push(?: |$)|api(?: [^ ]+){0,32}? (?:(?:-X|--method)[ =]?(?:POST|PUT|PATCH|[Pp]ost|[Pp]ut|[Pp]atch)|--input)(?:[ =]|$)|api(?: -[^ ]+(?: [^- ][^ ]*)?){0,8}? (?:[^g -][^ ]*|g(?:[^r ][^ ]*)?|gr(?:[^a ][^ ]*)?|gra(?:[^p ][^ ]*)?|grap(?:[^h ][^ ]*)?|graph(?:[^q ][^ ]*)?|graphq(?:[^l ][^ ]*)?|graphql[^ ]+)(?: [^ ]+){0,32}? (?:-[fF]|--field|--raw-field)(?:[ =]|$)|api(?: [^ ]+){0,8}? graphql[^\n]*?mutation)|^git(?: -[^ ]+(?: [^- ][^ ]*)?){0,8}? (?:push|send-pack)(?: |$)|^(?:ping6?|traceroute6?|tracepath|mtr|arping) [^\n]*?[$\x60]|^(?:[Ii][Nn][Vv][Oo][Kk][Ee]\-[Ww][Ee][Bb][Rr][Ee][Qq][Uu][Ee][Ss][Tt]|[Ii][Nn][Vv][Oo][Kk][Ee]\-[Rr][Ee][Ss][Tt][Mm][Ee][Tt][Hh][Oo][Dd]|iwr|irm|[Ss][Ee][Nn][Dd]\-[Mm][Aa][Ii][Ll][Mm][Ee][Ss][Ss][Aa][Gg][Ee]|[Ss][Tt][Aa][Rr][Tt]\-[Bb][Ii][Tt][Ss][Tt][Rr][Aa][Nn][Ss][Ff][Ee][Rr])(?: |$)'
     label: egress
   - id: TK-F038
     class: shell
@@ -330,9 +345,9 @@ flag:
     label: egress
   - id: TK-F039
     class: http
-    # a web fetch, to any host: its URL alone can carry data (a path or a name), where TK-F012 counts only a URL with
-    # a query or to a host not on this machine's list
-    tool: WebFetch
+    # a web fetch, to any host, and a web search: a URL alone can carry data (a path or a name), as a query does,
+    # where TK-F012 counts only a URL with a query or to a host not on this machine's list
+    tool: WebFetch|WebSearch
     pattern: '^'
     label: egress
   - id: TK-F040
@@ -351,6 +366,40 @@ flag:
     field: recipients
     pattern: '.'
     label: egress
+  - id: TK-F042
+    # Grep (Claude Code's, read whole) over files its glob names, a secret's (`.env*`, `**/.env`, `*.env`, `.aws/**`,
+    # `{.env,x}`), or of ripgrep's env type: Grep searches the files the glob or type selects
+    tool: Grep
+    pattern: '"glob":"(?:[^"\\]{0,1000}[/{,*])?(?:\.(?:ssh|aws|gnupg)(?:[/*]|"|$)|(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))[*?,}]?"|\*\.?env[*?,}]?")|"type":"(?:dot)?env"'
+    label: secrets_access
+  - id: TK-F043
+    class: mcp
+    # an MCP server's file read (read_file, read_text_file, read_media_file, read_multiple_files, get_file_contents,
+    # view_file, open_file; the filesystem and desktop-commander servers' and their kind): any path it names, as
+    # TK-F033 reads Read's (a path of its own: a path inside the call read whole, where it may be another
+    # argument's text, isn't)
+    tool: 'mcp(?::[^/]{1,128}/|__(?:[^_]|_[^_]){1,128}__)(?:read_(?:text_|media_|multiple_)?files?|get_file_contents?|view_file|open_file)'
+    field: target
+    pattern: '^(?:[^"{]*?[/\\])?(?:\.ssh|\.aws|\.gnupg)(?:[/\\]|$)|(?:^|[/\\])(?:\.(?:env(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|envrc|netrc(?:[.-][A-Za-z0-9_]{1,64}){0,8}~?|npmrc|pypirc|config[/\\]gh[/\\]hosts\.ya?ml)|[A-Za-z0-9_.-]{0,255}(?:\.env~?|credentials(?:\.[A-Za-z0-9_-]{1,64})?(?:\.json)?|id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}))$'
+    unless: '(?:^|[/\\])(?:\.[Ee][Nn][Vv]\.(?:[Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])|\.ssh[/\\](?:known_hosts(?:\.old)?|config|authorized_keys|[^/\\]{1,255}\.pub)|[A-Za-z0-9_.-]{0,255}(?:id_(?:rsa|dsa|ecdsa|ed25519)[A-Za-z0-9_.-]{0,255}\.pub|credentials[A-Za-z0-9_.-]{0,255}\.(?:md|rst|adoc)))$'
+    label: secrets_access
+  - id: TK-F044
+    class: mcp
+    # a write to a service's MCP server, on its own host (GitHub, GitLab, Bitbucket, Linear, Notion, Jira and
+    # Confluence, Gmail and Google's, Outlook and Microsoft's, Asana, Trello, ClickUp, Monday, Todoist, Airtable,
+    # HubSpot, Salesforce, Zendesk, Intercom, Figma, Canva, Dropbox, OneDrive, SharePoint, by its server's name):
+    # a tool whose name starts with create, add, update, push, comment, upload, write, edit, append, insert, post,
+    # send, reply, share, fork, merge or publish, after one word of its own at most (create_issue,
+    # add_issue_comment, create_or_update_file, notion_create_pages, create_draft)
+    tool: 'mcp(?::[^/]{0,128}?(?:[Gg][Ii][Tt][Hh][Uu][Bb]|[Gg][Ii][Tt][Ll][Aa][Bb]|[Bb][Ii][Tt][Bb][Uu][Cc][Kk][Ee][Tt]|[Ll][Ii][Nn][Ee][Aa][Rr]|[Nn][Oo][Tt][Ii][Oo][Nn]|[Jj][Ii][Rr][Aa]|[Aa][Tt][Ll][Aa][Ss][Ss][Ii][Aa][Nn]|[Cc][Oo][Nn][Ff][Ll][Uu][Ee][Nn][Cc][Ee]|[Gg][Mm][Aa][Ii][Ll]|[Gg][Oo][Oo][Gg][Ll][Ee]|[Gg][Dd][Rr][Ii][Vv][Ee]|[Dd][Rr][Ii][Vv][Ee]|[Oo][Uu][Tt][Ll][Oo][Oo][Kk]|[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]|[Aa][Ss][Aa][Nn][Aa]|[Tt][Rr][Ee][Ll][Ll][Oo]|[Cc][Ll][Ii][Cc][Kk][Uu][Pp]|[Mm][Oo][Nn][Dd][Aa][Yy]|[Tt][Oo][Dd][Oo][Ii][Ss][Tt]|[Aa][Ii][Rr][Tt][Aa][Bb][Ll][Ee]|[Hh][Uu][Bb][Ss][Pp][Oo][Tt]|[Ss][Aa][Ll][Ee][Ss][Ff][Oo][Rr][Cc][Ee]|[Zz][Ee][Nn][Dd][Ee][Ss][Kk]|[Ii][Nn][Tt][Ee][Rr][Cc][Oo][Mm]|[Ff][Ii][Gg][Mm][Aa]|[Cc][Aa][Nn][Vv][Aa]|[Dd][Rr][Oo][Pp][Bb][Oo][Xx]|[Oo][Nn][Ee][Dd][Rr][Ii][Vv][Ee]|[Ss][Hh][Aa][Rr][Ee][Pp][Oo][Ii][Nn][Tt])[^/]{0,128}/|__(?:[^_]|_[^_]){0,128}?(?:[Gg][Ii][Tt][Hh][Uu][Bb]|[Gg][Ii][Tt][Ll][Aa][Bb]|[Bb][Ii][Tt][Bb][Uu][Cc][Kk][Ee][Tt]|[Ll][Ii][Nn][Ee][Aa][Rr]|[Nn][Oo][Tt][Ii][Oo][Nn]|[Jj][Ii][Rr][Aa]|[Aa][Tt][Ll][Aa][Ss][Ss][Ii][Aa][Nn]|[Cc][Oo][Nn][Ff][Ll][Uu][Ee][Nn][Cc][Ee]|[Gg][Mm][Aa][Ii][Ll]|[Gg][Oo][Oo][Gg][Ll][Ee]|[Gg][Dd][Rr][Ii][Vv][Ee]|[Dd][Rr][Ii][Vv][Ee]|[Oo][Uu][Tt][Ll][Oo][Oo][Kk]|[Mm][Ii][Cc][Rr][Oo][Ss][Oo][Ff][Tt]|[Aa][Ss][Aa][Nn][Aa]|[Tt][Rr][Ee][Ll][Ll][Oo]|[Cc][Ll][Ii][Cc][Kk][Uu][Pp]|[Mm][Oo][Nn][Dd][Aa][Yy]|[Tt][Oo][Dd][Oo][Ii][Ss][Tt]|[Aa][Ii][Rr][Tt][Aa][Bb][Ll][Ee]|[Hh][Uu][Bb][Ss][Pp][Oo][Tt]|[Ss][Aa][Ll][Ee][Ss][Ff][Oo][Rr][Cc][Ee]|[Zz][Ee][Nn][Dd][Ee][Ss][Kk]|[Ii][Nn][Tt][Ee][Rr][Cc][Oo][Mm]|[Ff][Ii][Gg][Mm][Aa]|[Cc][Aa][Nn][Vv][Aa]|[Dd][Rr][Oo][Pp][Bb][Oo][Xx]|[Oo][Nn][Ee][Dd][Rr][Ii][Vv][Ee]|[Ss][Hh][Aa][Rr][Ee][Pp][Oo][Ii][Nn][Tt])(?:[^_]|_[^_]){0,128}__).*'
+    field: tool
+    pattern: '^(?:[A-Za-z0-9]{1,32}[_-])?(?:[Cc]reate|[Aa]dd|[Uu]pdate|[Pp]ush|[Cc]omment|[Uu]pload|[Ww]rite|[Ee]dit|[Aa]ppend|[Ii]nsert|[Pp]ost|[Ss]end|[Rr]eply|[Ss]hare|[Ff]ork|[Mm]erge|[Pp]ublish)(?:$|[_A-Z-])'
+    label: egress
+  - id: TK-F045
+    class: shell
+    # a job macOS's launchd starts and keeps running (`launchctl submit … -- cmd`), as TK-F007 reads nohup and setsid
+    pattern: '^launchctl(?: [^ ]+){0,8}? submit(?: |$)'
+    label: background_spawn
 
 # Detection (signer/detect.py), recorded only: a shadow incident is kept with the run (tracekit view shows it) and
 # holds nothing. Notify in enforce mode needs a webhook, which a laptop's signer has none of.

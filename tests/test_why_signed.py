@@ -832,7 +832,8 @@ class ImportWithoutWhyLog(unittest.TestCase):
 
     def test_calls_carry_their_verdicts(self):
         acts = self.acts()
-        ok = acts[("allow", "ok")]
+        ok = acts[("flag", "ok")]
+        self.assertEqual(ok["policy"]["rule_ids"], ["TK-F028"])   # an email send to anyone is egress: flagged, it runs
         self.assertEqual(self.imported.value(ok["result_ref"])["content"], import_v2.COMMITTED)
         deny = acts[("deny", "blocked")]
         self.assertTrue(deny["policy"]["rule_ids"])
@@ -934,7 +935,7 @@ class DemoWhy(unittest.TestCase):
         conns = lambda: [t.name for t in set(threading.enumerate()) - before   # noqa: E731
                          if t.name.startswith("tracekit-client") or "process_request_thread" in t.name]
         self.assertTrue(wait_for(lambda: not conns(), 5), conns())
-        self.assertIn("TK-P001: `to` 'audit@vendor-compliance.example' came only from untrusted content", out.getvalue())
+        self.assertIn("TK-P001, TK-F028: `to` 'audit@vendor-compliance.example' came only from untrusted content", out.getvalue())
         self.assertIn("a match of its text in the why log, not a signed link", out.getvalue())
         self.assertIn("in researcher.tkb, which the verifier passed", out.getvalue())
 

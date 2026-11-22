@@ -775,9 +775,13 @@ class View(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.r, name)
 
+        me = threading.current_thread()
+
         def reader(cfg, **kw):
-            opened.append(1)
             r = real_reader(cfg, **kw)
+            if threading.current_thread() is not me:   # the feed's own threads open readers too: not this request's
+                return r
+            opened.append(1)
             return Behind(r) if len(opened) == 1 else r
         with mock.patch.object(view, "reader", side_effect=reader):
             self.assertIsNotNone(feed.rows(observe.ALL, *key))
@@ -961,9 +965,10 @@ class View(unittest.TestCase):
         with open(path, "rb") as f:
             orig = f.read()
 
-        def put(p, data):
-            with open(p, "wb") as f:
+        def put(p, data):   # replaced whole, as the store writes its note: the feed's thread reads it meanwhile
+            with open(p + ".tmp", "wb") as f:
                 f.write(data)
+            os.replace(p + ".tmp", p)
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
         self.assertIsNone(feed.stopped)
@@ -1840,8 +1845,10 @@ class View(unittest.TestCase):
 
     def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
         run_id = self.finished_run()
-        seen = []
-        feed = store_feed(self, {"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        # `feed` is named before its threads start: the mirror thread can call on_run before the constructor returns
+        seen, feed = [], view.StoreFeed.__new__(view.StoreFeed)
+        feed.__init__({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        self.addCleanup(feed.close)
         self.report(feed, run_id)
         wait_for(lambda: seen, 15)
         shown, (tenant, rid, records, reasons) = seen[0]
@@ -2291,7 +2298,10 @@ class WhyLive(WhyServer):
         SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
         t.join(10)
         self.assertEqual(msgs[0]["run_id"], "remote-live")
-        self.assertGreaterEqual(len(msgs), 3)  # flushed per tool call, not only at the end
+        # announced while the run is live, not only at its end: a scan takes every batch that arrived since the last
+        # one, so how many messages a run gets depends on timing (3 or more alone, 2 under a parallel suite's load)
+        self.assertFalse(msgs[0]["finished"])
+        self.assertTrue(msgs[-1]["finished"])
         highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]
         self.assertGreaterEqual(len(highs), 1)
         self.assertEqual(len(highs), len({(a["title"], a["node"]) for a in highs}))

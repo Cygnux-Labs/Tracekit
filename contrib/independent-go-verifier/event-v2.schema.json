@@ -4860,7 +4860,7 @@
       }
     },
     "run_label": {
-      "description": "format 1.8: a change of the run's labels (docs/policy-v2.md#run-conditions), which run condition rules read. add: by the signer alone, right after the record that set it (source: that record's run_seq): a call that ran and matched a rule whose label it is, a tool whose results the policy's untrusted list names, an input observed as untrusted; or before a decision, a label the run's requester carries from another run of theirs (inherited: that run's run.label add). clear: by a person (run_label_clear), never the run's owner, principal or requester",
+      "description": "format 1.8: a change of the run's labels (docs/policy-v2.md#run-conditions), which run condition rules read. add: by the signer alone, right after the record that set it (source: that record's run_seq): a call that ran and matched a rule whose label it is, a tool whose results the policy's untrusted list names, an input observed as untrusted; or before a decision, a label the run's requester carries from another run of theirs (inherited: that run's run.label add). clear: by a person (run_label_clear), never the run's owner, principal or requester; on a signer with no approvals config (a dev signer), by any identity of the run's tenant, the run's owner too, then self_cleared",
       "oneOf": [
         {
           "type": "object",
@@ -4973,6 +4973,10 @@
             },
             "break_glass": {
               "const": true
+            },
+            "self_cleared": {
+              "const": true,
+              "description": "a dev signer's (no approvals config): the run's own owner, or any identity of its tenant, cleared it"
             }
           }
         }

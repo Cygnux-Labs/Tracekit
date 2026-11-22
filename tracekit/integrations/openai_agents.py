@@ -11,14 +11,21 @@ decided in the signer, `await tk.apply_decisions(state)` approves or rejects the
 `Runner.run(agent, state, hooks=tk)`. The RunState JSON is not authenticated, so a dict run context carries the
 approval id only as a hint in `context["tracekit"]["approvals"]` (any other context carries none: the signer finds the
 approval by the call id): every call that is not denied runs only after the signer's `approval_consume` agrees, and the
-SDK does not call `needs_approval` again on resume.
+SDK does not call `needs_approval` again on resume. The signer's reason for each hold is also a hint, in
+`context["tracekit"]["reasons"]`, for the app to show the person (after a load, only what the saved state says). A call
+rejected or expired tells the model so and why, without the approval commands, which are the person's; after a resume
+in another process, the why is the held rules' reasons only.
 An approval with a T2 executor runs a FunctionTool with the arguments the consume returns.
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
-executor, LocalShellTool and ApplyPatchTool (gated in the executor or editor). LocalShellTool and ApplyPatchTool cannot
-wait for an approval (the SDK has no approval hook for the first and does not tell the editor its call id), so an
-`ask` for them is refused. Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell),
-ComputerTool and handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
+executor, LocalShellTool and ApplyPatchTool (gated in the executor or editor). LocalShellTool cannot wait for an
+approval, so an `ask` for it is refused: the SDK has no approval hook for it. An ApplyPatchTool does wait: `needs_approval`
+opens the approval and the run pauses, and on resume — where the SDK skips `needs_approval` (`ApplyPatchAction.execute`,
+agents 0.23.1) and hands the editor an operation with no call id — the adapter finds the call from the approval a person
+gave, exactly on the operation's four fields, and consumes it once. Refused: an operation whose call has no approval of
+its own (the SDK resumed on a tool-wide one, or the call carries several operations) and two approved calls carrying the
+same patch. Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell), ComputerTool and
+handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
 `hooks=tk` records for each model response.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
@@ -45,14 +52,22 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.integrations import version_check
+from tracekit.integrations.claude_code import _rules, stopped
 from tracekit.integrations.executor_tools import EXECUTOR
-from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, refusal, result_field
+from tracekit.sdk.client import SignerUnavailable, VaultBody, _class_of, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
 _EVENTS = ("decide", "complete", "model_event")
 _FRAMEWORK = version_check.framework("openai-agents")
 MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one call
+
+
+def _held(head, d, outcome):
+    """What the model reads for a call the signer asked about that did not run: `head` (the coding-agent hooks' BLOCKED
+    or NOT APPROVED), that nothing ran and why, in their stopped() form, without the approval commands, which are for
+    the person."""
+    return stopped(f"{head}, nothing ran{_rules(d['rule_ids'])}: {outcome}.", d.get("reason"))
 
 
 def _keep(d, k, v):
@@ -68,6 +83,16 @@ def _source(args):
     return "raw" if isinstance(args, str) else "parsed"
 
 
+def _patch_args(op):
+    """An apply_patch operation as the signer decides on it: the four fields the editor is handed."""
+    return {"type": op.type, "path": op.path, "diff": op.diff, "move_to": op.move_to}
+
+
+def _patch_sig(args):
+    """What an approval for an apply_patch call is bound to, exactly: every field, none defaulted away."""
+    return (args.get("type"), args.get("path"), args.get("diff"), args.get("move_to"))
+
+
 class TracekitAgents(RunHooks):
     def __init__(self, signer, run):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`)."""
@@ -80,6 +105,8 @@ class TracekitAgents(RunHooks):
         self._decided = {}   # tool_call_id -> its decision, from needs_approval to the gate in this process
         self._passed = {}    # tool_call_id -> (decision, tool, args) of a call the gate let run (None: unrecorded)
         self._patches = {}   # id(operation) -> (operation, call_id): the SDK does not tell the editor the call id
+        self._patch_calls = {}   # call_id -> signature of an apply_patch call a person approved: the editor's only
+        #                          way to that call id on resume, where the SDK skips needs_approval (#985)
         self._vault = VaultBody(lambda: signer.status({}))   # a response's body, when the signer keeps content
 
     async def _call(self, method, req):
@@ -111,7 +138,10 @@ class TracekitAgents(RunHooks):
         except (RPCError, SignerUnavailable):
             return False   # no approval to wait for: the gate's approval_consume refuses the call
         if isinstance(ctx.context, dict):   # an app's own context object (a dataclass, a pydantic model) gets no hint
-            ctx.context.setdefault("tracekit", {}).setdefault("approvals", {})[call_id] = apr["approval_id"]
+            tk = ctx.context.setdefault("tracekit", {})
+            tk.setdefault("approvals", {})[call_id] = apr["approval_id"]
+            if d.get("reason"):   # why the signer holds it, for the app to show the person
+                tk.setdefault("reasons", {})[call_id] = d["reason"]
         return True
 
     async def _gate(self, ctx, call_id, tool, args, can_wait=True):
@@ -119,7 +149,7 @@ class TracekitAgents(RunHooks):
         try:
             d = self._decided.pop(call_id, None) or await self._decide(call_id, tool, args)   # resumed elsewhere
         except SignerUnavailable as e:
-            if not fail_open(self.fail_modes):
+            if not fail_open(self.fail_modes, _class_of(tool)):
                 return BLOCKED + f"signer unavailable: {e}"
             _keep(self._passed, call_id, None)
             return None
@@ -128,7 +158,7 @@ class TracekitAgents(RunHooks):
         if d["decision"] == "deny":
             return BLOCKED + (refusal(d) or "deny")
         if d["decision"] == "ask" and not can_wait:
-            return BLOCKED + "approval required, and this tool cannot wait for one"
+            return _held("BLOCKED", d, "approval required, and this tool cannot wait for one")
         try:
             hint = ctx.context["tracekit"]["approvals"][call_id]
         except (AttributeError, KeyError, TypeError, IndexError):
@@ -201,7 +231,7 @@ class TracekitAgents(RunHooks):
         if isinstance(t, ApplyPatchTool):
             async def needs_approval(ctx, op, call_id):
                 _keep(self._patches, id(op), (op, call_id))   # the SDK hands the editor this very object next
-                return False   # the gate in the editor decides
+                return await self._ask(ctx, call_id, t.name, _patch_args(op))   # True on ask: the run pauses
             return dataclasses.replace(t, editor=_Editor(self, t.name, t.editor), needs_approval=needs_approval)
         if not isinstance(t, FunctionTool):
             if not callable(t):
@@ -235,13 +265,40 @@ class TracekitAgents(RunHooks):
         return outer
 
     async def _patch(self, tool, fn, op):
+        args = _patch_args(op)
         op_, call_id = self._patches.pop(id(op), (None, None))
-        if op_ is not op:   # approved earlier (the SDK skipped needs_approval), so the call id is unknown
-            return ApplyPatchResult(status="failed", output=BLOCKED + "approval required, and this tool cannot wait "
-                                                                      "for one")
-        args = {"type": op.type, "path": op.path, "diff": op.diff, "move_to": op.move_to}
-        why = await self._gate(op.ctx_wrapper, call_id, tool, args, can_wait=False)
+        if op_ is op and any(c == call_id for _, c in self._patches.values()):
+            # a call with several operations: needs_approval decided them all under its one call id, so the gate
+            # decides this one again just before its consume
+            self._decided.pop(call_id, None)
+        elif op_ is not op:   # approved earlier: the SDK skipped needs_approval, so the call id comes from the approval
+            found = [c for c, sig in self._patch_calls.items() if sig == _patch_sig(args)]
+            if len(found) != 1:
+                why = ("two approved calls carry this same patch, so this operation cannot be told from the other; "
+                       "approve the call itself again" if len(found) > 1 else
+                       "no approval for this call: approve the call itself, not the tool; a call with several "
+                       "operations can't be approved")
+                return ApplyPatchResult(status="failed", output=BLOCKED + why)
+            call_id = found[0]
+            del self._patch_calls[call_id]   # consumed: one approval, one operation
+        why = await self._gate(op.ctx_wrapper, call_id, tool, args)
         return ApplyPatchResult(status="failed", output=why) if why is not None else await self._body(call_id, fn, op)
+
+    def _remember_approved_patch(self, raw, call_id):
+        """Keep what an approved apply_patch call will ask the editor to do. On resume the SDK skips
+        `needs_approval` (`ApplyPatchAction.execute`), so this is the last place that call id is reachable; the signer
+        stays the authority, because `approval_consume` still checks the arguments the call runs with."""
+        def field(name):   # the SDK hands a saved run state's interruption as a dict, a live one as a model
+            return raw.get(name) if isinstance(raw, dict) else getattr(raw, name, None)
+
+        if not call_id or field("type") != "apply_patch_call":
+            return
+        ops = field("operations")   # as the SDK reads a call (coerce_apply_patch_operations): a list wins
+        ops = ops if isinstance(ops, list) else [field("operation")]
+        if len(ops) != 1 or ops[0] is None:   # an approval binds one operation's arguments
+            return
+        d = ops[0] if isinstance(ops[0], dict) else ops[0].model_dump(mode="json")
+        _keep(self._patch_calls, call_id, _patch_sig(d))
 
     async def apply_decisions(self, state):
         """Approve or reject the paused calls in a RunState as the signer's approvers decided; returns the calls
@@ -250,21 +307,38 @@ class TracekitAgents(RunHooks):
         while True:   # every page: a call approved after the first page's worth would stay waiting
             listed = await self._call("approval_list", req)
             for a in listed["approvals"]:
-                decided.setdefault(a["tool_call_id"], a["state"])
+                decided.setdefault(a["tool_call_id"], a)
             if not listed["next_cursor"]:
                 break
             req = {**req, "cursor": listed["next_cursor"]}
         waiting = []
         for item in state.get_interruptions():
             raw = item.raw_item
-            s = decided.get(raw.get("call_id") if isinstance(raw, dict) else getattr(raw, "call_id", None))
+            a = decided.get(raw.get("call_id") if isinstance(raw, dict) else getattr(raw, "call_id", None)) or {}
+            s = a.get("state")
             if s == "approved":
+                self._remember_approved_patch(raw, a["tool_call_id"])
                 state.approve(item)
             elif s in ("rejected", "expired"):
-                state.reject(item, rejection_message=f"Tool call {s} in Tracekit")
+                d = {"rule_ids": a["rule_ids"], "reason": await self._reason(a["tool_call_id"])}
+                state.reject(item, rejection_message=_held("NOT APPROVED", d, s))
             else:
                 waiting.append(item)
         return waiting
+
+    async def _reason(self, call_id):
+        """Why the signer held the call: its decision's reason when this process asked; after a resume in another
+        process, the held rules' reasons only (call_state), without what decide joins in (a grant's, a constraint's,
+        who said no). None when there is none, or when the signer can't say (a warning)."""
+        # lean: call_state gives the rules' reasons, not the reason the decision recorded; that is a signer change
+        d = self._decided.get(call_id)
+        if d is not None:
+            return d.get("reason")
+        try:
+            return (await self._call("call_state", {**self.run, "tool_call_id": call_id})).get("reason")
+        except Exception as e:   # e.g. a SignerAPI of the app's own without call_state: the other calls are applied
+            warnings.warn(f"tracekit: why tool call {call_id} was held not read: {e}", stacklevel=2)
+            return None
 
     async def on_llm_end(self, context, agent, response):
         """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included, and
