@@ -60,7 +60,9 @@ finish() {
 if [ -e "$SYSTEM_CONFIG" ]; then
   "$SYSTEM_PYTHON" -I -m $HOOK "$@"; s=$?
   [ $s = 0 ] && exit 0
-  grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null && open=open
+  while IFS= read -r line || [ -n "$line" ]; do   # (no program is found through PATH here)
+    case $line in *'"fail_mode"'*:*'"open"'*) open=open ;; esac
+  done < "$SYSTEM_CONFIG" 2>/dev/null
   finish $s "$SYSTEM_PYTHON could not run the tracekit hook" "Re-run system init from a root-owned clone: sudo \
 /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks" "${open:-}"
 fi
@@ -110,22 +112,55 @@ plugin_off() {   # how a person turns this plugin off, in `off`
   [ -n "$AGENT" ] && off="turn the Tracekit plugin off"
   return 0
 }
-case $(uname -s 2>/dev/null) in
-  Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
-  MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
-  *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
-esac
+data_dir() {   # where the dev signer's data dir is, by this system's own uname (never one found through PATH)
+  un=/usr/bin/uname
+  [ -x "$un" ] || un=/bin/uname
+  case $("$un" -s 2>/dev/null) in
+    Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
+    MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
+    *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
+  esac
+}
 
 # The Python `tracekit init` recorded in $HOME/.tracekit-client (a folder TK-D007 keeps from the agent) runs the hook once
 # there is one, and only it: not TRACEKIT_PYTHON, PATH or a default folder. One that can't run it stops the call, and so
-# does a Tracekit that is set up (its data dir exists) with none recorded: neither falls back to another Python.
-rec= cfg=$HOME/.tracekit-client/config.json
+# does a Tracekit that is set up (its data dir exists) with none recorded: neither falls back to another Python. The record
+# is read here, first, with the shell's own builtins: nothing is found through PATH before it. It is the config's JSON
+# string (a backslash escape unescaped; a \u escape is refused), and a Python outside the folders of a uv tool or pipx
+# install of Tracekit is refused unless init recorded that a person allowed it (--allow-hook-python).
+rec= allowed= bad= cfg=$HOME/.tracekit-client/config.json
 if [ -r "$cfg" ]; then
   while IFS= read -r line || [ -n "$line" ]; do
-    case $line in *'"hook_python"'*) rec=${line#*'"hook_python"'}; rec=${rec#*\"}; rec=${rec%%\"*}; break ;; esac
+    case $line in *'"hook_python_allowed"'*true*) allowed=1 ;; esac
+    case $line in
+      *'"hook_python"'*)
+        rest=${line#*'"hook_python"'}
+        rest=${rest#*\"}
+        while [ -n "$rest" ]; do
+          c=${rest%"${rest#?}"}
+          rest=${rest#?}
+          [ "$c" = '"' ] && break
+          if [ "$c" = '\' ]; then
+            c=${rest%"${rest#?}"}
+            rest=${rest#?}
+            case $c in u) bad=1; break ;; esac
+          fi
+          rec=$rec$c
+        done ;;
+    esac
   done < "$cfg"
 fi
-if [ -n "$rec" ]; then
+if [ -n "$rec" ] || [ -n "$bad" ]; then
+  share=${XDG_DATA_HOME:-$HOME/.local/share}
+  inside=
+  for v in "${UV_TOOL_DIR:-$share/uv/tools}" "${PIPX_HOME:-$share/pipx}/venvs" "$HOME/.local/pipx/venvs" \
+           "$HOME/Library/Application Support/pipx/venvs"; do
+    case $rec in "$v/tracekit-ai/"*) inside=1 ;; esac
+  done
+  if [ -n "$bad" ] || { [ -z "$inside" ] && [ -z "$allowed" ]; }; then
+    finish 3 "the Python tracekit init recorded for this hook (${rec:-one with a unicode escape}) is not one of a uv tool or pipx install of Tracekit" \
+      "Ask the person to run: uv tool install --reinstall tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+  fi
   if [ -x "$rec" ] && "$rec" -I -c "import tracekit" >/dev/null 2>&1; then
     "$rec" -I -c "import sys$RUN" "$@"
     finish $? "$rec could not run the tracekit hook" "Ask the person to reinstall: uv tool install --reinstall \
@@ -134,6 +169,7 @@ tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
   finish 3 "$rec, the Python tracekit init recorded for this hook, cannot import tracekit" "Ask the person to run: uv tool \
 install --reinstall tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
 fi
+data_dir
 [ -d "$data" ] && plugin_off && finish 3 "tracekit init has recorded no Python for this hook, though Tracekit is set up" \
   "Ask the person to run: uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks, or $off"
 # A uv tool or pipx install's python is the tracekit the person runs: with one, nothing else runs the hook, so a

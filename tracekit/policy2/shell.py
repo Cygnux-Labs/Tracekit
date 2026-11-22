@@ -5543,12 +5543,18 @@ def _lower_name(word):
     return word[:i] + name
 
 
+# Homebrew's coreutils, findutils and GNU tar under a g prefix (gcp is cp)
+_GNU_PREFIXED = re.compile(r"g(cp|mv|rm|ln|install|dd|tee|truncate|shred|chmod|chown|chgrp|unlink|link|tar|find|xargs|"
+                           r"patch|touch|mkdir|rmdir)")
+
+
 @functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
 def base_name(word):
     """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
     casefolded and without a Windows program's extension (as _lower_name). A name bash's reading (after the last /)
     gives, it gives too."""
-    return _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
+    name = _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
+    return m.group(1) if (m := _GNU_PREFIXED.fullmatch(name)) else name
 
 
 def _programs(words, cmds):

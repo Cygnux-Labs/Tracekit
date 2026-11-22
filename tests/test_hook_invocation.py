@@ -288,12 +288,14 @@ class PluginShim(unittest.TestCase):
             self.assertIn(f"Ask the person to set it up: uv tool install tracekit-ai=={__version__} && tracekit init --dev --v2 "
                           "--no-hooks", err)
 
-    def record_python(self, python):
-        """What `tracekit init` leaves in the client config: the Python the hook runs in."""
+    def record_python(self, python, allowed=True, ascii=True):
+        """What `tracekit init` leaves in the client config: the Python the hook runs in (`allowed`: a person gave init
+        --allow-hook-python, for a Python that isn't a tool install's)."""
         client = os.path.join(self.home, ".tracekit-client")
         os.makedirs(client, exist_ok=True)
         with open(os.path.join(client, "config.json"), "w", encoding="utf-8") as f:
-            json.dump({"hook_python": python, "hooks_settings": "/x"}, f, indent=2)
+            json.dump({"hook_python": python, "hooks_settings": "/x", **({"hook_python_allowed": True} if allowed else {})},
+                      f, indent=2, ensure_ascii=ascii)
 
     def test_the_python_init_recorded_is_the_only_one_that_runs_the_hook(self):
         """The fifth review: with the uv install's folder unreadable or removed the hook fell back to python3, where a
@@ -322,6 +324,63 @@ class PluginShim(unittest.TestCase):
         self.assertEqual(code, 2, err)
         self.assertIn("recorded no Python", err)
         self.assertIn("turn the plugin off in /plugin", err)
+
+    def test_a_recorded_python_outside_a_tool_install_is_refused_unless_a_person_allowed_it(self):
+        """The record is the one Python the hook runs, so a record anywhere an agent can write (a project's .venv) would
+        let it choose that Python: only a uv tool or pipx install of tracekit-ai's folder is run, or one init recorded with
+        a person's --allow-hook-python."""
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        self.set_up_tracekit()
+        os.makedirs(os.path.join(self.d, "rec"))
+        outside = self.fake_python(os.path.join(self.d, "rec", "python"))
+        self.record_python(outside, allowed=False)
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2, err)
+        self.assertIn("is not one of a uv tool or pipx install of Tracekit", err)
+        self.assertNotIn(outside, self.calls())
+        self.record_python(outside, allowed=True)
+        self.assertEqual(self.hook("PreToolUse")[0], 0)
+        inside = os.path.join(self.data, "uv", "tools", "tracekit-ai", "bin")
+        os.makedirs(inside)
+        tool = self.fake_python(os.path.join(inside, "python"))
+        self.record_python(tool, allowed=False)
+        self.assertEqual(self.hook("PreToolUse")[0], 0)
+        self.assertIn(f"{tool} -I -c", self.calls())
+        self.assertEqual(self.hook("PreToolUse", UV_TOOL_DIR=os.path.join(self.d, "other"))[0], 2)   # (as this process sees it)
+
+    def test_the_record_is_read_as_json_so_quotes_backslashes_and_non_ascii_paths_work(self):
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        self.set_up_tracekit()
+        folder = os.path.join(self.d, 'r\u00e9c "q" a\\b')
+        os.makedirs(folder)
+        python = self.fake_python(os.path.join(folder, "python"))
+        self.record_python(python, ascii=False)
+        self.assertEqual(self.hook("PreToolUse")[0], 0)
+        self.assertIn('r\u00e9c "q" a', self.calls())
+        self.record_python(python, ascii=True)   # (\u00e9: a text the hook can't unescape is refused, never guessed)
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2, err)
+        self.assertIn("is not one of a uv tool or pipx install of Tracekit", err)
+
+    def test_the_hook_runs_no_program_found_through_path_before_it_reads_its_record(self):
+        """The hook ran the first `uname` on PATH on every call, which an agent can put there and which then ran in the
+        hook: the record is read first with the shell's builtins, and uname is /usr/bin/uname."""
+        os.makedirs(os.path.join(self.d, "plant"))
+        planted = os.path.join(self.d, "plant", "uname")
+        log = os.path.join(self.d, "planted")
+        path = os.path.join(self.d, "plant") + os.pathsep + self.bin
+        with open(planted, "w", encoding="utf-8") as f:
+            f.write(f'#!/bin/sh\necho ran >> {log}\necho Darwin\n')
+        os.chmod(planted, 0o755)
+        self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
+        self.set_up_tracekit()
+        os.makedirs(os.path.join(self.d, "rec"))
+        self.record_python(self.fake_python(os.path.join(self.d, "rec", "python")))
+        self.hook("PreToolUse", PATH=path)
+        self.assertFalse(os.path.exists(log))   # (a record: nothing found through PATH runs)
+        os.remove(os.path.join(self.home, ".tracekit-client", "config.json"))
+        self.hook("PreToolUse", PATH=path)
+        self.assertFalse(os.path.exists(log))   # (none: the system's own uname finds the data dir)
 
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""

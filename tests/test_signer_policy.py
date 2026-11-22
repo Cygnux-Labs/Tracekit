@@ -4729,14 +4729,13 @@ class CodingPack(unittest.TestCase):
             f"uv pip install --python {root}/bin/python ./evilpkg", f"pip install --target {root}/lib ./evilpkg",
             f"pip install --prefix {root} ./evilpkg", f"VIRTUAL_ENV={root} uv pip install ./evilpkg",
             f"uv venv {root}", "virtualenv ~/.local/share/pipx/venvs/tracekit-ai",
-            f"rsync -a --delete /tmp/empty/ {root}/", "rsync -a --delete /tmp/empty/ ~/.local/share/uv/tools/")]
+            f"rsync -a --delete /tmp/empty/ {root}/", "rsync -a --delete /tmp/empty/ ~/.local/share/uv/tools/",
+            "python3 -m zipfile -e evil.zip ~/.local/share/uv/tools", "python3 -m tarfile -e evil.tar ~/.local/share/uv/tools")]
         held = [("Bash", {"command": c}, rid) for c, rid in (
             ("cd ~/.local/share/uv/tools && tar -xf evil.tar", "TK-F015"), ("cd ~/.local/share/uv/tools && unzip -o e.zip", "TK-F015"),
             ("cp -R evil/ ~/.local/share/uv/tools", "TK-F015"), ("ditto evil ~/.local/share/uv/tools", "TK-F015"),
             ("tar xfC evil.tar ~/.local/share/uv/tools", "TK-F015"), ("tar -xf e.tar -C ~/.local/share/uv/tools .", "TK-F015"),
             ("unzip -o e.zip '*python' -d ~/.local/share/uv/tools", "TK-F015"),
-            ("python3 -m zipfile -e evil.zip ~/.local/share/uv/tools", "TK-F015"),
-            ("python3 -m tarfile -e evil.tar ~/.local/share/uv/tools", "TK-F015"),
             ("cd ~/.local/share/uv/tools && pax -r -f evil.tar", "TK-F015"),
             ("cd ~/.local/share/uv/tools && cpio -idv < evil.cpio", "TK-F015"),
             ("7z x evil.7z -o$HOME/.local/share/uv/tools", "TK-F015"),
@@ -4768,6 +4767,170 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_plugin_review_7_tar_options_other_writers_folder_stack_workdirs_and_names_the_parser_does_not_know(self):
+        """The plugin's seventh review: the classes round 6 fixed were still open through other spellings. tar: an option's
+        value read as a member (--newer-mtime D, -s, -K, --transform, --exclude); a member that is a folder (`-C ~ .local`,
+        `-C ~/.local/share/uv tools`); cpio -p; git's work tree writers (--work-tree, -C, `cd <root> && git pull`);
+        patch -d; the folder stack (`cd -`, popd, $OLDPWD, a link to a link); a shell tool's workdir argument; g-prefixed
+        coreutils, link, hdiutil attach -mountpoint; code naming a folder along a root; a program the parser doesn't know
+        (make -C <root>); packages named in another spelling (PEP 503), --force, runpip, the -all forms; an unresolved
+        variable before a pattern that makes a root's name; and the record's own writer (init, xargs tracekit)."""
+        root = "~/.local/share/uv/tools"
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "python3 -c \"import shutil; shutil.copytree('/tmp/evil', '/Users/me/.local/share/uv/tools', dirs_exist_ok=True)\"",
+            f"gcp /tmp/py {root}/tracekit-ai/bin/python", f"ginstall /tmp/py {root}/tracekit-ai/bin/python",
+            f"link /tmp/py {root}/tracekit-ai/bin/python", f"cp --parents tracekit-ai/bin/python {root}", f"hdiutil attach -mountpoint {root}/tracekit-ai /tmp/x.dmg",
+            "cd ~/.local/share/uv/tools/tracekit-ai && bin/python -m pip install ./evil",
+            f"UV_PROJECT_ENVIRONMENT={root}/tracekit-ai uv sync",
+            ".venv/bin/python -c \"from tracekit import cli; cli.main(['init','--dev','--v2','--no-hooks'])\"",
+            ".venv/bin/python -c \"from tracekit.install import record_hooks_settings as r; r(None)\"")] + [
+            ("Bash", {"command": "cp /tmp/c.json config.json", "workdir": "/Users/me/.tracekit-client"}, "TK-D007"),
+            ("Bash", {"command": "cp /tmp/py bin/python", "workdir": "/Users/me/.local/share/uv/tools/tracekit-ai"}, "TK-D007"),
+            ("Bash", {"command": "cp /tmp/py bin/python", "dir_path": "/Users/me/.local/share/uv/tools/tracekit-ai"}, "TK-D007"),
+            ("Bash", {"command": "cp /tmp/py bin/python", "working_directory": "/Users/me/.local/share/uv/tools/tracekit-ai"},
+             "TK-D007"),
+            ("Bash", {"commands": ["cp /tmp/py bin/python"], "workdir": "/Users/me/.local/share/uv/tools/tracekit-ai"}, "TK-D007"),
+            ("Bash", {"command": "cp /tmp/py bin/python", "cwd": "/Users/me/.local/share/uv/tools/tracekit-ai"}, "TK-D007"),
+            ("Write", {"file_path": "/p/.venv/lib/python3.12/site-packages/sitecustomize.py", "content": "x"}, "TK-A067"),
+            ("Write", {"file_path": "/home/u/.config/uv/uv.toml", "content": "x"}, "TK-A024"),
+            ("Bash", {"command": "cp /tmp/s.py .venv/lib/python3.12/site-packages/sitecustomize.py"}, "TK-A068"),
+            ("Bash", {"command": "cp /tmp/uv.toml ~/.config/uv/uv.toml"}, "TK-A030")]
+        denied += [("Bash", {"command": "cd /a && " + " ".join(f"cd d{i};" for i in range(n)) + " " + tail}, "TK-D007")
+                   for n in (80, 120) for tail in ("pkill " + "tracekitd", "cp x ~/.local/share/uv/tools/tracekit-ai/bin/python",
+                                                    "cp x ~/.tracekit-client/config.json", "rm -rf ~/.local/bin/tracekit")]
+        held = [("Bash", {"command": c}, "TK-F015") for c in (
+            "tar -xf /tmp/e.tar -C ~ --exclude foo", f"tar -xf /tmp/e.tar -C {root} --exclude foo",
+            f"tar -xf /tmp/e.tar -C {root} --newer-mtime 2020-01-01", f"tar -xf /tmp/e.tar -C {root} -K x",
+            f"tar -x -f /tmp/e.tar -C {root} -s ,^evil,tracekit-ai, evil/bin/python",
+            f"tar -xf /tmp/e.tar -C {root} --transform=s,^evil,tracekit-ai, evil/bin/python",
+            f"tar -xf /tmp/e.tar -C {root} --xform s,^evil,tracekit-ai, evil/bin/python",
+            f"tar -xf /tmp/e.tar -C {root} --files-from list.txt", f"tar -xf /tmp/e.tar --dir {root} --exclude-vcs",
+            "tar -xf /tmp/e.tar -C ~/.local/share/uv tools", "tar -xf /tmp/e.tar -C ~ .local", "tar -xJf e.txz -C ~ .local",
+            "cd /tmp/evil && find . | cpio -pdmu ~/.local/share/uv/tools", "cd /tmp/evil && find . | cpio -pdmu ~",
+            "git --git-dir=/tmp/e/.git --work-tree=$HOME/.local/share/uv/tools checkout -f .",
+            "git --git-dir=/tmp/e/.git --work-tree=$HOME checkout -f .", f"git -C {root} apply /tmp/p.diff",
+            f"git -C {root} stash pop", f"cd {root} && git pull", f"patch -d {root} -p1 < /tmp/p.diff",
+            f"cd {root} && patch -p1 < /tmp/p.diff", f"cp -RT /tmp/evil {root}",
+            f"unar -o {root} e.rar", f"cabextract -d {root} e.cab", f"unrar x e.rar {root}/", f"cd {root} && jar xf e.jar",
+            f"lha xw={root} e.lzh", f"cd {root} && ar x lib.a", f"make -C {root} install", "cargo install --root ~/.local x",
+            f"cd {root} && cd /tmp && cd - && tar -xf /tmp/e.tar", f"pushd {root} && pushd /tmp && popd && tar -xf /tmp/e.tar",
+            f"cd {root} && cd /tmp && cd \"$OLDPWD\" && tar -xf /tmp/e.tar", f"cd {root} && cd /tmp && cd ${{OLDPWD}} && tar -xf e.tar",
+            f"pushd {root} && pushd /tmp && pushd +1 && tar -xf /tmp/e.tar", f"D=$PWD; cd {root} && cd /tmp && cd \"$D\" && tar -xf e.tar",
+            f"read OLDPWD <<< {root}; cd - && tar -xf /tmp/e.tar", "OLDPWD=~/.cursor; cd - && cp -R evil/plugins .",
+            'OLDPWD=~/.cursor; cd "$OLDPWD" && cp -R evil/plugins .', "CDPATH=~/.local; cd share/uv/tools && tar -xf e.tar", f"foo {root}/tracekit-ai/bin/python",
+            f"ln -s {root} t && ln -s t u && tar -xf /tmp/e.tar -C u",
+            "uv tool upgrade --all", "uv tool install --force ruff", "pipx install --force black", "pipx reinstall-all",
+            "pipx upgrade-all", "pipx runpip black list", "pipx inject tracekit.ai ./evil", "uv tool install Tracekit_AI",
+            "uv tool install --with ./evil TRACEKIT-AI", "pipx install Tracekit.AI", "echo init | xargs tracekit",
+            "cp evil $D/tracekit-?i/bin/python", 'cp evil "$D"/*/bin/python', 'cp evil "$D/uv/pyth*/x"')] + [
+            ("Bash", {"command": "tar -xf /tmp/e.tar", "workdir": "/Users/me/.local/share/uv/tools"}, "TK-F015"),
+            ("Bash", {"command": "tar -xf /tmp/e.tar", "dir_path": "/Users/me/.local/share/uv/tools"}, "TK-F015")]
+        benign = [("Bash", {"command": c}) for c in (
+            "tar -xf x.tar -C build", "tar -xzf x.tgz", "tar -xOf x.tar file | head", "tar -xOf x.tar -C ~/.local/share/uv/tools --exclude foo | head", "tar -xf x.tar -C ~/project src", "tar -cf x.tar src", "tar -tf x.tar",
+            "patch -p1 < x.diff", "git -C repo pull", "git pull", "cd repo && git checkout main", "make -C build", "cargo build",
+            'export PATH="$HOME/.local/bin:$PATH"', "mkdir -p ~/.local/bin", "ls ~/.local/share/uv/tools", "cat ~/.local/bin/tracekit",
+            "which tracekit", "uv tool install tracekit-ai", "uv tool install ruff", "pipx install black", "pipx install tracekit-ai",
+            "cd a && cd .. && cd b && ls", "pushd a && popd", "pushd build && popd && tar -xf x.tar", "cd /tmp; cd -; ls", "unzip a.zip -d build", "cp -R a/. b",
+            "cp --parents src/a.py build", "cp -RT src build", "git -C ~/project status", "git -C ~/project commit -m x",
+            "ruff check ~/project", "uv run pytest", "python3 -m pytest tests", "cd ~/project && python3 -c 'print(1)'")] + [
+            ("Bash", {"command": "ls", "workdir": "/Users/me/project"}), ("Bash", {"command": "make test", "dir_path": "/Users/me/p"})]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in denied + held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    ids = e.decide(tool, args)["rule_ids"]
+                    self.assertIn(rid, ids)
+                    if rid == "TK-F015":
+                        self.assertNotIn("TK-D007", ids)
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
+                                     & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_plugin_review_7_the_folder_stack_and_tar_words_and_workdirs(self):
+        from tracekit.policy2 import classes, engine as eng, shell as sh
+
+        def walk(line):
+            where, held = eng._walk(sh.analyse(line, work=[0]), [0])
+            return [set(w) for w in where], held
+        where, _ = walk("cd /a && cd /b && cd - && ls")
+        self.assertIn("/a", where[-1])
+        where, _ = walk("OLDPWD=/x; cd - && ls")
+        self.assertIn("/x", where[-1])
+        where, _ = walk('OLDPWD=/x; cd "${OLDPWD}" && ls')
+        self.assertIn("/x", where[-1])
+        where, _ = walk("cd && ls")   # (HOME)
+        self.assertIn("~", where[-1])
+        where, _ = walk("cd /a; cd b || cd c; ls")
+        self.assertLessEqual({"/a", "/a/b", "/a/c"}, set(where[-1]))   # (a cd that fails leaves the one before)
+        where, _ = walk("pushd /a && pushd /b && popd && ls")
+        self.assertIn("/a", where[-1])
+        where, _ = walk("cd /a && cd rel && cd - && ls")
+        self.assertIn("/a", where[-1])
+        where, _ = walk('cd /a && cd /b && cd "$OLDPWD" && ls')
+        self.assertIn("/a", where[-1])
+        _, held = walk("cd /a; " + " ".join(f"cd d{i};" for i in range(40)) + " ls")
+        self.assertTrue(held)   # (more folders than are tracked: held, never every folder ever entered)
+        _, held = walk("cd /a && cd b && ls")
+        self.assertFalse(held)
+        # tar's words
+        letters, values, operands, unread = eng._tar_words(["-xf", "a.tar", "-C", "d", "--newer-mtime", "2020-01-01", "m"])
+        self.assertEqual((values["C"], operands, unread), (["d"], ["m"], False))
+        for words in (["-xf", "a", "-s", ",a,b,", "m"], ["-xf", "a", "-K", "x"], ["-xf", "a", "--exclude", "x"],
+                      ["-xf", "a", "--transform=s,a,b,"], ["-xf", "a", "--xform", "s,a,b,"], ["-xf", "a", "--files-from", "l"],
+                      ["-xf", "a", "--unknown-option"], ["-xf", "a", "-T", "l"], ["-xf", "a", "--strip-components=1"],
+                      ["-xf", "a", "--exclu", "x"]):
+            self.assertTrue(eng._tar_words(words)[3], words)
+        self.assertEqual(eng._tar_words(["-xJf", "a.txz", "m"])[2:], (["m"], False))
+        self.assertEqual(eng._tar_words(["xfC", "a.tar", "dir", "m"])[1]["C"], ["dir"])
+        self.assertEqual(eng._tar_words(["-x", "--directory=d", "--file", "a.tar"])[1]["C"], ["d"])
+        # every plain member may be a folder
+        out = eng._tree_writes("tar", ["-xf", "a.tar", "-C", "~/.local/share/uv", "tools"], [0])
+        self.assertIn("TREE_TARGET:~/.local/share/uv/tools", out)
+        # a shell tool's own working directory
+        for key in ("workdir", "dir_path", "directory", "working_directory", "cwd", "working_dir", "Cwd"):
+            self.assertEqual(classes.with_workdir({"command": "ls", key: "/a b"})["command"], "cd '/a b' && ls", key)
+        self.assertEqual(classes.with_workdir({"command": "ls", "workdir": "-x"})["command"], "cd ./-x && ls")
+        self.assertEqual(classes.with_workdir({"commands": ["a", "b"], "cwd": "/w"})["commands"], ["cd /w && a", "cd /w && b"])
+        self.assertEqual(classes.with_workdir({"command": "ls"}), {"command": "ls"})
+        # Homebrew's names
+        self.assertEqual(sh.base_name("/opt/homebrew/bin/gcp"), "cp")
+        self.assertEqual(sh.base_name("gdb"), "gdb")
+
+    def test_plugin_review_7_a_deny_the_text_makes_survives_any_work_budget(self):
+        """Lines of `cd` in front spent the decision's work budget and turned a deny into a hold: whatever the budget, a
+        deny a command's own text makes (a kill of the signer, a write to a path it spells out) stays one, beside the hold."""
+        from tracekit.policy2 import shell as sh
+        line = "cd ~/a && cd b && cd c; cd d; cp x ~/.tracekit-client/config.json; ln -s x y; pkill " + "tracekitd"
+        for pack, engine, e in self.every_pack():
+            if pack != "coding.yaml":
+                continue
+            for budget in range(150, 4000, 97):
+                with mock.patch.object(sh, "MAX_WORK", budget):
+                    d = e.decide("Bash", {"command": line})
+                with self.subTest(engine=engine, budget=budget):
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D007", d["rule_ids"])
+
+    @pytest.mark.serial
+    def test_plugin_review_7_the_quadratic_shapes_are_read_in_bounded_time(self):
+        """Four shapes took up to 288 s of a decision (a lazy match from each `$(` or backquote of a path, `cd` lines in
+        front that spent the work budget and turned a deny into a hold, tar's members times directories)."""
+        k = 63 * 1024
+        rows = ["cp x " + "$(" * (k // 2), "cp x " + "`" * k, "cp x " + "$/" * (k // 2), 'D="' + "$(" * (k // 2) + '"; cp x "$D"',
+                "tar -xf a " + " ".join(f"-C d{i}" for i in range(2500)) + " " + " ".join(f"m{i}" for i in range(2500)),
+                "cd /a; " + "cd b; cd -; " * (k // 12), "cd /a && " + " ".join(f"cd d{i};" for i in range(80)) + " cp x ~/.ssh/id_rsa",
+                "cp x ~/" + "***/a/" * (k // 6)]
+        for pack, engine, e in self.every_pack():
+            if pack != "coding.yaml":
+                continue
+            for row in rows:
+                t = time.perf_counter()
+                e.decide("Bash", {"command": row[:64 * 1024 - 1]})
+                self.assertLess(time.perf_counter() - t, 5 * SLOWER, (engine, row[:40]))
+            self.assertIn("TK-D007", e.decide("Bash", {"command": rows[6].replace("~/.ssh/id_rsa",
+                                                                                  "~/.tracekit-client/config.json")})["rule_ids"])
+
+    @pytest.mark.serial
     def test_plugin_review_5_hostile_patterns_are_read_in_bounded_time_the_same_on_both_engines(self):
         """The new readers took 6 to 58 seconds on inputs near 64 KiB (a thousand forms as long as the path, a `*/` a
         thousand times): they are read in a bounded number of forms, charged to the decision's work, and an input past

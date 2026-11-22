@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:d39de8732e7b4fbe4f1a7749ead993ce7497dbd579a2e6b81253830c72a65ec3",
+  "policy_hash": "sha256:e9e988ee70b37f9f677de6ec12b6d1ff8cf398ebf2a8b07b67560021aa830eae",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.11.15"
@@ -802,7 +802,7 @@
     "deny/shell:275": "ask TK-A035",
     "deny/shell:276": "ask TK-A043",
     "deny/shell:277": "deny TK-D001",
-    "deny/shell:278": "deny TK-D004",
+    "deny/shell:278": "deny TK-D004 TK-D007",
     "deny/shell:279": "ask TK-A029",
     "deny/shell:280": "ask TK-A029",
     "deny/shell:281": "ask TK-A021 TK-F001",
@@ -813,10 +813,10 @@
     "deny/shell:286": "deny TK-D004",
     "deny/shell:287": "deny TK-D004",
     "deny/shell:288": "deny TK-D004",
-    "deny/shell:289": "deny TK-D004",
+    "deny/shell:289": "deny TK-D004 TK-D007",
     "deny/shell:290": "deny TK-D004",
-    "deny/shell:291": "deny TK-D004",
-    "deny/shell:292": "deny TK-D004",
+    "deny/shell:291": "deny TK-D004 TK-D007",
+    "deny/shell:292": "deny TK-D004 TK-D007",
     "deny/shell:293": "deny TK-D003 TK-F004",
     "deny/shell:294": "ask TK-A002 TK-F004",
     "deny/shell:295": "deny TK-S006",

@@ -156,9 +156,11 @@ runs.
   Re-run system init from a root-owned clone: `sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
   --no-hooks`.
 - **Dev mode**: the hook runs in the Python `tracekit init` recorded (`hook_python` in `~/.tracekit-client/config.json`),
-  and only there: not `TRACEKIT_PYTHON`, `PATH` or a default folder. A record that can't run the hook, or a Tracekit that
-  is set up with none recorded, blocks tool calls and says what to run (`tracekit init --dev --v2 --no-hooks` again, from
-  the Python you want). Before Tracekit is set up the hook runs in `TRACEKIT_PYTHON` if that has the `tracekit` package;
+  and only there: not `TRACEKIT_PYTHON`, `PATH` or a default folder. Init records only the Python of a `uv tool` or pipx
+  install of Tracekit (every dev init does, with the plugin enabled or `--project` too); from any other Python it says
+  what to run, or `--allow-hook-python` records that one, which then runs the hook with whatever its site-packages hold. A
+  record outside those installs that you didn't allow, a record that can't run the hook, or a Tracekit that is set up with
+  none recorded, blocks tool calls and says what to run (`tracekit init --dev --v2 --no-hooks` again, from the install). Before Tracekit is set up the hook runs in `TRACEKIT_PYTHON` if that has the `tracekit` package;
   else in the Python of a `uv tool` or pipx install where uv (`UV_TOOL_DIR`) or pipx (`PIPX_HOME`) put it, else by
   default, and only there; else in the first of `python3`, `python` and the Python beside any other `tracekit`
   command that has the package, user site-packages included (their `.pth` files don't run). A tracekit older than the

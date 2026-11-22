@@ -1085,7 +1085,7 @@ class HookV2(unittest.TestCase):
         client = os.path.join(os.environ["HOME"], ".tracekit-client")
         os.makedirs(client, exist_ok=True)
         with open(os.path.join(client, "config.json"), "w") as f:
-            json.dump({"hook_python": sys.executable}, f)
+            json.dump({"hook_python": sys.executable, "hook_python_allowed": True}, f)
 
     def test_the_plugin_decides_through_the_dev_signer(self):
         os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"))

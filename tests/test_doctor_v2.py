@@ -1123,7 +1123,7 @@ class NoHooksChosen(unittest.TestCase):
             self.assertFalse(os.path.exists(marker))
             self.assertTrue(out.getvalue().endswith(f"{public_witness.NOT_CONFIGURED}\n"), out.getvalue())
             self.assertFalse(install._v2_hooks_in(settings))
-            self.assertEqual(client.client_config(), {"hook_python": sys.executable, "no_hooks": True})
+            self.assertEqual(client.client_config(), {"no_hooks": True})
 
     def test_system_mode_reads_the_choice_from_client_json(self):
         """System mode said "no hooks recorded in client.json", fix: reinstall, after `init --v2 --no-hooks`."""
