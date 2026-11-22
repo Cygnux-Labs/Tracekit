@@ -526,3 +526,4 @@
 {"tool": "Bash", "args": {"command": "printf '%s' FLUSHALL | redis-cli -h cache.internal"}, "expect": "ask", "note": "flush printed through a plain %s format into redis-cli (#978)"}
 {"tool": "Bash", "args": {"command": "psql -h db.internal --comm 'DROP TABLE users;' shop"}, "expect": "ask", "note": "a drop through psql's --command abbreviated to --comm (#978)"}
 {"tool": "Bash", "args": {"command": "mysql -h db.internal -e '# cleanup\nDROP TABLE users;' shop"}, "expect": "ask", "note": "a drop after a # comment line, which mysql reads as a comment (#978)"}
+{"tool": "Bash", "args": {"command": "kubectl get --raw /api/v1/namespaces/prod/secrets/db"}, "expect": "ask", "note": "#981: --raw of a secrets path reads the secret's value, not just its name"}
