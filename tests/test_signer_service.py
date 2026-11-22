@@ -656,8 +656,7 @@ class TestLogging(unittest.TestCase):
         for name, level in (("warning", logging.WARNING), ("info", logging.INFO), ("debug", logging.DEBUG)):
             with self.subTest(name=name), mock.patch.object(svc, "_serve_dev"):
                 svc.main(["serve", "--dev", "--log-level", name])
-                http = logging.getLogger("tracekit.transport.http")
-                self.assertEqual((http.isEnabledFor(level), http.isEnabledFor(level - 10)), (True, False))
+                self.assertEqual(logging.getLogger("tracekit.transport.http").getEffectiveLevel(), level)
                 # botocore's debug log prints AWS credentials when the log key is in KMS
                 self.assertFalse(logging.getLogger("botocore").isEnabledFor(logging.INFO))
 

@@ -6013,7 +6013,7 @@ def main(argv=None):
                    help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
     q.add_argument("--log-level", choices=("warning", "info", "debug"),
                    help="log Tracekit's lines to stderr from this level up: warning (the default), info (adds the HTTP "
-                        "request log) or debug; other libraries print only warnings")
+                        "request log) or debug; other libraries print only warnings and errors")
     mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
