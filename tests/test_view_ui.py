@@ -2503,6 +2503,30 @@ class PlainPages(unittest.TestCase):
         self.assertEqual(opened.count("its content is not in the log"), 0)
         self.assertIn('data-ingrp="session-message|untrusted" tabindex="0"><td>▾ ', opened)
 
+    def test_influence_says_a_person_rejected_a_call_and_why_a_lookups_answer_is_untrusted(self):
+        """A payment a person rejected while it was held read "held", and a payment the guard stopped because a lookup's
+        answer counts as untrusted showed no reason (the I preview): a tool's chip says "rejected" as a stop, and the
+        edge from the lookup carries the guard's reason."""
+        needs_node(self)
+        src = {"id": "s1", "labels": ["clerk:mail:inbox"], "trust": "untrusted", "runs": 1, "cited_by": 1,
+               "kind": "mail", "preview": "", "confirmed_tools": [],
+               "seen": [{"run": "r1", "agent": "clerk", "ts": "2026-11-22T08:00:00Z", "seq": 3}]}
+        edges = [{"source": "s1", "tool": "send_money", "reach_runs": 1, "ended": {"rejected": 1}}]
+        groups = [{"kind": "mail", "trust": "untrusted", "runs": 1, "reach": {"send_money": 1},
+                   "ended": {"send_money": {"rejected": 1}}, "stopped_runs": {"send_money": 1}}]
+        why = ("lookup_supplier's answer counts as untrusted: it was called with 'ACME-7781', which came only from "
+               "mail:inbox.")
+        call = {"node": "ev:p", "run": "r1", "tool": "send_money", "agent": "clerk", "seq": 7, "ended": "rejected",
+                "serves": "unknown", "seen": 3, "hinted": 0, "hints": [], "ruled_out": [], "truncated": False,
+                "chain": [], "untrusted": None, "words": "send_money (clerk, rejected): no replay has tested it.",
+                "edges": [{"src": "ev:l", "grade": "seen", "basis": "recorded", "label": "lookup_supplier", "why": why},
+                          {"src": "ev:m", "grade": "seen", "basis": "recorded", "label": "mail:inbox"}]}
+        page = html.unescape(self.influence([src], edges, groups, calls={"calls": [call], "calls_total": 1})[0])
+        self.assertIn("send_money (clerk, rejected): no replay has tested it.", page)
+        self.assertIn(f'<div class="dim">seen: {why}</div>', page)
+        self.assertIn('<span class="tag blk" title="came before send_money calls in 1 run · of those calls, '
+                      '1 rejected">send_money 1 rejected</span>', page)
+
     def test_influence_names_each_run_by_as_much_of_its_id_as_tells_it_apart(self):
         """In the why demo's logs every row read "researcher · run demo-see": eight runs alike, and no position."""
         needs_node(self)

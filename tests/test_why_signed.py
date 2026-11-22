@@ -663,6 +663,32 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(quiet("verify", merged.path, "--salts", salts)[0], 2)
         self.assertEqual(quiet("verify", merged.path, "--salts", os.path.join(out, "missing"))[0], 2)
 
+    def test_a_held_call_a_person_rejected_reads_rejected(self):
+        """A person rejected the held call while the runtime waited, and INFLUENCE still said it was held (the I
+        preview): the runtime records the answer as the approval's state, which only an import's decision was read
+        from."""
+        from tracekit.why.influence import call_influence
+        rt = Runtime(SYSTEM.models, SYSTEM.tools, task="t", signer=self.client, approval_wait_s=10,
+                     out_dir=tempfile.mkdtemp(dir=self.dir), run_id="rejected")
+        a = rt.agent("a")
+
+        def reject():   # the person, in another terminal
+            run_id = wait_for(lambda: "a" in rt._tk_runs) and rt._tk("a").run_id
+            pending = wait_for(lambda: [x for x in self.client.approval_list({"run_id": run_id})["approvals"]
+                                        if x["state"] == "requested"])
+            self.client.approval_decide({"approval_id": pending[0]["approval_id"], "decision": "reject"})
+        person = threading.Thread(target=reject)
+        person.start()
+        self.assertIn("a person rejected it", a.act("Bash", {"command": 'echo "held'}).value["error"])
+        person.join()
+        run = rt.finish()
+        call = run.of_type("action")[-1]
+        self.assertEqual(call["policy"]["approval"]["state"], "rejected")
+        inf = call_influence(run, build_graph(run), "ev:" + call["id"])
+        self.assertEqual(inf["ended"], "rejected")
+        self.assertTrue(inf["words"].startswith("Bash (a, rejected)"), inf["words"])
+        self.assertIn("Bash was held for approval and rejected", [x["title"] for x in alerts(run, build_graph(run))])
+
     def test_a_held_call_retried_runs_once_approved(self):
         rt = Runtime(SYSTEM.models, SYSTEM.tools, task="t", signer=self.client, approval_wait_s=0.2,
                      out_dir=tempfile.mkdtemp(dir=self.dir), run_id="held")

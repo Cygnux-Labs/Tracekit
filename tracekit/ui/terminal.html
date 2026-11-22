@@ -7034,11 +7034,11 @@
     const kindName = k => KIND[k] || (String(k).startsWith("tool:") ? "output of " + String(k).slice(5) : String(k));
     const many = (n, w) => Number(n).toLocaleString("en-US") + " " + w + (n === 1 ? "" : "s");
     // how a call content led to ended, worst first, and its chip's class
-    const ENDS = [["blocked", "blk"], ["held", "held"], ["flagged", "flag"]];
-    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, held, flagged},
+    const ENDS = [["blocked", "blk"], ["rejected", "blk"], ["held", "held"], ["flagged", "flag"]];
+    // a tool a row led to: {tool, runs, confirmed, tested, ruled_out, effect, ended: {blocked, rejected, held, flagged},
     // stopped_runs}; a confirmed cause, or a call it led to that was blocked or held, is always shown (flagged ones are
     // common: they come first among the rest)
-    const stopped = t => t.confirmed || t.ended.blocked || t.ended.held;
+    const stopped = t => t.confirmed || t.ended.blocked || t.ended.rejected || t.ended.held;
     // a tool's class (its chip's, and its line's in the flow), how the calls ended, and all it says
     const tone = t => t.confirmed ? "deny" : ENDS.find(([k]) => t.ended[k])?.[1] || (t.tested && t.ruled_out ? "ruled" : "");
     const endWords = t => ENDS.filter(([k]) => t.ended[k]).map(([k]) => `${Number(t.ended[k]).toLocaleString("en-US")} ${k}`).join(" · ");
@@ -7108,6 +7108,7 @@
         ...by("claimed").map(e => `claimed by the log, not checked against the signer: its \`${e.field}\` from ${e.label}`),
         ...by("measured").map(e => `measured: a replay without ${e.label} changed it, effect ${sgn(e.effect)}` + (e.ci ? ` [${sgn(e.ci[0])}, ${sgn(e.ci[1])}]` : "")),
         c.seen ? `seen: ${plural(c.seen, "source")} in the context of the model call that asked for it (${[...new Set(seen.map(e => BASIS[e.basis] || e.basis))].join("; ")})` : "",
+        ...c.edges.filter(e => e.why).map(e => `${e.grade}: ${e.why}`),
         c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
         ...(IFL.hint ? c.hints.map(h => `hint, not an influence: ${h.basis === "value" ? `the value ${h.value} is in` : "its text overlaps"} ${h.label}`) : [])];
       return `<div class="${esc(c.serves === "drift" ? "icall drift" : "icall")}"><div class="w">${esc(c.words)} <button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">WHY</button></div>`
@@ -7197,7 +7198,7 @@
       const groups = (I.groups || []).map(g => {
         const key = g.kind + "|" + g.trust, tools = dict();
         // its sources: a confirmed cause first, then those that came before calls blocked or held, then the most cited
-        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).held || 0), 0);
+        const stops = x => (bySrc.get(x.id) || []).reduce((n, e) => n + ((e.ended || {}).blocked || 0) + ((e.ended || {}).rejected || 0) + ((e.ended || {}).held || 0), 0);
         const mine = S2.filter(s => s.kind === g.kind && s.trust === g.trust)
           .sort((a, b) => b.confirmed_tools.length - a.confirmed_tools.length || (stops(b) > 0) - (stops(a) > 0) || b.cited_by - a.cited_by);
         for (const t of Object.keys(g.reach)) tools[t] = { tool: t, runs: g.reach[t], confirmed: false, tested: false, ruled_out: true, effect: null, ended: (g.ended || {})[t] || {}, stopped_runs: (g.stopped_runs || {})[t] || 0 };

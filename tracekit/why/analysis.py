@@ -11,7 +11,7 @@ import sys
 import unicodedata
 from collections import deque
 from itertools import islice
-from typing import Any, Callable, Deque, Dict, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from .. import provenance
 from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
@@ -109,12 +109,16 @@ def only_untrusted(row: Dict[str, Any]) -> str:
         for part, ss in parts.items()])
     said = (said if whole else f"'{_short(row['value'], 80)}': {said}") + "."
     src = next((s for s in srcs if "given" in s), None)
-    if src:
-        given = src["given"]
-        said += (f" {src['label']}'s answer counts as untrusted: it was called with '{given['value']}', which came "
-                 f"only from {', '.join(given['from'])}" + (f", and that only from {', '.join(given['origin'])}"
-                                                            if given["origin"] != given["from"] else "") + ".")
-    return said
+    return said + (" " + chosen(src) if src else "")
+
+
+def chosen(src: Dict[str, Any]) -> str:
+    """Why a trusted call's answer (a source of value_provenance carrying `given`) counts as untrusted: what the call
+    was given, and where that came from."""
+    given = src["given"]
+    return (f"{src['label']}'s answer counts as untrusted: it was called with '{given['value']}', which came only from "
+            f"{', '.join(given['from'])}" + (f", and that only from {', '.join(given['origin'])}"
+                                             if given["origin"] != given["from"] else "") + ".")
 
 
 def _committed(v: Any) -> bool:
@@ -334,18 +338,20 @@ DESTINATION = frozenset(("recipient", "to", "cc", "bcc", "payee", "account", "ib
                          "number", "id", "beneficiary", "receiver", "creditor", "dest", "wallet", "payto", "endpoint",
                          "webhook", "bucket", "server", "repo", "remote", "addr", "acct", "routing", "swift", "bic",
                          "sortcode"))
-FREE_TEXT = frozenset(("body", "text", "message", "content", "summary", "description", "subject", "note", "comment",
-                       "html", "markdown", "caption", "reply", "status", "title", "msg"))
+IDENTIFIER_ENDS = frozenset(("name", "info", "details", "number", "code", "id"))
 
 
 def _identifier_key(key: Any) -> bool:
-    """Whether an argument's key names where a call goes or what it acts on: a word of it, or two words together
-    (`sort_code`, `payTo`), one of DESTINATION, and its last word no free-text word (FREE_TEXT). `recipient`,
-    `to_email`, `payee_iban`, `beneficiary` and `destination` do; `email_body`, `payee_comment`, `payment_ref`, `msg`,
-    `status` and `title` don't (words in either set count in the plural too)."""
+    """Whether an argument's key names where a call goes or what it acts on: its last word, or its last two words
+    together, one of DESTINATION (`recipient`, `body_recipient`, `notes_iban`, `toAccount`, `sort_code`, `pay_to`), or
+    a last word of IDENTIFIER_ENDS after a destination word (`beneficiary_details`, `recipient_name`). Any other key
+    holds text (`email_body`, `payee_comment`, `repo_readme`, `webhook_payload`, `display_name`). Words count in the
+    plural too."""
     words = [w.lower() for w in _KEY_WORD.findall(key)] if isinstance(key, str) else []
-    return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(
-        _one_of(w, DESTINATION) for w in words + [a + b for a, b in zip(words, words[1:])])
+    if not words:
+        return False
+    return _one_of(words[-1], DESTINATION) or len(words) > 1 and _one_of(words[-2] + words[-1], DESTINATION) or \
+        _one_of(words[-1], IDENTIFIER_ENDS) and any(_one_of(w, DESTINATION) for w in words[:-1])
 
 
 def _one_of(word: str, names: frozenset) -> bool:
@@ -445,7 +451,8 @@ class _Index:
     call_vals and call_words, the calls by their values and words, call_ix, each by its event (id()), call_of, the call
     whose result each content is; bound, the seq at which a call's result was observed as untrusted, by its content's
     index: a log the runtime wrote marks the call itself untrusted (`trust`), an older one has the agent observe the
-    result as `tool:<name>` after the call, bound to its calls first in first out."""
+    result as `tool:<name>` after the call, which makes every result of that content and tool, of that agent, untrusted
+    from then on."""
 
     def __init__(self) -> None:
         self.n, self.last = 0, None   # events read, the last of them
@@ -461,15 +468,18 @@ class _Index:
         self.call_ix: Dict[int, int] = {}
         self.call_of: Dict[int, int] = {}
         self.bound: Dict[int, int] = {}
-        # (agent, content, `tool:<name>`) -> the results not yet observed, first in first out: in a log written before
-        # calls said their own trust, two parallel calls of one tool returning the same page each get one observation
-        self.recorded: Dict[Tuple[Any, ...], Deque[int]] = {}
+        # in a log written before calls said their own trust: (agent, content, `tool:<name>`) -> the results not yet
+        # observed, and the seq that content was first observed as untrusted at; from then on every result of it is
+        self.recorded: Dict[Tuple[Any, ...], List[int]] = {}
+        self.observed: Dict[Tuple[Any, ...], int] = {}
 
     def add(self, run: Run, memo: Dict[Any, Any], ev: Dict[str, Any]) -> None:
         if ev["type"] == "input":
-            waiting = self.recorded.get((ev["agent"], ev.get("ref"), ev.get("source")))
-            if waiting and ev.get("trust") == "untrusted":
-                self.bound[waiting.popleft()] = ev["seq"]
+            key = (ev["agent"], ev.get("ref"), ev.get("source"))
+            if ev.get("trust") == "untrusted":
+                self.observed.setdefault(key, ev["seq"])
+                for i in self.recorded.pop(key, ()):
+                    self.bound[i] = ev["seq"]
             self._content(ev, ev.get("trust", "trusted"), "task" if ev.get("kind") == "task" else
                           ev.get("source", "input"), _read(run, memo, ev, True))
         elif ev["type"] == "action":
@@ -483,8 +493,11 @@ class _Index:
                 self.call_words.setdefault(w, []).append(j)
             if ev.get("status") != "blocked":   # a call that ran: its result is content
                 self.call_of[len(self.reads)] = j
-                self.recorded.setdefault((ev["agent"], ev.get("result_ref"), "tool:" + ev["tool"]), deque()).append(
-                    len(self.reads))
+                key = (ev["agent"], ev.get("result_ref"), "tool:" + ev["tool"])
+                if key in self.observed:
+                    self.bound[len(self.reads)] = ev["seq"]
+                else:
+                    self.recorded.setdefault(key, []).append(len(self.reads))
                 self._content(ev, "untrusted" if ev.get("trust") == "untrusted" else "trusted", ev["tool"],
                               _read(run, memo, ev, True))
 
@@ -783,10 +796,10 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
         # a held call blocked at once whose retry ran under its approval is approved, as a call that ran itself
         if ev.get("status") == "blocked" and not (pol.get("approval") or {}).get("ran_by"):
             # a held call that no one approved never ran: it was held, not blocked
-            answer = (pol.get("approval") or {}).get("decision")
+            said = answer(pol)
             title = (f"{ev['tool']} was held for approval and " + {
-                "reject": "rejected", "timeout": "timed out", "expired": "the approval expired", "abandoned":
-                "the approval was abandoned", "revoked": "the approval was revoked"}.get(answer, "not approved")
+                "rejected": "rejected", "timed out": "timed out", "expired": "the approval expired", "abandoned":
+                "the approval was abandoned", "revoked": "the approval was revoked"}.get(said, "not approved")
                 if pol.get("decision") == "ask" else
                 f"{ev['tool']} was blocked by " + ("Tracekit policy" if pol.get("decision") == "deny" else "the guard"))
             out.append({**base, "severity": "high", "title": title,
@@ -933,15 +946,26 @@ def investigation(run: Run) -> Dict[str, Any]:
 
 SEEN_KEPT = 5   # a source's occurrences listed (run, time, record); `runs` counts them all
 CALLS_KEPT = 50   # risky calls INFLUENCE answers for, worst first; `calls_total` counts them all
-ENDED = (None, "flagged", "held", "blocked")   # how a call ended, worst last
+ENDED = (None, "flagged", "held", "rejected", "blocked")   # how a call ended, worst last
+# a person's answer to a held call, as an import (`decision`) or the runtime (`state`) records it
+ANSWERS = {"approve": "approved", "approved": "approved", "reject": "rejected", "rejected": "rejected",
+           "timeout": "timed out", "expired": "expired", "abandoned": "abandoned", "revoked": "revoked"}
+
+
+def answer(policy: Dict[str, Any]) -> Optional[str]:
+    """The answer to a held call (`policy`: its action's), in words: approved, rejected, timed out, expired, abandoned
+    or revoked; None while nobody answered."""
+    a = policy.get("approval") or {}
+    return ANSWERS.get(a.get("decision") or a.get("state"))
 
 
 def _ended(ev: Dict[str, Any]) -> Optional[str]:
-    """How a call ended when it is one to look at: blocked (denied, or stopped by the guard), held (a person's answer it
-    never got, or a no) or flagged; else None."""
+    """How a call ended when it is one to look at: blocked (denied, or stopped by the guard), rejected (a person said
+    no to it), held (a person's answer it never got) or flagged; else None."""
     p = ev.get("policy") or {}
     if p.get("decision") == "ask":
-        return None if (p.get("approval") or {}).get("decision") == "approve" else "held"
+        said = answer(p)
+        return None if said == "approved" else "rejected" if said == "rejected" else "held"
     return "blocked" if p.get("decision") == "deny" or ev.get("status") == "blocked" else \
         "flagged" if p.get("decision") == "flag" else None
 
@@ -1064,7 +1088,8 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
             "groups": [{**g, "runs": len(g["runs"]), "reach": {t: len(r) for t, r in g["reach"].items()},
                         "ended": {t: {how: len(c) for how, c in e.items()} for t, e in g["ended"].items()},
                         "stopped_runs": {t: n for t, e in g["ended"].items()
-                                         if (n := len({r for how in ("blocked", "held") for r, _ in e.get(how, ())}))}}
+                                         if (n := len({r for how in ("blocked", "rejected", "held")
+                                                       for r, _ in e.get(how, ())}))}}
                        for g in groups.values()]}
 
 

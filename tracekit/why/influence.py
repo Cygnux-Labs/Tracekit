@@ -36,7 +36,7 @@ import heapq
 import os
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
-from .analysis import _committed, _ended, _short, arg_provenance, atoms, is_sensitive
+from .analysis import _committed, _ended, _short, arg_provenance, atoms, chosen, is_sensitive, only_untrusted
 from .core import OWNER, Run
 from .graph import Graph, nodes_matching, target_hits
 
@@ -260,13 +260,20 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
                        gs if serves == "task" else set(), memo)
     step = next((s for s in steps if g.nodes[s]["type"] == "decision"), None) if serves == "task" else None
     prov = arg_provenance(run, g, ev, memo)
+    # a value only a trusted call's answer gave, which counts as untrusted because untrusted content chose what it was
+    # called with: the guard's reason, on the edge from that call and in the words
+    picked = next((r for r in prov if r["status"] == "untrusted-only" and not r.get("in_text")
+                   and any("given" in s for s in r["sources"])), None)
+    why = {s["node"]: chosen(s) for s in picked["sources"] if "given" in s} if picked else {}
     hinted = hints(g, nid, prov, {e["src"] for e in edges if e["grade"] in ("exact", "measured")})
     u = untrusted(edges)
     args = run.value(ev.get("args_ref"))
     traced = args.get(u["field"]) if u and u["grade"] == "exact" and isinstance(args, dict) else None
     out = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"], "ended": _ended(ev),
            "goal": [_goal_text(run, g, s) for s in goal], "seen": len(ctx), "hinted": len(hinted),
-           "edges": edges + seen, "hints": _first(hinted), "ruled_out": [g.nodes[s]["label"] for s in got["ruled"]],
+           "edges": [dict(e, why=why[e["src"]]) if e["src"] in why else e for e in edges + seen],
+           "hints": _first(hinted), "chosen": only_untrusted(picked) if picked else None,
+           "ruled_out": [g.nodes[s]["label"] for s in got["ruled"]],
            "chain": [_step(g, s, nid, edges, memo) for s in steps], "truncated": cut, "serves": serves,
            "untrusted": u,
            # the trusted content that holds the traced value too (the task, a trusted result): said beside
@@ -356,6 +363,7 @@ def words(inf: Dict[str, Any]) -> str:
     content around it; or that nothing links it."""
     head = f"{inf['tool']} ({inf['agent']}" + (f", {inf['ended']}" if inf["ended"] else "") + ")"
     goal = next((t for t in inf["goal"] if t), None)
+    tail = f" {inf['chosen']}" if inf.get("chosen") else ""   # why a trusted call's answer counts as untrusted
 
     def say(st):
         text = f"task '{goal}'" if st["text"] == "the task" and goal else st["text"]
@@ -363,9 +371,9 @@ def words(inf: Dict[str, Any]) -> str:
         return text + (f" ({'; '.join(notes)})" if notes else "")
     path = ("… → " if inf["truncated"] else "") + " → ".join(say(s) for s in inf["chain"])
     if not inf["edges"]:
-        return f"{head}: no influence found. Nothing exact, measured or seen links it to what the agents read."
+        return f"{head}: no influence found. Nothing exact, measured or seen links it to what the agents read.{tail}"
     if inf["serves"] == "drift":
-        return f"{head} serves no step of the task: a replay without the task kept it. Chain: {path}."
+        return f"{head} serves no step of the task: a replay without the task kept it. Chain: {path}.{tail}"
     u = inf["untrusted"]
     note = "" if not u else " " + (
         f"{u['label']} holds its `{u['field']}`, and nothing the signer indexed as trusted does"
@@ -375,7 +383,7 @@ def words(inf: Dict[str, Any]) -> str:
         if u["grade"] == "exact" else f"A replay without {u['label']} (untrusted) changed it ({_how(u)})") + \
         ": test it without the task to see whether it serves the task."
     if inf["serves"] == "task":
-        return f"{head} came from: {path}.{note}"
+        return f"{head} came from: {path}.{note}{tail}"
     around = f" Untrusted content in its model call's context: {_named(inf['in_context'])}." if inf["in_context"] else ""
     r, named = inf["replays"], lambda k: ", ".join(f"`{t}`" for t in inf["replays"][k])
     tested = "; ".join(x for x in (
@@ -384,7 +392,7 @@ def words(inf: Dict[str, Any]) -> str:
         r.get("partial") and f"a replay without part of the task kept it ({named('partial')}), none without the rest",
         r.get("inconclusive") and f"the replay without the task targeting {named('inconclusive')} was inconclusive")
         if x) or "no replay has tested it without the task"
-    return f"{head}: {tested}.{around} Chain: {path}.{note}"
+    return f"{head}: {tested}.{around} Chain: {path}.{note}{tail}"
 
 
 def influences(run: Run, g: Graph, risky: bool = False) -> List[Dict[str, Any]]:
