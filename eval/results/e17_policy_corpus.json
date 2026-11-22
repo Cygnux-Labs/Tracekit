@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:fb9fe144e77a41c4182b923824a8f86b88e93f5eb7dc1c366d508661fa0dd48c",
+  "policy_hash": "sha256:ce6a18de14fb6e883b96ca78ae600889226fbf04516a10823b916eae6dfbf112",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -54,8 +54,8 @@
       "fp": 0
     },
     "secrets": {
-      "deny": 45,
-      "caught": 45,
+      "deny": 46,
+      "caught": 46,
       "benign": 0,
       "fp": 0
     },
@@ -513,18 +513,19 @@
     "deny/secrets:31": "deny TK-S002",
     "deny/secrets:32": "deny TK-S002",
     "deny/secrets:33": "deny TK-S002 TK-S003",
-    "deny/secrets:34": "deny TK-S002 TK-F028",
-    "deny/secrets:35": "deny TK-S002 TK-F006",
-    "deny/secrets:36": "deny TK-S002 TK-S003",
-    "deny/secrets:37": "deny TK-S002 TK-F002 TK-F012",
-    "deny/secrets:38": "deny TK-S002",
-    "deny/secrets:39": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
-    "deny/secrets:40": "deny TK-D006 TK-D015 TK-F001 TK-F013",
-    "deny/secrets:41": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:34": "ask TK-A021",
+    "deny/secrets:35": "deny TK-S002 TK-F028",
+    "deny/secrets:36": "deny TK-S002 TK-F006",
+    "deny/secrets:37": "deny TK-S002 TK-S003",
+    "deny/secrets:38": "deny TK-S002 TK-F002 TK-F012",
+    "deny/secrets:39": "deny TK-S002",
+    "deny/secrets:40": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:41": "deny TK-D006 TK-D015 TK-F001 TK-F013",
     "deny/secrets:42": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
-    "deny/secrets:43": "deny TK-D011 TK-D015 TK-S004 TK-F001 TK-F012 TK-F013",
-    "deny/secrets:44": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
-    "deny/secrets:45": "deny TK-D006 TK-D015 TK-F013",
+    "deny/secrets:43": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:44": "deny TK-D011 TK-D015 TK-S004 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:45": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:46": "deny TK-D006 TK-D015 TK-F013",
     "deny/shell:1": "deny TK-S006",
     "deny/shell:2": "deny TK-S006",
     "deny/shell:3": "deny TK-S006",
