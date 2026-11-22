@@ -1046,11 +1046,11 @@ class TestEvidence(Case):
                                           {}, "whose snapshot the bundle doesn't hold"),
                  "no label, no snapshot": ({}, {"policy_hash": "sha256:" + "9" * 64}, {}, None),
                  "another policy than the request's": ({}, {}, {}, "not the one its call was held under"),
-                 "a label the run's records add": ({}, {}, {}, "carried at the yes secrets_access, which"),
+                 "a label the run's records add": ({}, {}, {}, "whose records held secrets_access at the yes, which"),
                  "a label the run's records add, no snapshot": ({}, {"policy_hash": "sha256:" + "9" * 64}, {},
                                                                 "whose snapshot the bundle doesn't hold"),
                  "a label the run's records add, then clear": ({}, {}, {}, None),
-                 "a label added before the consume": ({}, {}, {}, "carried at its consume secrets_access"),
+                 "a label added before the consume": ({}, {}, {}, "whose records held secrets_access at its consume"),
                  "a label added after the consume": ({}, {}, {}, None),
                  "a label of another run": ({}, {}, {}, None),
                  "after": ({}, {}, {}, "came after the answer"),
@@ -1102,7 +1102,7 @@ class TestEvidence(Case):
                 self.assertEqual(all(ok for _, ok, _ in rep.checks), why is None, problems)
                 self.assertTrue(why is None or why in problems[0], problems)
                 self.assertEqual([n for n, _, _ in rep.checks], ["AI approvals"] + ["AI run bound"] * bool(
-                    {**relied, **x}["labels"] or why and "carried" in why or "snapshot" in name and "add" in name))
+                    {**relied, **x}["labels"] or why and "records held" in why or "snapshot" in name and "add" in name))
 
 
 class TestAViewOfAnEarlierState(Case):

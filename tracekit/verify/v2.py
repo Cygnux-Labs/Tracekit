@@ -1372,8 +1372,8 @@ def _ai_approvals(rep, runs, policies):
             broken.append(f"{at}: an AI yes that cites policy {x['policy_hash']}, not the one its call was held under")
         # the run bound of the policy it cites decides whether the labels the run carried let it answer: those the
         # signer read, and those the run's own records held at the yes and at its consume
-        ways = (("carried", set(x["labels"])), ("carried at the yes", held[e["seq"]]),
-                ("carried at its consume", consumed.get((e.get("tenant"), d.get("approval_id")), set())))
+        ways = (("that carried {}", set(x["labels"])), ("whose records held {} at the yes", held[e["seq"]]),
+                ("whose records held {} at its consume", consumed.get((e.get("tenant"), d.get("approval_id")), set())))
         if any(ls for _, ls in ways):
             labelled, bound = labelled + 1, _run_bound(policies.get(x["policy_hash"]))
             if bound is None:
@@ -1383,8 +1383,8 @@ def _ai_approvals(rep, runs, policies):
                                     "policy snapshots")
             for how, ls in ways if bound is not None else ():
                 if ls & set(bound):
-                    bound_broken.append(f"{at}: an AI yes in a run that {how} {sorted(ls & set(bound))[0]}, which the "
-                                        "policy's run bound names")
+                    bound_broken.append(f"{at}: an AI yes in a run {how.format(sorted(ls & set(bound))[0])}, which "
+                                        "the policy's run bound names")
         for pid in x["precedents"]["approve"]:
             p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
             if p is None or pa is None:

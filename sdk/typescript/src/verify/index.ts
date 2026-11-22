@@ -1372,8 +1372,9 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
       broken.push(`${where}: an AI yes that cites policy ${x.policy_hash}, not the one its call was held under`);
     // the run bound of the policy it cites decides whether the labels the run carried let it answer: those the signer
     // read, and those the run's own records held at the yes and at its consume
-    const ways: [string, Set<string>][] = [["carried", new Set(x.labels)], ["carried at the yes", held.get(e.seq)!],
-      ["carried at its consume", consumed.get(key(get(e, "tenant"), get(d, "approval_id"))) ?? new Set()]];
+    const ways: [string, Set<string>][] = [["that carried {}", new Set(x.labels)],
+      ["whose records held {} at the yes", held.get(e.seq)!],
+      ["whose records held {} at its consume", consumed.get(key(get(e, "tenant"), get(d, "approval_id"))) ?? new Set()]];
     if (ways.some(([, ls]) => ls.size)) {
       labelled++;
       const bound = runBound(policies.get(x.policy_hash), floats);
@@ -1384,8 +1385,8 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
       } else {
         for (const [how, ls] of ways) {
           const met = [...ls].filter((l) => bound.includes(l)).sort();
-          if (met.length) boundBroken.push(`${where}: an AI yes in a run that ${how} ${met[0]}, which the policy's run `
-            + "bound names");
+          if (met.length) boundBroken.push(`${where}: an AI yes in a run ${how.replace("{}", met[0])}, which the `
+            + "policy's run bound names");
         }
       }
     }
