@@ -2005,6 +2005,7 @@ def _variable(parsed, name):
         for a in c["argv"][1:] if re.match(name + r"\+?=", a)]
 
 
+_STEPS_MAX = 1500   # the cd groups _walk follows
 _READINGS = 4   # the readings of one cd that _walk takes as alternatives
 _FOLDERS_MAX = 16   # the folders one line may be in at a command: past it the line is unread (held)
 _NAVIGATING = ("cd", "pushd", "popd")
@@ -2033,7 +2034,7 @@ def _walk(parsed, work):
     if "walk" in learned:
         return learned["walk"]
     cdpath, homes, oldpwd = _cdpath(parsed), _variable(parsed, "HOME") or ["~"], _variable(parsed, "OLDPWD")
-    folders, out, held, commands, i = [None], [], False, parsed[0], 0
+    folders, out, held, commands, i, steps = [None], [], False, parsed[0], 0, 0
     while i < len(commands):
         c = commands[i]
         if c["argv"][0] not in _NAVIGATING:
@@ -2045,6 +2046,12 @@ def _walk(parsed, work):
         while (j < len(commands) and commands[j]["pipeline"] == c["pipeline"] and commands[j]["argv"][0] in _NAVIGATING
                and j - i < _READINGS):
             j += 1
+        steps += 1
+        if steps > _STEPS_MAX:   # (more cd groups than are followed: the later ones are not, and the line is held)
+            held = True
+            out += [()] * (j - i)
+            i = j
+            continue
         new = [d for cur in folders for g in commands[i:j] if g["argv"][0] != "popd"
                for d in _destinations(next((a for a in g["argv"][1:] if a == "-" or not a.startswith("-")), None),
                                       cur, homes, oldpwd, cdpath)]
