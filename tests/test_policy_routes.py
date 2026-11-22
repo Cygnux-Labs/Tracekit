@@ -426,6 +426,42 @@ class Routes(unittest.TestCase):
         self.assertEqual(newer - set(shell._CURL_VALUED) - set(shell._CURL_BARE), set())
         self.assertFalse(newer & (valued | bare))
 
+    def test_a_download_with_a_newer_curl_option_reads_its_output_file(self):
+        # #979: the tables stopped at curl 8.13.0, so a line with a newer option was held as unread
+        # (TK-SHELL-PARSE) and its `-o` target was no write target. Every option curl added from 8.10.0 to 8.22.0
+        # that the tables missed is read now, with the arity curl's own man page (8.23.1) gives it, so a following
+        # `-o FILE` is read as the file the download writes, exactly as without the option. A bare option wrongly
+        # read as taking a value would swallow that `-o`, so each one is tried ahead of `-o .env` too.
+        u = "https://example.com/a"
+        plain = {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}
+        self.expect(self.bash("curl --httpsig-key key.hex -o .env " + u,
+                              "curl --sigalgs ecdsa_secp256r1_sha256 -o .env " + u,
+                              "curl --knownhosts kh -o .env " + u,
+                              "curl --parallel-max-host 5 -o .env " + u,
+                              "curl --httpsig-algo ed25519 --httpsig-key @key.hex --httpsig-keyid mykey "
+                              "--httpsig-headers 'method authority path' -o .env " + u,
+                              "curl --follow -o .env " + u, "curl --out-null -o .env " + u,
+                              "curl --tls-earlydata -o .env " + u, "curl --proxy-http3 -o .env " + u,
+                              "curl --dump-ca-embed -o .env " + u), "deny", "TK-D023")
+        self.expect(self.bash("curl --httpsig-key key.hex -o out " + u,
+                              "curl --sigalgs ecdsa_secp256r1_sha256 -o out " + u,
+                              "curl --knownhosts kh -o out " + u,
+                              "curl --parallel-max-host 5 -o out " + u,
+                              "curl --httpsig-algo ed25519 --httpsig-key @key.hex --httpsig-keyid mykey "
+                              "--httpsig-headers 'method authority path' -o out " + u,
+                              "curl --follow -o out " + u, "curl --out-null " + u,
+                              "curl --tls-earlydata -o out " + u, "curl --proxy-http3 -o out " + u,
+                              "curl --dump-ca-embed", "curl --dump-ca-embed " + u), plain, "TK-F001")
+        self.spare(self.bash("curl --httpsig-key key.hex -o out " + u,
+                             "curl --sigalgs ecdsa_secp256r1_sha256 -o out " + u,
+                             "curl --knownhosts kh -o out " + u, "curl --parallel-max-host 5 -o out " + u,
+                             "curl --httpsig-algo ed25519 --httpsig-key @key.hex --httpsig-keyid mykey "
+                             "--httpsig-headers 'method authority path' -o out " + u,
+                             "curl --follow -o out " + u, "curl --out-null " + u,
+                             "curl --tls-earlydata -o out " + u, "curl --proxy-http3 -o out " + u,
+                             "curl --dump-ca-embed", "curl --dump-ca-embed " + u,
+                             "curl --httpsig-key key.hex -o .env " + u), "TK-SHELL-PARSE")
+
     def test_the_download_option_table_is_wgets_own(self):
         # #979: the wget tables were written from GNU wget 1.21's manual, and the comment at _WGET_VALUED said no
         # binary had checked them. GNU Wget 1.25.0's own `--help` is kept beside this test
