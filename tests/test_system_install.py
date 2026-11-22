@@ -879,6 +879,14 @@ class UninstallV1System(unittest.TestCase):
         self.addCleanup(p.stop)
         return cfg
 
+    def managed_settings(self):
+        """The managed file's settings; {} when uninstall deleted it again. init marks a file it created, and uninstall
+        removes that file when nothing else is in it, so "the hooks are gone" can mean the file is gone."""
+        if not os.path.exists(self.managed):
+            return {}
+        with open(self.managed, encoding="utf-8") as f:
+            return json.load(f)
+
     def test_managed_install_loses_hooks_unit_and_opt_but_keeps_the_keys(self):
         """#948 test 1: no v1 hooks, no init-set allowManagedHooksOnly, no unit, no /opt/tracekit; keys and log stay."""
         self.v1_config("--managed", "--managed-only")
@@ -887,8 +895,7 @@ class UninstallV1System(unittest.TestCase):
         open(unit, "w").close()
         with contextlib.redirect_stdout(io.StringIO()):
             kept = install.uninstall_system()
-        with open(self.managed, encoding="utf-8") as f:
-            settings = json.load(f)
+        settings = self.managed_settings()
         self.assertNotIn("hooks", settings)
         self.assertNotIn("allowManagedHooksOnly", settings)
         self.assertFalse(os.path.exists(unit))
@@ -897,8 +904,8 @@ class UninstallV1System(unittest.TestCase):
         self.assertEqual(kept, [self.sys_home])
         self.assertTrue(os.path.isdir(self.sys_home))
 
-    def test_a_v2_install_on_the_same_machine_keeps_its_hooks_opt_and_keys(self):
-        """#948 test 2: v2's hooks, /opt/tracekit and the v2 keys of the client config stay."""
+    def test_a_v2_install_on_the_same_machine_keeps_its_opt_and_keys(self):
+        """#948 test 2: /opt/tracekit and v2's keys of the client config stay; the v1 hooks and keys go."""
         cfg = self.v1_config("--managed")
         cfg.update(signer="/run/tracekit-signer/signer.sock", hooks={"user": "agent"}, tailer={"user": "agent"})
         install.install_managed(None, True, self.managed, install.OPT_PYTHON)
@@ -912,9 +919,25 @@ class UninstallV1System(unittest.TestCase):
         self.assertEqual(written.get("tailer"), {"user": "agent"})
         for gone in ("socket", "signer_home", "mode", "init_flags"):
             self.assertNotIn(gone, written)
-        with open(self.managed, encoding="utf-8") as f:
-            groups = [g for gs in json.load(f).get("hooks", {}).values() for g in gs]
-        self.assertEqual(groups, [], "the v1 hook groups are gone from the managed file")
+        groups = [g for gs in self.managed_settings().get("hooks", {}).values() for g in gs]
+        self.assertEqual(groups, [], "Tracekit's hooks are out of the managed file")
+
+    def test_tracekits_groups_of_either_version_go_and_a_peoples_own_hooks_stay(self):
+        """`install_hooks(uninstall=True)` works per file, not per version, so a v2 group in the same file goes too —
+        exactly as `uninstall --v2` already does — while a group a person filed stays."""
+        self.v1_config("--managed")
+        own = {"matcher": "*", "hooks": [{"type": "command", "command": "my-own-check"}]}
+        v1 = {"matcher": "*", "hooks": [{"type": "command", "command": f"{install.OPT_PYTHON} -I -m tracekit.hook"}]}
+        v2 = {"matcher": "*", "hooks": [{"type": "command",
+                                          "command": f"{install.OPT_PYTHON} -I -m {install.V2_HOOK}"}]}
+        os.makedirs(os.path.dirname(self.managed), exist_ok=True)
+        with open(self.managed, "w", encoding="utf-8") as f:
+            json.dump({"hooks": {"PreToolUse": [own, v1, v2]}, "someAdminSetting": True}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.uninstall_system()
+        settings = self.managed_settings()
+        self.assertEqual(settings.get("hooks", {}).get("PreToolUse"), [own])
+        self.assertTrue(settings.get("someAdminSetting"), "an admin's own setting is untouched")
 
     def test_purge_also_removes_the_signers_data_dir(self):
         """#948 test 3: with --purge the signer's data dir goes too."""
