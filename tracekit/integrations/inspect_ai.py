@@ -43,6 +43,7 @@ from tracekit.sdk.client import AsyncClient, Client, result_field
 _allowed = {}   # the call's key -> (run, the signer's decision, the decided arguments), or None while it is decided
 _twins = collections.Counter()   # the call's key -> the calls refused because one with that key was open
 _sample_runs = {}   # (eval id, sample uuid) -> the task that opens that sample's run, with per_sample=True
+_completing = collections.defaultdict(set)   # (eval id, sample uuid) -> its completions still on their way
 _made = False   # whether a Tracekit approver exists, so the hook records for this process's evals
 
 
@@ -119,15 +120,21 @@ class Outcomes(Hooks):
             return
         run, d, decided = _allowed.pop(key)
         if ev.arguments != decided:
-            await complete(run, d, ev.id, 0, "error", error="the call's arguments changed after the decision")
+            status, fields = "error", {"error": "the call's arguments changed after the decision"}
         elif ev.error:
-            await complete(run, d, ev.id, 0, "error", error=ev.error.message[:4096])
+            status, fields = "error", {"error": ev.error.message[:4096]}
         else:
-            await complete(run, d, ev.id, 0, "ok", result=result_field(d.get("send_result"),
-                                                                      to_jsonable_python(ev.result)))
+            status, fields = "ok", {"result": result_field(d.get("send_result"), to_jsonable_python(ev.result))}
+        # Inspect cancels a sample's hook calls once its solvers return: the completion goes on, and its sample's end
+        # waits for it
+        done, pending = asyncio.ensure_future(complete(run, d, ev.id, 0, status, **fields)), _completing[sample]
+        pending.add(done)
+        done.add_done_callback(pending.discard)
+        await asyncio.shield(done)
 
     async def on_sample_end(self, data: SampleEnd):
         sample = (data.eval_id, data.sample_id)
+        await asyncio.gather(*_completing.pop(sample, ()))
         opening = _sample_runs.pop(sample, None)
         if opening is None:   # one run for the eval: the sample's calls that got no ToolEvent are the signer's gaps
             for m in data.sample.messages:

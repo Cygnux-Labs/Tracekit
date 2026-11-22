@@ -3,6 +3,8 @@ FakeSigner: only a call the signer allows (or a person approves while it waits) 
 the rest, and every call that ran is completed with its result or its error, and no other is."""
 import asyncio
 import collections
+import concurrent.futures
+import contextlib
 import importlib.util
 import tempfile
 import threading
@@ -389,6 +391,68 @@ class Approver(unittest.TestCase):
         self.assertTrue(wait_for(lambda: "approval.abandoned" in types()), types())
         self.assertEqual((ac.RAN, run.closed, "run.closing" in types(), "tool.result" in types()),
                          ([], True, True, False))
+
+    def test_the_last_calls_outcome_is_recorded_before_its_samples_run_closes(self):
+        """Review of #1070: Inspect cancels a sample's hook calls once its solvers return, and the sample's end closed
+        its run meanwhile, so a completion still on its way was refused and the last call had no result. The sample's
+        end waits for it."""
+        self.client = Client(ac.OnReal.serve_signer(self))
+        self.addCleanup(self.client.close)
+        opened, real_run, real_complete = [], self.client.run, RunHandle.complete
+
+        def slow(handle, *args, **kw):
+            time.sleep(0.4)   # still on its way when the sample's solvers return
+            return real_complete(handle, *args, **kw)
+        outs = [ModelOutput.for_tool_call("mockllm/model", "echo", {"text": "hi"}, tool_call_id="call-1"),
+                ModelOutput.from_content("mockllm/model", "done")]
+        def run(agent):
+            opened.append(real_run(agent))
+            return opened[-1]
+        with mock.patch.object(self.client, "run", side_effect=run), \
+                mock.patch.object(RunHandle, "complete", autospec=True, side_effect=slow):
+            t = Task(dataset=[Sample(input="go")], solver=[use_tools([echo()]), generate()],
+                     approval=[ApprovalPolicy(ti.tracekit(client=self.client, per_sample=True), "*")])
+            [log] = eval(t, model=get_model("mockllm/model", custom_outputs=outs), display="none",
+                         log_dir=ac.tmpdir(self))
+        self.assertEqual(log.status, "success", log.error)
+        [run] = opened
+        types = [e["type"] for e in ac.OnReal.events(self, {"run_id": run.run_id})]
+        self.assertEqual((ac.RAN, types.count("tool.result"), run.closed), (["echo"], 1, True), types)
+
+    def test_a_completion_cancelled_before_a_worker_takes_it_is_still_sent(self):
+        """Review of #1070 (on main too): with one run for the eval, a hook call Inspect cancelled while its completion
+        waited for a worker thread dropped the completion unsent. It goes on, and the sample's end waits for it."""
+        self.serve()
+        d = self.run.decide("call-1", "echo", {"text": "hi"})
+        ti._allowed["call-1"] = (self.run, d, {"text": "hi"})
+        ev = ToolEvent(id="call-1", function="echo", arguments={"text": "hi"}, result="hi")
+        free = threading.Event()
+
+        async def cancelled_then_ended():
+            loop = asyncio.get_running_loop()
+            loop.set_default_executor(concurrent.futures.ThreadPoolExecutor(max_workers=1))
+            busy = loop.run_in_executor(None, free.wait)   # the only worker is taken
+            hook = asyncio.ensure_future(ti.Outcomes().on_sample_event(SampleEvent(None, "run", "eval", "sample", ev)))
+            await asyncio.sleep(0.05)   # the completion waits for a worker
+            hook.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await hook
+            free.set()
+            await busy
+            await ti.Outcomes().on_sample_end(SampleEnd(None, "run", "eval", "sample", mock.Mock(messages=[])))
+        asyncio.run(cancelled_then_ended())
+        [done] = self.recorded("tool.result")
+        self.assertEqual((done["tool_call_id"], done["status"]), ("call-1", "ok"))
+
+    def test_a_samples_end_drops_its_calls_that_got_no_tool_event(self):
+        """Review of #1070: a per-sample call decided but never run (no ToolEvent), and a twin refused beside it, are
+        dropped when the sample ends, not kept for the process's life."""
+        self.serve_per_sample()
+        approve = self.per_sample()
+        self.assertEqual([a.decision for a in self.ask(approve, "call-1", "call-1")], ["approve", "reject"])
+        self.assertEqual((len(ti._allowed), +ti._twins), (1, collections.Counter({("eval", "sample", "call-1"): 1})))
+        self.end()
+        self.assertEqual((ti._allowed, +ti._twins), ({}, collections.Counter()))
 
     def test_a_call_with_no_running_sample_is_refused(self):
         """#1068: per-sample mode refuses a call it cannot attribute to a sample, instead of recording it against
