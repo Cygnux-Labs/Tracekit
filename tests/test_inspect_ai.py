@@ -107,6 +107,8 @@ class Approver(unittest.TestCase):
         ac.RAN.clear()
         self.addCleanup(ti._allowed.clear)
         self.addCleanup(ti._twins.clear)
+        self.addCleanup(ti._sample_runs.clear)
+        self.addCleanup(setattr, ti, "_single", None)
 
     def serve(self, person_answers=False):
         """A FakeSigner for `ac._rule` (pay is held, wipe denied); with `person_answers`, a person approves a held call
@@ -125,6 +127,24 @@ class Approver(unittest.TestCase):
         self.client = Client(ac._serve(self, handle))
         self.addCleanup(self.client.close)
         self.run = self.client.run(agent="inspect")
+
+    def serve_per_sample(self):
+        """Like serve(), but records every run the approver opens and closes, and every completion, by run id."""
+        signer, mutex, self.frames = FakeSigner(ac._rule), threading.Lock(), []
+
+        def handle(identity, frame):
+            method = frame.pop("method")
+            with mutex:
+                out = getattr(signer, method)(frame)
+            if method == "register_run":
+                self.frames.append(("register_run", out["run_id"], out["run_token"]))
+            elif method == "close_run":
+                self.frames.append(("close_run", frame.get("run_id"), None))
+            elif method == "complete":
+                self.frames.append(("complete", frame.get("run_id"), dict(frame)))
+            return out
+        self.client = Client(ac._serve(self, handle))
+        self.addCleanup(self.client.close)
 
     def sample(self, calls, run=None, **task):
         """The tool messages the model read after one sample in which it made `calls` ((tool, args), ...) and answered."""
@@ -224,11 +244,56 @@ class Approver(unittest.TestCase):
         arguments: the call was completed `ok` under the decision made for the model's."""
         self.serve()
         d = self.run.decide("call-1", "echo", {"text": "hi"})
-        ti._allowed["call-1"] = (self.run, d, {"text": "hi"})
+        ti._single = self.run
+        ti._allowed[(self.run.run_id, "call-1")] = (self.run, d, {"text": "hi"})
         ev = ToolEvent(id="call-1", function="echo", arguments={"text": "rm -rf /"}, result="rm -rf /")
         asyncio.run(ti.Outcomes().on_sample_event(SampleEvent(None, "run", "eval", "sample", ev)))
         [done] = self.recorded("tool.result")
         self.assertEqual((done["status"], done["error"]), ("error", "the call's arguments changed after the decision"))
+
+    def test_two_samples_with_the_same_tool_call_ids_record_into_their_own_runs(self):
+        """#1068: per_sample=True opens one run per sample (keyed by the sample's eval id and uuid), so two samples
+        with the same input and the same tool-call ids each record into their own run, and each run closes when its
+        sample ends."""
+        self.serve_per_sample()
+        # lean: a callable, not a shared list, so concurrent samples can't consume each other's outputs: a sample's
+        # first generate (just its input) echoes once, later ones are done
+        def outs(input, tools, tool_choice, config):
+            if len(input) == 1:
+                return ModelOutput.for_tool_call("mockllm/model", "echo", {"text": "hi"}, tool_call_id="call-1")
+            return ModelOutput.from_content("mockllm/model", "done")
+        t = Task(dataset=[Sample(input="go"), Sample(input="go")],
+                 solver=[use_tools([echo()]), generate()],
+                 approval=[ApprovalPolicy(ti.tracekit(client=self.client, per_sample=True), "*")])
+        [log] = eval(t, model=get_model("mockllm/model", custom_outputs=outs), display="none",
+                     log_dir=ac.tmpdir(self))
+        self.assertEqual(log.status, "success", log.error)
+        self.assertEqual(ac.RAN, ["echo", "echo"])
+        runs = [f[1] for f in self.frames if f[0] == "register_run"]
+        self.assertEqual((len(runs), len(set(runs))), (2, 2), self.frames)
+        self.assertEqual(sorted(f[1] for f in self.frames if f[0] == "close_run"), sorted(runs))
+        done = [(f[1], f[2]["tool_call_id"], f[2]["status"]) for f in self.frames if f[0] == "complete"]
+        self.assertEqual(sorted(done), sorted((r, "call-1", "ok") for r in runs))
+        self.assertEqual((ti._allowed, ti._twins, ti._sample_runs), ({}, collections.Counter(), {}))
+
+    def test_a_call_with_no_running_sample_is_refused(self):
+        """#1068: per-sample mode refuses a call it cannot attribute to a sample, instead of recording it against
+        some other sample's run."""
+        self.serve()
+        approve = ti.tracekit(client=self.client, per_sample=True)
+        out = asyncio.run(approve(message="", call=ToolCall(id="x", function="echo", arguments={"text": "hi"}),
+                                  view=None, history=[]))
+        self.assertEqual(out.decision, "reject")
+        self.assertIn("could not be told", out.explanation)
+
+    def test_per_sample_needs_a_client_not_a_run(self):
+        self.serve()
+        with self.assertRaisesRegex(TypeError, "needs client=Client"):
+            ti.tracekit(per_sample=True)
+        with self.assertRaisesRegex(TypeError, "not a run handle"):
+            ti.tracekit(self.run, per_sample=True)
+        with self.assertRaisesRegex(TypeError, "per_sample=True"):
+            ti.tracekit(self.run, client=self.client)
 
     def test_a_signer_error_refuses_the_call(self):
         self.serve()
