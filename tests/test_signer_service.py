@@ -194,10 +194,17 @@ class TestService(unittest.TestCase):
         dev token by accident."""
         self.assertEqual(svc.DEFAULT_GRANTS | svc.NEVER_DEFAULT, set(REQUESTS))
         self.assertFalse(svc.DEFAULT_GRANTS & svc.NEVER_DEFAULT)
-        s = self.open()
+        s, other = self.open(), tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, other, True)
+        configured = svc.SignerService(other, policy=PAY_ASKS, approvals={"approvers": ["uid:1"]})
+        self.addCleanup(configured.close)
         for who in (OTHER, CallerIdentity("token", "dev", True)):
-            for method in sorted(svc.NEVER_DEFAULT):
+            for method in sorted(svc.NEVER_DEFAULT - {"run_label_clear"}):
                 self.refused("forbidden", s, method, {}, who)
+            # but a signer with no approvals config (a dev signer) lets its own user clear their run's label, as it
+            # lets them answer their run's approvals (self_cleared: tests/test_run_conditions.py)
+            self.refused("invalid_request", s, "run_label_clear", {}, who)
+            self.refused("forbidden", configured, "run_label_clear", {}, who)
 
     def test_refusals_leave_no_state(self):
         s = self.open()
