@@ -29,6 +29,7 @@ except ImportError:
 from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
+from . import yamlmini
 from .wiki import wiki_url
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1574,28 +1575,23 @@ V2_INIT_KEYS = ("data_dir", "socket", "socket_mode", "tenant", "tenants", "appro
                 "harness_binding", "witnesses")
 
 
-def _top_blocks(text):
-    """signer.yaml's top-level entries, {key: its lines}; a comment or blank line goes with the entry above it."""
-    blocks, key = {}, None
-    for line in text.splitlines(keepends=True):
-        if line[:1] not in ("", " ", "\t", "#", "-", "\n") and ":" in line:
-            key = line.split(":", 1)[0].strip()
-            blocks[key] = []
-        if key is not None:
-            blocks[key].append(line)
-    return blocks
-
-
 def keep_hand_keys(old, new):
-    """`new` (v2_signer_yaml's) plus the top-level entries of `old` that init doesn't write (`content:`, `metrics:`, ...),
-    and a `witnesses:` list other than init's own `["public"]`, which then replaces init's. Returns (text, kept keys)."""
-    blocks = _top_blocks(old)
-    kept = [k for k in blocks if k not in V2_INIT_KEYS]
-    witnesses = "".join(blocks.get("witnesses", ())).strip()
-    if witnesses and witnesses != 'witnesses: ["public"]':
+    """`new` (v2_signer_yaml's) plus the top-level keys of signer.yaml `old` that init doesn't write (`content:`,
+    `metrics:`, ...), read by their parsed names and written back as JSON, and a `witnesses:` list other than init's
+    own `["public"]`, which then replaces init's. Returns (text, kept keys); ValueError names what can't be kept."""
+    cfg = yamlmini.load_any(old) or {}
+    if not isinstance(cfg, dict):
+        raise ValueError("it is not a mapping of keys")
+    kept = [k for k in cfg if k not in V2_INIT_KEYS]
+    if cfg.get("witnesses") not in (None, ["public"]):
         new = "".join(line for line in new.splitlines(keepends=True) if not line.startswith("witnesses:"))
         kept.append("witnesses")
-    return new + "".join(line for k in kept for line in blocks[k]), kept
+    text = new + "".join(f"{json.dumps(k)}: {json.dumps(cfg[k])}\n" for k in kept)
+    merged, ours = yamlmini.load_any(text), yamlmini.load_any(new)
+    for k in V2_INIT_KEYS:
+        if k != "witnesses" and merged.get(k) != ours.get(k):
+            raise ValueError(f"init's key {k} would not be what init writes")
+    return text, kept
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1757,11 +1753,16 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     config = v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
                             system_witness(public_witness), observer and observer.pw_uid)
+    kept = []
+    d = files.open_dir(os.path.dirname(V2_CONFIG)) if os.path.isdir(os.path.dirname(V2_CONFIG)) else None
     try:
-        with open(V2_CONFIG) as f:
-            config, kept = keep_hand_keys(f.read(), config)
-    except FileNotFoundError:
-        kept = []
+        old = d is not None and files.read(d, os.path.basename(V2_CONFIG))
+        if old:
+            config, kept = keep_hand_keys(old.decode("utf-8"), config)
+    except (files.UnsafePath, UnicodeDecodeError, ValueError) as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    finally:
+        files.close(d)
     if kept:
         print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
     _write_root_file(V2_CONFIG, config.encode())

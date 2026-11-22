@@ -155,8 +155,10 @@ dependencies); on the clone route, delete the clone.
 
 Each init run writes its own keys in `/etc/tracekit/signer.yaml` again from its flags (`data_dir`, `socket`,
 `socket_mode`, `tenant`, `tenants`, `approvals`, `authorize`, `policy`, `harness_binding` and `witnesses`), keeps
-every other key you added, such as `content:` or `metrics:`, and says which it kept. A `witnesses:` list of your own is
-kept as it is, so add `public` to it yourself if you want the public witness too. To upgrade:
+every other key you added, such as `content:` or `metrics:`, and says which it kept. Kept keys are written back as
+JSON, so comments in the file are not kept. A `witnesses:` list of your own is kept as it is, so add `public` to it
+yourself if you want the public witness too. Init refuses a signer.yaml it can't read as UTF-8 YAML, a symlink or
+anything but a regular file. To upgrade:
 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.

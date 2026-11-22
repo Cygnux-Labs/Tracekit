@@ -51,13 +51,13 @@ class SignerConfig(unittest.TestCase):
                + 'metrics: {"listen": "127.0.0.1:9464"}\n')
         text, kept = install.keep_hand_keys(old, new)
         self.assertEqual(kept, ["content", "metrics", "witnesses"])
-        self.assertIn('witnesses:\n- url: "https://w2.example"\n  class: "operator"\n', text)
         self.assertNotIn('witnesses: ["public"]', text)
+        self.assertEqual(install.yamlmini.load_any(text)["witnesses"], [{"url": "https://w2.example", "class": "operator"}])
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "signer.yaml")
         with open(path, "w") as f:   # load_config checks a witness's vkey; the rest loads as written
-            f.write(text.split("witnesses:")[0] + text.split("  class: \"operator\"\n")[1])
+            f.write("".join(line for line in text.splitlines(keepends=True) if not line.startswith('"witnesses"')))
         cfg = service.load_config(path)
         self.assertEqual(cfg["content"], {"keep": True})
         self.assertEqual(cfg["metrics"], {"listen": "127.0.0.1:9464"})
@@ -68,6 +68,27 @@ class SignerConfig(unittest.TestCase):
         old = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
         new = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=False)
         self.assertEqual(install.keep_hand_keys(old, new), (new, []))
+
+    def test_a_rerun_reads_old_keys_by_their_parsed_names(self):
+        """A key init writes, spelled another way (quoted, escaped, tagged, complex, merged in), is init's: it is
+        neither kept nor written after init's own (where the last one would win)."""
+        new = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102)
+        for old in ('"socket": "/tmp/evil.sock"\n', "'approvals': {\"self_approval\": \"allow\"}\n",
+                    '"sock\\x65t": "/tmp/evil.sock"\n', '!!str socket: "/tmp/evil.sock"\n',
+                    '? socket\n: "/tmp/evil.sock"\n', 'x: &d {"socket": "/tmp/evil.sock"}\n<<: *d\n',
+                    'socket : "/tmp/evil.sock"\n'):
+            with self.subTest(old=old):
+                text, _ = install.keep_hand_keys(new + old, new)
+                cfg = install.yamlmini.load_any(text)
+                self.assertEqual((cfg["socket"], cfg["approvals"]["self_approval"]), ("/run/s.sock", "deny"))
+
+    def test_a_comment_after_init_witness_line_still_follows_the_flags(self):
+        old = (install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
+               + '# keep content 30 days\ncontent: {"retain": true}\n')
+        new = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=False)
+        text, kept = install.keep_hand_keys(old, new)
+        self.assertEqual(kept, ["content"])
+        self.assertNotIn("witnesses", install.yamlmini.load_any(text))
 
     def test_unit_is_hardened_with_no_capabilities(self):
         unit = install.V2_UNIT_TEXT.format(user="tracekit-signer", python=install.OPT_PYTHON,
@@ -194,6 +215,31 @@ class InstallAndUninstall(unittest.TestCase):
                   mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed)):
             p.__enter__()
             self.addCleanup(p.__exit__, None, None, None)
+
+    def test_a_rerun_keeps_content_and_says_so(self):
+        with open(install.V2_CONFIG, "w") as f:
+            f.write('# old\ndata_dir: "/x"\ncontent: {"retain": true}\nmetrics: {"listen": "127.0.0.1:9464"}\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        cfg = install.yamlmini.load_any(self.written[install.V2_CONFIG].decode())
+        self.assertEqual((cfg["content"], cfg["data_dir"]), ({"retain": True}, install.V2_DATA))
+        self.assertIn("kept what you added: content, metrics", out.getvalue())
+
+    def test_a_rerun_refuses_an_old_file_it_cannot_read_safely(self):
+        target = os.path.join(self.d, "elsewhere.yaml")
+        with open(target, "w") as f:
+            f.write('data_dir: "/x"\n')
+        for name, make in (("not utf-8", lambda p: open(p, "wb").write(b'data_dir: "/x"\ncontent: "\xff"\n')),
+                           ("symlink", lambda p: os.symlink(target, p)), ("fifo", os.mkfifo)):
+            with self.subTest(name):
+                make(install.V2_CONFIG)
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+                        self.init_v2()
+                finally:
+                    os.remove(install.V2_CONFIG)
+                self.assertIn("can't keep what you added", str(e.exception))
 
     def test_without_tailer_access_init_writes_no_tailer_key(self):
         out = io.StringIO()
