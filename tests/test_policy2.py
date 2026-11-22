@@ -3991,6 +3991,22 @@ class ExemptionWords(unittest.TestCase):
         e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], BACKENDS[0])
         self.assertIn(e.decide("Bash", {"command": "gh release create v1 -d"})["verdict"], ("allow", "flag"))
 
+    def test_a_help_word_after_a_double_dash_is_the_started_program_s(self):
+        """`tracekit srt-decider --allow-domain x -- sh -c 'rm -rf /var/lib/tracekit' --help` was allowed: TK-D007's
+        `--help` exemption took the last word as Tracekit's own, but srt-decider starts the program its first word
+        that isn't one of its options names, or the words after a `--`, with every word after it, the --help too. A
+        help word after a bare `--`, or after srt-decider, exempts no longer (TK-A057's for `init` neither)."""
+        TimedAndBraced.held_or_denied(self, [
+            ("tracekit srt-decider --allow-domain x -- sh -c 'rm -rf /var/lib/tracekit' --help", "TK-D007"),
+            ("tracekit srt-decider -- python3 -c 'import shutil; shutil.rmtree(\"/var/lib/tracekit\")' --help",
+             "TK-D007"),
+            ("tracekit srt-decider --allow-domain x python3 -c 'import shutil; shutil.rmtree(\"/var/lib/tracekit\")' "
+             "--help", "TK-D007"),
+            ("python3 -m tracekit srt-decider -- sh -c 'pkill -f tracekitd' --help", "TK-D007"),
+            ("tracekit init -- --help", "TK-A057")], packs=("coding.yaml", "dev.yaml"))
+        Round11.allowed(self, ["tracekit srt-decider --help", "tracekit srt-decider --allow-domain x --help",
+                               "python3 -m tracekit -- init --help", "tracekit signer serve --dev --help"])
+
 
 class Round15(unittest.TestCase):
     """A copy or link of Tracekit's entry point run under another name, a function variable as a
