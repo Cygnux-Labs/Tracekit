@@ -377,7 +377,8 @@ def _parser():
                         "when not given) instead of its user settings file")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--system", action="store_true",
-                   help="as root: remove v1 system mode (init as root without --v2): its hooks, service and configs")
+                   help="as root: remove v1 system mode (init as root without --v2): its hooks, service and configs; "
+                        "with --project DIR, also the hooks in a project an init before 1.7.0 didn't record")
     p.add_argument("--user", metavar="NAME",
                    help="with --system: the agent user init set up (its --user); needed unless init used --managed or "
                         "--no-hooks, and it also removes that user's client config")
@@ -929,18 +930,23 @@ def _run(a):
     if a.cmd == "uninstall" and (a.v2 or a.system or a.purge or a.user):
         from . import install
         if a.system:
-            if a.v2 or a.project or a.agent != "claude":
-                print("tracekit: --system takes neither --v2, --project nor --agent", file=sys.stderr)
+            if a.v2 or a.agent != "claude":
+                print("tracekit: --system takes neither --v2 nor --agent", file=sys.stderr)
                 return 2
             try:
-                removed, kept = install.uninstall_system(a.purge, a.user)
+                removed, kept, notes = install.uninstall_system(a.purge, a.user, a.project)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v1 system mode removed: {', '.join(removed)}" if removed else
                   "v1 system mode is not installed: nothing to remove")
-            if kept:
+            if kept and not a.purge:
                 print(f"kept {' and '.join(kept)} (--purge deletes them)")
+            for note in notes:
+                print(note)
+            if kept and a.purge:
+                print(f"tracekit: --purge could not delete {' and '.join(kept)}", file=sys.stderr)
+                return 1
             return 0
         if a.user:
             print("tracekit: --user goes with --system", file=sys.stderr)
