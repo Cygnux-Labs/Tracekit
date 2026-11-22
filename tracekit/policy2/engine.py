@@ -3322,7 +3322,7 @@ _SED_WRITE = re.compile(r"(?:^|[\s;{}/])[wW]\s*([^\s;}]+)")
 # the files an editor is told to write: vim's and ex's :w, :write, :saveas, :sav, :wq, :x, :up (past a !), emacs's write-file
 _EDITOR_WRITE = re.compile(r"(?:^|[\s:|;'\"])(?:w(?:rite)?|sav(?:eas)?|wq|x|up(?:date)?|f(?:ile)?|r(?:ead)?)!?\s+([^\s|;'\"]+)|"
                            r"write-file\s+\"([^\"]+)\"|set-visited-file-name\s+\"([^\"]+)\"")
-_SQLITE_FILE = re.compile(r"(?i)\.(?:output|once|backup|save|import|read|dump|clone|cd|trace|log|shell|system)\s+(?:--\w+\s+)*(\S+)|"
+_SQLITE_FILE = re.compile(r"(?i)\.(?:output|once|backup|save|import|read|dump|clone|cd|trace|log)\s+(?:--\w+\s+)*(\S+)|"
                           r"\bvacuum\s+(?:\w+\s+)?into\s+['\"]([^'\"]*)['\"]|\battach\s+(?:database\s+)?['\"]([^'\"]*)['\"]")
 
 
@@ -3339,7 +3339,7 @@ def _side_outputs(exe, args, command):
         return [m.group(1) for a in words for m in _SED_WRITE.finditer(a)]
     if exe in ("awk", "gawk", "mawk", "nawk"):
         program = shell._awk_program(args) or ""
-        return [piece for lit in re.findall(r"\"([^\"\n]*)\"", program) for piece in lit.split()]   # (a path in a command it runs)
+        return re.findall(r"\"([^\"\n]*)\"", program)
     if exe in ("sqlite3", "sqlite"):
         return [g.strip("\"'") for m in _SQLITE_FILE.finditer("\n".join(words + list(command.get("stdin", ()))))
                 for g in m.groups() if g]

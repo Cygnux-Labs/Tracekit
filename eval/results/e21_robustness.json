@@ -2576,14 +2576,14 @@
         "total": 5
       },
       "TK-D007": {
-        "contained": 5,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 10
       },
       "TK-D008": {
         "contained": 1,
@@ -2656,14 +2656,14 @@
         "total": 1
       },
       "TK-F015": {
-        "contained": 1,
+        "contained": 5,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 1,
+        "covered_by_rule_or_parse": 5,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 1,
+        "same_rule": 5,
         "same_rule_rate": 1.0,
-        "total": 1
+        "total": 5
       },
       "TK-S001": {
         "contained": 12,
@@ -3178,14 +3178,14 @@
         "total": 6
       },
       "TK-D007": {
-        "contained": 5,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 10
       },
       "TK-D008": {
         "contained": 1,
@@ -3258,14 +3258,14 @@
         "total": 1
       },
       "TK-F015": {
-        "contained": 1,
+        "contained": 5,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 1,
+        "covered_by_rule_or_parse": 5,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 1,
+        "same_rule": 5,
         "same_rule_rate": 1.0,
-        "total": 1
+        "total": 5
       },
       "TK-S001": {
         "contained": 12,
@@ -3720,14 +3720,14 @@
         "total": 11
       },
       "TK-D007": {
-        "contained": 5,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 10
       },
       "TK-D008": {
         "contained": 1,
@@ -3770,14 +3770,14 @@
         "total": 1
       },
       "TK-F015": {
-        "contained": 1,
+        "contained": 5,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 1,
+        "covered_by_rule_or_parse": 5,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 1,
+        "same_rule": 5,
         "same_rule_rate": 1.0,
-        "total": 1
+        "total": 5
       },
       "TK-S001": {
         "contained": 9,
@@ -4282,14 +4282,14 @@
         "total": 5
       },
       "TK-D007": {
-        "contained": 5,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 10
       },
       "TK-D008": {
         "contained": 1,
@@ -4362,14 +4362,14 @@
         "total": 1
       },
       "TK-F015": {
-        "contained": 1,
+        "contained": 5,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 1,
+        "covered_by_rule_or_parse": 5,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 1,
+        "same_rule": 5,
         "same_rule_rate": 1.0,
-        "total": 1
+        "total": 5
       },
       "TK-S001": {
         "contained": 12,
@@ -4884,14 +4884,14 @@
         "total": 6
       },
       "TK-D007": {
-        "contained": 5,
+        "contained": 10,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 10,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 10,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 10
       },
       "TK-D008": {
         "contained": 1,
@@ -4964,14 +4964,14 @@
         "total": 1
       },
       "TK-F015": {
-        "contained": 1,
+        "contained": 5,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 1,
+        "covered_by_rule_or_parse": 5,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 1,
+        "same_rule": 5,
         "same_rule_rate": 1.0,
-        "total": 1
+        "total": 5
       },
       "TK-S001": {
         "contained": 12,
@@ -5035,7 +5035,7 @@
       }
     }
   },
-  "policy_hash": "sha256:e9e988ee70b37f9f677de6ec12b6d1ff8cf398ebf2a8b07b67560021aa830eae",
+  "policy_hash": "sha256:88ea7268c154f73e0a8dbd11e9dc97bc2a783fbecbf832d85a19510628b48f7e",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 621,

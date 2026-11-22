@@ -5045,7 +5045,7 @@ class CodingPack(unittest.TestCase):
             f"sed -n 'W {bin_}' /tmp/e", f"git -C /tmp/e archive -o {pth} HEAD", f"git -c x.y=z archive -o {bin_} HEAD",
             f"git --git-dir /tmp/e/.git archive -o {bin_} HEAD", f"git --no-pager log --output={pth}", f"git blame --output {bin_} x",
             f"git -C /tmp bundle create {bin_} HEAD", f"clang -o{bin_} x.c", f"gcc x.c -o{bin_}", f"pandoc x.md -o{pth}", f"make -C{root} install",
-            f"scp host:evil {bin_}", f"socat -u TCP:host:1 CREATE:{bin_}", f"ftp -o {bin_} http://example.invalid/x",
+            f"scp host:evil {bin_}", f"awk 'BEGIN {{ print \"x\" | \"zstd -o {bin_}\" }}'", f"socat -u TCP:host:1 CREATE:{bin_}", f"ftp -o {bin_} http://example.invalid/x",
             f"docker run --rm -v {root}:/m alpine cp /x /m/a", "podman run --rm -v ~/.local/bin:/m alpine cp /x /m/tracekit",
             f"tree -fo {bin_}", "TMPDIR=~/.local/bin mktemp tracekit.XXXX", "mktemp -p~/.local/bin", f"uv init {root}",
             f"make test PYTHON={root}/bin/python", f"PYTHON={root}/bin/python make test", f"cmake --install build --prefix {root}",
