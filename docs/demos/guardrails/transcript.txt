@@ -15,7 +15,7 @@ $ tracekit verify 25499b981483c876db604937e2455957.tkb --trust trust.json --deta
 [PASS] policy snapshot — policies/6a672068b8a69b63519a07645be002f3cfab85a0cd6ac13731aa8190264afd4b.json
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
-[PASS] run labels — 1 run(s) replayed under their policy, 0 signer-asserted (under several policies, or a policy not in the bundle)
+[PASS] run labels — 1 run(s) replayed under their policies, 0 signer-asserted (under a policy not in the bundle)
 [PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
 [PASS] args source — 3 record(s): raw 0, parsed 3, coerced 0
 [PASS] isolation — signer-reported: same-user 1 run(s)

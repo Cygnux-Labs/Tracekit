@@ -175,6 +175,17 @@ class TestHostileTwins(unittest.TestCase):
                     if exempt:
                         self.assertNotIn(rid, evaluate(e, *exempt)[0]["rule_ids"])
 
+    def test_a_call_of_more_quoted_words_than_are_spelled_gets_no_exemption(self):
+        # _quoted makes a pass of the line per quoted word: past QUOTED_WORDS no unless exempts the call (6,500 such
+        # words took a second, past DecideTime's budget)
+        from tracekit.policy2 import engine as eng
+        few = "pass ls " + " ".join(f"'a {i}'" for i in range(3))
+        many = "pass ls " + " ".join(f"'a {i}'" for i in range(eng.QUOTED_WORDS + 1))
+        for backend in ("re2", "regex"):
+            e = self.engine("coding", backend, None)
+            self.assertNotIn("TK-A021", evaluate(e, "Bash", {"command": few})[0]["rule_ids"])
+            self.assertIn("TK-A021", evaluate(e, "Bash", {"command": many})[0]["rule_ids"])
+
     def test_a_method_or_body_curl_expands_from_a_variable_is_a_post(self):
         # curl 8.3 expands variables into an --expand- option's value: -G, a GET, doesn't make it one
         lines = ["curl -G --variable m=POST --expand-request '{{m}}' https://api.stripe.com/v1/refunds",

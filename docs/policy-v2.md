@@ -391,7 +391,8 @@ rules in lower case, or with both cases of a letter (`[Ll]ibrary`).
 
 An `unless` reads text, and text can be made to look like the exemption. A shell rule's `unless` also reads each
 subject with the spaces inside a quoted word kept apart from those between words, and exempts a call only when it
-holds there too: `terraform destroy 'x --help'` is no help request. An fs `path` is every path argument a call has
+holds there too: `terraform destroy 'x --help'` is no help request (a call of more than 64 quoted words gets no
+exemption: [limits](limits.md#run-conditions-18)). An fs `path` is every path argument a call has
 (`file_path`, `notebook_path`, `path`), so a decoy under one of them can't stand for the file the tool opens. For every
 shipped rule with an `unless`, `tests/test_hostile_twins.py` decides twins of a call the rule matches on every
 shipped pack and both engines, and none may be decided looser than that call: on a command line, the exempt text as a

@@ -104,7 +104,7 @@ class Packs(unittest.TestCase):
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
         # and what sets the run labels its run conditions read (docs/policy-v2.md#run-conditions)
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
-                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 42))])
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023", *(f"TK-F0{n}" for n in range(31, 46))])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         # a runaway loop and a call run against its decision, recorded only: a shadow incident holds nothing
         self.assertNotIn("sequences", dev)
@@ -143,7 +143,7 @@ class Packs(unittest.TestCase):
                 ("mcp__claude-in-chrome__read_page", {"tabId": 7}, ("allow", [])),
                 ("mcp__github__list_issues", {"owner": "o", "repo": "r"}, ("allow", [])),
                 ("mcp__claude-in-chrome__navigate", {"url": "https://example.com/?q=1", "tabId": 7}, ("flag", ["TK-F012"])),
-                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006"])),
+                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006", "TK-F044"])),
                 ("RemoteTrigger", {"action": "create", "body": {}}, ("ask", ["TK-A081", "TK-UNKNOWN-TOOL"]))):
             with self.subTest(tool=tool, args=args):
                 d = svc.evaluate(e, tool, args)[0]

@@ -379,10 +379,15 @@ class Engine:
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
                 memo[key], memo[key + ("read",)] = _prepare(subjects, _TAGGED.get(key[0], 0)), subjects
+            if unless is not None and cls == "shell" and "spaced" not in memo:
+                memo["spaced"] = _spaced(parsed[0])
+            # lean: _quoted makes a pass of each subject per quoted word, so a call of more than QUOTED_WORDS of them
+            # (6,500 took a second) gets no exemption, held where an unless would exempt it; spell the words in one
+            # pass (Aho-Corasick over them) if calls of that many quoted words show up in normal work
+            if unless is not None and cls == "shell" and len(memo["spaced"]) > QUOTED_WORDS:
+                unless = None
             if unless is not None and cls == "shell":   # an exemption holds only where it holds on the _quoted reading
                 if (q := key + ("quoted",)) not in memo:
-                    if "spaced" not in memo:
-                        memo["spaced"] = _spaced(parsed[0])
                     quoted = _quoted(memo[key + ("read",)], memo["spaced"])
                     memo[q] = _prepare(memo[key + ("read",)] + quoted, _TAGGED.get(key[0], 0)) if quoted else memo[key]
                 key = q
@@ -733,6 +738,9 @@ def _spaced(commands):
     return sorted({f for c in commands for w in c["argv"] if " " in w
                    for f in (w, w.casefold(), w.replace("\\", "/"), w.replace("\\", "/").casefold())},
                   key=len, reverse=True)
+
+
+QUOTED_WORDS = 64   # the most _spaced words _quoted spells; a call with more is exempted by no `unless`
 
 
 def _quoted(subjects, words):
