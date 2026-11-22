@@ -230,9 +230,11 @@ carries from another run of theirs, in any tenant and under any principal, open 
 `label_inherit_s` (default 3600 s), added before the run's next decision; `inherited` names that run's `run.label`
 add (its tenant isn't named). A bundle holds one run, so an inherited label is signer-asserted (the other run's
 bundle shows its add).
-`run.label{label, action: clear, by: person, identity, person, reason?, break_glass?}`: a person ended the label
-(`run_label_clear`), for the run and its client's runs in its tenant, never the run's owner, principal or requester;
-a later record that sets it sets it again. A
+`run.label{label, action: clear, by: person, identity, person, reason?, break_glass?, self_cleared?}`: a person ended
+the label (`run_label_clear`), for the run and its client's runs in its tenant, never the run's owner, principal or
+requester, but on a signer with no `approvals` config (a dev signer, whose one user answers their own run's
+approvals), where any identity of the run's tenant may, its owner too, `self_cleared: true`; a later record that sets
+it sets it again. A
 `policy.decision` whose run conditions applied names the labels that made them apply (`run_labels`): each one the run
 carried, or one a rule of the call itself sets. A bundle with either needs `verifier_min_version` 1.8.0.
 
@@ -772,7 +774,7 @@ line and verdict is in [verdicts](verdicts.md).
    first one's before any) and, between two decisions under different policies, the next one's too, owing what both
    set and free to add what either does: each label a record sets is added by a `run.label` before the run's next `policy.decision` or `approval.consumed` (or its end); each add
    cites a record that sets that label and that the run didn't carry; a clear is of a label the run carries and its
-   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`); a decision's `run_labels` were
+   `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`) unless it is `self_cleared`; a decision's `run_labels` were
    carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold (`run
    labels`); an inherited add (`inherited`) is of a label the policy reads, and signer-asserted.
    Without one of its policies the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle

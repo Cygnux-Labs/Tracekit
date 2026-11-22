@@ -614,6 +614,8 @@ class TestClear(Case):
         with self.assertRaises(RPCError) as c:   # the agent's identity: no operator call
             s.call("run_label_clear", {"run_id": run["run_id"], "label": "secrets_access"})
         self.assertEqual(c.exception.code, "forbidden")
+        self.assertIn("as an operator", c.exception.message)   # what to do instead, and when it ends anyway
+        self.assertIn("label_inherit_s", c.exception.message)
         with self.assertRaises(RPCError) as c:
             s.as_(OP, "run_label_clear", {"run_id": run["run_id"], "label": "untrusted_content"})
         self.assertEqual(c.exception.code, "invalid_request")
@@ -627,6 +629,25 @@ class TestClear(Case):
         self.assertEqual([x[:2] for x in s.labels(run)], [("secrets_access", "add"), ("secrets_access", "clear"),
                                                           ("secrets_access", "add")])
         self.assertEqual(self.check(*bundle(s, run))[0], 0)
+
+    def test_a_dev_signer_s_user_clears_their_own_run_s_label_recorded_self_cleared(self):
+        # a dev signer (no approvals config): its one user answers their own run's approvals (self_approved), and
+        # clears its labels as well
+        from test_containment import e17
+        s = e17.Signer(engine())
+        self.addCleanup(s.close)
+        run = s.register()
+        s.decide(run, SECRET)
+        out = s.call("run_label_clear", {"run_id": run["run_id"], "label": "secrets_access", "reason": "test values"})
+        cleared = s.events(run)[out["run_seq"]]
+        self.assertEqual(schema.validate(cleared), [])
+        self.assertEqual(cleared["data"], {"label": "secrets_access", "action": "clear", "by": "person",
+                                           "identity": f"uid:{ME.subject}", "person": f"uid:{ME.subject}",
+                                           "reason": "test values", "self_cleared": True})
+        self.assertEqual(s.decide(run, EGRESS)["decision"], "allow")
+        self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "allow")   # nor does a new run inherit it
+        code, line = self.check(*bundle(s, run))
+        self.assertEqual((code, line["status"]), (0, "pass"), line)
 
     def test_the_cli_sends_the_label_it_is_given(self):
         calls = []
@@ -761,6 +782,8 @@ class TestVerifier(Case):
         self.assertEqual(v2._run_labels([reg, dec, add], {"h": src}, got), [])
         self.assertEqual(v2._run_labels([reg, dec, add, clear], {"h": src}, got),
                          ["seq 3: secrets_access cleared by the run's own owner"])
+        mine = {**clear, "data": {**clear["data"], "self_cleared": True}}   # a dev signer's own user
+        self.assertEqual(v2._run_labels([reg, dec, add, mine], {"h": src}, got), [])
         self.assertEqual(v2._run_labels([reg, clear], {"h": src}, got), ["seq 3: clears secrets_access, which the run doesn't "
                                                                   "carry"])
         self.assertEqual(v2._run_labels([reg, dec, add, add], {"h": src}, got), ["seq 2: adds secrets_access, which the run "

@@ -98,6 +98,8 @@
   "kit/vectors/run-label-inherited.tkb": "b8b80a42b4425a806ee846c72c4b8775d4d15668eb121b4c5a890802780f3d33",
   "kit/vectors/run-label-omitted-trusted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
   "kit/vectors/run-label-omitted.tkb": "3d1a7fb5d26bc2de890cb1f43f1083833f1225f2f747f8200dc869d3579817c2",
+  "kit/vectors/run-label-owner-cleared.tkb": "94233a7354003e8300aef55cea801ebb49f67d2ae4e87d8e1969e66d184ed899",
+  "kit/vectors/run-label-self-cleared.tkb": "ee87b8372e9fc966d0252723ee41bc0c661c7e478fd9526ea72d600d9286bbd9",
   "kit/vectors/run-label-two-policies-omitted.tkb": "433b1c5ff5f1d873e603dfab8c03e884339a87cf605803fc92b2bab317889393",
   "kit/vectors/run-label-two-policies.tkb": "483dbf07d7b27b70993cef425d6a3512754d639eb54209a8c1d1bbf15ecb0543",
   "kit/vectors/run-label-unset.tkb": "3568120c790ea55ac856cf81c8146cb7e425a18a7089e94c3184d0dcfae91f77",
@@ -1172,6 +1174,32 @@
     "run labels"
    ],
    "decided_by": "§3 (run labels: only those the policy reads), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its run's own owner cleared on a dev signer",
+   "input": "kit/vectors/run-label-self-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a label its run's own owner cleared, not self_cleared",
+   "input": "kit/vectors/run-label-owner-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run labels"
+   ],
+   "decided_by": "§3 (run labels: never the run's owner, but a dev signer's self_cleared), §11 step 9",
    "addon": "run labels",
    "needs": "1.8.0"
   },

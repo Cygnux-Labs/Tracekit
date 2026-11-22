@@ -1419,6 +1419,13 @@ class SignerService:
         granted = self._granted(identity)
         if method == "channel_open" and identity.scheme != "box":   # a Box daemon's, never an authorize grant
             granted = {method} if subject(identity) in self.box_daemons else ()
+        if method == "run_label_clear" and self.approvals is None and "register_run" in granted:
+            return   # a dev signer's: the run's own owner clears its label, self_cleared (_run_label_clear)
+        if method == "run_label_clear" and method not in granted:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for run_label_clear: on this "
+                                        "signer a person clears a run label as an operator (an identity that runs no "
+                                        "agent, its authorize entry listing run_label_clear: docs/incidents.md#operators)"
+                                        "; without one, the label ends label_inherit_s after the run that set it does")
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -2912,10 +2919,16 @@ class SignerService:
 
     def _run_label_clear(self, identity, req):
         """A person ends one of a run's labels (docs/policy-v2.md#run-conditions), recorded as theirs: who may is who may
-        resume a run (_resolver), never its owner, principal or requester. A later record that sets it sets it again."""
-        tenant = self._operator(identity)
+        resume a run (_resolver), never its owner, principal or requester; on a signer with no approvals config (a dev
+        signer, where a person answers their own run's approvals: self_approved), any identity of the run's tenant,
+        its owner too, recorded self_cleared. A later record that sets it sets it again."""
         reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
-        who, glass = self._resolver(identity, tenant, [req["run_id"]], reason)
+        mine = self.approvals is None and "register_run" in self._granted(identity)
+        if mine:
+            tenant, who, glass = self._tenant_of(identity), person(identity) or subject(identity), False
+        else:
+            tenant = self._operator(identity)
+            who, glass = self._resolver(identity, tenant, [req["run_id"]], reason)
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -2924,7 +2937,8 @@ class SignerService:
             seq = tx.emit(run, "run.label", {"label": req["label"], "action": "clear", "by": "person",
                                              "identity": subject(identity)[:256], "person": who[:256],
                                              **({"reason": reason} if reason else {}),
-                                             **({"break_glass": True} if glass else {})},
+                                             **({"break_glass": True} if glass else {}),
+                                             **({"self_cleared": True} if mine else {})},
                           source="signer", request_id=req["request_id"])
             return {"run_id": run["run_id"], "label": req["label"], "run_seq": seq}
         return self.log.submit(identity, "run_label_clear", req, fn, (tenant, req["run_id"]))
@@ -3317,6 +3331,12 @@ class SignerService:
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             elif granted and d["decision"] == "flag":
                 out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
+            if d["decision"] == "flag" and (shadow := [i for i in d["rule_ids"] if i in self.policy.shadow]):
+                out["recorded"] = shadow   # rules in shadow that would hold the call: the client tells the person
+                said = {r["id"]: r.get("reason") for _, r, *_ in self.policy.rules if r["id"] in shadow}
+                why = "; ".join(said[i] for i in shadow if said.get(i))   # in the order of `recorded`
+                if why and "reason" not in out:
+                    out["reason"] = why[:1024]
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index

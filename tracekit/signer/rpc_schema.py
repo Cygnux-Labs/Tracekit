@@ -2,7 +2,8 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 27 adds `run_label_clear`, an operator call: a person
 ends one of a run's labels (docs/policy-v2.md#run-conditions), which the signer records as theirs; a run's own owner,
-principal or requester can't. Version 26 adds register_run's `continues` (a later run of an
+principal or requester can't (a dev signer's own, self_cleared), and decide's `recorded` (the rules in shadow that would
+hold the call). Version 26 adds register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -527,6 +528,8 @@ RESPONSES = {
                    # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
                    # redacts it, commits to it and indexes its values for provenance), not a digest of it
                    send_result={"const": True},
+                   # rules in shadow (mode: shadow) that would hold the call: it runs, recorded (`reason` says why)
+                   recorded=RULE_IDS,
                    incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,

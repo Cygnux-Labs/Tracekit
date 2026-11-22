@@ -98,7 +98,7 @@ A call or field that this page does not list below was already in version 15. Th
 | 24 | `call_state`, `call_claim` |
 | 25 | `content_get`'s `type` and `source` |
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
-| 27 (Tracekit 1.8) | `run_label_clear`, an operator call: a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)) |
+| 27 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
 
 ## Errors
 
@@ -357,6 +357,7 @@ lists `decide`. A box's agent channel may call it too.
 | `run_seq` | whole number | yes |  |
 | `expires_at` | text | no | up to 40 characters |
 | `send_result` | always `true` | no |  |
+| `recorded` | list of texts | no | up to 32 items; each item: up to 64 characters |
 | `incident_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
@@ -2166,7 +2167,9 @@ carry is refused with `invalid_request`. The answer gives the `run_id`, the `lab
 **Who may call:** only a caller whose `authorize` entry lists `run_label_clear`. It is never granted by default. As
 for `run_resume`, the identity must run no agent, and the caller must be a person (an identity mapped in
 `approvals.persons`, or an OIDC person, who is an approver, or a break-glass identity giving a `reason`) who is not
-the owner, principal or requester of the run. More: [operators](incidents.md#operators).
+the owner, principal or requester of the run. More: [operators](incidents.md#operators). On a signer with no
+`approvals` config (a dev signer), any identity of the run's tenant that may `register_run` clears it, the run's own
+owner too, and the record says `self_cleared`.
 
 <!-- api-doc:begin run_label_clear -->
 <details>

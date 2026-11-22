@@ -671,11 +671,15 @@ the call runs, so a policy records what the rule would hold before it holds anyt
 operator call), recorded as a `run.label` of theirs. Who may is who may resume a held run ([incidents](incidents.md)):
 never the run's own owner, principal or requester. It clears the label for the run's client too, in the run's
 tenant: a new run of theirs no longer inherits it (an identity the run was delegated to keeps its own runs'). The
-next call that sets it sets it again.
+next call that sets it sets it again. On a dev signer (no `approvals` config), whose one user answers their own run's
+approvals, that user clears their own run's label (`tracekit signer incidents clear-label <run_id> --label
+secrets_access --reason "..."`), recorded `self_cleared`; the agent runs as the same user, and `TK-D007` denies it
+that command.
 
 `dev.yaml`, the laptop default, names a send (`egress`) once the run carries `secrets_access` (`TK-Q001`), and a
 send left in the background whatever the run carries (`TK-Q002`), both in shadow in 1.8: each such call is recorded,
-flagged, and runs. They hold once a week of normal projects measures what the holds cost ([limits](limits.md)); a
+flagged, and runs, and the Claude Code hook shows the person one line as it runs (`[tracekit] recorded: data sent off
+the machine after the run read a secret (TK-Q001, record-only)`; decide's `recorded` names the rules in shadow). They hold once a week of normal projects measures what the holds cost ([limits](limits.md)); a
 policy that extends `dev.yaml` and redefines them without `mode` holds them now.
 
 ## Live constraints

@@ -124,6 +124,8 @@ class Engine:
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
         # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
+        self.shadow = frozenset(r["id"] for sec in SECTIONS for r in self.policy.get(sec, [])
+                                if r.get("mode") == "shadow")
         self.rules = [("flag" if r.get("mode") == "shadow" else sec, r, compile_(r["tool"]) if "tool" in r else None,
                        rx(r, "pattern"),
                        rx(r, "unless") if "unless" in r else None, lits := literals(r["pattern"]),

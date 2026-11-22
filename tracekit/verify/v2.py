@@ -1463,7 +1463,7 @@ def _run_labels(events, srcs, inherited):
                     carried.add(x)
             elif x not in carried:
                 problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
-            elif d.get("identity") == owner:
+            elif d.get("identity") == owner and d.get("self_cleared") is not True:
                 problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
             else:
                 carried.discard(x)

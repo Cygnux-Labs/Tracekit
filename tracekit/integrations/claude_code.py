@@ -828,9 +828,17 @@ def _pre(client, p, sid, tid, end=None):
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
         return block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
+    # a rule in shadow that would hold the call (decide's `recorded`): one quiet line for the person, the call runs
+    note = d.get("recorded") and (f"[tracekit] recorded: {d.get('reason') or 'a rule in shadow would hold this call'} "
+                                  f"({', '.join(d['recorded'])}, record-only)")
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args},
+                          **({"systemMessage": note} if note else {})}))
+    elif note and AGENT == "claude-code":   # Claude Code shows a systemMessage to the person
+        print(json.dumps({"systemMessage": note}))
+    elif note:
+        print(note, file=sys.stderr)
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}), "tool": tool,
                                         "send_result": d.get("send_result", False),

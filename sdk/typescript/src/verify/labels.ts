@@ -124,7 +124,8 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
           carried.add(x);
         }
       } else if (x === null || !carried.has(x)) problems.push(`${where}: clears ${cut(str(x), 32)}, which the run doesn't carry`);
-      else if ((d.identity ?? null) === owner) problems.push(`${where}: ${cut(str(x), 32)} cleared by the run's own owner`);
+      else if ((d.identity ?? null) === owner && d.self_cleared !== true)
+        problems.push(`${where}: ${cut(str(x), 32)} cleared by the run's own owner`);
       else carried.delete(x);
       continue;
     }

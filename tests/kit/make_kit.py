@@ -446,6 +446,16 @@ def vectors():
                                                              policy_dir=policies),
          t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
          decided_by="§3 (run labels: only those the policy reads), §11 step 9")
+    cleared = ("run.label", {"label": "secrets_access", "action": "clear", "by": "person", "identity": "token:svc",
+                             "person": "token:svc"}, {})
+    case("a label its run's own owner cleared on a dev signer", closed(
+        "run-label-self-cleared", secret, added, (cleared[0], {**cleared[1], "self_cleared": True}, {}),
+        policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a dev signer's self_cleared), §11 step 9")
+    case("a label its run's own owner cleared, not self_cleared", closed(
+        "run-label-owner-cleared", secret, added, cleared, policy_dir=policies), t, 1, "FAILED",
+         failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never the run's owner, but a dev signer's self_cleared), §11 step 9")
     first = ("policy.decision", {"tool_use_id": "t0", "decision": "allow", "rule_ids": [], "tool": "read_file",
                                  "policy_hash": LABELLED_HASH}, {"tool_call_id": "t0"})
     after = lambda r: (r[0], {**r[1], "policy_hash": LABELLED2_HASH}, r[2])   # noqa: E731
