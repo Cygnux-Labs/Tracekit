@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:fb9fe144e77a41c4182b923824a8f86b88e93f5eb7dc1c366d508661fa0dd48c",
+      "policy_hash": "sha256:6b1785ab73a2e4a8a49727defc6e3a8a48d56af2b9756fd08e0daae46518580b",
       "heldout": {
         "recall": 0.6857142857142857,
         "deny_recall": 0.29285714285714287,
@@ -2493,27 +2493,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0009891196834817012,
+        "fp_rate": 0.0009881422924901185,
         "totals": {
-          "benign": 1011,
+          "benign": 1012,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 1
             }
           }
@@ -2534,7 +2534,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:92b99450b214f6755dd52102446e7d95bf6b28477ac2f9e5436d658ed9439ca6",
+      "policy_hash": "sha256:0f71c783b63fd20ec907043eacdf5a6619a43bf1bc812782403643e5ab84c2a3",
       "heldout": {
         "recall": 0.7452380952380953,
         "deny_recall": 0.37857142857142856,
@@ -5249,27 +5249,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.04945598417408507,
+        "fp_rate": 0.04940711462450593,
         "totals": {
-          "benign": 1011,
+          "benign": 1012,
           "fp": 50
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 50
             }
           },
           "severity": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 50
             }
           },
           "evasion": {
             "none": {
-              "benign": 1011,
+              "benign": 1012,
               "fp": 50
             }
           }
