@@ -2,6 +2,76 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.7.3 (2026-11-23) — policy and approver-copy hardening, the LangSmith Tool Gateway, and fixes from contributors
+
+A security and maintenance release: everything merged since 1.7.2, plus policy and approver-copy hardening. The shipped
+packs change (`coding` is `2026.11-v2-100`, `strict` is `2026.11-strict-15`), so a run's policy hash changes and some
+calls that were allowed are now held. Upgrade the signer first, as for 1.7.2.
+
+### Security
+- Policy and approver-copy hardening: the policy reads more of what a shell command and the programs it starts run,
+  and a held call's copy, which its approver reads, hides each secret value whole on every surface it is shown on.
+
+### Added
+- LangSmith Tool Gateway: Tracekit decides and signs each call in front of it (#1038).
+- An approver for Inspect AI (experimental) (#1041).
+- TypeScript executor helpers: `claudeAgentSdkTool` for the Claude Agent SDK (#1011, by @costajohnt).
+- `tracekit otel` imports Docker MCP Gateway `mcp.tool.call` spans as tool calls (#1004, by @Vijay-10-7).
+- The policy backtest prints each limit's busiest window (#1008, by @NarenDawar).
+- TIPS reads Codex CLI's session files for token counts, with OpenAI list prices (#921).
+- `tracekit audit` reads OpenCode's saved sessions (#926, by @samueladebisi-dev).
+- The signer's HTTPS RPC has an API reference (#939).
+
+### Changed
+- A shell tool's own working-directory argument (Codex's and OpenCode's `workdir`, Gemini CLI's `dir_path`, Cursor's
+  `working_directory`, in any case) is read as the folder its command runs in, in the v2 signer and v1's hook; a call
+  that names more than one working directory is held (`TK-SHELL-PARSE`).
+- `tracekit mcp-gateway` run from an agent's session is held (`TK-A057`), as `tracekit init` is: it starts the programs
+  its configuration names. A person starts it from their own terminal.
+- New policy holds from contributors: `gh`'s printed credential reads (#900, by @Seyamalam), `git credential fill` and
+  helper `get` (#937, by @Seyamalam), secret manager CLI value reads (#910, by @Siri-Durugapu), keepassxc-cli credential
+  reads and export (#917, by @TheVicky1), Vivaldi, Arc and Opera saved logins and cookies (#909, by @NarenDawar),
+  GitLab protected-branch, tag, push-rule and CI/CD variable removals (#912, by @NarenDawar), a platform CLI's
+  production deploy (#908, by @hayatexe), deletes of Windows system folders through WSL and Cygwin mounts (#919, by
+  @kings-avathar54), and `ssh-keygen -f` read as the file a writing mode writes (#1040, by @pm25coder).
+- The server pack counts an email send as egress for `TK-Q001` (#1019, by @daichunghy).
+- `TK-A055` exempts `django-admin flush --help` (#918, by @Jainil-devaliya28).
+- Integrations widened to the current releases of ADK, Haystack, Pydantic AI, Agent Framework and LangChain (#1044);
+  Strands is tested on 1.65 (#943).
+- google-re2 is optional where it has no wheel (#913, by @Sejal-Kadgi).
+- The central chart's `agentEgress.dns` reaches NodeLocal DNSCache or another resolver (#1017, by @emreocell).
+
+### Fixed
+- OpenCode 2.x: the person's prompts and a deleted session's end are recorded (#1037, by @costajohnt).
+- Qwen Code and Gemini CLI: `QWEN_HOME` is honoured, `disableAllHooks` warned about, folder trust read (#1016, by
+  @costajohnt).
+- Copilot's project install keeps the hook file out of git and says when Claude Code's hook runs too (#1043, by
+  @Kidkender).
+- OpenAI Agents and the Claude Agent SDK pick the fail mode by the tool's class (#1032, by @NarenDawar); the OpenAI
+  Agents adapter shows why it holds a call (#963, by @Seemanshi2104); an ApplyPatchTool ask waits for a person (#1031,
+  by @pm25coder).
+- The signer re-reads its vault state rather than keeping it for the process (#1025, by @pm25coder).
+- Claude Code Code Mode completes calls from code that got no PostToolUse (#907, by @khushi-git-7).
+- Codex in-session approval commands are supported (#905, by @Sejal-Kadgi).
+- OpenCode's and Kilo Code's batch tool is blocked in the audit as the plugin blocks it (#930, by @kushaldave002).
+- jcode's MCP tool names are decided as jcode's `dispatch_name` makes them (#1003, by @rajuriprathik-a11y).
+- The SDKs say a write may not have been recorded when its outcome is unknown (#857, by @costajohnt).
+- The LangGraph gate warns when the signer lacks `call_state` or `call_claim` (#968, by @rise11hx-cmyk).
+- OpenShell bounds one sandbox's response streams to a quarter of `MAX_STREAMS` (#1007, by @rise11hx-cmyk).
+- An `explains` host glob over a public suffix is refused (#966, by @phanindra798).
+- `tracekit doctor` warns when Open Interpreter's `hooks.json` holds Tracekit's Claude Code hook (#962, by @mccalpink).
+- The v1 hook prunes client state no hook wrote for 30 days (#944, by @Kidkender).
+- A new log's checkpoint origin is named after its key, and kept (#925).
+- Tests: ANSI-C `\x{…}` parsing checked against bash 5.2 and 5.3 (#1005, by @kunaltaydetayde7552-ship-it); a loop
+  decides no more loosely than any value it holds (#794, by @pm25coder); Python 3.13's gc threshold on 3.9 and 3.12
+  (#1053, by @khushi-git-7).
+
+### Contributors
+@costajohnt, @NarenDawar, @pm25coder, @hayatexe, @Seyamalam, @Siri-Durugapu, @TheVicky1, @Sejal-Kadgi, @Kidkender,
+@khushi-git-7, @rise11hx-cmyk, @daichunghy, @emreocell, @kunaltaydetayde7552-ship-it, @Vijay-10-7, @phanindra798,
+@rajuriprathik-a11y, @mccalpink, @Seemanshi2104, @kushaldave002, @samueladebisi-dev, @kings-avathar54 and
+@Jainil-devaliya28. Thank you.
+
 ## 1.7.2 (2026-11-18) — 1.7.1, published, with three contributions
 
 1.7.1 was tagged but never published: the release's check of the built wheel ran two version tests that read

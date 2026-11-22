@@ -407,7 +407,7 @@ tracekit doctor                             # check your setup
 Whoever checks a run needs nothing installed: the
 [browser verifier](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts#verify-in-your-browser) takes the `.tkb`,
 sends nothing anywhere, and says VERIFIED, FAILED or UNVERIFIABLE. In CI:
-`uses: Cygnux-Labs/Tracekit@v1.7.2` with `bundle:` and `trust:`.
+`uses: Cygnux-Labs/Tracekit@v1.7.3` with `bundle:` and `trust:`.
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
 report it.
 
@@ -459,7 +459,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License and citation
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), © Cygnux Labs. Version 1.7.2; 1.x is the supported
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), © Cygnux Labs. Version 1.7.3; 1.x is the supported
 line. Report vulnerabilities privately as [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)
 describes.
 
