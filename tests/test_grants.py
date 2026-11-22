@@ -8,6 +8,7 @@ import io
 import itertools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -52,7 +53,7 @@ def pay(amount=120 * USDC, to=P1, currency="USDC", **kw):
 
 
 class Case(unittest.TestCase):
-    approvals, ceilings = APPROVALS, None
+    approvals, ceilings, policy = APPROVALS, None, POLICY
 
     def setUp(self):
         self.dir = ts.tmpdir(self)
@@ -65,7 +66,7 @@ class Case(unittest.TestCase):
         self.run = {"run_id": r["run_id"], "run_token": r["run_token"]}
 
     def open(self):
-        s = svc.SignerService(self.dir, policy=Engine(POLICY), approvals=self.approvals, grants=self.ceilings,
+        s = svc.SignerService(self.dir, policy=Engine(self.policy), approvals=self.approvals, grants=self.ceilings,
                               authorize={"token:ops": ["run_hold"]})
         self.addCleanup(s.close)
         return s
@@ -239,6 +240,51 @@ class TestRelease(Case):
                      caveats=[{"field": "currency", "op": "==", "value": "USDC"},
                               {"field": "payee", "op": "==", "value": P1}],
                      limits=[{"op": "sum", "field": "amount", "max": USDC}], expires_at=svc._iso(time.time() + 60))
+
+
+def reasoned(why):
+    """POLICY with the reason `why` on its payment rule."""
+    return {**POLICY, "ask": [dict(POLICY["ask"][0], reason=why), *POLICY["ask"][1:]]}
+
+
+class TestCallState(Case):
+    """call_state answers the reason decide gave a call, which the LangChain gate tells the model when a node runs
+    again after a resume: not its rules' reasons in the signer's policy now (after a reload), nor without what decide
+    added to them (a grant's text, a person's earlier no), after a restart too."""
+    policy = reasoned("a payment waits for a person")
+
+    def state(self, tcid):
+        return self.call("call_state", **self.run, tool_call_id=tcid)["reason"]
+
+    def restart(self, why):
+        self.s.close()
+        self.policy = reasoned(why)
+        self.s = self.open()
+
+    def test_a_grant_hold_keeps_its_reason_across_a_policy_reload_and_restarts(self):
+        g = self.grant()["grant_id"]
+        d = self.held(pay(250 * USDC), f"grant {g}: amount 250 USDC is over 200 USDC each", tcid="big")
+        self.assertIn("; a payment waits for a person", d["reason"])
+        self.assertEqual(self.state("big"), d["reason"])
+        self.restart("the policy says so now")   # from the snapshot the close wrote
+        self.assertEqual(self.state("big"), d["reason"])
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+        self.s = self.open()   # from the records alone, and the policy the call was decided under
+        self.assertEqual(self.state("big"), d["reason"])
+        self.s.close()
+        ts.drop_call_keys(self.dir, "reason", "reasons")   # a snapshot written up to 1.7.2
+        self.s = self.open()
+        self.assertEqual(self.state("big"), d["reason"])
+
+    def test_a_persons_earlier_no_stays_in_the_reason_after_a_restart(self):
+        self.decide(pay(), tcid="first")
+        aid = self.call("approval_request", **self.run, tool_call_id="first")["approval_id"]
+        self.call("approval_decide", ALICE, approval_id=aid, decision="reject")
+        d = self.held(pay(), f"a person rejected this exact call ({aid}, by uid:990001)", tcid="again")
+        self.assertEqual(self.state("again"), d["reason"])
+        self.restart("a payment waits for a person")
+        self.assertEqual(self.state("again"), d["reason"])
 
 
 class TestAttacks(Case):
