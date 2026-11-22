@@ -7,12 +7,14 @@ import bisect
 import collections
 import fnmatch
 import functools
+import io
 import itertools
 import json
 import posixpath
 import re
 import shlex
 import time
+import tokenize
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
@@ -2977,6 +2979,7 @@ _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__
 # process, whose frames hold them too: code that names one and reaches through an object (a dunder, even quoted; an
 # attribute read by name; a frame, traceback or trace hook; inspect, gc, sys.modules) may get to the module
 _SIGNER_CODE = re.compile(r"\b(?:RPCError|compared|model_names|load_policy)\b")
+_FSTRING_TOKENS = {getattr(tokenize, n) for n in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END") if hasattr(tokenize, n)}
 _PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
                        r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
                        r"walk_tb|walk_stack|settrace|setprofile|gettrace|getprofile|inspect|gc)\b|\bsys\s*\.\s*modules\b")
@@ -2990,19 +2993,29 @@ _RPC_CATCH = re.compile(r"\bexcept\s+$|\bexcept\s*\((?:[^()]*,)?\s*$")
 _RPC_TEST = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
 
 
+def _rpc_items(listed):
+    return [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", listed).replace("\n", " ").split(",")]
+
+
 def _without_rpc_catch(code):
     """The code less its statements importing RPCError (and rpc_schema's tables) by name, when it uses RPCError only to
     catch it (`except RPCError`, `except (…, RPCError)`) or test for it (`isinstance(x, RPCError)`): such a script
     reaches nothing of the schema's module; else the code as it is. A call, a raise, a subclass or another use of the
     class holds its module, as do names read any other way (_runs_signer). The statements are read in the code with its
-    comments and string literals blanked (_py_blank, which keeps every offset): a `# except (` or `"except ("` before
-    a use makes it no catch, and an import written in a comment or a string is none, so cuts nothing."""
-    text = _py_blank(code)
+    comments and string literals blanked by Python's tokenizer (_py_blanked): a `# except (` or `"except ("` before a
+    use makes it no catch, and an import written in a comment or a string is none, so cuts nothing. Code that can't be
+    read so is left as it is, which is main's decision; the allowance only ever loosens one."""
+    text = _py_blanked(code)
+    if text is None:
+        return code
     spans = []
     for m in _SIGNER_IMPORT.finditer(text):
         listed = m.group(1) if m.group(1) is not None else m.group(2)
-        items = [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", listed).replace("\n", " ").split(",")]
+        items = _rpc_items(listed)
         if "RPCError" not in items or any(i not in _RPC_DATA | {"RPCError"} for i in items if i):
+            return code
+        raw = _SIGNER_IMPORT.match(code, m.start())   # (the code itself reads as the same import)
+        if raw is None or raw.span() != m.span() or _rpc_items(raw.group(1) if raw.group(1) is not None else raw.group(2)) != items:
             return code
         spans.append(m.span())
     if not spans:
@@ -3077,32 +3090,29 @@ def _py_code(code):
     return "".join(out) + code[i:]
 
 
-def _py_blank(code):
-    """The code with each comment and string literal blanked to spaces (its newlines kept), so every offset stays the
-    code's own. An f-string's replacement fields stay: the code in its braces runs."""
-    out, i = [], 0
-    while m := _PY_OPEN.search(code, i):
-        out.append(code[i:m.start()])
-        if m.group() == "#":
-            nl = code.find("\n", m.end())
-            end = len(code) if nl < 0 else nl
-            out.append(" " * (end - m.start()))
-            i = end
-            continue
-        end = _PY_REST[m.group(2)].match(code, m.end()).end()
-        literal, depth, kept = code[m.start():end], 0, []
-        fstring = "f" in (m.group(1) or "").lower()
-        for k, c in enumerate(literal):
-            if fstring and c == "{" and depth == 0 and literal[k + 1:k + 2] != "{" and literal[k - 1:k] != "{":
-                depth = 1
-            elif fstring and depth and c == "{":
-                depth += 1
-            elif fstring and depth and c == "}":
-                depth -= 1
-            kept.append(c if depth and c != "{" or c == "\n" else " ")
-        out.append("".join(kept))
-        i = end
-    return "".join(out) + code[i:]
+def _py_blanked(code):
+    """The code with each comment and string literal blanked to spaces (newlines kept, so every offset is the code's
+    own), read with Python's own tokenizer; None where that can't be trusted to read as Python does: it raises, yields an
+    error token, the code holds a line break other than \\n (a bare \\r ends a line in Python), or a string is an
+    f-string (3.12 tokenizes its fields, 3.9 does not)."""
+    if re.search("[\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]", code):
+        return None
+    starts = [0]
+    for line in code.split("\n")[:-1]:
+        starts.append(starts[-1] + len(line) + 1)
+    blank = list(code)
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(code).readline):
+            kind = tok.type
+            if kind == tokenize.ERRORTOKEN or kind in _FSTRING_TOKENS or kind == tokenize.STRING and re.match(
+                    r"[A-Za-z]*[fF]", tok.string):
+                return None
+            if kind in (tokenize.COMMENT, tokenize.STRING):
+                a, b = starts[tok.start[0] - 1] + tok.start[1], starts[tok.end[0] - 1] + tok.end[1]
+                blank[a:b] = [c if c == "\n" else " " for c in code[a:b]]
+    except (tokenize.TokenError, SyntaxError, ValueError, IndexError):
+        return None
+    return "".join(blank)
 
 
 _SDK_PATH = re.compile(r"\b(?:dev_data_dir|data_dir_at)\b")

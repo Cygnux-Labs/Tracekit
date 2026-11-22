@@ -321,28 +321,46 @@ class FalseStops(unittest.TestCase):
 
     def test_text_that_only_looks_like_an_import_never_loosens_a_decision(self):
         # a comment line or a string holding any import form, at any line of a stopped script, changes nothing but
-        # to stop it: never a looser decision than the script has without it
+        # to stop it: never a looser decision than the script has without it. The lines are joined by each line break
+        # Python knows (a bare \r ends a comment in Python), the indent is spaces or a tab, and the inserted text is a
+        # comment, a string, a docstring, or an f-string with braces in its fields, nested quotes, or `{{{`
         rank = {"deny": 3, "ask": 2, "flag": 1, "allow": 0}
         scripts = (
             "from tracekit.signer.rpc_schema import RPCError\nimport tracekit.signer.service as x\n"
             "x.SignerService('/tmp/x')\ntry:\n    pass\nexcept RPCError:\n    pass",
-            "from tracekit.signer.rpc_schema import RPCError\nprint(RPCError.__init__.__globals__)\ntry:\n    pass\nexcept RPCError:\n    pass",
+            "from tracekit.signer.rpc_schema import RPCError\nprint(RPCError.__init__.__globals__)\ntry:\n    pass\n"
+            "except RPCError:\n    pass",
             "from tracekit.signer.service import load_policy\nprint(load_policy.__globals__)",
             "from tracekit.signer.service import SignerService\nprint(SignerService)",
             "from tracekit.signer import service as svc\nsvc.SignerService('/tmp/x')")
         forms = ("from tracekit.signer.rpc_schema import (", "from tracekit.signer.rpc_schema import RPCError",
                  "from tracekit.signer.service import SignerService", "import tracekit.signer.service as x")
-        wrappers = ("# {}", "'{}'", '"""{}"""', "x = '{}'")
-        for script in scripts:
-            lines = script.split("\n")
-            base = {k: rank[d["verdict"]] for k, d in self.decide(f"python3 - <<'EOF'\n{script}\nEOF").items()}
-            for at in range(len(lines) + 1):
-                for form in forms:
-                    for wrapper in wrappers:
-                        code = "\n".join(lines[:at] + [wrapper.format(form)] + lines[at:])
-                        for key, d in self.decide(f"python3 - <<'EOF'\n{code}\nEOF").items():
-                            if rank[d["verdict"]] < base[key]:
-                                self.fail(f"looser {key}: {d['verdict']}\n{code}")
+        plain = ("# @@", "'@@'", '"""@@"""', "x = '@@'")
+        fields = ("f\"{'{'}@@\"", "f\"{'\"'}\"; @@", "x = f\"{{{1}}}@@\"", "f'{\"}\"}@@'", "x = rf'@@{1}'")
+        for tab in (False, True):
+            for sep, wrappers in (("\n", plain + fields), ("\r", plain[:2]), ("\r\n", plain[:2]), ("\f\n", plain[:2])):
+                for script in scripts:
+                    script = script.replace("    ", "\t") if tab else script
+                    lines = script.split("\n")
+                    base = {k: rank[d["verdict"]] for k, d in self.decide(f"python3 - <<'EOF'\n{sep.join(lines)}\nEOF").items()}
+                    for at in range(len(lines) + 1):
+                        for form in forms[:2] if sep != "\n" else forms:
+                            for wrapper in wrappers:
+                                code = sep.join(lines[:at] + [wrapper.replace("@@", form)] + lines[at:])
+                                for key, d in self.decide(f"python3 - <<'EOF'\n{code}\nEOF").items():
+                                    if rank[d["verdict"]] < base[key]:
+                                        self.fail(f"looser {key}: {d['verdict']}\n{code!r}")
+
+    def test_a_bare_carriage_return_or_nested_braces_cannot_fake_a_checked_import(self):
+        imp = "from tracekit.signer.rpc_schema import RPCError\n"
+        for code in (
+                "# a\rfrom tracekit.signer.rpc_schema import (\rimport tracekit.signer.service as x\n"
+                "x.SignerService('/tmp/x')\n)\ntry:\n    pass\nexcept RPCError:\n    pass",
+                imp + "x = f\"{'{'}\"\n# from tracekit.signer.rpc_schema import (\nfrom tracekit.signer.service import SignerService\n"
+                ")\ntry:\n    pass\nexcept RPCError:\n    pass",
+                imp + "f\"{'\"'}\"; raise RPCError('a', 'b')\ntry:\n    pass\nexcept RPCError:\n    pass",
+                imp + "x = f\"{{{RPCError('a', 'b')}}}\"\ntry:\n    pass\nexcept RPCError:\n    pass"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
 
     def test_help_that_a_parallel_may_add_words_to_stays_held(self):
         self.assert_held("TK-A054", "echo x | parallel tracekit uninstall --help",
