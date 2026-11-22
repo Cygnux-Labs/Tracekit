@@ -100,7 +100,7 @@ SYSTEM.run(seed=0, out_dir="runs")
 | `agent.decide(context, model=, purpose=)` | a model call: exactly this context, its output, latency, usage |
 | `agent.act(tool, args, decision=)` | a tool call linked to the decision that asked for it |
 | `agent.send(to, content)` / `agent.inbox()` | agent-to-agent messages |
-| `agent.record_decision(...)`, `agent.record_action(...)` | calls your own code already made |
+| `agent.record_decision(...)`, `agent.record_action(..., untrusted=)` | calls your own code already made; `record_action` records the result as trusted content unless you pass `untrusted=True` (a fetched page, a mail read), so pass it for every tool whose result someone else wrote |
 
 A model function may return `tracekit.why.core.ModelOutput(value, usage={...})` to record tokens.
 [examples/why/quickstart.py](../examples/why/quickstart.py) is a complete example with a test at the end.
@@ -270,30 +270,40 @@ source). A call's arguments are read whole and in their parts, nested objects, l
 them, and a string that holds JSON or a query string (`to=…&amount=…`) under its own keys. Untrusted content also
 brought an identifier (anything but text a model wrote) when it holds a part of it that no trusted content holds (an
 IBAN's digits written in groups, a URL's host; the call's own digits read across any separator, `+1 (415) 555-0134`), or
-all of it without its white space (base64 a model broke over lines). A value is an identifier under a key, or a key
-above it, with a word (or two together) that names a destination, such as recipient, to, payee, beneficiary, account,
-iban, wallet, url, host, destination, channel, path, file, email, number, id or sort_code, unless the key's last word is
-a free-text word (`account_no`, `to_whom`, `{"recipient": {"note": …}}` are identifiers; `email_body`, `payee_comment`,
-`repo_readme` are text); any value under a key whose last word is a free-text word or a reference (`subject`,
-`payment_ref`) is text, and prose under any other key. Untrusted content that holds more values than the index reads
-(its 4,096) is read for the rest from its text. There the search reads wider than the signer's index, so it stops more,
-never fewer: a free string joined to another word by `_` (`External_…` holds `External`), digit runs across any
-characters but letters (slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words
-("six zero one six"), addresses spelled out ("audit at outside dot example"), and a one-word value in parts that
-different untrusted texts hold as words: two parts, or more that each hold a digit (an account in three mails, not a
-name made of three words), when some part is one no trusted content (the task included) holds. Text a model wrote (a
-message body) is read for its addresses and URLs, and each host and digit run in it is a value of its own: a body that
-quotes one only untrusted content gave gets a review alert naming it, not the high one. An alert names the part
-untrusted content held (`its 77812290 appears only in mail:1`), and the content read latest first. A trusted call's
-result holds nothing an earlier call's arguments named (all of it, or its longest digit run) unless trusted content gave
-each argument that named it: a lookup's error naming the mail's IBAN, or a validator returning it whole, is an echo of
-the agent's own value, not its source; a lookup by an account the task gives is a source, and a domain or another part
-names nothing (a directory looked up by the domain the mail names still gives the address). A trusted call's result is
+all of it without its white space (base64 a model broke over lines). The key nearest a value says what it is. Under a
+key with a word (or two together) that names a destination, such as recipient, to, payee, beneficiary, account, iban,
+wallet, url, host, destination, channel, path, file, email, number, id or sort_code, it is an identifier, unless the
+key's last word is a free-text word (`account_no`, `to_whom` are identifiers; `email_body`, `payee_comment`,
+`repo_readme` are text). Under a key whose last word is a free-text word or a reference (`subject`, `body`, `note`,
+`signature`, `payment_ref`) it is text whatever keys are above it (`{"email": {"body": …}}`), unless it is all one
+identifier: an address, URL, host, digit run or IBAN, spaced in groups or after a label of up to three words (`IBAN:
+GB29…`, `Account no.: …`). Under another key it is an identifier when a key above it is one (`{"file": {"name": …}}`),
+else text when it is prose. Content that holds more values than the index reads (its 4,096) is read for the rest from
+its text, trusted and untrusted alike, each value once. In untrusted content the search reads wider than the signer's
+index, so it stops more, never fewer: a free string joined to another word by `_` (`External_…` holds `External`), digit
+runs across any characters but letters (slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or
+written as words ("six zero one six"), addresses spelled out ("audit at outside dot example"), and a one-word value in
+parts that different untrusted texts hold as words: two parts, or more that each hold a digit (an account in three
+mails, not a name made of three words), when some part is one no trusted content (the task included) holds. Text a model
+wrote (a message body) is read for its addresses and URLs, and each host and digit run in it is a value of its own: a
+body that quotes one only untrusted content gave gets a review alert naming it, not the high one. Text is still checked
+whole, as main reads it: a value that copies a phrase only untrusted content holds (an event titled as the mail says, a
+subject `Delivery delayed` the mail gave) stops the call, under a text key too. An alert names the part untrusted
+content held (`its 77812290 appears only in mail:1`), and the content read latest first. A trusted call's result holds
+nothing an earlier call's arguments named (all of it, or its longest digit run) unless trusted content gave each
+argument that named it: a lookup's error naming the mail's IBAN, or a validator returning it whole, is an echo of the
+agent's own value, not its source; a lookup by an account the task gives is a source, and a domain or another part names
+nothing (a directory looked up by the domain the mail names still gives the address). A trusted call's result is
 untrusted content when the values of its arguments that were traced came only from untrusted content, one at least (a
 value the model made up, such as a charset, doesn't count): a decoder, a reverser or a calculator given what the mail
-wrote, and a lookup by a key only the mail gave (the mail chose the record). The alert says what the call was given and
-where that came from (`crm_lookup's answer counts as untrusted: it was called with '60161331926819', which came only
-from mail:inbox`).
+wrote, and a lookup by a key only the mail gave (the mail chose the record). A value only under a filter's key (its last
+word status, state, format, type, kind, year, month, day, date, sort, limit, page, offset, size, lang, language, locale,
+mode, period, since, until or currency) narrows a lookup and doesn't count. A key too short to trace (3 to 5 characters,
+or a number of 3 to 7 digits: `781`, `#7781`, `A-781`, `Eve`) counts under a lookup's key only (its last word id, name,
+code, number, ref, key, handle, user, customer, supplier, vendor, contact, query and the like, or a destination word),
+read without the punctuation around it, its letters and digits with or without one character between (`A781` is
+`A-781`). The alert says what the call was given and where that came from (`crm_lookup's answer counts as untrusted: it
+was called with '60161331926819', which came only from mail:inbox`).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
