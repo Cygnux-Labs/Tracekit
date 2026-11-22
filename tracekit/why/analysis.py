@@ -11,7 +11,7 @@ import sys
 import unicodedata
 from collections import deque
 from itertools import islice
-from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
+from typing import Any, Callable, Deque, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from .. import provenance
 from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
@@ -331,17 +331,21 @@ _SPACE_RUN = re.compile(r"\s+")
 _KEY_WORD = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
 DESTINATION = frozenset(("recipient", "to", "cc", "bcc", "payee", "account", "iban", "url", "uri", "link", "host",
                          "domain", "destination", "target", "channel", "path", "file", "address", "email", "phone",
-                         "number", "id", "ref"))
+                         "number", "id", "beneficiary", "receiver", "creditor", "dest", "wallet", "payto", "endpoint",
+                         "webhook", "bucket", "server", "repo", "remote", "addr", "acct", "routing", "swift", "bic",
+                         "sortcode"))
 FREE_TEXT = frozenset(("body", "text", "message", "content", "summary", "description", "subject", "note", "comment",
                        "html", "markdown", "caption", "reply", "status", "title", "msg"))
 
 
 def _identifier_key(key: Any) -> bool:
-    """Whether an argument's key names where a call goes or what it acts on: a word of it one of DESTINATION and its
-    last word no free-text word (FREE_TEXT). `recipient`, `to_email`, `payee_iban` and `destination` do; `email_body`,
-    `payee_comment`, `msg`, `status` and `title` don't (words in either set count in the plural too)."""
+    """Whether an argument's key names where a call goes or what it acts on: a word of it, or two words together
+    (`sort_code`, `payTo`), one of DESTINATION, and its last word no free-text word (FREE_TEXT). `recipient`,
+    `to_email`, `payee_iban`, `beneficiary` and `destination` do; `email_body`, `payee_comment`, `payment_ref`, `msg`,
+    `status` and `title` don't (words in either set count in the plural too)."""
     words = [w.lower() for w in _KEY_WORD.findall(key)] if isinstance(key, str) else []
-    return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(_one_of(w, DESTINATION) for w in words)
+    return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(
+        _one_of(w, DESTINATION) for w in words + [a + b for a, b in zip(words, words[1:])])
 
 
 def _one_of(word: str, names: frozenset) -> bool:
@@ -439,8 +443,9 @@ class _Index:
     letters, digits or _ (and of letters and digits only); pre4, the lengths of the words by their first 4 characters;
     calls, each call as (seq, its arguments read plain, their values, those read wider, its event) in log order, with
     call_vals and call_words, the calls by their values and words, call_ix, each by its event (id()), call_of, the call
-    whose result each content is; bound, the seq at which a call's result was observed as untrusted (an untrusted
-    tool's result is recorded so: by the same agent, as `tool:<name>`, after the call), by its content's index."""
+    whose result each content is; bound, the seq at which a call's result was observed as untrusted, by its content's
+    index: a log the runtime wrote marks the call itself untrusted (`trust`), an older one has the agent observe the
+    result as `tool:<name>` after the call, bound to its calls first in first out."""
 
     def __init__(self) -> None:
         self.n, self.last = 0, None   # events read, the last of them
@@ -456,13 +461,15 @@ class _Index:
         self.call_ix: Dict[int, int] = {}
         self.call_of: Dict[int, int] = {}
         self.bound: Dict[int, int] = {}
-        self.recorded: Dict[Tuple[Any, ...], int] = {}   # (agent, content, `tool:<name>`) -> the latest such result
+        # (agent, content, `tool:<name>`) -> the results not yet observed, first in first out: in a log written before
+        # calls said their own trust, two parallel calls of one tool returning the same page each get one observation
+        self.recorded: Dict[Tuple[Any, ...], Deque[int]] = {}
 
     def add(self, run: Run, memo: Dict[Any, Any], ev: Dict[str, Any]) -> None:
         if ev["type"] == "input":
-            i = self.recorded.pop((ev["agent"], ev.get("ref"), ev.get("source")), None)
-            if i is not None and ev.get("trust") == "untrusted":
-                self.bound[i] = ev["seq"]
+            waiting = self.recorded.get((ev["agent"], ev.get("ref"), ev.get("source")))
+            if waiting and ev.get("trust") == "untrusted":
+                self.bound[waiting.popleft()] = ev["seq"]
             self._content(ev, ev.get("trust", "trusted"), "task" if ev.get("kind") == "task" else
                           ev.get("source", "input"), _read(run, memo, ev, True))
         elif ev["type"] == "action":
@@ -476,7 +483,8 @@ class _Index:
                 self.call_words.setdefault(w, []).append(j)
             if ev.get("status") != "blocked":   # a call that ran: its result is content
                 self.call_of[len(self.reads)] = j
-                self.recorded[(ev["agent"], ev.get("result_ref"), "tool:" + ev["tool"])] = len(self.reads)
+                self.recorded.setdefault((ev["agent"], ev.get("result_ref"), "tool:" + ev["tool"]), deque()).append(
+                    len(self.reads))
                 self._content(ev, "untrusted" if ev.get("trust") == "untrusted" else "trusted", ev["tool"],
                               _read(run, memo, ev, True))
 

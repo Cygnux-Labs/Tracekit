@@ -745,6 +745,9 @@ class Agent:
             if mode != "blocked":
                 gate["tracekit"] = self._complete(gate["tracekit"], ids, status, result, stub=mode == "stub")
             extra.update(gate)
+        untrusted = mode != "blocked" and (untrusted if untrusted is not None else tool in rt.untrusted_tools)
+        if untrusted:   # the call's own entry says so, whatever other calls returning the same content do
+            extra["trust"] = "untrusted"
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status, mode=mode,
                       sensitive=is_sensitive, duration_ms=round((time.perf_counter() - t0) * 1000, 3), **extra)
@@ -752,7 +755,7 @@ class Agent:
             check.notify(rt, ev)
         trust = decision.trust if decision else "trusted"
         ref = Ref(res_ref, result, "result", self.name, tool, trust, ev["id"])
-        if mode != "blocked" and (untrusted if untrusted is not None else tool in rt.untrusted_tools):
+        if untrusted:
             # same content as the action's result, so the graph links action -> input (same-content)
             ref = rt._input(self.name, result, source=f"tool:{tool}", trust="untrusted")
         return ref
