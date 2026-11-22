@@ -3961,6 +3961,106 @@ class CodingPack(unittest.TestCase):
             d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x\t" * 19000})
             self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
 
+    def test_reading_a_credential_from_a_store_through_an_mcp_tool_asks_in_every_pack(self):
+        """TK-A050 is TK-A021's twin: the same credential reads, as the cli_command, command or cmd argument of
+        an MCP tool that runs a command. The call is one subject, so TK-A021's help and non-decrypting pass
+        forms are held here too, as TK-A036 holds TK-A035's."""
+        tools = ("mcp__aws-api__call_aws", "mcp:aws-api/call_aws", "mcp__shell__run_command", "mcp__cloud__ExecuteCommand",
+                 "mcp:ssh/execute", "mcp__x__aws-cli")
+        held = [{"cmd": "gh auth token"},
+                {"cmd": "gh auth status --show-token"},
+                {"cmd": "gh auth status -t"},
+                {"cmd": "gh auth status -ht"},
+                {"cmd": "gh auth status --hostname h --show-token"},
+                {"cmd": "gh auth git-credential get"},
+                {"cmd": "pass github"},
+                {"cmd": "pass show db"},
+                {"cmd": "gopass show db"},
+                {"cmd": "security find-generic-password -s example"},
+                {"cmd": "security find-internet-password -s example"},
+                {"cmd": "security -p hunter2 find-generic-password -s x"},
+                {"cmd": "secret-tool lookup foo"},
+                {"cmd": "secret-tool search foo"},
+                {"cmd": "kwallet-query foo"},
+                {"cmd": "kwallet-query"},
+                {"cmd": "ssh-add -L"},
+                {"cmd": "ssh-add -qL"},
+                {"cmd": "ssh-add -q -L"},
+                {"cmd": "ssh-add -Lq"},
+                {"cmd": "git credential fill"},
+                {"cmd": "git credential get"},
+                {"cmd": "git credential-store get"},
+                {"cmd": "git -c credential.helper=store credential fill"},
+                {"cmd": "keepassxc-cli show db"},
+                {"cmd": "keepassxc-cli clip x"},
+                {"cmd": "keepassxc-cli attachment-export x"},
+                {"cmd": "keepassxc-cli --no-password show db"},
+                {"cmd": "keepassxc-cli.exe show db"},
+                {"cmd": "cat ~/.config/google-chrome/Default/Cookies"},
+                {"cmd": "cat ~/Library/Application Support/Google/Chrome/Profile 1/Network/Cookies"},
+                {"cmd": "sqlite3 'C:/Users/u/AppData/Local/Microsoft/Edge/User Data/Default/Login Data'"},
+                {"cmd": "cat ~/.config/vivaldi/Default/Login Data"},
+                {"cmd": "cat ~/.mozilla/firefox/abc123.default/logins.json"},
+                {"cmd": "sqlite3 ~/Library/Application Support/Firefox/Profiles/abc.default/cookies.sqlite"},
+                # no unless: TK-A021 lets these through over Bash, the twin holds them
+                {"cmd": "pass ls"},
+                {"cmd": "pass find x"},
+                {"cmd": "gopass ls"},
+                {"cmd": "gh auth token --help"},
+                {"cmd": "gh auth status --show-token --help"}]
+        routine = [{"cmd": "gh auth status"},
+                   {"cmd": "gh auth login"},
+                   {"cmd": "gh auth git-credential store"},
+                   {"cmd": "gh auth git-credential erase"},
+                   {"cmd": "git credential approve"},
+                   {"cmd": "git credential store"},
+                   {"cmd": "git credential reject"},
+                   {"cmd": "git credential erase"},
+                   {"cmd": "git push origin feature"},
+                   {"cmd": "echo gh auth token"},
+                   {"cmd": "op item list"},
+                   {"cmd": "aws secretsmanager list-secrets"},
+                   {"cmd": "cat ~/.config/vivaldi/Default/Preferences"},
+                   {"cmd": "cat ~/.config/google-chrome/Default/Preferences"},
+                   {"cmd": "cat /etc/passwd"},
+                   {"cmd": "keepassxc-cli --help"},
+                   {"cmd": "keepassxc-cli export db"},
+                   {"cmd": "pass"},
+                   {"cmd": "cat ~/.mozilla/firefox/abc123.default/places.sqlite"}]
+        for pack, engine, e in self.every_pack():
+            for tool in tools:
+                for args in held + routine:
+                    with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                        d = e.decide(tool, args)
+                        self.assertEqual("TK-A050" in d["rule_ids"], args in held, d)
+                        if args in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+            # a tool not named for running a command is left alone
+            self.assertNotIn("TK-A050", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
+
+    @pytest.mark.serial
+    def test_every_command_tk_a021_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
+        """TK-A050 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
+        newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
+        cmds = ["gh auth token", "gh auth status --show-token", "gh auth status -t",
+                "gh auth git-credential get", "pass github", "gopass show db",
+                "security find-generic-password -s example", "secret-tool lookup foo",
+                "ssh-add -L", "keepassxc-cli show db", "git credential fill",
+                "cat ~/.config/google-chrome/Default/Cookies",
+                "cat ~/.mozilla/firefox/abc123.default/logins.json"]
+        routine = ["gh  auth  status", "git  credential  approve", "cat  /etc/passwd"]
+        for pack, engine, e in self.every_pack():
+            for cmd in cmds:
+                for sep in (" ", "  ", "\t", "\n", " \t "):
+                    text = sep.join(cmd.split(" "))
+                    with self.subTest(pack=pack, engine=engine, cmd=text):
+                        self.assertIn("TK-A050", e.decide("mcp__aws-api__call_aws", {"cli_command": text})["rule_ids"])
+            for text in routine:
+                with self.subTest(pack=pack, engine=engine, cmd=text):
+                    self.assertNotIn("TK-A050", e.decide("mcp__aws-api__call_aws", {"cli_command": text})["rule_ids"])
+            d = e.decide("mcp__aws-api__call_aws", {"cli_command": "gh auth status " + "x\t" * 19000})
+            self.assertEqual(("TK-A050" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
+
     def test_an_mcp_tool_that_returns_a_secrets_value_asks_in_every_pack_and_one_that_lists_or_describes_does_not(self):
         held = [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
                 ("mcp:aws/get_secret_value", {"secret_id": "prod/db-password"}),
