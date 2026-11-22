@@ -128,15 +128,20 @@ def _split_flow(s, lineno):
             depth += (c in "[{") - (c in "]}")
         cur.append(c)
     parts.append("".join(cur))
+    if len(parts) > 1 and not parts[-1].strip():   # a trailing comma, as in [a, b,]
+        parts.pop()
+    if any(not x.strip() for x in parts):
+        raise YAMLError(f"line {lineno}: empty item in flow list")
     return parts
 
 
 def _split_key(text, lineno):
     """'key: value' -> (key, value_text) or None if not a mapping entry."""
-    if text[:1] in "'\"":
-        end = _close(text, text[0])
-        if end < 0:
+    if text[:1] and text[0] in "'\"":
+        marks, open_ = _quoted(text)
+        if open_:
             raise YAMLError(f"line {lineno}: unterminated key")
+        end = marks.index(False) - 1 if False in marks else len(text) - 1
         key, rest = _scalar(text[:end + 1], lineno), text[end + 1:]
         if not rest.startswith(":"):
             return None
@@ -145,19 +150,6 @@ def _split_key(text, lineno):
     if not m:
         return None
     return m.group(1), m.group(3)
-
-
-def _close(text, q):
-    """Index of the quote `q` that closes the string `text` starts, or -1; a double-quoted one skips its \\ escapes."""
-    i = 1
-    while i < len(text):
-        if q == '"' and text[i] == "\\":
-            i += 2
-            continue
-        if text[i] == q:
-            return i
-        i += 1
-    return -1
 
 
 def _unclosed(text, lineno):

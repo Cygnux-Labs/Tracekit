@@ -73,6 +73,11 @@ class SignerConfig(unittest.TestCase):
                 except ValueError:
                     pass
 
+    def test_a_trailing_comma_in_a_kept_value_is_read_as_pyyaml_reads_it(self):
+        """It raised IndexError, a traceback instead of init's refusal."""
+        self.assertEqual(install.hand_keys('data_dir: "/x"\ncontent: {retain: true,}\n'),
+                         ('"content": {"retain": true}\n', ["content"]))
+
     def test_a_key_that_would_not_load_back_as_it_was_is_refused(self):
         for old, key in (('grace_s: 1.0e-5\n', "grace_s"), ('frobnicate: 1\n', "frobnicate")):
             with self.subTest(old=old), self.assertRaisesRegex(ValueError, key):

@@ -52,18 +52,22 @@ class FlowMappings(unittest.TestCase):
             return r.choice(["'" + body.replace("'", "''") + "'", json.dumps(body),
                              r.choice(["a", "b c", "a#b", 'x"y', "it's", 'a"x\\"y', "q #z"])])
 
+        def key(i):
+            return r.choice([f"k{i}", f"'k''{i}'", f'"k\\"{i}"'])
+
         def flow(d=0):
             items = [flow(d + 1) if d < 2 and r.random() < 0.25 else atom() for _ in range(r.randrange(4))]
+            comma = ", " if items and r.random() < 0.2 else ""   # a trailing comma
             if r.random() < 0.5:
-                return "[" + ", ".join(items) + "]"
-            return "{" + ", ".join(f"k{i}: {v}" for i, v in enumerate(items)) + "}"
+                return "[" + ", ".join(items) + comma + "]"
+            return "{" + ", ".join(f"{key(i)}: {v}" for i, v in enumerate(items)) + comma + "}"
 
         both = 0
         for _ in range(5000):
             doc = "v: " + flow() + "\n"
             try:
                 mine = yamlmini.loads(doc)
-            except yamlmini.YAMLError:
+            except ValueError:   # a refusal; any other exception is a crash and fails the test
                 continue
             try:
                 theirs = yaml.safe_load(doc)
@@ -72,6 +76,16 @@ class FlowMappings(unittest.TestCase):
             both += 1
             self.assertEqual(mine, theirs, doc)
         self.assertGreater(both, 4000)
+
+    def test_a_trailing_comma_ends_a_flow_collection_and_an_empty_item_is_refused(self):
+        self.assertEqual(yamlmini.loads("a: [x,]\nb: {retain: true,}\nc: [{a: 1,}]\n"),
+                         {"a": ["x"], "b": {"retain": True}, "c": [{"a": 1}]})
+        for text in ("v: {,}", "v: {a: 1, , b: 2}", "v: {a: {,}}", "v: [[], {}, [,], {,}]", "v: [a,,]"):
+            with self.subTest(text), self.assertRaisesRegex(yamlmini.YAMLError, "empty item"):
+                yamlmini.loads(text + "\n")
+
+    def test_a_single_quoted_key_takes_a_doubled_quote(self):
+        self.assertEqual(yamlmini.loads("v: {'it''s': 1}\n'a''b': 2\n"), {"v": {"it's": 1}, "a'b": 2})
 
     def test_a_flow_item_that_is_not_key_value_is_an_error(self):
         with self.assertRaises(yamlmini.YAMLError):
