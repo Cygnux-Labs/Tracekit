@@ -1519,7 +1519,11 @@ def _gist(c, aid, n=60):
     v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
               and isinstance(args.get(k), str)), None)
     text = " ".join((f"{len(many)} {k}: {json.dumps(many)}" if many else json.dumps(args) if v is None else v).split())
-    n = max(n, 400) if many else n
+    return _cut(text, max(n, 400) if many else n)
+
+
+def _cut(text, n):
+    """`text` in at most `n` characters: cut, ending in "...", when longer."""
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
@@ -1536,6 +1540,47 @@ def _expires_left(x):
     if left < 0:
         return f" ({-left // 60:.0f} min ago)"
     return f" (in {left // 60:.0f} min)" if x["state"] in ("requested", "approved") else ""
+
+
+def _ai_said(ans, n=1024):
+    """What agent approver answer `ans` (an approval's `ai.answer`: model output) said, as `approvals list` and `show`
+    print it, its reason JSON-escaped and cut to `n` characters."""
+    reason = ans.get("reason")
+    return ((f"suggests {ans['decision']} (shadow: people decide)" if ans["mode"] == "shadow" else
+             {"approve": "approved it", "reject": "rejected it", "escalate": "handed it to people"}[ans["decision"]])
+            + (f": {json.dumps(_cut(reason, n))}" if reason else ""))
+
+
+def _ai_may(ai, n=1024):
+    """Whether an agent approver may answer an approval that waits, by its `ai`, as `approvals list` and `show` print
+    it, with why when none may, cut to `n` characters."""
+    return {"enforce": "may answer it", "shadow": "may suggest an answer, people decide"}.get(
+        ai["mode"], f"doesn't answer it: {_cut(ai['reason'], n)}")
+
+
+def _ai_brief(x):
+    """What `approvals list` adds of agent approvers to approval `x`: the latest answer one gave (model output), or
+    while it waits, whether one may answer it (why not, when none may); "" otherwise."""
+    ai = x.get("ai")
+    return ("" if not ai else "  ai approver " + _ai_said(ai["answer"], 60) if ai.get("answer") else
+            "  ai approver " + _ai_may(ai, 60) if x["state"] == "requested" else "")
+
+
+def _ai_lines(x):
+    """What `approvals show` says of agent approvers on approval `x` (its `ai`): the latest answer one gave, model
+    output, with who gave it and the view it answered; and while it waits, whether one may answer it and why."""
+    ai = x.get("ai")
+    if not ai:
+        return []
+    ans = ai.get("answer")
+    lines = [f"ai approver {_ai_said(ans)} (model output, by {json.dumps(ans['by'])})"] if ans else []
+    if ans and "view" in ans:
+        lines.append(f"            the view it answered: {ans['view']}" + (
+            " (its record's commitment to that view_digest: the signer no longer holds the view)"
+            if ans["view"].startswith("hmac-") else ""))
+    if x["state"] == "requested":
+        lines.append("ai approver " + _ai_may(ai) + (f" ({ai['reason']})" if ai["mode"] else ""))
+    return lines
 
 
 def _stop_lines(c, x):
@@ -1726,7 +1771,7 @@ def _approvals(a):
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                       f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x)}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
-                          else ""))
+                          else "") + _ai_brief(x))
             if a.json:
                 print(json.dumps(approvals))
             elif len(shown) < len(approvals):
@@ -1746,7 +1791,8 @@ def _approvals(a):
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     *_stop_lines(c, x), f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
+                     *_stop_lines(c, x), *_ai_lines(x), f"rules       {', '.join(x['rule_ids'])}",
+                     f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
                      f"call        {x['tool_call_id']} attempt {x['attempt']}",
                      f"binding     {x['binding_digest']}", "arguments (the signer's copy, in full):",

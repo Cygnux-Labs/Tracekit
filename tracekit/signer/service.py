@@ -2247,7 +2247,22 @@ class SignerService:
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
                 **({"agent": True} if self._agent_mode(a) == "enforce" else {}),
-                **{k: a[k] for k in ("answered", "escalation") if a.get(k)}}
+                **{k: a[k] for k in ("answered", "escalation") if a.get(k)},
+                **({"ai": self._ai(approval_id, a)} if a.get("agent") else {})}
+
+    def _ai(self, approval_id, a):
+        """People's view of agent approvers on approval `a`, whose request weighed them (its `agent`): `mode`, how an
+        agent's answer counts now (_agent_mode), and `reason`, why (its eligibility, or why it is refused now); and
+        `answer`, the latest agent answer (pipeline.agent_state's agent_answer), its `view` the view_digest it answered
+        while the signer holds the view it served that approver, else its record's commitment to it."""
+        ans = a.get("agent_answer")
+        out = {"mode": self._agent_mode(a), "reason": a["agent"]["eligible"] and self._agent_refusal(a)
+               or a["agent"]["reason"]}
+        if ans:
+            served = (a.get("viewed") or {}).get(ans["by"])
+            out["answer"] = {**ans, **({"view": served[0]} if served and "view" in ans and self._opens(
+                ans["view"], f"approval.view:{approval_id}", served[0]) else {})}
+        return out
 
     def _agent_refusal(self, a):
         """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
@@ -2377,6 +2392,18 @@ class SignerService:
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
         return (why + INSTEAD * bool(why and instead) + instead)[:1024]
+
+    def _joined(self, rule_ids, engine_ids, run_labels):
+        """Why no agent approver answers an ask whose rule ids `rule_ids` differ on the writer from those of the reading
+        its eligibility was weighed for (`engine_ids`): the run conditions the run's labels made apply (`run_labels`:
+        those labels; TK-Q001 after a secret read, the first to join) or an operator's limit joined it. Its eligibility
+        reason, for people and the record."""
+        added = [i for i in rule_ids if i not in engine_ids]
+        rule = next((r for _, r, *_ in self.policy.rules if r["id"] in added[:1]), {})
+        return ((f"the run carries {', '.join(run_labels)}, so " if run_labels else "")
+                + (f"{added[0]} also matched this call" + (f" ({rule['reason']})" if rule.get("reason") else "")
+                   if added else "the rules that held this call differ from those its eligibility was weighed for")
+                + ": people answer it")[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent, and those the policy's approval_agent lists, each as a
@@ -3498,6 +3525,10 @@ class SignerService:
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
                         call["agent"] = agent
+                    elif agent:   # a rule the writer applied joined the ask: people answer it, and it says why
+                        call["agent"] = {**{k: v for k, v in agent.items() if k not in ("target", "untrusted")},
+                                         "eligible": False, "reason": self._joined(rule_ids, ruled[0]["rule_ids"],
+                                                                                   data.get("run_labels"))}
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
@@ -4588,8 +4619,7 @@ class SignerService:
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
                 s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
-                page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
-                                                                     "passkey", "answered", "escalation")}
+                page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
                             if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 

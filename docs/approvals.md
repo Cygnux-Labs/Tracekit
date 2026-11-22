@@ -418,7 +418,8 @@ Metrics: `tracekit_signer_agent_approvals_total{decision}`, `tracekit_signer_age
 `tracekit_signer_records_total{type="approval.escalated"|"approval.suggested"}`.
 
 **What people see.** `approval_list` and `approval_get` show people `answered: {by, kind}` (`kind: agent` is model
-output) and, once escalated, `escalation: {by: agent|signer, reason}`; an agent sees neither. Their `agent: true` means
+output), once escalated, `escalation: {by: agent|signer, reason}`, and `ai`: whether an agent may answer it now and
+why, and its latest answer ([the AI approver](#the-ai-approver)); an agent sees none of them. Their `agent: true` means
 an agent's answer can still decide the approval: it is agent-eligible, not escalated, agent approvals are on, the
 policy is the one it was requested under, no agent said no to the same call, and no rule of it is in shadow mode. The
 Slack bridge posts every approval without it (person-only, escalated, shadow mode, agents switched off) and leaves the
@@ -566,6 +567,26 @@ approvals` line checks each AI yes against the precedents its bundle holds and a
 call like it there. When an AI yes's run carried a label, their `AI run bound` line checks it against the run bound of
 the policy snapshot it names, and fails when the bundle doesn't hold that snapshot: export with the policy snapshots
 ([verdicts](verdicts.md)).
+
+**What people see.** `tracekit approvals show` and `list` say what the AI approver did with each approval:
+
+```
+ai approver approved it: "the mirror alice approved" (model output, by "uid:990299")
+            the view it answered: sha256:5838c1aa…
+```
+
+The reason is model output, printed JSON-escaped. The view is the `view_digest` of the view it answered; after a
+restart with no snapshot, the signer no longer holds that view, and shows its record's commitment to it instead. While
+a call waits, they say whether the AI may answer it and, when it may not, why:
+
+```
+ai approver doesn't answer it: the run carries secrets_access, so TK-Q001 also matched this call (data sent off the machine after the run read a secret): people answer it
+```
+
+A rule that joins a call on the signer (a run condition, such as TK-Q001 after a secret read) makes it a person's,
+and its `agent.reason` says which. `approval_get` and `approval_list` carry the same as `ai`: `mode` (enforce, shadow,
+or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view). An agent approver sees
+none of it.
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
 own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start

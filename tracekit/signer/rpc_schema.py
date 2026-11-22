@@ -4,8 +4,9 @@ Frozen: a change to any schema here is a new RPC_VERSION. Version 28 adds the AI
 approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
 `ai` (an agent approver's answers) and `view_digest` (the approval_review it answers, required for an approval
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
-playbook and recent calls of such an approval) and `approver` (people: the circuit breaker's state and the playbook,
-accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped). Version 27 adds
+playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
+accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped) and an approval's `ai` (what
+people see of agent approvers on it: whether one may answer it now and why, and the latest agent answer). Version 27 adds
 `run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
 the signer records as theirs; a run's own owner, principal or requester can't. Version 26 adds register_run's
 `continues` (a later run of an
@@ -254,9 +255,18 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 # who answered (an agent's answer is model output) and, once escalated, by whom and why
                 answered=_obj(["by", "kind"], by=_str(256), kind={"enum": ["person", "agent"]}),
                 escalation=_obj(["by"], by={"enum": ["agent", "signer"]}, reason=REASON),
-                run_closing={"const": True})   # still requested, but its run is closing: no answer can be acted on
-# what approval_list shows an agent approver: nothing from the run or the requesting agent
-_AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
+                run_closing={"const": True},   # still requested, but its run is closing: no answer can be acted on
+                # people's view of agent approvers on it, when its request weighed them: how an agent's answer counts
+                # now (`mode`; null: only people answer it) and why, and the latest agent answer (model output): its
+                # decision, mode, who gave it, its reason, and an AI answer's `view`: the view_digest it answered, or
+                # its record's commitment to it once the signer no longer holds the view it served
+                ai=_obj(["mode", "reason"], mode={"enum": ["enforce", "shadow", None]}, reason=REASON,
+                        answer=_obj(["decision", "mode", "by"], decision={"enum": ["approve", "reject", "escalate"]},
+                                    mode={"enum": ["enforce", "shadow"]}, by=_str(256), reason=REASON,
+                                    view={"oneOf": [DIGEST, _str(77, pattern=r"^hmac-sha256:[0-9a-f]{64}" + _END)]})))
+# what approval_list shows an agent approver (its properties, all it is shown): nothing from the run, the requesting
+# agent or other answers
+AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
                       **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
                                                                 "policy_hash", "expires_at", "escalated", "agent",
                                                                 "run_closing")})
@@ -579,7 +589,7 @@ RESPONSES = {
                          properties=dict(_SUMMARY["properties"], args_source={"enum": ["raw", "parsed", "coerced"]},
                                          args=ANY, binding_digest=DIGEST, reason=REASON)),
     "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000,
-                                                              "items": {"oneOf": [_SUMMARY, _AGENT_SUMMARY]}},
+                                                              "items": {"oneOf": [_SUMMARY, AGENT_SUMMARY]}},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     # view_digest: sha256(JCS(the rest of the answer))

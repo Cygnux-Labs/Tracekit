@@ -98,7 +98,9 @@ def approval(tenant, run_id, data, ts):
     record's agent eligibility; `ai`: its `ai`, when the policy's approval_agent lists every rule it was held by (its
     precedent key); `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
-    when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
+    when the record has them); an agent approver's latest answer, deciding or not, `agent_answer` (decision, mode,
+    by, its reason and an AI answer's `view`: the commitment to the view it answered); an agent's approval adds `kind`
+    agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
     record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran); one a root PCM grant was
     minted from adds `granted`."""
@@ -204,6 +206,13 @@ def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
         set_(a, "escalation", {k: d[k] for k in ("by", "reason") if k in d})
     elif typ == "approval.revoked":   # by whom, for the held message of a retry (SignerService._said_no)
         set_(a, "revoked", d["by"])
+    if typ in ("approval", "approval.suggested") and d.get("approver_kind") == "agent" or \
+            typ == "approval.escalated" and d.get("by") == "agent":   # what it said, for people (SignerService._ai)
+        who = d["approver_identity"]
+        set_(a, "agent_answer", {"decision": d.get("decision", "escalate"), "by": f"{who['scheme']}:{who['subject']}",
+                                 "mode": "shadow" if typ == "approval.suggested" else "enforce",
+                                 **{k: v for k, v in (("reason", d.get("reason")),
+                                                      ("view", (d.get("relied_on") or {}).get("view"))) if v}})
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
         set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
