@@ -633,19 +633,33 @@ class TestServeContract(SignerContract, unittest.TestCase):
 
 
 class TestLogging(unittest.TestCase):
+    def setUp(self):
+        root, tk = logging.getLogger(), logging.getLogger("tracekit")
+        saved = root.handlers[:], root.level, tk.level
+
+        def restore():
+            root.handlers[:], level, tk_level = saved
+            root.setLevel(level)
+            tk.setLevel(tk_level)
+        self.addCleanup(restore)
+        root.handlers[:] = []   # pytest's capture handler would make basicConfig a no-op
+        root.setLevel(logging.WARNING)
+        tk.setLevel(logging.NOTSET)
+
     @mock.patch("logging.basicConfig")
     def test_serve_default_does_not_configure_logging(self, basic_config):
         with mock.patch.object(svc, "_serve_dev"):
             svc.main(["serve", "--dev"])
         basic_config.assert_not_called()
 
-    @mock.patch("logging.basicConfig")
-    def test_serve_explicit_log_levels_configure_logging(self, basic_config):
+    def test_serve_log_level_reaches_tracekit_loggers_only(self):
         for name, level in (("warning", logging.WARNING), ("info", logging.INFO), ("debug", logging.DEBUG)):
             with self.subTest(name=name), mock.patch.object(svc, "_serve_dev"):
-                basic_config.reset_mock()
                 svc.main(["serve", "--dev", "--log-level", name])
-            basic_config.assert_called_once_with(level=level)
+                http = logging.getLogger("tracekit.transport.http")
+                self.assertEqual((http.isEnabledFor(level), http.isEnabledFor(level - 10)), (True, False))
+                # botocore's debug log prints AWS credentials when the log key is in KMS
+                self.assertFalse(logging.getLogger("botocore").isEnabledFor(logging.INFO))
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")

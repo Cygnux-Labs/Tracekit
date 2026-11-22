@@ -100,7 +100,8 @@ deny or ask with 200.
 `Request-Id` header (`req_` and 24 hex digits) of its own, not the `request_id` a call sends: the signer logs one line
 per answer at INFO on the `tracekit.transport.http` logger with that id, the status, method, identity, error code and
 time taken. `tracekit signer serve --config signer.yaml --log-level info` prints these lines on stderr (`debug` prints
-debug lines too); without `--log-level` the signer prints only warnings.
+Tracekit's debug lines too); without `--log-level` the signer prints only warnings and errors. Other libraries print
+only warnings and errors at every level, since a library's debug log can carry credentials (botocore's does).
 
 The SDKs send an event call (`decide`, `complete`, `observe`, `state_write`, `model_event`) again after `unavailable`
 or a `quota_exceeded` with `retry_after_ms`, at most three tries within the call's timeout: they wait
