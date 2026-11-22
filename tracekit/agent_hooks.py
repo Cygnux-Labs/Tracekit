@@ -3153,10 +3153,12 @@ def _install_cline(path, uninstall=False, v2=False, python=None):
     return path
 
 
-def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
+def install(harness, project=None, uninstall=False, v2=False, python=None, path=None, extra=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
-    config file (path, or config_path), replacing those of the other version. -> the file's path."""
-    from .install import SettingsError, _atomic_write_json, _backup_changed
+    config file (path, or config_path), replacing those of the other version. extra: settings to set with the hooks and
+    remove with them, marked so an admin's own value stays (a managed file's own switch, e.g. Gemini CLI's
+    hooksConfig.enabled). -> the file's path."""
+    from .install import SettingsError, _atomic_write_json, _backup_changed, _set_extra
     path = path or config_path(harness, project)
     if harness == "gptme":
         return _install_gptme(path, uninstall, v2, python)
@@ -3268,6 +3270,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             kept = _droid_settings_hooks(path) != s and f"the hooks left in it aren't those in {settings}"
         except SettingsError as e:   # Tracekit's hooks still go: what is left can't be told from a person's
             kept = f"{settings} can't be read ({e.__cause__})"
+    if extra is not None:   # a managed file's own switch, set with the hooks and taken out with them
+        _set_extra(s, extra, uninstall)
     changed = _backup_changed(path, txt, s)
     if uninstall and (harness == "droid" and (not s or kept is False)
                       or harness == "copilot" and set(s) <= {"version"}):   # Tracekit's own file, left with no hooks

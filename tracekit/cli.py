@@ -696,11 +696,11 @@ def _run(a):
         if a.managed_only and not a.managed:   # alone, the hooks would go to settings the agent's user can edit
             print("tracekit: --managed-only goes with --managed", file=sys.stderr)
             return 2
-        if a.managed and (a.dev or a.project or a.agent != "claude"):
+        if a.managed and (a.dev or a.project or not install.managed_path(a.agent)):
             print("tracekit: " + ("--managed is for system mode: a --dev setup belongs to its user" if a.dev else
                                   "--managed and --project name different settings files: use one" if a.project else
-                                  f"--managed is for Claude Code only: Tracekit wires no admin-managed settings for "
-                                  f"{a.agent}, so its hooks go in the agent user's own config "
+                                  f"--managed needs an admin-managed settings file, and Tracekit wires none for "
+                                  f"{a.agent}: its hooks go in the agent user's own config "
                                   f"({wiki_url('docs/limits.md')})"), file=sys.stderr)
             return 2
         signer = None
