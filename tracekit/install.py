@@ -1600,14 +1600,14 @@ def hand_keys(old):
 def _old_hand_keys():
     """hand_keys of the signer.yaml an earlier init wrote, read as a regular file in a root-owned directory, without
     following a symlink; ("", []) when there is none. SystemExit when it can't be kept."""
+    d = None
     try:
         d = files.open_dir(os.path.dirname(V2_CONFIG), {0})
-    except FileNotFoundError:
-        return "", []
-    try:
         old = files.read(d, os.path.basename(V2_CONFIG))
         return hand_keys(old.decode("utf-8")) if old else ("", [])
-    except (files.UnsafePath, ValueError) as e:
+    except FileNotFoundError:
+        return "", []
+    except (files.UnsafePath, NotADirectoryError, ValueError) as e:
         raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
     finally:
         files.close(d)

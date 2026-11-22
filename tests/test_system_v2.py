@@ -217,6 +217,21 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual((cfg["content"], cfg["data_dir"]), ({"retain": True}, install.V2_DATA))
         self.assertIn("kept what you added: content, metrics", out.getvalue())
 
+    def test_a_rerun_refuses_a_config_folder_it_cannot_open_safely(self):
+        real = os.path.join(self.d, "real-etc")
+        os.mkdir(real)
+        os.symlink(real, os.path.join(self.d, "etc"))
+        folder = os.path.join(self.d, "etc", "signer.yaml")
+        for name, patch in (("symlinked folder", mock.patch.object(install, "V2_CONFIG", folder)),
+                            ("wrong owner", mock.patch.object(install.files, "open_dir", side_effect=install.files.UnsafePath(
+                                "etc is owned by uid 501, expected [0]"))),
+                            ("not a folder", mock.patch.object(install.files, "open_dir", side_effect=NotADirectoryError(
+                                "etc")))):
+            with self.subTest(name), patch, contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaisesRegex(SystemExit, "can't keep what you added to it"):
+                self.init_v2()
+            self.users.assert_not_called()
+
     def test_a_rerun_refuses_an_old_file_it_cannot_read_safely(self):
         target = os.path.join(self.d, "elsewhere.yaml")
         with open(target, "w") as f:

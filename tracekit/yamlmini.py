@@ -19,6 +19,9 @@ _INT = re.compile(r"^[-+]?\d+$")
 _FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
 
 
+_OPENS = ("", ":", "-", "[", ",", "{")   # a quote opens a string only after one of these (or at the start)
+
+
 def _strip_comment(line):
     out, q = [], None
     i = 0
@@ -39,7 +42,7 @@ def _strip_comment(line):
         else:
             if c == "#" and (i == 0 or line[i - 1] in " \t"):
                 break
-            if c in "'\"" and (not out or "".join(out).rstrip()[-1:] in ("", ":", "-", "[", ",", "{") ):
+            if c in "'\"" and "".join(out).rstrip()[-1:] in _OPENS:
                 q = c
             out.append(c)
         i += 1
@@ -91,19 +94,20 @@ def _scalar(tok, lineno):
 
 def _split_flow(s, lineno):
     """The comma-separated items of a flow list or mapping body, nested [] and {} kept whole."""
-    parts, cur, q, depth, esc = [], [], None, 0, False
+    parts, cur, q, depth, esc, last = [], [], None, 0, False, ""
     for c in s:
         if q:
             cur.append(c)
             esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
             q = None if end else q
-        elif c in "'\"":
+        elif c in "'\"" and last in _OPENS:
             q = c; cur.append(c)
         elif c == "," and not depth:
             parts.append("".join(cur)); cur = []
         else:
             depth += (c in "[{") - (c in "]}")
             cur.append(c)
+        last = c if not c.isspace() else last
     if q:
         raise YAMLError(f"line {lineno}: unterminated string in flow list")
     parts.append("".join(cur))
@@ -145,15 +149,16 @@ def _unclosed(text, lineno):
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
         return False
-    depth, q, esc = 0, None, False
+    depth, q, esc, last = 0, None, False, ""
     for c in v:
         if q:
             esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
             q = None if end else q
-        elif c in "'\"":
+        elif c in "'\"" and last in _OPENS:
             q = c
         else:
             depth += (c in "[{") - (c in "]}")
+        last = c if not c.isspace() else last
     return depth > 0
 
 

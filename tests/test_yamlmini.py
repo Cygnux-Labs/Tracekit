@@ -26,6 +26,8 @@ class FlowMappings(unittest.TestCase):
         self.assertEqual(yamlmini.loads('m: {"note": "rack 12\\" A, row 3", "x": ["a\\\\", "b"]}\n"k\\"q": 1\n'),
                          {"m": {"note": 'rack 12" A, row 3', "x": ["a\\", "b"]}, 'k"q': 1})
         self.assertEqual(yamlmini.loads('m: {"a": "x\\"]",\n  "b": 2}\n'), {"m": {"a": 'x"]', "b": 2}})
+        # a quote inside a plain item opens no string (as in PyYAML), so its backslash escapes nothing
+        self.assertEqual(yamlmini.loads('content: {b: [a"x\\"y]}\n'), {"content": {"b": ['a"x\\"y']}})
 
     def test_a_flow_item_that_is_not_key_value_is_an_error(self):
         with self.assertRaises(yamlmini.YAMLError):
