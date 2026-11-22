@@ -227,7 +227,7 @@ class _Https:
         if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
         self.token_file, self.pid, self.hello = token_file or os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
-        self.conns = weakref.WeakSet()   # every thread's, for close()
+        self.conns = weakref.WeakSet()   # every live thread's _ThreadConns, for close()
 
     def _host(self, req):
         """The host of the run or approval `req` names. A central signer's replica (docs/deploy-kubernetes.md) prefixes
@@ -256,12 +256,13 @@ class _Https:
             self.pid, self.local, self.conns = os.getpid(), threading.local(), weakref.WeakSet()
         host = host or self.host
         if not hasattr(self.local, "conns"):
-            self.local.conns = {}
-        conn = self.local.conns.get(host)
+            self.local.conns = _ThreadConns()
+            self.conns.add(self.local.conns)
+        by_host = self.local.conns.by_host
+        conn = by_host.get(host)
         if conn is None:
-            conn = self.local.conns[host] = (http.client.HTTPConnection(host, self.port) if self.plain else
+            conn = by_host[host] = (http.client.HTTPConnection(host, self.port) if self.plain else
                                              http.client.HTTPSConnection(host, self.port, context=self.ctx))
-            self.conns.add(conn)
         conn.timeout = timeout
         if conn.sock and _readable(conn.sock):
             conn.close()   # a kept connection the signer closed (or sent unasked bytes on): written into, it looks sent
@@ -313,8 +314,23 @@ class _Https:
         return self.post(body, rem, self._host(req))
 
     def close(self):
-        for conn in list(self.conns):
+        for conns in list(self.conns):
+            conns.close()
+
+
+class _ThreadConns:
+    """One thread's connections by host; closed by close() or, if that has not run, when the thread ends and its
+    thread-local goes."""
+
+    def __init__(self):
+        self.by_host = {}
+
+    def close(self):
+        for conn in list(self.by_host.values()):
             conn.close()
+        self.by_host.clear()
+
+    __del__ = close
 
 
 class _Conn:
