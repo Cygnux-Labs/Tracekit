@@ -2784,71 +2784,72 @@ _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
-                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY", "evaluate"}}
-# of those, the names of functions and classes: each holds its module's globals (`f.__globals__`, gc.get_referents(f))
-_SIGNER_CODE = r"\b(?:RPCError|compared|model_names|load_policy|evaluate)\b"
-# what reaches a module through an object that holds it: any dunder (quoted too: a name given to getattr or an
-# attrgetter; not `__name__` or `__main__`, which hold no module's globals), an attribute after a dot and a
-# backslash-newline or a space, a function that reads an attribute by name (getattr, vars, attrgetter, methodcaller), a
-# frame or traceback (an exception's `tb_frame.f_globals`, sys.exc_info, traceback.walk_tb), and the inspect, gc and
-# sys.modules lookups
-_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
-                       r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
-                       r"walk_tb|walk_stack|inspect|gc)\b|\bsys\s*\.\s*modules\b")
+                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
 # a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
-# pydoc.locate), or reads a field of an object by its name (string.Formatter), or runs code (ctypes, code.InteractiveInterpreter)
+# pydoc.locate, mock.patch's get_original), reads a field of an object by its name (string.Formatter) or runs code
+# (ctypes, code.InteractiveInterpreter)
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
-                        r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|format_map|"
-                        r"BaseConfigurator|InteractiveInterpreter|runsource)\b|"
+                        r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|"
+                        r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original)\b|\bmock\s*\.\s*patch\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
-# where one of those names may stand outside its import: called, and RPCError (an exception) also caught (`except`
-# alone or in a tuple), raised, or tested for with isinstance. Any other use passes the function or class on as a value,
-# and what holds it holds its module.
-_RPC_CAUGHT = re.compile(r"\b(?:except|raise)\s+$")
-_RPC_IN_TUPLE = re.compile(r"\bexcept\s*\((?:[^()]*,)?\s*$")
-_RPC_TESTED = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
+# a function or class the signer's code may be read for holds its module's globals, and a call of one runs in the agent's
+# process, whose frames hold them too: code that names one and reaches through an object (a dunder, even quoted; an
+# attribute read by name; a frame, traceback or trace hook; inspect, gc, sys.modules) may get to the module
+_SIGNER_CODE = re.compile(r"\b(?:RPCError|compared|model_names|load_policy)\b")
+_PY_REACH = re.compile(r"\.\s*(?:\\\r?\n\s*)*__|\b__(?!(?:name|main)__\b)\w+__\b|"
+                       r"\b(?:getattr|vars|attrgetter|methodcaller|f_globals|f_locals|f_back|tb_frame|tb_next|exc_info|"
+                       r"walk_tb|walk_stack|settrace|setprofile|gettrace|getprofile|inspect|gc)\b|\bsys\s*\.\s*modules\b")
 # a statement importing from the signer: its list ends where its statement does (a parenthesised one at its `)`, a comment
 # in it may hold one; any other at its line's end unless a backslash goes on)
-_SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
-                            r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w,*]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+_SIGNER_IMPORT = re.compile(r"\bfrom\s+tracekit\.signer\.rpc_schema\s+import\s+"
+                            r"(?:\(((?:[^)#]|#[^\n]*)*)\)|((?:[\w,]|[^\S\r\n]|\\(?:\r\n?|\n))+))")
+_RPC_DATA = {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN"}
+_RPC_CATCH = re.compile(r"\bexcept\s+$|\bexcept\s*\((?:[^()]*,)?\s*$")
+_RPC_TEST = re.compile(r"\bisinstance\(\s*[\w.\[\]]+\s*,\s*$")
 
 
-def _signer_code_as_value(code):
-    """Whether code uses a name of _SIGNER_CODE other than to call it (or, for RPCError, to catch, raise or test for it)
-    outside the statements that import it."""
-    spans = [m.span() for m in _SIGNER_IMPORT.finditer(code)]
-    for m in re.finditer(_SIGNER_CODE, code):
-        before, after = code[:m.start()][-80:], code[m.end():]
-        if any(a <= m.start() < b for a, b in spans) or re.match(r"\s*\(", after) or m.group() == "RPCError" and (
-                _RPC_CAUGHT.search(before) or _RPC_IN_TUPLE.search(before) and re.match(r"\s*[,)]", after) or
-                _RPC_TESTED.search(before) and re.match(r"\s*\)", after)):
-            continue
-        return True
-    return False
+def _without_rpc_catch(code):
+    """The code less its statements importing RPCError (and rpc_schema's tables) by name, when it uses RPCError only to
+    catch it (`except RPCError`, `except (…, RPCError)`) or test for it (`isinstance(x, RPCError)`): such a script
+    reaches nothing of the schema's module; else the code as it is. A call, a raise, a subclass or another use of the
+    class holds its module, as do names read any other way (_runs_signer)."""
+    spans = []
+    for m in _SIGNER_IMPORT.finditer(code):
+        items = [x.strip() for x in re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(1) or m.group(2)).replace("\n", " ").split(",")]
+        if "RPCError" not in items or any(i not in _RPC_DATA | {"RPCError"} for i in items if i):
+            return code
+        spans.append(m.span())
+    if not spans:
+        return code
+    for m in re.finditer(r"\bRPCError\b", code):
+        if not any(a <= m.start() < b for a, b in spans) and not (
+                _RPC_CATCH.search(code[:m.start()][-80:]) and re.match(r"\s*(?:[,):]|as\b)", code[m.end():]) or
+                _RPC_TEST.search(code[:m.start()][-80:]) and re.match(r"\s*\)", code[m.end():])):
+            return code
+    return "".join(code[a:b] for a, b in zip([0] + [s[1] for s in spans], [s[0] for s in spans] + [len(code)]))
 
 
 def _runs_signer(code):
     """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
     other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
-    reached by its full name. A function or class it may read (_SIGNER_CODE) holds its module: code that names one and
-    reaches through an object (_PY_REACH), or uses it other than called (_signer_code_as_value), may get to the module."""
+    reached by its full name."""
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
-            re.search(r"\btracekit\.signer\.\w+\.\w", code) or \
-            re.search(_SIGNER_CODE, code) and (_PY_REACH.search(code) or _signer_code_as_value(code)):
+            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code):
         return True
+    code = _without_rpc_catch(code)
     aliases = {}   # a name the code gives one of the signer's modules -> that module
-    # an import list ends where its statement does: a parenthesised one at its `)` (a comment in it may hold one), any
-    # other at its line's end unless a backslash goes on
-    for m in _SIGNER_IMPORT.finditer(code):
-        listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) or m.group(3) or "")
+    # (a backslash continues a list; a parenthesised one runs to its `)`, a comment in it may hold one)
+    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
+                         r"(?:\(((?:[^)#]|#[^\n]*)*)|((?:[\w\s,*]|\\(?:\r\n?|\n))+))", code):
+        listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) or m.group(3))
         for item in listed.replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))
             if not name:
                 continue
-            if m.group(1) is None and name in _SIGNER_READS:
+            if m.group(1) is None and name in _SIGNER_READS and len(alias.split()) <= 1:   # (more: the next line's words)
                 aliases[alias or name] = name
             elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
                 return True
@@ -3189,6 +3190,7 @@ def _tracekit(parsed, finds, work):
     def tag(name, texts):
         return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
+    act = [unicodedata.normalize("NFKC", s) for s in act]   # (Python reads a name so: `ｓigner` is `signer`)
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
         (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or

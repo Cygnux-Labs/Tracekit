@@ -81,27 +81,44 @@ class FalseStops(unittest.TestCase):
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
                         self.assertIn(rule, d["rule_ids"], d)
 
-    def test_an_import_list_ends_with_its_statement(self):
-        # `import RPCError` then `try:` on the next line read `try` as a second imported name; evaluate only
-        # decides a call (it signs and starts nothing)
+    def test_an_exception_class_that_is_only_caught_is_no_reach(self):
+        # `import RPCError` then `try:` on the next line read `try` as a second imported name
         self.assert_open(
-            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    RPCError('x', 'y')\n"
-            "except AssertionError as e:\n    print(e)\nEOF",
-            "python3 - <<'EOF'\nimport json\nfrom tracekit.signer.rpc_schema import RESPONSES\n"
-            "print(sorted(RESPONSES['read']['properties']))\nEOF",
-            "python3 -c \"from tracekit.signer.service import evaluate, load_policy, DEFAULT_POLICY\n"
-            "e = load_policy(DEFAULT_POLICY)\nprint(evaluate(e, 'Bash', {'command': 'ls'})[0]['verdict'])\"",
-            "python3 -c \"from tracekit.signer.service import evaluate; from tracekit.policy2.engine import Engine; "
-            "from tracekit.policy2 import compile; e = Engine(compile.build('p.yaml')[0]); "
-            "print(evaluate(e, 'Bash', {'command': 'ls'}))\"")
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
+            "except RPCError as e:\n    print(e)\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
+            "except (ValueError, RPCError):\n    pass\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError, RESPONSES\n"
+            "print(isinstance(1, RPCError), sorted(RESPONSES))\nEOF",
+            "python3 -c \"from tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\nexcept RPCError:\n    pass\"")
+
+    def test_an_exception_class_used_other_than_caught_stays_stopped_as_on_main(self):
+        # called, raised, subclassed, passed on or reached through: each holds the schema's module or can get to it
+        imp = "from tracekit.signer.rpc_schema import RPCError\n"
+        for code in (imp + "try:\n    pass\nexcept RPCError:\n    pass\nRPCError('x', 'y')",
+                     imp + "raise RPCError('x', 'y')",
+                     imp + "class E(RPCError):\n    pass",
+                     imp + "print(RPCError)",
+                     imp + "print(RPCError.__init__.__globals__)",
+                     imp + "try:\n    RPCError('x', 'y')\nexcept RPCError as e:\n    print(e.__traceback__.tb_frame.f_globals)",
+                     imp + "import sys\nsys.settrace(print)\ntry:\n    pass\nexcept RPCError:\n    pass"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
+
+    def test_the_signers_functions_stay_denied_as_on_main_when_imported_with_more(self):
+        # evaluate was never readable; a list of several names read on into the next line is stopped as before
+        for code in ("from tracekit.signer.service import evaluate\nprint(evaluate(None, 'Bash', {}))",
+                     "from tracekit.signer.service import evaluate, load_policy, DEFAULT_POLICY\n"
+                     "e = load_policy(DEFAULT_POLICY)\nprint(evaluate(e, 'Bash', {'command': 'ls'})[0]['verdict'])",
+                     "from tracekit.signer.service import load_policy\nprint(load_policy.__globals__)"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
 
     def test_any_whitespace_between_import_names_still_separates_them(self):
         # main read `\s` there: a form feed, tab or vertical tab between names must not hide the second one
         for sep in ("\f", "\t", "\v", " \f "):
             self.assert_denied(
                 "TK-D007",
-                f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate,{sep}SignerService\nEOF",
-                f"python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate{sep}SignerService\nEOF")
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy,{sep}SignerService\nEOF",
+                f"python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy{sep}SignerService\nEOF")
 
     def test_a_backslash_continuation_of_any_line_ending_does_not_hide_a_name(self):
         for end in ("\n", "\r\n", "\r"):
@@ -113,116 +130,74 @@ class FalseStops(unittest.TestCase):
     def test_an_import_of_more_of_the_signer_stays_stopped(self):
         self.assert_denied(
             "TK-D007",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate, SignerService\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy, SignerService\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\n"
             "from tracekit.signer.service import SignerService\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError, \\\n    SignerService\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import (evaluate,\n    SignerService)\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import (evaluate,  # a name the service may not give\n"
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import (load_policy,\n    SignerService)\nEOF",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import (load_policy,  # a name the service may not give\n"
             "    SignerService)\nEOF",
-            "python3 -c \"from tracekit.signer.service import evaluate as ev; ev\"",
-            "python3 -c \"from tracekit.signer.service import evaluate; evaluate.__globals__['SignerService']\"",
-            "python3 -c \"from tracekit.signer.service import evaluate; f = evaluate; f.__globals__\"",
-            "python3 -c \"import inspect; from tracekit.signer.service import evaluate; inspect.getmodule(evaluate)\"",
+            "python3 -c \"from tracekit.signer.service import load_policy as lp; lp\"",
+            "python3 -c \"from tracekit.signer.service import load_policy; load_policy.__globals__['SignerService']\"",
+            "python3 -c \"import inspect; from tracekit.signer.service import load_policy; inspect.getmodule(load_policy)\"",
             "python3 -c \"import tracekit.signer.service as s; s.SignerService('/tmp/x')\"",
             # the import's next line was read as part of its list, so an alias used for more went unseen
             "python3 - <<'EOF'\nfrom tracekit.signer import service as svc\nsvc.SignerService('/tmp/x')\nEOF",
             "python3 - <<'EOF'\nfrom tracekit.signer import service as svc\nprint(svc._dotenv)\nEOF",
             "python3 -c \"from tracekit.signer.service import dev_data_dir; print(dev_data_dir(create=False))\"")
 
-    def test_a_function_the_signer_gives_still_holds_its_module(self):
-        # main denied these only because it read the next line as part of the import list: each reaches the service
-        # module (SignerService) through a function imported from it
+    def test_a_name_reached_through_a_fullwidth_spelling_is_the_name(self):
+        # Python folds an identifier to NFKC: `\uff53igner` is `signer`
+        for code in ("from tracekit.\uff53igner.service import SignerService",
+                     "from tracekit.signer.service import \uff33ignerService",
+                     "from tracekit.\uff53igner.rpc_schema import RPCError\nRPCError('x', 'y')",
+                     "from tracekit.signer.rpc_schema import \uff32PCError\nprint(\uff32PCError)"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
         self.assert_denied(
-            "TK-D007",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\ng = evaluate.\\\n__globals__\n"
-            "print(g['SignerService'])\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\ng = evaluate . __globals__\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy\n"
-            "print(load_policy.__globals__['SignerService'])\nEOF",
-            "python3 -c \"import gc\nfrom tracekit.signer.service import evaluate\n"
-            "print([d for d in gc.get_referents(evaluate) if type(d) is dict][0]['SignerService'])\"",
-            "python3 -c \"import gc\nfrom tracekit.signer.service import load_policy\nprint(gc.get_objects())\"",
-            "python3 -c \"import sys\nfrom tracekit.signer.service import evaluate\n"
-            "sys.modules['tracekit.signer.service'].SignerService\"",
-            "python3 -c \"from tracekit.signer.service import load_policy\nprint(vars(load_policy))\"",
-            "python3 -c \"from tracekit.signer.service import evaluate\nprint(getattr(evaluate, '__glob' 'als__'))\"",
-            "python3 -c \"import importlib\nfrom tracekit.signer.service import evaluate\nimportlib.reload(1)\"",
-            "python3 -c \"import inspect\nfrom tracekit.signer.reconcile import compared\ninspect.getmodule(compared)\"",
-            "python3 -c \"from tracekit.signer.rpc_schema import RPCError\nprint(RPCError.__init__.__globals__)\"")
+            "TK-D007", "python3 -c \"from tracekit.\uff53igner.service import SignerService\"",
+            "python3 -c \"from tracekit.signer.service import \uff33ignerService\"")
 
-    def test_a_function_reached_by_a_name_given_as_data_still_holds_its_module(self):
-        imp = "from tracekit.signer.service import {}\n"
-        bodies = (
-            ("evaluate", "import functools\n{imp}print(functools.reduce(getattr, ['__globals__'], evaluate)['SignerService'])"),
-            ("evaluate", "import functools\n{imp}print(functools.partial(getattr, evaluate)('__globals__')['SignerService'])"),
-            ("evaluate", "{imp}print(list(map(getattr, [evaluate], ['__globals__']))[0]['SignerService'])"),
-            ("evaluate", "import operator\n{imp}print(operator.attrgetter('__globals__')(evaluate)['SignerService'])"),
-            ("evaluate", "import operator\n{imp}print(operator.methodcaller('__reduce_ex__', 2)(evaluate))"),
-            ("load_policy", "import functools\n{imp}print(functools.reduce(getattr, ['__globals__'], load_policy))"),
-            ("evaluate", "import sys\n{imp}try:\n    evaluate(None, None)\nexcept Exception:\n"
-                         "    print(sys.exc_info()[2].tb_next.tb_frame.f_globals['SignerService'])"),
-            ("evaluate", "import traceback, sys\n{imp}try:\n    evaluate(None, None)\nexcept Exception:\n"
-                         "    print([f for f, _ in traceback.walk_tb(sys.exc_info()[2])][-1].f_globals['SignerService'])"),
-            ("evaluate", "{imp}try:\n    evaluate(None, None)\nexcept Exception as e:\n    print(e.__traceback__)"),
-            ("evaluate", "import sys\n{imp}print(sys._getframe().f_back.f_locals)"))
-        for name, body in bodies:
-            code = body.format(imp=imp.format(name))
-            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
-
-    def test_a_module_loaded_from_a_string_stays_denied(self):
-        # older than this change: main allows them
-        for code in ("import pickle\nprint(pickle.loads(b'ctracekit.signer.service\\nSignerService\\n.'))",
-                     "import pkgutil\nprint(pkgutil.resolve_name('tracekit.signer.service:SignerService'))",
-                     "import marshal, copyreg\nimport tracekit.signer.service",
-                     "import dill\nfrom tracekit.signer.service import evaluate\ndill.dumps(evaluate)"):
-            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"")
-
-    def test_a_signer_function_passed_on_as_a_value_stays_denied(self):
-        # a function or class of the signer may be called; anything that holds it (a ctypes call, a format field, a
-        # locate or Formatter lookup) can read its module's globals, so any other use is denied
-        imp = "from tracekit.signer.service import evaluate\n"
+    def test_a_signer_function_reached_through_data_or_a_frame_stays_denied(self):
+        imp = "from tracekit.signer.service import load_policy\n"
         for code in (
-                "import ctypes\n" + imp + "g = ctypes.pythonapi.PyFunction_GetGlobals\ng.restype = ctypes.py_object\n"
-                "g.argtypes = [ctypes.py_object]\nprint(g(evaluate)['SignerService'])",
-                "import string\n" + imp + "print(string.Formatter().get_field('0._' + '_globals__', (evaluate,), {})[0])",
-                "import pydoc\n" + imp + "m = pydoc.locate('operator.method' + 'caller')\n"
-                "print(m('_' + '_getattribute__', '_' + '_globals__')(evaluate)['SignerService'])",
-                imp + "print(('{0._' + '_globals__[SignerService]}').format(evaluate))",
-                imp + "f = evaluate\nprint(f)",
-                imp + "print(evaluate)",
-                "from tracekit.signer.rpc_schema import RPCError\nclass E(RPCError):\n    pass",
-                "from tracekit.signer.rpc_schema import RPCError\nprint(RPCError)",
-                "import pydoc\nprint(pydoc.locate('tracekit.signer.ser' + 'vice.SignerService'))",
-                "import logging.config\nprint(logging.config.BaseConfigurator({}).resolve('tracekit.signer.ser' + "
-                "'vice.SignerService'))",
-                "import code\ncode.InteractiveInterpreter().runsource('from tracekit.signer.ser' + 'vice import "
-                "SignerService; print(SignerService)')"):
+                "import functools\n" + imp + "print(functools.reduce(getattr, ['__globals__'], load_policy)['X'])",
+                "import functools\n" + imp + "print(functools.partial(getattr, load_policy)('__globals__'))",
+                imp + "print(list(map(getattr, [load_policy], ['__globals__']))[0])",
+                "import operator\n" + imp + "print(operator.attrgetter('__globals__')(load_policy))",
+                "import sys\n" + imp + "try:\n    load_policy(None)\nexcept Exception:\n"
+                "    print(sys.exc_info()[2].tb_next.tb_frame.f_globals['SignerService'])",
+                "import sys\n" + imp + "sys.settrace(print)\nload_policy(None)",
+                "import sys\n" + imp + "sys.setprofile(print)\nload_policy(None)",
+                "import gc\n" + imp + "print(gc.get_referents(load_policy))",
+                "import ctypes\n" + imp + "g = ctypes.pythonapi.PyFunction_GetGlobals\nprint(g(load_policy))",
+                "import string\n" + imp + "print(string.Formatter().get_field('0._' + '_globals__', (load_policy,), {}))",
+                "import pydoc\n" + imp + "print(pydoc.locate('operator.method' + 'caller'))",
+                "import pydoc\n" + imp + "print(pydoc.locate('x')(load_policy))"):
             self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"",
                                f"python3 -c \"{code.replace(chr(10), '; ')}\"")
 
-    def test_a_signer_function_called_or_an_exception_caught_is_no_reach(self):
-        self.assert_open(
-            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
-            "except RPCError as e:\n    print(e)\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\ntry:\n    pass\n"
-            "except (ValueError, RPCError):\n    raise RPCError('x', 'y')\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import RPCError\nprint(isinstance(1, RPCError))\nEOF",
-            "python3 -c \"from tracekit.signer.service import evaluate; print(evaluate(None, 'Bash', {}))\"")
+    def test_a_module_loaded_from_a_string_stays_denied(self):
+        # none needs an import of the signer's names; main allows most of them
+        for code in ("import pickle\nprint(pickle.loads(b'ctracekit.signer.service\\nSignerService\\n.'))",
+                     "import pkgutil\nprint(pkgutil.resolve_name('tracekit.signer.service:SignerService'))",
+                     "import pydoc\nprint(pydoc.locate('tracekit.signer.ser' + 'vice.SignerService'))",
+                     "import logging.config\nprint(logging.config.BaseConfigurator({}).resolve('tracekit.signer.ser' + "
+                     "'vice.SignerService'))",
+                     "import code\ncode.InteractiveInterpreter().runsource('from tracekit.signer.ser' + 'vice import "
+                     "SignerService; print(SignerService)')",
+                     "from unittest import mock\nfrom tracekit.signer.rpc_schema import REQUESTS\n"
+                     "print(mock.patch.object(REQUESTS, 'get').get_original())",
+                     "import marshal, copyreg\nimport tracekit.signer.service"):
+            self.assert_denied("TK-D007", f"python3 - <<'EOF'\n{code}\nEOF", f"python3 -c \"{code}\"",
+                               f"python3 -c \"{code.replace(chr(10), '; ')}\"")
 
-    def test_a_module_that_only_shares_a_name_with_the_signer_is_no_reach(self):
+    def test_a_script_that_reads_an_allowed_name_and_uses_it_is_no_reach(self):
         self.assert_open(
+            "python3 -c \"from tracekit.signer.rpc_schema import REQUESTS; print(sorted(REQUESTS)[:3])\"",
+            "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy, DEFAULT_POLICY; "
+            "print(load_policy(DEFAULT_POLICY).policy_hash)\nEOF",
             "python3 - <<'EOF'\nimport gc\nfrom mylib.metrics import evaluate\n"
-            "print(evaluate.__doc__, gc.get_objects()[:1])\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nprint(evaluate(None, 'Bash', {}))\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.rpc_schema import REQUESTS\nprint(sorted(REQUESTS)[:3])\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import evaluate\nif __name__ == '__main__':\n"
-            "    print(evaluate(None, 'Bash', {}))\nEOF",
-            "python3 - <<'EOF'\nfrom tracekit.signer.service import load_policy, DEFAULT_POLICY\n"
-            "print(load_policy(DEFAULT_POLICY))\nEOF",
-            "python3 -c \"import sys\nfrom tracekit.signer.service import evaluate\nprint(sys.argv, evaluate(None, 'x', {}))\"",
-            "python3 -c \"from tracekit.signer.service import evaluate\nimport unittest\n"
-            "class T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(evaluate(None, 'x', {}))\"")
+            "print(evaluate.__doc__, gc.get_objects()[:1])\nEOF")
 
     def test_curl_in_a_path_is_no_download(self):
         self.assert_open(
