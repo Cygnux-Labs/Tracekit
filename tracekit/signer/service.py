@@ -5995,7 +5995,8 @@ def main(argv=None):
     q.add_argument("--close-on-stop", metavar="FILE",
                    help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
     q.add_argument("--log-level", choices=("warning", "info", "debug"),
-                   help="configure stderr logging at warning (default), info or debug")
+                   help="log to stderr from this level up: warning (the default), info (adds the HTTP request log) "
+                        "or debug")
     mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
@@ -6055,7 +6056,7 @@ def main(argv=None):
     g.add_argument("--config")
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir")
     a = ap.parse_args(argv)
-    if a.cmd == "serve" and getattr(a, "log_level", None):
+    if a.cmd == "serve" and a.log_level:
         logging.basicConfig(level=getattr(logging, a.log_level.upper()))
     if a.cmd == "serve" and a.dev:
         return _serve_dev()

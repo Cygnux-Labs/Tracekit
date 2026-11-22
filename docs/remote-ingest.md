@@ -99,8 +99,8 @@ deny or ask with 200.
 `Retry-After` is `retry_after_ms` rounded up to whole seconds; the frame keeps the milliseconds. Every answer carries a
 `Request-Id` header (`req_` and 24 hex digits) of its own, not the `request_id` a call sends: the signer logs one line
 per answer at INFO on the `tracekit.transport.http` logger with that id, the status, method, identity, error code and
-time taken. Start `tracekit signer serve --config signer.yaml --log-level info` to print these lines on stderr; `debug`
-also lowers logging for its debug lines, and omitting `--log-level` keeps the default warning-only output.
+time taken. `tracekit signer serve --config signer.yaml --log-level info` prints these lines on stderr (`debug` prints
+debug lines too); without `--log-level` the signer prints only warnings.
 
 The SDKs send an event call (`decide`, `complete`, `observe`, `state_write`, `model_event`) again after `unavailable`
 or a `quota_exceeded` with `retry_after_ms`, at most three tries within the call's timeout: they wait
