@@ -629,7 +629,7 @@ RESPONSES = {
     # frame (the transport's 1 MiB)
     "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
                        data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
-    # {} when the run never decided the call; else its latest attempt's decision (as decide answered it), whether
+    # {} when the run never decided the call; else its latest attempt's decision and reason (as decide answered), whether
     # `args_digest` opens it (`same_args`), its approval and whether this attempt consumed it, a refused consume's rule
     # ids, and its tool.result
     "call_state": _obj([], attempt=SEQ, decision={"enum": ["allow", "deny", "ask"]}, decision_id=ID,
