@@ -12,17 +12,18 @@ let an approver before it `escalate`. An approver never sees a call's result, so
 when Inspect emits its ToolEvent: `ok` with the result, or `error` with the event's message (a call a sample limit cancels while it runs ends
 as `error`). A call that never gets a ToolEvent is left open for the signer to close as a gap when the run ends.
 
-`tracekit(run)` records the whole eval into the one run it was given. `tracekit(client, per_sample=True)` opens a run
-per sample instead: the approver reads the running sample from `inspect_ai.log._samples.sample_active()` (a private
-module; what is relied on is `sample_active()`, `ActiveSample.sample_uuid` and `ActiveSample.eval_id`, pinned to the
-tested inspect-ai 0.3.x in pyproject), opens that sample's run on its first approved
-call, and the hook closes it when the sample ends. A sample that retries keeps its run (a retry keeps the sample's uuid),
-and each epoch is a separate sample execution with its own run. A call whose sample cannot be told is refused.
+`tracekit(run)` records the whole eval into the one run it was given. `tracekit(client=Client(), per_sample=True)`
+opens a run per sample instead: the approver reads the running sample from `inspect_ai.log._samples.sample_active()` (a
+private module, checked on inspect-ai 0.3.290; what is relied on is `sample_active()`, `ActiveSample.eval_id` and
+`ActiveSample.sample_uuid`, the `sample_id` Inspect gives the hooks), opens that sample's run at its first tool call
+(calls made at once wait for the one run), and the hook closes it when the sample ends, a sample cancelled while its run
+opened too. A sample that retries keeps its run (a retry keeps the sample's uuid), and each epoch is a separate sample
+with its own run. A call whose sample cannot be told, or whose sample's run did not open, is refused.
 
 Inspect registers a hook once per process, for every eval in it, and runs samples at once: the hook is enabled only
-after a Tracekit approver was made, and finds a call by its run and id, which must be unique within that run. A call whose id
-is already being decided or still open in its run is refused (Inspect's cache can give two samples one tool-call id, but
-with a run per sample each sample's twin lands in its own run), and one
+after a Tracekit approver was made, and finds a call by its id, which must be unique across the eval, or with a run per
+sample by its sample and id. A call whose id is already being decided or still open there is refused (Inspect's cache
+can give two samples one tool-call id; with a run per sample each lands in its own run), and one
 whose arguments changed after the decision (an in-process sentinel's `modify`) is completed as `error`.
 """
 import asyncio
@@ -31,68 +32,59 @@ import copy
 
 from inspect_ai.approval import Approval, approver
 from inspect_ai.hooks import Hooks, SampleEnd, SampleEvent, hooks
-from inspect_ai.log._samples import sample_active
 from pydantic_core import to_jsonable_python
 
 from tracekit.integrations.gate import complete, gate_call, run_handle
-from tracekit.sdk.client import result_field
+from tracekit.sdk.client import AsyncClient, Client, result_field
 
-# lean: a call stays here until its ToolEvent or its sample's end, and a twin's count until its ToolEvent; a hook
-# missing both leaves them for the process's life. Keys are (run id, tool-call id): two samples may share an id, and
-# each sample's call belongs to its own run.
-_allowed = {}   # (run_id, tool_call_id) -> (run, the signer's decision, the decided arguments), or None while decided
-_twins = collections.Counter()   # (run_id, tool_call_id) -> the calls refused because one of that id was open
+# lean: a call stays here until its ToolEvent or its sample's end, a twin's count until its ToolEvent, and a sample's
+# run until its sample's end; a hook missing them leaves them for the process's life (the signer closes an idle run).
+# A call's key: its tool-call id with one run for the eval, (eval id, sample uuid, tool-call id) with a run per sample.
+_allowed = {}   # the call's key -> (run, the signer's decision, the decided arguments), or None while it is decided
+_twins = collections.Counter()   # the call's key -> the calls refused because one with that key was open
+_sample_runs = {}   # (eval id, sample uuid) -> the task that opens that sample's run, with per_sample=True
 _made = False   # whether a Tracekit approver exists, so the hook records for this process's evals
-_single = None   # the run tracekit(run) was given, for the hook's single-run lookups
-_sample_runs = {}   # (eval_id, sample_id) -> the per-sample run, opened lazily by approve(), closed at sample end
 
 
 @approver(name="tracekit")
 def tracekit(run=None, *, client=None, per_sample=False, agent="inspect"):
     """The approver for `ApprovalPolicy(tracekit(run), "*")`. `run` is a RunHandle (`Client().run(...)`; an AsyncRunHandle
-    works too): one run for the whole eval. `tracekit(client, per_sample=True)` opens a run per sample instead, with
-    `client` a `Client` and `agent` the name the runs are registered under."""
-    global _made, _single
+    works too): one run for the whole eval. `tracekit(client=Client(), per_sample=True)` opens a run per sample
+    instead, registered as `agent` (an AsyncClient works too)."""
+    global _made
     if per_sample:
         if run is not None:
             raise TypeError("tracekit(per_sample=True) takes client=..., not a run handle")
-        if client is None or not callable(getattr(client, "run", None)):
-            raise TypeError("tracekit(per_sample=True) needs client=Client()")
+        client = client._sync if isinstance(client, AsyncClient) else client
+        if not isinstance(client, Client):
+            raise TypeError(f"tracekit(per_sample=True) needs client=Client(), not {client!r}")
+        from inspect_ai.log._samples import sample_active   # private: what is relied on is in the module's doc
     else:
         if client is not None:
             raise TypeError("tracekit(run) takes a run handle, not client=... (use per_sample=True for a client)")
         run = run_handle(run)
-        _single = run
     _made = True
 
-    async def sample_run():
-        """The run this call records into: the sample's own run in per-sample mode, opened on its first call."""
-        active = sample_active()
-        if active is None:   # no running sample to key the run by: refuse rather than guess
-            return None
-        key = (active.eval_id, active.sample_uuid)
-        found = _sample_runs.get(key)
-        if found is not None:
-            return found
-        # lean: two calls of one sample at once may both open a run; setdefault keeps the first, the spare is closed
-        opened = await asyncio.to_thread(client.run, agent)
-        kept = _sample_runs.setdefault(key, opened)
-        if kept is not opened:
-            try:
-                opened.close()   # an empty spare that will not close still leaves the kept run recording the sample
-            except Exception:
-                pass
-        return kept
-
     async def approve(message, call, view, history):
-        call_run = run
+        key, call_run = call.id, run
         if per_sample:
-            call_run = await sample_run()
-            if call_run is None:
+            active = sample_active()
+            if active is None:   # no running sample to key the run by: refused, never recorded in another's run
                 return Approval(decision="reject", explanation="Tool call refused by Tracekit: the sample this call "
                                                                 "belongs to could not be told")
-        key = (call_run.run_id, call.id)
-        if key in _allowed:   # its decision and result are found by its id: the open one's would be overwritten
+            sample = (active.eval_id, active.sample_uuid)
+            if sample not in _sample_runs:   # its first call opens it; a cancel leaves the task for the sample's end
+                _sample_runs[sample] = asyncio.ensure_future(asyncio.to_thread(client.run, agent))
+            opening = _sample_runs[sample]
+            try:
+                call_run = await asyncio.shield(opening)
+            except Exception as e:   # nothing to record into: refused, and the sample's next call opens one again
+                if _sample_runs.get(sample) is opening:
+                    del _sample_runs[sample]
+                return Approval(decision="reject", explanation=f"Tool call refused by Tracekit: the sample's run did "
+                                                                f"not open: {type(e).__name__}: {e}")
+            key = (*sample, call.id)
+        if key in _allowed:   # its decision and result are found by its key: the open one's would be overwritten
             _twins[key] += 1
             return Approval(decision="reject", explanation=f"Tool call refused by Tracekit: another call with its id "
                                                             f"({call.id}) is still open in this run")
@@ -114,19 +106,12 @@ class Outcomes(Hooks):
     def enabled(self):
         return _made
 
-    def _run(self, data):
-        """The run a sample's event belongs to: its per-sample run, else the single run the approver was given."""
-        run = _sample_runs.get((data.eval_id, data.sample_id))
-        return run if run is not None else _single
-
     async def on_sample_event(self, data: SampleEvent):
         ev = data.event
         if ev.event != "tool" or ev.pending:
             return
-        run = self._run(data)
-        if run is None:
-            return
-        key = (run.run_id, ev.id)
+        sample = (data.eval_id, data.sample_id)
+        key = (*sample, ev.id) if sample in _sample_runs else ev.id
         if ev.error and ev.error.type == "approval" and _twins[key]:   # a twin's refusal, not the open call's
             _twins[key] -= 1
             return
@@ -142,15 +127,18 @@ class Outcomes(Hooks):
                                                                       to_jsonable_python(ev.result)))
 
     async def on_sample_end(self, data: SampleEnd):
-        run = _sample_runs.pop((data.eval_id, data.sample_id), None)
-        if run is not None:   # the sample's run ends with it: drop its open calls and twins, then close it
-            for table in (_allowed, _twins):
-                for key in [k for k in table if k[0] == run.run_id]:
-                    table.pop(key, None)
-            run.close()
+        sample = (data.eval_id, data.sample_id)
+        opening = _sample_runs.pop(sample, None)
+        if opening is None:   # one run for the eval: the sample's calls that got no ToolEvent are the signer's gaps
+            for m in data.sample.messages:
+                for c in getattr(m, "tool_calls", None) or ():
+                    _allowed.pop(c.id, None)
             return
-        if _single is None:
+        for table in (_allowed, _twins):   # its run ends with it, and the signer closes its open calls as gaps
+            for key in [k for k in table if isinstance(k, tuple) and k[:2] == sample]:
+                del table[key]
+        try:
+            run = await opening
+        except Exception:   # it never opened: its calls were refused
             return
-        for m in data.sample.messages:
-            for c in getattr(m, "tool_calls", None) or ():
-                _allowed.pop((_single.run_id, c.id), None)
+        await asyncio.to_thread(run.close)

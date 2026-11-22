@@ -6,12 +6,13 @@ import collections
 import importlib.util
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
 import adapter_contract as ac
 from factories import wait_for
-from tracekit.sdk.client import Client, RunHandle, result_field
+from tracekit.sdk.client import AsyncClient, Client, RunHandle, result_field
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.testing import FakeSigner
 
@@ -21,7 +22,7 @@ if HAVE:
     from inspect_ai.approval import ApprovalPolicy
     from inspect_ai.dataset import Sample
     from inspect_ai.event import ToolEvent
-    from inspect_ai.hooks import SampleEvent
+    from inspect_ai.hooks import SampleEnd, SampleEvent
     from inspect_ai.model import ModelOutput, get_model
     from inspect_ai.solver import generate, use_tools
     from inspect_ai.tool import ToolCall, ToolCallError, ToolError, tool
@@ -108,7 +109,6 @@ class Approver(unittest.TestCase):
         self.addCleanup(ti._allowed.clear)
         self.addCleanup(ti._twins.clear)
         self.addCleanup(ti._sample_runs.clear)
-        self.addCleanup(setattr, ti, "_single", None)
 
     def serve(self, person_answers=False):
         """A FakeSigner for `ac._rule` (pay is held, wipe denied); with `person_answers`, a person approves a held call
@@ -143,8 +143,28 @@ class Approver(unittest.TestCase):
             elif method == "complete":
                 self.frames.append(("complete", frame.get("run_id"), dict(frame)))
             return out
-        self.client = Client(ac._serve(self, handle))
+        self.address = ac._serve(self, handle)
+        self.client = Client(self.address)
         self.addCleanup(self.client.close)
+
+    def per_sample(self, client=None):
+        """A per-sample approver on `client` (this test's) that reads the running sample as ("eval", "sample")."""
+        active = mock.Mock(eval_id="eval", sample_uuid="sample")
+        with mock.patch("inspect_ai.log._samples.sample_active", return_value=active):
+            return ti.tracekit(client=client or self.client, per_sample=True)
+
+    def ask(self, approve, *ids):
+        """`approve`'s answers to an echo call under each of `ids`, asked at once (as Inspect asks a message's parallel
+        calls)."""
+        async def at_once():
+            return await asyncio.gather(*(approve(message="", call=ToolCall(id=i, function="echo",
+                                                                            arguments={"text": "hi"}),
+                                                  view=None, history=[]) for i in ids))
+        return asyncio.run(at_once())
+
+    def end(self):
+        """The hook's end of the sample `per_sample` reads."""
+        asyncio.run(ti.Outcomes().on_sample_end(SampleEnd(None, "run", "eval", "sample", None)))
 
     def sample(self, calls, run=None, **task):
         """The tool messages the model read after one sample in which it made `calls` ((tool, args), ...) and answered."""
@@ -244,8 +264,7 @@ class Approver(unittest.TestCase):
         arguments: the call was completed `ok` under the decision made for the model's."""
         self.serve()
         d = self.run.decide("call-1", "echo", {"text": "hi"})
-        ti._single = self.run
-        ti._allowed[(self.run.run_id, "call-1")] = (self.run, d, {"text": "hi"})
+        ti._allowed["call-1"] = (self.run, d, {"text": "hi"})
         ev = ToolEvent(id="call-1", function="echo", arguments={"text": "rm -rf /"}, result="rm -rf /")
         asyncio.run(ti.Outcomes().on_sample_event(SampleEvent(None, "run", "eval", "sample", ev)))
         [done] = self.recorded("tool.result")
@@ -275,6 +294,101 @@ class Approver(unittest.TestCase):
         done = [(f[1], f[2]["tool_call_id"], f[2]["status"]) for f in self.frames if f[0] == "complete"]
         self.assertEqual(sorted(done), sorted((r, "call-1", "ok") for r in runs))
         self.assertEqual((ti._allowed, ti._twins, ti._sample_runs), ({}, collections.Counter(), {}))
+
+    def test_an_approver_made_before_another_on_another_run_completes_its_own_calls(self):
+        """Review of #1070: the hook found a call through the run the last `tracekit(run)` was given, so the calls of an
+        eval whose approver was made before another one's (a Task's own approver, say) got no result."""
+        self.serve()
+        t = Task(dataset=[Sample(input="go")], solver=[use_tools([echo()]), generate()],
+                 approval=[ApprovalPolicy(ti.tracekit(self.run), "*")])
+        ti.tracekit(self.client.run(agent="inspect"))   # another eval's approver, made before this eval runs
+        outs = [ModelOutput.for_tool_call("mockllm/model", "echo", {"text": "hi"}, tool_call_id="call-1"),
+                ModelOutput.from_content("mockllm/model", "done")]
+        [log] = eval(t, model=get_model("mockllm/model", custom_outputs=outs), display="none", log_dir=ac.tmpdir(self))
+        self.assertEqual(log.status, "success", log.error)
+        [done] = self.recorded("tool.result")
+        self.assertEqual((done["tool_call_id"], done["status"]), ("call-1", "ok"))
+
+    def test_the_calls_a_sample_starts_with_at_once_share_one_run(self):
+        """Review of #1070: Inspect asks about a message's parallel calls at once, and each of a sample's first calls
+        opened a run of its own."""
+        self.serve_per_sample()
+        approve = self.per_sample()
+        self.assertEqual([a.decision for a in self.ask(approve, "call-1", "call-2")], ["approve", "approve"])
+        self.end()
+        self.assertEqual([f[0] for f in self.frames if f[0] != "complete"], ["register_run", "close_run"], self.frames)
+
+    def test_a_sample_cancelled_while_its_run_opens_still_closes_that_run(self):
+        """Review of #1070: a sample cancelled (a time limit) while its first call opened its run dropped the run, and
+        it stayed open. The sample's end closes it."""
+        self.serve()
+        opened, opening, real = [], threading.Event(), self.client.run
+
+        def slow(agent):
+            opening.set()
+            time.sleep(0.2)   # still opening when the sample is cancelled
+            opened.append(real(agent))
+            return opened[-1]
+        approve = self.per_sample()
+
+        async def cancelled_then_ended():
+            asking = asyncio.ensure_future(approve(message="", call=ToolCall(id="call-1", function="echo",
+                                                                             arguments={"text": "hi"}),
+                                                   view=None, history=[]))
+            await asyncio.to_thread(opening.wait)
+            asking.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await asking
+            await ti.Outcomes().on_sample_end(SampleEnd(None, "run", "eval", "sample", None))
+        with mock.patch.object(self.client, "run", side_effect=slow):
+            asyncio.run(cancelled_then_ended())
+        [run] = opened
+        self.assertEqual((run.closed, ti._sample_runs), (True, {}))
+
+    def test_a_run_that_does_not_open_refuses_the_call_and_the_next_call_opens_one(self):
+        """Review of #1070: a run the signer didn't open raised out of the approver, which Inspect doesn't catch, so the
+        sample errored. The call is refused with the reason, and the sample's next call opens its run."""
+        self.serve_per_sample()
+        approve = self.per_sample()
+        with mock.patch.object(self.client, "run", side_effect=RPCError("unavailable", "signer down")):
+            [out] = self.ask(approve, "call-1")
+        self.assertEqual((out.decision, out.explanation),
+                         ("reject", "Tool call refused by Tracekit: the sample's run did not open: RPCError: "
+                                    "unavailable: signer down"))
+        [out] = self.ask(approve, "call-2")
+        self.end()
+        self.assertEqual((out.decision, [f[0] for f in self.frames if f[0] != "complete"]),
+                         ("approve", ["register_run", "close_run"]))
+
+    def test_per_sample_takes_an_async_client(self):
+        """Review of #1070: an AsyncClient passed the check, then its run() gave the approver a coroutine, not a run."""
+        self.serve_per_sample()
+        client = AsyncClient(self.address)
+        self.addCleanup(client._sync.close)
+        [out] = self.ask(self.per_sample(client), "call-1")
+        self.end()
+        self.assertEqual((out.decision, [f[0] for f in self.frames if f[0] != "complete"]),
+                         ("approve", ["register_run", "close_run"]))
+
+    def test_a_held_call_whose_wait_a_time_limit_cancels_is_withdrawn_in_its_samples_run(self):
+        """#1068 with #571: in a run per sample too, a time limit that cancels a held call's wait withdraws the approval
+        and the call never runs; the sample's end closes its run."""
+        self.client = Client(ac.OnReal.serve_signer(self))
+        self.addCleanup(self.client.close)
+        opened, real = [], self.client.run
+        with mock.patch.object(self.client, "run", side_effect=lambda agent: opened.append(real(agent)) or opened[-1]):
+            outs = [ModelOutput.for_tool_call("mockllm/model", "pay", {"to": "acct-42", "cents": 1500},
+                                              tool_call_id="call-1"), ModelOutput.from_content("mockllm/model", "done")]
+            t = Task(dataset=[Sample(input="go")], solver=[use_tools([pay()]), generate()], time_limit=3,
+                     approval=[ApprovalPolicy(ti.tracekit(client=self.client, per_sample=True), "*")])
+            [log] = eval(t, model=get_model("mockllm/model", custom_outputs=outs), display="none",
+                         log_dir=ac.tmpdir(self))
+        self.assertEqual(log.status, "success", log.error)
+        [run] = opened
+        types = lambda: [e["type"] for e in ac.OnReal.events(self, {"run_id": run.run_id})]  # noqa: E731
+        self.assertTrue(wait_for(lambda: "approval.abandoned" in types()), types())
+        self.assertEqual((ac.RAN, run.closed, "run.closing" in types(), "tool.result" in types()),
+                         ([], True, True, False))
 
     def test_a_call_with_no_running_sample_is_refused(self):
         """#1068: per-sample mode refuses a call it cannot attribute to a sample, instead of recording it against
