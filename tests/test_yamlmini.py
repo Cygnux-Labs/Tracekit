@@ -125,6 +125,62 @@ class FlowMappings(unittest.TestCase):
             self.assertEqual(mine, theirs, doc)
         self.assertGreater(both, 2000)
 
+    def test_a_flow_list_over_lines_keeps_its_strings_whole(self):
+        """A continuation line starts inside the flow list: a quote after `,` opens a string there, and ` #` in it is
+        text, not a comment."""
+        self.assertEqual(yamlmini.loads("deny: ['rm -rf /',\n  'sudo', 'curl x # y',\n  'wget']\n"),
+                         {"deny": ["rm -rf /", "sudo", "curl x # y", "wget"]})
+        self.assertEqual(yamlmini.loads("k: [[a,\n  b], 'c #d']\n"), {"k": [["a", "b"], "c #d"]})
+
+    def test_documents_over_lines_read_as_pyyaml_reads_them(self):
+        """Differential, from a fixed seed: block documents with comments, `- ` lists and flow lists over several
+        lines. Where PyYAML reads a document, yamlmini reads it the same, and refuses none."""
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        r = random.Random(1074)
+
+        def quoted():
+            v = "".join(r.choice("ab ,:#[]{}'\"\\-x\u00e9") for _ in range(r.randint(0, 7)))
+            return ("'" + v.replace("'", "''") + "'") if r.random() < 0.5 else json.dumps(v)
+
+        def scalar(flow):
+            if flow or r.random() < 0.6:
+                return quoted()
+            return r.choice(["abc", "a b", "x-y", "a.b", "path/to", "12", "true", "null", "a#b", "it's", 'say "hi"'])
+
+        def comment():
+            return r.choice(["", "", " # note", "  # a 'quoted' # thing", ' #"x'])
+
+        def flow_list():
+            parts = [("" if i == 0 else r.choice([", ", ",\n  ", ",", ",\n    "])) + scalar(True)
+                     for i in range(r.randint(1, 5))]
+            return "[" + r.choice(["", "\n  "]) + "".join(parts) + r.choice(["]", "\n]", ",\n]", ",]"])
+
+        def doc():
+            out = []
+            for i in range(r.randint(1, 4)):
+                kind = r.random()
+                if kind < 0.4:
+                    out.append(f"k{i}: {scalar(False)}{comment()}")
+                elif kind < 0.8:
+                    out.append(f"k{i}: {flow_list()}{comment()}")
+                else:
+                    out.append(f"k{i}:" + "".join(f"\n  - {scalar(False)}{comment()}" for _ in range(r.randint(1, 3))))
+            return "\n".join(out) + "\n"
+
+        both = 0
+        for _ in range(3000):
+            d = doc()
+            try:
+                theirs = yaml.safe_load(d)
+            except yaml.YAMLError:
+                continue
+            both += 1
+            self.assertEqual(yamlmini.loads(d), theirs, d)
+        self.assertGreater(both, 2000)
+
     def test_a_single_quoted_key_takes_a_doubled_quote(self):
         self.assertEqual(yamlmini.loads("v: {'it''s': 1}\n'a''b': 2\n"), {"v": {"it's": 1}, "a'b": 2})
 

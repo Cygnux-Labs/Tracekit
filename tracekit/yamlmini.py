@@ -22,10 +22,10 @@ _FLOAT = re.compile(r"^[-+]?(\d+\.\d*|\.\d+)([eE][-+]?\d+)?$")
 _OPENS = ("", ":", "-", "[", ",", "{")   # a quote opens a string only after one of these (or at the start)
 
 
-def _strip_comment(line):
-    """`line` without its comment. A quote opens a string only where a scalar starts (the line's start, after `- `,
+def _strip_comment(line, depth=0):
+    """`line` without its comment; `depth`: the flow brackets an earlier line left open. A quote opens a string only where a scalar starts (the line's start, after `- `,
     `: `, a flow `[`, `{` or `,`, or a quoted key's `:`); inside a plain scalar it is text, as in PyYAML."""
-    out, q, depth, start, dash, closed = [], None, 0, True, False, False
+    out, q, start, dash, closed = [], None, True, False, False
     i = 0
     while i < len(line):
         c = line[i]
@@ -169,29 +169,29 @@ def _split_key(text, lineno):
 
 
 def _unclosed(text, lineno):
-    """Whether the flow list or mapping that `text`'s value starts goes on past the line."""
+    """How many brackets of the flow list or mapping that `text`'s value starts are still open at the line's end."""
     kv = None if text.startswith("- ") else _split_key(text, lineno)
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
-        return False
+        return 0
     marks, _ = _quoted(v)
-    depth = sum((c in "[{") - (c in "]}") for c, quoted in zip(v, marks) if not quoted)
-    return depth > 0
+    return max(0, sum((c in "[{") - (c in "]}") for c, quoted in zip(v, marks) if not quoted))
 
 
 def loads(text):
-    lines, open_ = [], None   # open_: a line whose flow list or mapping the next lines continue
+    lines, open_ = [], None   # open_: a line whose flow list or mapping the next lines continue, and its open depth
     for n, raw in enumerate(text.splitlines(), 1):
         if "\t" in raw[:len(raw) - len(raw.lstrip())] and open_ is None:
             raise YAMLError(f"line {n}: tabs are not allowed for indentation")
-        s = _strip_comment(raw)
+        s = _strip_comment(raw, open_[3] if open_ else 0)
         if open_ is not None:
             ind, s, n = open_[0], open_[1] + " " + s.strip(), open_[2]
         elif s.strip() in ("", "---"):
             continue
         else:
             ind, s = len(s) - len(s.lstrip()), s.strip()
-        open_ = (ind, s, n) if _unclosed(s, n) else None
+        depth = _unclosed(s, n)
+        open_ = (ind, s, n, depth) if depth else None
         if open_ is None:
             lines.append((ind, s, n))
     if open_ is not None:
