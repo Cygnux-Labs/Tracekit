@@ -415,8 +415,9 @@ REQUESTS = {
     "approver": {**_obj(["action"], request_id=ID, action={"enum": ["status", "accept", "retire", "revoke", "enable"]},
                         id=ID, rules={"type": "array", "minItems": 1, "maxItems": 32, "items": _str(64)},
                         reason=REASON),
-                 "allOf": [{"if": {"properties": {"action": {"enum": ["accept", "retire", "revoke", "enable"]}}},
-                            "then": {"required": ["request_id"]}}]},
+                 "oneOf": [{"properties": {"action": {"const": "status"}}},   # a read; every other action changes state
+                           {"properties": {"action": {"enum": ["accept", "retire", "revoke", "enable"]}},
+                            "required": ["request_id"]}]},
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     # last_client_seq: the last client_seq each of the caller's streams sent; a value the signer never received becomes

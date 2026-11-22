@@ -1435,6 +1435,13 @@ class TestReviewerOnTheSigner(Case):
                           "disagree": 1, "false_approve": 1})
         self.assertGreaterEqual(out["median_ai_s"], 0)
 
+    def test_a_change_to_the_approver_needs_a_request_id(self):
+        schema = svc.REQUESTS["approver"]
+        self.assertEqual(validate(schema, {"action": "status"}), [])   # a read
+        for action in ("accept", "retire", "revoke", "enable"):
+            self.assertTrue(validate(schema, {"action": action, "id": "P-1"}), action)
+            self.assertEqual(validate(schema, {"action": action, "id": "P-1", "request_id": "r1"}), [], action)
+
     def test_people_run_the_approver_from_the_cli(self):
         for _ in range(svc.PLAYBOOK_MIN):
             self.precedent()

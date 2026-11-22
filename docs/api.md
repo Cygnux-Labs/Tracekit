@@ -67,7 +67,7 @@ field that a table does not list is refused, as Versioning says; the notes do no
 
 ## Versioning
 
-The contract has one version number, and this page describes version 27. A released version never changes: any change to
+The contract has one version number, and this page describes version 28. A released version never changes: any change to
 a request or an answer is a new version.
 
 A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
@@ -99,6 +99,7 @@ A call or field that this page does not list below was already in version 15. Th
 | 25 | `content_get`'s `type` and `source` |
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
 | 27 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
+| 28 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list` |
 
 ## Errors
 
@@ -845,6 +846,7 @@ lists `approval_request`. A box's agent channel may call it too.
 | `tool_call_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `attempt` | whole number | no |  |
 | `reason` | text | no | up to 1024 characters |
+| `project` | text | no | 1 to 1024 characters |
 
 **Answer**
 
@@ -943,6 +945,15 @@ lists `approval_get`. A box's agent channel may call it too.
 | `escalation.by` | one of `agent`, `signer` | yes |  |
 | `escalation.reason` | text | no | up to 1024 characters |
 | `run_closing` | always `true` | no |  |
+| `ai` | object | no |  |
+| `ai.mode` | one of `enforce`, `shadow`, `null` | yes |  |
+| `ai.reason` | text | yes | up to 1024 characters |
+| `ai.answer` | object | no |  |
+| `ai.answer.decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answer.mode` | one of `enforce`, `shadow` | yes |  |
+| `ai.answer.by` | text | yes | up to 256 characters |
+| `ai.answer.reason` | text | no | up to 1024 characters |
+| `ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
 | `args` | any value | yes |  |
 | `binding_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
@@ -1007,6 +1018,15 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 1).escalation.by` | one of `agent`, `signer` | yes |  |
 | `approvals[] (variant 1).escalation.reason` | text | no | up to 1024 characters |
 | `approvals[] (variant 1).run_closing` | always `true` | no |  |
+| `approvals[] (variant 1).ai` | object | no |  |
+| `approvals[] (variant 1).ai.mode` | one of `enforce`, `shadow`, `null` | yes |  |
+| `approvals[] (variant 1).ai.reason` | text | yes | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer` | object | no |  |
+| `approvals[] (variant 1).ai.answer.decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `approvals[] (variant 1).ai.answer.mode` | one of `enforce`, `shadow` | yes |  |
+| `approvals[] (variant 1).ai.answer.by` | text | yes | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.reason` | text | no | up to 1024 characters |
+| `approvals[] (variant 1).ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
 | `approvals[] (variant 2)` | object | no |  |
 | `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |
@@ -1063,6 +1083,11 @@ answer](approvals.md#who-may-answer).
 | `asserted.model` | text | no | up to 128 characters |
 | `asserted.version` | text | no | up to 64 characters |
 | `asserted.prompt_hash` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
+| `ai` | object | no |  |
+| `ai.answers` | list of objects | yes | 1 to 2 items |
+| `ai.answers[].model` | text | yes | 1 to 128 characters |
+| `ai.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `view_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 **Answer**
 
@@ -1150,6 +1175,7 @@ granted by default.
 | `budget` | object | yes |  |
 | `args` | any value | yes |  |
 | `redacted` | list of texts | yes | up to 4096 items; each item: up to 4096 characters |
+| `ai` | object | no |  |
 | `view_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 </details>
@@ -1301,6 +1327,39 @@ approvals it revoked.
 </details>
 <!-- api-doc:end approval_agents -->
 
+### `approver`
+
+The [AI approver](approvals.md#the-ai-approver), for people. `status` lists the rules its circuit breaker dropped to
+shadow, the playbook in force and the entries people's answers propose. `accept` and `retire` change a playbook entry
+(`id`: `P-…`), `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
+breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id`. A signer
+without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
+
+**Who may call:** an approver of the caller's tenant (`approvals.approvers` or `break_glass`), with the default grants or
+an `authorize` entry that lists `approver`. An agent approver can't.
+
+<!-- api-doc:begin approver -->
+<details>
+<summary>Request and answer fields</summary>
+
+**Request**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `request_id` | text | depends | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `action` | one of `status`, `accept`, `retire`, `revoke`, `enable` | yes |  |
+| `id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `rules` | list of texts | no | 1 to 32 items; each item: up to 64 characters |
+| `reason` | text | no | up to 1024 characters |
+
+**Answer**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+
+</details>
+<!-- api-doc:end approver -->
+
 ### `passkey_register`
 
 Registers the passkey of the person a bridge acts for, named in `on_behalf`: its `credential_id` and its `public_key`
@@ -1362,7 +1421,7 @@ lists `status`. A box's agent channel may call it too.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `rpc_version` | always `27` | yes |  |
+| `rpc_version` | always `28` | yes |  |
 | `signer` | object | yes |  |
 | `signer.name` | text | yes | up to 128 characters |
 | `signer.version` | text | yes | up to 64 characters |
@@ -1733,7 +1792,7 @@ listed under `analyzers` in the signer's configuration may register one. In any 
 | `review.verdict (kind finding).asserted.version` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:/@+-]+(?![\s\S])` |
 | `review.verdict (kind finding).asserted.prompt_hash` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 | `review.verdict (kind finding).families` | object | no |  |
-| `review.verdict (kind finding).families.reviewer` | one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`, `None` | yes |  |
+| `review.verdict (kind finding).families.reviewer` | one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`, `null` | yes |  |
 | `review.verdict (kind finding).families.agent` | list of (one of `anthropic`, `openai`, `google`, `meta`, `mistral`, `deepseek`, `qwen`, `xai`) | yes | up to 8 items |
 | `review.verdict (kind finding).window` | object | no |  |
 | `review.verdict (kind finding).window.grace_s` | number | yes | at least 0; at most 86400 |
