@@ -84,6 +84,47 @@ class FlowMappings(unittest.TestCase):
             with self.subTest(text), self.assertRaisesRegex(yamlmini.YAMLError, "empty item"):
                 yamlmini.loads(text + "\n")
 
+    def test_a_quote_in_a_plain_value_is_text(self):
+        """Only the key's own string decides "unterminated key", and a quote inside a plain scalar opens no string."""
+        for text, want in (('"contact": ops, "night desk', 'ops, "night desk'), ('"note": 5-\'7 days', "5-'7 days"),
+                           ('"cmd": echo a,\'b', "echo a,'b"), ('"x": a:\'b', "a:'b"),
+                           ('"title": the ["draft', 'the ["draft'), ("k: b,,'{ #", "b,,'{"), ("k: -[''#-{-", "-[''#-{-")):
+            with self.subTest(text):
+                self.assertEqual(list(yamlmini.loads(text + "\n").values()), [want])
+        with self.assertRaisesRegex(yamlmini.YAMLError, "unterminated key"):
+            yamlmini.loads('"abc: d\n')
+
+    def test_block_lines_read_as_pyyaml_reads_them(self):
+        """Differential, from a fixed seed: `key: value` lines with plain, single-quoted ('') and double-quoted keys,
+        and plain values holding stray quotes, `,`, `:`, `-`, `[`, `{` and `#`. Where both parse, they agree; a plain
+        scalar PyYAML reads is never refused; nothing but ValueError is raised."""
+        try:
+            import yaml
+        except ImportError:
+            self.skipTest("PyYAML is not installed")
+        r = random.Random(1074)
+        both = 0
+        for _ in range(5000):
+            body = "".join(r.choice("ab -:'\"\\#") for _ in range(r.randrange(1, 5)))
+            key = r.choice(["k", "a-b", "'" + body.replace("'", "''") + "'", json.dumps(body)])
+            value = "".join(r.choice("ab -:,'\"[{#") for _ in range(r.randrange(1, 9))).strip() or "v"
+            doc = f"{key}: {value}\n"
+            try:
+                mine = yamlmini.loads(doc)
+            except ValueError:
+                mine = None
+            try:
+                theirs = yaml.safe_load(doc)
+            except yaml.YAMLError:
+                continue
+            if mine is None:
+                self.assertTrue(value[:1] in "'\"[{&*!|>%@`#" or not isinstance(theirs, dict) or any(
+                    isinstance(v, (dict, list)) for v in theirs.values()), f"refused a plain scalar: {doc!r}")
+                continue
+            both += 1
+            self.assertEqual(mine, theirs, doc)
+        self.assertGreater(both, 2000)
+
     def test_a_single_quoted_key_takes_a_doubled_quote(self):
         self.assertEqual(yamlmini.loads("v: {'it''s': 1}\n'a''b': 2\n"), {"v": {"it's": 1}, "a'b": 2})
 

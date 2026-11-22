@@ -23,7 +23,9 @@ _OPENS = ("", ":", "-", "[", ",", "{")   # a quote opens a string only after one
 
 
 def _strip_comment(line):
-    out, q = [], None
+    """`line` without its comment. A quote opens a string only where a scalar starts (the line's start, after `- `,
+    `: `, a flow `[`, `{` or `,`, or a quoted key's `:`); inside a plain scalar it is text, as in PyYAML."""
+    out, q, depth, start, dash, closed = [], None, 0, True, False, False
     i = 0
     while i < len(line):
         c = line[i]
@@ -33,18 +35,30 @@ def _strip_comment(line):
                 if i + 1 < len(line) and line[i + 1] == "'":
                     out.append("'"); i += 1
                 else:
-                    q = None
+                    q, closed = None, True
             elif q == '"' and c == "\\":
                 if i + 1 < len(line):
                     out.append(line[i + 1]); i += 1
             elif q == '"' and c == '"':
-                q = None
+                q, closed = None, True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or line[i - 1] in " \t" or closed):
+            break
+        if c in "'\"" and start:
+            q = c
+        elif c in " \t":
+            start = start or out[-1:] == [":"] or (out[-1:] == ["-"] and dash)
+        elif (c in "[{" and start) or (c == "," and depth):
+            depth += c != ","
+            start = True
+        elif c == ":" and closed:
+            start = True
         else:
-            if c == "#" and (i == 0 or line[i - 1] in " \t"):
-                break
-            if c in "'\"" and "".join(out).rstrip()[-1:] in _OPENS:
-                q = c
-            out.append(c)
+            depth -= c in "]}" and depth > 0
+            dash, start = c == "-" and start, False
+        closed = False
+        out.append(c)
         i += 1
     return "".join(out).rstrip()
 
@@ -137,11 +151,13 @@ def _split_flow(s, lineno):
 
 def _split_key(text, lineno):
     """'key: value' -> (key, value_text) or None if not a mapping entry."""
-    if text[:1] and text[0] in "'\"":
-        marks, open_ = _quoted(text)
-        if open_:
-            raise YAMLError(f"line {lineno}: unterminated key")
-        end = marks.index(False) - 1 if False in marks else len(text) - 1
+    if text[:1] in ("'", '"'):
+        marks, open_ = _quoted(text)   # only the key's own string counts: a quote in the value is the value's
+        if False not in marks:
+            if open_:
+                raise YAMLError(f"line {lineno}: unterminated key")
+            return None
+        end = marks.index(False) - 1
         key, rest = _scalar(text[:end + 1], lineno), text[end + 1:]
         if not rest.startswith(":"):
             return None
