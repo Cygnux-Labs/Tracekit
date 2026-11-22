@@ -5815,7 +5815,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git push origin --tags", "git push --follow-tags origin feature", "git push origin refs/tags/v1.0",
             "git push -o ci.skip origin", "git push --repo origin feature", "git push --for origin feature",
             "git push --bogus origin feature", "git-push origin main", "npm publish", "pnpm -r publish",
-            "yarn npm publish", "cargo publish", "twine upload dist/*", "docker push x", "helm upgrade --install a b",
+            "yarn npm publish", "cargo publish", "hatch publish", "hatch publish --repo pypi",
+            "flit publish", "flit publish --repository pypi", "twine upload dist/*", "docker push x",
+            "helm upgrade --install a b",
             "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x",
             # #892: a platform CLI's production deploy, each form from the CLI's own docs
             "vercel --prod", "vercel deploy --prod", "vercel deploy ./dist --prod --yes", "vercel --token t --prod",
@@ -5849,7 +5851,7 @@ class GuardrailsAndPushes(unittest.TestCase):
                   "gh release create v1.0 -d", "gh release create -d v1.0", "gh release create v1.0 --notes x -d",
                   "gh release create v1.0 --notes=x -d", "gh release create v1.0 -p -d",
                   "gh release create v1.0 --latest=false --draft", "gh release create v1.0 --notes -d --draft",
-                  "gh release list", "fly status", "cdk diff", "sam build"):
+                  "gh release list", "fly status", "cdk diff", "sam build", "hatch build", "flit build"):
             for e in self.engines:
                 with self.subTest(engine=e.engine, command=c):
                     d = e.decide("Bash", {"command": c})
@@ -5871,7 +5873,7 @@ class GuardrailsAndPushes(unittest.TestCase):
     def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
         """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
-        for c in ("vercel --prod", "fly deploy", "gh release create v1.0"):
+        for c in ("vercel --prod", "fly deploy", "gh release create v1.0", "hatch publish", "flit publish"):
             with self.subTest(command=c):
                 self.assertNotIn("TK-A056", server.decide("Bash", {"command": c})["rule_ids"])
         self.assertEqual(server.decide("Bash", {"command": "vercel --prod"})["verdict"], "allow")
