@@ -30,8 +30,6 @@ cd ~ && npm install
 cd ~ && pip install --user black
 cd ~ && python3 -m venv venv
 cd ~ && rsync -a src/ dst/
-cd ~ && tar -xzf ~/Downloads/release.tgz
-cd ~ && unzip ~/Downloads/x.zip
 cd ~ && uv tool install ruff
 cd ~ && uv venv
 cd ~ && virtualenv venv
@@ -140,3 +138,53 @@ uv venv .venv --python 3.12
 VIRTUAL_ENV=.venv uv pip install pytest
 virtualenv venv
 wget -qO- https://example.com/x.tgz | tar xz -C ~/opt
+sed -n '/warn/p' ~/.local/share/uv/tools/tracekit-ai/lib/python3.12/site-packages/tracekit/hook.py
+awk '/x/' ~/.local/bin/tracekit
+head ~/.local/share/uv/tools/tracekit-ai/lib/python3.12/site-packages/tracekit/__init__.py
+cd ~ && tar -czf backup.tgz projects
+cd ~ && zip -r proj.zip proj
+cd ~ && git status
+cd ~ && git add .bashrc && git commit -m dotfiles
+cd ~ && git diff
+cd ~ && git log --oneline -5
+cd ~ && git stash
+cd ~ && git checkout -b feature
+cd ~ && git fetch
+cd ~ && git merge --ff-only origin/main
+cd ~ && git rebase origin/main
+cd ~ && git reset --hard origin/main
+cd ~ && git restore .bashrc
+cd ~ && git checkout -- .zshrc
+git -C ~/dotfiles pull
+cd ~/proj && git pull
+tar -tzf x.tgz -C ~
+cd ~ && rsync -av proj/ /backup/
+uv -q tool upgrade --all
+pipx upgrade-all --include-injected
+cargo install ripgrep
+npm i -g typescript
+make install PREFIX=$HOME/.local
+cmake --install build --prefix ~/.local
+./configure --prefix=$HOME/.local
+meson setup build --prefix ~/.local
+pip install --user -e .
+make test PYTHON=~/.local/share/uv/tools/tracekit-ai/bin/python	TK-F015
+uv tool run ruff check .
+uvx ruff check .
+uv --directory ~/proj run pytest
+cd ~ && unzip -l x.zip
+cd ~ && tar -tzf x.tgz
+git -C ~ status
+git -C ~ log -1
+cd ~/Downloads && tar -xzf release.tgz
+cd ~/Downloads && unzip x.zip
+mktemp -d -t build
+git log -p --output=/tmp/x
+sqlite3 app.db ".read schema.sql"
+sqlite3 app.db ".backup backup.db"
+awk -F, '{print $1 > "out.csv"}' data.csv
+sed -n 'w out.txt' in.txt
+tree -L 2 -o tree.txt .
+cd ~ && git worktree list
+cd ~ && git submodule status
+uv tool install --force ruff	TK-F015

