@@ -2994,12 +2994,14 @@ def _without_rpc_catch(code):
     """The code less its statements importing RPCError (and rpc_schema's tables) by name, when it uses RPCError only to
     catch it (`except RPCError`, `except (…, RPCError)`) or test for it (`isinstance(x, RPCError)`): such a script
     reaches nothing of the schema's module; else the code as it is. A call, a raise, a subclass or another use of the
-    class holds its module, as do names read any other way (_runs_signer). The statements are read in the code without
-    its comments and string literals: a `# except (` or `"except ("` before a use makes it no catch."""
-    text = _py_code(code)
+    class holds its module, as do names read any other way (_runs_signer). The statements are read in the code with its
+    comments and string literals blanked (_py_blank, which keeps every offset): a `# except (` or `"except ("` before
+    a use makes it no catch, and an import written in a comment or a string is none, so cuts nothing."""
+    text = _py_blank(code)
     spans = []
     for m in _SIGNER_IMPORT.finditer(text):
-        items = [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", m.group(1) or m.group(2)).replace("\n", " ").split(",")]
+        listed = m.group(1) if m.group(1) is not None else m.group(2)
+        items = [x.strip() for x in re.sub(r"\\(?:\r\n?|\n)", " ", listed).replace("\n", " ").split(",")]
         if "RPCError" not in items or any(i not in _RPC_DATA | {"RPCError"} for i in items if i):
             return code
         spans.append(m.span())
@@ -3010,7 +3012,6 @@ def _without_rpc_catch(code):
                 _RPC_CATCH.search(text[:m.start()][-80:]) and re.match(r"\s*(?:[,):]|as\b)", text[m.end():]) or
                 _RPC_TEST.search(text[:m.start()][-80:]) and re.match(r"\s*\)", text[m.end():])):
             return code
-    spans = [m.span() for m in _SIGNER_IMPORT.finditer(code)]
     return "".join(code[a:b] for a, b in zip([0] + [s[1] for s in spans], [s[0] for s in spans] + [len(code)]))
 
 
@@ -3027,7 +3028,7 @@ def _runs_signer(code):
     # (a backslash continues a list; a parenthesised one runs to its `)`, a comment in it may hold one)
     for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+"
                          r"(?:\(((?:[^)#]|#[^\n]*(?:\n|\Z))*)|((?:[\w\s,*]|\\(?:\r\n?|\n))+))", code):
-        listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) or m.group(3))
+        listed = re.sub(r"#[^\n]*|\\(?:\r\n?|\n)", " ", m.group(2) if m.group(2) is not None else m.group(3))
         for item in listed.replace("\n", " ").split(","):
             name, _, alias = (x.strip() for x in item.partition(" as "))
             if not name:
@@ -3053,7 +3054,7 @@ _SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__)
 _SDK_READS = {"status", "Hung", "SignerUnavailable", "Incompatible"}
 # where a Python comment or string literal may start, and the rest of each kind of literal: its text (a backslash
 # escapes any character, a newline too) up to its closing quote, or to its line's end (the code's, triple-quoted)
-_PY_OPEN = re.compile(r"#|(?<![\w])([rRbBuUfF]{0,2})(\"\"\"|'''|\"|')")
+_PY_OPEN = re.compile(r"#|(?:(?<![\w])([rRbBuUfF]{1,2}))?(\"\"\"|'''|\"|')")
 _PY_REST = {'"""': re.compile(r'(?:[^\\"]|\\[\s\S]|"(?!""))*(?:"""|\Z)'),
             "'''": re.compile(r"(?:[^\\']|\\[\s\S]|'(?!''))*(?:'''|\Z)"),
             '"': re.compile(r'(?:[^\\"\n]|\\[\s\S])*"?'), "'": re.compile(r"(?:[^\\'\n]|\\[\s\S])*'?")}
@@ -3071,8 +3072,36 @@ def _py_code(code):
             i = len(code) if nl < 0 else nl
             continue
         rest = _PY_REST[m.group(2)].match(code, m.end())
-        out.append(rest.group() if "f" in m.group(1).lower() else "''")
+        out.append(rest.group() if "f" in (m.group(1) or "").lower() else "''")
         i = rest.end()
+    return "".join(out) + code[i:]
+
+
+def _py_blank(code):
+    """The code with each comment and string literal blanked to spaces (its newlines kept), so every offset stays the
+    code's own. An f-string's replacement fields stay: the code in its braces runs."""
+    out, i = [], 0
+    while m := _PY_OPEN.search(code, i):
+        out.append(code[i:m.start()])
+        if m.group() == "#":
+            nl = code.find("\n", m.end())
+            end = len(code) if nl < 0 else nl
+            out.append(" " * (end - m.start()))
+            i = end
+            continue
+        end = _PY_REST[m.group(2)].match(code, m.end()).end()
+        literal, depth, kept = code[m.start():end], 0, []
+        fstring = "f" in (m.group(1) or "").lower()
+        for k, c in enumerate(literal):
+            if fstring and c == "{" and depth == 0 and literal[k + 1:k + 2] != "{" and literal[k - 1:k] != "{":
+                depth = 1
+            elif fstring and depth and c == "{":
+                depth += 1
+            elif fstring and depth and c == "}":
+                depth -= 1
+            kept.append(c if depth and c != "{" or c == "\n" else " ")
+        out.append("".join(kept))
+        i = end
     return "".join(out) + code[i:]
 
 
