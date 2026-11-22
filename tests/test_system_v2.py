@@ -42,6 +42,33 @@ class SignerConfig(unittest.TestCase):
         self.assertEqual(cfg["policy"], POLICY)
         self.assertEqual(cfg["authorize"], {"uid:64102": ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]})
 
+    def test_a_rerun_keeps_the_keys_init_does_not_write(self):
+        """#463: init wrote signer.yaml anew each run, dropping `content:` (new runs then kept no content) and a hand
+        `witnesses:` list. Init's own keys are still written from its flags."""
+        new = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
+        old = (install.v2_signer_yaml(AGENT, 999, "/old/policy.yaml", "/run/s.sock", 64102, public_witness=False)
+               + 'content:\n  keep: true\n# my note\nwitnesses:\n- url: "https://w2.example"\n  class: "operator"\n'
+               + 'metrics: {"listen": "127.0.0.1:9464"}\n')
+        text, kept = install.keep_hand_keys(old, new)
+        self.assertEqual(kept, ["content", "metrics", "witnesses"])
+        self.assertIn('witnesses:\n- url: "https://w2.example"\n  class: "operator"\n', text)
+        self.assertNotIn('witnesses: ["public"]', text)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "signer.yaml")
+        with open(path, "w") as f:   # load_config checks a witness's vkey; the rest loads as written
+            f.write(text.split("witnesses:")[0] + text.split("  class: \"operator\"\n")[1])
+        cfg = service.load_config(path)
+        self.assertEqual(cfg["content"], {"keep": True})
+        self.assertEqual(cfg["metrics"], {"listen": "127.0.0.1:9464"})
+        self.assertEqual((cfg["approvals"]["approvers"], cfg["policy"]), (["uid:501"], POLICY))
+        self.assertEqual(text.count("approvals:"), 1)
+
+    def test_a_rerun_writes_init_own_witness_line_from_its_flags(self):
+        old = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
+        new = install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=False)
+        self.assertEqual(install.keep_hand_keys(old, new), (new, []))
+
     def test_unit_is_hardened_with_no_capabilities(self):
         unit = install.V2_UNIT_TEXT.format(user="tracekit-signer", python=install.OPT_PYTHON,
                                            config=install.V2_CONFIG, unit=install.V2_UNIT, data=install.V2_DATA)

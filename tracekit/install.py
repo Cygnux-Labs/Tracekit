@@ -1561,13 +1561,41 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), 
                                                 f"      script: {q(h['script'])}"] if h.get("script")
                                                else [f"    {q(h['name'])}: {q(h['exe'])}"])] if harnesses else []
     return "\n".join([
-        "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
+        "# written by `tracekit init --v2`; a re-run writes its own keys again and keeps the others", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", *([f"  {q(f'uid:{egress_uid}')}: {tenant}"] if egress_uid is not None else []),
         "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
         "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]",
         *([f"  {q(f'uid:{egress_uid}')}: [observe_effect]"] if egress_uid is not None else []), f"policy: {q(policy)}",
         *binding, *(['witnesses: ["public"]'] if public_witness else []), ""])
+
+
+V2_INIT_KEYS = ("data_dir", "socket", "socket_mode", "tenant", "tenants", "approvals", "authorize", "policy",
+                "harness_binding", "witnesses")
+
+
+def _top_blocks(text):
+    """signer.yaml's top-level entries, {key: its lines}; a comment or blank line goes with the entry above it."""
+    blocks, key = {}, None
+    for line in text.splitlines(keepends=True):
+        if line[:1] not in ("", " ", "\t", "#", "-", "\n") and ":" in line:
+            key = line.split(":", 1)[0].strip()
+            blocks[key] = []
+        if key is not None:
+            blocks[key].append(line)
+    return blocks
+
+
+def keep_hand_keys(old, new):
+    """`new` (v2_signer_yaml's) plus the top-level entries of `old` that init doesn't write (`content:`, `metrics:`, ...),
+    and a `witnesses:` list other than init's own `["public"]`, which then replaces init's. Returns (text, kept keys)."""
+    blocks = _top_blocks(old)
+    kept = [k for k in blocks if k not in V2_INIT_KEYS]
+    witnesses = "".join(blocks.get("witnesses", ())).strip()
+    if witnesses and witnesses != 'witnesses: ["public"]':
+        new = "".join(line for line in new.splitlines(keepends=True) if not line.startswith("witnesses:"))
+        kept.append("witnesses")
+    return new + "".join(line for k in kept for line in blocks[k]), kept
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1727,8 +1755,16 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
               "records a tailer_lost gap instead of its transcript")
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                system_witness(public_witness), observer and observer.pw_uid).encode())
+    config = v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
+                            system_witness(public_witness), observer and observer.pw_uid)
+    try:
+        with open(V2_CONFIG) as f:
+            config, kept = keep_hand_keys(f.read(), config)
+    except FileNotFoundError:
+        kept = []
+    if kept:
+        print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
+    _write_root_file(V2_CONFIG, config.encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
