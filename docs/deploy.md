@@ -157,8 +157,11 @@ Each init run writes its own keys in `/etc/tracekit/signer.yaml` again from its 
 `socket_mode`, `tenant`, `tenants`, `approvals`, `authorize`, `policy`, `harness_binding` and `witnesses`), keeps
 every other key you added, such as `content:` or `metrics:`, and says which it kept. Kept keys are written back as
 JSON, so comments in the file are not kept. A `witnesses:` list of your own is kept as it is, so add `public` to it
-yourself if you want the public witness too. Init refuses a signer.yaml it can't read as UTF-8 YAML, a symlink or
-anything but a regular file. To upgrade:
+yourself if you want the public witness too. Init reads the file as the signer does, before it changes anything, and
+stops with `/etc/tracekit/signer.yaml: can't keep what you added to it (<why>); fix or move it, then run init again`
+when the file isn't UTF-8 text in the YAML subset the signer reads, is a symlink or not a regular file, has a key the
+signer doesn't know, or has a value that wouldn't load back as it is (such as `1.0e-5`, which JSON writes as `1e-05`
+and the signer reads back as text). To upgrade:
 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.

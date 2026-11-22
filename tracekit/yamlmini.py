@@ -91,12 +91,12 @@ def _scalar(tok, lineno):
 
 def _split_flow(s, lineno):
     """The comma-separated items of a flow list or mapping body, nested [] and {} kept whole."""
-    parts, cur, q, depth = [], [], None, 0
+    parts, cur, q, depth, esc = [], [], None, 0, False
     for c in s:
         if q:
             cur.append(c)
-            if c == q:
-                q = None
+            esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
+            q = None if end else q
         elif c in "'\"":
             q = c; cur.append(c)
         elif c == "," and not depth:
@@ -113,10 +113,10 @@ def _split_flow(s, lineno):
 def _split_key(text, lineno):
     """'key: value' -> (key, value_text) or None if not a mapping entry."""
     if text[:1] in "'\"":
-        end = text.find(text[0], 1)
+        end = _close(text, text[0])
         if end < 0:
             raise YAMLError(f"line {lineno}: unterminated key")
-        key, rest = text[1:end], text[end + 1:]
+        key, rest = _scalar(text[:end + 1], lineno), text[end + 1:]
         if not rest.startswith(":"):
             return None
         return key, rest[1:]
@@ -126,16 +126,30 @@ def _split_key(text, lineno):
     return m.group(1), m.group(3)
 
 
+def _close(text, q):
+    """Index of the quote `q` that closes the string `text` starts, or -1; a double-quoted one skips its \\ escapes."""
+    i = 1
+    while i < len(text):
+        if q == '"' and text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == q:
+            return i
+        i += 1
+    return -1
+
+
 def _unclosed(text, lineno):
     """Whether the flow list or mapping that `text`'s value starts goes on past the line."""
     kv = None if text.startswith("- ") else _split_key(text, lineno)
     v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
     if v[:1] not in ("[", "{"):
         return False
-    depth, q = 0, None
+    depth, q, esc = 0, None, False
     for c in v:
         if q:
-            q = None if c == q else q
+            esc, end = q == '"' and c == "\\" and not esc, c == q and not esc
+            q = None if end else q
         elif c in "'\"":
             q = c
         else:

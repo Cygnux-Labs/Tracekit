@@ -1575,23 +1575,42 @@ V2_INIT_KEYS = ("data_dir", "socket", "socket_mode", "tenant", "tenants", "appro
                 "harness_binding", "witnesses")
 
 
-def keep_hand_keys(old, new):
-    """`new` (v2_signer_yaml's) plus the top-level keys of signer.yaml `old` that init doesn't write (`content:`,
-    `metrics:`, ...), read by their parsed names and written back as JSON, and a `witnesses:` list other than init's
-    own `["public"]`, which then replaces init's. Returns (text, kept keys); ValueError names what can't be kept."""
-    cfg = yamlmini.load_any(old) or {}
+def hand_keys(old):
+    """The top-level keys of signer.yaml text `old`, read by yamlmini as the signer reads it, that init doesn't write,
+    and a `witnesses:` list other than init's own `["public"]`: (their signer.yaml lines, written as JSON, and their
+    names). ValueError names what can't be kept: a key the signer doesn't know, or a value that wouldn't load back as
+    it is."""
+    from .signer.service import CONFIG_KEYS
+    cfg = yamlmini.loads(old) or {}
     if not isinstance(cfg, dict):
         raise ValueError("it is not a mapping of keys")
-    kept = [k for k in cfg if k not in V2_INIT_KEYS]
-    if cfg.get("witnesses") not in (None, ["public"]):
-        new = "".join(line for line in new.splitlines(keepends=True) if not line.startswith("witnesses:"))
-        kept.append("witnesses")
-    text = new + "".join(f"{json.dumps(k)}: {json.dumps(cfg[k])}\n" for k in kept)
-    merged, ours = yamlmini.load_any(text), yamlmini.load_any(new)
-    for k in V2_INIT_KEYS:
-        if k != "witnesses" and merged.get(k) != ours.get(k):
-            raise ValueError(f"init's key {k} would not be what init writes")
-    return text, kept
+    kept = {k: v for k, v in cfg.items()
+            if k not in V2_INIT_KEYS or k == "witnesses" and v not in (None, ["public"])}
+    unknown = sorted(str(k) for k in kept if k not in CONFIG_KEYS)
+    if unknown:
+        raise ValueError(f"the signer doesn't know {', '.join(unknown)}")
+    lines = "".join(f"{json.dumps(k)}: {json.dumps(v)}\n" for k, v in kept.items())
+    back = yamlmini.loads(lines) or {}
+    for k, v in kept.items():
+        if json.dumps(back.get(k)) != json.dumps(v) or back.get(k) != v:
+            raise ValueError(f"{k} would not be written back as it is")
+    return lines, list(kept)
+
+
+def _old_hand_keys():
+    """hand_keys of the signer.yaml an earlier init wrote, read as a regular file in a root-owned directory, without
+    following a symlink; ("", []) when there is none. SystemExit when it can't be kept."""
+    try:
+        d = files.open_dir(os.path.dirname(V2_CONFIG), {0})
+    except FileNotFoundError:
+        return "", []
+    try:
+        old = files.read(d, os.path.basename(V2_CONFIG))
+        return hand_keys(old.decode("utf-8")) if old else ("", [])
+    except (files.UnsafePath, ValueError) as e:
+        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
+    finally:
+        files.close(d)
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1728,6 +1747,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
+    hand, kept = _old_hand_keys()   # before any change: a file it can't keep stops init here
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1753,16 +1773,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     config = v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
                             system_witness(public_witness), observer and observer.pw_uid)
-    kept = []
-    d = files.open_dir(os.path.dirname(V2_CONFIG)) if os.path.isdir(os.path.dirname(V2_CONFIG)) else None
-    try:
-        old = d is not None and files.read(d, os.path.basename(V2_CONFIG))
-        if old:
-            config, kept = keep_hand_keys(old.decode("utf-8"), config)
-    except (files.UnsafePath, UnicodeDecodeError, ValueError) as e:
-        raise SystemExit(f"{V2_CONFIG}: can't keep what you added to it ({e}); fix or move it, then run init again")
-    finally:
-        files.close(d)
+    if "witnesses" in kept:   # a list of the operator's own replaces init's
+        config = "".join(line for line in config.splitlines(keepends=True) if not line.startswith("witnesses:"))
+    config += hand
     if kept:
         print(f"{V2_CONFIG}: kept what you added: {', '.join(kept)}")
     _write_root_file(V2_CONFIG, config.encode())

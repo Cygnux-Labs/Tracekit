@@ -21,6 +21,12 @@ class FlowMappings(unittest.TestCase):
         with self.assertRaisesRegex(yamlmini.YAMLError, "line 1: unterminated flow list"):
             yamlmini.loads("a: [1,\n")
 
+    def test_an_escaped_quote_does_not_end_a_double_quoted_string(self):
+        """A `\"` inside a double-quoted flow string or key, as json.dumps writes it, didn't end it."""
+        self.assertEqual(yamlmini.loads('m: {"note": "rack 12\\" A, row 3", "x": ["a\\\\", "b"]}\n"k\\"q": 1\n'),
+                         {"m": {"note": 'rack 12" A, row 3', "x": ["a\\", "b"]}, 'k"q': 1})
+        self.assertEqual(yamlmini.loads('m: {"a": "x\\"]",\n  "b": 2}\n'), {"m": {"a": 'x"]', "b": 2}})
+
     def test_a_flow_item_that_is_not_key_value_is_an_error(self):
         with self.assertRaises(yamlmini.YAMLError):
             yamlmini.loads("a: {b c}")
