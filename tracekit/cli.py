@@ -379,9 +379,10 @@ def _parser():
     p.add_argument("--system", action="store_true",
                    help="as root: remove v1 system mode (init as root without --v2): its hooks, service and configs")
     p.add_argument("--user", metavar="NAME",
-                   help="with --system: the agent user whose settings file init wrote, when it recorded no managed hooks")
+                   help="with --system: the agent user init set up (its --user); needed unless init used --managed or "
+                        "--no-hooks, and it also removes that user's client config")
     p.add_argument("--purge", action="store_true",
-                   help="with --v2 or --system: also delete the signer's keys and log (--v2: and its users)")
+                   help="with --v2 or --system: also delete the signer's keys, log and users")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
                    help="which coding agent's hooks to remove (default: Claude Code)")
 
@@ -925,21 +926,26 @@ def _run(a):
     if a.cmd == "doctor":
         from . import doctor
         return doctor.main(a.config, a.json, a.k8s, a.manifests, a.issuer_key)
-    if a.cmd == "uninstall" and (a.v2 or a.system or a.purge):
+    if a.cmd == "uninstall" and (a.v2 or a.system or a.purge or a.user):
         from . import install
         if a.system:
             if a.v2 or a.project or a.agent != "claude":
                 print("tracekit: --system takes neither --v2, --project nor --agent", file=sys.stderr)
                 return 2
             try:
-                kept = install.uninstall_system(a.purge, a.user)
+                removed, kept = install.uninstall_system(a.purge, a.user)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
-            print("v1 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept
-                                              else ""))
+            print(f"v1 system mode removed: {', '.join(removed)}" if removed else
+                  "v1 system mode is not installed: nothing to remove")
+            if kept:
+                print(f"kept {' and '.join(kept)} (--purge deletes them)")
             return 0
-        if not a.v2 or a.project or a.agent != "claude" or a.user:
+        if a.user:
+            print("tracekit: --user goes with --system", file=sys.stderr)
+            return 2
+        if not a.v2 or a.project or a.agent != "claude":
             print("tracekit: --purge goes with --v2 or --system, which take neither --project nor --agent", file=sys.stderr)
             return 2
         try:

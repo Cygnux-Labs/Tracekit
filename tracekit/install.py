@@ -1924,101 +1924,119 @@ def uninstall_system_v2(purge=False):
     except OSError:
         pass   # not empty: v1 system mode or a policy lives there
     if purge:
-        for user in users:
-            cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
-                    else [["userdel", user]])
-            for cmd in cmds:
-                subprocess.run(cmd, check=False)
+        _delete_users(users, darwin)
         return []
     return [V2_DATA, *users]
 
 
+def _delete_users(users, darwin):
+    """Delete the system users init made, and their groups."""
+    for user in users:
+        cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
+                else [["userdel", user]])
+        for cmd in cmds:
+            subprocess.run(cmd, check=False)
+
+
+def _drop_client_config(path):
+    """Delete the config.json v1 system init wrote in the agent's client dir `path` (it says "mode": "system"; a dev
+    init's stays), following no symlink. Run as the agent's user; the client's run state beside it stays. Whether it
+    did."""
+    try:
+        d = files.open_dir(path)
+    except OSError:   # missing, or a symlink
+        return False
+    try:
+        cfg = json.loads(files.read(d, "config.json") or b"null")
+        if isinstance(cfg, dict) and cfg.get("mode") == "system":
+            files.remove(d, "config.json")
+            return True
+    except (OSError, ValueError):
+        pass
+    finally:
+        files.close(d)
+    return False
+
+
 def uninstall_system(purge=False, user=None):
-    """`tracekit uninstall --system` as root: remove what `init` as root without `--v2` wrote — the hook group it put in
-    the managed settings file or in the agent's own, the units or plists it started, and the v1 keys of the system client
-    config with /opt/tracekit (unless v2 system mode still uses them). purge: also the signer's data dir (its keys and
-    log). user: the agent user, needed only when the client config records no managed hooks — a plain v1 install wrote
-    that user's ~/.claude/settings.json and the user itself is recorded nowhere (init_system drops target_user), so it
-    cannot be found without being named. Returns what was kept."""
+    """`tracekit uninstall --system` as root: remove what `init` as root without `--v2` wrote, read from the system
+    client config's init_flags: the hooks it put in the managed settings file, or in the agent's own or a project's
+    settings file (edited as `user`, the agent's user, which v1 init did not record, so such an install needs it), the
+    units or plists it started, the config's v1 keys (the file and /opt/tracekit too unless v2 system mode still uses
+    them) and, with `user`, the agent's ~/.tracekit-client/config.json. What an earlier or partial run left goes too.
+    purge: also the signer's data dir (its keys and log) and its user. Returns (what it removed, what it kept that
+    --purge removes)."""
     darwin = _require_system(True, ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its "
                                     "hooks out and tracekit down stops its signer")
     sc = client.system_config() or {}
-    if "socket" not in sc and "mode" not in sc:   # neither generation installed here
-        raise SystemExit("v1 system mode is not installed: no client config records it, so there is nothing to remove")
-    flags = sc.get("init_flags") or []
-    signer = sc.get("signer")
-    v1_keys = ("socket", "signer_home", "signer_isolation", "mode", "fail_mode", "policy", "proxy", "proxy_url",
-               "init_flags")
-    kept = []
-    # hooks: what init wrote, read from init_flags rather than assumed
-    settings = None
-    owner = None
-    if "--no-hooks" not in flags:
+    flags = (sc.get("init_flags") or []) if "socket" in sc else None   # None: no v1 install recorded
+    try:
+        owner = pwd.getpwnam(user) if user else None
+    except KeyError:
+        raise SystemExit(f"no user {user!r} on this machine") from None
+    if flags is not None and "--no-hooks" not in flags:
         if "--managed" in flags or "--managed-only" in flags:
             settings = MANAGED_SETTINGS["darwin" if darwin else "linux"]
             if _v1_hooks_in(settings):
                 install_managed(sc.get("proxy_url"), "--managed-only" in flags, settings, OPT_PYTHON, uninstall=True,
-                                signer=signer)
-        else:
+                                signer=sc.get("signer"))
+        else:   # init wrote this file as the agent's user; as root, a symlink the agent made would aim the edit elsewhere
             project = flags[flags.index("--project") + 1] if "--project" in flags else None
-            if project:
-                settings = os.path.join(project, ".claude", "settings.json")
-            elif user:
-                try:
-                    owner = pwd.getpwnam(user)
-                except KeyError:
-                    raise SystemExit(f"no user {user!r} on this machine, so its Claude Code settings file cannot be "
-                                     "found to take Tracekit's hooks out of it")
-                settings = os.path.join(owner.pw_dir, ".claude", "settings.json")
-            else:
-                raise SystemExit("this install wrote Tracekit's hooks into the agent user's own "
-                                 "~/.claude/settings.json, and v1 init did not record which user that was. Re-run with "
-                                 "--user NAME to name it, or --project DIR if the hooks went into a project's settings")
-            if owner is not None:
-                if files.as_user(owner, _v1_hooks_in, settings):
-                    install_hooks(settings, uninstall=True, owner=owner, signer=signer)
-            elif _v1_hooks_in(settings):
-                install_hooks(settings, uninstall=True, signer=signer)
-    # services: the signer's, the proxy's (only with --proxy) and the helper's (only when a harness was registered)
-    if darwin:
-        plists = [os.path.join(LAUNCHD_DIR, label + ".plist") for label in ("dev.tracekit.tracekitd", "dev.tracekit.proxy",
-                                                                          HELPER_LABEL)]
-        for p in plists:
-            if os.path.exists(p):
-                subprocess.run(["launchctl", "bootout", "system", p], check=False)
-        removed = [p for p in plists if os.path.exists(p)]
+            settings = os.path.join(project or (owner.pw_dir if owner else "~AGENT"), ".claude", "settings.json")
+            if owner is None:
+                raise SystemExit(f"v1 init wrote Tracekit's hooks into {settings} as the agent's user and did not "
+                                 "record that user: re-run with --user NAME, the user init set up")
+            if files.as_user(owner, _v1_hooks_in, settings):
+                install_hooks(settings, uninstall=True, owner=owner, signer=sc.get("signer"))
+    if darwin:   # v1 starts no harness helper on macOS: dev.tracekit.harness-helper is v2's
+        units = [os.path.join(LAUNCHD_DIR, label + ".plist") for label in ("dev.tracekit.tracekitd", "dev.tracekit.proxy")]
     else:
         units = [os.path.join(SYSTEMD_DIR, n) for n in ("tracekitd.service", "tracekit-proxy.service",
                                                         V1_HELPER + ".socket", V1_HELPER + ".service")]
-        for name in ("tracekitd", "tracekit-proxy", V1_HELPER + ".socket", V1_HELPER):
-            if os.path.exists(os.path.join(SYSTEMD_DIR, name.split(".")[0] + ".service")) or \
-                    os.path.exists(os.path.join(SYSTEMD_DIR, name + ".socket")):
-                subprocess.run(["systemctl", "disable", "--now", name], check=False)
-        removed = [p for p in units if os.path.exists(p)]
-        if removed:
-            subprocess.run(["systemctl", "daemon-reload"], check=False)
-    # files: the v1 keys of the system config, and what only v1 uses
-    rest = {k: v for k, v in sc.items() if k not in v1_keys}
-    if rest.get("signer") or rest.get("hooks") or rest.get("tailer"):   # v2 system mode keeps its keys
-        _write_system_client_config(rest)
-        kept += [OPT, client.SYSTEM_CONFIG]
-    else:
-        removed += [client.SYSTEM_CONFIG, OPT]
-    if owner is not None:
-        removed.append(os.path.join(owner.pw_dir, ".tracekit-client"))
-    for p in removed:
+    units = [p for p in units if os.path.exists(p)]   # --no-service, --proxy and a harness decide which init wrote
+    for p in units:
+        subprocess.run(["launchctl", "bootout", "system", p] if darwin else
+                       ["systemctl", "disable", "--now", os.path.basename(p)], check=False)
+    removed, paths = [], list(units)
+    if not any(k in sc for k in ("signer", "hooks", "tailer")):
+        paths += [OPT, client.SYSTEM_CONFIG]   # the record last: a run that stops part way can run again
+    elif flags is not None:   # v2 system mode uses the venv and the file: only v1's own keys go
+        _write_system_client_config({k: v for k, v in sc.items() if k not in (
+            "socket", "signer_home", "signer_isolation", "policy", "proxy", "proxy_url", "init_flags")})
+        removed.append(f"v1's keys in {client.SYSTEM_CONFIG}")
+        print(f"kept {OPT} and {client.SYSTEM_CONFIG}: v2 system mode uses them")
+    for p in paths:
         if os.path.isdir(p) and not os.path.islink(p):
             shutil.rmtree(p)
         elif os.path.lexists(p):
             os.remove(p)
+        else:
+            continue
+        removed.append(p)
+    if units and not darwin:
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
     try:
         os.rmdir(os.path.dirname(client.SYSTEM_CONFIG))
     except OSError:
         pass   # not empty: v2 system mode or a policy lives there
-    if purge:
-        shutil.rmtree(SYS_HOME, ignore_errors=True)
-        return kept
-    return [SYS_HOME, *kept]
+    if owner is not None:
+        mine = os.path.join(owner.pw_dir, ".tracekit-client")
+        if files.as_user(owner, _drop_client_config, mine):
+            removed.append(os.path.join(mine, "config.json"))
+    elif flags is not None:
+        print("kept the agent user's ~/.tracekit-client/config.json: --user NAME removes it")
+    tk_user = SYS_USER_DARWIN if darwin else SYS_USER
+    try:
+        pwd.getpwnam(tk_user)
+    except KeyError:
+        tk_user = None
+    kept = ([SYS_HOME] if os.path.isdir(SYS_HOME) else []) + ([f"user {tk_user}"] if tk_user else [])
+    if not purge:
+        return removed, kept
+    shutil.rmtree(SYS_HOME, ignore_errors=True)
+    if tk_user:
+        _delete_users([tk_user], darwin)
+    return removed + kept, []
 
 
 def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_service=False, proxy=False, proxy_port=8787,
