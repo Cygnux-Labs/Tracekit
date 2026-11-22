@@ -487,6 +487,28 @@ class Routes(unittest.TestCase):
                               "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
                               "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
                     "allow")
+        # #980, bun/deno only: Bun.write, Deno.writeTextFile(Sync)/writeFile(Sync)/create/truncate, and
+        # Deno.open(Sync) with a writing option; plain Deno.openSync stays a read
+        self.expect(self.bash(
+            "bun -e \"Bun.write('.env', 'x')\"",
+            "bun --eval \"Bun.write('.env', 'x')\"",
+            "deno eval \"Deno.writeTextFileSync('.env', 'x')\"",
+            "deno eval \"Deno.writeTextFile('.env', 'x')\"",
+            "deno eval \"Deno.writeFileSync('.env', new Uint8Array())\"",
+            "deno eval \"Deno.create('.env')\"",
+            "deno eval \"Deno.truncate('.env')\"",
+            "deno eval \"Deno.openSync('.env', { write: true })\"",
+            "deno eval \"Deno.open('.env', { write: true })\""), "deny", "TK-D023")
+        readonly_js = self.bash(
+            "deno eval \"Deno.openSync('.env')\"",
+            "deno eval \"Deno.openSync('.env', { read: true })\"",
+            "deno eval \"Deno.openSync('.env', { write: false })\"")
+        self.expect(readonly_js, "flag")
+        self.spare(readonly_js, "TK-D023")
+        self.expect(self.bash("bun -e \"Bun.write('out.txt', 'x')\"",
+                              "deno eval \"Deno.writeTextFileSync('out.txt', 'x')\"",
+                              "bun -e \"console.log('hi')\"", "deno eval \"console.log('hi')\"",
+                              "bun run test.ts", "deno run main.ts", "deno test"), "allow")
 
     def test_ssh_keygen_writes_the_file_its_f_mode_names(self):
         """#980 item 3: `-f` is the file a writing mode creates or rewrites, so a key written into `~/.ssh` is the
