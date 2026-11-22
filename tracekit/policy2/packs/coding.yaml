@@ -1372,14 +1372,15 @@ flag:
     field: line
     # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
     # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ or publi, which
-    # it runs as publish, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # it runs as publish, pip of any version, uv (after up to eight of its options, before its command and
+    # tool's: uv --cache-dir c tool install), pipx, poetry, conda, cargo, gem,
     # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publi too, also after up to eight options, as
     # TK-A056 reads one: npm --dry-run publish as npm publish --dry-run), a docker or podman run or push (container
     # run, image push, after up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and
     # kubectl apply or delete (both after up to eight options). The strict pack holds it, so its list is what "every
     # install" means there
     # lean: an install after options (npm --prefix x install) isn't read; add it as publish is if one is in use
-    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|(npm|pnpm|yarn|bun|uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+pu(b(li?)?)?|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|(npm|pnpm|yarn|bun|uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+pu(b(li?)?)?|pip[0-9.]*\s+install|uv(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(add|sync|publish|tool(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every

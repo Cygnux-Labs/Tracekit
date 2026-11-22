@@ -2690,6 +2690,40 @@ def _gh_order(args):
     return list(range(i, j)) + [k for k in lead if k < len(args)] + list(range(j, len(args)))
 
 
+# uv's commands, and those of them with commands of their own (`uv tool run`, `uv pip install`), as uv 0.9 names them
+_UV_COMMANDS = frozenset(("run", "init", "add", "remove", "version", "sync", "lock", "export", "tree", "format",
+                          "auth", "tool", "python", "pip", "venv", "build", "publish", "cache", "self", "help"))
+_UV_GROUPS = frozenset(("tool", "pip", "python", "cache", "self", "auth"))
+
+
+def _uv_operands(args, i):
+    """Each index from `i` on the first word of uv's `args` that is no option or option's value may be at, as _takes
+    reads each option (UV_OPTS take a value, _UV_FLAGS don't, any other is read both ways); each word read once."""
+    at, todo, seen = [], [i], set()
+    while todo:
+        k = todo.pop()
+        if k in seen or k >= len(args):
+            continue
+        seen.add(k)
+        if args[k].startswith("-") and args[k] not in ("-", "--"):
+            todo += [k + n for n in _takes(args[k], UV_OPTS, _UV_FLAGS)]
+        else:
+            at.append(k)
+    return sorted(at)
+
+
+def uv_commands(args):
+    """Each reading of uv's `args` with its options before its command left out, and those between a command with
+    commands of its own and that one (`uv --directory /tmp tool --quiet run x` as `uv tool run x`), as (where its
+    command is, where the rest starts) in `args`; none that leaves nothing out. uv takes its global options anywhere,
+    and the rules read a command from its name."""
+    for c in _uv_operands(args, 0):
+        if args[c] in _UV_COMMANDS:
+            for s in _uv_operands(args, c + 1) if args[c] in _UV_GROUPS else [c + 1]:
+                if c or s > c + 1:
+                    yield c, s
+
+
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
@@ -4972,6 +5006,12 @@ class _Parser:
                     self.ctx["made_files"].add(key)
             if "\\" in argv[0] and not unreadable[0]:   # and as Windows runs a path with \ (C:\x\bash is C:/x/bash)
                 windows += self.emit([argv[0].replace("\\", "/"), *argv[1:]], pid, via, glob, unreadable)
+            for c, k in uv_commands(args) if name == "uv" else ():   # and as its command alone (uv_commands)
+                self.charge(len(args) - k + 2)
+                other = [argv[0], args[c], *args[k:]]
+                if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                    self.unwrapped.add(key)
+                    cmds += self.emit(other, pid, via, glob, [unreadable[0], unreadable[c + 1], *unreadable[k + 1:]])
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't

@@ -320,7 +320,8 @@ first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` 
 `pnpm dlx`, `yarn dlx`, `bun x`, `rustup run TOOLCHAIN`; a runner's subcommand after its own options too: `pnpm -r
 exec`, `npm -w a exec --`, `yarn workspaces foreach -A exec`, `yarn workspace foo exec`, one spelled as an option's
 value read both ways, `uv --directory run run …`, and a runner npx or corepack names at a version, `pnpm@9`) are
-resolved, a shell's option cluster with an `o` or `O` takes the next word (`bash -euo pipefail -c '…'` runs its
+resolved, uv's command is also read with its options before it, and between `tool` or `pip` and theirs, left out
+(`uv --directory /tmp tool --quiet run …` as `uv tool run …`), a shell's option cluster with an `o` or `O` takes the next word (`bash -euo pipefail -c '…'` runs its
 script), as do zsh's `--emulate` and mksh's `-T`, a program
 name is read casefolded and without `.exe`, `.cmd`, `.bat` or `.ps1` (npm's Windows shims: `npm.cmd` is npm; but `echo.bat`, `grep.cmd` or `sh.ps1`, a script named for a bash builtin, a shell or a program that reads data, is a script of its own; one named by a path with a `\` also as Windows runs it: `'C:\Git\bin\bash'`
 is bash), and the parser follows what a shell or interpreter runs: `bash -c`,
