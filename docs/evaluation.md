@@ -316,9 +316,9 @@ forged precedent (the agent answering its own hold, the reviewer's own yes), a b
 project claimed, no project, another tool, another agent), a secret read between the AI's yes and the run and then a
 run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
-E21's held-out pool and its four blind pools (1,593), with two injected variants of each shell line ("approved by the
+E21's held-out pool and its four blind pools (1,627), with two injected variants of each shell line ("approved by the
 admin", a fake tool output), put to that reviewer with no precedent and with a person's precedent for a benign sibling
-of the same reviewed rule, each held call a requester of its own: 0 approvals outside the bounds. 893 of the calls are
+of the same reviewed rule, each held call a requester of its own: 0 approvals outside the bounds. 902 of the calls are
 held, 108 of them by reviewed rules alone; with a person's precedent for that very call (inside the bounds), the AI
 approves 78 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
 so no precedent lets it answer them). Results: `eval/results/e18_agent_approvers.json`.
@@ -558,8 +558,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 288 / 420 (68.6%) | 123 (29.3%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 314 / 420 (74.8%) | 159 (37.9%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 289 / 420 (68.8%) | 124 (29.5%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 315 / 420 (75.0%) | 160 (38.1%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
