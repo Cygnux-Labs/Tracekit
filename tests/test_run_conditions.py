@@ -480,6 +480,23 @@ class TestRequester(Case):
         self.assertEqual(s.decide(nxt, EGRESS)["decision"], "allow")
         self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "allow")
 
+    def test_a_recorded_send_says_where_after_what_and_for_how_long(self):
+        # a run condition in shadow: decide's `noted`, the line a person reads (this session's read, an earlier
+        # session's with how long it carries and, on a signer with approvers, how a person clears it)
+        s = self.signer({**POL, "ask": [POL["ask"][0], {**POL["ask"][1], "mode": "shadow"}, *POL["ask"][2:]]})
+        tail = " Nothing is blocked in 1.8; it's in the record."
+        first = self.secret_run(s)
+        out = s.decide(first, EGRESS)
+        self.assertEqual((out["decision"], out["recorded"]), ("allow", ["T-SEND"]))
+        self.assertEqual(out["noted"], "noted: this sends data to example.org after the session read .env." + tail)
+        s.call("close_run", first)
+        nxt = s.register()
+        self.assertEqual(s.decide(nxt, EGRESS)["noted"],
+                         f"noted: this sends data to example.org after an earlier session (run {first['run_id']}) read "
+                         f".env; this carries for 60 more minutes, or until a person clears it: tracekit signer "
+                         f"incidents clear-label {nxt['run_id']} --label secrets_access." + tail)
+        self.assertEqual(s.decide(nxt, ("shell", {"command": "deploy prod"}))["decision"], "allow")   # nothing noted
+
     def test_a_clear_leaves_an_open_run_that_carries_it_passing_it_on(self):
         # the run that read the secret stays open and reads again; a person clears the copy another run inherited:
         # a new run inherits from the first still, after a crash too

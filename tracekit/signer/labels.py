@@ -20,9 +20,12 @@ its client's ended runs in that tenant (an open run that carries it in its own s
 cleared there; a dev signer's self-clear is of that run alone); nothing a client sends sets or clears one. A run's
 requesters are in its records (run.registered's caller, run.writer), so a restart from the records knows them.
 """
+import math
+import os
 import re
 import time
 
+from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
 from tracekit.policy2.compile import SECTIONS
 from tracekit.signer.detect import epoch
 
@@ -97,15 +100,22 @@ def _compiled(pattern):
 
 def state(set_, run, e):
     """Follow `run.label` record `e` in the run's labels, `run["labels"]`: {label: the run_seq of the record that set
-    it (an inherited one's own)}. `set_`: as pipeline.agent_state's."""
+    it (an inherited one's own)}, and `run["label_src"]`: {label: an inherited add's `inherited`}. `set_`: as
+    pipeline.agent_state's."""
     if e["type"] != "run.label":
         return
-    d, have = e["data"], dict(run.get("labels") or {})
+    d, have, src = e["data"], dict(run.get("labels") or {}), dict(run.get("label_src") or {})
     if d["action"] == "add":
         have[d["label"]] = d.get("source", e["run_seq"])
     else:
         have.pop(d["label"], None)
+    if d["action"] == "add" and "inherited" in d:
+        src[d["label"]] = d["inherited"]
+    else:
+        src.pop(d["label"], None)
     set_(run, "labels", have)
+    if src or "label_src" in run:
+        set_(run, "label_src", src)
 
 
 def _who(identity):
@@ -222,3 +232,88 @@ def _carried(log, whos, now):
                     if label not in best or rank < best[label][0]:
                         best[label] = (rank, r, seq)
     return {label: [r.split("\0", 1)[1], seq] for label, (_, r, seq) in best.items()}
+
+
+# what a person reads of a call rules in shadow recorded (decide's `noted`)
+NOTE_TAIL = "Nothing is blocked in 1.8; it's in the record."
+_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^/\s'\"@]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)")
+_DETACHED = re.compile(r"(?:^|[\s;&|(])(nohup|setsid|disown|daemonize|screen|tmux|launchctl submit)(?=\s|$)")
+_DONE = {"secrets_access": "read a secret", UNTRUSTED: "took in untrusted content"}
+
+
+def what(tool, args):
+    """The call that set a label, for a person: `read .env` (a file it names), ran `cat .env` (a command, cut at 48
+    characters), else `used <tool>`."""
+    a = args if isinstance(args, dict) else {}
+    path = next((a[k] for k in PATH_KEYS if isinstance(a.get(k), str) and a[k].strip()), None)
+    if path:
+        return "read " + (os.path.basename(path.rstrip("/\\")) or path)
+    cmd = next((a[k] for k in SHELL_KEYS if isinstance(a.get(k), str) and a[k].strip()), None)
+    if cmd:
+        line = " ".join(cmd.split())
+        return f"ran `{line[:48]}{'...' if len(line) > 48 else ''}`"
+    return f"used {tool}"
+
+
+def _dest(tool, args):
+    """Where a call sends: `to <host>` (the first two its URLs name), else `with <program>` (a command's first word
+    that sets no variable, an MCP server, the tool)."""
+    hosts = list(dict.fromkeys(_HOST.findall(" ".join(v for v in args.values() if isinstance(v, str)))))
+    if hosts:
+        return "to " + " and ".join(hosts[:2])
+    cmd = next((args[k] for k in SHELL_KEYS if isinstance(args.get(k), str) and args[k].split()), None)
+    if cmd:
+        return "with " + next((w for w in cmd.split() if "=" not in w), cmd.split()[0])
+    server = re.match(r"mcp__(.+?)__", tool or "") or re.match(r"mcp:([^/]+)/", tool or "")
+    return f"with the {server.group(1)} MCP server" if server else f"with {tool}"
+
+
+def _left(log, run, rid, label, now):
+    """(whether a requester of `run` carries `label` from run `rid`, the seconds it carries for: None while that run is
+    open)."""
+    found, left = False, 0
+    for who in requesters(run):
+        for r, (_, ended) in ((log.carry.get(who) or {}).get(label) or {}).items():
+            if r.endswith("\0" + rid):
+                if ended is None:
+                    return True, None
+                found, left = True, max(left, log.labels.window - (now - epoch(ended)))
+    return found, left
+
+
+def noted(log, run, shadow, rules, rule_ids, tool, args, said, clears, now=None):
+    """What a person reads of a call the rules `shadow` (in shadow; `rules`: their compiled rules by id) recorded: where
+    it sends and after what (this session's read, from `said`: {(run_id, label): labels.what}, or an earlier session's
+    it inherits, how long that carries and, where a person's clear ends it (`clears`), how), or that it starts a send
+    in the background; then NOTE_TAIL. A rule of another kind gives its reason. "" when there is nothing to say."""
+    now = time.time() if now is None else now
+    mine = {log.labels.all_labels[i] for i in rule_ids if i in log.labels.all_labels} if log.labels else set()
+    a = args if isinstance(args, dict) else {}
+    parts = []
+    for rid in shadow:
+        r = rules.get(rid, {})
+        when = (r.get("when") or {}).get("run_has") or []
+        if when and "egress" in mine:
+            label = when[0]
+            src = (run.get("label_src") or {}).get(label)
+            done = said.get(((src or {}).get("run_id", run["run_id"]), label)) or _DONE.get(label, f"set {label}")
+            if src:
+                found, left = _left(log, run, src["run_id"], label, now) if log.labels else (False, 0)
+                carry = "" if not found else "; this carries while that session is open" if left is None else \
+                    f"; this carries for {max(1, math.ceil(left / 60))} more minutes"
+                if clears and carry:
+                    carry += (f", or until a person clears it: tracekit signer incidents clear-label {run['run_id']} "
+                              f"--label {label}")
+                parts.append(f"this sends data {_dest(tool, a)} after an earlier session (run {src['run_id']}) "
+                             f"{done}{carry}")
+            else:
+                parts.append(f"this sends data {_dest(tool, a)} after the session {done}")
+        elif {"background_spawn", "egress"} <= mine:
+            cmd = next((a[k] for k in SHELL_KEYS if isinstance(a.get(k), str)), "")
+            m = _DETACHED.search(cmd)
+            how = "run_in_background" if a.get("run_in_background") is True else m.group(1) if m else \
+                "&" if re.search(r"(?<![&|])&\s*$", cmd) else "detached"
+            parts.append(f"this starts a send in the background ({how}), which may run after a secret is read")
+        elif r.get("reason"):
+            parts.append(r["reason"])
+    return "noted: " + "; ".join(dict.fromkeys(parts)) + ". " + NOTE_TAIL if parts else ""

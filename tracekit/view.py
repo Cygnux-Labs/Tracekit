@@ -81,6 +81,7 @@ from .netserver import Server
 from .policy2 import compile as policy_compile
 from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
+from .signer.labels import NOTE_TAIL
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
@@ -372,10 +373,16 @@ def policy_reasons(paths=(), kept=None):
             out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
     for h, pol in out.policies.items():
         # a rule with no reason gives its label as words: side_effect reads "side effect"
-        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),
+        # and a rule in shadow as the hook says it (labels.noted): noted, nothing blocked
+        out[h] = {r["id"]: {"reason": _noted(r, r.get("reason") or (r.get("label") or "").replace("_", " ")),
                             **{k: r[k] for k in ("remedy",) if k in r}}
                   for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
+
+
+def _noted(rule, reason):
+    """A rule's reason as the page and the report say it: a rule in shadow's as a note (labels.NOTE_TAIL)."""
+    return f"noted: {reason}. {NOTE_TAIL}" if rule.get("mode") == "shadow" and reason else reason
 
 
 def _who(i):

