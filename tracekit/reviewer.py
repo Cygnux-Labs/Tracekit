@@ -449,7 +449,8 @@ def people(a):
     else:   # the text holds what the agent ran: control and bidi characters escaped, as approval_review shows them
         from tracekit.signer.service import _escaped
         book = out["playbook"]
-        print("dropped to shadow by the circuit breaker (`tracekit reviewer enable RULE` turns one back on):")
+        print("the AI reviewer only suggests (a person decides) for these rules until you run "
+              "`tracekit reviewer enable RULE` (the circuit breaker):")
         print("\n".join(f"  {_escaped(x['rule'])}: {_escaped(x['reason'])}" for x in out["demoted"]) or "  none")
         print(f"playbook v{book['version']} ({book['digest']}), in force (`tracekit reviewer retire ID`):")
         print("\n".join(f"  {_escaped(x['id'])}  {_escaped(x['text'])}" for x in book["entries"]) or "  none")
@@ -472,7 +473,7 @@ def main(argv=None):
     for name, what in (("status", "the circuit breaker's dropped rules and the playbook, in force and proposed"),
                        ("accept", "accept a proposed playbook entry"), ("retire", "retire a playbook entry"),
                        ("revoke", "a person's answer no longer counts as a precedent (a revert, a mistake)"),
-                       ("enable", "turn rules the circuit breaker dropped to shadow back on")):
+                       ("enable", "let the AI reviewer answer rules again that it only suggests for now (the circuit breaker)")):
         p = sub.add_parser(name, help=what)
         p.add_argument("--signer", help="the signer: its Unix socket, tcp://host:port or https://host:port")
         if name == "status":

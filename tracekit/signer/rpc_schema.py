@@ -265,7 +265,10 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 ai=_obj(["mode", "reason"], mode={"enum": ["enforce", "shadow", None]}, reason=REASON,
                         answer=_obj(["decision", "mode", "by"], decision={"enum": ["approve", "reject", "escalate"]},
                                     mode={"enum": ["enforce", "shadow"]}, by=_str(256), reason=REASON,
-                                    view={"oneOf": [DIGEST, _str(77, pattern=r"^hmac-sha256:[0-9a-f]{64}" + _END)]})))
+                                    view={"oneOf": [DIGEST, _str(77, pattern=r"^hmac-sha256:[0-9a-f]{64}" + _END)]},
+                                    # the person's approval a yes matched: who gave it, when, and what it was of
+                                    matched=_obj(["approval_id"], approval_id=ID, by=_str(256), at=_str(40),
+                                                 target=REASON))))
 # what approval_list shows an agent approver (its properties, all it is shown): nothing from the run, the requesting
 # agent or other answers
 AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],

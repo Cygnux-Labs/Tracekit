@@ -1552,44 +1552,57 @@ def _expires_left(x):
     return f" (in {left // 60:.0f} min)" if x["state"] in ("requested", "approved") else ""
 
 
-def _ai_said(ans, n=1024):
-    """What agent approver answer `ans` (an approval's `ai.answer`: model output) said, as `approvals list` and `show`
-    print it, its reason JSON-escaped and cut to `n` characters."""
-    reason = ans.get("reason")
-    return ((f"suggests {ans['decision']} (shadow: people decide)" if ans["mode"] == "shadow" else
-             {"approve": "approved it", "reject": "rejected it", "escalate": "handed it to people"}[ans["decision"]])
-            + (f": {json.dumps(_cut(reason, n))}" if reason else ""))
+def _ai_said(ans, brief=False):
+    """What the AI reviewer did with an approval (its `ai.answer`), in people's words, as `approvals show` and (`brief`)
+    `approvals list` print it: a yes names the person's approval it matched."""
+    m = ans.get("matched") or {}
+    if ans["mode"] == "shadow":
+        return f"the AI reviewer suggests {ans['decision']}" + (
+            "" if brief else " (it only suggests for this rule now: a person decides)")
+    if ans["decision"] == "approve" and "by" in m:
+        return (f"approved by the AI reviewer: it matched the call {m['by']} approved on {m['at'][5:10]}"
+                + (f" ({m['target']})" if m.get("target") and not brief else ""))
+    return {"approve": "approved by the AI reviewer", "reject": "rejected by the AI reviewer",
+            "escalate": "the AI reviewer handed it to a person"}[ans["decision"]] + (
+        f": {json.dumps(_cut(ans['reason'], 60))}" if brief and ans.get("reason") and ans["decision"] != "approve"
+        else "")
 
 
 def _ai_may(ai, n=1024):
-    """Whether an agent approver may answer an approval that waits, by its `ai`, as `approvals list` and `show` print
-    it, with why when none may, cut to `n` characters."""
-    return {"enforce": "may answer it", "shadow": "may suggest an answer, people decide"}.get(
-        ai["mode"], f"doesn't answer it: {_cut(ai['reason'], n)}")
+    """Whether the AI reviewer may answer an approval that waits (its `ai`), and why not, cut to `n` characters."""
+    return {"enforce": "the AI reviewer may answer this",
+            "shadow": "the AI reviewer only suggests for this call: a person decides"}.get(
+        ai["mode"], f"the AI reviewer won't answer this: {_cut(ai['reason'], n)}")
 
 
 def _ai_brief(x):
-    """What `approvals list` adds of agent approvers to approval `x`: the latest answer one gave (model output), or
-    while it waits, whether one may answer it (why not, when none may); "" otherwise."""
+    """What `approvals list` adds of the AI reviewer to approval `x`: what it did, or while it waits, whether it may
+    answer it (why not, when it won't); "" otherwise."""
     ai = x.get("ai")
-    return ("" if not ai else "  ai approver " + _ai_said(ai["answer"], 60) if ai.get("answer") else
-            "  ai approver " + _ai_may(ai, 60) if x["state"] == "requested" else "")
+    return ("" if not ai else "  " + _ai_said(ai["answer"], True) if ai.get("answer") else
+            "  " + _ai_may(ai, 60) if x["state"] == "requested" else "")
 
 
 def _ai_lines(x):
-    """What `approvals show` says of agent approvers on approval `x` (its `ai`): the latest answer one gave, model
-    output, with who gave it and the view it answered; and while it waits, whether one may answer it and why."""
+    """What `approvals show` says of the AI reviewer on approval `x` (its `ai`), in people's words: what it did, and
+    while it waits, whether it may answer it and why; a `details` line keeps the precise terms (the model's own
+    reason, which reviewer, the view it answered, the approval it matched). `--json` has every field."""
     ai = x.get("ai")
     if not ai:
         return []
-    ans = ai.get("answer")
-    lines = [f"ai approver {_ai_said(ans)} (model output, by {json.dumps(ans['by'])})"] if ans else []
-    if ans and "view" in ans:
-        lines.append(f"            the view it answered: {ans['view']}" + (
-            " (its record's commitment to that view_digest: the signer no longer holds the view)"
-            if ans["view"].startswith("hmac-") else ""))
+    ans, lines = ai.get("answer"), []
+    if ans:
+        lines.append(f"ai          {_ai_said(ans)}")
+        view = ans.get("view") and ans["view"] + (" (its record's commitment: the signer no longer holds that view)"
+                                                  if ans["view"].startswith("hmac-") else "")
+        lines.append("details     " + "; ".join(x for x in (
+            ans.get("reason") and f"model output {json.dumps(ans['reason'])}", f"by {json.dumps(ans['by'])}",
+            view and f"view_digest {view}", (ans.get("matched") or {}).get("approval_id") and
+            f"matched {ans['matched']['approval_id']}") if x))
     if x["state"] == "requested":
-        lines.append("ai approver " + _ai_may(ai) + (f" ({ai['reason']})" if ai["mode"] else ""))
+        lines.append(f"ai          {_ai_may(ai)}" + (f" ({ai['reason']})" if ai["mode"] == "shadow" else ""))
+        if ai["mode"] == "enforce":
+            lines.append(f"details     {ai['reason']}")
     return lines
 
 

@@ -954,6 +954,11 @@ lists `approval_get`. A box's agent channel may call it too.
 | `ai.answer.by` | text | yes | up to 256 characters |
 | `ai.answer.reason` | text | no | up to 1024 characters |
 | `ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
+| `ai.answer.matched` | object | no |  |
+| `ai.answer.matched.approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `ai.answer.matched.by` | text | no | up to 256 characters |
+| `ai.answer.matched.at` | text | no | up to 40 characters |
+| `ai.answer.matched.target` | text | no | up to 1024 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
 | `args` | any value | yes |  |
 | `binding_digest` | text | yes | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
@@ -1027,6 +1032,11 @@ lists `approval_list`. An agent approver may call it too, with an `authorize` en
 | `approvals[] (variant 1).ai.answer.by` | text | yes | up to 256 characters |
 | `approvals[] (variant 1).ai.answer.reason` | text | no | up to 1024 characters |
 | `approvals[] (variant 1).ai.answer.view` | text | no | text: up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])`; text: up to 77 characters; matches `^hmac-sha256:[0-9a-f]{64}(?![\s\S])` |
+| `approvals[] (variant 1).ai.answer.matched` | object | no |  |
+| `approvals[] (variant 1).ai.answer.matched.approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `approvals[] (variant 1).ai.answer.matched.by` | text | no | up to 256 characters |
+| `approvals[] (variant 1).ai.answer.matched.at` | text | no | up to 40 characters |
+| `approvals[] (variant 1).ai.answer.matched.target` | text | no | up to 1024 characters |
 | `approvals[] (variant 2)` | object | no |  |
 | `approvals[] (variant 2).approval_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `approvals[] (variant 2).state` | one of `requested`, `approved`, `rejected`, `expired`, `consumed` | yes |  |

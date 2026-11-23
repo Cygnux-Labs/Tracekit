@@ -287,7 +287,7 @@ class TestPrecedent(Case):
     def test_people_answer_until_a_person_answered_a_call_like_it(self):
         aid, a = self.ask()
         self.assertFalse(a["agent"]["eligible"])
-        self.assertIn("no person has answered a call like this one", a["agent"]["reason"])
+        self.assertIn("no person has approved a call like this one yet", a["agent"]["reason"])
         self.assertEqual(self.s.call(REVIEWER, "approval_list", {"for": "agent"})["approvals"], [])
         self.assertEqual((a["ai"]["clean"], a["ai"]["asserted"], a["ai"]["key"]["project"][:5]),
                          (True, ["project"], "api ("))
@@ -347,15 +347,15 @@ class TestPrecedent(Case):
         out = self.ai(rejected)
         self.assertEqual((out["state"], out.get("escalated")), ("requested", True))
         reasons = [e["data"]["reason"] for e in self.events() if e["type"] == "approval.escalated"]
-        self.assertEqual([r[:40] for r in reasons], ["no person's answer to a call like this o",
+        self.assertEqual([r[:40] for r in reasons], ["the person's approval it matched no long",
                                                      "a person rejected a call like this one: "])
 
     def test_people_who_answered_both_ways_answer_it(self):
         self.precedent()
         self.precedent(decision="reject")
         _, a = self.ask()
-        self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"][:40]),
-                         (False, "people answered calls like this one both"))
+        self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"]),
+                         (False, "people have answered calls like this one both ways: a person decides"))
 
     def test_an_answer_is_no_precedent_unless_a_clean_runs_and_a_persons(self):
         run = self.register()
@@ -414,7 +414,7 @@ class TestPrecedent(Case):
         self.person(aid, who=glass, reason="on call")
         self.assertEqual(self.s.log.agent["precedents"], {})
         _, a = self.ask()
-        self.assertIn("no person has answered a call like this one", a["agent"]["reason"])
+        self.assertIn("no person has approved a call like this one yet", a["agent"]["reason"])
         [ans] = [e["data"] for e in self.events() if e["type"] == "approval" and e["data"]["approval_id"] == aid]
         self.assertIs(ans["break_glass"], True)
 
@@ -433,7 +433,7 @@ class TestRunBound(Case):
         reader = self.register()
         self.ask("cat .env", run=reader)
         aid, a = self.ask(HELD)
-        self.assertEqual(a["agent"]["reason"], "the run carries secrets_access: people answer it")
+        self.assertEqual(a["agent"]["reason"], "the session read a secret: a person decides")
         for continues in (False, True):   # any run of the requester, afresh or not
             with self.subTest(continues=continues):
                 _, a = self.ask(HELD, run=self.register(**({"continues": True} if continues else {})))
@@ -510,7 +510,7 @@ class TestRunBound(Case):
         self.ask("cat .env")
         out = self.consume(aid)
         self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-REJECTED"]))
-        self.assertIn("the run carries secrets_access now", out["reason"])
+        self.assertIn("the session read a secret since it was", out["reason"])
         self.assertEqual(self.s.log.agent["demoted"], {})   # the signer's own withdrawal trips no breaker
         [rev] = [e for e in self.events() if e["type"] == "approval.revoked"]
         self.assertEqual((rev["data"]["approval_id"], rev["data"]["by"]), (aid, "signer"))
@@ -522,7 +522,7 @@ class TestRunBound(Case):
         self.ask("cat .env")
         msg = self.refused("forbidden", REVIEWER, "approval_decide", {"request_id": rid(), "approval_id": aid,
                                                                       "decision": "approve", "ai": TWO})
-        self.assertIn("the run carries secrets_access now", msg)
+        self.assertIn("the session read a secret since it was", msg)
         self.assertEqual(self.s.call(REVIEWER, "approval_list", {"for": "agent"})["approvals"], [])
 
     def test_a_call_whose_target_cant_be_read_is_peoples(self):
@@ -559,7 +559,7 @@ class TestRunBound(Case):
         with mock.patch.object(svc, "PRECEDENT_S", 0):
             out = self.consume(aid)
         self.assertEqual((out["ok"], out["rule_ids"]), (False, ["TK-APPROVAL-REJECTED"]))
-        self.assertIn("no person's answer to a call like this one counts now", out["reason"])
+        self.assertIn("the person's approval it matched no longer counts", out["reason"])
 
 
 class TestTenantsAnAppAsserts(Case):
@@ -653,7 +653,7 @@ class TestDelegatedRuns(Case):
         msg = self.refused("forbidden", REVIEWER, "approval_decide", {
             "request_id": rid(), "approval_id": aid, "decision": "approve", "ai": TWO, "view_digest": served,
             "asserted": {"model": "m-a", "version": "1"}})
-        self.assertIn("the run carries secrets_access now", msg)
+        self.assertIn("the session read a secret since it was", msg)
         self.s.call(AGENT, "close_run", {"request_id": rid(), **reader[0]})
         later = lambda log, run, now=None: real(log, run, now=time.time() + 3601)   # noqa: E731
         real = labels.labels_for
@@ -718,7 +718,8 @@ class TestUntrustedContent(Case):
                                        "source": "web:1", "trust": "untrusted", "value": "a page"})
         _, a = self.ask()
         self.assertEqual((a["agent"]["reason"], a["ai"]["labels"]),
-                         ("the run carries untrusted_content: people answer it", ["untrusted_content"]))
+                         ("the session read untrusted content (a web page, an email or a download): a person decides",
+                          ["untrusted_content"]))
 
 
 class TestVeto(Case):
@@ -748,7 +749,7 @@ class TestTwoKeys(Case):
         es = self.events()
         esc = [e["data"] for e in es if e["type"] == "approval.escalated"]
         self.assertEqual({e["by"] for e in esc}, {"signer"})
-        self.assertTrue(all(e["reason"].startswith("an approval needs two independent answers") for e in esc))
+        self.assertTrue(all(e["reason"].startswith("the AI reviewer's two answers didn't both approve") for e in esc))
         [yes] = [e["data"] for e in es if e["type"] == "approval" and e["data"].get("approver_kind") == "agent"]
         r = yes["relied_on"]
         self.assertEqual((r["mode"], r["answers"], r["policy_hash"], r["playbook"]["version"], len(r["precedents"]
@@ -762,8 +763,12 @@ class TestBreaker(Case):
         aid, _ = self.ask()
         self.ai(aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid, "reason": "not this one"})
-        self.assertIn("revoked AI approval", self.s.log.agent["demoted"]["default\0TK-A025"])
+        self.assertIn("took back AI approval", self.s.log.agent["demoted"]["default\0TK-A025"])
         aid2, _ = self.ask()   # the next answer, within one decision, is a suggestion that changes nothing
+        ai = self.s.call(ALICE, "approval_get", {"approval_id": aid2})["ai"]   # and people are told why, and the way out
+        self.assertEqual((ai["mode"], ai["reason"]), ("shadow", f"uid:{ALICE.subject} took back AI approval {aid}, so it "
+                                                                "only suggests until a person runs `tracekit reviewer "
+                                                                "enable TK-A025`"))
         out = self.ai(aid2)
         self.assertEqual((out["state"], out.get("suggested")), ("requested", True))
         listed = self.s.call(ALICE, "approval_list", {"for": "person"})["approvals"]
@@ -819,13 +824,13 @@ class TestBreaker(Case):
         p = self.precedent()
         spoil(p, self.s.log.agent["precedents"][p]["run"].split("\0")[1])
         self.assertIn(why, self.s.log.agent["precedents"][p]["bad"])
-        self.assertIn(f"precedent {p} went bad", self.s.log.agent["demoted"]["default\0TK-A025"])
+        self.assertIn(f"the person's approval it matched ({p}) no longer counts", self.s.log.agent["demoted"]["default\0TK-A025"])
         self.refused("invalid_request", ALICE, "approver", {"request_id": rid(), "action": "revoke", "id": p})
         return p
 
     def test_a_precedent_a_person_revokes(self):
         p = self.gone_bad(lambda p, _: self.s.call(ALICE, "approver", {
-            "request_id": rid(), "action": "revoke", "id": p, "reason": "reverted"}), "revoked it: reverted")
+            "request_id": rid(), "action": "revoke", "id": p, "reason": "reverted"}), "took it back: reverted")
         _, a = self.ask()
         self.assertNotIn(p, a["ai"]["precedents"]["approve"])
         self.refused("forbidden", AGENT, "approver", {"request_id": rid(), "action": "revoke", "id": p})
@@ -934,7 +939,7 @@ class TestReplayAndView(Case):
         self.assertIn("TK-A032 is answered by people", a["agent"]["reason"])
         self.assertIsNone(a["ai"])   # no precedent key: people's answer to it is no precedent either
         _, a = self.ask("make test", tool="run_tool")   # TK-A062 and the laptop's unknown-tool flag
-        self.assertIn("no person has answered", a["agent"]["reason"])
+        self.assertIn("no person has approved", a["agent"]["reason"])
 
 
 class TestEvidence(Case):
@@ -1640,7 +1645,7 @@ class TestTheRunBoundsLabels(Case):
         self.ask("cat .env")
         _, a = self.ask(HELD)
         self.assertEqual((a["ai"]["labels"], a["agent"]["reason"]),
-                         (["secrets_access"], "the run carries secrets_access: people answer it"))
+                         (["secrets_access"], "the session read a secret: a person decides"))
         self.verified()
 
     def test_events_the_signer_never_got_set_every_label(self):
@@ -1678,20 +1683,26 @@ class TestWhatPeopleSee(Case):
     def test_show_and_list_say_what_the_ai_answered_why_and_the_view_it_answered(self):
         p = self.precedent()
         aid, _ = self.ask()
-        self.assertIn("ai approver may answer it (within the bounds of TK-A025)", self.tk("show", aid))
-        self.assertIn("ai approver may answer it", self.line(aid))
+        self.assertIn("ai          the AI reviewer may answer this\ndetails     within the bounds of TK-A025\n",
+                      self.tk("show", aid))
+        self.assertIn("the AI reviewer may answer this", self.line(aid))
         self.ai(aid, reason="the mirror alice approved \x1b[2K")
         served = self.s.log.approvals[aid]["viewed"][f"uid:{REVIEWER.subject}"][0]
+        at = self.s.log.agent["precedents"][p]["at"]
         self.assertEqual(self.get(aid)["ai"]["answer"], {
             "decision": "approve", "mode": "enforce", "by": f"uid:{REVIEWER.subject}",
-            "reason": "the mirror alice approved \x1b[2K", "view": served})
+            "reason": "the mirror alice approved \x1b[2K", "view": served, "matched": {
+                "approval_id": p, "by": "alice", "at": svc._iso(at),
+                "target": "pip --index-url https://pypi.internal/\u2026"}})
         show = self.tk("show", aid)
-        self.assertIn('ai approver approved it: "the mirror alice approved \\u001b[2K" (model output, by '
-                      f'"uid:{REVIEWER.subject}")\n            the view it answered: {served}\n', show)
-        self.assertNotIn("may answer it", show)   # answered: nothing waits for it
-        self.assertIn('ai approver approved it: "the mirror alice approved \\u001b[2K"', self.line(aid))
+        self.assertIn(f"ai          approved by the AI reviewer: it matched the call alice approved on "
+                      f"{svc._iso(at)[5:10]} (pip --index-url https://pypi.internal/\u2026)\n"
+                      'details     model output "the mirror alice approved \\u001b[2K"; '
+                      f'by "uid:{REVIEWER.subject}"; view_digest {served}; matched {p}\n', show)
+        self.assertNotIn("may answer this", show)   # answered: nothing waits for it
+        self.assertIn("approved by the AI reviewer: it matched the call alice approved on", self.line(aid))
         self.assertNotIn("\x1b", self.tk("list"))
-        self.assertNotIn("ai approver", self.line(p))   # a person answered it
+        self.assertNotIn("AI reviewer", self.line(p))   # a person answered it
         listed = self.s.call(REVIEWER, "approval_list", {})["approvals"]   # an agent approver sees no other's answer
         self.assertEqual(validate(RESPONSES["approval_list"], {"approvals": listed, "next_cursor": None}), [])
         self.assertFalse([x for x in listed if "ai" in x])
@@ -1703,8 +1714,7 @@ class TestWhatPeopleSee(Case):
         [yes] = [e for e in ts.records(self.dir) if e["event"]["type"] == "approval"
                  and e["event"]["data"]["approval_id"] == aid and e["event"]["data"]["approver_kind"] == "agent"]
         self.assertEqual(self.get(aid)["ai"]["answer"]["view"], yes["event"]["data"]["relied_on"]["view"])
-        self.assertIn("(its record's commitment to that view_digest: the signer no longer holds the view)",
-                      self.tk("show", aid))
+        self.assertIn("(its record's commitment: the signer no longer holds that view)", self.tk("show", aid))
 
     def test_the_requesting_agent_sees_none_of_it(self):
         self.precedent()
@@ -1715,7 +1725,7 @@ class TestWhatPeopleSee(Case):
         self.assertEqual(validate(RESPONSES["approval_get"], mine), [])
         self.assertNotIn("ai", mine)
         self.assertFalse([x for x in self.s.call(AGENT, "approval_list", {})["approvals"] if "ai" in x])
-        self.assertEqual(self.tk("show", aid, who=AGENT).count("ai approver"), 0)
+        self.assertEqual(self.tk("show", aid, who=AGENT).count("AI reviewer"), 0)
 
     def test_a_suggestion_and_a_hand_over_to_people(self):
         self.s.close()
@@ -1726,9 +1736,10 @@ class TestWhatPeopleSee(Case):
         aid, _ = self.ask()
         self.ai(aid, "reject", reason="an index it never used")
         show = self.tk("show", aid)
-        self.assertIn('ai approver suggests reject (shadow: people decide): "an index it never used" (model output',
-                      show)
-        self.assertIn("ai approver may suggest an answer, people decide (within the bounds of TK-A025)", show)
+        self.assertIn("ai          the AI reviewer suggests reject (it only suggests for this rule now: a person "
+                      'decides)\ndetails     model output "an index it never used"', show)
+        self.assertIn("ai          the AI reviewer only suggests for this call: a person decides (the policy runs it "
+                      "in shadow mode: it suggests, a person decides)", show)
         said = self.get(aid)["ai"]["answer"]["view"]
         self.ask("ls")   # the run moved on: the view the reviewer reads next is another
         self.assertNotEqual(self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"], said)
@@ -1741,24 +1752,24 @@ class TestWhatPeopleSee(Case):
         self.assertEqual({k: v for k, v in self.get(aid)["ai"].items() if k != "answer"},
                          {"mode": None, "reason": "it was escalated: people answer it now"})
         show = self.tk("show", aid)
-        self.assertIn('ai approver handed it to people: "not sure" (model output', show)
-        self.assertIn("ai approver doesn't answer it: it was escalated: people answer it now", show)
-        self.assertIn('ai approver handed it to people: "not sure"', self.line(aid))
+        self.assertIn('ai          the AI reviewer handed it to a person\ndetails     model output "not sure"', show)
+        self.assertIn("ai          the AI reviewer won't answer this: it was escalated: people answer it now", show)
+        self.assertIn('the AI reviewer handed it to a person: "not sure"', self.line(aid))
 
     def test_a_send_after_a_secret_read_says_why_no_ai_answers_it(self):
         self.precedent()   # without the read, the AI could answer it
         self.ask("cat .env")   # a secret read: an install from the index after it is also TK-Q001's (a send)
         aid, a = self.ask()
         self.assertIn("TK-Q001", a["rule_ids"])
-        why = ("the run carries secrets_access, so TK-Q001 also matched this call (data sent off the machine after the "
-               "run read a secret): people answer it")
+        why = ("the session read a secret, and TK-Q001 also matched this call (data sent off the machine after the "
+               "run read a secret): a person decides")
         self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"], a["ai"]), (False, why, None))
         self.assertEqual(self.get(aid)["ai"], {"mode": None, "reason": why})
-        self.assertIn(f"ai approver doesn't answer it: {why}\n", self.tk("show", aid))
-        self.assertIn(f"ai approver doesn't answer it: {why[:57]}...", self.line(aid))
+        self.assertIn(f"ai          the AI reviewer won't answer this: {why}\n", self.tk("show", aid))
+        self.assertIn(f"the AI reviewer won't answer this: {why[:57]}...", self.line(aid))
         self.assertNotIn(aid, [x["approval_id"] for x in self.s.call(REVIEWER, "approval_list", {})["approvals"]])
         _, a = self.ask(HELD)   # a hold that sends nothing: the run bound's own reason
-        self.assertEqual(a["agent"]["reason"], "the run carries secrets_access: people answer it")
+        self.assertEqual(a["agent"]["reason"], "the session read a secret: a person decides")
         [req] = [e["data"] for e in self.events() if e["type"] == "approval.request" and e["data"]["approval_id"] == aid]
         self.assertEqual(req["agent"]["reason"], why)   # signed with the request
 

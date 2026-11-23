@@ -493,9 +493,30 @@ reviewer neither reads nor writes (it says so once, in its log).
 
 ## The AI approver
 
-A reviewer model may answer a coding agent's routine holds on a laptop in seconds, inside bounds the signer enforces
-(format 1.8, RPC 28). It is an agent approver as above, with these bounds added, and it is off unless your own policy
-opts rules in.
+An AI reviewer can answer some of your coding agent's routine holds for you, in seconds: only kinds of call a person
+already approved. It is off until your policy turns it on.
+
+**What it answers.** You list the rules it may answer: an install from a package index you chose, a line the policy
+can't read, or an unmapped tool given a command line. For a call held by one of them, it looks for a call like it that
+a person approved in the last 30 days: the same rules, tool and target (for an install, the same package source),
+the same project and the same agent. It approves only then, and only when two model answers both say yes. It never
+answers a call in a session that read a secret (or untrusted content, when you list it), a call like one a person
+rejected, or a call any other rule also holds. A person decides those.
+
+**What you see.** `tracekit approvals show` and `list` say what it did, or why it won't answer:
+
+```
+ai          approved by the AI reviewer: it matched the call alice approved on 11-22 (pip --index-url https://pypi.internal/…)
+ai          the AI reviewer won't answer this: the session read a secret: a person decides
+```
+
+**Taking one back.** You can take back an AI approval before the agent's retry runs it (the viewer's approvals desk).
+The AI reviewer then only suggests for that rule, and a person decides, until you run `tracekit reviewer enable
+TK-A025`. `tracekit reviewer status` lists those rules and why.
+
+The rest of this section is the precise version: the bounds, the run labels, precedents, two keys, the circuit
+breaker, the view the reviewer answers, the records and what the verifiers check. The AI reviewer is an agent approver
+as above (format 1.8, RPC 28) with these bounds added.
 
 **Rules: an allowlist you opt into.** Your policy lists the rules it may answer:
 
@@ -578,24 +599,28 @@ replayed up to the yes and up to its consume, their `AI run bound` line checks i
 snapshot it names (which must be its request's policy), and fails when the bundle doesn't hold that snapshot: export with the policy snapshots
 ([verdicts](verdicts.md)).
 
-**What people see.** `tracekit approvals show` and `list` say what the AI approver did with each approval:
+**What people see.** `tracekit approvals show` says what the AI reviewer did, in plain words, and a `details` line
+keeps the precise terms:
 
 ```
-ai approver approved it: "the mirror alice approved" (model output, by "uid:990299")
-            the view it answered: sha256:5838c1aa…
+ai          approved by the AI reviewer: it matched the call alice approved on 11-22 (pip --index-url https://pypi.internal/…)
+details     model output "same internal index"; by "uid:990299"; view_digest sha256:5838c1aa…; matched apr-59d3…
 ```
 
-The reason is model output, printed JSON-escaped. The view is the `view_digest` of the view it answered; after a
-restart with no snapshot, the signer no longer holds that view, and shows its record's commitment to it instead. While
-a call waits, they say whether the AI may answer it and, when it may not, why:
+The model's reason is printed JSON-escaped. The view is the `view_digest` of the view it answered; after a restart
+with no snapshot, the signer no longer holds that view, and shows its record's commitment to it instead. While a call
+waits, it says whether the AI may answer it and, when it won't, why:
 
 ```
-ai approver doesn't answer it: the run carries secrets_access, so TK-Q001 also matched this call (data sent off the machine after the run read a secret): people answer it
+ai          the AI reviewer won't answer this: the session read a secret, and TK-Q001 also matched this call (data sent off the machine after the run read a secret): a person decides
 ```
+
+`tracekit approvals list` adds the same, shorter. `--json` prints every field.
 
 A rule that joins a call on the signer (a run condition, such as TK-Q001 after a secret read) makes it a person's,
 and its `agent.reason` says which. `approval_get` and `approval_list` carry the same as `ai`: `mode` (enforce, shadow,
-or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view), to people who answer
+or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view, and `matched`: the
+person's approval a yes matched, who gave it, when and what it was of), to people who answer
 approvals only (`approvals.approvers`, `break_glass`). The requesting agent and agent approvers see none of it.
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its

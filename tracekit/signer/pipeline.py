@@ -100,7 +100,8 @@ def approval(tenant, run_id, data, ts):
     precedent key); `via`: the gateway whose call it is; `escalated`: only people answer it now
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent approver's latest answer, deciding or not, `agent_answer` (decision, mode,
-    by, its reason and an AI answer's `view`: the commitment to the view it answered); an agent's approval adds `kind`
+    by, its reason, an AI answer's `view`: the commitment to the view it answered, and `precedent`: the first
+    person's approval it named); an agent's approval adds `kind`
     agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
     record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran); one a root PCM grant was
@@ -208,11 +209,12 @@ def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
         set_(a, "revoked", d["by"])
     if typ in ("approval", "approval.suggested") and d.get("approver_kind") == "agent" or \
             typ == "approval.escalated" and d.get("by") == "agent":   # what it said, for people (SignerService._ai)
-        who = d["approver_identity"]
+        who, x = d["approver_identity"], d.get("relied_on") or {}
+        first = ((x.get("precedents") or {}).get("approve") or [None])[0]
         set_(a, "agent_answer", {"decision": d.get("decision", "escalate"), "by": f"{who['scheme']}:{who['subject']}",
                                  "mode": "shadow" if typ == "approval.suggested" else "enforce",
-                                 **{k: v for k, v in (("reason", d.get("reason")),
-                                                      ("view", (d.get("relied_on") or {}).get("view"))) if v}})
+                                 **{k: v for k, v in (("reason", d.get("reason")), ("view", x.get("view")),
+                                                      ("precedent", first)) if v}})
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
         set_(a, "answer", {k: d[k] for k in ("self_approved", "person") if k in d})
@@ -227,7 +229,7 @@ def approver_state(set_, log, run, e, a, pop):
     """Follow record `e` of `run` (`a`: the approval it names) in the AI approver's state (docs/approvals.md#the-ai-
     approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, key, rules, decision, at, run,
     reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
-    PRECEDENT_S; `key`, its precedent key as shown); keyed by tenant and rule (joined by a NUL), `demoted` (why the
+    PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
     `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `label_seq`, the seq of the log's last
@@ -248,7 +250,7 @@ def approver_state(set_, log, run, e, a, pop):
             p = ag["precedents"][aid]
             if not p.get("bad"):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
-                demote(p["rules"], f"precedent {aid} went bad: {why}")
+                demote(p["rules"], f"the person's approval it matched ({aid}) no longer counts: {why}")
     ap = (a or {}).get("ai")
     if typ == "run.label":
         set_(ag, "label_seq", e["seq"])
@@ -273,7 +275,7 @@ def approver_state(set_, log, run, e, a, pop):
                 "tenant": tenant, "requester": a["requester"], "digest": ap["digest"], "key": ap["key"],
                 "rules": ap["key"]["rules"],
                 "decision": d["decision"], "at": epoch(e["ts"]), "run": f"{tenant}\0{e['run_id']}",
-                **({"reason": d["reason"]} if d.get("reason") else {})})
+                "by": d.get("person") or d["approver"], **({"reason": d["reason"]} if d.get("reason") else {})})
         if a.get("suggested"):   # the person's answer to a call the AI answered in shadow mode
             for r in ap["key"]["rules"]:
                 k = f"{tenant}\0{r}"
@@ -282,7 +284,7 @@ def approver_state(set_, log, run, e, a, pop):
                 if len(pairs) >= AGREEMENT_MIN and sum(pairs) < AGREEMENT_BAR * len(pairs):
                     demote([r], f"the AI agreed with people on {sum(pairs)} of the last {len(pairs)} calls")
     elif typ == "approval.revoked" and ap and a.get("kind") == "agent" and d["by"] != "signer":
-        demote(ap["key"]["rules"], f"{d['by']} revoked AI approval {d['approval_id']}")
+        demote(ap["key"]["rules"], f"{d['by']} took back AI approval {d['approval_id']}")
     elif typ == "incident.opened":
         spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{e['run_id']}"],
               f"incident {d['incident_id']} opened in its run")
@@ -290,7 +292,7 @@ def approver_state(set_, log, run, e, a, pop):
         spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{run['analyzes']}"],
               "a why finding was written about its run")
     elif typ == "precedent.revoked" and d["approval_id"] in ag["precedents"]:
-        spoil([d["approval_id"]], f"{d['by']} revoked it" + (f": {d['reason']}" if d.get("reason") else ""))
+        spoil([d["approval_id"]], f"{d['by']} took it back" + (f": {d['reason']}" if d.get("reason") else ""))
     elif typ == "approver.enabled":
         for r in d["rules"]:
             for table in ("demoted", "pairs"):

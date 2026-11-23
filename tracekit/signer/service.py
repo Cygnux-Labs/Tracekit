@@ -433,6 +433,9 @@ RECENT_CALLS = 10   # the run's last calls an AI approver's review shows (tool, 
 # the AI approver (docs/approvals.md#the-ai-approver): the precedents a request or answer names per decision, and the
 # playbook's window and the human answers, all one way, a proposal needs
 PRECEDENTS_NAMED, PLAYBOOK_S, PLAYBOOK_MIN = 8, 7 * 86400, 3
+# a run label of approval_agent's run bound, as the AI approver's reasons say it to people
+LABEL_WORDS = {"secrets_access": "the session read a secret",
+               "untrusted_content": "the session read untrusted content (a web page, an email or a download)"}
 # characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
 # and line/paragraph separators
 _HIDDEN = ("Cc", "Cf", "Zl", "Zp")
@@ -2272,15 +2275,33 @@ class SignerService:
         """People's view of agent approvers on approval `a`, whose request weighed them (its `agent`): `mode`, how an
         agent's answer counts now (_agent_mode), and `reason`, why (its eligibility, or why it is refused now); and
         `answer`, the latest agent answer (pipeline.agent_state's agent_answer), its `view` the view_digest it answered
-        while the signer holds the view it served that approver, else its record's commitment to it."""
-        ans = a.get("agent_answer")
-        out = {"mode": self._agent_mode(a), "reason": a["agent"]["eligible"] and self._agent_refusal(a)
-               or a["agent"]["reason"]}
+        while the signer holds the view it served that approver, else its record's commitment to it, and `matched`, the
+        person's approval its yes named (who, when, what it was of, while the signer holds it as a precedent). A rule
+        the circuit breaker dropped says why, and how a person turns it back on."""
+        ans, mode, demoted = a.get("agent_answer"), self._agent_mode(a), self._demoted(a)
+        rules = " ".join((a.get("ai") or {"key": {"rules": ()}})["key"]["rules"])
+        out = {"mode": mode, "reason": (
+            f"{demoted}, so it only suggests until a person runs `tracekit reviewer enable {rules}`" if mode == "shadow"
+            and demoted else "the policy runs it in shadow mode: it suggests, a person decides" if mode == "shadow"
+            else a["agent"]["eligible"] and self._agent_refusal(a) or a["agent"]["reason"])}
         if ans:
             served = (a.get("viewed") or {}).get(ans["by"])
-            out["answer"] = {**ans, **({"view": served[0]} if served and "view" in ans and self._opens(
-                ans["view"], f"approval.view:{approval_id}", served[0]) else {})}
+            out["answer"] = {k: v for k, v in ans.items() if k != "precedent"}
+            if served and "view" in ans and self._opens(ans["view"], f"approval.view:{approval_id}", served[0]):
+                out["answer"]["view"] = served[0]
+            if "precedent" in ans:
+                out["answer"]["matched"] = self._precedent_said(ans["precedent"])
         return out
+
+    def _precedent_said(self, pid):
+        """Person's approval `pid` that an AI yes named, as people see it: who gave it, when and what it was of, while
+        the signer holds it as a precedent."""
+        p = self.log.agent["precedents"].get(pid)
+        if p is None:
+            return {"approval_id": pid}
+        target = "; ".join(" ".join(v) for v in p["key"]["target"].values())
+        return {"approval_id": pid, "by": p.get("by", "a person")[:256], "at": _iso(p["at"]),
+                **({"target": target[:1024]} if target else {})}
 
     def _agent_refusal(self, a):
         """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
@@ -2290,7 +2311,7 @@ class SignerService:
                 if a["policy_hash"] != self.policy.policy_hash else
                 "an agent or a person did not approve this call in this run: people answer it"
                 if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else
-                f"the run carries {unclean[0]} now, or this signer can't tell: people answer it"
+                f"{LABEL_WORDS[unclean[0]]} since it was asked: a person decides"
                 if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else None)
 
     def _agent_mode(self, a):
@@ -2418,10 +2439,10 @@ class SignerService:
         reason, for people and the record."""
         added = [i for i in rule_ids if i not in engine_ids]
         rule = next((r for _, r, *_ in self.policy.rules if r["id"] in added[:1]), {})
-        return ((f"the run carries {', '.join(run_labels)}, so " if run_labels else "")
+        return ("".join(f"{LABEL_WORDS.get(x, f'the session carries {x}')}, and " for x in run_labels or ())
                 + (f"{added[0]} also matched this call" + (f" ({rule['reason']})" if rule.get("reason") else "")
                    if added else "the rules that held this call differ from those its eligibility was weighed for")
-                + ": people answer it")[:1024]
+                + ": a person decides")[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent, and those the policy's approval_agent lists, each as a
@@ -2528,12 +2549,12 @@ class SignerService:
         ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
                "digest": digest, "labels": self._run_labels(run, requester), "clean": clean, "precedents": prec,
                **({"asserted": ["project"]} if project else {})}
-        why = (f"the run carries {unclean[0]}: people answer it" if unclean else
-               "an argument carries a value only untrusted content brought into the run: people answer it"
+        why = (f"{LABEL_WORDS[unclean[0]]}: a person decides" if unclean else
+               "an argument came from untrusted content (a web page, an email or a download): a person decides"
                if untrusted else
-               "no person has answered a call like this one (the same rules, tool, target and project) in a clean run: "
-               "people answer it" if not (prec["approve"] or prec["reject"]) else
-               "people answered calls like this one both ways: people answer it" if prec["approve"] and prec["reject"]
+               "no person has approved a call like this one yet (the same rules, tool, target and project, in a "
+               "clean session): a person decides" if not (prec["approve"] or prec["reject"]) else
+               "people have answered calls like this one both ways: a person decides" if prec["approve"] and prec["reject"]
                else None)
         return ext, why
 
@@ -4249,11 +4270,11 @@ class SignerService:
                     "labels": carried, "mode": "shadow" if shadow or demoted else "enforce",
                     **({"demoted": demoted} if demoted else {})}}
                 basis = decision == "approve" and (
-                    "an approval needs two independent answers that agree: people answer it"
+                    "the AI reviewer's two answers didn't both approve: a person decides"
                     if [x.get("decision") for x in given.get("answers", ())] != ["approve", "approve"] else
-                    "no person's answer to a call like this one counts as a precedent now: people answer it"
+                    "the person's approval it matched no longer counts: a person decides"
                     if not prec["approve"] else
-                    "a person rejected a call like this one: people answer it" if prec["reject"] else None)
+                    "a person rejected a call like this one: a person decides" if prec["reject"] else None)
             if shadow or demoted:
                 tx.emit(run, "approval.suggested", {**data, **ext}, **top)
                 return {"approval_id": aid, "state": "requested", "self_approved": False, "suggested": True}
@@ -4589,10 +4610,10 @@ class SignerService:
             elif a.get("not_before", "") > _iso(time.time()):
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
             elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
-                    f"the run carries {u[0]} now" if (u := self._unclean(run, a["requester"])) else None) or (
-                    "a person rejected a call like this one" if (p := self._precedents(
+                    f"{LABEL_WORDS[u[0]]} since it was approved" if (u := self._unclean(run, a["requester"])) else
+                    None) or ("a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
-                    "no person's answer to a call like this one counts now" if not p["approve"] else None)):
+                    "the person's approval it matched no longer counts" if not p["approve"] else None)):
                 # the circuit breaker tripped, the run took a label of the bound, or the precedents changed, since the
                 # AI approved it
                 self._revoke(tx, run, aid, "signer", f"AI approval withdrawn: {stop}")
