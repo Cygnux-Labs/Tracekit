@@ -2859,6 +2859,8 @@ def _reads_stdin(kind, args):
         return any(_stream_name(f) for f in _program_files(args))
     if _code_arg(kind, args) is not None:
         return False
+    if kind in ("bun", "deno"):   # no script after their options and `run`: `run -`, a REPL, no operand, deno's others
+        return _script_operand(kind, args) is None
     i = 0
     while i < len(args):
         a = args[i]
@@ -5957,7 +5959,7 @@ def _script_operand(kind, args):
         if not ended and i < len(args):
             if args[i] == "run":
                 i, _ = _skip_interp_opts(args, i + 1)
-            elif kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
+            elif args[i] == "repl" or kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
                 return None
         return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
     i = 0

@@ -3766,12 +3766,11 @@ def _download_runs(commands):
             out.append(f"{tool} | sh")
         for c in later:
             if (kind := shell._kind(_program(c["argv"]))) in shell.CODE_FLAGS:
-                args = c["argv"][1:]
+                args, label = c["argv"][1:], shell._JS_KIND.get(kind, kind)   # bun's and deno's code is node's
                 if shell._code_arg(kind, args) is not None:
-                    flag = "eval" if kind == "deno" else "-" + shell.CODE_FLAGS[kind][0]
-                    out.append(f"{tool} | {kind} {flag}")
+                    out.append(f"{tool} | {label} -{shell.CODE_FLAGS[label][0]}")
                 elif (i := shell._script_operand(kind, args)) is not None:
-                    out.append(f"{tool} | {kind} {args[i]}")
+                    out.append(f"{tool} | {label} {args[i]}")
     for tool in fed:
         for c in commands:
             subs = [w for w in c["argv"][1:] + list(c.get("in", ())) if w.startswith("<(")]
