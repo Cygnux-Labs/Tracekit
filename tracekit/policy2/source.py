@@ -8,6 +8,9 @@ or reach indirectly, and an unmapped network, process or FFI import are held as 
 """
 import ast
 import builtins
+import importlib
+import inspect
+import os
 
 from . import shell
 
@@ -24,26 +27,55 @@ SETATTR = {"setattr", "delattr"}
 # third-party; the rest are standard library and still held, to keep the set closed)
 HELD_IMPORTS = {"urllib", "http", "socket", "requests", "httpx", "aiohttp", "ctypes", "multiprocessing"}
 # modules a cell may call through without a hold: each only computes or formats a value (no process, socket, or
-# arbitrary import/exec entry point). Below `os.path` only its own path functions are inert, not module attributes.
-INERT_MODULES = {"json", "re", "math", "cmath", "time", "datetime", "itertools", "collections", "string",
-                 "textwrap", "unicodedata", "decimal"}
-# the path functions directly under `os.path`; any other name below it (`os.path.os`) is a module, not a path call
-INERT_PATH_FUNCTIONS = frozenset({
-    "abspath", "basename", "commonpath", "commonprefix", "dirname", "exists", "expanduser", "expandvars",
-    "getatime", "getctime", "getmtime", "getsize", "isabs", "isdir", "isfile", "islink", "ismount", "join",
-    "lexists", "normcase", "normpath", "realpath", "relpath", "samefile", "sameopenfile", "samestat",
-    "split", "splitdrive", "splitext"})
+# arbitrary import/exec entry point)
+INERT_MODULES = ("json", "re", "math", "cmath", "time", "datetime", "itertools", "collections", "string",
+                 "textwrap", "unicodedata", "decimal")
 
 
-def _inert(dotted):
-    """A call the reader leaves unread: a name directly under an inert module, or a path function directly under
-    `os.path`. Anything deeper (`os.path.os`) is not inert."""
-    root, dot, rest = dotted.partition(".")
-    if not dot:
-        return False
-    if root in INERT_MODULES:
-        return True
-    return root == "os" and rest.startswith("path.") and rest[len("path."):] in INERT_PATH_FUNCTIONS
+def _data(value):
+    return not callable(value) and not inspect.ismodule(value)
+
+
+def _inert_names():
+    """(calls, values): the names under an inert module the reader leaves unread, read with `inspect` from this
+    Python's own modules. A call is `module.name` for a public function or class the module defines itself (its
+    `__module__` is the module or its C accelerator), a public classmethod of such a class (bound to the class, so it
+    never runs on an object the cell picks), or a function in `os.path.__all__`. A value is one of those, `os.path`,
+    or a public attribute in the same places that is neither callable nor a module (`string.digits`,
+    `datetime.timezone.utc`). A deeper, private or imported name, or a module, is neither, so it is held."""
+    calls, data = set(), {"os.path"}
+    for name in INERT_MODULES:
+        homes = (name, "_" + name)
+        for attr, value in vars(importlib.import_module(name)).items():
+            if attr.startswith("_"):
+                continue
+            dotted = f"{name}.{attr}"
+            if not ((inspect.isroutine(value) or inspect.isclass(value))
+                    and getattr(value, "__module__", None) in homes):
+                if _data(value):
+                    data.add(dotted)
+                continue
+            calls.add(dotted)
+            for member in dir(value) if inspect.isclass(value) else ():
+                if member.startswith("_"):
+                    continue
+                bound = getattr(value, member)
+                owner = next((k for k in value.__mro__ if member in vars(k)), None)
+                if inspect.isroutine(bound) and getattr(bound, "__self__", None) is value \
+                        and getattr(owner, "__module__", None) in homes:
+                    calls.add(f"{dotted}.{member}")
+                elif _data(bound):
+                    data.add(f"{dotted}.{member}")
+    for attr in os.path.__all__:
+        value = getattr(os.path, attr)
+        if inspect.isroutine(value):
+            calls.add(f"os.path.{attr}")
+        elif _data(value):
+            data.add(f"os.path.{attr}")
+    return frozenset(calls), frozenset(calls | data)
+
+
+INERT_CALLS, INERT_VALUES = _inert_names()
 _BUILTINS = frozenset(dir(builtins))
 _HELPER_MODULES = ("browser_harness.helpers.", "helpers.")
 
@@ -634,8 +666,8 @@ class Reader(ast.NodeVisitor):
             return True
         root = dotted.split(".", 1)[0]
         if root in self.modules:
-            if _inert(dotted):
-                return False   # an inert module or a path function under os.path: it only computes or formats a value
+            if dotted in INERT_CALLS:
+                return False   # an inert module's own function or class: it only computes or formats a value
             self.hold("call")
             return True
         if "." not in dotted:
@@ -661,7 +693,7 @@ class Reader(ast.NodeVisitor):
                 self.helper_call(helper, node)
                 return
             root = dotted.split(".", 1)[0]
-            if root in self.modules and not _inert(dotted):
+            if root in self.modules and dotted not in INERT_CALLS:
                 self.hold("call")
 
     def indirect(self, node, inner):
@@ -832,10 +864,9 @@ class Reader(ast.NodeVisitor):
             or dotted in DYNAMIC_CALLS or dotted in SETATTR or dotted in ("exec", "eval", "getattr")
 
     def module_value(self, dotted):
-        """A dotted name under an imported module other than an inert one, used as a value: a later call through it
-        would be a call through that module. The bare `os.path` and its path functions are not held."""
-        return "." in dotted and dotted != "os.path" and not _inert(dotted) \
-            and dotted.split(".", 1)[0] in self.modules
+        """A dotted name under an imported module used as a value, other than an inert one (INERT_VALUES): a later
+        call through it would be a call through that module."""
+        return "." in dotted and dotted not in INERT_VALUES and dotted.split(".", 1)[0] in self.modules
 
     def normalize(self, dotted):
         """A builtin spelled through the `builtins` module or the `__builtins__` dunder (`builtins.exec`,

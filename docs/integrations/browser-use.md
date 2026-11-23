@@ -83,10 +83,12 @@ a computed `getattr`, `globals`/`locals`/`vars`, `__import__`, an unmapped netwo
 `http`, `socket`, `requests`, `httpx`, `aiohttp`, `ctypes`, `multiprocessing`), nested `exec`/`eval` with a namespace of
 its own, a name that may be rebound (`global`/`nonlocal`, a match capture, a comprehension or loop target, a branch),
 nested code past three levels, over 256 calls, or over 64 KiB. A value a branch or a nested `exec` assigns is read as it
-becomes. A call through an imported module waits unless the module is `json`, `re`, `math`, `cmath`, `time`,
-`datetime`, `itertools`, `collections`, `string`, `textwrap`, `unicodedata` or `decimal`, or the name is a path
-function directly under `os.path` (`join`, `split`, `basename`, `realpath` and the like; `os.path.os` is the module
-again, so it waits). A function of another imported module used as a value waits, and so does a method called on a
+becomes. A call through an imported module waits unless it names, one level down, a public function or class that
+`json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`, `string`, `textwrap`, `unicodedata` or
+`decimal` defines itself (`json.loads`, `datetime.datetime`), a classmethod of such a class (`datetime.datetime.now`),
+or a path function directly under `os.path` (`join`, `exists` and the like). A module's attributes include the
+modules it imported, so anything deeper, private or defined elsewhere waits: `os.path.os`, `json.decoder`, and
+`json.JSONDecoder`, which `json.decoder` defines. A function of another imported module used as a value waits, and so does a method called on a
 call result, so `map(posix.system, ...)`, `open(p).write(...)` and `re.compile(...).sub(...)` ask. What
 the reader still leaves to the cell: a builtin, a function it defines and reads, a method on a cell name it already
 follows, and a call into one of the modules above. A cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
@@ -256,7 +258,8 @@ carries no model call id, so they are not linked to the actions. Which framework
   body where it is defined, so the calls in it are decided too; a value that may be rebound, an unknown bare callee,
   raw CDP, and an unmapped network, process or FFI import are held. A call through any other imported module waits, as
   does a method on a call result or a function of that module used as a value; only builtins, the cell's own names,
-  calls into `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`, `string`, `textwrap`,
-  `unicodedata`, `decimal` and `os.path`'s own path functions are left unread, and a name built at run time is held. The same goes for the `finish_from_repl`
+  the public functions and classes `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`,
+  `string`, `textwrap`, `unicodedata` and `decimal` define themselves (one level down, and a class's classmethods) and
+  `os.path`'s own path functions are left unread, and a name built at run time is held. The same goes for the `finish_from_repl`
   expression. A cell can still hide an action behind such code; read a 1.0 decision as a statement about the calls its
   source names literally.

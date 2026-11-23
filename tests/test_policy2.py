@@ -3,6 +3,7 @@ import functools
 import glob
 import importlib.util
 import builtins
+import inspect
 import io
 import itertools
 import json
@@ -6414,6 +6415,54 @@ class SourceReader(unittest.TestCase):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], None))
+
+    def test_under_an_inert_module_only_its_own_public_names_one_level_down_stay_unread(self):
+        """A module's attributes include the modules it imported, so below an inert module only a public function or
+        class the module defines itself stays unread, plus a classmethod of such a class: bound to the class, it
+        never runs on an object the cell picks. Anything deeper, private, from a submodule, or a module waits."""
+        cases = [
+            ('import json\njson.loads("{}")', None),
+            ('import re\nre.match("a", "a")', None),
+            ('import math\nmath.sqrt(4)', None),
+            ('import datetime\ndatetime.datetime.now()', None),
+            ('from datetime import datetime, timezone\ndatetime.now(timezone.utc)', None),
+            ('import itertools\nitertools.chain.from_iterable([[1]])', None),
+            ('import re\nre.findall("a", "A", re.IGNORECASE)', None),
+            ('import os\nos.path.exists("/tmp")', None),
+            # a method reached through its class runs on whatever object the cell passes as its first argument
+            ('import datetime\ndatetime.datetime.strftime(d, "%Y")', "call"),
+            ('import re\nre._compile("a", 0)', "call"),
+            ('import string\nstring.Template.__init_subclass__()', "call"),
+            ('import json\njson.decoder.JSONDecoder()', "call"),
+            ('import json\njson.JSONDecoder()', "call"),   # defined in json.decoder, not in json
+            ('import json\nd = json.decoder', "value"),
+            ('import collections\ncollections.abc.Callable', "value"),
+            ('import textwrap\ntextwrap.re.compile("a")', "call"),
+            ('import os.path\nos.path.os', "value"),
+            ('import os.path\nos.path.os.getcwd()', "call"),
+            ('import json\ngetattr(json, "x")', "value"),
+            ('import json\nvars(json)', "vars")]
+        for module in (*source.INERT_MODULES, "os.path"):   # two levels below each inert module
+            name = min(n for n in source.INERT_CALLS if n.rpartition(".")[0] == module)
+            cases += [(f"import {module}\n{name}.attr()", "call"), (f"import {module}\nx = {name}.attr", "value")]
+        for code, held in cases:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], held))
+        for dotted in source.INERT_VALUES:
+            with self.subTest(dotted=dotted):
+                module = "os.path" if dotted.startswith("os.path") else dotted.split(".")[0]
+                below = dotted[len(module) + 1:].split(".") if dotted != module else []
+                self.assertLessEqual(len(below), 2)
+                self.assertFalse(any(part.startswith("_") for part in below))
+                value = functools.reduce(getattr, dotted.split(".")[1:], importlib.import_module(dotted.split(".")[0]))
+                self.assertTrue(dotted == "os.path" or not inspect.ismodule(value))
+                if len(below) == 2:   # under a class the module defines: a classmethod bound to it, or plain data
+                    self.assertIn(f"{module}.{below[0]}", source.INERT_CALLS)
+                    cls = getattr(importlib.import_module(module), below[0])
+                    self.assertTrue(inspect.isclass(cls))
+                    if dotted in source.INERT_CALLS:
+                        self.assertIs(value.__self__, cls)
 
     def test_a_raised_visitor_a_reflection_call_and_an_argv_star_are_held(self):
         with mock.patch.object(source.Reader, "visit", side_effect=RuntimeError("boom")):
