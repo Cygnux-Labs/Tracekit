@@ -276,18 +276,27 @@ func TestKeyOriginNameBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{
-		"tracekit.local/k" + strings.Repeat("a", 65),
-		"tracekit.local/k" + strings.Repeat("A", 64),
-		"tracekit.local/k" + strings.Repeat("a", 64) + "/registry/" + strings.Repeat("0", 32),
+	own := sha256.Sum256(encoded[1:])
+	other := sha256.Sum256([]byte("another key"))
+	for _, tc := range []struct {
+		name string
+		bad  bool
+	}{
+		{"tracekit.local/k" + strings.Repeat("a", 65), false},
+		{"tracekit.local/k" + strings.Repeat("A", 64), false},
+		{"tracekit.local/k" + hex.EncodeToString(own[:]), false},
+		{"tracekit.local/k" + hex.EncodeToString(own[:]) + "/registry/" + strings.Repeat("0", 32), false},
+		{"x.tracekit.local/k" + hex.EncodeToString(other[:]), false},
+		{"tracekit.local/k" + strings.Repeat("a", 64) + "/registry/" + strings.Repeat("0", 32), true},
 	} {
+		name := tc.name
 		config["logs"] = []any{fixtureVKey(name, encoded[0], encoded[1:])}
 		valid, err := json.Marshal(config)
 		if err != nil {
 			t.Fatal(err)
 		}
 		_, _, _, _, err = loadTrust(valid)
-		if strings.Contains(name, "/registry/") {
+		if tc.bad {
 			if err == nil || !strings.Contains(err.Error(), "named after another key") {
 				t.Fatalf("accepted mismatched registry origin %q: %v", name, err)
 			}
