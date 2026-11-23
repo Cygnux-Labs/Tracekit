@@ -9,8 +9,9 @@ packs change (`coding` is `2026.11-v2-100`, `strict` is `2026.11-strict-15`), so
 calls that were allowed are now held. Upgrade the signer first, as for 1.7.2.
 
 ### Security
-- Policy and approver-copy hardening: the policy reads more of what a shell command and the programs it starts run,
-  and a held call's copy, which its approver reads, hides each secret value whole on every surface it is shown on.
+- Policy and approver-copy hardening. Some shell calls that ran before are now held (`TK-SHELL-PARSE`, `TK-A057`);
+  `tracekit approvals show` says why for each. A person starts `tracekit mcp-gateway` from their own terminal. A held
+  call's copy, which its approver reads, hides each secret value whole.
 
 ### Added
 - LangSmith Tool Gateway: Tracekit decides and signs each call in front of it (#1038).
@@ -23,11 +24,6 @@ calls that were allowed are now held. Upgrade the signer first, as for 1.7.2.
 - The signer's HTTPS RPC has an API reference (#939).
 
 ### Changed
-- A shell tool's own working-directory argument (Codex's and OpenCode's `workdir`, Gemini CLI's `dir_path`, Cursor's
-  `working_directory`, in any case) is read as the folder its command runs in, in the v2 signer and v1's hook; a call
-  that names more than one working directory is held (`TK-SHELL-PARSE`).
-- `tracekit mcp-gateway` run from an agent's session is held (`TK-A057`), as `tracekit init` is: it starts the programs
-  its configuration names. A person starts it from their own terminal.
 - New policy holds from contributors: `gh`'s printed credential reads (#900, by @Seyamalam), `git credential fill` and
   helper `get` (#937, by @Seyamalam), secret manager CLI value reads (#910, by @Siri-Durugapu), keepassxc-cli credential
   reads and export (#917, by @TheVicky1), Vivaldi, Arc and Opera saved logins and cookies (#909, by @NarenDawar),
