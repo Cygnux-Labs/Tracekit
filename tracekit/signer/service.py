@@ -980,6 +980,19 @@ def _escaped(value):
     return {_escaped(k): _escaped(v) for k, v in value.items()} if isinstance(value, dict) else value
 
 
+def _unjudged(e):
+    """Record `e`'s data as the run's own token reads it: without what agent approvers judged of its calls (an approval
+    request's `agent` and `ai`, an AI answer's reason and `relied_on`), which would coach the agent whose call it is.
+    People, and a bundle export, read the records whole."""
+    d, t = e["data"], e["type"]
+    if t == "approval.request":
+        return {k: v for k, v in d.items() if k not in ("agent", "ai")}
+    if t == "approval.suggested" or t in ("approval", "approval.escalated") and (
+            d.get("approver_kind") == "agent" or d.get("by") == "agent" or "relied_on" in d):
+        return {k: v for k, v in d.items() if k not in ("reason", "relied_on")}
+    return d
+
+
 def _recorded(identity):
     """An identity as run.registered and approval records carry it."""
     who = person(identity)
@@ -2256,20 +2269,25 @@ class SignerService:
 
     def _summary(self, approval_id, a, people):
         """Approval `a` as approval_get and approval_list show it; `people`: the caller is a person who may answer it
-        (_a_person), who alone sees what agent approvers said of it (`ai`)."""
+        (_a_person), who alone sees what agent approvers said of it (`ai`, an escalation's reason) and whether one may
+        answer it now (`agent`): to the agent whose call it is, that would say a person approved a call like it."""
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if a["agent_mode"] == "enforce" else {}),
-                **{k: a[k] for k in ("answered", "escalation") if a.get(k)},
+                **({"agent": True} if a["agent_mode"] == "enforce" and people else {}),
+                **({"answered": a["answered"]} if a.get("answered") else {}),
+                **({"escalation": a["escalation"] if people else {"by": a["escalation"]["by"]}}
+                   if a.get("escalation") else {}),
                 **({"ai": a["people_ai"]} if a["people_ai"] and people else {})}
 
     def _a_person(self, identity):
-        """Whether `identity` is a person who answers approvals (approvals.approvers or break_glass; a bridge's person
-        too): never the agent whose run it is, which an AI approver's reasons and view would coach."""
-        return self.approvals is not None and (self._in(self._approvers, identity)
-                                               or self._in(self._break_glass, identity))
+        """Whether `identity` is a person who answers approvals (approvals.approvers or break_glass; a bridge's person,
+        or a bridge granted ON_BEHALF, which serves them): never the agent whose run it is, which an AI approver's
+        reasons and view would coach."""
+        return self.approvals is not None and (
+            self._in(self._approvers, identity) or self._in(self._break_glass, identity)
+            or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity)))
 
     def _agent_views(self, approval_id, a):
         """(on the writer: they read the run's labels) What approval `a`'s summary shows of agent approvers: `agent_mode`
@@ -2300,12 +2318,12 @@ class SignerService:
 
     def _precedent_said(self, pid):
         """Person's approval `pid` that an AI yes named, as people see it: who gave it, when and what it was of, while
-        the signer holds it as a precedent."""
+        the signer holds it as a precedent. What the agent wrote (its command) and the name are escaped (_escaped)."""
         p = self.log.agent["precedents"].get(pid)
         if p is None:
             return {"approval_id": pid}
-        target = "; ".join(" ".join(v) for v in p["key"]["target"].values())
-        return {"approval_id": pid, "by": p.get("by", "a person")[:256], "at": _iso(p["at"]),
+        target = _escaped("; ".join(" ".join(v) for v in p["key"]["target"].values()))   # the agent's own words
+        return {"approval_id": pid, "by": _escaped(p.get("by", "a person"))[:256], "at": _iso(p["at"]),
                 **({"target": target[:1024]} if target else {})}
 
     def _agent_refusal(self, a):
@@ -4367,12 +4385,15 @@ class SignerService:
     def _ai_state(self, a, run):
         """(precedents, labels, playbook {version, digest}, label epoch) an AI answer to approval `a` relies on, read
         now: what its view shows of them (_approver_view) and what its record names (_agent_answer), which refuses an
-        answer once they changed since the view it answers was served. The epoch (the seq of the log's last run.label,
-        pipeline.approver_state) moves with any label added or cleared, so a run whose labels came and went is never
-        the state an earlier view showed."""
+        answer once they changed since the view it answers was served. The epoch (the seq of the last run.label that
+        reached the run's requesters or the approval's, pipeline.approver_state) moves with any such label added or
+        cleared, so a run whose labels came and went is never the state an earlier view showed; another identity's
+        label moves none."""
+        seqs = self.log.agent.get("label_seqs", {})
+        whose = labels.requesters(run) | labels.requesters({"owner": a["requester"]})
         return (self._precedents(run["tenant"], a["requester"], a["ai"]["digest"]),
                 self._run_labels(run, a["requester"]), _playbook_ref(self.log.agent["playbook"].get(run["tenant"])),
-                self.log.agent.get("label_seq"))
+                max((seqs.get(w, -1) for w in whose), default=-1))
 
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
@@ -4712,7 +4733,8 @@ class SignerService:
                     or req["for"] == "person" and a["agent_mode"] != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                s = {**self._summary(aid, a, people), **({"run_closing": True} if a["run_closing"] else {})}
+                # an agent approver keeps whether its answer counts (`agent`); its allow-list drops the rest
+                s = {**self._summary(aid, a, people or agent_view), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
                             if agent_view else s)
         return {"approvals": page, "next_cursor": None}
@@ -5506,7 +5528,7 @@ class SignerService:
                 **({"content": {"max_record_bytes": self.content["max_record_bytes"]}} if self.content["retain"] else {})}
 
     def _read(self, identity, req):
-        key = self._authorize(identity, req)
+        key, people = self._authorize(identity, req), self._a_person(identity)
         start, limit = req.get("from_seq", 0), req.get("limit", 100)
         events, next_seq = [], None
         try:
@@ -5518,7 +5540,7 @@ class SignerService:
                 if len(events) == limit:
                     next_seq = e["run_seq"]
                     break
-                p = {"run_seq": e["run_seq"], "type": e["type"], "data": e["data"]}
+                p = {"run_seq": e["run_seq"], "type": e["type"], "data": e["data"] if people else _unjudged(e)}
                 p["event_hash"] = event_hash(p)
                 events.append(p)
         except (OSError, StorageUnavailable) as e:

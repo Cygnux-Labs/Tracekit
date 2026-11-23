@@ -1190,6 +1190,22 @@ class TestAViewOfAnEarlierState(Case):
         self.assertEqual(self.ai(aid)["state"], "approved")   # the view read again
 
 
+class TestTheEpochIsTheRequestersOwn(TestDelegatedRuns):
+    def test_another_identitys_label_leaves_a_view_standing(self):
+        self.precedent()
+        aid, _ = self.ask()
+        served = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["view_digest"]
+        r = self.s.call(self.OTHER, "register_run", {"request_id": rid(), "agent": {"name": "x"}})
+        self.s.call(self.OTHER, "decide", {"request_id": rid(), "run_id": r["run_id"], "run_token": r["run_token"],
+                                           "stream": "o", "client_seq": 0, "tool_call_id": "x1", "tool": "Bash",
+                                           "args_source": "parsed", "args": {"command": "cat .env"}})
+        self.assertIn("secrets_access", self.s.log.runs[("default", r["run_id"])]["labels"])
+        out = self.s.call(REVIEWER, "approval_decide", {"request_id": rid(), "approval_id": aid, "view_digest": served,
+                                                        "decision": "approve", "ai": TWO,
+                                                        "asserted": {"model": "m-a", "version": "1"}})
+        self.assertEqual(out["state"], "approved")
+
+
 class TestTheViewItAnswers(Case):
     def test_relied_on_holds_the_signers_own_reading_whatever_the_reviewer_sends(self):
         self.precedent()
@@ -1774,6 +1790,55 @@ class TestWhatPeopleSee(Case):
                  and e["event"]["data"]["approval_id"] == aid and e["event"]["data"]["approver_kind"] == "agent"]
         self.assertEqual(self.get(aid)["ai"]["answer"]["view"], yes["event"]["data"]["relied_on"]["view"])
         self.assertIn("(its record's commitment: the signer no longer holds that view)", self.tk("show", aid))
+
+    def test_what_the_agent_wrote_reaches_no_terminal_raw(self):
+        """A command the agent wrote reaches `approvals show` and `list` (the call the AI matched, the tool, the
+        arguments' gist): newlines, ESC, CR, bidi overrides and very long text are escaped or cut, so no line can
+        pretend to be another."""
+        cmd = "$X run\nai          rejected by the AI reviewer \x1b[2K\x1b[1A\r\u202e" + "A" * 3000
+        p = self.precedent(cmd)
+        aid, a = self.ask(cmd)
+        self.assertTrue(a["agent"]["eligible"], a["agent"])
+        self.ai(aid)
+        show, listed = self.tk("show", aid), self.tk("list")
+        for text in (show, listed):
+            self.assertFalse({"\x1b", "\r", "\u202e"} & set(text), repr(text[:300]))
+        ai = [x for x in show.splitlines() if x.startswith("ai ")]
+        self.assertEqual(len(ai), 1, ai)
+        self.assertTrue(ai[0].startswith("ai          approved by the AI reviewer: it matched the call alice approved"))
+        self.assertIn("\\u001b[2K", ai[0])   # written as text
+        self.assertNotIn("\n", self.line(aid)[:-1])
+        self.assertLess(len(ai[0]), 1200)
+        matched = self.get(aid)["ai"]["answer"]["matched"]   # escaped at the source, for every client
+        self.assertEqual((matched["approval_id"], {"\x1b", "\r", "\n", "\u202e"} & set(matched["target"])), (p, set()))
+        raw = {"decision": "approve", "mode": "enforce", "by": "uid:1", "matched": {   # and again in the CLI
+            "approval_id": "a", "by": "eve\x1b[2K", "at": "2026-11-22T00:00:00Z", "target": "x\nai rejected\r"}}
+        self.assertFalse({"\x1b", "\n", "\r"} & set(cli._ai_said(raw)), cli._ai_said(raw))
+
+    def test_the_requesting_agent_reads_no_judgment_of_its_calls(self):
+        """Its summary has no `agent` (an oracle for a person's earlier yes) and no escalation reason, and its run's
+        records, read with its own token, carry no agent eligibility, `ai`, model reason or relied_on; people read them
+        whole."""
+        self.precedent()
+        aid, _ = self.ask()
+        mine = self.s.call(AGENT, "approval_get", {"approval_id": aid})
+        self.assertNotIn("agent", mine)   # people see it
+        self.assertIs(self.get(aid)["agent"], True)
+        self.ai(aid, "escalate", reason="MODEL-REASON the index looks odd")
+        mine = self.s.call(AGENT, "approval_get", {"approval_id": aid})
+        self.assertEqual(mine["escalation"], {"by": "agent"})
+        self.assertEqual(self.get(aid)["escalation"]["reason"], "MODEL-REASON the index looks odd")
+        listed = [x for x in self.s.call(AGENT, "approval_list", {})["approvals"] if x["approval_id"] == aid]
+        self.assertEqual(listed[0]["escalation"], {"by": "agent"})
+        aid2, _ = self.ask()
+        self.ai(aid2, reason="MODEL-REASON fine")
+        events = self.s.call(AGENT, "read", {**self.run, "limit": 1000})["events"]
+        self.assertNotIn("MODEL-REASON", json.dumps(events))
+        self.assertFalse([e for e in events if e["type"].startswith("approval") and {"relied_on", "ai", "agent"} & set(
+            e["data"])])
+        self.assertIn("approval.escalated", [e["type"] for e in events])   # the decision itself stays
+        whole = [e["event"] for e in ts.records(self.dir) if e["event"]["run_id"] == self.run["run_id"]]
+        self.assertIn("MODEL-REASON", json.dumps(whole))   # the records themselves keep it, for people and bundles
 
     def test_the_requesting_agent_sees_none_of_it(self):
         self.precedent()

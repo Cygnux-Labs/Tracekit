@@ -598,8 +598,8 @@ answer, when, the person's reason), the playbook in force, and the run's last 10
 reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
 `approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
 reviewer for that approval, and only while what the view showed of it (its precedents, the run's labels, the
-playbook) still holds and no run label was added or cleared since, anywhere: a label that came and went is a new
-state. Otherwise it answers `conflict`, and the reviewer reads the view again at its next poll.
+playbook) still holds and no run label reaching the run's requesters or the approval's was added or cleared since: a
+label that came and went is a new state, and another identity's label changes nothing. Otherwise it answers `conflict`, and the reviewer reads the view again at its next poll.
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
 own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
@@ -636,7 +636,11 @@ A rule that joins a call on the signer (a run condition, such as TK-Q001 after a
 and its `agent.reason` says which. `approval_get` and `approval_list` carry the same as `ai`: `mode` (enforce, shadow,
 or null when only people answer it), `reason`, and `answer` (decision, mode, by, reason, view, and `matched`: the
 person's approval a yes matched, who gave it, when and what it was of), to people who answer
-approvals only (`approvals.approvers`, `break_glass`). The requesting agent and agent approvers see none of it.
+approvals only (`approvals.approvers`, `break_glass`, a bridge acting for them). The requesting agent and agent
+approvers see none of it: the agent's own summary has no `agent` flag (it would say a person approved a call like it)
+and an escalation without its reason, and its run's records, read with its run token (`read`), come without an
+approval request's `agent` and `ai` and without an AI answer's reason and `relied_on`. The records themselves, and a
+bundle export, keep them.
 
 **On a laptop, in system mode.** The reviewer runs as a user of its own: not the agent's, which must not answer its
 own holds or read your provider key, and not the signer's, which holds the signer's keys. The signer refuses to start

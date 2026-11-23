@@ -1554,8 +1554,10 @@ def _expires_left(x):
 
 def _ai_said(ans, brief=False):
     """What the AI reviewer did with an approval (its `ai.answer`), in people's words, as `approvals show` and (`brief`)
-    `approvals list` print it: a yes names the person's approval it matched."""
-    m = ans.get("matched") or {}
+    `approvals list` print it: a yes names the person's approval it matched. Every string from the signer is escaped
+    again here (a command the agent wrote reaches it), never printed raw."""
+    from .signer.service import _escaped
+    m = _escaped(ans.get("matched") or {})
     if ans["mode"] == "shadow":
         return f"the AI reviewer suggests {ans['decision']}" + (
             "" if brief else " (it only suggests for this rule now: a person decides)")
@@ -1570,9 +1572,10 @@ def _ai_said(ans, brief=False):
 
 def _ai_may(ai, n=1024):
     """Whether the AI reviewer may answer an approval that waits (its `ai`), and why not, cut to `n` characters."""
+    from .signer.service import _escaped
     return {"enforce": "the AI reviewer may answer this",
             "shadow": "the AI reviewer only suggests for this call: a person decides"}.get(
-        ai["mode"], f"the AI reviewer won't answer this: {_cut(ai['reason'], n)}")
+        ai["mode"], f"the AI reviewer won't answer this: {_cut(_escaped(ai['reason']), n)}")
 
 
 def _ai_brief(x):
@@ -1600,9 +1603,10 @@ def _ai_lines(x):
             view and f"view_digest {view}", (ans.get("matched") or {}).get("approval_id") and
             f"matched {ans['matched']['approval_id']}") if x))
     if x["state"] == "requested":
-        lines.append(f"ai          {_ai_may(ai)}" + (f" ({ai['reason']})" if ai["mode"] == "shadow" else ""))
+        from .signer.service import _escaped
+        lines.append(f"ai          {_ai_may(ai)}" + (f" ({_escaped(ai['reason'])})" if ai["mode"] == "shadow" else ""))
         if ai["mode"] == "enforce":
-            lines.append(f"details     {ai['reason']}")
+            lines.append(f"details     {_escaped(ai['reason'])}")
     return lines
 
 

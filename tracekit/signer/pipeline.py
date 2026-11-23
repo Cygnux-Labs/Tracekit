@@ -174,7 +174,8 @@ def degrade(tx, prov, state, reason):
 
 def new_agent():
     """The agent-approval state (agent_state), empty."""
-    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {}}
+    return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
+            "label_seqs": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -232,8 +233,8 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL), `demoted` (why the
     circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
     the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `label_seq`, the seq of the log's last
-    run.label, an add or a clear (SignerService._ai_state's label epoch). A precedent goes bad when a person revokes it
+    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `label_seqs` (each identity a run.label's run
+    has as a requester -> the seq of the last such record, an add or a clear: SignerService._ai_state's label epoch). A precedent goes bad when a person revokes it
     (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
     of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an
     answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled restores it
@@ -252,8 +253,8 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["precedents"], aid, dict(p, bad=why[:1024]))
                 demote(p["rules"], f"the person's approval it matched ({aid}) no longer counts: {why}")
     ap = (a or {}).get("ai")
-    if typ == "run.label":
-        set_(ag, "label_seq", e["seq"])
+    if typ == "run.label":   # each requester it reaches (labels.requesters, labels_of's inputs): when, last
+        set_(ag, "label_seqs", {**ag.get("label_seqs", {}), **dict.fromkeys(labels.requesters(run), e["seq"])})
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
             k, now = f"{tenant}\0{r}", pinned(d)
