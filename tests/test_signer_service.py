@@ -2,6 +2,7 @@
 Unix socket, refusals that leave no state, disk errors, restart with a torn tail, rollback detection, quotas, the CLI,
 and (with -m perf, Linux) the S1 performance gates."""
 import json
+import logging
 import os
 import shutil
 import socket
@@ -629,6 +630,35 @@ class TestServeContract(SignerContract, unittest.TestCase):
         client = SocketSigner(cfg["socket"])
         self.addCleanup(client.close)
         return client
+
+
+class TestLogging(unittest.TestCase):
+    def setUp(self):
+        root, tk = logging.getLogger(), logging.getLogger("tracekit")
+        saved = root.handlers[:], root.level, tk.level
+
+        def restore():
+            root.handlers[:], level, tk_level = saved
+            root.setLevel(level)
+            tk.setLevel(tk_level)
+        self.addCleanup(restore)
+        root.handlers[:] = []   # pytest's capture handler would make basicConfig a no-op
+        root.setLevel(logging.WARNING)
+        tk.setLevel(logging.NOTSET)
+
+    @mock.patch("logging.basicConfig")
+    def test_serve_default_does_not_configure_logging(self, basic_config):
+        with mock.patch.object(svc, "_serve_dev"):
+            svc.main(["serve", "--dev"])
+        basic_config.assert_not_called()
+
+    def test_serve_log_level_reaches_tracekit_loggers_only(self):
+        for name, level in (("warning", logging.WARNING), ("info", logging.INFO), ("debug", logging.DEBUG)):
+            with self.subTest(name=name), mock.patch.object(svc, "_serve_dev"):
+                svc.main(["serve", "--dev", "--log-level", name])
+                self.assertEqual(logging.getLogger("tracekit.transport.http").getEffectiveLevel(), level)
+                # botocore's debug log prints AWS credentials when the log key is in KMS
+                self.assertFalse(logging.getLogger("botocore").isEnabledFor(logging.INFO))
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
