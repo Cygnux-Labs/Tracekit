@@ -23,6 +23,27 @@ SETATTR = {"setattr", "delattr"}
 # an import of one of these, used or not, leaves what it can run out of the reader's sight (requests and httpx are
 # third-party; the rest are standard library and still held, to keep the set closed)
 HELD_IMPORTS = {"urllib", "http", "socket", "requests", "httpx", "aiohttp", "ctypes", "multiprocessing"}
+# modules a cell may call through without a hold: each only computes or formats a value (no process, socket, or
+# arbitrary import/exec entry point). Below `os.path` only its own path functions are inert, not module attributes.
+INERT_MODULES = {"json", "re", "math", "cmath", "time", "datetime", "itertools", "collections", "string",
+                 "textwrap", "unicodedata", "decimal"}
+# the path functions directly under `os.path`; any other name below it (`os.path.os`) is a module, not a path call
+INERT_PATH_FUNCTIONS = frozenset({
+    "abspath", "basename", "commonpath", "commonprefix", "dirname", "exists", "expanduser", "expandvars",
+    "getatime", "getctime", "getmtime", "getsize", "isabs", "isdir", "isfile", "islink", "ismount", "join",
+    "lexists", "normcase", "normpath", "realpath", "relpath", "samefile", "sameopenfile", "samestat",
+    "split", "splitdrive", "splitext"})
+
+
+def _inert(dotted):
+    """A call the reader leaves unread: a name directly under an inert module, or a path function directly under
+    `os.path`. Anything deeper (`os.path.os`) is not inert."""
+    root, dot, rest = dotted.partition(".")
+    if not dot:
+        return False
+    if root in INERT_MODULES:
+        return True
+    return root == "os" and rest.startswith("path.") and rest[len("path."):] in INERT_PATH_FUNCTIONS
 _BUILTINS = frozenset(dir(builtins))
 _HELPER_MODULES = ("browser_harness.helpers.", "helpers.")
 
@@ -101,8 +122,9 @@ class Reader(ast.NodeVisitor):
         if scope is None:
             self.env, self.aliases = {}, {}
             self.defined, self.dynamic, self.shadowed, self.never = set(), set(), set(), set()
+            self.modules = set()
         else:
-            self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never = scope
+            self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never, self.modules = scope
         self.held = None
         self.force_conditional = force_conditional
         self.in_conditional = force_conditional
@@ -150,7 +172,7 @@ class Reader(ast.NodeVisitor):
         return True
 
     def _save(self):
-        return self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never
+        return self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never, self.modules
 
     def _scope(self):
         """Copy the names into a scope of its own (a function, a class body, a comprehension), on the budget: each
@@ -161,10 +183,11 @@ class Reader(ast.NodeVisitor):
         self.env, self.aliases = dict(self.env), dict(self.aliases)
         self.defined, self.dynamic, self.shadowed, self.never = (set(self.defined), set(self.dynamic),
                                                                  set(self.shadowed), set(self.never))
+        self.modules = set(self.modules)
         return saved
 
     def _restore(self, saved):
-        self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never = saved
+        self.env, self.aliases, self.defined, self.dynamic, self.shadowed, self.never, self.modules = saved
 
     # --- statements: read calls in the order they run, so a name only resolves to a value assigned before it ---
     def visit_Module(self, node):
@@ -264,14 +287,17 @@ class Reader(ast.NodeVisitor):
     def bind_import(self, node):
         if isinstance(node, ast.Import):
             for a in node.names:
-                if a.name.split(".")[0] in HELD_IMPORTS:
+                root = a.name.split(".")[0]
+                if root in HELD_IMPORTS:
                     self.hold("import")
-                name = a.asname or a.name.split(".")[0]
-                self.aliases[name] = a.name if a.asname else a.name.split(".")[0]
+                name = a.asname or root
+                self.aliases[name] = a.name if a.asname else root
                 self._clear(name)
+                self.modules.add(root)
         else:
             base = node.module or ""
-            if base.split(".")[0] in HELD_IMPORTS:
+            root = base.split(".")[0]
+            if root in HELD_IMPORTS:
                 self.hold("import")
             for a in node.names:
                 if a.name == "*":
@@ -280,11 +306,14 @@ class Reader(ast.NodeVisitor):
                 self.aliases[name] = f"{base}.{a.name}" if base else a.name
                 self.env.pop(name, None)
                 self._clear(name)
+            if root:
+                self.modules.add(root)
 
     def _clear(self, name):
         self.dynamic.discard(name)
         self.defined.discard(name)
         self.shadowed.discard(name)
+        self.modules.discard(name)
 
     def _forget(self, name):
         """A name whose value the reader cannot follow: never a literal, never an alias."""
@@ -292,6 +321,7 @@ class Reader(ast.NodeVisitor):
         self.env.pop(name, None)
         self.aliases.pop(name, None)
         self.shadowed.add(name)
+        self.modules.discard(name)
 
     def _forget_pattern(self, pattern):
         for sub in ast.walk(pattern):
@@ -438,14 +468,14 @@ class Reader(ast.NodeVisitor):
     def visit_Name(self, node):
         dotted = self.name(node)
         if dotted is not None and dotted not in self.defined and not self.is_dynamic(dotted) \
-                and self.known(dotted):
+                and (self.known(dotted) or self.module_value(dotted)):
             self.hold("value")   # a helper or command used as a value, not as the callee of this call
 
     def visit_Attribute(self, node):
         dotted = self.name(node)
         for candidate in (dotted, self.name(node.value)):
             if candidate is not None and candidate not in self.defined and not self.is_dynamic(candidate) \
-                    and self.known(candidate):
+                    and (self.known(candidate) or self.module_value(candidate)):
                 self.hold("value")
                 return
         self.generic_visit(node)
@@ -566,7 +596,9 @@ class Reader(ast.NodeVisitor):
             self.hold("call")
             return True
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Call):
-            return False   # a method on a call result (open(path).write(text)): ordinary Python, its inner call is read
+            self.visit(func.value)   # read the call that builds the object; the method itself is not followed
+            self.hold("call")
+            return True
         dotted = self.name(func)
         if dotted is None:
             self.hold("call")
@@ -600,6 +632,12 @@ class Reader(ast.NodeVisitor):
         if helper is not None:
             self.helper_call(helper, node)
             return True
+        root = dotted.split(".", 1)[0]
+        if root in self.modules:
+            if _inert(dotted):
+                return False   # an inert module or a path function under os.path: it only computes or formats a value
+            self.hold("call")
+            return True
         if "." not in dotted:
             if dotted in self.defined or dotted in self.aliases or dotted in _BUILTINS:
                 return True   # a builtin, or a function the cell defines and this reader already read
@@ -621,6 +659,10 @@ class Reader(ast.NodeVisitor):
             helper = self.helper(dotted)
             if helper is not None:
                 self.helper_call(helper, node)
+                return
+            root = dotted.split(".", 1)[0]
+            if root in self.modules and not _inert(dotted):
+                self.hold("call")
 
     def indirect(self, node, inner):
         """A call on a call result: `getattr(base, "name")(...)` is read when the name is literal; any other target
@@ -648,6 +690,10 @@ class Reader(ast.NodeVisitor):
         name = lit(node.args[1], self.env) if len(node.args) > 1 else _MISSING
         if not (isinstance(name, str) and base is not None and self.name(base)):
             self.hold("getattr")
+            return
+        dotted = self.normalize(f"{self.name(base)}.{name}")
+        if self.module_value(dotted):
+            self.hold("value")   # a function of an imported module picked at run time, used as a value
 
     def nested(self, dotted, node):
         code = lit(node.args[0], self.env) if node.args else _MISSING
@@ -784,6 +830,12 @@ class Reader(ast.NodeVisitor):
     def known(self, dotted):
         return self.helper(dotted) is not None or dotted in SHELL or dotted in SHELL_ARGV \
             or dotted in DYNAMIC_CALLS or dotted in SETATTR or dotted in ("exec", "eval", "getattr")
+
+    def module_value(self, dotted):
+        """A dotted name under an imported module other than an inert one, used as a value: a later call through it
+        would be a call through that module. The bare `os.path` and its path functions are not held."""
+        return "." in dotted and dotted != "os.path" and not _inert(dotted) \
+            and dotted.split(".", 1)[0] in self.modules
 
     def normalize(self, dotted):
         """A builtin spelled through the `builtins` module or the `__builtins__` dunder (`builtins.exec`,

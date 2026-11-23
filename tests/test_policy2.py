@@ -6060,10 +6060,10 @@ class SourceReader(unittest.TestCase):
         self.assertIsNone(r.held)
         r = source.read('def f(url):\n    goto_url(url)\nf("file:///etc/passwd")')
         self.assertEqual((r.calls, r.held), ([], "arg"))
-        for code in ('open("/tmp/x", "w").write("x")', 'import json\njson.loads("{}")'):
-            with self.subTest(code=code):
-                r = source.read(code)
-                self.assertEqual((r.calls, r.held), ([], None))
+        r = source.read('open("/tmp/x", "w").write("x")')
+        self.assertEqual((r.calls, r.held), ([], "call"))
+        r = source.read('import json\njson.loads("{}")')
+        self.assertEqual((r.calls, r.held), ([], None))
         r = source.read('import requests\nrequests.get("https://example.com/")')
         self.assertEqual((r.calls, r.held), ([], "import"))
 
@@ -6313,12 +6313,14 @@ class SourceReader(unittest.TestCase):
         for code in ('goto_url.__call__("file:///etc/passwd")',
                      'getattr(goto_url, "__call__")("file:///etc/passwd")',
                      'map(goto_url, ["https://docs.python.org/"])',
-                     'import threading\nthreading.Thread(target=os.system, args=("id",)).start()',
                      '@js\ndef f():\n    pass',
                      'def f():\n    return goto_url'):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], "value"))
+        # the method on a call result is held before its arguments are visited, so the callee decides first
+        r = source.read('import threading\nthreading.Thread(target=os.system, args=("id",)).start()')
+        self.assertEqual((r.calls, r.held), ([], "call"))
 
     def test_a_function_body_reads_parameters_imports_and_lambda_values_as_non_literal(self):
         r = source.read('def f():\n    goto_url("file:///etc/passwd")')
@@ -6354,6 +6356,65 @@ class SourceReader(unittest.TestCase):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], None))
 
+    def test_a_call_through_an_imported_module_is_held_unless_the_module_is_inert(self):
+        for code in ('import posix\nposix.system("id")',
+                     'import shutil\nshutil.os.system("id")',
+                     'import getpass\ngetpass.getuser()',
+                     'import sys\nsys.modules.get("os").system("id")',
+                     'import importlib\nimportlib.__import__("os").system("id")',
+                     'import timeit\ntimeit.timeit("1")',
+                     'import asyncio\nasyncio.get_event_loop().subprocess_shell("id")',
+                     'import os\nos.getcwd()',
+                     'from os import getcwd\ngetcwd()',
+                     'import os\ndef f():\n    return os\nf().system("id")',
+                     'import posix\ndef f():\n    posix.system("id")',
+                     'def f():\n    import posix\n    posix.system("id")',
+                     'import posix\ngetattr(posix, "system")("id")',
+                     'import json\njson.loads("{}").get("a")',
+                     'import re\nre.compile("a").sub("b", "a")',
+                     'import os.path\nos.path.os.system("id")',
+                     'import os.path\nos.path.os.execv("/bin/sh", ["sh", "-c", "id"])',
+                     'import os.path\nos.path.os.popen("id")'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], "call"))
+        # a function of a non-inert imported module used as a value waits before something else calls it
+        for code in ('import posix\nmap(posix.system, ["id"])',
+                     'import posix\nlist(map(posix.system, ["id"]))',
+                     'import os.path\nmap(os.path.os.system, ["id"])',
+                     'import os.path\nmap(getattr(os.path, "os").system, ["id"])',
+                     'import posix\nsorted([], key=posix.getpid)'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], "value"))
+        # a rebound module name is no longer an imported module: the dynamic name decides
+        r = source.read('import json\njson = object()\njson.loads("{}")')
+        self.assertEqual((r.calls, r.held), ([], "call"))
+
+    def test_an_inert_module_and_os_path_stay_unread(self):
+        for code in ('import json\njson.dumps({})', 'import re\nre.sub("a", "b", "a")',
+                     'import math\nmath.sqrt(4)', 'import cmath\ncmath.sqrt(-1)',
+                     'import time\ntime.sleep(1)', 'import datetime\ndatetime.date.today()',
+                     'import itertools\nitertools.chain([1])', 'import collections\ncollections.Counter()',
+                     'import string\nstring.digits', 'import textwrap\ntextwrap.dedent(" x")',
+                     'import unicodedata\nunicodedata.name("a")', 'import decimal\ndecimal.Decimal("1")',
+                     'import os\nos.path.join("a", "b")', 'import os.path as p\np.join("a", "b")',
+                     'from os.path import join\njoin("a", "b")'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], None))
+        # an inert callee is still left unread while its arguments are read
+        r = source.read('import json\njson.dump(os.system, None)')
+        self.assertEqual((r.calls, r.held), ([], "value"))
+        # an inert function used as a value and the bare `os.path` module stay unread
+        for code in ('import json\nmap(json.dumps, [{}])', 'import re\nmap(re.sub, ["a"])',
+                     'import os.path\nmap(os.path.join, ["a"])',
+                     'import os.path\np = os.path',
+                     'import os.path\nmap(getattr(os.path, "join"), ["a"])'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], None))
+
     def test_a_raised_visitor_a_reflection_call_and_an_argv_star_are_held(self):
         with mock.patch.object(source.Reader, "visit", side_effect=RuntimeError("boom")):
             r = source.read('goto_url("https://docs.python.org/")')
@@ -6370,7 +6431,7 @@ class SourceReader(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "ran")
         r = source.read(f'open({path!r}, "w").write("x")')
-        self.assertEqual((r.calls, r.held), ([], None))
+        self.assertEqual((r.calls, r.held), ([], "call"))
         self.assertFalse(os.path.exists(path))
         self.assertEqual((source.read("raise SystemExit(1)").calls, source.read("raise SystemExit(1)").held), ([], None))
 
@@ -6435,7 +6496,8 @@ class CellSource(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"]), ("allow", []))
 
     def test_a_source_it_cannot_read_waits_for_on_parse_error(self):
-        for code in ('url = input()\ngoto_url(url)', 'globals()["goto_url"]("https://x")', 'def f(:\n pass'):
+        for code in ('url = input()\ngoto_url(url)', 'globals()["goto_url"]("https://x")', 'def f(:\n pass',
+                     'import posix\nposix.system("id")'):
             with self.subTest(code=code):
                 d = self.cell(self.browser, code)
                 self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SOURCE-PARSE"]))
