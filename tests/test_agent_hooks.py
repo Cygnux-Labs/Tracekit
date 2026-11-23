@@ -2139,6 +2139,19 @@ class JcodeTools(unittest.TestCase):
             self.assertEqual((config["model"], config["tools"]), ("x", {"auto_background_timeout_ms": 3000}))
             self.assertIn(saved, [b.read_text(encoding="utf-8") for b in path.parent.glob("config.toml.bak-*")])
 
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_keeps_a_peoples_own_timeout_when_uninstalling(self):
+        import tomllib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.install(path, v2=True)
+            hooks = tomllib.loads(path.read_text(encoding="utf-8"))["hooks"]
+            path.write_text(f'[hooks]\npre_tool = {json.dumps(hooks["pre_tool"])}\npre_tool_timeout_ms = 5000\n',
+                            encoding="utf-8")
+            self.install(path, uninstall=True)
+            self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8")), {"hooks": {"pre_tool_timeout_ms": 5000}})
+
     def test_a_resaved_command_that_is_not_a_line_of_its_own_is_left_and_printed(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
