@@ -7256,6 +7256,8 @@
     const fromWords = l => /^(mail|email|inbox)\b/i.test(l) ? "an email" : /^(web|page|fetch|url)\b/i.test(l) ? "a web page"
       : l === "task" ? "your task" : String(l).startsWith("tool:") ? `${String(l).slice(5)}'s output` : String(l);
     const lead = p => p ? ` (${fit(String(p), 40)})` : "";
+    // what base64 text decodes to, as text; null when it isn't base64
+    const b64 = t => { try { return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(t) ? atob(t) : null; } catch { return null; } };
     function inflHead(c) {
       const a = c.args || {}, amount = a.amount ?? null, cur = a.currency;
       const to = Object.keys(a).find(k => TO.test(k)), what = to != null ? a[to] : c.value?.value;
@@ -7267,7 +7269,7 @@
       const v = c.value, trusted = [...new Set(c.edges.filter(e => e.grade === "seen" && e.trust === "trusted" && e.type === "action" && e.label !== v?.via?.tool).map(e => e.label))];
       if (v && v.status === "untrusted-only") {
         const noun = nounOf(v.value), cap = "The " + noun;
-        if (v.via) return `${cap} came from ${v.via.tool}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${v.via.given}, which appeared only in ${fromWords(v.via.origin[0] || v.via.from[0])}${lead(v.preview)}.`;
+        if (v.via) return `${cap} came from ${v.via.tool}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${v.via.given}${b64(v.via.given) === v.value ? ` (base64 of the ${isIban(v.value) ? "IBAN" : noun})` : ""}, which appeared only in ${fromWords(v.via.origin[0] || v.via.from[0])}${lead(v.preview)}.`;
         return `${cap} came from ${fromWords(v.from)}${lead(v.preview)}, not from your task${trusted.length ? " or " + trusted.join(", ") : ""}.`;
       }
       if (c.serves === "drift") return "A replay without your task still made this call: it serves no step of the task.";
@@ -7315,7 +7317,7 @@
         + (rest.length ? `<div class="iquiet"><button type="button" class="cp" data-iquiet="">${esc(`${IQ.open ? "▾" : "▸"} ${many(rest.length, "other call")} ran without a stop or a flag`)}</button>`
           + (IQ.open ? rest.map(c => `<div>${esc(quiet(c))}</div>`).join("") : "") + `</div>` : "")
         + (I.calls_total > calls.length ? `<div class="dim">${esc(`and ${I.calls_total - calls.length} more`)}</div>` : "")
-        + (calls.some(c => c.hinted) ? `<div class="wbar glegend"><span><button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span></div>` : "")
+        + (calls.some(c => c.hinted) || I.sources.length ? `<div class="wbar glegend"><span><button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span></div>` : "")
         + `</div>`;
     }
     // INFLUENCE's flow: a node per kind of content (the table's rows, in its order) and per tool, a line per kind and
@@ -7359,7 +7361,7 @@
       for (const l of [...L].sort((a, b) => RANK.indexOf(tone(a.t)) - RANK.indexOf(tone(b.t)))) {
         const mx = (KW + X2) / 2, d = `M${KW},${f(l.ky)} C${mx},${f(l.ky)} ${mx},${f(l.jy)} ${X2},${f(l.jy)}`, w = .8 + 3 * Math.log1p(l.t.runs) / big, g = groups[l.k];
         s += `<g class="${esc(cl("ln", tone(l.t) || "pl", lit(l) && "on"))}" data-ifk="${esc(l.k)}" data-ift="${esc(l.hid ? "+" : l.j)}"><path class="hit" d="${esc(d)}"/><path class="v" d="${esc(d)}" stroke-width="${esc(f(l.t.confirmed ? Math.max(4, w) : w))}"/>`
-          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">${esc(sgn(l.t.effect))}</text>` : "")
+          + (l.t.confirmed ? `<text class="fx" x="${esc(f(mx))}" y="${esc(f((l.ky + l.jy) / 2 - 5))}" text-anchor="middle">caused it<title>${esc(`a replay without it changed the call: effect ${sgn(l.t.effect)}`)}</title></text>` : "")
           + `<title>${esc(`${name(g)}: ` + (l.hid ? `came before calls to ${plural(l.hid.length, "tool")} not shown: ${l.hid.map(t => t.tool).join(", ")}` : said(l.t)))}</title></g>`;
       }
       groups.forEach((g, k) => {
@@ -7429,8 +7431,8 @@
       const where = (o, n) => `<div>${esc(`${o.agent || "agent"} · run ${String(o.run).slice(0, n)}` + (o.seq != null ? ` · record ${o.seq}` : o.pos != null ? ` · event ${o.pos}` : ""))}`
         + `<br><span class="dim">${esc(Date.parse(o.ts) ? `read ${fmtD(Date.parse(o.ts) / 1000)} ${fmtT(Date.parse(o.ts) / 1000)} ${TZ}` : "")}</span> `
         + (o.seq != null && RUNS.has(o.run) ? `<button type="button" class="cp" data-orun="${esc(o.run)}" data-oseq="${esc(o.seq)}">OPEN</button>` : `<button type="button" class="cp" data-wgo="${esc(o.run)}">OPEN</button>`) + `</div>`;
-      // in front of the agent for how many decisions (a phone's card, which has no column names, says what the number is)
-      const front = n => `<span class="ph">in front of the agent </span>${esc("for " + many(n, "decision"))}`;
+      // read before how many decisions (a phone's card, which has no column names, says what the number is)
+      const front = n => `<span class="ph">read before </span>${esc(many(n, "decision"))}`;
       const src = (x, n, mark) => `<tr class="insrc"><td>` + (x.seen || []).map(o => where(o, n)).join("") + (x.runs > (x.seen || []).length ? `<div class="dim">${esc(`and ${x.runs - x.seen.length} more`)}</div>` : "")
         + (x.preview ? `<div class="dim">${esc(String(x.preview).slice(0, 110))}</div>` : "") + `</td><td class="${x.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(x.trust)}</td><td></td><td>${esc(many(x.runs, "run"))}</td><td>` + front(x.cited_by) + `</td>`
         + `<td class="reach">` + chips((bySrc.get(x.id) || []).map(link), x.id, mark) + `</td></tr>`;
@@ -7441,12 +7443,12 @@
       const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
       const answers = S2.length || I.calls_total ? inflCalls(I, el.clientWidth) : "";
       put("whyv", !S2.length ? answers || `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
-        : answers + `<p class="dim" style="padding:0 8px">${esc(`${WHY.runs.length === 1 ? "In this run" : `Across all ${many(WHY.runs.length, "run")}`}: what the agents read, and the tools they called after it. Content in front of an agent when it decided was seen before that call; only a call's chain above says what set or caused it.`)}</p>`
-          + flow + `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
+        : answers + `<p class="dim" style="padding:0 8px">What the agents read, and the calls that followed. Red lines led to a stopped call.</p>`
+          + flow + (!IFL.hint ? "" : `<div class="wbar glegend"><span>` + sw("") + `<span class="tag">tool N</span> came before its calls in N runs${flow ? ", the more the thicker" : ""}</span><span>` + sw("blk") + `<span class="tag blk">tool N blocked</span> calls blocked</span>`
           + `<span>` + sw("held") + `<span class="tag held">tool N held</span> held for a person</span><span>` + sw("flag") + `<span class="tag flag">tool N flagged</span> flagged</span>`
           + `<span>` + sw("deny") + `<span class="tag deny">tool +effect</span> a replay confirmed it caused them</span><span>` + sw("ruled") + `<span class="tag ruled">tool N</span> a replay ruled it out</span>`
-          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`
-          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>IN FRONT OF THE AGENT</th><th>LED TO</th></tr></thead><tbody>`
+          + `<span><span class="s-deny">untrusted</span> by the harness's word</span><span>a row opens to its sources</span></div>`)
+          + `<table class="wt infl"><thead><tr><th>CONTENT</th><th>TRUST</th><th>SOURCES</th><th>RUNS</th><th>READ BEFORE</th><th>LED TO</th></tr></thead><tbody>`
           + groups.map(g => `<tr class="row ingrp${M && M.key === g.key ? " on" : ""}" data-ingrp="${esc(g.key)}" tabindex="0"><td>${esc(INFL.has(g.key) ? "▾ " : "▸ ")}<b>${esc(kindName(g.kind))}</b>${kindName(g.kind) !== g.kind ? ` <span class="dim">(${esc(g.kind)})</span>` : ""}</td>`
             + `<td class="${g.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(g.trust)}</td><td>${esc(Number(g.mine.length).toLocaleString("en-US"))}<span class="ph">${esc(g.mine.length === 1 ? " source" : " sources")}</span></td><td>${esc(many(g.runs, "run"))}</td><td>` + front(g.cited) + `</td><td class="reach">` + chips(g.reach, g.key, markOf(g.key)) + `</td></tr>`
             + (INFL.has(g.key) ? (g.mine.some(x => !x.preview) ? `<tr class="insrc"><td colspan="6" class="dim">${esc("Content not in the log: a signed run's record holds only its hash, so each source is named by where it was read.")}</td></tr>` : "")

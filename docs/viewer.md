@@ -338,7 +338,8 @@ verified signed record behind it, is shown as "claimed by the log".
   Its headline says what happened and why, with the facts, in one line: "Blocked: send_money €98.70 to GB29 NWBK 6016
   1331 9268 19. The account number came from an email (From: billing@acme-ltd.example), not from your task." For a value
   a trusted call's answer gave, which counts as untrusted because untrusted content chose what the call was given: "The
-  account number came from lookup_supplier, looked up with ACME-7781, which appeared only in an email." Below it, the
+  account number came from lookup_supplier, looked up with ACME-7781, which appeared only in an email."; for a
+  decoder's, "called with R0IyOU5X… (base64 of the IBAN)". Below it, the
   value's route, its untrusted start marked: email from billing@acme-ltd.example → lookup_supplier(ACME-7781) → IBAN
   GB29 NWBK … → send_money. A tag says how it is known (exact, measured, claimed or seen; its meaning on hover). Beside
   the card, the same call that ran with a value trusted content gave, if the runs have one ("Ran: the same payment with
@@ -347,17 +348,19 @@ verified signed record behind it, is shown as "claimed by the log".
   line from a step the signer traced an argument to, a double line from one a replay tied to the call), each link's
   line with a replay's effect and interval and what a replay ruled out, and **OPEN IN ITS RUN**. The other calls are one
   quiet line ("3 other calls ran without a stop or a flag") that opens to a line each. **show hints** adds the
-  text-overlap hints to WHY, dashed.
-- **The flow.** What the agents had in front of them when they decided, across runs: each kind of content on the left
-  (its trust, untrusted framed red, and its sources) and the tools called after it on the right. Where a stopped call's value came through a trusted call's answer (an email to lookup_supplier to send_money), that call sits between them, on the value's route. Only the lines that matter are drawn, coloured as the table's chips: red where calls
-  were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a
+  text-overlap hints to WHY, dashed, and the key under the flow.
+- **The flow.** "What the agents read, and the calls that followed. Red lines led to a stopped call." Across runs,
+  each kind of content on the left (its trust, untrusted framed red, and its sources) and the tools called after it on
+  the right. Where a stopped call's value came through a trusted call's answer (an email to lookup_supplier to send_money), that call sits between them, on the value's route. Only the lines that matter are drawn, coloured as the table's chips: red where calls
+  were blocked, amber where held, blue where flagged, bold red marked "caused it" for a confirmed cause (the replay's
+  effect on hover), dashed where a
   replay ruled the link out. A line is thicker the more runs it came before (log scale). The plain lines (calls that
   ran with no flag) are hidden; a note says how many. Point at content or a tool to see all its lines and dim the
   rest. Click a line or content to open its row and mark the tool's chip; click a tool to mark it in every row;
   click empty space to clear. The tools with a marked line come first, then four quiet ones; the rest are one
   **+N more**. Panels narrower than 600 px leave the flow out: the answer and the cards say the same.
 - **The table, the detail.** One row per kind of content and its trust, with how many sources, in how many runs,
-  in front of the agent for how many decisions, and the tools it led to. Blocked, held and confirmed first, then six
+  read before how many decisions, and the tools it led to. Blocked, held and confirmed first, then six
   more (flagged first, then the most runs; **+N more** shows the rest). Click a row for its sources one by one (the
   200 that matter most: a confirmed cause, then those before stopped calls, then the most cited). Each is named by
   where it was read: its run, record and time, with **OPEN** for that record.
