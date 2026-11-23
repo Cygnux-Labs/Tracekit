@@ -692,6 +692,46 @@ class ManagedHooks(unittest.TestCase):
         got = self.rows(managed={"disableAllHooks": True})["D-HOOKS-EVENT"]
         self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {self.managed}'))
 
+    def dropin(self, **settings):
+        """A `managed-settings.d/` drop-in beside the managed file, as an admin of the machine writes one."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "50-team.json")
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        return path
+
+    def test_a_dropin_that_turns_every_hook_off_fails_and_names_it(self):
+        """Claude Code merges the `managed-settings.d/` drop-ins with the managed file, so a `disableAllHooks` an admin
+        puts in a drop-in turns the managed hooks off. Doctor read `managed-settings.json` alone and passed."""
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
+        path = self.dropin(disableAllHooks=True)
+        got = self.rows()["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
+
+    def test_a_dropin_with_other_keys_leaves_the_hooks_on(self):
+        """Setting other keys is what the folder is for: doctor passes and says it read the drop-in."""
+        self.dropin(model="claude-sonnet-5", permissions={"deny": ["Bash(rm -rf *)"]})
+        got = self.rows()
+        self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok", got["D-HOOKS-EVENT"])
+        self.assertEqual(got["D-HOOKS-MANAGED"]["status"], "ok", got["D-HOOKS-MANAGED"])
+        self.assertIn("drop-in(s) in", got["D-HOOKS-MANAGED"]["detail"])
+
+    def test_a_dropin_folder_the_agent_can_write_fails(self):
+        """A drop-in only turns the hooks off if the agent's user can write there, which the managed file's own mode
+        doesn't say. Windows reports `0o40777` for every directory, so the mode this reads is the POSIX one."""
+        path = self.dropin(model="claude-sonnet-5")
+        folder = os.path.dirname(path)
+        real, writable, admin = os.lstat, types.SimpleNamespace(st_uid=0, st_mode=0o40777), \
+            types.SimpleNamespace(st_uid=0, st_mode=0o100644)
+
+        def lstat(p, *a, **kw):
+            return writable if str(p) == folder else admin if str(p) == path else real(p, *a, **kw)
+        with mock.patch.object(doctor.os, "name", "posix"), mock.patch.object(doctor.os, "lstat", lstat):
+            got = self.rows()["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{folder} is group- or world-writable", got["detail"])
+
     def test_inits_hooks_also_in_the_agents_own_settings_are_decided_twice(self):
         """With the managed file in use, init's v2 hooks left in the agent's own settings ran too, deciding every call
         twice, and doctor said nothing."""

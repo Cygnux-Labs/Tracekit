@@ -239,6 +239,55 @@ def collect(config=None, issuer_key=None):
 def _managed():
     return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
 
+def _dropin_folder(settings):
+    """Claude Code's `managed-settings.d/`: the drop-ins it merges with the admin-managed settings file beside them."""
+    return os.path.join(os.path.dirname(settings), "managed-settings.d")
+
+
+def _managed_dropins(settings):
+    """The drop-ins Claude Code merges with the admin-managed settings `settings`, in its order: the `*.json` files of
+    the `managed-settings.d/` folder beside it, by name. Claude Code's changelog: "Added `managed-settings.d/` drop-in
+    directory alongside `managed-settings.json`, letting separate teams deploy independent policy fragments that merge
+    alphabetically" (anthropics/claude-code CHANGELOG.md, read 2026-11-23). Neither that entry nor the CLI's docs say
+    which names the folder takes, or how a drop-in ranks against the file itself, so doctor reads every `*.json` in it
+    and treats a `disableAllHooks` in any of them as off, which holds under either rank. lean: a drop-in with another
+    suffix goes unread."""
+    folder = _dropin_folder(settings)
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:   # no folder, or one this user can't read: no drop-ins to check
+        return []
+    return [os.path.join(folder, n) for n in names
+            if n.endswith(".json") and os.path.isfile(os.path.join(folder, n))]
+
+
+def _untrusted(path):
+    """Problem with trusting `path` for what its contents say, or None: it must be root-owned and not group- or
+    world-writable. The directories above it are not read here; the managed file's own check (trusted_file) reads them."""
+    try:
+        st = os.lstat(path)
+    except OSError as e:
+        return f"{path}: {e.strerror}"
+    if st.st_uid != 0:
+        return f"{path} is not owned by root"
+    if st.st_mode & 0o022:
+        return f"{path} is group- or world-writable"
+    return None
+
+
+def _dropins(settings):
+    """(problem with the drop-ins beside the admin-managed `settings`, what the detail then says was checked). A drop-in
+    the agent's user can write is a way to set `disableAllHooks` and turn every hook off, so the folder and each file in
+    it must be root-owned and not group- or world-writable. Windows reports modes that mean nothing (ACLs), as for
+    D-KEYS-MODE, so there the detail says they were not checked."""
+    folder, found = _dropin_folder(settings), _managed_dropins(settings)
+    if not found:
+        return None, ""
+    if os.name == "nt":
+        return None, f", and {len(found)} drop-in(s) in {folder}, whose modes are not checked on Windows"
+    bad = [why for why in map(_untrusted, (folder, *found)) if why]
+    return "; ".join(bad) or None, f", and the {len(found)} drop-in(s) in {folder} are root-owned too"
+
 
 def _layers(paths, key):
     """The `key` object of each settings file in `paths` that has one, in order."""
@@ -1553,16 +1602,18 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
+    dropins = _managed_dropins(settings) if managed else []   # Claude Code merges these with the managed file
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
+        problem, note = _dropins(settings)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
-                                         "it" if read == [] else None)
+                                         "it" if read == [] else None) or problem
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
-            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
+            + (f", and {agent.pw_name} can read it" if read else "") + note, f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
-    layers = list(dict.fromkeys(sandbox_settings or [p for p in (
+    layers = list(dict.fromkeys([*(sandbox_settings or [p for p in (
         os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
-        settings, _managed()) if p]))
+        settings, _managed()) if p]), *dropins]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
     only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
     why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
@@ -1620,9 +1671,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript; only managed settings can
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
-            # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
+            # a drop-in is managed settings too: a disableAllHooks in one turns the managed hooks off
             managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
-            off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
+            off = [p for p in ((*([plugin_settings] if not managed else [settings]), *dropins) if managed_hooks
                                else dict.fromkeys([*layers, settings]))   # the hooks' own file too
                    if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
                 if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
