@@ -6043,17 +6043,19 @@ class SourceReader(unittest.TestCase):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), (calls, None))
 
-    def test_a_literal_name_an_alias_and_a_literal_getattr_are_read(self):
+    def test_a_literal_name_an_import_alias_and_a_literal_getattr_are_read(self):
         r = source.read('from browser_harness.helpers import js as run_js\n'
                         'url = "file:///etc/passwd"\n'
                         'run_js("document.title")\n'
                         'goto_url(url)\n'
-                        'getattr(helpers, "js")("location")\n'
-                        'f = js\nf("x")\n')
+                        'getattr(helpers, "js")("location")\n')
         self.assertIsNone(r.held)
         self.assertEqual([t for t, _ in r.calls],
-                         ["browser_use:evaluate", "browser_use:navigate", "browser_use:evaluate", "browser_use:evaluate"])
+                         ["browser_use:evaluate", "browser_use:navigate", "browser_use:evaluate"])
         self.assertEqual(r.calls[1][1], {"url": "file:///etc/passwd", "page_url": ""})
+        # a helper is only called by its name, never named again: the call is still decided
+        r = source.read('f = js\nf("x")')
+        self.assertEqual((r.calls, r.held), ([("browser_use:evaluate", {"code": "x", "page_url": ""})], "value"))
 
     def test_a_function_defined_in_the_cell_is_read_and_plain_python_is_not(self):
         r = source.read('def f():\n    goto_url("file:///etc/passwd")\nf()')
@@ -6062,7 +6064,7 @@ class SourceReader(unittest.TestCase):
         r = source.read('def f(url):\n    goto_url(url)\nf("file:///etc/passwd")')
         self.assertEqual((r.calls, r.held), ([], "arg"))
         r = source.read('open("/tmp/x", "w").write("x")')
-        self.assertEqual((r.calls, r.held), ([], "call"))
+        self.assertEqual((r.calls, r.held), ([], "open"))
         r = source.read('import json\njson.loads("{}")')
         self.assertEqual((r.calls, r.held), ([], None))
         r = source.read('import requests\nrequests.get("https://example.com/")')
@@ -6075,21 +6077,20 @@ class SourceReader(unittest.TestCase):
         r = source.read('class C:\n    url = "file:///x"\ngoto_url(url)')
         self.assertEqual((r.calls, r.held), ([], "arg"))
 
-    def test_a_builtin_spelled_through_the_builtins_module_is_read(self):
-        for code, calls, held in [
-                ('import builtins\nbuiltins.exec("goto_url(\'file:///x\')")',
-                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
-                ('import builtins as b\nb.eval("goto_url(\'file:///x\')")',
-                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
-                ('from builtins import __import__ as imp\nimp("os")', [], "__import__"),
-                ('__builtins__.exec("goto_url(\'file:///x\')")',
-                 [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
-                ('__builtins__ = {}\n__builtins__.exec("goto_url(\'file:///x\')")', [], "call"),
-                # a str has no exec method, and a method plain data lacks is held as on any other value
-                ('builtins = "x"\nbuiltins.exec("goto_url(\'file:///x\')")', [], "call")]:
+    def test_builtins_and_dunders_are_held(self):
+        """`builtins`, `__builtins__` and a dunder reach past the names the reader trusts: held, whatever they name."""
+        for code, held in [
+                ('import builtins\nbuiltins.exec("goto_url(\'file:///x\')")', "import"),
+                ('from builtins import __import__ as imp\nimp("os")', "import"),
+                ('__builtins__.exec("goto_url(\'file:///x\')")', "builtins"),
+                ('__builtins__["exec"]("goto_url(\'file:///x\')")', "builtins"),
+                ('builtins = "x"', "builtins"),
+                ('len.__self__', "dunder"),
+                ('getattr(len, "__self__")', "dunder"),
+                ('x = []\nx.__class__', "dunder")]:
             with self.subTest(code=code):
                 r = source.read(code)
-                self.assertEqual((r.calls, r.held), (calls, held))
+                self.assertEqual((r.calls, r.held), ([], held))
 
     def test_a_literal_join_is_read_not_held(self):
         r = source.read('goto_url("".join(["file://", "/etc/passwd"]))')
@@ -6100,9 +6101,9 @@ class SourceReader(unittest.TestCase):
         r = source.read('def f():\n    return () \nr = "https://docs.python.org/"\na, *r = f()\ngoto_url(r)')
         self.assertEqual((r.calls, r.held), ([], "arg"))
 
-    def test_a_helper_module_name_the_cell_shadowed_is_not_read(self):
+    def test_a_helper_module_name_the_cell_rebinds_is_held(self):
         r = source.read('helpers = "x"\nhelpers.js("document.title")')
-        self.assertEqual((r.calls, r.held), ([], "call"))   # not the helper: a method a str lacks, held
+        self.assertEqual(r.held, "bind")
 
     def test_what_it_cannot_follow_is_held(self):
         for code, cause in [
@@ -6130,7 +6131,8 @@ class SourceReader(unittest.TestCase):
     def test_a_shell_line_is_read_only_as_a_shell_line(self):
         for code, calls, held in [
                 ('os.system("id")', [("shell", {"command": "id"})], None),
-                ('from subprocess import getoutput\ngetoutput("id")', [("shell", {"command": "id"})], None),
+                ('subprocess.getoutput("id")', [("shell", {"command": "id"})], None),
+                ('from subprocess import getoutput\ngetoutput("id")', [], "import"),   # outside the list
                 ('subprocess.run("id", shell=True)', [("shell", {"command": "id"})], None),
                 ('asyncio.create_subprocess_shell("id")', [("shell", {"command": "id"})], None),
                 ('subprocess.run("id")', [], "program"),
@@ -6142,7 +6144,7 @@ class SourceReader(unittest.TestCase):
                  [("shell", {"command": ["sh", "-c", "id"]})], None),
                 ('import os\nos.posix_spawnp("sh", ["sh", "-c", "id"], {})',
                  [("shell", {"command": ["sh", "-c", "id"]})], None),
-                ('import pty\npty.spawn(["sh", "-c", "id"])', [("shell", {"command": ["sh", "-c", "id"]})], None),
+                ('pty.spawn(["sh", "-c", "id"])', [("shell", {"command": ["sh", "-c", "id"]})], None),
                 # the os.execl family takes its argv inline: it was an ordinary library call, left unread
                 ('import os\nos.execl("/bin/sh", "sh", "-c", "id")', [("shell", {"command": ["/bin/sh", "-c", "id"]})],
                  None),
@@ -6182,12 +6184,13 @@ class SourceReader(unittest.TestCase):
         self.assertEqual((state.count, r.held), (source.MAX_CALLS + 1, "calls"))
         self.assertLessEqual(len(r.calls), source.MAX_CALLS)
         names = "".join(f"v{i} = 'x'\n" for i in range(3500))
-        for scope in ("lambda: 0", "class C: 0", "[0 for _ in ()]"):   # each scope copies every name the cell has
+        # a class body copies every name the cell has; a function or comprehension copies none
+        for scope, held in (("lambda: 0", None), ("class C: 0", "budget"), ("[0 for _ in ()]", None)):
             with self.subTest(scope=scope):
                 start = time.monotonic()
                 r = source.read(names + f"{scope}\n" * 1500)
                 self.assertLess(time.monotonic() - start, 5)
-                self.assertEqual(r.held, "budget")
+                self.assertEqual(r.held, held)
         for n in (16, 20, 22):
             with self.subTest(n=n):
                 code = 'a = "xxxxxxxx"\n' + "a += a\n" * n + "goto_url(a)"
@@ -6205,7 +6208,7 @@ class SourceReader(unittest.TestCase):
         self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], None))
         r = source.read('url = "https://docs.python.org/"\n'
                         'eval("(url := \'file:///etc/passwd\')")\ngoto_url(url)')
-        self.assertEqual((r.calls, r.held), ([], "arg"))
+        self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], None))
         for code in ('exec("goto_url(\'file:///x\')", {})',
                      'eval("goto_url(\'file:///x\')", {"goto_url": goto_url})',
                      'exec("goto_url(\'file:///x\')", globals=globals)'):
@@ -6217,7 +6220,7 @@ class SourceReader(unittest.TestCase):
                         'def f():\n    global url\n    url = "file:///etc/passwd"\nf()\ngoto_url(url)')
         self.assertEqual((r.calls, r.held), ([], "arg"))
         r = source.read('def f():\n    u = "https://a"\n    def g():\n        nonlocal u\n'
-                        '        u = "file:///etc/passwd"\n    g()\n    goto_url(u)\nf()')
+                        '        u = "file:///etc/passwd"\n    goto_url(u)')
         self.assertEqual((r.calls, r.held), ([], "arg"))
 
     def test_match_comprehension_and_condition_targets_are_forgotten(self):
@@ -6240,7 +6243,7 @@ class SourceReader(unittest.TestCase):
     def test_a_match_capture_target_is_forgotten(self):
         for code, cause in [
                 ('match input():\n    case url:\n        pass\ngoto_url(url)', "arg"),
-                ('match input():\n    case press_key:\n        pass\npress_key("Enter")', "call")]:
+                ('match input():\n    case press_key:\n        pass\npress_key("Enter")', "bind")]:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], cause))
@@ -6265,16 +6268,19 @@ class SourceReader(unittest.TestCase):
                 self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (urls, held))
 
     def test_a_call_in_a_binding_target_is_read(self):
-        for code in ('d[goto_url("file:///etc/passwd")] = 1',
-                     'goto_url("file:///etc/passwd").y = 1',
-                     'for d[goto_url("file:///etc/passwd")] in []:\n    pass',
-                     'with open("/tmp/x") as d[goto_url("file:///etc/passwd")]:\n    pass',
-                     '[0 for d[goto_url("file:///etc/passwd")] in []]',
-                     'del d[goto_url("file:///etc/passwd")]',
-                     'd[goto_url("file:///etc/passwd")] += 1'):
+        """A target's subscript and an attribute's base run before the store: their calls are the cell's. Only plain
+        data may be stored into, and plain data holding plain data only takes plain data only."""
+        for code, held in [('d = {}\nd[goto_url("file:///etc/passwd")] = 1', None),
+                           ('goto_url("file:///etc/passwd").y = 1', "store"),
+                           ('d = {}\nfor d[goto_url("file:///etc/passwd")] in []:\n    pass', None),
+                           ('d = {}\nwith open("/tmp/x") as d[goto_url("file:///etc/passwd")]:\n    pass', "store"),
+                           ('d = {}\n[0 for d[goto_url("file:///etc/passwd")] in []]', None),
+                           ('d = {}\ndel d[goto_url("file:///etc/passwd")]', None),
+                           ('d = {}\nd[goto_url("file:///etc/passwd")] += 1', None),
+                           ('d[goto_url("file:///etc/passwd")] = 1', "store")]:
             with self.subTest(code=code):
                 r = source.read(code)
-                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], None))
+                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], held))
 
     def test_a_call_in_an_annotation_is_read(self):
         for code in ('x: goto_url("file:///etc/passwd") = 1',
@@ -6286,13 +6292,14 @@ class SourceReader(unittest.TestCase):
 
     @unittest.skipUnless(sys.version_info >= (3, 12), "PEP 695 syntax")
     def test_a_call_in_a_type_parameter_bound_is_read(self):
-        for code in ('def f[T: goto_url("file:///etc/passwd")](a: T):\n    pass',
-                     'class C[T: goto_url("file:///etc/passwd")]:\n    pass',
-                     'type X[T: goto_url("file:///etc/passwd")] = int',
-                     'class C[T: goto_url("file:///etc/passwd")]:\n    pass\nC.__type_params__[0].__bound__'):
+        for code, held in [('def f[T: goto_url("file:///etc/passwd")](a: T):\n    pass', None),
+                           ('class C[T: goto_url("file:///etc/passwd")]:\n    pass', None),
+                           ('type X[T: goto_url("file:///etc/passwd")] = int', None),
+                           ('class C[T: goto_url("file:///etc/passwd")]:\n    pass\nC.__type_params__[0].__bound__',
+                            "dunder")]:
             with self.subTest(code=code):
                 r = source.read(code)
-                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], None))
+                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], held))
 
     def test_a_joined_or_formatted_literal_is_capped_in_bytes(self):
         base = 'a = "\u00e9"\n' + "a += a\n" * 15   # 32,768 characters, 65,536 bytes
@@ -6301,10 +6308,10 @@ class SourceReader(unittest.TestCase):
                 r = source.read(base + tail)
                 self.assertEqual((r.calls, r.held), ([], "arg"))
 
-    def test_what_rebinds_an_attribute_setattr_or_a_helper_is_held_or_forgotten(self):
+    def test_what_rebinds_an_attribute_setattr_or_a_helper_is_held(self):
         for code, cause in [
-                ('helpers.press_key = os.system\npress_key("Enter")', "call"),
-                ('helpers.press_key += 1\npress_key("Enter")', "call"),
+                ('helpers.press_key = os.system\npress_key("Enter")', "value"),
+                ('helpers.press_key += 1\npress_key("Enter")', "store"),
                 ('setattr(helpers, "press_key", os.system)\npress_key("Enter")', "setattr"),
                 ('delattr(helpers, "press_key")\npress_key("Enter")', "delattr")]:
             with self.subTest(code=code):
@@ -6312,17 +6319,16 @@ class SourceReader(unittest.TestCase):
                 self.assertEqual(r.held, cause)
 
     def test_a_known_name_used_as_a_value_is_held(self):
-        r = source.read('goto_url.__call__("file:///etc/passwd")')   # a method of a helper, held as a call
-        self.assertEqual((r.calls, r.held), ([], "call"))
-        for code in ('getattr(goto_url, "__call__")("file:///etc/passwd")',
-                     'map(goto_url, ["https://docs.python.org/"])',
-                     '@js\ndef f():\n    pass',
-                     'def f():\n    return goto_url'):
+        for code, held in [('goto_url.__call__("file:///etc/passwd")', "dunder"),
+                           ('getattr(goto_url, "__call__")("file:///etc/passwd")', "dunder"),
+                           ('map(goto_url, ["https://docs.python.org/"])', "value"),
+                           ('@js\ndef f():\n    pass', "value"),
+                           ('def f():\n    return goto_url', "value")]:
             with self.subTest(code=code):
                 r = source.read(code)
-                self.assertEqual((r.calls, r.held), ([], "value"))
-        # the method on a call result is held before its arguments are visited, so the callee decides first
-        r = source.read('import threading\nthreading.Thread(target=os.system, args=("id",)).start()')
+                self.assertEqual((r.calls, r.held), ([], held))
+        # the method on a call result is held before its arguments are read, so the callee decides first
+        r = source.read('threading.Thread(target=os.system, args=("id",)).start()')
         self.assertEqual((r.calls, r.held), ([], "call"))
 
     def test_a_function_body_reads_parameters_imports_and_lambda_values_as_non_literal(self):
@@ -6359,7 +6365,7 @@ class SourceReader(unittest.TestCase):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], None))
 
-    def test_a_call_through_an_imported_module_is_held_unless_the_module_is_inert(self):
+    def test_an_import_outside_the_list_and_a_name_outside_an_inert_module_are_held(self):
         for code in ('import posix\nposix.system("id")',
                      'import shutil\nshutil.os.system("id")',
                      'import getpass\ngetpass.getuser()',
@@ -6367,30 +6373,32 @@ class SourceReader(unittest.TestCase):
                      'import importlib\nimportlib.__import__("os").system("id")',
                      'import timeit\ntimeit.timeit("1")',
                      'import asyncio\nasyncio.get_event_loop().subprocess_shell("id")',
-                     'import os\nos.getcwd()',
                      'from os import getcwd\ngetcwd()',
-                     'import os\ndef f():\n    return os\nf().system("id")',
                      'import posix\ndef f():\n    posix.system("id")',
                      'def f():\n    import posix\n    posix.system("id")',
                      'import posix\ngetattr(posix, "system")("id")',
+                     'import posix\nmap(posix.system, ["id"])',
+                     'import posix\nlist(map(posix.system, ["id"]))',
+                     'import posix\nsorted([], key=posix.getpid)'):
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], "import"))
+        for code in ('import os\nos.getcwd()',
+                     'import os\ndef f():\n    return os\nf().system("id")',
                      'import os.path\nos.path.os.system("id")',
                      'import os.path\nos.path.os.execv("/bin/sh", ["sh", "-c", "id"])',
                      'import os.path\nos.path.os.popen("id")'):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], "call"))
-        # a function of a non-inert imported module used as a value waits before something else calls it
-        for code in ('import posix\nmap(posix.system, ["id"])',
-                     'import posix\nlist(map(posix.system, ["id"]))',
-                     'import os.path\nmap(os.path.os.system, ["id"])',
-                     'import os.path\nmap(getattr(os.path, "os").system, ["id"])',
-                     'import posix\nsorted([], key=posix.getpid)'):
+        for code in ('import os.path\nmap(os.path.os.system, ["id"])',
+                     'import os.path\nmap(getattr(os.path, "os").system, ["id"])'):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], "value"))
-        # a rebound module name is no longer an imported module: the dynamic name decides
+        # a module name the cell rebinds
         r = source.read('import json\njson = object()\njson.loads("{}")')
-        self.assertEqual((r.calls, r.held), ([], "call"))
+        self.assertEqual(r.held, "bind")
 
     def test_an_inert_module_and_os_path_stay_unread(self):
         for code in ('import json\njson.dumps({})', 'import re\nre.sub("a", "b", "a")',
@@ -6404,17 +6412,15 @@ class SourceReader(unittest.TestCase):
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], None))
-        # an inert callee is still left unread while its arguments are read
-        r = source.read('import json\njson.dump(os.system, None)')
-        self.assertEqual((r.calls, r.held), ([], "value"))
-        # an inert function used as a value and the bare `os.path` module stay unread
+        r = source.read('import json\njson.dump(os.system, None)')   # json's file writer is not in the list
+        self.assertEqual((r.calls, r.held), ([], "call"))
+        # a function or module is only called: handed on as a value, it waits
         for code in ('import json\nmap(json.dumps, [{}])', 'import re\nmap(re.sub, ["a"])',
-                     'import os.path\nmap(os.path.join, ["a"])',
-                     'import os.path\np = os.path',
-                     'import os.path\nmap(getattr(os.path, "join"), ["a"])'):
+                     'import os.path\nmap(os.path.join, ["a"])', 'import os.path\np = os.path',
+                     'import os.path\nmap(getattr(os.path, "join"), ["a"])', 'sorted(["b"], key=len)'):
             with self.subTest(code=code):
                 r = source.read(code)
-                self.assertEqual((r.calls, r.held), ([], None))
+                self.assertEqual((r.calls, r.held), ([], "value"))
 
     def test_under_an_inert_module_only_its_own_public_names_one_level_down_stay_unread(self):
         """A module's attributes include the modules it imported, so below an inert module only a public function or
@@ -6432,7 +6438,7 @@ class SourceReader(unittest.TestCase):
             # a method reached through its class runs on whatever object the cell passes as its first argument
             ('import datetime\ndatetime.datetime.strftime(d, "%Y")', "call"),
             ('import re\nre._compile("a", 0)', "call"),
-            ('import string\nstring.Template.__init_subclass__()', "call"),
+            ('import string\nstring.Template.__init_subclass__()', "dunder"),
             ('import json\njson.decoder.JSONDecoder()', "call"),
             ('import json\njson.JSONDecoder()', "call"),   # defined in json.decoder, not in json
             ('import json\nd = json.decoder', "value"),
@@ -6442,32 +6448,63 @@ class SourceReader(unittest.TestCase):
             ('import os.path\nos.path.os.getcwd()', "call"),
             ('import json\ngetattr(json, "x")', "value"),
             ('import json\nvars(json)', "vars"),
-            # a cell may read the clock, not set it or reset the process's time zone
+            # a cell may read the clock, not set it or reset the process's time zone; nor set decimal's context,
+            # write or read a file through json, or purge re's cache
             ('import time\ntime.time()', None),
             ('import time\ntime.clock_settime(0, 0)', "call"),
             ('import time\ntime.clock_settime_ns(0, 0)', "call"),
-            ('import time\ntime.tzset()', "call")]
-        for module in (*source.INERT_MODULES, "os.path"):   # two levels below each inert module
+            ('import time\ntime.tzset()', "call"),
+            ('import decimal\ndecimal.setcontext(decimal.Context())', "call"),
+            ('import decimal\ndecimal.localcontext()', "call"),
+            ('import json\njson.dump([], None)', "call"),
+            ('import json\njson.load(None)', "call"),
+            ('import re\nre.purge()', "call")]
+        for module in source.INERT_MODULES - {"os"}:   # two levels below each inert module
             name = min(n for n in source.INERT_CALLS if n.rpartition(".")[0] == module)
             cases += [(f"import {module}\n{name}.attr()", "call"), (f"import {module}\nx = {name}.attr", "value")]
         for code, held in cases:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], held))
-        for dotted in source.INERT_VALUES:
-            with self.subTest(dotted=dotted):
-                module = "os.path" if dotted.startswith("os.path") else dotted.split(".")[0]
-                below = dotted[len(module) + 1:].split(".") if dotted != module else []
-                self.assertLessEqual(len(below), 2)
-                self.assertFalse(any(part.startswith("_") for part in below))
-                value = functools.reduce(getattr, dotted.split(".")[1:], importlib.import_module(dotted.split(".")[0]))
-                self.assertTrue(dotted == "os.path" or not inspect.ismodule(value))
-                if len(below) == 2:   # under a class the module defines: a classmethod bound to it, or plain data
-                    self.assertIn(f"{module}.{below[0]}", source.INERT_CALLS)
-                    cls = getattr(importlib.import_module(module), below[0])
-                    self.assertTrue(inspect.isclass(cls))
-                    if dotted in source.INERT_CALLS:
-                        self.assertIs(value.__self__, cls)
+
+    def test_the_inert_lists_are_what_inspect_finds_on_this_python(self):
+        """source.py's lists are reviewed literals; each name in them is what `inspect` finds here: a public function
+        or class the module defines itself (or in its C accelerator), a classmethod bound to such a class, a path
+        function in os.path.__all__, or a public constant that is neither callable nor a module."""
+        calls, data = set(), set()
+        modules = sorted(source.INERT_MODULES - {"os", "os.path"})
+        for name in modules:
+            homes = (name, "_" + name)
+            for attr, value in vars(importlib.import_module(name)).items():
+                if attr.startswith("_"):
+                    continue
+                dotted = f"{name}.{attr}"
+                if not ((inspect.isroutine(value) or inspect.isclass(value))
+                        and getattr(value, "__module__", None) in homes):
+                    if not callable(value) and not inspect.ismodule(value):
+                        data.add(dotted)
+                    continue
+                calls.add(dotted)
+                for member in dir(value) if inspect.isclass(value) else ():
+                    if member.startswith("_"):
+                        continue
+                    bound = getattr(value, member)
+                    owner = next((k for k in value.__mro__ if member in vars(k)), None)
+                    if inspect.isroutine(bound) and getattr(bound, "__self__", None) is value \
+                            and getattr(owner, "__module__", None) in homes:
+                        calls.add(f"{dotted}.{member}")
+                    elif not callable(bound) and not inspect.ismodule(bound):
+                        data.add(f"{dotted}.{member}")
+        for attr in os.path.__all__:
+            (calls if inspect.isroutine(getattr(os.path, attr)) else data).add(f"os.path.{attr}")
+        self.assertEqual(source.INERT_CALLS - calls, set())
+        self.assertEqual(source.INERT_DATA - data, set())
+        self.assertEqual({n.split(".")[0] if not n.startswith("os.path.") else "os.path"
+                          for n in source.INERT_CALLS | source.INERT_DATA}, set(modules) | {"os.path"})
+        for dotted in source.INERT_TYPES:
+            module, _, attr = dotted.partition(".")
+            self.assertIn(attr, importlib.import_module(module).__all__)
+            self.assertTrue(getattr(importlib.import_module(module), attr).__module__.startswith(module + "."))
 
     ORDINARY = {   # cells that only compute: none of them waits
         "json parse": 'import json\ndata = json.loads(\'{"a": 1}\')\nprint(data["a"])',
@@ -6501,13 +6538,35 @@ class SourceReader(unittest.TestCase):
         "pattern method": 'import re\nre.compile("a").sub("b", "a")',
         "str chain": 's = " A,b "\nprint(s.strip().lower().split(","), f"{len(s)}".zfill(3))',
         "harness json": 'print(json.loads("[1]"), time.time())',   # the harness imported json and time
-        "builtin attribute": 'print(str.join(",", ["a"]), dict.fromkeys("ab"))'}
+        "builtin attribute": 'print(str.join(",", ["a"]), dict.fromkeys("ab"))',
+        # plain data by construction: what json.loads, str.split and re.finditer return holds plain data only
+        "comprehension strip": 'print([s.strip() for s in "a, b".split(",")])',
+        "loop line strip": 'for line in "a\\nb".splitlines():\n    print(line.strip())',
+        "now().strftime": 'from datetime import datetime\nprint(datetime.now().strftime("%Y-%m-%d"))',
+        "d.isoformat": 'from datetime import datetime\nd = datetime.now()\nprint(d.isoformat())',
+        "finditer loop": 'import re\nfor m in re.finditer(r"\\d+", "a1b22"):\n    print(m.group())',
+        "json items loop get": 'import json\ndata = json.loads(\'{"items": [{"n": 1}]}\')\n'
+                               'for item in data["items"]:\n    print(item.get("n"))',
+        "re.sub strip": 'import re\nprint(re.sub(r"\\s+", " ", "a  b").strip())',
+        "dict items loop": 'x = {"a": 1}\nfor k, v in x.items():\n    print(k.upper(), v)',
+        "join sorted set": 'print(", ".join(sorted({"b", "a"})))',
+        "sum genexp": 'nums = [1, 2]\nprint(sum(n * 2 for n in nums))',
+        "time.sleep": 'import time\ntime.sleep(0)',
+        "timedelta days": 'from datetime import timedelta\nprint(timedelta(days=2).total_seconds())',
+        "m.group after if": 'import re\nm = re.search(r"(\\d+)", "a12")\nif m:\n    print(m.group(1))',
+        "f-string method": 'name = "x"\nprint(f"{name}".upper())',
+        "Decimal quantize": 'from decimal import Decimal\nprint(Decimal("1.234").quantize(Decimal("0.01")))',
+        "dict comp items": 'd = {"a": 1}\nprint({k: v * 2 for k, v in d.items()})',
+        "sorted with a lambda": 'print(sorted([("a", 2)], key=lambda p: p[1]))',
+        "json of a helper's text": 'data = json.loads(js("JSON.stringify({a: 1})"))\nprint(data.get("a"))',
+        "function with plain locals": 'def total(n):\n    return n * 2\nprint(total(2))'}
 
     def test_ordinary_cells_stay_unread(self):
         for name, code in self.ORDINARY.items():
             with self.subTest(name=name):
                 r = source.read(code)
-                self.assertEqual((r.calls, r.held), ([], None))
+                evaluates = ["browser_use:evaluate"] * code.count("js(")
+                self.assertEqual(([t for t, _ in r.calls], r.held), (evaluates, None))
 
     def test_a_method_of_anything_but_plain_data_is_held(self):
         """A method is left unread only on plain data, through a method of its own type (PLAIN_METHODS). A call or
@@ -6532,11 +6591,12 @@ class SourceReader(unittest.TestCase):
                 ('js("x").strip()', evaluate, "call"),
                 ('import json\ndata = json.loads("{}")\ndata.click()', [], "call"),   # not a dict method
                 ('class C:\n    pass\nC.m()', [], "call"),
-                ('dict = "x"\ndict.fromkeys("ab")', [], "call"),   # no longer the builtin, and no str method
-                ('d = {}\nd.get("a").strip()', [], "call"),   # an element: the cell may have put anything there
-                ('xs = [1]\nxs[0].bit_length()', [], "call"),
+                ('dict = "x"\ndict.fromkeys("ab")', [], "bind"),   # a builtin rebound
+                # an element of what holds a value the reader can't follow
+                ('d = {"k": js("x")}\nd.get("k").strip()', evaluate, "call"),
+                ('xs = [js("x")]\nxs[0].bit_length()', evaluate, "call"),
                 ('s = str(js("x"))\ns.strip()', evaluate, "call"),   # str() of a value not known to be plain
-                ('import json\njson.loads("{}", object_hook=f).get("a")', [], "call")]:
+                ('import json\njson.loads("{}", object_hook=f).get("a")', [], "value")]:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), (calls, held))
@@ -6575,15 +6635,137 @@ class SourceReader(unittest.TestCase):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], held))
 
+    # cells the reader left unread at 78f05d807e (each a shape: the commands are placeholders)
+    WALKED_AROUND = [
+        # a callable stored anywhere but under a plain name, then handed to something that calls it
+        ('d = {}\nd["k"] = os.system\nsorted(["id"], key=d["k"])', "value"),
+        ('class C:\n    pass\nC.f = os.system\nlist(map(C.f, ["id"]))', "value"),
+        ('if input():\n    g = os.system\nelse:\n    g = os.system\nlist(map(g, ["id"]))', "value"),
+        ('global g\ng = os.system\nlist(map(g, ["id"]))', "value"),
+        ('try:\n    e = exec\nexcept Exception:\n    pass\nlist(map(e, ["x = 1"]))', "value"),
+        ('d = {}\nd["k"] = goto_url\nlist(map(d["k"], ["https://x.test/"]))', "value"),
+        ('json.loads = os.system\nsorted(["id"], key=json.loads)', "value"),
+        # an attribute chain from a builtin
+        ('len.__self__.exec("x = 1")', "dunder"),
+        ('list(map(len.__self__.exec, ["x = 1"]))', "dunder"),
+        ('list(map(__builtins__["exec"], ["x = 1"]))', "builtins"),
+        ('import builtins\nlist(map(getattr(builtins, "eval"), ["1"]))', "import"),
+        ('list(map(getattr(len.__self__, "exec"), ["x = 1"]))', "dunder"),
+        # a name the reader trusts, rebound
+        ('import builtins\nbuiltins.sorted = os.system\nsorted("id")', "import"),
+        ('__builtins__["sorted"] = os.system\nsorted("id")', "builtins"),
+        ('__builtins__["sorted"] = len.__self__.exec\nsorted("x = 1")', "builtins"),
+        ('goto_url = os.system', "bind"),
+        ('import pickle as json', "import"),
+        ('f = os.system', "value"),
+        ('list(map(f, ["id"]))', "value"),   # the next cell: f is an earlier cell's
+        ('json.loads = os.system', "value"),
+        ('import builtins\nbuiltins.sorted = os.system', "import"),
+        ('x = ["a"]\nimport json as x\nx.remove("a")', "bind"),
+        ('def sorted(v):\n    return v\ny = sorted(prev)\ny.clear()', "bind"),
+        ('isinstance = print\nisinstance(1, json.JSONDecodeError)', "bind"),
+        ('def json():\n    pass\ntry:\n    pass\nexcept json.JSONDecodeError:\n    pass', "bind"),
+        ('json = prev\ntry:\n    pass\nexcept json.JSONDecodeError:\n    pass', "bind"),
+        # a body read with the names it had when defined, run after the cell rebinds them
+        ('def f():\n    goto_url("https://docs.python.org/")\ngoto_url = os.system\nf()', "bind"),
+        ('def f():\n    json.loads("1")\nimport pickle as json\nf()', "import"),
+        ('url = "https://docs.python.org/"\ng = (goto_url(url) for _ in [1])\nurl = "file:///etc/passwd"\nlist(g)',
+         "arg"),
+        ('g = (json.loads("1") for _ in [1])\nimport pickle as json\nlist(g)', "import"),
+        ('g = (json.loads(x) for x in [1])', "call"),
+        ('f = lambda: goto_url("https://docs.python.org/")\ngoto_url = os.system\nf()', "bind"),
+        # a module the cell writes, then imports; a file opened to write
+        ('print("x = 1", file=open("evil_mod.py", "w"))', "print"),
+        ('import evil_mod', "import"),
+        ('import antigravity', "import"),
+        ('json.dump(["x"], open("/tmp/x.json", "w"))', "call"),
+        ('open("/tmp/x", "w")', "open"),
+        # inert-list members that change state
+        ('import decimal\ndecimal.setcontext(decimal.Context(prec=1))', "call"),
+        ('import decimal\ndecimal.DefaultContext.prec = 1', "store"),
+        ('import string\nstring.digits = "x"', "store"),
+        ('import re\nre.purge()', "call")]
+
+    def test_what_walked_around_the_reader_is_held(self):
+        for code, held in self.WALKED_AROUND:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], held))
+
+    def test_each_rule_of_the_subset_holds_what_it_names(self):
+        evaluate = [("browser_use:evaluate", {"code": "x", "page_url": ""})]
+        for code, calls, held in [
+                # a method is checked against the receiver's own type: a str has no append
+                ('s = "a"\ns.append(1)', [], "call"),
+                ('s = "a"\nf = s.strip', [], "value"),   # a method taken as a value
+                ('str.lower("A")', [], "call"),   # a builtin type's function outside BUILTIN_ATTRS
+                ('__build_class__(lambda: None, "C")', [], "dunder"),
+                # plain only when all it holds is plain: a container built from a helper's result, a comprehension
+                # or loop over one, a json.loads with a hook
+                ('xs = list([js("x")])\nxs[0].strip()', evaluate, "call"),
+                ('[x.strip() for x in js("x")]', evaluate, "call"),
+                ('for x in js("x"):\n    x.strip()', evaluate, "call"),
+                ('import json\njson.loads("{}", object_hook=lambda d: d).get("a")', [], "call"),
+                # plain data holding plain data takes plain data only; nothing else is stored into
+                ('d = json.loads("{}")\nd.update(k=js("x"))', evaluate, "store"),
+                ('d = json.loads("{}")\nd["k"] = js("x")', evaluate, "store"),
+                ('xs = [1]\nxs += [js("x")]', evaluate, "store"),
+                ('d = js("x")\nd["k"] = 1', evaluate, "store"),
+                ('r = js("x")\nr2 = r', evaluate, "value"),   # another name for a value it can't follow
+                # a block that may not run, or may stop early, leaves its names unknown after it
+                ('x = js("x")\nfor _ in range(1):\n    break\nelse:\n    x = []\nx.clear()', evaluate, "call"),
+                ('x = js("x")\nwhile input():\n    break\nelse:\n    x = []\nx.clear()', evaluate, "call"),
+                ('x = js("x")\nwith open("a"):\n    x = []\nx.clear()', evaluate, "call"),
+                ('x = js("x")\ntry:\n    x = []\nexcept Exception:\n    pass\nx.clear()', evaluate, "call"),
+                # a body that runs later trusts no name the cell binds, nor a module
+                ('def f():\n    return json.loads("1")', [], "call"),
+                ('def f(len):\n    return len("a")', [], "call"),
+                ('try:\n    pass\nexcept bu:\n    pass', [], "value"),
+                # what the subset leaves unread: an else branch starts where the if did, a class body has its own names
+                ('x = []\nif input():\n    x = js("x")\nelse:\n    x.clear()', evaluate, None),
+                ('x = []\ntry:\n    pass\nfinally:\n    x.clear()', [], None),
+                # a handler or an else may have run, or not
+                ('x = []\ntry:\n    pass\nexcept Exception:\n    x = js("x")\nx.clear()', evaluate, "call"),
+                ('x = []\ntry:\n    pass\nexcept Exception:\n    pass\nelse:\n    x = js("x")\nx.clear()', evaluate,
+                 "call"),
+                # an import may bind a name the reader trusts only to what it already is
+                ('from datetime import time\ntime.sleep(1)', [], "bind"),
+                ('import re as json\njson.loads("1")', [], "bind"),
+                ('d = {}\nv = getattr(d, name)', [], "getattr"),
+                # each possible type's own table: an int's is_integer (3.12 on) is in no table, a float's is
+                ('len("a").is_integer()', [], "call" if hasattr(int, "is_integer") else None)]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, held))
+        r = source.read('u = "https://docs.python.org/"\nclass C:\n    u = "file:///etc/passwd"\ngoto_url(u)')
+        self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["https://docs.python.org/"], None))
+
+    def test_a_name_rebound_by_an_import_a_def_or_a_handler_is_never_plain(self):
+        """Each of these was left unread when the reader kept a name plain across a rebinding: an import, a `def`, an
+        `except ... as` in a loop, a shadowed builtin, a rebound `isinstance`."""
+        for code, held in [
+                ('x = ["a"]\nimport json as x\nx.remove("a")', "bind"),
+                ('x = []\ndef x():\n    pass\nx.append(1)', "call"),
+                ('x = ["a"]\nfor _ in range(2):\n    x.remove("a")\n    import json as x', "bind"),
+                ('x = ["a"]\nfor _ in range(2):\n    x.remove("a")\n    def x():\n        pass', "call"),
+                ('x = ["a"]\nfor _ in range(2):\n    x.remove("a")\n    try:\n        pass\n'
+                 '    except Exception as x:\n        pass', "call"),
+                ('def sorted(v):\n    return v\ny = sorted(prev)\ny.clear()', "bind"),
+                ('isinstance = print\nisinstance(1, json.JSONDecodeError)', "bind")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], held))
+
     def test_the_plain_tables_name_what_they_say(self):
-        for kind, names in source.PLAIN_METHODS.items():
-            for name in names.split():
-                with self.subTest(method=f"{kind.__name__}.{name}"):
-                    self.assertTrue(callable(getattr(kind, name)))
-        for name in source.FRESH_CALLS | source.PURE_CALLS:
+        for table in (source.PLAIN_METHODS, source.PLAIN_DATA):
+            for kind, names in table.items():
+                for name in names:
+                    with self.subTest(name=f"{kind.__name__}.{name}"):
+                        self.assertTrue(hasattr(kind, name))
+                        self.assertEqual(callable(getattr(kind, name)), table is source.PLAIN_METHODS)
+        for name in source.FRESH_CALLS | source.PURE_CALLS | set(source._BUILT):
             with self.subTest(call=name):
                 self.assertTrue(name in source.INERT_CALLS or name in dir(builtins))
-        self.assertTrue(source.INERT_TYPES >= {"json.JSONDecodeError", "json.JSONDecoder"})
 
     def test_a_raised_visitor_a_reflection_call_and_an_argv_star_are_held(self):
         with mock.patch.object(source.Reader, "visit", side_effect=RuntimeError("boom")):
@@ -6601,7 +6783,7 @@ class SourceReader(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "ran")
         r = source.read(f'open({path!r}, "w").write("x")')
-        self.assertEqual((r.calls, r.held), ([], "call"))
+        self.assertEqual((r.calls, r.held), ([], "open"))
         self.assertFalse(os.path.exists(path))
         self.assertEqual((source.read("raise SystemExit(1)").calls, source.read("raise SystemExit(1)").held), ([], None))
 
@@ -6782,15 +6964,17 @@ class CellSource(unittest.TestCase):
     def test_a_cell_with_no_calls_is_allowed(self):
         self.assertEqual(self.cell(self.browser, "")["verdict"], "allow")
 
-    def test_a_class_body_a_builtin_spelling_and_a_join_are_decided(self):
-        for code in ('class C:\n    goto_url("file:///etc/passwd")',
-                     'import builtins\nbuiltins.exec("goto_url(\'file:///etc/passwd\')")',
-                     '__builtins__.exec("goto_url(\'file:///etc/passwd\')")',
-                     'goto_url("".join(["file://", "/etc/passwd"]))'):
+    def test_a_class_body_and_a_join_are_decided_and_a_builtin_spelling_waits(self):
+        for code in ('class C:\n    goto_url("file:///etc/passwd")', 'goto_url("".join(["file://", "/etc/passwd"]))'):
             with self.subTest(code=code):
                 d = self.cell(self.browser, code)
                 self.assertEqual(d["verdict"], "deny")
                 self.assertIn("TK-B001", d["rule_ids"])
+        for code in ('import builtins\nbuiltins.exec("goto_url(\'file:///etc/passwd\')")',
+                     '__builtins__.exec("goto_url(\'file:///etc/passwd\')")'):
+            with self.subTest(code=code):
+                d = self.cell(self.browser, code)
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SOURCE-PARSE"]))
 
     def test_a_call_in_a_target_or_an_annotation_is_decided(self):
         for code in ('d[goto_url("file:///etc/passwd")] = 1',
