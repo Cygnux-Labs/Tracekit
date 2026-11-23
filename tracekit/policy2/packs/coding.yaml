@@ -310,8 +310,9 @@ deny:
     # lean: a tripwire, as TK-D007: code that calls approval_decide itself (python -c, a script, a copy or link of the
     # entry script an earlier call made, run under another name; one the same call makes is read as tracekit, by
     # shell.py's _tracekit_copies) isn't read, nor an action from stdin (`xargs tracekit`), a
-    # value the parser makes of a literal with an operator other than a default, alternate or replacement (`D=xapprove; tracekit ${D#x}
-    # ID` is read as written and empty), a variable the line gives no literal as the action after approvals' options
+    # value the parser makes of a literal with an operator other than a default, alternate, replacement or a
+    # prefix or suffix removal with a literal pattern (`D=xapprove; tracekit ${D#x*} ID` is read as written and
+    # empty), a variable the line gives no literal as the action after approvals' options
     # (`--signer /tmp/s "$A"`: the joined argv can't tell it from --signer's value), an unquoted --signer value bash splits into a value and an action (`--signer
     # $1 list` with $1 `s approve`), a runner's own options before its subcommand (`uv -q run`) or a runner
     # policy2/shell.py doesn't name (`hatch env run`); when that must hold too, run system mode, whose signer

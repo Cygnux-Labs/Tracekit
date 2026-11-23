@@ -4216,6 +4216,31 @@ class ReadAsBash(unittest.TestCase):
                 with self.subTest(backend=backend, line=line):
                     self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
 
+    def test_an_approval_answered_through_a_prefix_or_suffix_removal_is_held(self):
+        """#983 item 2: a prefix or suffix removal with a literal pattern, of a variable the line gives a literal,
+        is computed on the literal, as a default, alternate or replacement already is: `D=xapprove; tracekit
+        ${D#x} apr-x` reads as `tracekit approve apr-x`, and `D=approvex; tracekit ${D%x} apr-x` the same, so
+        TK-D012 holds each on both engines. The hold is an ask, not a deny: the engine downgrades a deny that only
+        a computed reading makes, the line as written not reading as approve. A glob in the pattern keeps today's
+        reading (the pattern itself denies, as an unread action may be approve); a variable the line doesn't know
+        stays allowed, as does a removal that makes a listing (`D=xlist; tracekit approvals ${D#x}`). A value made
+        by ^, a comma, an @ transform or a substring stays unread, as before."""
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
+            for line in ("D=xapprove; tracekit ${D#x} apr-x", "D=xapprove; tracekit ${D##x} apr-x",
+                         "D=approvex; tracekit ${D%x} apr-x", "D=approvex; tracekit ${D%%x} apr-x",
+                         "D=xxapprove; tracekit ${D#xx} apr-x", "D=approve; tracekit ${D#x} apr-x",
+                         "D=xapprove; tracekit ${D#'x'} apr-x", "D=xapprove; tracekit ${D#x*} apr-x"):
+                with self.subTest(backend=backend, line=line):
+                    d = e.decide("Bash", {"command": line})
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+                    self.assertIn("TK-D012", d["rule_ids"], d)
+            for line in ("hatch env run pytest", "hatch env run tracekit approvals list",
+                         "D=xlist; tracekit approvals ${D#x}", "D=xlist; tracekit ${D#x} apr-x",
+                         "tracekit ${D#x} apr-x"):
+                with self.subTest(backend=backend, line=line):
+                    self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
+
     def test_an_approval_action_through_an_indirect_name_or_a_signer_value_with_a_space(self):
         """An indirect expansion as the action (${!#} is the last positional parameter, ${!1} the
         variable $1 names, ${!appr*} the names that start appr) may be approve; and a --signer value with a space in
