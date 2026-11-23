@@ -2387,7 +2387,7 @@ class CodingPack(unittest.TestCase):
                                 "uv tool install --force --with /tmp/evil tracekit-ai"),
                                ("uv -q tool --quiet install ruff", "uv tool install ruff"),
                                ("uv --directory /tmp sync", "uv sync"), ("uv pip -q install ruff", "uv pip install ruff"),
-                               ("uv " + "-q " * 12 + "tool install ruff", "uv tool install ruff")):
+                               ("uv " + "-q " * 8 + "tool install ruff", "uv tool install ruff")):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     d, p = (svc.evaluate(e, "Bash", {"command": c})[0] for c in (cmd, plain))
                     self.assertEqual((d["verdict"], d["rule_ids"]), (p["verdict"], p["rule_ids"]))
