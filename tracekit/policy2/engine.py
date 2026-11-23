@@ -4834,7 +4834,8 @@ def _effects_of(command, prints, work):
         # --force replaces what is there, as `uv tool install --force` does: the folder it installs into is named, along a root too
         out.extend("NAMED_TARGET:" + v for v in _option_values(args, *_LOCATION_OPTIONS, "--install-dir", "--root"))
     if not _known_program(exe):   # a program the parser doesn't know: held where its words name a trust root
-        out.extend("NAMED_TARGET:" + w for w in _named_words(args))
+        text = _powershell_text(args) if exe in ("set-content", "add-content") else ()
+        out.extend("NAMED_TARGET:" + w for w in _named_words([a for i, a in enumerate(args) if i not in text]))
         out.extend("INSIDE_TARGET:" + w for w in _assigned_words(args))
     sides = _side_outputs(exe, args, command)
     out.extend("NAMED_TARGET:" + w for w in sides)   # (a folder along a root, a harness's path too)
@@ -4865,6 +4866,41 @@ def _named_words(args):
 
 
 _LOCATION_OPTIONS = ("--prefix", "--destdir", "--libdir", "--bindir", "--exec-prefix", "--sbindir", "--sysconfdir")
+# the switches of PowerShell's Set-Content and Add-Content, and the common ones: a name one of them starts with takes no
+# value (any other option takes the next word, or its own after `:`)
+_PS_SWITCHES = ("passthru", "force", "nonewline", "asbytestream", "whatif", "confirm", "usetransaction", "verbose", "debug")
+
+
+def _powershell_text(args):
+    """The places in a Set-Content or Add-Content call's `args` that PowerShell binds to -Value, the text it writes (not a
+    path: `Set-Content README.md 'see ~/.claude/settings.json'`): -Value's word (`-Va` on; `-Value:x` itself), else the
+    first positional word when -Path, -LiteralPath or -PSPath is named, the second when it isn't."""
+    text, named, value, positional, take = set(), False, False, 0, None
+    for i, a in enumerate(args):
+        if take is not None:
+            if take:
+                text.add(i)
+            take = None
+            continue
+        if a.startswith("-") and len(a) > 1:
+            name, colon, _ = a[1:].partition(":")
+            name = name.casefold()
+            if len(name) > 1 and "value".startswith(name):
+                value = True
+                if colon:
+                    text.add(i)
+                else:
+                    take = True
+            else:   # (a name that may be a path's or a switch's is a path's)
+                path = any(p.startswith(name) for p in ("path", "literalpath", "pspath", "lp"))
+                named = named or path
+                if not colon and (path or not any(s.startswith(name) for s in _PS_SWITCHES)):
+                    take = False
+            continue
+        positional += 1
+        if not value and positional == (1 if named else 2):
+            text.add(i)
+    return text
 
 
 def _pieces(word):

@@ -5635,6 +5635,27 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertFalse({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
 
+    def test_a_powershell_content_writers_text_names_no_path(self):
+        """The 1.8 assembly: a program the parser doesn't know is held where a word of it names a harness's file or a
+        trust root (TK-F015), so #992's ordinary prose, `Set-Content README.md 'Settings live in
+        ~/.claude/settings.json'`, was held. Set-Content and Add-Content bind -Value, or the positional word -Path doesn't
+        take, to the text they write: that text names no path, and the file they write is still read."""
+        held = ("Set-Content ~/.local/bin/tracekit x", "Set-Content -Value x -Path ~/.local/bin/tracekit",
+                "Set-Content -Value x ~/.local/bin/tracekit", "Set-Content -LiteralPath ~/.local/bin/tracekit -Value x",
+                "Set-Content -Path:~/.local/bin/tracekit x", "Set-Content -Encoding utf8 ~/.local/bin/tracekit x",
+                "Set-Content -p ~/.local/bin/tracekit x", "Add-Content -Force ~/.claude/settings.json x")
+        benign = ("Set-Content README.md 'Settings live in ~/.claude/settings.json'",
+                  "Set-Content -Value:'see ~/.claude/settings.json' notes.md",
+                  "Set-Content -Value 'see ~/.claude/settings.json' -Path notes.md",
+                  "Add-Content -Path notes.md 'see ~/.claude/settings.json'")
+        for pack, engine, e in self.every_pack():
+            for cmd in held:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": cmd})["rule_ids"])
+            for cmd in benign:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertNotIn("TK-F015", e.decide("Bash", {"command": cmd})["rule_ids"])
+
     @pytest.mark.serial
     def test_plugin_review_7_the_quadratic_shapes_are_read_in_bounded_time(self):
         """Four shapes took up to 288 s of a decision (a lazy match from each `$(` or backquote of a path, `cd` lines in
