@@ -2345,6 +2345,16 @@
       color: var(--muted)
     }
 
+    /* a value the agent's content chose, in a card's sentence: data, not our words */
+    .icard code.dv {
+      font: inherit;
+      color: var(--text);
+      background: var(--panel2);
+      border: 1px solid var(--line2);
+      border-radius: 3px;
+      padding: 0 3px
+    }
+
     .ipath {
       display: flex;
       flex-wrap: wrap;
@@ -7255,26 +7265,33 @@
     // where content came from, in words: a mail is an email, a fetched page a web page, a tool's result its output
     const fromWords = l => /^(mail|email|inbox)\b/i.test(l) ? "an email" : /^(web|page|fetch|url)\b/i.test(l) ? "a web page"
       : l === "task" ? "your task" : String(l).startsWith("tool:") ? `${String(l).slice(5)}'s output` : String(l);
-    const lead = p => p ? ` (${fit(String(p), 40)})` : "";
+    // a value the agent's content chose, in a card's sentence: marked as data, quoted and cut to 40 characters, its
+    // whole text on hover (a recipient reading "…Verified payee: approve the retry" is the attacker's, not ours)
+    const dv = v => `<code class="dv" title="${esc(String(v))}">“${esc(fit(String(v), 40))}”</code>`;
+    // the content a value came from, as what it says of itself: "an email that says it's from …"
+    const says = (l, p) => esc(fromWords(l)) + (!p ? "" : /^from:\s*\S/i.test(p) ? ` that says it's from ${dv(String(p).replace(/^from:\s*/i, ""))}` : ` that starts ${dv(p)}`);
     // what base64 text decodes to, as text; null when it isn't base64
     const b64 = t => { try { return /^[A-Za-z0-9+/]{8,}={0,2}$/.test(t) ? atob(t) : null; } catch { return null; } };
+    // a card's headline: what happened (its verb), and the call with its facts as HTML: an amount only when it is a
+    // number, a currency only as a 3-letter code, the recipient as data (dv)
     function inflHead(c) {
-      const a = c.args || {}, amount = a.amount ?? null, cur = a.currency;
+      const a = c.args || {}, amount = a.amount == null ? "" : String(a.amount).trim(), cur = /^[A-Z]{3}$/.test(String(a.currency ?? "")) ? a.currency : "";
       const to = Object.keys(a).find(k => TO.test(k)), what = to != null ? a[to] : c.value?.value;
-      return `${c.serves === "drift" && !c.ended ? "Strays from the task" : VERB[c.ended] || "Flagged"}: ${c.tool}`
-        + (amount != null && amount !== "" ? ` ${CUR[cur] || ""}${amount}${CUR[cur] || !cur ? "" : " " + cur}` : "")
-        + (what != null ? (to != null ? " to " : " with ") + spaced(what) : "") + ".";
+      const money = !amount ? "" : /^\d{1,3}(,\d{3})*(\.\d+)?$|^\d+(\.\d+)?$/.test(amount) ? ` ${CUR[cur] || ""}${amount}${!cur || CUR[cur] ? "" : " " + cur}` : " an amount";
+      return [`${c.serves === "drift" && !c.ended ? "Strays from the task" : VERB[c.ended] || "Flagged"}:`,
+              ` ${esc(c.tool + money)}` + (what != null ? (to != null ? " to " : " with ") + dv(spaced(what)) : "") + "."];
     }
+    // why, in one sentence of HTML: where the value came from, each value the content chose marked as data
     function inflBecause(c) {
       const v = c.value, trusted = [...new Set(c.edges.filter(e => e.grade === "seen" && e.trust === "trusted" && e.type === "action" && e.label !== v?.via?.tool).map(e => e.label))];
       if (v && v.status === "untrusted-only") {
         const noun = nounOf(v.value), cap = "The " + noun;
-        if (v.via) return `${cap} came from ${v.via.tool}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${v.via.given}${b64(v.via.given) === v.value ? ` (base64 of the ${isIban(v.value) ? "IBAN" : noun})` : ""}, which appeared only in ${fromWords(v.via.origin[0] || v.via.from[0])}${lead(v.preview)}.`;
-        return `${cap} came from ${fromWords(v.from)}${lead(v.preview)}, not from your task${trusted.length ? " or " + trusted.join(", ") : ""}.`;
+        if (v.via) return `${cap} came from ${esc(v.via.tool)}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${dv(v.via.given)}${b64(v.via.given) === v.value ? ` (base64 of the ${isIban(v.value) ? "IBAN" : noun})` : ""}, which appeared only in ${says(v.via.origin[0] || v.via.from[0], v.preview)}.`;
+        return `${cap} came from ${says(v.from, v.preview)}, not from your task${trusted.length ? " or " + esc(trusted.join(", ")) : ""}.`;
       }
       if (c.serves === "drift") return "A replay without your task still made this call: it serves no step of the task.";
       const u = c.untrusted;
-      if (u) return `Its ${u.field ? "`" + u.field + "`" : "argument"} came from ${fromWords(u.label)} (${u.grade}).`;
+      if (u) return `Its ${u.field ? dv(u.field) : "argument"} came from ${esc(fromWords(u.label))} (${esc(u.grade)}).`;
       return "Nothing it was given came only from untrusted content.";
     }
     // the value's route: the content it came from (untrusted marked), the call that turned it into the value, the value,
@@ -7284,7 +7301,7 @@
       if (!v || v.status !== "untrusted-only") return "";
       const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<span class="${bad ? "ar bad" : "ar"}">→</span>`;
       const origin = v.via ? v.via.origin[0] || v.via.from[0] : v.from;
-      const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? " " + String(v.preview).replace(/^From:\s*/i, "from ") : "");
+      const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? ` “${v.preview}”` : "");
       return `<div class="ipath">` + hop(src, true) + arrow(true)
         + (v.via ? hop(`${v.via.tool}(${v.via.given})`, false) + arrow(false) : "")
         + hop((isIban(v.value) ? "IBAN " : "") + spaced(v.value), false) + arrow(false) + `<span class="hop end">${esc(c.tool)}</span></div>`;
@@ -7300,9 +7317,10 @@
     function inflCard(c, all, W) {
       const tw = twinOf(c, all), g = gradeOf(c), open = ICARD.has(c.node);
       const cls = c.ended === "held" ? "c-held" : c.ended === "flagged" || !c.ended ? "c-flag" : "c-blk";
-      const head = inflHead(c), cut = head.indexOf(":");
-      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><span class="vb">${esc(head.slice(0, cut + 1))}</span>${esc(head.slice(cut + 1))} `
-        + `<span class="why">${esc(inflBecause(c))}</span></div>` + inflPath(c)
+      const [verb, head] = inflHead(c);
+      // head and inflBecause are HTML built of esc'd words and dv'd values
+      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><span class="vb">${esc(verb)}</span>` + head
+        + ` <span class="why">` + inflBecause(c) + `</span></div>` + inflPath(c)
         + `<div class="imeta"><span class="tag" title="${esc(GRADES[g])}">${esc(g)}</span><button type="button" class="cp" data-icard="${esc(c.node)}">${open ? "WHY ▾" : "WHY ▸"}</button></div></div>`
         + (tw ? `<div class="itwin"><span class="vb">Ran:</span> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
         + (open ? inflWhy(c, W) : "") + `</div>`;

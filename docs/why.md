@@ -307,8 +307,10 @@ part and each number. A token counts when it names something: letters and digits
 (`7781`; not `2026`, `2026-11-01`, `1500`, `100`); or a quoted part of 3 or more characters that is no common word
 (`'acme'`, not `'open'`). An address, URL, host or such a digit run among its values counts too, and a whole value with
 such a token in it (base64). A token is matched with or without one character between its letters and digits (`A781` is
-`A-781`). The first 64 tokens are read; a call given more fails closed: its answer counts as untrusted. The alert says
-what the call was given and where that came from (`crm_lookup's answer counts as untrusted: it was called with
+`A-781`). The first 64 tokens are read; a call given more fails closed: its answer counts as untrusted. A value trusted
+content gave keeps the answer trusted only when it names something too (the account the task gives, not the task's word
+`supplier`). A content's digits in any script are read as the digits they are (`٧٧٨١` is `7781`). The alert says what
+the call was given and where that came from (`crm_lookup's answer counts as untrusted: it was called with
 '60161331926819', which came only from mail:inbox`).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed

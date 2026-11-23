@@ -335,12 +335,14 @@ verified signed record behind it, is shown as "claimed by the log".
 
 - **The answer, first: a card per call stopped or flagged.** A call blocked, held, rejected by a person or flagged, one
   a replay without the task kept, and one the signer or a replay tied to untrusted content each get a card, worst first.
-  Its headline says what happened and why, with the facts, in one line: "Blocked: send_money €98.70 to GB29 NWBK 6016
-  1331 9268 19. The account number came from an email (From: billing@acme-ltd.example), not from your task." For a value
-  a trusted call's answer gave, which counts as untrusted because untrusted content chose what the call was given: "The
-  account number came from lookup_supplier, looked up with ACME-7781, which appeared only in an email."; for a
-  decoder's, "called with R0IyOU5X… (base64 of the IBAN)". Below it, the
-  value's route, its untrusted start marked: email from billing@acme-ltd.example → lookup_supplier(ACME-7781) → IBAN
+  Its headline says what happened and why, with the facts, in one line: "Blocked: send_money €98.70 to “GB29 NWBK 6016
+  1331 9268 19”. The account number came from an email that says it's from “billing@acme-ltd.example”, not from your
+  task." Each value the agent's content chose is quoted data, cut to 40 characters with its whole text on hover; an
+  amount shows only as a number, a currency only as a 3-letter code ("an amount" otherwise), and an email is what it
+  says it is. For a value a trusted call's answer gave, which counts as untrusted because untrusted content chose what
+  the call was given: "The account number came from lookup_supplier, looked up with “ACME-7781”, which appeared only in
+  an email …"; for a decoder's, "called with “R0IyOU5X…” (base64 of the IBAN)". Below it, the
+  value's route, its untrusted start marked: email “From: billing@acme-ltd.example” → lookup_supplier(ACME-7781) → IBAN
   GB29 NWBK … → send_money. A tag says how it is known (exact, measured, claimed or seen; its meaning on hover). Beside
   the card, the same call that ran with a value trusted content gave, if the runs have one ("Ran: the same payment with
   crm_lookup's account number."). **WHY** opens the rest: the call's words (only a replay without the task says a call

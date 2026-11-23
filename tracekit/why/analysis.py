@@ -247,8 +247,9 @@ def _tainted(rows: List[Dict[str, Any]]) -> bool:
 def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: int, need: Set[int], by: bool = True
           ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """value_provenance's rows of `args` before `before_seq`, and the rows of what the call was called by, which say
-    whether a trusted call's answer counts as untrusted (_tainted): its rows that are trusted or name something
-    (_names: an address, URL or host, a distinctive digit run), and a row for each distinctive token of its arguments
+    whether a trusted call's answer counts as untrusted (_tainted): its rows that name something, trusted or not
+    (_names: an address, URL or host, a distinctive digit run; a task's word such as `supplier` keeps no answer
+    trusted), and a row for each distinctive token of its arguments
     (_tokens), the first 64 (past them, a row of untrusted-only for the rest: a call given more fails closed); each
     earlier call whose rows (memo["rows"]) the reading needed and didn't have is added to `need`, and the rows are then
     provisional."""
@@ -367,7 +368,7 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         rows.append({"value": a, "status": status, "sources": srcs, **({"in_text": True} if in_text else {})})
     if not by:   # a call checked before it runs: what it was called by matters once it is an earlier call (_settle)
         return rows, []
-    by = [r for r in rows if r["status"] == "trusted" or r["status"] == "untrusted-only" and _names(r["value"])]
+    by = [r for r in rows if r["status"] in ("trusted", "untrusted-only") and _names(r["value"])]
     tokens = _tokens(args)
     holders = _key_holders(ix, {t for _, t in tokens[:64]}, k)
     for shown, token in tokens[:64]:
@@ -457,7 +458,7 @@ def _key_holders(ix: "_Index", tokens: Iterable[str], k: int) -> Dict[str, List[
         while left:
             pat = re.compile(r"(?<![^\W_])(?:" + "|".join(r"[\W_]?".join(map(re.escape, p)) for p in left)
                              + r")(?![^\W_])")
-            got = {tuple(_KEY_PART.findall(m.group())) for m in pat.finditer(ix.reads[i][3])}
+            got = {tuple(_KEY_PART.findall(m.group())) for m in pat.finditer(ix.decimal(i))}
             if not got & set(left):
                 break
             for p in got & set(left):
@@ -692,6 +693,7 @@ _SEPARATED = re.compile(r"\s+(?:/|and|or)\s+|\s*[,;|&]\s*|\s+")
 _QUOTED = re.compile(r"(?<!\w)'([^'\n]{3,}?)'(?!\w)|(?<!\w)\"([^\"\n]{3,}?)\"(?!\w)")
 _WORD_TOKEN = re.compile(r"[^\W_]+(?:[-_.#/][^\W_]+)*")
 _DIGITS = re.compile(r"\d+")
+_DIGIT_ANY = re.compile(r"\d")
 _UNIT = re.compile(r"\d+(?:ms|us|ns|s|sec|secs|m|min|mins|h|hr|hrs|d|w|wk|y|yr|yrs|k|kb|mb|gb|tb|px|em|pt|x|st|nd|rd|th"
                    r"|am|pm)")
 _KEY_PART = re.compile(r"[^\W\d_]+|\d+")   # a run of letters, or of digits
@@ -724,6 +726,7 @@ class _Index:
         self.call_of: Dict[int, int] = {}
         self.bound: Dict[int, int] = {}
         self.keys: Dict[Tuple[str, ...], Tuple[int, List[int]]] = {}   # _key_holders: a key's holders, read so far
+        self.ascii: Dict[int, str] = {}   # decimal(): a content's text with ASCII digits
         self.truncated: Set[int] = set()   # content with more values than were read (provenance.MAX_VALUES, MAX_TEXT)
         self.held: Dict[Tuple[int, Tuple[str, str], bool], bool] = {}   # full(): what their text was found to hold
         # in a log written before calls said their own trust: (agent, content, `tool:<name>`) -> the results not yet
@@ -758,6 +761,14 @@ class _Index:
                     self.recorded.setdefault(key, []).append(len(self.reads))
                 self._content(ev, "untrusted" if ev.get("trust") == "untrusted" else "trusted", ev["tool"],
                               _read(run, memo, ev, True))
+
+    def decimal(self, i: int) -> str:
+        """Content `i`'s text read plain with every decimal digit as its ASCII digit (`٧٧٨١` is `7781`, as _wide reads
+        other scripts' digits), read once."""
+        if i not in self.ascii:
+            t = self.reads[i][3]
+            self.ascii[i] = t if t.isascii() else _DIGIT_ANY.sub(lambda m: str(unicodedata.digit(m.group())), t)
+        return self.ascii[i]
 
     def full(self, i: int, v: Tuple[str, str], wide: bool) -> bool:
         """Whether content `i`, which holds more values than the index read, holds value `v` in its text (_bounded,
