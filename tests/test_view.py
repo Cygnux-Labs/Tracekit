@@ -287,7 +287,13 @@ class Translate(unittest.TestCase):
                          [("SIGNER", "info", "RUN WRITER · uid:990777",
                            "writes stream s2 through a gateway: the labels this run carries are its as well")])
 
-    def test_live_constraints_are_rows_and_head_the_run_review(self):
+    def test_a_rule_in_shadow_reads_as_the_hook_says_it(self):
+        # the page and tracekit report: noted, nothing blocked (labels.noted's words), for a rule in shadow only
+        dev = policy_compile.build(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "dev.yaml"))[0]
+        reasons = view.policy_reasons()[policy_compile.policy_hash(dev)]
+        self.assertEqual(reasons["TK-Q001"]["reason"], "noted: this sends data off the machine after the session read a "
+                         "secret. Nothing is blocked in 1.8; it's in the record.")
+        self.assertEqual(reasons["TK-F013"]["reason"], "egress")
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),
                 v2rec(2, "constraint.added", {"kind": "no_push"}),
