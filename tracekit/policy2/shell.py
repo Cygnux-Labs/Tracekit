@@ -925,11 +925,11 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
-# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text/open
 _WRITES = {
-    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.(?:write_(?:text|bytes)|(?P<open>open))\s*\(|"""
                          r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
-                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+                         r"os\.(?:open|rename|replace|link|symlink))\s*\("),
     "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
                        r"cp|link|symlink)(?:Sync)?\s*\("),
     "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
@@ -942,13 +942,56 @@ _SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln") 
 
 _PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
 _MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+_WRITE_FLAG_NAME = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND|TMPFILE)\b")   # a writing open flag, by name
+_INT_FLAG_EXPR = re.compile(r"\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+)(?:\s*[|]\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+))*\s*")
+
+
+def _arg_slices(kind, text):
+    """(start, end) character spans of each top-level argument in `text` (inside a call's argument list)."""
+    slices, k = [], 0
+    while k < len(text):
+        k = _blank_end(text, k, ",)")
+        if k >= len(text) or text[k] == ")":
+            break
+        if text[k] == ",":
+            k += 1
+            continue
+        end = _skip_value(kind, text, k, ",)", lambda _: None)
+        slices.append((k, end))
+        k = end + (text[end:end + 1] == ",")
+    return slices
+
+
+def _kw_arg(kind, text, name):
+    """(_arg_text pieces, raw RHS) of keyword argument `name=...` in `text`, else (None, None)."""
+    rx = re.compile(rf"{name}\s*=(?!=)\s*")
+    for start, end in _arg_slices(kind, text):
+        if m := rx.match(text, start, end):
+            return _arg_text(kind, text, m.end(), end, lambda _: None) or None, text[m.end():end].strip()
+    return None, None
+
+
+def _is_write_flags(expr):
+    """Whether an open flags expression writes: a writing flag by name (O_WRONLY, O_RDWR, or one that creates,
+    truncates or appends), or a number whose access-mode bits write or whose create/truncate/append bits are set."""
+    if not expr:
+        return False
+    if _WRITE_FLAG_NAME.search(expr):
+        return True
+    if _INT_FLAG_EXPR.fullmatch(expr):
+        val = 0
+        for tok in re.split(r"\s*[|]\s*", expr.strip()):
+            val |= int(tok, 0)
+        return val & 0o22003103 != 0
+    return False
 
 
 def _written(kind, call, items, text=""):
     """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
-    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
-    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
-    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    keyword mode or flags), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument
+    with w, a, x, c or +, Python's as `mode=` too, Python's `open` naming its file by `file=` too and `os.open` by
+    `path=` and writing only when its flags do, by name or number; Perl's `>`, `>>`, `+<` as its mode, with any layers
+    (`>>:utf8`), or in front of its file), a copy's, move's, rename's or link's target, else its first argument."""
     name = call.rsplit(".", 1)[-1]
     if kind == "perl" and name == "open":
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
@@ -960,10 +1003,23 @@ def _written(kind, call, items, text=""):
             target = items[2] if len(items) > 2 else None
         else:   # open(FH, ">file")
             target = (rest,)
+    elif kind == "python" and call == "os.open":
+        # its flags are the second argument, positional or flags=, and its path the first, positional or path=
+        slices = _arg_slices(kind, text)
+        if items:
+            target = items[0]
+            flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else _kw_arg(kind, text, "flags")[1]
+        else:
+            target, _ = _kw_arg(kind, text, "path")
+            _, flag_text = _kw_arg(kind, text, "flags")
+        target = target if _is_write_flags(flag_text) else None
     elif name in ("open", "fopen"):
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
             (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
-        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
+        if mode and re.search(r"[waxc+]", mode):
+            target = items[0] if items else _kw_arg(kind, text, "file")[0]
+        else:
+            target = None
     else:
         target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
     return target if isinstance(target, tuple) else None
@@ -4940,6 +4996,14 @@ class _Parser:
         # too: only the shell's `>>` and tee -a are read as appends)
         for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
             if m.group("path"):   # Path("…").write_text(…): its literal
+                if kind == "python" and m.group("open"):   # Path("…").open(…): a write only in a writing mode
+                    items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
+                    self.charge(end - m.end())
+                    mode = _text_of(items[0]) if items and isinstance(items[0], tuple) else \
+                        (k.group(2) if (k := _MODE_KEYWORD.search(code[m.end():end])) else None)
+                    if mode and re.search(r"[waxc+]", mode):
+                        self.argv([("tee",), (m.group("path"),)], pid, via)
+                    continue
                 self.argv([("tee",), (m.group("path"),)], pid, via)
                 continue
             items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)

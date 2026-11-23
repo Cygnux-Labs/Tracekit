@@ -523,6 +523,32 @@ class Routes(unittest.TestCase):
                               "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
                               "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
                     "allow")
+        # #980, Python only: Path(…).open in a writing mode, os.open with writing flags (by name or number,
+        # positional or path=/flags=), and open naming its file by file=
+        self.expect(self.bash(
+            "python3 -c \"from pathlib import Path; Path('.env').open('w').write('x')\"",
+            "python3 -c \"from pathlib import Path; Path('.env').open(mode='a')\"",
+            "python3 -c \"from pathlib import Path; Path('.env').open('x')\"",
+            "python3 -c \"import os; os.open('.env', os.O_WRONLY)\"",
+            "python3 -c \"import os; os.open('.env', os.O_RDWR | os.O_CREAT)\"",
+            "python3 -c \"import os; os.open('.env', 1)\"",
+            "python3 -c \"import os; os.open('.env', 0o100)\"",
+            "python3 -c \"import os; os.open(path='.env', flags=os.O_WRONLY)\"",
+            "python3 -c \"import os; os.open('.env', flags=os.O_APPEND)\"",
+            "python3 -c \"open(file='.env', mode='a').write('x')\"",
+            "python3 -c \"open(mode='w', file='.env')\"",
+            "python3 -c \"io.open(file='.env', mode='w')\""), "deny", "TK-D023")
+        readonly_py = self.bash(
+            "python3 -c \"from pathlib import Path; Path('.env').open()\"",
+            "python3 -c \"from pathlib import Path; Path('.env').open('r')\"",
+            "python3 -c \"import os; os.open('.env', os.O_RDONLY)\"",
+            "python3 -c \"import os; os.open('.env', 0)\"",
+            "python3 -c \"open(file='.env')\"",
+            "python3 -c \"open(file='.env', mode='r')\"")
+        self.expect(readonly_py, "flag")
+        self.spare(readonly_py, "TK-D023")
+        self.expect(self.bash("python3 -c \"from pathlib import Path; Path('out.txt').open('w')\"",
+                              "python3 -c \"import os; os.open('out.txt', os.O_WRONLY)\""), "allow")
 
     def test_ssh_keygen_writes_the_file_its_f_mode_names(self):
         """#980 item 3: `-f` is the file a writing mode creates or rewrites, so a key written into `~/.ssh` is the
