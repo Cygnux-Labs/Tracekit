@@ -1217,6 +1217,10 @@ class Routes(unittest.TestCase):
         self.expect(cases, "ask", "TK-A056", packs=("dev",))
         self.expect(cases, {"coding": "flag", "server": "flag", "strict": "ask"}, "TK-F004",
                     packs=("coding", "server", "strict"))
+        # #990: hatch and flit publish are held on dev only; TK-F004 doesn't read them on the other packs,
+        # so they are not in `cases` above
+        self.expect(self.bash("hatch publish", "hatch publish --repo pypi", "flit publish",
+                              "flit publish --repository pypi"), "ask", "TK-A056", packs=("dev",))
         self.expect(self.bash("pnpm -r exec sudo -u root -E -H npm publish"), "deny", "TK-A056", packs=("dev",))
         self.expect(self.bash("pnpm recursive publish --dry-run", "cargo +nightly publish --dry-run",
                               "timeout 600 npm publish --dry-run", "env CI=1 npm publish --dry-run",
@@ -1224,7 +1228,8 @@ class Routes(unittest.TestCase):
                     packs=("dev",))
         self.expect(self.bash("npm run build", "corepack enable", "pnpm m ls", "rustup run nightly cargo build",
                               "yarn workspaces foreach -A exec tsc", "corepack pnpm@9 install",
-                              "pnpm -r recursive test publish", "pnpm -r exec -- vitest run"), "allow")
+                              "pnpm -r recursive test publish", "pnpm -r exec -- vitest run",
+                              "hatch build", "flit build"), "allow")
 
     def test_a_dry_run_whose_words_a_runner_or_a_pattern_adds_is_held(self):
         # sec08 adversarial review: xargs, parallel, find -exec and fd -x add words at run time (`false`, or
