@@ -5009,7 +5009,9 @@ class CodingPack(unittest.TestCase):
                        ("aws configure get aws_secret_access_key", "TK-A021"),
                        ("aws configure get aws_session_token", "TK-A021"),
                        ("aws --profile prod configure get aws_secret_access_key", "TK-A021"),
-                       ("aws configure get prod.aws_secret_access_key", "TK-A021")])
+                       ("aws configure get prod.aws_secret_access_key", "TK-A021"),
+                       # the AWS CLI reads profile.NAME.KEY as NAME's KEY (configure/get.py)
+                       ("aws configure get profile.prod.aws_secret_access_key", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
