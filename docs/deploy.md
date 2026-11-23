@@ -230,7 +230,31 @@ What Claude Code's documentation says (October 2026):
 The rest is in [limits](limits.md#dev-mode-vs-system-mode): the hooks run in every user's Claude Code on the machine
 (use a host or VM where AGENT is the only one running Claude Code); a server-managed or MDM Claude Code policy replaces
 the file, so `/status` in AGENT's Claude Code must list `Enterprise managed settings (file)`; the docs don't say
-whether `claude --bare` runs managed hooks; and Claude Code is the only coding agent init does this for.
+whether `claude --bare` runs managed hooks.
+
+### Admin-managed hooks (Gemini CLI)
+
+The same shape, for Gemini CLI, from that agent's own documentation
+([centralized configuration](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/enterprise.md#centralized-configuration-the-system-settings-file)):
+
+```bash
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --approver ADMIN --managed --managed-only \
+    --agent gemini
+```
+
+Init writes Tracekit's hook groups into Gemini CLI's **system overrides** file — `/etc/gemini-cli/settings.json`
+(macOS: `/Library/Application Support/GeminiCli/settings.json`, Windows: `C:\ProgramData\gemini-cli\settings.json`) —
+root-owned and readable by every user, together with `hooksConfig.enabled: true`, its documented switch ("Canonical
+toggle for the hooks system"). Gemini CLI merges four settings files with that one **last** — "the System Overrides
+file has the final say" — so a user's `false` in `~/.gemini/settings.json` cannot win, and `--managed-only` leaves no
+hook from any other file running. `uninstall --v2` takes out only Tracekit's groups and the switch it set, and doctor
+checks the file the way it checks Claude Code's (`D-HOOKS-MANAGED`).
+
+Two limits it cannot close, and [limits](limits.md#dev-mode-vs-system-mode) records them: an agent can still silence
+the hook by naming it in `hooksConfig.disabled` in its own settings, because that list merges by **union** (the system
+file can only add to it); and `GEMINI_CLI_SYSTEM_SETTINGS_PATH` points the CLI at another file, which Gemini CLI's docs
+answer with a wrapper script that pins the path. As with Claude Code, the file is machine-wide: every user's Gemini CLI
+on the host reads it.
 
 ## Container and Kubernetes sidecar
 

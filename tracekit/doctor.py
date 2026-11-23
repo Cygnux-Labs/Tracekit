@@ -155,7 +155,7 @@ def collect(config=None, issuer_key=None):
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
         project = (os.path.dirname(os.path.dirname(settings))
-                   if settings and settings not in (home, *install.MANAGED_SETTINGS.values())
+                   if settings and settings not in (home, *install.managed_paths())
                    and os.path.basename(os.path.dirname(settings)) == ".claude" else None)
         users = [home] if home else []
         plugin = install.plugin_enabled(users, project) if project else install.plugin_enabled(users)
@@ -181,7 +181,7 @@ def collect(config=None, issuer_key=None):
         # allowManagedHooksOnly off. And the rest of init's flags, which only root-owned client.json gives
         # (install.reinit_flags): without them init puts its defaults (its own policy, no harness binding) in place of
         # the host's
-        managed = settings in install.MANAGED_SETTINGS.values()
+        managed = settings in install.managed_paths()
         flags, tail = install.reinit_flags(h.get("init_flags"), settings if managed else None, V2_FLAGS,
                                            f"{client.SYSTEM_CONFIG} doesn't record them" if sc else
                                            f"there's no {client.SYSTEM_CONFIG} here to record them")
@@ -1237,8 +1237,8 @@ def _plugin_idle(plugin, prod, settings=None):
     if not plugin:
         return None
     plugin_settings, _ = plugin
-    admin = settings if settings in install.MANAGED_SETTINGS.values() else _managed()
-    in_managed = plugin_settings in install.MANAGED_SETTINGS.values()
+    admin = settings if settings in install.managed_paths() else _managed()
+    in_managed = plugin_settings in install.managed_paths()
     if not in_managed and _setting(admin, "allowManagedHooksOnly") is True:
         return "allowManagedHooksOnly"
     if not prod:
@@ -1551,7 +1551,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 os.path.join(os.path.dirname(unit), (install.HELPER_LABEL + ".plist") if unit.endswith(".plist")
                              else install.V2_HELPER + ".service"), REINIT))   # collect() adds init's --harness
 
-    managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
+    managed = settings in install.managed_paths()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
@@ -1621,7 +1621,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
             # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
-            managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
+            managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.managed_paths())
             off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
                                else dict.fromkeys([*layers, settings]))   # the hooks' own file too
                    if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \

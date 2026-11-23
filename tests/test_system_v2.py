@@ -1183,8 +1183,8 @@ class CliManaged(unittest.TestCase):
         for argv, why in ((["--v2", "--dev"], "--managed is for system mode: a --dev setup belongs to its user"),
                           (["--dev"], "--managed is for system mode"),
                           (["--v2", "--user", "agent", "--project"], "--managed and --project name different settings"),
-                          (["--v2", "--user", "agent", "--agent", "codex"], "--managed is for Claude Code only: "
-                           "Tracekit wires no admin-managed settings for codex, so its hooks go in the agent user's")):
+                          (["--v2", "--user", "agent", "--agent", "codex"], "--managed needs an admin-managed "
+                           "settings file, and Tracekit wires none for codex: its hooks go in the agent user's")):
             with self.subTest(argv=argv), mock.patch.object(install, "init_system_v2") as v2, \
                     mock.patch.object(install, "init_system") as v1, mock.patch.object(install, "init_dev") as dev, \
                     contextlib.redirect_stderr(io.StringIO()) as err:

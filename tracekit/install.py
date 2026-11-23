@@ -266,6 +266,16 @@ def _create_system_user_darwin(name, home=SYS_HOME):
 
 MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
+# The admin-managed settings file of each other coding agent that has one, from that agent's own docs: Gemini CLI's
+# "system overrides" settings.json, which it merges last (google-gemini/gemini-cli docs/cli/enterprise.md, read at
+# eecccfcd; its code's getSystemSettingsPath has the same three paths).
+AGENT_MANAGED = {"gemini": {"linux": "/etc/gemini-cli/settings.json",
+                            "win32": "C:\\ProgramData\\gemini-cli\\settings.json",
+                            "darwin": "/Library/Application Support/GeminiCli/settings.json"}}
+# The setting each agent needs in its managed file so a user's own config cannot turn Tracekit's hooks off there:
+# Claude Code's stops user and project hooks running at all; Gemini CLI's is its documented on/off switch for hooks,
+# a single value it takes from the system file (the file merges last).
+MANAGED_ONLY_KEY = {"claude": "allowManagedHooksOnly", "gemini": "hooksConfig.enabled"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
 V2_HOOK = "tracekit.integrations.claude_code"
 SIGNER_ENV = ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_SIGNER_CA")   # what init --remote --v2 sets
@@ -644,6 +654,34 @@ def _parse_settings(raw, settings_path):
     return s
 
 
+def _set_extra(s, extra, uninstall):
+    """Set (or, on uninstall, remove) the settings in `extra` on `s`, marked `_tracekit_<path>` so an admin's own value
+    is never removed: `allowManagedHooksOnly` or a dotted path such as Gemini CLI's `hooksConfig.enabled`."""
+    for k, on in (extra or {}).items():   # an admin's own value stays: no marker; `a.b` is a nested setting
+        marker = f"_tracekit_{k.replace('.', '_')}"
+        if "." in k:
+            head, _, tail = k.partition(".")
+            sub = s.get(head) if isinstance(s.get(head), dict) else {}
+            if uninstall or not on:
+                if sub.get(marker) and sub.get(tail) is True:
+                    sub.pop(tail, None)
+                sub.pop(marker, None)
+                if sub:
+                    s[head] = sub
+                else:
+                    s.pop(head, None)
+            else:
+                if sub.get(tail) is not True:
+                    sub[tail], sub[marker] = True, True
+                s[head] = sub
+            continue
+        if uninstall or not on:
+            if s.pop(marker, None) and s.get(k) is True:
+                s.pop(k)
+        elif s.get(k) is not True:
+            s[k], s[marker] = True, True
+
+
 def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
                       signer=None, thinking=False, dry_run=False):
     name = os.path.basename(settings_path)
@@ -703,12 +741,7 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
         s["env"] = env
     else:
         s.pop("env", None)
-    for k, on in (extra or {}).items():   # an admin's own value stays: no marker
-        if uninstall or not on:
-            if s.pop(f"_tracekit_{k}", None) and s.get(k) is True:
-                s.pop(k)
-        elif s.get(k) is not True:
-            s[k], s[f"_tracekit_{k}"] = True, True
+    _set_extra(s, extra, uninstall)
     _thinking(s, thinking, uninstall)
     if dry_run:
         return None
@@ -1174,18 +1207,36 @@ def stop_dev_daemon(home):
     _stop_pidfile(os.path.join(home, "tracekitd.pid"))
 
 
-def install_managed(proxy_url=None, managed_only=False, path=None, python=None, uninstall=False, **kw):
-    """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot override, as root and
-    readable by every user (Claude Code starts without a managed file it can't read). managed_only additionally sets
-    allowManagedHooksOnly (user/project hooks stop running); without it, or with uninstall (which takes the hooks out),
-    allowManagedHooksOnly goes only if init set it. kw: install_hooks' (v2: module, signer, thinking). Returns the
+def managed_path(agent="claude", darwin=None):
+    """The path of `agent`'s admin-managed settings file (Claude Code's, or the one its own docs name), or None for an
+    agent that has none."""
+    darwin = sys.platform == "darwin" if darwin is None else darwin
+    key = "darwin" if darwin else "linux"
+    if agent == "claude":
+        return MANAGED_SETTINGS[key]
+    return (AGENT_MANAGED.get(agent) or {}).get(key)
+
+
+def managed_paths():
+    """Every admin-managed settings file Tracekit writes: Claude Code's and each other agent's here. Read through
+    values(), not by key: a caller (and several tests) may patch MANAGED_SETTINGS with only this platform's entry."""
+    return [*[p for p in MANAGED_SETTINGS.values() if p],
+            *[p for paths in AGENT_MANAGED.values() for p in paths.values() if p]]
+
+
+def install_managed(proxy_url=None, managed_only=False, path=None, python=None, uninstall=False, agent="claude", **kw):
+    """C5: put the hooks in a coding agent's admin-managed settings, which users and projects cannot override, as root
+    and readable by every user (an agent starts without a managed file it can't read). managed_only additionally sets
+    that agent's MANAGED_ONLY_KEY (Claude Code: allowManagedHooksOnly, user/project hooks stop running; Gemini CLI:
+    hooksConfig.enabled, the documented switch that stops every hook); without it, or with uninstall (which takes the
+    hooks out), that setting goes only if init set it. kw: install_hooks' (v2: module, signer, thinking). Returns the
     file's THINKING setting. The folder it makes for the file is 0755 whatever root's umask (027 left it 0750: no other
     user could read the hooks); an admin's own folder stays as it is, and doctor checks it (D-HOOKS-MANAGED)."""
-    path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    path = path or managed_path(agent)
     if not uninstall and not kw.get("dry_run") and not os.path.isdir(os.path.dirname(path)):
         os.makedirs(os.path.dirname(path))
         os.chmod(os.path.dirname(path), 0o755)
-    return install_hooks(path, uninstall, proxy_url=proxy_url, extra={"allowManagedHooksOnly": managed_only},
+    return install_hooks(path, uninstall, proxy_url=proxy_url, extra={MANAGED_ONLY_KEY[agent]: managed_only},
                          mode=0o644, python=python, **kw)
 
 
@@ -1745,7 +1796,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     recorded = (sc.get("hooks") or {}).get("settings")
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
-    if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
+    if recorded in managed_paths() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
     hand, kept = _old_hand_keys()   # before any change: a file it can't keep stops init here
     requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
@@ -1784,7 +1835,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
                                          f"\nsigner: {json.dumps(sock)}\n").encode())
     from . import agent_hooks
-    admin = MANAGED_SETTINGS["darwin" if darwin else "linux"]
+    admin = managed_path(agent, darwin)
     settings = None if not hooks else admin if managed else (
         os.path.join(project or owner.pw_dir, ".claude", "settings.json") if agent == "claude"
         else agent_hooks.config_path(agent, project, owner.pw_dir))
@@ -1840,6 +1891,16 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                   + f" A server-managed or MDM Claude Code policy would replace this file: in {target_user}'s Claude "
                   f"Code, /status must list `Enterprise managed settings (file)` "
                   f"({wiki_url('docs/deploy.md', 'laptop-system-mode')})")
+    elif settings and managed:   # another agent with an admin-managed file: root writes it, as Claude Code's is written
+        folder = os.path.dirname(settings)
+        if not os.path.isdir(folder):
+            os.makedirs(folder)
+            os.chmod(folder, 0o755)
+        agent_hooks.install(agent, None, False, True, OPT_PYTHON, settings,
+                            extra={MANAGED_ONLY_KEY[agent]: managed_only})
+        print(f"admin-managed hooks: {target_user} can't edit or turn them off, and they run in every user's {agent} "
+              f"on this machine, not only {target_user}'s." + (
+                  f" {MANAGED_ONLY_KEY[agent]} is on: no hook from any other file runs." if managed_only else ""))
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
         if agent == "codex" and thinking:
@@ -1911,7 +1972,7 @@ def _remove_v2_hooks(sc, owner, keep=None, own=None):
             from . import agent_hooks
             files.as_user(owner, agent_hooks.install, h["agent"], None, True, True, None, h["settings"],
                           errors=(SettingsError,))
-        elif h["settings"] in MANAGED_SETTINGS.values():
+        elif h["settings"] in managed_paths():
             install_managed(None, True, h["settings"], uninstall=True, signer=signer)
         else:
             install_hooks(h["settings"], uninstall=True, owner=owner, signer=signer)
@@ -2270,7 +2331,7 @@ def _installed_hooks():
                 hooks.append({"settings": p, **_hook_summary(s)})
             except (ValueError, AttributeError, TypeError, OSError):   # not JSON, not a settings object, or no read access
                 hooks.append({"settings": p, "error": "unreadable"})
-    for p in MANAGED_SETTINGS.values():
+    for p in managed_paths():
         if os.path.exists(p):
             try:
                 s = read_json(p)

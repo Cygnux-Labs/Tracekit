@@ -16,7 +16,7 @@ from unittest import mock
 
 import pytest
 
-from tracekit import __version__, cli, client, install
+from tracekit import __version__, agent_hooks, cli, client, install
 from tracekit.ledger import Keys, Ledger
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -839,6 +839,103 @@ class ActionInputs(unittest.TestCase):
                                 rejected_v1_trust.stdout + rejected_v1_trust.stderr)
 
 
+class ManagedHooksPerAgent(unittest.TestCase):
+    """#970: install_managed writes another agent's system settings file with that agent's own on/off key. No root is
+    needed — it writes a JSON file — so unlike the classes above this one runs on every platform, which is the point:
+    a class that skips on the maintainer's laptop proves nothing there."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def path(self, *parts):
+        p = os.path.join(self.d, *parts)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        return p
+
+    def settings(self, path):
+        """The file's settings; {} when the uninstall deleted it again (install_hooks removes a file init created when
+        nothing else is in it, so "the flag is gone" can mean the file is gone)."""
+        if not os.path.exists(path):
+            return {}
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_gemini_reports_its_documented_system_paths_and_an_agent_without_one_none(self):
+        self.assertEqual(install.managed_path("gemini", darwin=False), "/etc/gemini-cli/settings.json")
+        self.assertEqual(install.managed_path("gemini", darwin=True),
+                         "/Library/Application Support/GeminiCli/settings.json")
+        self.assertEqual(install.managed_path("claude", darwin=False),
+                         "/etc/claude-code/managed-settings.json")
+        self.assertIsNone(install.managed_path("codex", darwin=False))
+        self.assertIn("C:\\ProgramData\\gemini-cli\\settings.json", install.managed_paths())
+
+    def test_gemini_managed_hooks_set_its_own_switch_and_uninstall_takes_only_that_out(self):
+        p = self.path("gemini", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, p, install.OPT_PYTHON, agent="gemini")
+            s = self.settings(p)
+            self.assertTrue(s.get("hooks"), "Tracekit's hooks are in the system file")
+            self.assertIs(s.get("hooksConfig", {}).get("enabled"), True, "the documented on/off switch is set")
+            self.assertIs(s["hooksConfig"].get("_tracekit_hooksConfig_enabled"), True, "marked so uninstall may undo it")
+            self.assertNotIn("allowManagedHooksOnly", s, "Claude Code's key does not leak into Gemini's file")
+            install.install_managed(None, True, p, install.OPT_PYTHON, uninstall=True, agent="gemini")
+        after = self.settings(p)
+        self.assertNotIn("enabled", after.get("hooksConfig") or {})
+        self.assertNotIn("hooks", after)
+
+    def test_gemini_managed_hooks_without_managed_only_leave_the_switch_alone(self):
+        p = self.path("gemini", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, False, p, install.OPT_PYTHON, agent="gemini")
+        self.assertNotIn("enabled", self.settings(p).get("hooksConfig") or {})
+
+    def test_an_admins_own_false_survives_an_uninstall_that_did_not_set_it(self):
+        p = self.path("gemini", "settings.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"hooksConfig": {"enabled": False}, "someAdminSetting": 1}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, p, install.OPT_PYTHON, uninstall=True, agent="gemini")
+        s = self.settings(p)
+        self.assertIs((s.get("hooksConfig") or {}).get("enabled"), False, "init did not set it, so it stays")
+        self.assertEqual(s.get("someAdminSetting"), 1)
+
+    def test_another_agents_managed_file_gets_its_switch_in_the_same_write(self):
+        """#970: the writer every other agent uses takes `extra`, so Gemini CLI's hooksConfig.enabled goes in with the
+        hooks and comes out with them — and an admin's own value, which init did not set, stays."""
+        p = self.path("gemini", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("gemini", None, False, True, install.OPT_PYTHON, p,
+                                extra={"hooksConfig.enabled": True})
+        s = self.settings(p)
+        self.assertTrue(s.get("hooks"), "Tracekit's hooks are written")
+        self.assertIs((s.get("hooksConfig") or {}).get("enabled"), True, "the switch goes in the same write")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("gemini", None, True, True, None, p, extra={"hooksConfig.enabled": True})
+        after = self.settings(p)
+        self.assertNotIn("enabled", after.get("hooksConfig") or {}, "uninstall takes out only what init set")
+        self.assertNotIn("hooks", after)
+
+        admin = self.path("gemini-admin", "settings.json")
+        with open(admin, "w", encoding="utf-8") as f:
+            json.dump({"hooksConfig": {"enabled": True}, "adminKey": 7}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("gemini", None, True, True, None, admin, extra={"hooksConfig.enabled": True})
+        stayed = self.settings(admin)
+        self.assertIs((stayed.get("hooksConfig") or {}).get("enabled"), True, "init did not set it, so it stays")
+        self.assertEqual(stayed.get("adminKey"), 7)
+
+    def test_claude_code_managed_hooks_are_written_exactly_as_before(self):
+        p = self.path("claude", "managed-settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_managed(None, True, p, install.OPT_PYTHON)
+            s = self.settings(p)
+            self.assertIs(s.get("allowManagedHooksOnly"), True)
+            self.assertNotIn("hooksConfig", s, "Gemini's key does not leak into Claude Code's file")
+            install.install_managed(None, True, p, install.OPT_PYTHON, uninstall=True)
+        self.assertNotIn("allowManagedHooksOnly", self.settings(p))
+
+
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class UninstallV1System(unittest.TestCase):
     """#948: `tracekit uninstall --system` removes what a v1 root init wrote, and keeps v2's and the signer's keys."""
@@ -1130,7 +1227,5 @@ class UninstallV1System(unittest.TestCase):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(cli.main(["uninstall", "--user", "agent"]), 2)
         self.assertIn("--user goes with --system", err.getvalue())
-
-
 if __name__ == "__main__":
     unittest.main(argv=[sys.argv[0]])
