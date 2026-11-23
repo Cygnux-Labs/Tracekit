@@ -163,8 +163,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 - **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
   retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago,
   except, on the dev signer, a run holding nothing but a person's answers to TIPS' lessons, at most 64 (each
-  `tracekit:lessons:person` observe is an action, a lesson's id and its text's sha256; the signer refuses any other
-  value under that source), which the Claude Code hook reads back before it gives a lesson
+  `tracekit:lessons:person` observe is an action, a lesson's id, its text's sha256 and, on a retire, the record that
+  disproved it (`RUN:SEQ`); the signer refuses any other value under that source), which the Claude Code hook reads
+  back before it gives a lesson
   ([coding agents](coding-agents.md#lessons-at-the-first-prompt)). Other signers keep no such exception.
   Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
   is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
@@ -219,9 +220,11 @@ a program, a flag or a setting, an error's name, or your own sentence quoted as 
 when you approved it, the `run:run_seq` of up to 8 signed records it rests on, and that of the signed record of your
 answer (an observe whose kept value is the action, the id and the sha256 of the lesson's text, never the text). A
 lesson whose text matches a secret's shape, a bank
-number or a value the signer redacted is refused, never cut. The folder is a git repository: every approve, retire,
-restore and add is a commit, so its history keeps what a retired lesson said. A session's run keeps, in the vault, the
-ids of the lessons it was given and the block's sha256, never their text.
+number or a value the signer redacted is refused, never cut. A retire may name the record that disproved the lesson
+(`--because RUN:SEQ`, kept in the note as `retired_because` and in the signed answer): its run id and seq, never the
+record's content. The folder is a git repository: every approve, retire, restore and add is a commit, so its history
+keeps what a retired lesson said. A session's run keeps, in the vault, the ids of the lessons it was given and the
+block's sha256, never their text.
 
 The dev data dir is `~/Library/Application Support/tracekit/data` on macOS, `$XDG_DATA_HOME/tracekit` (else
 `~/.local/share/tracekit`) on Linux and `%LOCALAPPDATA%\tracekit` on Windows. To erase the lessons and their history,

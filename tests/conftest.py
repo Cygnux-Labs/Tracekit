@@ -56,14 +56,60 @@ if sys.version_info < (3, 13):
     gc.set_threshold(2000, 10, 10)
 
 
+def pytest_addoption(parser):
+    parser.addoption("--shard", default=None, metavar="I/N",
+                     help="run only shard I of N (0-based): whole test files, packed by recorded duration so the shards are even, so "
+                          "CI can split the suite over runners; every test is in exactly one shard")
+
+
+def _durations():
+    with open(os.path.join(TESTS, "data", "shard_durations.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def pack_shards(paths, n, durations):
+    """file -> shard in range(n): largest file first, onto the lightest shard. A file's weight is its recorded seconds,
+    the median of the recorded ones when it has none (a new file), so the packing depends only on the paths and the data.
+    lean: the recorded seconds are one CI run's; refresh them with tests/data/refresh_shard_durations.py RUN_ID when the
+    shards drift apart (a shard's job taking over 1.5x the quickest's) or after files are added or split."""
+    default = sorted(durations.values())[len(durations) // 2] if durations else 1
+    weight = {p: durations.get(p, default) for p in paths}
+    load, where = [0] * n, {}
+    for path in sorted(weight, key=lambda p: (-weight[p], p)):
+        where[path] = load.index(min(load))
+        load[where[path]] += weight[path]
+    return where
+
+
+def _shard(config):
+    spec = config.getoption("--shard")
+    if spec is None:
+        return None
+    try:
+        i, n = map(int, spec.split("/"))
+    except ValueError:
+        i = n = 0
+    if not 0 <= i < n:
+        raise pytest.UsageError(f"--shard={spec}: expected I/N with 0 <= I < N")
+    return i, n
+
+
 def pytest_configure(config):
+    _shard(config)
     for name, doc in MARKERS.items():
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
 @pytest.hookimpl(tryfirst=True)   # before -m selects: it reads the marker
 def pytest_collection_modifyitems(config, items):
-    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`."""
+    """factories.serial marks its test serial; perf tests run only when asked for: `pytest -m perf`; --shard=I/N keeps
+    the test files of one shard (a file's tests stay together)."""
+    shard = _shard(config)
+    if shard:
+        where = pack_shards({i.nodeid.split("::")[0] for i in items}, shard[1], _durations())
+        mine = [where[i.nodeid.split("::")[0]] == shard[0] for i in items]
+        config.hook.pytest_deselected(items=[i for i, m in zip(items, mine) if not m])
+        items[:] = [i for i, m in zip(items, mine) if m]
     for item in items:
         if getattr(getattr(item, "function", None), "serial", False):
             item.add_marker(pytest.mark.serial)

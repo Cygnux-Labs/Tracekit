@@ -112,8 +112,9 @@ verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) a
 interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
 This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`),
 `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
-policy`) and `box` (the label of a Tracekit Box box's run and of its agent channel's runs: `boxed agent`, which says
-what they prove instead of the general claim).
+policy`), `box` (the label of a Tracekit Box box's run and of its agent channel's runs: `boxed agent`, which says
+what they prove instead of the general claim) and `approval.decision` (the decision an approval.consumed was used for:
+`approval decision`).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -440,11 +441,44 @@ def _grants(rep, events):
               (broken + bad)[:20], warn=not broken)
 
 
+def _approval_decision(rep, events):
+    """ext.approval.decision (1.8.0): each approval.consumed names a policy.decision of its own run, tool_call_id and
+    attempt that comes before it. The signer writes the decision it checked the approval's use against; a verifier
+    can check the reference without trusting the name (a used decision that the bundle doesn't hold is a warning)."""
+    decisions = {}
+    for e in events:
+        d = e.get("data") or {}
+        if e.get("type") == "policy.decision" and isinstance(d.get("decision_id"), str):
+            decisions.setdefault((e.get("run_id"), d["decision_id"]), []).append(e)
+    n, bad = 0, []
+    for e in events:
+        if "approval.decision" not in ext_names(e):
+            continue
+        n += 1
+        if e.get("type") != "approval.consumed":
+            bad.append(e.get("seq"))
+            continue
+        did = (e.get("ext") or {}).get("approval.decision") if isinstance(e.get("ext"), dict) else None
+        if not isinstance(did, str):
+            bad.append(e.get("seq"))
+            continue
+        before = [d for d in decisions.get((e.get("run_id"), did), ()) if d.get("run_seq", 0) < e.get("run_seq", 0)]
+        if not any((d.get("tool_call_id") or (d.get("data") or {}).get("tool_use_id")) == e.get("tool_call_id")
+                   and d.get("attempt", 0) == e.get("attempt", 0) for d in before):
+            bad.append(e.get("seq"))
+    if n:
+        rep.check("approval decision", not bad,
+                  f"{n} record(s) name a policy.decision of their run, call id and attempt before them"
+                  if not bad else
+                  f"the record(s) at seq {', '.join(str(s) for s in bad[:5])} carry ext.approval.decision without "
+                  "naming a policy.decision of their run, call id and attempt before it", warn=True)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9). Names that
 # share a check are read together, once: a grant, its revocation and the calls it released
-EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box, "intent.grant": _grants,
-              "intent.revoked": _grants, "grant": _grants}
+EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box, "approval.decision":
+              _approval_decision, "intent.grant": _grants, "intent.revoked": _grants, "grant": _grants}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 
@@ -707,7 +741,8 @@ def _ext(rep, events, full):
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
         and _version(full) > _version(READS) else ""
     shown, more, done = 0, 0, set()
-    also = {_grants: [e for e in events if _tk_grant(e)]}   # records a check reads beside its names' own
+    also = {_grants: [e for e in events if _tk_grant(e)],   # records a check reads beside its names' own
+            _approval_decision: [e for e in events if e.get("type") == "policy.decision"]}
 
     def run(f):   # once, over the records of every name it reads and what it reads beside them
         done.add(f)

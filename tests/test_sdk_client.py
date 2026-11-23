@@ -28,7 +28,7 @@ from tracekit import __version__, cli
 from tracekit.signer.rpc_schema import RPC_VERSION  # noqa: E402
 from tracekit.sdk import autospawn, client
 from tracekit.sdk.client import AsyncClient, AsyncRunHandle, Client, Incompatible, RunHandle, current_run
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import INSTEAD, RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE_ARGV = [sys.executable, "-m", "tracekit.testing"]
@@ -486,6 +486,38 @@ class Transports(unittest.TestCase):
                                                 r"connect|no answer from the signer within)"):
             self.assertIsNone(RunHandle(c, {"run_id": "r1", "run_token": "t"}).complete("call-1", **DONE))
 
+    def test_a_connection_a_handler_thread_opened_is_closed_when_the_thread_ends(self):
+        """A gateway answers each request on a thread of its own and calls the signer from it: that thread's kept-alive
+        connection must not be left for the garbage collector."""
+        class Signer(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_POST(self):
+                frame = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                body = json.dumps(HELLO if frame["method"] == "hello" else {}).encode()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_):
+                pass
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Signer)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=2)
+        self.addCleanup(c.close)
+        gc.collect()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            for _ in range(3):
+                t = threading.Thread(target=c.status)
+                t.start()
+                t.join()
+            gc.collect()
+        self.assertEqual([str(x.message) for x in w if issubclass(x.category, ResourceWarning)], [])
+
     def test_a_signer_gone_after_the_hello_records_nothing_it_refused(self):
         """Once the hello is answered, a connect the signer refuses still sends nothing: not recorded, not "may have
         been". The signer keeps connections alive and closes idle ones, as the real one does: the kept connection it
@@ -512,7 +544,8 @@ class Transports(unittest.TestCase):
         c.status()   # the hello is cached
         srv.shutdown()
         srv.server_close()   # gone: every connect is refused
-        conn, = c._https.conns   # wait for the signer to close the kept connection
+        (conns,) = c._https.conns
+        (conn,) = conns.by_host.values()   # wait for the signer to close the kept connection
         deadline = time.monotonic() + 5
         while not client._readable(conn.sock) and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -1206,6 +1239,19 @@ class FakeSigners(unittest.TestCase):
         p = subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": ROOT}, capture_output=True,
                            text=True, timeout=30)
         self.assertEqual(p.stdout.strip(), "0", p.stderr)
+
+
+class Stops(unittest.TestCase):
+    def test_a_stop_is_the_clients_and_the_claude_code_hook_names_it_too(self):
+        """stopped and stop_rules are the client's, for every adapter's stop; the Claude Code hook's names for them
+        (claude_code.stopped, _rules) are the same functions."""
+        from tracekit.integrations import claude_code
+        self.assertIs(claude_code.stopped, client.stopped)
+        self.assertIs(claude_code._rules, client.stop_rules)
+        self.assertEqual(client.stop_rules(["TK-UNKNOWN-TOOL"]), "")
+        said = client.stopped(f"BLOCKED, nothing ran{client.stop_rules(['R1', 'TK-UNKNOWN-TOOL'])}.",
+                              "why" + INSTEAD + "do x")
+        self.assertEqual(said.splitlines()[:3], ["[tracekit] BLOCKED, nothing ran (R1).", "Why: why", "Instead: do x"])
 
 
 if __name__ == "__main__":

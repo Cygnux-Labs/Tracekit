@@ -75,6 +75,7 @@
   "kit/vectors/a-signature-in-non-canonical-base64.tkb": "ace93af22162d21fc637e5562c84e2b53706f07505ed8026ca2d1a3dcd670c0b",
   "kit/vectors/agent-approval.tkb": "33b05cfd78dad2fd12eaf22c88cfeebd32c77b210c18c3d9e73b2543535cbd20",
   "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
+  "kit/vectors/approval-decision.tkb": "605df592bf58b063ea89f2820c1c89e70fedf6e9f080804eb11dca9320e52212",
   "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
   "kit/vectors/every-type.tkb": "bf26a8d07fa4ebe0490429c700b9d0314887db7f7ad278c8acc03d5a9f73d8bf",
   "kit/vectors/ext.tkb": "323743b93439dd22b8cc45ac7b288b51443de323f0bfdef54005e3bfb15545e9",
@@ -1268,6 +1269,16 @@
    ],
    "decided_by": "proposed: a run other than the signer's own starts with its run.registered (§3 lifecycle)",
    "proposed": true
+  },
+  {
+   "name": "a consume names the decision it ran under",
+   "input": "kit/vectors/approval-decision.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§10 (ext.approval.decision), §11 step 10"
   }
  ],
  "primitives": [

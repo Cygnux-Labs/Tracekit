@@ -1502,7 +1502,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     if (cfg.get("log_key") or {}).get("aws_kms"):
         out += kms_checks(cfg["log_key"]["aws_kms"], issuer_key)
     if (cfg.get("storage") or {}).get("postgres") is not None:
-        out += pg_checks(cfg["storage"]["postgres"])
+        out += pg_checks(cfg["storage"]["postgres"],
+                         isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True)
 
     try:
         with open(os.path.join(data, "hygiene.json"), encoding="utf-8") as f:
@@ -1883,26 +1884,33 @@ def kms_checks(kms, issuer_key=None):
 
 
 LOG_TABLES = ["tracekit_records", "tracekit_registry", "tracekit_notes", "tracekit_anchors"]
+VAULT_TABLES = ["tracekit_content_keys", "tracekit_content"]
 PG_WRITERS = """SELECT r.rolname, t FROM pg_roles r, unnest(%s::text[]) t
 WHERE r.rolname <> current_user AND r.rolname !~ '^pg_' AND NOT r.rolsuper
   AND NOT pg_has_role(r.oid, (SELECT relowner FROM pg_class WHERE oid = t::regclass), 'USAGE')
   AND has_table_privilege(r.oid, t, 'INSERT, UPDATE, DELETE, TRUNCATE') ORDER BY 1, 2"""
 
 
-def pg_checks(section):
+def pg_checks(section, vault=False):
     """The signer's Postgres role, connected to as the signer, against the grants of postgres.GRANTS: no UPDATE, DELETE
-    or TRUNCATE on the logs and not superuser; and no other role but the tables' owner may write the logs."""
+    or TRUNCATE on the logs and not superuser; and no other role but the tables' owner may write the logs. With the
+    content vault on (`vault`), it also holds every grant of GRANTS on the vault's tables."""
     try:
         import psycopg
         from .storage import postgres
     except ImportError:
         return [result("D-PG-SIGNER-ROLE", WARN, "not checked: no psycopg", "pip install 'tracekit-ai[postgres]'")]
     try:
-        with psycopg.connect(postgres.read_dsn(section), autocommit=True, connect_timeout=10) as c:
+        with psycopg.connect(postgres.read_dsn(section), autocommit=True, connect_timeout=10,
+                             client_encoding="utf8") as c:   # names as str, even on a SQL_ASCII database
             role, superuser = c.execute("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user").fetchone()
             bad = c.execute("SELECT t || ': ' || p FROM unnest(%s::text[]) t, unnest(array['UPDATE', 'DELETE', "
                             "'TRUNCATE']) p WHERE has_table_privilege(t, p) ORDER BY 1", (LOG_TABLES,)).fetchall()
             writers = c.execute(PG_WRITERS, (LOG_TABLES,)).fetchall()
+            lacks = c.execute("SELECT t || ': ' || p, to_regclass(t) IS NULL FROM unnest(%s::text[]) t, unnest(array["
+                              "'SELECT', 'INSERT', 'UPDATE', 'DELETE']) p WHERE CASE WHEN to_regclass(t) IS NULL THEN "
+                              "true ELSE NOT has_table_privilege(t, p) END ORDER BY (t || ': ' || p) COLLATE \"C\"",
+                              (VAULT_TABLES,)).fetchall() if vault else []
     except (OSError, psycopg.Error) as e:
         return [result("D-PG-SIGNER-ROLE", WARN, f"not checked: {str(e)[:256]}",
                        "run doctor where the signer's DSN reaches Postgres, after `tracekit signer migrate`")]
@@ -1912,7 +1920,13 @@ def pg_checks(section):
                    f"DELETE, TRUNCATE ON {', '.join(LOG_TABLES)} FROM {role}; ALTER ROLE {role} NOSUPERUSER"),
             result("D-PG-READER-ROLES", FAIL if writers else OK, "; ".join(f"{r} can write {t}" for r, t in writers)
                    or f"no role but {role} and the tables' owner can write the logs",
-                   "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")]
+                   "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")] + ([
+            result("D-PG-VAULT-GRANTS", FAIL if lacks else OK,
+                   "the content vault's tables are missing (schema version 1)" if any(m for _, m in lacks)
+                   else f"{role} lacks " + ", ".join(t for t, _ in lacks) if lacks
+                   else f"{role} may keep and erase the content vault's items",
+                   ("run `tracekit signer migrate`, then " if any(m for _, m in lacks) else "")   # a v1 store
+                   + postgres.VAULT_GRANTS.format(role=role))] if vault else [])
 
 
 # Kubernetes: the signer image's user and paths (deploy/docker), and what hands a pod cloud credentials

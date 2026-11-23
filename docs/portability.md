@@ -13,9 +13,11 @@
 
 ## What "tested" means here
 
-The CI workflow runs the whole suite on Linux, macOS and Windows (Python 3.9, 3.12, 3.13). The macOS and Windows
-jobs are `continue-on-error`, so a failure there is visible but does not block a merge. Two more Linux jobs block
-merges: the root-only tests, and E8 (insider attacks against a real system-mode signer, docs/evaluation.md).
+The CI workflow runs the whole suite on Linux (Python 3.9, 3.12, 3.13; in three shards each, with a required check per
+Python version). The whole suite also runs on macOS and Windows (Python 3.9 and 3.13) on the merge queue and nightly,
+not on a pull request or a push to main; those jobs are `continue-on-error`, so a failure there is visible but does not
+block a merge. Two more Linux jobs block merges: the root-only tests, and E8 (insider attacks against a real
+system-mode signer, docs/evaluation.md).
 
 Tested locally:
 

@@ -1383,6 +1383,28 @@ class OpenCodeTools(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "path": "/w/o"}),
                          ("Write", {"prompt": "p", "path": "/w/o", "file_path": "/w/o", "paths": []}))
 
+    def test_opencode_2_image_generate_fetches_an_http_image(self):
+        # #988: OpenCode downloads an http(s) image, under webfetch's permission (image-generate.ts, readImage): images
+        # that are all URLs are decided as a WebFetch of each, so the fetch rules read them, never a decoy `url`
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        images = ["HTTP://169.254.169.254/a.png", "https://x.example/b.png"]
+        tool, ti = agent_hooks.tool("opencode", "experimental_image_generate",
+                                    {"prompt": "p", "images": images, "path": "/w/o", "url": "https://x.example/"})
+        self.assertEqual((tool, ti["url"], ti["urls"]), ("WebFetch", images[0], images))
+        d = e.decide(tool, ti)
+        self.assertEqual((d["verdict"], "TK-N001" in d["rule_ids"]), ("deny", True), d)
+        _, ti = agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "images": images[1:],
+                                                                              "urls": ["https://x.example/"]})
+        self.assertEqual((ti["url"], "urls" in ti), (images[1], False))
+        # a call that downloads some images and reads others is denied in the hook: a call is decided as one tool
+        def blocked(imgs):
+            return agent_hooks._blocked("opencode", {"tool_name": "experimental_image_generate",
+                                                     "tool_input": {"prompt": "p", "images": imgs}})
+        self.assertIn("download the image to a file first", blocked(["/w/a.png", images[1]]))
+        self.assertIsNone(blocked(["/w/a.png", "/w/b.png"]))
+
 
 class GptmeTools(unittest.TestCase):
     def test_gptme_native_shell_background_matches_gptme_truth_values(self):
@@ -2073,14 +2095,70 @@ class JcodeTools(unittest.TestCase):
             self.install(path, uninstall=True)
             self.assertEqual(path.read_bytes(), b"")
 
-    def test_resaved_config_names_its_unmarked_commands_on_init_and_uninstall(self):
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_gets_its_unmarked_commands_taken_out(self):
+        import tomllib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_bytes(b'model = "x"\n')
+            self.install(path, v2=True)
+            # Config::save serializes the hooks but discards comments, including Tracekit's markers.
+            saved = self.resaved(path)
+            path.write_text(saved, encoding="utf-8")
+            said = self.install(path, uninstall=True)
+            self.assertIn("Tracekit v2 hooks removed from", said)
+            self.assertEqual(path.read_text(encoding="utf-8"), 'model = "x"\n')
+            self.assertIn(saved, [b.read_text(encoding="utf-8") for b in path.parent.glob("config.toml.bak-*")])
+            self.install(path, v2=True)   # init after the removal: a marked table again
+            text = path.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith('model = "x"\n\n' + agent_hooks.JCODE_BEGIN + "\n[hooks]\n"))
+            self.assertEqual(tomllib.loads(text)["hooks"], agent_hooks._jcode_hooks(True, None))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_keeps_a_peoples_command_when_uninstalling(self):
+        import tomllib
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             self.install(path, v2=True)
-            # Config::save serializes the hooks but discards comments, including Tracekit's markers.
-            saved = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
-                              if not line.startswith("#")) + "\n"
+            hooks = tomllib.loads(path.read_text(encoding="utf-8"))["hooks"]
+            theirs = "/home/u/bin/their-gate"
+            # jcode's own shape: no comments, a hook with several commands saved as a list over several lines
+            saved = ('model = "x"\n\n[hooks]\npre_tool = [\n    ' + json.dumps(theirs) + ",\n    "
+                     + json.dumps(hooks["pre_tool"]) + ",\n]\n"
+                     + "".join(f'{key} = {json.dumps(hooks[key])}\n' for key in
+                               ("post_tool", "session_start", "session_end"))
+                     + f"pre_tool_timeout_ms = {agent_hooks.JCODE_TIMEOUT_MS}\n"
+                     '[tools]\nauto_background_timeout_ms = 3000\n')
+            path.write_text(saved, encoding="utf-8")
+            said = self.install(path, uninstall=True)
+            self.assertIn("Tracekit v2 hooks removed from", said)
+            config = tomllib.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(config["hooks"], {"pre_tool": [theirs]})
+            self.assertEqual((config["model"], config["tools"]), ("x", {"auto_background_timeout_ms": 3000}))
+            self.assertIn(saved, [b.read_text(encoding="utf-8") for b in path.parent.glob("config.toml.bak-*")])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_keeps_a_peoples_own_timeout_when_uninstalling(self):
+        import tomllib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.install(path, v2=True)
+            hooks = tomllib.loads(path.read_text(encoding="utf-8"))["hooks"]
+            path.write_text(f'[hooks]\npre_tool = {json.dumps(hooks["pre_tool"])}\npre_tool_timeout_ms = 5000\n',
+                            encoding="utf-8")
+            self.install(path, uninstall=True)
+            self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8")), {"hooks": {"pre_tool_timeout_ms": 5000}})
+
+    def test_a_resaved_command_that_is_not_a_line_of_its_own_is_left_and_printed(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.install(path, v2=True)
+            pre_tool = agent_hooks._jcode_hooks(True, None)["pre_tool"]
+            saved = '[hooks]\npre_tool = ["/home/u/bin/their-gate", ' + json.dumps(pre_tool) + ']\n'
             path.write_text(saved, encoding="utf-8")
             for uninstall in (False, True):
                 with self.subTest(uninstall=uninstall):
@@ -2088,8 +2166,13 @@ class JcodeTools(unittest.TestCase):
                     self.assertIn("unmarked Tracekit hook commands", said)
                     self.assertIn("Remove these Tracekit commands from [hooks] by hand", said)
                     self.assertIn("pre_tool =", said)
-                    self.assertIn("session_end =", said)
                     self.assertEqual(path.read_text(encoding="utf-8"), saved)
+                    self.assertEqual(list(path.parent.glob("config.toml.bak-*")), [])
+
+    def resaved(self, path):
+        """What jcode's Config::save writes of init's config.toml: the same settings, no comment (the markers go)."""
+        return "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                         if not line.startswith("#")) + "\n"
 
     @unittest.skipIf(sys.version_info < (3, 11), "checks the appended table with tomllib")
     def test_install_checks_generated_toml_before_writing_non_bmp_interpreter(self):
@@ -3749,6 +3832,65 @@ class Installer(unittest.TestCase):
         self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
                          ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
 
+    def test_kilo_browser_open_and_repo_clone_are_fetches_of_their_url(self):
+        # #988: browser_open opens its `url` (kilocode/tool/browser-open.ts) and repo_clone clones the remote Kilo's
+        # Repository.parse makes of its `repository` (core/src/repository.ts): each is decided as a WebFetch, so the
+        # fetch rules read it. They passed as unknown tools, flagged on the dev pack
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        for name, args in [("browser_open", {"url": "http://169.254.169.254/latest/meta-data/"}),
+                           ("repo_clone", {"repository": "169.254.169.254/a/b", "url": "https://github.com/o/r"}),
+                           ("repo_clone", {"repository": "git@10.0.0.5:a/b.git", "branch": "main"}),
+                           # git connects to the host before the first ':', whatever an '@' after it says
+                           ("repo_clone", {"repository": "10.0.0.5:x@github.com:o/r.git"})]:
+            with self.subTest(name=name, args=args):
+                mapped, ti = agent_hooks.tool("kilo", name, args)
+                d = e.decide(mapped, ti)
+                self.assertEqual((mapped, d["verdict"], "TK-N001" in d["rule_ids"]), ("WebFetch", "deny", True), d)
+                self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)   # OpenCode has no such tool
+        for repository, url in [("owner/repo", "https://github.com/owner/repo.git"),
+                                ("github:o/r.git", "https://github.com/o/r.git"),
+                                ("git@gitlab.example:g/r.git", "ssh://git@gitlab.example/g/r.git"),
+                                ("10.0.0.5:x@github.com:o/r.git", "ssh://10.0.0.5/x@github.com:o/r.git"),
+                                ("git+https://h.example/a/b.git#main", "https://h.example/a/b.git"),
+                                (" Code.Example/g/s/r.git/ ", "https://code.example/g/s/r.git"),
+                                ("file:///tmp/r", "file:///tmp/r")]:   # Kilo refuses a file: URL: decided as sent
+            with self.subTest(repository=repository):
+                self.assertEqual(agent_hooks.tool("kilo", "repo_clone", {"repository": repository})[1]["url"], url)
+
+    def test_kilo_memory_save_writes_kilos_memory_files(self):
+        # #988: kilo_memory_save saves a note later sessions read back: a remember to project.md, a correct to
+        # corrections.md, a forget from all three files (kilo-memory: tool.ts, storage/paths.ts); a skip writes nothing
+        memory = "~/.local/share/kilo/memory/"
+        self.assertEqual(agent_hooks.tool("kilo", "kilo_memory_save", {"action": "remember", "text": "t", "content": "x"}),
+                         ("Write", {"action": "remember", "text": "t", "content": "t", "file_path": memory + "project.md",
+                                    "paths": [memory + "project.md"]}))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "correct", "text": "t", "key": "k"})
+        self.assertEqual((mapped, ti["file_path"], ti["content"]), ("Write", memory + "corrections.md", "t"))
+        mapped, ti = agent_hooks.tool("kilo", "kilo_memory_save", {"action": "forget", "query": "q", "text": "t"})
+        self.assertEqual((mapped, ti["paths"], "content" in ti), ("Edit", [memory + f for f in (
+            "project.md", "environment.md", "corrections.md")], False))
+        # held as harness settings (TK-F009), from a file tool and from the shell (TK-F015), as Kilo itself asks
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        for pack in ("dev", "coding", "server", "strict"):
+            e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack + ".yaml"))[0])
+            for args in ({"action": "remember", "text": "t"}, {"action": "correct", "text": "t"},
+                         {"action": "forget", "query": "q"}):
+                with self.subTest(pack=pack, args=args):
+                    d = e.decide(*agent_hooks.tool("kilo", "kilo_memory_save", args))
+                    self.assertEqual((d["verdict"], "TK-F009" in d["rule_ids"]), ("ask", True), d)
+            for command in ("echo t >> ~/.local/share/kilo/memory/app-0123456789ab/project.md",
+                            "rm -rf $XDG_DATA_HOME/kilo/memory/app-0123456789ab"):
+                with self.subTest(pack=pack, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+        for name, args in [("kilo_memory_save", {"action": "skip"}), ("kilo_memory_save", {"action": ["remember"]}),
+                           ("kilo_memory_save", {"action": {"remember": 1}}),   # unhashable: tool() raised TypeError
+                           ("agent_manager", {"mode": "local", "tasks": [{"prompt": "fix the tests"}]})]:
+            with self.subTest(name=name):
+                self.assertEqual(agent_hooks.tool("kilo", name, args), (name, args))
+
     def test_codex_joins_an_argv_only_of_strings(self):
         """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
         so tracekit audit --agent codex crashed."""
@@ -4188,6 +4330,7 @@ class Installer(unittest.TestCase):
         from tracekit import hook, privacy
         for command, runs in (("TOKEN=abcd;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
                               ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=[REDACTED:dotenv]; rm -rf ~/w"),
+                              # a fake connection string, a redaction fixture: agent-flow:allow-secret
                               ("psql postgres://u:abcd@h/db;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
                               ("bash -s <<EOF\nTOKEN=abcd;rm -rf ~/w\nEOF", ";rm -rf ~/w\nEOF")):
             with self.subTest(command=command):

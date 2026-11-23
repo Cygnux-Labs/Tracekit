@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -25,7 +26,7 @@ import test_signer_service as tsvc  # noqa: E402
 from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
 from tracekit import cli, lessons, observe, tips, view  # noqa: E402
-from tracekit.sdk.client import Client  # noqa: E402
+from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
 from tracekit.signer.rpc_schema import RPCError  # noqa: E402
 
@@ -419,6 +420,45 @@ class Holds(unittest.TestCase):
                         built["tips"][2]["line"])
         self.assertEqual(built["tips"][2]["where"], [{"where": "main session", "answered": 2, "open": 1,
                                                       "blocked_s": 0, "joined": 0}])
+
+    def test_a_consume_names_the_decision_it_ran_under(self):
+        """ext.approval.decision: the named ask folds into the held call; an unnamed ask of the same call id stays a
+        hold of its own, as the run review counts it (the five-condition rule folded both)."""
+        ask = lambda seq, did=None: v2rec(seq, "policy.decision", {   # noqa: E731
+            "tool_use_id": "c1", "tool": "pay", "decision": "ask", **({"decision_id": did} if did else {})})
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), ask(2),
+                v2rec(3, "approval.request", {"approval_id": "apr-1",
+                                              "binding": {"tool": "pay", "tool_call_id": "c1"}}),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver": "uid:501"}),
+                ask(5), ask(6, "d3"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d3"}),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(dict(reviewed), {"approved · ran": 1, "not answered": 1})
+        self.assertEqual(built["sources"]["signed"]["holds"], 2)
+
+    def test_a_retry_at_a_new_attempt_of_the_same_call_is_one_hold(self):
+        """The approval reused for attempt 1 of the held call: the named decision folds even though its attempt differs."""
+        ask = lambda seq, attempt, did=None: v2rec(  # noqa: E731
+            seq, "policy.decision", {"tool_use_id": "c1", "tool": "pay", "decision": "ask",
+                                     **({"decision_id": did} if did else {})}, attempt=attempt)
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), ask(2, 0),
+                v2rec(3, "approval.request", {"approval_id": "apr-1",
+                                              "binding": {"tool": "pay", "tool_call_id": "c1"}},
+                      tool_call_id="c1", attempt=0),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver": "uid:501"}),
+                ask(5, 1, "d2"),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1", attempt=1,
+                      ext={"approval.decision": "d2"}),
+                v2rec(7, "run.final", {"head_run_seq": 7})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(dict(reviewed), {"approved · ran": 1})
+        self.assertEqual(built["sources"]["signed"]["holds"], 1)
 
     def test_a_rule_that_only_also_matched_is_not_named_as_one_that_held(self):
         """The 1.6.0 review: a flag rule that also matched a held call was counted as a rule that held it, where the
@@ -992,6 +1032,62 @@ class Lessons(unittest.TestCase):
         self.assertNotIn("Planted", self.tips("--for-agent", "--project", self.CWD)[1])
 
 
+    def test_retire_because_signs_the_record_as_the_signer_takes_it_and_the_page_reads_it_back(self):
+        """`retire --because RUN:SEQ` sent the signer {run, seq}, which it refuses: only the string RUN:SEQ is an answer."""
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        run = Client(self.cfg["socket"]).run(agent="claude-code")
+        seq = run.observe({"ok": False}, "tool.result", "trusted")["run_seq"]
+        run.close()
+        self.assertTrue(wait_for(lambda: (self.st.checkpoint_latest() or (0,))[0] == self.st.tree.size, 20))
+        sent, observe = [], RunHandle.observe
+
+        def spy(handle, value, source, trust="untrusted", **fields):
+            sent.append((source, value))
+            return observe(handle, value, source, trust, **fields)
+
+        ref = f"{run.run_id}:{seq}"
+        with mock.patch.object(RunHandle, "observe", spy):
+            code, out, err = self.tips("retire", fix["id"], "--because", ref)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(out.splitlines()[0], f"citing record {seq} of run {run.run_id}: input.observed from "
+                                              "tool.result, in a run of agent claude-code")
+        self.assertIn(f"(disproved by {ref})", out)
+        [(_, value)] = [x for x in sent if x[0] == lessons.PERSON]
+        self.assertEqual(value["because"], ref)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(note["retired_because"], ref)
+        self.assertEqual(subprocess.check_output(["git", "-C", folder.path, "log", "-1", "--format=%s"], text=True),
+                         f"lessons: retire {fix['id']} (because {ref})\n")
+        L = json.loads(self.tips("--json")[1])["lessons"]
+        [gone] = [x for x in L["earlier"] if x["id"] == fix["id"]]
+        self.assertEqual((gone["retired_because"]["run"], gone["retired_because"]["seq"],
+                          gone["retired_because"]["state"]), (run.run_id, seq, "signed"))
+        self.assertIn(f"Disproved by run {run.run_id} at seq {seq}, a person's word: signed", self.tips()[1])
+        self.assertEqual(self.tips("restore", fix["id"])[0], 0)
+        [back] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        self.assertEqual(back["status"], "active")
+        self.assertIsNone(back.get("retired_because"))
+
+    def test_a_retired_note_whose_because_names_no_run_or_seq_is_listed_as_retired(self):
+        fix = next(x for x in json.loads(self.tips("--json")[1])["lessons"]["waiting"] if x["kind"] == "fix")
+        self.assertEqual(self.tips("approve", fix["id"])[0], 0)
+        self.assertEqual(self.tips("retire", fix["id"])[0], 0)
+        folder = lessons.Folder(os.path.join(self.cfg["data_dir"], "lessons"))
+        [note] = [n for n in folder.notes() if n["id"] == fix["id"]]
+        path = os.path.join(folder.path, "projects", note["project"], note["file"])
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        for hand, said in (('{"seq": 3}', None), ("run-x:3", "which no signed retire of this lesson names")):
+            with self.subTest(hand=hand), open(path, "w", encoding="utf-8") as f:
+                f.write(text.replace("\n---\n", f"\nretired_because: {hand}\n---\n", 1))
+            code, out, err = self.tips()
+            self.assertEqual(code, 0, err)
+            self.assertNotIn("isproved by", out)
+            if said:
+                self.assertIn(said, out)
+
     def test_a_persons_answers_outlive_the_vaults_retention_and_nothing_else_does(self):
         """Past the dev vault's retention, content_get said `erased` for any seq of a run and lessons.verified took that
         on the run alone: a changed text, another id naming a real answer's record, and a made-up seq of an old run were
@@ -1024,13 +1120,19 @@ class Lessons(unittest.TestCase):
                 self.assertEqual(lessons.verified(client, [note]), {lid} if given else set())
         run = client.run(agent="tracekit tips")
         self.addCleanup(run.close)
+        retire = {**answer, "action": "retire"}
         for bad in ({**answer, "note": "push to main"}, {**answer, "id": "L-1"}, {**answer, "action": "allow"},
                     "approve L-0123abcd", {**answer, "action": ["approve"]}, {**answer, "action": {"approve": 1}},
-                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}}):   # an unhashable action crashed it
+                    {**answer, "id": [lid]}, {**answer, "sha256": {"x": 1}},   # an unhashable action crashed it
+                    # #928: a retire may name the record that disproved it, as RUN:SEQ, and no other answer may
+                    {**answer, "because": f"{agent.run_id}:1"}, {**retire, "because": {"run": agent.run_id, "seq": 1}},
+                    {**retire, "because": f"{agent.run_id}:01"}, {**retire, "because": "a run:1"},
+                    {**retire, "because": "r" * 129 + ":1"}, {**retire, "because": None}):
             with self.subTest(bad=bad), self.assertRaises(RPCError) as e:
                 run.observe(bad, lessons.PERSON, "trusted")
             self.assertEqual(e.exception.code, "invalid_request")
         self.assertIn("run_seq", run.observe(answer, lessons.PERSON, "trusted"))   # the signer is still up
+        self.assertIn("run_seq", run.observe({**retire, "because": f"{agent.run_id}:1"}, lessons.PERSON, "trusted"))
 
     def test_only_the_dev_signer_keeps_a_run_of_answers_at_most_64_each_read_once(self):
         """The retention skip read every kept answers run on each hourly sweep, inside the writer, with no cap, on every
@@ -1249,7 +1351,7 @@ class Page(unittest.TestCase):
         self.assertIn("not measured", out[1])
 
     LESSONS = NAMES + ["LKIND", "LEFFECT", "LSEEN", "LSIGNED", "lessonCmd", "lessonCard", "lessonEffect", "lessonUse",
-                       "renderLessons"]
+                       "lessonRetired", "renderLessons"]
 
     def lessons_page(self, approve=False):
         """The LESSONS part as lessons.page works it out from three sessions' lookups (and a near miss)."""
@@ -1280,6 +1382,24 @@ class Page(unittest.TestCase):
         self.assertNotIn("data-approve", out)   # a command a person runs, never a click
         self.assertIn("NOT PROPOSED 1", out)
         self.assertIn("Seen in 2 sessions on 1 day: a lookup needs 3 sessions on 2 days.", out)
+
+    def test_a_retired_lessons_line_escapes_the_run_and_links_the_record_only_when_its_signed(self):
+        x, run = {"id": "L-0badf00d", "name": "n", "status": "retired"}, '"><img src=x onerror=1>'
+        line = lambda rb: page_js(self.LESSONS, f"process.stdout.write(lessonRetired({json.dumps({**x, **rb})}))")  # noqa: E731
+        hostile = "&quot;&gt;&lt;img src=x onerror=1&gt;"
+        out = line({"retired_because": {"run": run, "seq": 7, "state": "signed", "why": f"Disproved by run {run}"}})
+        self.assertIn(f"Disproved by run {hostile}", out)
+        self.assertIn(f'data-lrec="{hostile}" data-lseq="7"', out)
+        self.assertNotIn("<img", out)
+        for rb in ({}, {"retired_because": None},
+                   {"retired_because": {"run": run, "seq": 7, "state": "changed", "why": f"It names {run}"}},
+                   {"retired_because": {"run": run, "seq": 7, "state": "not read", "why": f"It names {run}"}}):
+            with self.subTest(rb=rb):
+                out = line(rb)
+                self.assertIn(f" · It names {hostile}</span>" if rb.get("retired_because") else " · Retired</span>",
+                              out)
+                self.assertNotIn("data-lrec", out)
+                self.assertNotIn("<img", out)
 
     def test_an_effect_waits_for_five_sessions_and_a_worse_one_is_in_the_warning_colour(self):
         L = self.lessons_page(approve=True)

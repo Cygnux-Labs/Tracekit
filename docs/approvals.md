@@ -102,10 +102,11 @@ it, the agent sends the same call again, under a new tool call id, and that call
    with the approval and who said no
    (`a person rejected this exact call (apr-…, by uid:501); ask them before trying again`), so the agent asks before
    it tries again; the new approval lets a person change their mind.
-3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id
-   under the retry's `tool_call_id`, and the approval's `approval.request` and `approval` records name the blocked
-   attempt's. A T2 approval is consumed with the `approval_id_hint` that `approval_request` returned, and the consume
-   returns the signer's copy of the arguments as for any T2 call.
+3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id and,
+   from format 1.8, `ext.approval.decision`, the `policy.decision` it checked the use against, under the retry's
+   `tool_call_id`; the approval's `approval.request` and `approval` records name the blocked attempt's. A T2 approval is
+   consumed with the `approval_id_hint` that `approval_request` returned, and the consume returns the signer's copy of
+   the arguments as for any T2 call.
 4. The retry completes as an approved call (no `executed_against_policy` gap), once: a second result on the same
    approval, under another decision of the same call, is signed with that gap. If it never completes, the retry, not
    the blocked attempt, is the run's `decided_not_completed` gap. The blocked attempt never ran under the approval: if
@@ -114,7 +115,11 @@ it, the agent sends the same call again, under a new tool call id, and that call
 
 Sent again before anyone answered, the call asks on its own, with a new approval each time; approving any of them lets
 the next retry run. After a retry ran, the same call is held again: one approval runs one call. The records are the
-ones every approval writes, so a bundle with a retry needs no newer verifier, Python or TypeScript, than one without.
+ones every approval writes. A consume from this signer also carries `ext.approval.decision`, the decision it ran
+under, when the signer can name one (the call's latest decision with the approved arguments, or the approval's own
+decision for its attempt), so a bundle with a used approval needs a 1.4 verifier at least, as any bundle with an
+`ext` name does: 1.2 and 1.3 answer `UNVERIFIABLE (needs tracekit >= 1.4.0)`. A verifier from 1.4 that doesn't read
+the name still verifies the bundle and warns that it did not interpret it, so `--strict` exits 3.
 A held or quarantined run follows [its own rules](incidents.md).
 
 In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every
@@ -449,6 +454,7 @@ gateway: https://gateway.internal:8080     # the LLM gateway in front of Anthrop
 model: claude-opus-5-5                      # the default
 poll_s: 5
 timeout_s: 120                              # one model call; past it the reviewer escalates
+state_file: reviewer.state                  # optional: answered approval ids, kept across a restart
 tenants:                                    # it serves these tenants and no other
   acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
 ```
@@ -465,6 +471,12 @@ there. `run_token_file` is an ordinary identity that registers the reviewer's ru
 links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
 The reviewer sends the redacted arguments of the tenants it serves to the model provider
 ([privacy](privacy.md#what-leaves-the-machine)).
+
+`state_file` is optional. Without it the reviewer remembers the approvals it answered only in memory, so after a
+restart a shadow-mode approval, which stays listed, gets a second model call and a second `approval.suggested`. With
+it the ids are written there (a JSON list, replaced whole on each change, mode 0600) and read back at start; a
+missing, unreadable or malformed file starts empty, and so does a symlink or anything but a regular file, which the
+reviewer neither reads nor writes (it says so once, in its log).
 
 **Before you enforce: eval, then shadow.**
 

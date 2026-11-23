@@ -7,6 +7,7 @@ its cases name none: the hook pairs calls itself (tracekit.agent_hooks._paired_i
 distinct and never a default.
 """
 import contextlib
+import glob
 import io
 import json
 import os
@@ -353,6 +354,11 @@ class Mapping(HarnessCase):
 
     def test_opencode(self):
         self.check("opencode")
+
+    def test_kilo(self):
+        # #988: Kilo's browser_open and repo_clone are decided as fetches, kilo_memory_save as a write (built from
+        # Kilo's tool sources: kilocode/tool/browser-open.ts, tool/repo_clone.ts, kilo-memory/src/tool.ts)
+        self.check("kilo")
 
     def test_goose(self):
         self.check("goose")
@@ -1054,6 +1060,17 @@ class Mapping(HarnessCase):
                                    "tool.execute.before")
         self.assertEqual((code, out), (2, ""))
         self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
+
+    def test_opencode_image_generate_mixing_urls_and_files_is_denied_before_the_signer(self):
+        # #988: an http(s) image is decided as a fetch and a file as a read, and a call is decided as one tool
+        code, out, err = self.hook("opencode", {"session_id": "oc-9", "hook_event_name": "tool.execute.before",
+                                                "tool_name": "experimental_image_generate", "tool_use_id": "oc-9",
+                                                "tool_input": {"prompt": "p", "images": [
+                                                    "/home/u/.ssh/id_rsa", "https://x.example/cat.png"]}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("download the image to a file first", err)
         self.assertEqual(self.sent, [])
 
     def test_signer_unreachable_is_fail_closed_by_default(self):
@@ -2729,6 +2746,69 @@ class WhatTheModelSaid(HarnessCase):
             self.assertIn("run.final", recs)
             self.assertEqual((recs.count("model.exchange") > 0, recs.count("policy.decision")), (True, 1), sid)
             self.assertEqual([t for t in recs if t.startswith("reconcile.")], [], sid)
+
+    def qwen_chat(self, *extra):
+        """A copy of a real Qwen Code 0.27.4 chat file (a scripted model: text parts only), then `extra` records."""
+        src = glob.glob(os.path.join(os.path.dirname(DATA), "audit", "qwen-code-0.27.4", "projects", "*", "chats",
+                                     "*.jsonl"))[0]
+        path = os.path.join(self.d, "chat.jsonl")
+        with open(src, "rb") as f, open(path, "wb") as out:
+            out.write(f.read() + b"".join(map(line, extra)))
+        return path
+
+    def qwen_pre(self, path, sid="q-s"):
+        return {"session_id": sid, "hook_event_name": "PreToolUse", "tool_name": "run_shell_command",
+                "tool_input": {"command": "ls"}, "tool_use_id": "call_q1", "cwd": self.d, "transcript_path": path}
+
+    def said(self, frame):
+        return [(x["kind"], x["text"]) for x in parsers.said("openai:responses", frame["body"])]
+
+    def test_qwen_thoughts_and_text_are_recorded_and_name_no_call(self):
+        self.serve()
+        thought = {"uuid": "q-thought", "type": "assistant", "model": "qwen3-coder",
+                   "message": {"role": "model", "parts": [{"text": "list the files first", "thought": True},
+                                                          {"text": "Listing."},
+                                                          {"functionCall": {"id": "call_q1", "name": "run_shell_command",
+                                                                            "args": {"command": "ls"}}}]}}
+        self.assertEqual(self.hook("qwen", self.qwen_pre(self.qwen_chat(thought)), "PreToolUse")[0], 0)
+        self.assertIn([("reasoning", "list the files first"), ("text", "Listing.")], map(self.said, self.frames))
+        self.assertIn([("text", "done")], map(self.said, self.frames))   # the real file's own text part
+        self.assertTrue(all("tool_uses" not in f for f in self.frames))
+        mine = next(f for f in self.frames if self.said(f)[0][1] == "list the files first")
+        self.assertEqual((mine["provider"], mine["model"], mine["body"]["source"]),
+                         ("unknown", "qwen3-coder", "qwen chat"))
+
+    def test_qwen_record_already_sent_is_not_sent_again(self):
+        self.serve()
+        path = self.qwen_chat()
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        sent = len(self.frames)
+        self.assertGreater(sent, 0)
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        self.assertEqual(len(self.frames), sent)
+        with open(path, "ab") as f:
+            f.write(line({"uuid": "q-new", "type": "assistant", "message": {"parts": [{"text": "Next."}]}}))
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        self.assertEqual([self.said(f) for f in self.frames[sent:]], [[("text", "Next.")]])
+
+    def test_qwen_lines_of_another_shape_are_skipped(self):
+        self.serve()
+        path = os.path.join(self.d, "chat.jsonl")
+        with open(path, "wb") as f:
+            f.write(b"not JSON\n" + b"".join(map(line, (
+                {"uuid": "a", "type": "assistant", "message": "not an object"},
+                {"uuid": "b", "type": "assistant", "message": {"parts": "not a list"}},
+                {"uuid": "c", "type": "assistant", "message": {"parts": [7, {"text": 1}, {"functionCall": {}}]}},
+                {"uuid": "d", "type": "user", "message": {"parts": [{"text": "typed"}]}}))))
+        quiet = self.hook("qwen", self.qwen_pre(path, "q-bad"), "PreToolUse")
+        self.assertEqual(self.frames, [])
+        self.assertEqual(quiet[:2], self.hook("qwen", self.qwen_pre("", "q-bad2"), "PreToolUse")[:2])
+
+    def test_qwen_with_chat_recording_off_records_nothing(self):
+        self.serve()
+        with mock.patch.object(harness_hooks, "_read", side_effect=AssertionError("an empty path was read")):
+            self.assertEqual(self.hook("qwen", self.qwen_pre(""), "PreToolUse")[0], 0)
+        self.assertEqual(self.frames, [])
 
     def test_cursor_thinking_is_recorded(self):
         self.serve()

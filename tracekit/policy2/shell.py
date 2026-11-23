@@ -151,6 +151,10 @@ UV_OPTS = ("--from", "-w", "--with", "--with-editable", "--with-requirements", "
            "--allow-insecure-host", "--trusted-host", "--directory", "--project", "--config-file",
            "--preview-features", "--preview-feature", "--package", "--extra", "--no-extra", "--group", "--no-group",
            "--only-group", "--no-editable-package")
+# npm 11's options that take a value and have a short form (@npmcli/config's definitions.js: -p is --parseable, a
+# flag; --package has none), and npx's: its own -p (--package), -c (--call) and -n (--node-arg) besides (bin/npx-cli.js)
+_NPM_OPTS = ("-c", "--call", "-C", "--prefix", "-L", "--location", "-m", "--message", "-w", "--workspace", "--package")
+_NPX_OPTS = _NPM_OPTS + ("-p", "-n", "--node-arg")
 # wrapper -> (options that take a value, positional arguments before the command); an option not named is read both
 # ways (_unwrap)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--chdir", "--argv0"), 0), "nohup": ((), 0),
@@ -182,8 +186,9 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "unbuffer": ((), 0), "fakeroot": (("-l", "-s", "-i", "-b", "--lib", "--faked"), 0),
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
-            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
-            "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
+            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (_NPX_OPTS, 0),
+            # pnpm dlx's and pnpm's own (pnpm 11: -p is --parseable, a flag)
+            "pnpx": (("-C", "--dir", "-F", "--filter", "--package", "--allow-build"), 0), "corepack": ((), 0),
             # cmd.exe's switches start with / (// where MSYS rewrites one: cmd //c); wsl runs its words in its distro's
             # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
             "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
@@ -235,7 +240,12 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                            "--close", "--no-fork", "--verbose"),
                  "setsid": ("-c", "-f", "-w", "--ctty", "--fork", "--wait"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
-                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
+                 "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z"),
+                 # yarn's before its subcommand, workspaces foreach's (berry: -p there is --parallel; after dlx, the
+                 # option RUNNERS names, --package)
+                 "yarn": ("-A", "--all", "-R", "--recursive", "-W", "--worktree", "-v", "--verbose", "-p", "--parallel",
+                          "-i", "--interlaced", "-t", "--topological", "--topological-dev", "-n", "--dry-run",
+                          "--no-private")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 WRAPPER_FLAGS["faketime"] = ("-m", "-f", "--exclude-monotonic", "--disable-shm")
 WRAPPER_FLAGS["xvfb-run"] = ("-a", "--auto-servernum", "-l", "--listen-tcp")
@@ -252,9 +262,10 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
            "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
            "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
-           "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
+           "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
-           "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0),
+           "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
+           "bun": (("x",), ("-p", "--package"), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -278,6 +289,9 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
                                                   "--interval-print", "-G", "--cgroup", "-u", "--uid", "-m",
                                                   "--mmap-pages", "-x", "--field-separator", "--call-graph"), 0),
            "rr": (("record",), ("-o", "--output-trace-dir"), 0)}
+# a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
+# (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
+RUNNER_LEADS = {"hatch": ("env",)}
 # bwrap's options that take two words; a flag of its takes none, any other one word (read both ways: _bwrap)
 _BWRAP_TWO = frozenset(("--bind", "--bind-try", "--dev-bind", "--dev-bind-try", "--ro-bind", "--ro-bind-try", "--symlink",
                         "--setenv", "--file", "--bind-data", "--ro-bind-data", "--chmod", "--bind-fd", "--ro-bind-fd"))
@@ -314,10 +328,15 @@ KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", 
 # bash's reserved words: an alias of one is expanded where the word is one (`alias do='do cmd;'`)
 _RESERVED = KEYWORDS | {"for", "select", "case", "esac", "in", "function", "coproc", "time", "[[", "]]"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
-KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
+KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")),
+         ("bun", re.compile(r"bun")), ("deno", re.compile(r"deno")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "r", "lua": "e"}
+# each interpreter's options whose value is its code (php's -B, -R and -E run code before, for and after each line of
+# stdin), the first its usual one, and their long forms
+CODE_FLAGS = {"python": "c", "node": "ep", "bun": "ep", "deno": "", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
+_JS_KIND = {"bun": "node", "deno": "node"}   # bun's and deno's code is JavaScript: read it as node's
+LONG_CODE = {"node": ("--eval", "--print"), "bun": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
                      "--experimental-loader"}
@@ -486,9 +505,10 @@ def _reads_only(cmds, ctx):
 
 
 # NAME OP after a ${: a parameter (a special one, an array element, an indirect name too) with a default or an
-# assignment (-, =), an alternate (+), each with or without the colon, or a pattern substitution (/, //, /#, /%): its
-# word follows. Matched on the pieces dquote reads, one character each (\x01 for an expansion or quoted text)
-_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|/[/#%]?)")
+# assignment (-, =), an alternate (+), each with or without the colon, a prefix or suffix removal (#, ##, %, %%) or
+# a pattern substitution (/, //, /#, /%): its word follows. Matched on the pieces dquote reads, one character each
+# (\x01 for an expansion or quoted text)
+_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|##?|%%?|/[/#%]?)")
 
 
 def _assignments(ways):
@@ -1289,13 +1309,13 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
-# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text/open
 _WRITES = {
-    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.(?:write_(?:text|bytes)|(?P<open>open))\s*\(|"""
                          r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
-                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+                         r"os\.(?:open|rename|replace|link|symlink))\s*\("),
     "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
-                       r"cp|link|symlink)(?:Sync)?\s*\("),
+                       r"cp|link|symlink|Bun\.write|Deno\.(?:writeTextFile|writeFile|create|truncate|open(?:Sync)?))(?:Sync)?\s*\("),
     "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
     "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
                        r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
@@ -1306,13 +1326,62 @@ _SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln") 
 
 _PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
 _MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+_WRITE_FLAG_NAME = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND|TMPFILE)\b")   # a writing open flag, by name
+_INT_FLAG_EXPR = re.compile(r"\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+)(?:\s*[|]\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+))*\s*")
+
+
+def _arg_slices(kind, text):
+    """(start, end) character spans of each top-level argument in `text` (inside a call's argument list)."""
+    slices, k = [], 0
+    while k < len(text):
+        k = _blank_end(text, k, ",)")
+        if k >= len(text) or text[k] == ")":
+            break
+        if text[k] == ",":
+            k += 1
+            continue
+        end = _skip_value(kind, text, k, ",)", lambda _: None)
+        slices.append((k, end))
+        k = end + (text[end:end + 1] == ",")
+    return slices
+
+
+def _kw_arg(kind, text, name):
+    """(_arg_text pieces, raw RHS) of keyword argument `name=...` in `text`, else (None, None)."""
+    rx = re.compile(rf"{name}\s*=(?!=)\s*")
+    for start, end in _arg_slices(kind, text):
+        if m := rx.match(text, start, end):
+            return _arg_text(kind, text, m.end(), end, lambda _: None) or None, text[m.end():end].strip()
+    return None, None
+
+
+def _is_write_flags(expr):
+    """Whether an open flags expression writes: a writing flag by name (O_WRONLY, O_RDWR, or one that creates,
+    truncates or appends), or a number whose access-mode bits write or whose create/truncate/append bits are set."""
+    if not expr:
+        return False
+    if _WRITE_FLAG_NAME.search(expr):
+        return True
+    if _INT_FLAG_EXPR.fullmatch(expr):
+        try:
+            val = 0
+            for tok in re.split(r"\s*[|]\s*", expr.strip()):
+                val |= int(tok, 0)
+        except ValueError:   # a number Python doesn't read (08, 0b12, past int's digit limit): read as writing
+            return True
+        return val & 0o20003103 != 0   # O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_TMPFILE (Linux's numbers)
+    return False
+
+
+_DENO_WRITE_OPT = re.compile(r"\b(?:write|append|create|createNew|truncate)\s*:\s*true\b")   # Deno.open's options
 
 
 def _written(kind, call, items, text=""):
     """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
-    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
-    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
-    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    keyword mode or flags), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument
+    with w, a, x, c or +, Python's as `mode=` too, Python's `open` naming its file by `file=` too and `os.open` by
+    `path=` and writing only when its flags do, by name or number; Perl's `>`, `>>`, `+<` as its mode, with any layers
+    (`>>:utf8`), or in front of its file), a copy's, move's, rename's or link's target, else its first argument."""
     name = call.rsplit(".", 1)[-1]
     if kind == "perl" and name == "open":
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
@@ -1324,10 +1393,26 @@ def _written(kind, call, items, text=""):
             target = items[2] if len(items) > 2 else None
         else:   # open(FH, ">file")
             target = (rest,)
+    elif kind == "python" and call == "os.open":
+        # its flags are the second argument, positional or flags=, and its path the first, positional or path=
+        slices = _arg_slices(kind, text)
+        if items:
+            target = items[0]
+            flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else _kw_arg(kind, text, "flags")[1]
+        else:
+            target, _ = _kw_arg(kind, text, "path")
+            _, flag_text = _kw_arg(kind, text, "flags")
+        target = target if _is_write_flags(flag_text) else None
+    elif kind == "node" and call in ("Deno.open", "Deno.openSync"):
+        # Deno.open's options say whether it writes; with none it only reads
+        target = items[0] if items and _DENO_WRITE_OPT.search(text) else None
     elif name in ("open", "fopen"):
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
             (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
-        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
+        if mode and re.search(r"[waxc+]", mode):
+            target = items[0] if items else _kw_arg(kind, text, "file")[0]
+        else:
+            target = None
     else:
         target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
     return target if isinstance(target, tuple) else None
@@ -1658,39 +1743,44 @@ def _unread_query(args):
 # own list (`curl --help all`, kept in tests/data and compared with these) and _CURL_NEWER's, each with the release
 # that added it. A long option the tables don't hold is one the reader can't place (download_writes)
 _CURL_NEWER = {"ech": "8.8.0", "ip-tos": "8.9.0", "vlan-priority": "8.9.0", "keepalive-cnt": "8.9.0", "mptcp": "8.9.0",
-               "show-headers": "8.10.0", "skip-existing": "8.10.0", "ssl-sessions": "8.12.0", "upload-flags": "8.13.0"}
+               "show-headers": "8.10.0", "skip-existing": "8.10.0", "dump-ca-embed": "8.10.0", "tls-earlydata": "8.11.0",
+               "ssl-sessions": "8.12.0", "upload-flags": "8.13.0", "sigalgs": "8.14.0", "out-null": "8.16.0",
+               "parallel-max-host": "8.16.0", "follow": "8.16.0", "knownhosts": "8.17.0", "proxy-http3": "8.21.0",
+               "httpsig-algo": "8.22.0", "httpsig-headers": "8.22.0", "httpsig-key": "8.22.0",
+               "httpsig-keyid": "8.22.0"}
 _CURL_VALUED = frozenset((
     "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
     "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
     "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
     "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
     "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
-    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type krb libcurl limit-rate "
+    "httpsig-algo httpsig-headers httpsig-key httpsig-keyid interface ip-tos ipfs-gateway json keepalive-cnt "
+    "keepalive-time key key-type knownhosts krb libcurl limit-rate "
     "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
-    "oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default "
+    "oauth2-bearer output output-dir parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default "
     "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
     "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
     "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
-    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs "
     "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
     "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
     "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
     "write-out").split())
 _CURL_BARE = frozenset((
     "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
-    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
-    "fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure dump-ca-embed fail fail-early "
+    "fail-with-body false-start follow form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
     "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
     "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
     "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
-    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb out-null parallel "
     "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
-    "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
+    "proxy-digest proxy-http2 proxy-http3 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
     "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
     "remote-time remove-on-error retry-all-errors retry-connrefused sasl-ir show-error show-headers silent "
     "skip-existing socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert "
     "ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen "
-    "tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
+    "tcp-nodelay tftp-no-options tls-earlydata tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
     "verbose version xattr").split())
 _CURL_SHORT = {
     "0": "http1.0", "1": "tlsv1", "2": "sslv2", "3": "sslv3", "4": "ipv4", "6": "ipv6", ":": "next", "#": "progress-bar",
@@ -1705,7 +1795,8 @@ _CURL_SHORT = {
     "Z": "parallel"}
 _CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
                 "hsts", "alt-svc", "ssl-sessions"}
-# wget's, as GNU wget 1.21's manual lists them (its option index; no binary here checked them), read as getopt_long
+# wget's, checked against GNU Wget 1.25.0's own `--help` (tests/data/wget-1.25.0-help.txt, compared with these by
+# test_the_download_option_table_is_wgets_own), read as getopt_long
 # reads them: a long option by any unique prefix, with its value after `=` or as the next word; the short letters as
 # long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value is a file it writes, and those
 # that make it write files the reader can't name (a URL list or metalink file, a wgetrc command or file, a name the
@@ -1925,10 +2016,11 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
-    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
+    and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
+    TK-D004 reads them as that home or root, and TK-D014 as a system folder.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
-    where, links, printed = None, {}, {}
+    where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
         argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
         if argv[0] in ("find", "rsync") and argv != c["argv"]:
@@ -1940,9 +2032,17 @@ def _home_readings(ctx):
                 re.fullmatch(r"-\w*s\w*|--symbolic", a) for a in argv[1:]):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
-            printed[c["pipeline"]] = (c.get("stage", 0), ops)
-        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
-            argv = argv + printed[c["pipeline"]][1]
+            for p, s in dict.fromkeys([(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]):
+                printed.setdefault(p, []).append((s, ops))
+        elif argv[0] in ("xargs", "gxargs"):
+            fed = c
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
+            extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
+            if extra:
+                argv = argv + extra
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
         read = [argv[0]]
@@ -1955,6 +2055,23 @@ def _home_readings(ctx):
             read.append(a)
         if read != c["argv"]:
             ctx["cmds"].append({**c, "argv": read, "via": c["via"] + ["read at home"]})
+
+
+def _xargs_here_words(xargs, c):
+    """The words of a here-string or heredoc that `xargs` (its own command, which the parser lists just before) gives
+    c, the command it runs (`xargs rm -rf <<< /etc`): split at blanks, as xargs reads its input unless an option says
+    otherwise (-0, -d, -a, -E, -e, -I, -i, -J or their long forms: then none), and only those that are a path from /
+    in letters, digits and `_./:-` (the parser doesn't expand or unquote what xargs reads)."""
+    n = len(c["argv"])   # (the program by its base name in c, as written in xargs's words)
+    if xargs is None or len(xargs["argv"]) <= n or xargs["argv"][len(xargs["argv"]) - n + 1:] != c["argv"][1:]:
+        return []
+    for a in xargs["argv"][1:len(xargs["argv"]) - n]:
+        name = a.split("=")[0]
+        if len(name) > 2 and any(o.startswith(name) for o in ("--null", "--delimiter", "--arg-file", "--eof",
+                                                                "--replace")) \
+                or re.match(r"-[^-LlnPs0adEeIiJ]*[0adEeIiJ]", a):   # (L, l, n, P and s take the rest as a value)
+            return []
+    return [w for s in c.get("stdin", ()) for w in s.split() if re.fullmatch(r"/[A-Za-z0-9_./:-]*", w)]
 
 
 def hidden_commands(cmds, refs):
@@ -2766,25 +2883,35 @@ def uv_commands(args):
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
-    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`; one that may be an option's
-    value is read both ways (`uv --directory run run x`). Each word read once: linear; [] for none (`npm test`)."""
+    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`. The value of an option its
+    table names (RUNNERS: `uv --directory run run x`) is never the subcommand, and a flag WRAPPER_FLAGS names takes
+    none, here before the subcommand where both name it (yarn's -p); one that may be another option's value is read
+    both ways. Each word read once: linear; [] for none (`npm test`)."""
+    opts, flags = RUNNERS[name][1], WRAPPER_FLAGS.get(name, ())
     at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
         a = args[i]
+        lead = RUNNER_LEADS.get(name)
+        if lead and a in lead and i + 1 < len(args) and args[i + 1] in RUNNERS[name][0]:
+            at.append(i + 1)   # the subcommand's own word last: `hatch env run a-command` is `run a-command`
+            if not valued:
+                return at
+            i, valued = i + 2, False
+            continue
         if a in RUNNERS[name][0]:
             at.append(i)
             if not valued:
                 return at
             i, valued = i + 1, False
             continue
-        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") else \
-            1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
+        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") or \
+            a in opts and a not in flags else 1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
         if skip:
             i, valued = i + skip, False
             continue
         if not a.startswith("-") and not valued:
             return at
-        valued = a.startswith("-") and a != "--"
+        valued = a.startswith("-") and a != "--" and "=" not in a and a not in flags
         i += 1
     return at
 
@@ -2818,6 +2945,8 @@ def _unwrap(name, args):
             starts.append(i)
         elif a is None or name == "command" and a in ("-v", "-V"):   # the end, or a lookup, not a run
             starts.append(None)
+        elif name == "uv" and a == "-":   # `uv run -`: the Python script it reads from stdin
+            starts.append(i)
         elif a.startswith("-") or name == "cmd" and a.startswith("/"):   # a bare `-` too (env - cmd: an empty environment)
             todo += [i + n for n in reversed(_takes(a, opts, WRAPPER_FLAGS.get(name, ())))]
         elif assigns(a) or name == "hatch" and a.startswith("+"):   # hatch run's +var=… matrix selection
@@ -2830,6 +2959,12 @@ def _unwrap(name, args):
             inner = inner[1:]
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
+        if name == "uv" and inner[:1] == ["-"]:   # `uv run -` is `python -`
+            inner = ["python"] + inner
+        if name == "dotenv" and inner[:1] == ["run"]:   # python-dotenv's: dotenv [-f FILE] run [--[no-]override] CMD
+            yield inner
+            k = next((k for k, w in enumerate(inner) if k and w not in ("--override", "--no-override")), len(inner))
+            inner = inner[k + (inner[k:k + 1] == ["--"]):]
         yield inner
         if name == "dotenv" and inner[:1] == ["run"]:   # and as python-dotenv's `dotenv [-f FILE] run [--override] CMD`
             k = 1
@@ -3023,15 +3158,17 @@ def _as_node(name, args):
     return ["-e", "\n".join(lines)] if lines else None
 
 
-def _npm_call(args):
-    """The script of npm exec's (npx's) -c/--call, among the options before the command it runs, or None."""
-    i = 0
-    while i < len(args) and args[i].startswith("-") and args[i] != "--":
-        if args[i] in ("-c", "--call"):
-            return args[i + 1] if i + 1 < len(args) else ""
-        if args[i].startswith("--call="):
-            return args[i][7:]
-        i += 2 if args[i] in ("-p", "--package", "-w", "--workspace") else 1
+def _npm_call(name, args):
+    """The script of npx's -c/--call, or npm exec's after its own options (each place runner_at reads its subcommand:
+    `npm -w a exec -c …`), among the options before the command it runs, or None."""
+    opts, starts = (_NPX_OPTS, [0]) if name == "npx" else (_NPM_OPTS, [k + 1 for k in runner_at("npm", args)])
+    for i in starts:   # (each scan stops at a word runner_at reads no further than: linear)
+        while i < len(args) and args[i].startswith("-") and args[i] != "--":
+            if args[i] in ("-c", "--call"):
+                return args[i + 1] if i + 1 < len(args) else ""
+            if args[i].startswith("--call="):
+                return args[i][7:]
+            i += 2 if args[i] in opts else 1
     return None
 
 
@@ -3094,11 +3231,41 @@ def _find_execs(args):
     return out
 
 
+# the options bun and deno must be given a value for, the next word when it isn't joined by `=`; an option whose value
+# is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags; bun's --config, --inspect)
+_DENO_VALUED = {"--ext", "-c", "--config", "--import-map", "--cert", "--seed", "--location", "--conditions", "-L",
+                "--log-level", "--preload", "--require", "--inspect-publish-uid", "--min-dep-age", "--node-modules-linker"}
+_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
+               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
+               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
+               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
+               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
+_DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
+                     "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
+                     "repl", "init", "coverage", "publish", "outdated", "clean"}
+
+
+def _skip_interp_opts(args, i=0, valued=INTERP_VALUE_OPTS):
+    """Advance `i` past interpreter options (including `--opt val`); stops at `--`, `-`, or first non-option word."""
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "--":
+            return i + 1, True
+        i += 2 if args[i] in valued else 1
+    return i, False
+
+
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None; Perl and Ruby
-    run each -e (-E) as one line of one program; sed's: _sed_options."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or
+    None; Perl and Ruby run each -e (-E) as one line of one program; sed's: _sed_options."""
     if kind == "awk":
         return _awk_program(args)
+    if kind == "deno":
+        i, ended = _skip_interp_opts(args, 0, _DENO_VALUED)
+        if ended or i >= len(args) or args[i] != "eval":
+            return None
+        i, _ = _skip_interp_opts(args, i + 1, _DENO_VALUED)
+        rest = args[i:]
+        return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
     lines = [code for _, code in _code_words(kind, args)]
     return ("\n".join(lines) if kind in ("perl", "ruby") else lines[0]) if lines else None
 
@@ -3106,14 +3273,16 @@ def _code_arg(kind, args):
 def _code_words(kind, args):
     """(the word's index, its program text) of each code option on an interpreter's command line, in order (code
     attached to its flag, -c"..." the word -c..., is that word's); Perl's and Ruby's up to a `--` after one."""
-    flags, found = CODE_FLAGS[kind], False
-    for i, a in enumerate(args):
+    flags, long, found = CODE_FLAGS[kind], LONG_CODE.get(kind, ()), False
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a == "--" and found:
             return
-        if kind == "node" and a in ("--eval", "--print"):
+        if a in long:
             yield from [(i + 1, args[i + 1])] if i + 1 < len(args) else []
             return
-        if kind == "node" and a.startswith(("--eval=", "--print=")):
+        if a.partition("=")[0] in long:
             yield i, a.split("=", 1)[1]
             return
         if re.match(r"-[A-Za-z]", a):
@@ -3126,11 +3295,15 @@ def _code_words(kind, args):
                         return
                     break
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
+                    if not a[j + 2:]:
+                        i += 1
                     break
+        i += 1
 
 
 # each interpreter's options that take the rest of their word as their value
-_VALUED = {"python": "WXm", "node": "r", "perl": "MmIxdD", "ruby": "rIxCEFKT", "php": "dcz", "lua": "l"}
+_VALUED = {"python": "WXm", "node": "r", "bun": "rdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
+           "php": "dcz", "lua": "l"}
 
 
 def _loaded(kind, args):
@@ -3308,6 +3481,8 @@ def _reads_stdin(kind, args):
         return any(_stream_name(f) for bsd in (False, True) for f in _sed_options(args, bsd)[1])
     if _code_arg(kind, args) is not None:
         return False
+    if kind in ("bun", "deno"):   # no script after their options and `run`: `run -`, a REPL, no operand, deno's others
+        return _script_operand(kind, args) is None
     i = 0
     while i < len(args):
         a = args[i]
@@ -4226,9 +4401,10 @@ class _Parser:
                     header += self.header_pattern(text)
                     header_glob = True
                     continue
-                # a word whose every expansion is a variable's one known literal (word(): given) is that literal
-                header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
-                              else text)
+                # a word whose every expansion is a variable's one known literal (word(): given) is that literal; one
+                # with none is its text, a `$` or backquote it quotes too (`for u in 'http://…$X'`: what curl gets)
+                header.append(None if g or self.exps and (re.search(r"[$`]", text) or re.search(r"[$`]", raw) and
+                                                          not self.given) else text)
                 if header[-1] is None and self.readings:   # (a word with a blank an expansion joins: track_values)
                     header_blank += [r for r in self.readings if re.search(r"[ \t\n]", r) and
                                      not any(e in r for e in self.exps)]   # (none of its expansions as written)
@@ -4971,7 +5147,8 @@ class _Parser:
                 first, kept = len(self.ctx["cmds"]), {k: type(self.ctx[k])(self.ctx[k]) for k in
                                                       ("unread_values", "arith_names", "code_names", "depth")}
                 try:
-                    self.emit([program, "-" + CODE_FLAGS[_kind(program)][0], text, *gives], cmd["pipeline"], inside)
+                    flag = ["eval"] if _kind(program) == "deno" else ["-" + CODE_FLAGS[_kind(program)][0]]
+                    self.emit([program, *flag, text, *gives], cmd["pipeline"], inside)
                 except ParseError:   # (a literal it runs that isn't shell)
                     if self.ctx["work"][0] > MAX_WORK:
                         raise
@@ -5183,8 +5360,7 @@ class _Parser:
                 argv, via, unreadable = ["env", *split], via + ["env -S"], [False] * (1 + len(split))
                 self.charge(len(argv))
                 continue
-            elif (name == "npx" or name == "npm" and args[:1] in (["exec"], ["x"])) and \
-                    (script := _npm_call(args if name == "npx" else args[1:])) is not None:
+            elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
@@ -5541,6 +5717,7 @@ class _Parser:
             self.within = outer
 
     def read_program(self, kind, code, pid, via, cmd):
+        kind = _JS_KIND.get(kind, kind)
         if kind == "sed":   # a file it writes is tee's, one it reads cat's; e runs its command
             for what, arg in dict.fromkeys(c for bsd in (False, True) for c in _sed_commands(code, bsd)):
                 if what != "e":
@@ -5594,6 +5771,14 @@ class _Parser:
         # too: only the shell's `>>` and tee -a are read as appends)
         for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
             if m.group("path"):   # Path("…").write_text(…): its literal
+                if kind == "python" and m.group("open"):   # Path("…").open(…): a write only in a writing mode
+                    items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
+                    self.charge(end - m.end())
+                    mode = _text_of(items[0]) if items and isinstance(items[0], tuple) else \
+                        (k.group(2) if (k := _MODE_KEYWORD.search(code[m.end():end])) else None)
+                    if mode and re.search(r"[waxc+]", mode):
+                        self.argv([("tee",), (m.group("path"),)], pid, via)
+                    continue
                 self.argv([("tee",), (m.group("path"),)], pid, via)
                 continue
             items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
@@ -6411,9 +6596,16 @@ class _Parser:
         # pattern matches all of it (the pattern ends at its first / outside quotes and nested expansions, a / first in
         # it its own; a bare & is the text matched, read as nothing; without a /, the matches are removed). Each is one
         # more value (`values`, with as written and empty where those may be), its own expansions read each way too
-        # lean: a value made from the variable's own (#, %, a replacement's &, ^, ",", @Q and the other @ transforms,
+        # lean: a value made from the variable's own (a replacement's &, ^, ",", @Q and the other @ transforms,
         # a substring) is read as written and as nothing, as an unknown one, also of a variable the line gives a
-        # literal (D=xy; ${D#x} isn't read as y); compute them on the literals if real commands need it
+        # literal; a # or % removal with a literal pattern is computed on the literals (D=xy; ${D#x} is y), a glob
+        # in the pattern keeps today's reading; compute the rest on the literals if real commands need it
+        if op and not plain and op.group(1) in ("#", "##", "%", "%%"):
+            # a removal is read this way only, never the generic word's readings below (those would add the pattern
+            # itself as a value the expansion may take); not computed, it keeps today's reading (as written, empty)
+            if (values := self._removal(op.group(1), op, pieces)) is not None:
+                expansion.values = values
+            op = None
         if op and not plain:
             kind = op.group(1)
             end = next((i for i, p in enumerate(pieces) if i and type(p) is str and p == "/"), None)
@@ -6444,6 +6636,43 @@ class _Parser:
             else:
                 self.ctx["assigns"] = True
         return expansion
+
+    def _removal(self, kind, op, pieces):
+        """The values `${NAME#pat}`, `${NAME##pat}`, `${NAME%pat}` or `${NAME%%pat}` expands to, when the line gives
+        NAME a literal and the pattern is literal (no *, ?, [ in it, nothing in it an expansion makes): the literal
+        with its matching prefix or suffix removed (for a literal pattern # and ##, % and %% remove the same: the
+        pattern itself, once, where the value starts or ends with it), each literal the line may have given it; None
+        otherwise (an indirect name, a subscript, a glob in the pattern, a value that isn't a literal, or a variable
+        the line doesn't know: read as written and empty, as today). A quoted piece of the pattern is literal text,
+        even a * in quotes."""
+        name = op.group(0)
+        if name.startswith("!"):
+            return None
+        name = name[:-len(kind)]
+        if not re.fullmatch(r"[A-Za-z_]\w*", name or ""):
+            return None
+        pattern = []
+        for p in pieces:
+            if isinstance(p, _Expansion):
+                return None
+            if isinstance(p, _Quoted):
+                pattern.append(str(p))
+            elif type(p) is str and not re.search(r"[*?\[]", p):
+                pattern.append(p)
+            else:
+                return None
+        pattern = "".join(pattern)
+        known = {} if self.ctx["any_set"] else self.known
+        values = known.get(name, ()) if known.get(name) and not self.ctx["ifs_named"] and \
+            name not in self.ctx["reassigned"] else ()
+        if self.ctx["defaults"] or self.ctx["given"]:
+            values = (*values, *self.ctx["defaults"].get(name, ()), *self.maybe(name, known))
+        values = tuple(dict.fromkeys(values))
+        if not values or any(not isinstance(v, str) for v in values):
+            return None
+        if kind[0] == "#":
+            return tuple(dict.fromkeys(v[len(pattern):] if v.startswith(pattern) else v for v in values))
+        return tuple(dict.fromkeys(v[:-len(pattern)] if pattern and v.endswith(pattern) else v for v in values))
 
     def backtick(self):
         m = re.compile(r"((?:\\.|[^`\\])*)`", re.S).match(self.s, self.i + 1)
@@ -6521,16 +6750,38 @@ PIECE_ROOM = 128
 
 def _lines(words, progs):
     """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
-    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), so a
-    rule that reads the command after a pipe, or where one starts, reads what the wrapper runs."""
+    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), and a
+    runner's where its subcommand runs one (`uv -q run python …`, `poetry run python …` are `python …`: runner_at), so
+    a rule that reads the command after a pipe, or where one starts, reads what the wrapper or runner runs; and again
+    with each reserved word where a command starts (do, then, else, {, !, and case, which the parser gives right
+    before its first arm's commands, its word and patterns left out, and each ;;, ;& or ;;& as a `;`) as a `;`, so it
+    reads a loop's, a group's or a case arm's commands as it reads them alone (`for h in x; do echo FLUSHDB |
+    redis-cli; done` and `case x in x) echo FLUSHDB | redis-cli;; esac` hold `echo FLUSHDB | redis-cli`)."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
     at = sorted(set(progs))
-    cut = {i for p, q in zip(at, at[1:]) if base_name(words[p]) in WRAPPERS and
-           not _STAGE_ENDS.intersection(words[p + 1:q]) for i in range(p, q)}
+    bare, start = list(words), True
+    for i, w in (enumerate(words) if "case" in words or not KEYWORDS.isdisjoint(words) else ()):
+        if start and (w in KEYWORDS or w == "case"):
+            bare[i] = ";"
+        else:
+            start = w in _STAGE_ENDS
+
+    def runs(p, q):   # the program at p is a wrapper, or a runner whose subcommand is among its words before q, and
+        # no stage ends between (its name read first, the cheapest)
+        name = base_name(words[p])
+        runner = name.partition("@")[0]
+        return (name in WRAPPERS or runner in RUNNERS) and not _STAGE_ENDS.intersection(words[p + 1:q]) and (
+            name in WRAPPERS or bool(runner_at(runner, words[p + 1:q])))
+    cut = {i for p, q in zip(at, at[1:]) if runs(p, q) for i in range(p, q)}
+    ran = list(low)
+    for p, q in zip(at, at[1:]):
+        if p in cut and base_name(words[p]) == "hatch":   # hatch run [ENV:]ARGS: the command, not its environment
+            ran[q] = ran[q].split(":", 1)[-1]
     return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
-        [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
+        [" ".join(w for i, w in enumerate(ran) if i not in cut)] if cut else []) + (
+        [" ".join(bare)] if bare != words else [])
 
 
 _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
@@ -6715,6 +6966,15 @@ def _python_runs(args, copies=frozenset()):
 def _script_operand(kind, args):
     """The index in `args` of the script file an interpreter of `kind` (one of CODE_FLAGS') runs: its first operand
     after its options (and their values); None for a module (python -m), stdin (-, a stream) or no operand."""
+    if kind in ("bun", "deno"):
+        valued = _BUN_VALUED if kind == "bun" else _DENO_VALUED
+        i, ended = _skip_interp_opts(args, 0, valued)
+        if not ended and i < len(args):
+            if args[i] == "run":
+                i, _ = _skip_interp_opts(args, i + 1, valued)
+            elif args[i] == "repl" or kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
+                return None
+        return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "-":
         if args[i] == "--":

@@ -37,7 +37,8 @@ class TestTokenStore(unittest.TestCase):
         a, b = self.store.add("a", 60, tenant="acme"), self.store.add("b", 3600)
         identity = self.store.authenticate(conn(a), {})
         self.assertEqual((identity.scheme, identity.subject, identity.claims["tenant"]), ("token", "a", "acme"))
-        self.assertNotIn(a.split(".")[1], open(self.store.path).read())   # only a salted hash is stored
+        with open(self.store.path) as f:
+            self.assertNotIn(a.split(".")[1], f.read())   # only a salted hash is stored
         self.now += 60
         self.store.revoke("b")
         for token in (a, b, a[:-1] + "x", "tk2_nobody.x"):

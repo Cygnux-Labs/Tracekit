@@ -335,7 +335,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
-    provenance, public_witness, yamlmini
+    lessons, provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -469,13 +469,14 @@ EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
 EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
-# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
-# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
-# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
-# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id,
+# its text's sha256 and, on a retire, the record that disproved it (`because`: RUN:SEQ) (_observe refuses any other).
+# On the dev signer, where lessons live, a run of nothing else (at most ANSWERS_KEPT: `tracekit tips` writes one run per
+# command) keeps its content past retention (expire_content), as the Claude Code hook reads each answer back before it
+# gives a lesson (lessons.verified)
 LESSON_ANSWERS = "tracekit:lessons:person"
 LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
-                 re.compile(r"[0-9a-f]{64}"))
+                 re.compile(r"[0-9a-f]{64}"), lessons.SIGNED)
 ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
 ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
@@ -2230,18 +2231,18 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         return evaluate(self.policy, tool, args, hint, untrusted)
 
-    def _reasons(self, ids, unread=None):
+    def _reasons(self, ids, unread=None, policy=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
         INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
-        so its label is no reason it was denied or held."""
+        so its label is no reason it was denied or held. `policy`: the Engine whose rules these are (this signer's)."""
         if HIDDEN_CODE in ids:   # its reason alone: the call can't be approved, whatever held it
             ids = [HIDDEN_CODE]
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
-        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
+        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in (policy or self.policy).rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
@@ -2482,6 +2483,16 @@ class SignerService:
                 pass
         self._kept[policy_hash] = kept
         return kept
+
+    def _recorded_reason(self, call):
+        """The reason of decision `call` as its record gives it (replayed, pipeline.CALL_KEYS): the reasons signed with
+        it, then for a deny or ask its rules' reasons in the policy it was decided under (none when that one isn't
+        kept). What decide said from memory only is not in the record: a person's earlier no, a constraint's text (a
+        name out of the call's arguments), a containment's, the cause of a TK-SHELL-PARSE."""
+        policy = self.policy if call.get("policy_hash") in (None, self.policy.policy_hash) else \
+            self._kept_policy(call["policy_hash"])
+        rules = policy and call["decision"] in ("deny", "ask") and self._reasons(call["rule_ids"], policy=policy)
+        return "; ".join(x for x in (*(call.get("reasons") or ()), rules) if x)[:1024]
 
     def _untrusted_results(self, tool, policy_hash):
         """Whether `tool`'s results are untrusted under this signer's policy or the one its call was decided under
@@ -3310,6 +3321,7 @@ class SignerService:
                 out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
+            tx.set(run["calls"][tcid], "reason", out.get("reason", ""))   # what call_state answers
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
                 out["send_result"] = True
             return out
@@ -3429,14 +3441,18 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
-        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
-        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
-                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
-                and lid.fullmatch(v["id"])
-                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+        v, (actions, lid, sha, because) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (
+                isinstance(v, dict) and set(v) - {"because"} == {"action", "id", "sha256"} and (
+                    isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                    and lid.fullmatch(v["id"])
+                    and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"])
+                    and ("because" not in v or v["action"] == "retire" and isinstance(v["because"], str)
+                         and because.fullmatch(v["because"])))):
             raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
-                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
-                                              "and nothing else")
+                                              f"({', '.join(sorted(actions))}), a lesson's id, its text's sha256 and, "
+                                              "on a retire, the record that disproved it (because: RUN:SEQ), and "
+                                              "nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -4140,8 +4156,16 @@ class SignerService:
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
-                # under this call's tool_call_id; the approval.request it names has the earlier attempt's
-                tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                # under this call's tool_call_id; the approval.request it names has the earlier attempt's. The decision
+                # the use was checked against: the current call when its arguments are the approved ones (a retry), else
+                # the decision the approval was asked for (the call under its id whose arguments changed since). It goes
+                # in the non-critical slot, so a verifier that doesn't interpret it still verifies the bundle (1.8.0)
+                data, ext = {"approval_id": aid}, None
+                if call and call.get("decision_id") and call.get("attempt") == attempt and self._same(call, digest):
+                    ext = {"approval.decision": call["decision_id"]}
+                elif isinstance(a.get("decision_id"), str) and a.get("attempt", 0) == attempt:
+                    ext = {"approval.decision": a["decision_id"]}
+                tx.emit(run, "approval.consumed", data, source="signer", **top, **({"ext": ext} if ext else {}))
                 if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
                     tx.set(call, "refused", None)
                 rec = run.get("rec")
@@ -5011,11 +5035,12 @@ class SignerService:
         return {"events": events, "next_seq": next_seq}
 
     def _call_state(self, identity, req):
-        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
-        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
-        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
-        nothing."""
+        """What the signer recorded of the latest attempt of a call of the run: its decision and the reason decide gave,
+        its approval and whether this attempt consumed it, a refused consume, and its result; {} for a call never
+        decided. The LangChain gate reads it to go on with a ToolNode's calls when the node runs again after a resume,
+        in any process. Writes nothing."""
         key, tcid = self._authorize(identity, req), req["tool_call_id"]
+        replayed = []   # the call, replayed from its record (a crash since the last snapshot)
 
         def state(tx):
             call = self.log.runs[key].get("calls", {}).get(tcid)
@@ -5024,8 +5049,10 @@ class SignerService:
             attempt = call["attempt"]
             out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
                    "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
-            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
-                out["reason"] = why
+            if call.get("reason") is None:
+                replayed.append(call)
+            elif call["reason"]:
+                out["reason"] = call["reason"]
             if call.get("tool") and self.policy.untrusted_results(call["tool"]):
                 out["send_result"] = True
             if "args_digest" in req:
@@ -5040,7 +5067,10 @@ class SignerService:
             if call.get("ended"):
                 out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
             return out
-        return self.log.write(state)
+        out = self.log.write(state)
+        if replayed and (why := self._recorded_reason(replayed[0])):   # off the writer: it may load a kept policy
+            out["reason"] = why
+        return out
 
     def _call_claim(self, identity, req):
         """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
@@ -6033,6 +6063,9 @@ def main(argv=None):
     q = sub.add_parser("serve", help="run the signer in the foreground")
     q.add_argument("--close-on-stop", metavar="FILE",
                    help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
+    q.add_argument("--log-level", choices=("warning", "info", "debug"),
+                   help="log Tracekit's lines to stderr from this level up: warning (the default), info (adds the HTTP "
+                        "request log) or debug; other libraries print only warnings and errors")
     mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
@@ -6092,6 +6125,10 @@ def main(argv=None):
     g.add_argument("--config")
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir")
     a = ap.parse_args(argv)
+    if a.cmd == "serve" and a.log_level:
+        # Tracekit's loggers only: other libraries stay at warning, as botocore's debug log prints AWS credentials
+        logging.basicConfig()
+        logging.getLogger("tracekit").setLevel(a.log_level.upper())
     if a.cmd == "serve" and a.dev:
         return _serve_dev()
     if a.cmd == "reveal":
@@ -6170,7 +6207,13 @@ def main(argv=None):
             return 2
         from tracekit.storage import postgres
         try:
-            print(f"schema version {postgres.migrate(postgres.read_dsn(cfg['storage']['postgres']))}")
+            dsn = postgres.read_dsn(cfg["storage"]["postgres"])
+            before = postgres.version(dsn)
+            print(f"schema version {postgres.migrate(dsn)}")
+            if before == 1:   # it added the content vault's tables, and granted nothing on them (a fresh store's
+                # first deploy grants all of GRANTS)
+                print("the content vault's tables are new: grant the signer's role these, or every item it keeps "
+                      "reads back not_retained:\n" + postgres.VAULT_GRANTS.format(role="<the signer's role>"))
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer migrate: {e}", file=sys.stderr)
             return 1
