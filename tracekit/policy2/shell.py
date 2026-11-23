@@ -188,7 +188,11 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
             "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
                                      "--shell-type"), 0),
-            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
+            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p", "-f", "--file", "-q", "--quote", "--export"), 0),
+            "catchsegv": ((), 0), "heaptrack": (("-o", "--output", "-p", "--pid"), 0),
+            "faketime": (("-p", "--date-prog"), 1),
+            "xvfb-run": (("-n", "--server-num", "-s", "--server-args", "-f", "--auth-file", "-e", "--error-file", "-w",
+                          "--wait", "-p", "--xauth-protocol"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
@@ -233,10 +237,12 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
                  "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
+WRAPPER_FLAGS["faketime"] = ("-m", "-f", "--exclude-monotonic", "--disable-shm")
+WRAPPER_FLAGS["xvfb-run"] = ("-a", "--auto-servernum", "-l", "--listen-tcp")
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
-# lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
-# anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
+# lean: a wrapper or runner not named here hides what it runs from the rules anchored on a command's name (TK-D001,
+# TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
 RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
@@ -255,7 +261,37 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
                                      "--attach", "--label"), 0),
            "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1),
            # Tracekit's srt-proxy decider starts the program its words name, after its options or a `--`
-           "tracekit": (("srt-decider",), ("--allow-domain", "--agent"), 0)}
+           "tracekit": (("srt-decider",), ("--allow-domain", "--agent"), 0),
+           # Procfile runners, secret injectors, version managers, profilers: each runs the command its words name
+           "honcho": (("run",), ("-e", "--env", "-d", "--app-root", "-f", "--procfile"), 0),
+           "foreman": (("run",), ("-e", "--env", "-d", "--root", "-f", "--procfile"), 0),
+           "chamber": (("exec",), ("-b", "--backend", "-r", "--retries", "--kms-key-alias", "--min-throttle-delay"),
+                       "--"),
+           "aws-vault": (("exec",), ("-d", "--duration", "-t", "--mfa-token", "-r", "--region", "--prompt",
+                                     "--backend", "--keychain", "--config"), 1),
+           "infisical": (("run",), ("--env", "--path", "--projectId", "--token", "--domain", "--tags"), "--"),
+           "asdf": (("exec",), (), 0), "pyenv": (("exec",), (), 0), "rbenv": (("exec",), (), 0),
+           "nodenv": (("exec",), (), 0), "volta": (("run",), ("--node", "--npm", "--pnpm", "--yarn", "--env"), 0),
+           "fnm": (("exec",), ("--using",), 0), "devbox": (("run",), ("-c", "--config", "-e", "--env", "--env-file"), 0),
+           "perf": (("stat", "record", "trace"), ("-e", "--event", "-o", "--output", "-p", "--pid", "-t", "--tid", "-C",
+                                                  "--cpu", "-c", "--count", "-F", "--freq", "-r", "--repeat", "-I",
+                                                  "--interval-print", "-G", "--cgroup", "-u", "--uid", "-m",
+                                                  "--mmap-pages", "-x", "--field-separator", "--call-graph"), 0),
+           "rr": (("record",), ("-o", "--output-trace-dir"), 0)}
+# bwrap's options that take two words; a flag of its takes none, any other one word (read both ways: _bwrap)
+_BWRAP_TWO = frozenset(("--bind", "--bind-try", "--dev-bind", "--dev-bind-try", "--ro-bind", "--ro-bind-try", "--symlink",
+                        "--setenv", "--file", "--bind-data", "--ro-bind-data", "--chmod", "--bind-fd", "--ro-bind-fd"))
+_BWRAP_FLAGS = frozenset(("--unshare-all", "--share-net", "--unshare-user", "--unshare-user-try", "--unshare-ipc",
+                          "--unshare-pid", "--unshare-net", "--unshare-uts", "--unshare-cgroup", "--unshare-cgroup-try",
+                          "--die-with-parent", "--as-pid-1", "--new-session", "--clearenv", "--disable-userns",
+                          "--assert-userns-disabled", "--level-prefix"))
+# gdb's options that take a value (the program is its first word that is neither one nor its value)
+_GDB_VALUED = frozenset(("-ex", "--eval-command", "-iex", "--init-eval-command", "-x", "--command", "-ix",
+                         "--init-command", "-p", "--pid", "-c", "--core", "-d", "--directory", "-s", "--symbols", "-e",
+                         "--exec", "-se", "-cd", "-b", "-l", "-tty", "-D", "--data-directory", "-i", "--interpreter"))
+_LLDB_VALUED = frozenset(("-o", "--one-line", "-O", "--one-line-before-file", "-s", "--source", "-S",
+                          "--source-before-file", "-k", "--one-line-on-crash", "-K", "--source-on-crash", "-f", "--file",
+                          "-c", "--core", "-a", "--arch", "-p", "--attach-pid", "-n", "--attach-name"))
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -2795,6 +2831,78 @@ def _unwrap(name, args):
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
         yield inner
+        if name == "dotenv" and inner[:1] == ["run"]:   # and as python-dotenv's `dotenv [-f FILE] run [--override] CMD`
+            k = 1
+            while inner[k:k + 1] in (["--override"], ["--no-override"]):
+                k += 1
+            yield inner[k:]
+
+
+def _runs_of(name, args):
+    """(kind, words) for what a debugger, sandbox, watcher, secret injector or namespace runner given `args` runs:
+    ("argv", the command's words) or ("code", [the shell line it runs]). gdb: the words after --args, or its program
+    with the arguments of an -ex `run`/`start`; lldb: the words after `--`, also after its program before it; bwrap:
+    the command after its options (_bwrap); nodemon: --exec's line; infisical and doppler run: --command's line;
+    `ip netns exec NS`: the command after the namespace."""
+    out = []
+    if name == "ip":
+        return [("argv", args[3:])] if args[3:] else []
+    if name in ("infisical", "doppler", "nodemon"):
+        flags = ("--exec", "-x") if name == "nodemon" else ("--command",)
+        for i, a in enumerate(args):
+            value = args[i + 1] if a in flags and i + 1 < len(args) else a.partition("=")[2] if a.startswith(
+                tuple(f + "=" for f in flags if f.startswith("--"))) else None
+            if value is not None:
+                out.append(("code", [value]))
+        return out
+    if name == "bwrap":
+        return [("argv", w) for w in _bwrap(args)]
+    valued = _LLDB_VALUED if name == "lldb" else _GDB_VALUED
+    i, program, evals = 0, None, []
+    while i < len(args):
+        a = args[i]
+        if name != "lldb" and a == "--args" or name == "lldb" and a == "--":
+            words = args[i + 1:]
+            out += [("argv", words)] if words else []
+            if name == "lldb" and program is not None and words:
+                out.append(("argv", [program, *words]))
+            return out
+        if a in valued:
+            if a in ("-ex", "--eval-command", "-iex", "--init-eval-command", "-o", "--one-line"):
+                evals.append(args[i + 1] if i + 1 < len(args) else "")
+            i += 2
+            continue
+        if a.startswith(("--eval-command=", "--one-line=")):
+            evals.append(a.partition("=")[2])
+        elif not a.startswith("-") and program is None:
+            program = a
+        i += 1
+    for e in evals if program is not None else ():   # gdb's `run ARGS` (r, start, starti), lldb's `run`/`r`
+        if (m := re.fullmatch(r"\s*(?:run|r|start|starti|process launch(?: --)?)(?:\s+([\w\W]*))?", e)):
+            try:
+                out.append(("argv", [program, *shlex.split(m.group(1) or "")]))
+            except ValueError:
+                out.append(("code", [program + " " + (m.group(1) or "")]))
+    return out
+
+
+def _bwrap(args):
+    """Each command bwrap given `args` may run: the words after its options, one of _BWRAP_TWO taking two words, one of
+    _BWRAP_FLAGS none, any other one or none (read both ways), or after a `--`; each start read once."""
+    starts, todo, seen = [], [0], set()
+    while todo:
+        i = todo.pop()
+        if i in seen or i >= len(args):
+            continue
+        seen.add(i)
+        a = args[i]
+        if a == "--":
+            starts.append(i + 1)
+        elif a.startswith("--"):
+            todo += [i + 3] if a in _BWRAP_TWO else [i + 1] if a in _BWRAP_FLAGS else [i + 1, i + 2]
+        else:
+            starts.append(i)
+    return [args[i:] for i in sorted(set(starts)) if i < len(args)]
 
 
 def _shell_mode(args, shell=""):
@@ -5039,6 +5147,9 @@ class _Parser:
             if name in ("make", "gmake", "npm", "yarn", "pnpm", "bun", "git") or _PIP.fullmatch(name) or \
                     _kind(name) == "python" and args[:2] == ["-m", "pip"]:
                 self.configs(name, args, via, cmd)
+            if name in ("infisical", "doppler") and args[:1] == ["run"] or name == "nodemon":
+                for _, words in _runs_of(name, args):   # the line --command or --exec runs in a shell
+                    self.nested(self.code(cmd, words), via + [name + " sh -c"])
             if name in DASH_C:
                 if _dash_c(args) is None:
                     cmd["opaque"] = True   # an interactive shell: it runs whatever its stdin holds
@@ -5046,6 +5157,13 @@ class _Parser:
                     self.nested(self.code(cmd, [_dash_c(args)]), via + [name + " -c"])
             elif name == "sg":
                 self.nested(self.code(cmd, [a for a in args[1:] if a != "-c"]), via + ["sg -c"])
+            elif name in ("gdb", "cgdb", "lldb", "bwrap") or name == "ip" and args[:2] == ["netns", "exec"]:
+                for kind, words in _runs_of(name, args):   # the command each runs (gdb's run ARGS it can't split: code)
+                    self.charge(len(words))
+                    if kind == "code":
+                        self.nested(self.code(cmd, words), via + [name + " sh -c"])
+                    else:
+                        cmds += self.emit(words, pid, via + [name])
             elif name == "watch":
                 i = 0
                 while i < len(args) and args[i].startswith("-"):

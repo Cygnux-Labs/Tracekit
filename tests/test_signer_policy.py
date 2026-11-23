@@ -2451,6 +2451,41 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertIn(svc.evaluate(e, "Bash", {"command": cmd})[0]["verdict"], ("allow", "flag"))
 
+    def test_debuggers_sandboxes_and_secret_runners_run_what_they_name(self):
+        """`dotenv run tracekit approve <id>`, `honcho run …`, `foreman run …` and `gdb -batch -ex run --args …` were
+        allowed: the parser read none of them as running the command its words name. Each is now read, as are the same
+        shape's others: python-dotenv's run, honcho's and foreman's run, gdb's --args and -ex run, lldb's --, bwrap,
+        nodemon's --exec, chamber exec, aws-vault exec, infisical run, doppler's and infisical's --command, the version
+        managers' exec (asdf, pyenv, rbenv, nodenv, volta run, fnm exec), devbox run, perf, rr, catchsegv, heaptrack,
+        faketime, xvfb-run and `ip netns exec`."""
+        a = "tracekit approve apr-" + "0123456789abcdef" * 2
+        held = [f"dotenv run {a}", f"dotenv -f /tmp/e run --override {a}", f"honcho run {a}", f"honcho -e .env run {a}",
+                f"foreman run {a}", f"foreman run -e .env {a}", f"gdb -batch -ex run --args {a}", f"gdb --args {a}",
+                f"gdb -batch -ex 'run {a.split(' ', 1)[1]}' tracekit", f"lldb -- {a}", f"lldb -o run -- {a}",
+                f"lldb tracekit -- {a.split(' ', 1)[1]}", f"nodemon --exec '{a}'", f"nodemon -x '{a}' app.js",
+                f"chamber exec svc -- {a}", f"aws-vault exec prod -- {a}", f"aws-vault exec prod {a}",
+                f"infisical run --env dev -- {a}", f"infisical run --command '{a}'", f"doppler run --command '{a}'",
+                f"bwrap --ro-bind / / --dev /dev --unshare-all {a}", f"bwrap --bind /a /b -- {a}", f"asdf exec {a}",
+                f"pyenv exec {a}", f"rbenv exec {a}", f"nodenv exec {a}", f"volta run --node 20 {a}",
+                f"fnm exec --using=20 -- {a}", f"devbox run {a}", f"perf stat -e cycles {a}", f"perf record -o p -- {a}",
+                f"rr record {a}", f"catchsegv {a}", f"heaptrack {a}", f"faketime '2020-01-01' {a}", f"xvfb-run -a {a}",
+                f"ip netns exec ns1 {a}"]
+        for pack, engine, e in self.every_pack():
+            for cmd in held:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = svc.evaluate(e, "Bash", {"command": cmd})[0]
+                    self.assertEqual((d["verdict"], "TK-D012" in d["rule_ids"]), ("deny", True), d)
+            with self.subTest(pack=pack, engine=engine, cmd="honcho run uv tool uninstall"):
+                self.assertIn("TK-A054", svc.evaluate(e, "Bash", {"command": "honcho run uv tool uninstall tracekit-ai"})[0]
+                              ["rule_ids"])
+            for cmd in ("dotenv run pytest -q", "honcho run python manage.py migrate", "foreman run rake db:migrate",
+                        "gdb -batch -ex run --args ./a.out --flag", "lldb -- ./a.out", "nodemon --exec 'python app.py'",
+                        "chamber exec svc -- ./server", "aws-vault exec prod -- aws s3 ls", "infisical run -- npm start",
+                        "bwrap --ro-bind / / --unshare-all ls", "perf stat ls", "pyenv exec python -V",
+                        "ip netns exec ns1 ip a", "gdb ./a.out", "lldb ./a.out"):
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertIn(svc.evaluate(e, "Bash", {"command": cmd})[0]["verdict"], ("allow", "flag"))
+
     def test_text_only_written_into_a_file_may_name_tracekits_paths(self):
         # TK-D007 matched a Tracekit path anywhere in the command, so writing a source file whose help text names one
         # was denied (#423); reading, writing, moving or deleting one, stopping the signer, and code an interpreter

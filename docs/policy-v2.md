@@ -314,10 +314,13 @@ class, so a rule can't name a raw argument called `target`.
 **Shell parsing** (`policy2/shell.py`, its own tokenizer): quotes, escapes (`$'…'` as bash 5 decodes it, cut at its
 first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` `&`, newlines,
 `$()`, backticks, `<()`, heredocs, `VAR=` prefixes and wrappers (`sudo`, `env`, `nohup`, `timeout`, `xargs`, `nice`,
-`exec`, `command`, `taskset`, `chrt`, `unbuffer`, `fakeroot`, `dbus-run-session`, `caffeinate`, `npx`, `uvx`, `dotenv`,
+`exec`, `command`, `taskset`, `chrt`, `unbuffer`, `fakeroot`, `dbus-run-session`, `caffeinate`, `npx`, `uvx`, `dotenv` (and python-dotenv's `dotenv run`), `catchsegv`, `heaptrack`, `faketime`, `xvfb-run`,
 `torsocks`, `firejail`, `gosu`, `tini`, `cmd /c` or `/k` (`//c` under MSYS), `wsl` bare or with `-e`, `--exec` or `--`, …) and runners (`uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`,
 `pipx run`, `hatch run`, `conda run`, `direnv exec DIR`, `mise exec … --`, `op run`, `doppler run`, `npm exec`,
-`pnpm dlx`, `yarn dlx`, `bun x`, `rustup run TOOLCHAIN`, `tracekit srt-decider`; a runner's subcommand after its own options too: `pnpm -r
+`pnpm dlx`, `yarn dlx`, `bun x`, `rustup run TOOLCHAIN`, `tracekit srt-decider`, `honcho run`, `foreman run`,
+`chamber exec … --`, `aws-vault exec PROFILE`, `infisical run … --`, `asdf`, `pyenv`, `rbenv` or `nodenv exec`, `volta run`,
+`fnm exec`, `devbox run`, `perf stat`, `record` or `trace`, `rr record`; gdb's `--args` and `-ex run`, lldb's `--`, `bwrap`,
+`ip netns exec`, and the line nodemon's `--exec` or `doppler run` and `infisical run`'s `--command` runs; a runner's subcommand after its own options too: `pnpm -r
 exec`, `npm -w a exec --`, `yarn workspaces foreach -A exec`, `yarn workspace foo exec`, one spelled as an option's
 value read both ways, `uv --directory run run …`, and a runner npx or corepack names at a version, `pnpm@9`) are
 resolved, uv's command is also read with its options before it, and between `tool` or `pip` and theirs, left out
