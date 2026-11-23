@@ -46,6 +46,7 @@ from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingB
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations import executor_tools, said, version_check
+from tracekit.integrations.recording_warning import warn_unrecorded
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, _class_of, fail_open, refusal, result_field
@@ -167,8 +168,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
             await rpc("complete", tool_call_id=inp.get("tool_use_id") or tool_use_id, decision_id=call[0],
                       args_digest=call[1], **out)
         except Exception as e:   # the tool ran: its result reaches the model either way
-            warnings.warn(f"tracekit: outcome of tool call {inp.get('tool_use_id') or tool_use_id} not recorded: {e}",
-                          stacklevel=2)
+            warn_unrecorded(f"outcome of tool call {inp.get('tool_use_id') or tool_use_id}", e, stacklevel=2)
         return {}
 
     async def end(inp, tool_use_id, ctx):
@@ -268,7 +268,7 @@ class TracekitSessionStore:
         try:
             await self._rpc.send("state_write", req)
         except (RPCError, SignerUnavailable) as e:
-            warnings.warn(f"tracekit: transcript commitment for {k} not recorded: {e}", stacklevel=3)
+            warn_unrecorded(f"transcript commitment for {k}", e, stacklevel=3)
             if isinstance(e, SignerUnavailable):
                 self._lost[k] = req, digest
             return not isinstance(e, SignerUnavailable)
