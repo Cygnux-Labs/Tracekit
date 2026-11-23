@@ -3877,7 +3877,13 @@ class CodingPack(unittest.TestCase):
             "kubectl get SECRETS -o json", "oc extract secret/db --to=-", "oc extract secrets/db --keys=password",
             "oc get secret db -o yaml", "oc get secrets -A -o json", "kubectl view-secret db", "oc view-secret db",
             "kubectl-view-secret db password", "kubectl create token deployer", "oc create token deployer -n prod",
-            "sudo kubectl get secrets -o yaml", "bash -c 'kubectl get secret db -o json'"]
+            "sudo kubectl get secrets -o yaml", "bash -c 'kubectl get secret db -o json'",
+            # #981: a raw API read of a secrets path returns the values, not just names
+            "kubectl get --raw /api/v1/namespaces/prod/secrets/db",
+            "kubectl get --raw=/api/v1/namespaces/prod/secrets/db",
+            "kubectl get -n prod --raw /api/v1/namespaces/prod/secrets/db",
+            "kubectl get --raw /api/v1/namespaces/prod/secrets",
+            "oc get --raw /api/v1/namespaces/prod/secrets/db"]
         vault = [
             "vault kv get -format=json secret/production/stripe_api_key", "vault kv get secret/app",
             "vault read secret/foo", "vault read -format=json aws/creds/deploy", "vault token create -policy=root -ttl=720h",
@@ -3898,7 +3904,10 @@ class CodingPack(unittest.TestCase):
             "vault secrets list", "vault policy list", "vault token lookup", "vault kv list secret/",
             "vault kv metadata get secret/app", "vault status", "vault policy read admin", "vault write secret/app a=b",
             "echo kubectl get secrets -o yaml", "echo vault kv get secret/app",
-            "git commit -m 'kubectl get secret db -o yaml'"]
+            "git commit -m 'kubectl get secret db -o yaml'",
+            # #981: a raw read of a path with no /secrets/ segment reads no secret
+            "kubectl get --raw /api/v1/namespaces/prod/pods", "kubectl get --raw /healthz",
+            "kubectl get secrets/db", "kubectl get --raw /api/v1/namespaces/default/configmaps/mysecrets"]
         for pack, engine, e in self.every_pack():
             for cmd in k8s + vault + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
