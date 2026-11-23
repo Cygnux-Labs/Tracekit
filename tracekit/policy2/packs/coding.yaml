@@ -1439,13 +1439,16 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: agent_skill
-    # a call on a .md file under .agents/skills/ (OpenHands loads each, in a project or the home folder) whose text
-    # holds an inline command, !`cmd`, which OpenHands' invoke_skill runs with shell=True; \!`cmd` is kept as text.
-    # Skill text without one stays unheld, as do other agents' skill folders' files (.claude/ is TK-F009's)
+    # a call on a skill OpenHands loads whose text holds an inline command, !`cmd`, which OpenHands' invoke_skill runs
+    # with shell=True; \!`cmd` is kept as text. A skill is a .md file under .agents/skills/ (in a project or the home
+    # folder), or an instruction file OpenHands loads as one: AGENTS.md, agent.md, CLAUDE.md, GEMINI.md or
+    # .cursorrules, by its whole name in any case and in any folder (classes.py _AGENT_SKILL). Text without a !`cmd`
+    # stays unheld, so an ordinary edit of an instruction file is allowed, as are other agents' skill folders' files
+    # (.claude/ is TK-F009's)
     pattern: '(?:^|[^\\])!`[^`]+`'
-    reason: writing an agent skill that runs a shell command when it is invoked
+    reason: writing an agent skill or instruction file that runs a shell command when it is invoked
     remedy: Have a person read the skill's !`cmd` lines and approve the held call, or write the skill without them.
-    rationale: OpenHands runs a skill's inline commands with no hook when the skill is invoked; a person confirms them.
+    rationale: OpenHands runs the inline commands of a skill, and of the instruction files it loads as skills, with no hook when it is invoked; a person confirms them.
 
   - id: TK-A061
     class: fs

@@ -337,8 +337,9 @@ class CodingPack(unittest.TestCase):
     def test_what_a_harness_runs_from_a_recipe_or_a_skill_is_held(self):
         # goose starts a recipe's stdio extensions (cmd and args) with no hook when the recipe runs, and loads recipes
         # and sub-agents from recipes/ and agents/ under a project's or the home's .goose/ and .agents/; OpenHands'
-        # invoke_skill runs each !`cmd` of a skill it loads from .agents/skills/. Writing one was allowed: it is held,
-        # and running one is flagged, as running a script the repository has is
+        # invoke_skill runs each !`cmd` of a skill it loads from .agents/skills/ and of the instruction files it loads
+        # as skills. Writing one was allowed: it is held, and running one is flagged, as running a script the
+        # repository has is
         recipe = "title: x\nextensions:\n  - type: stdio\n    name: x\n    cmd: bash\n    args: ['-c', 'id']\n"
         skill = "---\nname: x\ndescription: x\n---\nStatus: !`git status`\n"
         held = [("Write", {"file_path": f, "content": recipe}, "TK-F009") for f in (
@@ -356,13 +357,34 @@ class CodingPack(unittest.TestCase):
              "TK-A085"),
             # OpenHands' file_editor sends the text as file_text, its str_replace as new_str
             ("Write", {"file_path": "/home/u/.agents/skills/notes.md", "file_text": skill}, "TK-A085"),
-            ("Edit", {"file_path": "/w/.agents/skills/x/SKILL.md", "old_str": "a", "new_str": "!`id`"}, "TK-A085")]
+            ("Edit", {"file_path": "/w/.agents/skills/x/SKILL.md", "old_str": "a", "new_str": "!`id`"}, "TK-A085")] + [
+            # the instruction files OpenHands also loads as skills (openhands-sdk 1.63.1), in any folder and any case
+            ("Write", {"file_path": f"/w/{folder}{name}", "content": skill}, "TK-A085")
+            for name in ("AGENTS.md", "agent.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "Agents.MD", "claude.md",
+                         ".CursorRules")
+            for folder in ("", "server/api/")] + [
+            ("Write", {"file_path": "/w/pkg/AGENTS.md", "file_text": skill}, "TK-A085"),
+            ("Edit", {"file_path": "/w/CLAUDE.md", "old_str": "a", "new_str": "Run !`id`"}, "TK-A085"),
+            ("Edit", {"file_path": "/w/pkg/GEMINI.md", "old_string": "a", "new_string": "!`id`"}, "TK-A085"),
+            ("Write", {"file_path": "/w/ok.md", "paths": ["/w/ok.md", "/w/pkg/.cursorrules"], "content": skill},
+             "TK-A085")]
         flagged = [("delegate", {"source": "deploy", "instructions": "deploy to staging"}, "TK-F026"),
                    ("invoke_skill", {"name": "x"}, "TK-F027")]
         benign = [("delegate", {"instructions": "summarise the README"}),
                   ("Write", {"file_path": "/w/.agents/skills/x/SKILL.md",
                              "content": "Run `git status` first; the syntax is \\!`cmd`.\n"}),
                   ("Write", {"file_path": "/w/docs/x.md", "content": skill}),
+                  # an ordinary edit of an instruction file, and \!`cmd` (kept as text by OpenHands), aren't held
+                  *[("Edit", {"file_path": f"/w/{folder}{name}", "old_str": "a", "new_str": "Run `git status` first."})
+                    for name in ("AGENTS.md", "agent.md", "CLAUDE.md", "GEMINI.md", ".cursorrules", "Agents.MD")
+                    for folder in ("", "server/api/")],
+                  ("Write", {"file_path": "/w/pkg/GEMINI.md", "content": "Use the `make test` target.\n"}),
+                  ("Write", {"file_path": "/w/pkg/AGENTS.md", "content": "Run `git status` first; use \\!`cmd`.\n"}),
+                  ("Edit", {"file_path": "/w/AGENTS.md", "old_str": "a", "new_str": "the syntax is \\!`cmd`"}),
+                  # only the names OpenHands loads: a name with more or less around it is another file
+                  *[("Write", {"file_path": f"/w/{name}", "content": skill}) for name in (
+                      "AGENTS.md.bak", "notAGENTS.md", "MY_CLAUDE.md", "CLAUDE.mdx", "AGENTS.txt", "GEMINI", "agents.md/x",
+                      "docs/AGENTS.md/notes.txt", "x.cursorrules", ".cursorrules.old", "CLAUDE.local.md", "README.md", "AGENT.markdown")],
                   ("Write", {"file_path": "/w/recipes/x.yaml", "content": recipe}),
                   ("Bash", {"command": "cat .goose/recipes/x.yaml .agents/skills/a/SKILL.md"})]
         new = {want for *_, want in held + flagged}
