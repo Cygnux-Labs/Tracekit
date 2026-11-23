@@ -2468,7 +2468,8 @@ class SignerService:
         takes from each sum budget)}; None when none of its rules has approval.agent. Eligible only when every rule
         it asked by (flags aside) has approval.agent and its bounds pass, the tool is one the policy names exactly,
         no argument carries a value only untrusted content brought and provenance is complete, the run is no replay,
-        agent approvals are on and each budget has room. Off the writer; the writer checks the run's state again."""
+        agent approvals are on and each budget has room; and an install TK-A025 holds reads no file that may name
+        another source (Engine.install_reads). Off the writer; the writer checks the run's state again."""
         rules = self._agent_rules(d["rule_ids"]) if self._agents else []
         if not rules:
             return None
@@ -2489,7 +2490,10 @@ class SignerService:
                   "an argument carries a value only untrusted content brought into the run, or provenance is not "
                   "complete" if prov else
                   "what the call acts on can't be read, so no person's precedent can match it"
-                  if len(fields) < len(rules) and target is None else None)
+                  if len(fields) < len(rules) and target is None else
+                  f"the install reads {read[:256]}, which may name another index: a person decides"
+                  if "TK-A025" in ids and (read := self.policy.install_reads(tool, args))
+                  else None)
         spend = {}
         if reason is None:
             try:

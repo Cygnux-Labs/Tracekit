@@ -501,7 +501,9 @@ can't read, or an unmapped tool given a command line. For a call held by one of 
 a person approved in the last 30 days: the same rules, tool and target (for an install, the same package source),
 the same project and the same agent. It approves only then, and only when two model answers both say yes. It never
 answers a call in a session that read a secret (or untrusted content, when you list it), a call like one a person
-rejected, or a call any other rule also holds. A person decides those.
+rejected, a call any other rule also holds, or an install that reads a requirements or config file (`-r
+requirements.txt`, `-c`, `--config-settings`, `PIP_CONFIG_FILE`, npm's `--userconfig`, a `.npmrc` or `pip.conf` on the
+line, or for npm a working tree the line changes to), which may name another index. A person decides those.
 
 **What you see.** `tracekit approvals show` and `list` say what it did, or why it won't answer:
 

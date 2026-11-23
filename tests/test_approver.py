@@ -936,6 +936,33 @@ class TestReplayAndView(Case):
         self.assertEqual({c["rule"] for c in view["conditions"]}, {"approval_agent"})
         self.assertNotIn(self.run["run_id"], json.dumps(view))
 
+    def test_an_install_that_reads_a_file_is_peoples(self):
+        """A requirements or config file can name another index, and the agent writes it: no precedent vouches for an
+        install that reads one."""
+        self.precedent()
+        index = "pip install --index-url https://pypi.internal/simple"
+        for cmd, read in ((f"{index} -r requirements.txt", "requirements.txt"),
+                          (f"{index} --requirement=reqs/dev.txt", "reqs/dev.txt"),
+                          (f"{index} --req reqs/dev.txt", "reqs/dev.txt"),
+                          (f"{index} -rrequirements.txt x", "requirements.txt"),
+                          (f"{index} -c constraints.txt x", "constraints.txt"),
+                          (f"{index} --config-settings editable_mode=compat x", "build settings (editable_mode=compat)"),
+                          (f"PIP_CONFIG_FILE=./my.conf {index} x", "the pip config file ./my.conf (PIP_CONFIG_FILE)"),
+                          (f"python3 -m {index} -r requirements.txt", "requirements.txt"),
+                          (f"{index} x && cat pip.conf", "pip.conf"),
+                          ("npm install --registry https://npm.internal/ --userconfig ./ci.npmrc left-pad",
+                           "the npm config file ./ci.npmrc"),
+                          ("cd ../vendored && npm install --registry https://npm.internal/ left-pad",
+                           "the working tree ../vendored (its .npmrc)"),
+                          ("npm --prefix ../vendored install --registry https://npm.internal/ left-pad",
+                           "the working tree ../vendored (its .npmrc)")):
+            with self.subTest(cmd):
+                aid, a = self.ask(cmd)
+                self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"]),
+                                 (False, f"the install reads {read}, which may name another index: a person decides"))
+        _, a = self.ask(f"{index} y")   # the line alone: the precedent vouches for it
+        self.assertTrue(a["agent"]["eligible"], a["agent"])
+
     def test_a_held_call_also_held_by_another_rule_is_peoples(self):
         self.precedent()
         _, a = self.ask("pip install --index-url https://pypi.internal/simple x && gsutil cp f gs://b")

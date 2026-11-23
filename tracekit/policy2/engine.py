@@ -217,6 +217,18 @@ class Engine:
             out.append((f"{name}: {canonical(b)}", ok))
         return out
 
+    def install_reads(self, tool, args):
+        """What a package install of `tool` with `args` reads besides its line that may name another package source,
+        as people read it (a requirements file, a config file, a working tree whose .npmrc npm reads), or None: a
+        precedent of TK-A025 can't vouch for an install whose source a file the agent writes may change
+        (_install_reads)."""
+        args = args if isinstance(args, dict) else {"value": args}
+        command = classes.extract("shell", tool, args, MAX_SUBJECT).get("command")
+        if not isinstance(command, str):
+            return None
+        parsed, _ = self._parse(args, command, [0], fallback=False)
+        return _install_reads(parsed[0], parsed[2]) if parsed else None
+
     def target(self, rule_ids, tool, args):
         """{rule id: the kind of target a call of `tool` with `args` acts on, as that rule reads it}, for each rule of
         `rule_ids` the AI approver may answer (compile.APPROVER_RULES): what its precedents are matched by
@@ -1463,6 +1475,62 @@ def _package_indexes(commands, refs=(), kinds=False):
 
 
 _LONG_OPTIONS = {"-i": "--index-url", "-f": "--find-links", "-s": "--source", "-a": "--add"}   # one option, two names
+# what an install reads besides its line (_install_reads): pip's and uv's requirement, constraint and build settings
+# options, npm's config file options, and the variables that name a config file
+_READ_OPTIONS = {"pip": {"-r": "{}", "--requirement": "{}", "-c": "{}", "--constraint": "{}",
+                         "-C": "build settings ({})", "--config-settings": "build settings ({})"},
+                 "npm": {"--userconfig": "the npm config file {}", "--globalconfig": "the npm config file {}"}}
+_READ_OPTIONS["uv"] = {**_READ_OPTIONS["pip"], "--override": "{}", "--build-constraint": "{}"}
+_READ_VARIABLES = {"PIP_CONFIG_FILE": "the pip config file {} (PIP_CONFIG_FILE)", "PIP_REQUIREMENT": "{}",
+                   "UV_CONFIG_FILE": "the uv config file {} (UV_CONFIG_FILE)",
+                   "NPM_CONFIG_USERCONFIG": "the npm config file {} (NPM_CONFIG_USERCONFIG)",
+                   "NPM_CONFIG_GLOBALCONFIG": "the npm config file {} (NPM_CONFIG_GLOBALCONFIG)"}
+_CONFIG_NAMES = re.compile(r"(?:^|/)(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.(?:conf|ini)|uv\.toml|bunfig\.toml)$")
+_WORKING_TREE = {"--prefix", "-C", "--cwd", "--dir"}   # npm, pnpm, yarn and bun: the tree whose .npmrc they read
+
+
+def _install_reads(commands, refs=()):
+    """The first thing a package install on this line reads besides the line that may name another package source,
+    as people read it, or None: a requirements or constraints file (pip's and uv's -r and -c), build settings
+    (--config-settings), a config file an option or a variable names (npm's --userconfig, PIP_CONFIG_FILE), a config
+    file named anywhere on the line (.npmrc, pip.conf), or, for npm, pnpm, yarn and bun, a working tree the line changes
+    to (cd, --prefix), whose .npmrc they read. Writes to a .npmrc or pip.conf are people's to approve (TK-A024, TK-A030);
+    a requirements file, or a config file of another name, is the agent's to write."""
+    words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
+    for name, eq, value in (w.partition("=") for w in words):
+        if eq and name.upper() in _READ_VARIABLES:
+            return _READ_VARIABLES[name.upper()].format(value)
+    moved = None
+    for command in commands:
+        argv = command["argv"]
+        named = next((a for a in argv if _CONFIG_NAMES.search(a.split("=", 1)[-1])), None)
+        if named:
+            return named.split("=", 1)[-1]
+        exe = _program(argv) if argv else ""
+        if exe in ("cd", "pushd") and len(argv) > 1:
+            moved = argv[-1]
+            continue
+        args = argv[1:]
+        if exe.startswith("python") or exe == "py":
+            module = _python_module(args)
+            if module[:1] == ["pip"]:
+                exe, args = "pip", module[1:]
+        exe = "pip" if _PIP.fullmatch(exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        family = "npm" if exe in ("npm", "pnpm", "yarn", "bun") else exe
+        options = _READ_OPTIONS.get(family, {})
+        for i, arg in enumerate(args):
+            name, eq, value = arg.partition("=")
+            if exe == "pip" and len(name) > 2 and name.startswith("--"):   # optparse's unique prefix
+                name = next((o for o in options if o.startswith(name)), name)
+            if name in options:
+                return options[name].format(value if eq else args[i + 1] if i + 1 < len(args) else "")
+            if family in ("pip", "uv") and len(arg) > 2 and arg[:2] in ("-r", "-c") and arg[1] != "-":
+                return arg[2:]   # -rrequirements.txt
+            if family == "npm" and name in _WORKING_TREE:
+                return f"the working tree {value if eq else args[i + 1] if i + 1 < len(args) else ''} (its .npmrc)"
+        if family == "npm" and moved is not None:
+            return f"the working tree {moved} (its .npmrc)"
+    return None
 
 
 def _source(value):
