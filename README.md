@@ -345,7 +345,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 | **Three verifiers, one verdict** (E22): 63 bundles, 33 of them forged, each checked by the Python CLI, the TypeScript CLI and the browser page | **All three agree on all 63**; no forgery verifies. A 50,000-call run verifies in the browser in 14 s |
 | **Overhead** (E9): signer round trip over a Unix socket | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **Policy packs, known cases** (E17): 1063 harmful, 1015 benign calls | 1063 stopped, 1 false alarm |
-| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (288 now, with rules added after reading the pool); 18 benign held |
+| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (291 now, with rules added after reading the pool); 18 benign held |
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the
