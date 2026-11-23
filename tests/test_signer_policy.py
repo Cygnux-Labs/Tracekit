@@ -4967,7 +4967,11 @@ class CodingPack(unittest.TestCase):
                        ("git credential fill", "TK-A021"), ("git credential-store get", "TK-A021"),
                        ("git credential-manager get", "TK-A021"), ("git -C repo credential fill", "TK-A021"),
                        ("git credential-store --file f get", "TK-A021"), ("git-credential fill", "TK-A021"),
-                       ("git-credential-libsecret get", "TK-A021"), ("gh auth git-credential get", "TK-A021")])
+                       ("git-credential-libsecret get", "TK-A021"), ("gh auth git-credential get", "TK-A021"),
+                       ("aws configure get aws_secret_access_key", "TK-A021"),
+                       ("aws configure get aws_session_token", "TK-A021"),
+                       ("aws --profile prod configure get aws_secret_access_key", "TK-A021"),
+                       ("aws configure get prod.aws_secret_access_key", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
@@ -4978,7 +4982,11 @@ class CodingPack(unittest.TestCase):
                         "git credential-store store", "git credential-store erase", "git credential",
                         "git config credential.helper", "git credentials fill", "gh auth git-credential",
                         "gh auth git-credential store", "gh auth git-credential erase",
-                        "gh auth git-credential --help", "gh auth git-credentials get"):
+                        "gh auth git-credential --help", "gh auth git-credentials get",
+                        "aws configure", "aws configure list", "aws configure get",
+                        "aws configure get --help", "aws configure get region",
+                        "aws configure get default.region", "aws configure get aws_access_key_id",
+                        "aws configservice describe"):
             for pack, engine, e in self.every_pack():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
