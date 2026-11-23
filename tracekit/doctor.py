@@ -246,47 +246,54 @@ def _dropin_folder(settings):
 
 def _managed_dropins(settings):
     """The drop-ins Claude Code merges with the admin-managed settings `settings`, in its order: the `*.json` files of
-    the `managed-settings.d/` folder beside it, by name. Claude Code's changelog: "Added `managed-settings.d/` drop-in
-    directory alongside `managed-settings.json`, letting separate teams deploy independent policy fragments that merge
-    alphabetically" (anthropics/claude-code CHANGELOG.md, read 2026-11-23). Neither that entry nor the CLI's docs say
-    which names the folder takes, or how a drop-in ranks against the file itself, so doctor reads every `*.json` in it
-    and treats a `disableAllHooks` in any of them as off, which holds under either rank. lean: a drop-in with another
-    suffix goes unread."""
+    the `managed-settings.d/` folder beside it, by name. Claude Code's docs (code.claude.com/docs/en/managed-settings,
+    "Split a file-based policy across teams", read 2026-11-23): it "merges `managed-settings.json` first, then every
+    `*.json` file in the directory in alphabetical order", and "ignores hidden files and files that don't end in
+    `.json`"."""
     folder = _dropin_folder(settings)
     try:
         names = sorted(os.listdir(folder))
-    except OSError:   # no folder, or one this user can't read: no drop-ins to check
+    except OSError:   # no folder
         return []
     return [os.path.join(folder, n) for n in names
-            if n.endswith(".json") and os.path.isfile(os.path.join(folder, n))]
+            if n.endswith(".json") and not n.startswith(".") and os.path.isfile(os.path.join(folder, n))]
 
 
-def _untrusted(path):
-    """Problem with trusting `path` for what its contents say, or None: it must be root-owned and not group- or
-    world-writable. The directories above it are not read here; the managed file's own check (trusted_file) reads them."""
-    try:
-        st = os.lstat(path)
-    except OSError as e:
-        return f"{path}: {e.strerror}"
-    if st.st_uid != 0:
-        return f"{path} is not owned by root"
-    if st.st_mode & 0o022:
-        return f"{path} is group- or world-writable"
-    return None
+def _admin_files(settings):
+    """The file-based managed sources in the order Claude Code merges them: `managed-settings.json`, then each drop-in
+    by name."""
+    return [settings, *_managed_dropins(settings)]
 
 
-def _dropins(settings):
+def _setting_in_order(paths, key):
+    """(the file whose value Claude Code uses for `key`, that value) over file-based managed sources in merge order.
+    Its docs: for a single value, "the later file's value replaces the earlier one", so the last file that sets the key
+    decides — and a drop-in setting it false lifts an earlier true."""
+    at, value = None, None
+    for p in paths:
+        v = _setting(p, key)
+        if v is not None:
+            at, value = p, v
+    return at, value
+
+
+def _dropins(settings, unreadable=()):
     """(problem with the drop-ins beside the admin-managed `settings`, what the detail then says was checked). A drop-in
     the agent's user can write is a way to set `disableAllHooks` and turn every hook off, so the folder and each file in
-    it must be root-owned and not group- or world-writable. Windows reports modes that mean nothing (ACLs), as for
-    D-KEYS-MODE, so there the detail says they were not checked."""
+    it must be trusted the way the managed file is: `trusted_file` resolves a symlink and checks every directory above
+    it, which is what Claude Code reads (its docs: "You can deploy any of these files as a symbolic link, and Claude
+    Code reads the file the link leads to"). A source the agent's user can't read is a fault too: its docs say that when
+    the OS denies the read, "every session starts without that source's policies", and `unreadable` names those. The
+    folder is checked even when it holds no drop-ins: an empty one the agent's user can write is where a
+    `99-off.json` can be added."""
     folder, found = _dropin_folder(settings), _managed_dropins(settings)
-    if not found:
+    if not found and not os.path.isdir(folder):
         return None, ""
-    if os.name == "nt":
-        return None, f", and {len(found)} drop-in(s) in {folder}, whose modes are not checked on Windows"
-    bad = [why for why in map(_untrusted, (folder, *found)) if why]
-    return "; ".join(bad) or None, f", and the {len(found)} drop-in(s) in {folder} are root-owned too"
+    bad = [why for why in map(trusted_file, (folder, *found)) if why]
+    bad += [f"{p} isn't readable by the agent's user, so its Claude Code starts without that source's policies"
+            for p in (folder, *found) if p in unreadable]
+    return "; ".join(bad) or None, (f", and the {len(found)} drop-in(s) in {folder} are root-owned too" if found
+                                    else f", and {folder} is root-owned too")
 
 
 def _layers(paths, key):
@@ -1602,12 +1609,17 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
-    dropins = _managed_dropins(settings) if managed else []   # Claude Code merges these with the managed file
+    # Claude Code merges the drop-ins beside the managed file with it, in both modes: they are a settings layer
+    dropins = _managed_dropins(settings if managed else _managed())
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
-        read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
-        problem, note = _dropins(settings)
+        folder = _dropin_folder(settings)
+        sources = list(dict.fromkeys([settings, folder, *dropins]))   # the folder whenever it exists, empty or not
+        read = agent and agent_access(agent, [[p, "read"] for p in sources])   # None: not probed (doctor isn't root)
+        can = {p for p, how in (read or []) if how == "read"}
+        unreadable = [p for p in sources if read is not None and p not in can]
+        problem, note = _dropins(settings, unreadable)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
-                                         "it" if read == [] else None) or problem
+                                         "it" if settings in unreadable else None) or problem
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
             + (f", and {agent.pw_name} can read it" if read else "") + note, f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
@@ -1615,7 +1627,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
         settings, _managed()) if p]), *dropins]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
-    only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
+    # Claude Code runs managed hooks only, and a drop-in can set that too: the later file's value wins
+    only = managed and _setting_in_order(_admin_files(settings), "allowManagedHooksOnly")[1] is True
     why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
     active_plugin = plugin if plugin and not why else None
     note = _plugin_note(plugin_settings, why)
@@ -1671,12 +1684,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript; only managed settings can
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
-            # a drop-in is managed settings too: a disableAllHooks in one turns the managed hooks off
+            # a drop-in is a managed source too, merged after managed-settings.json by name: for a single value the
+            # later file wins, so the last file that sets disableAllHooks decides, and a later false lifts an earlier true
             managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
-            off = [p for p in ((*([plugin_settings] if not managed else [settings]), *dropins) if managed_hooks
-                               else dict.fromkeys([*layers, settings]))   # the hooks' own file too
-                   if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
-                if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
+            order = [*(([plugin_settings] if not managed else [settings]) if managed_hooks
+                       else [*layers, settings]),   # the hooks' own file too
+                     *dropins]
+            at, value = _setting_in_order(order, "disableAllHooks")
+            off = [at] if at and value not in (False, 0, "") and (
+                any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ")) else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
                         if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
             unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
