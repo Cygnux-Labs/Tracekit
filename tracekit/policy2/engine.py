@@ -2095,8 +2095,29 @@ def _sets_environment(parsed):
     learned = parsed[5] if len(parsed) > 5 else {}
     return bool(parsed[2] or learned.get("any_set") or any(
         c["argv"] and (_program(c["argv"]) in ("source", ".", "direnv", "read", "export", "declare", "typeset", "eval", "mapfile",
-                                                "readarray", "set") or shell._sets_with_v(c["argv"]))
+                                                "readarray", "set") or shell._sets_with_v(c["argv"])
+                       or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) or re.search(r"[$`{]", a) for a in c["argv"][1:])
+                       or _program(c["argv"]) in ("bash", "sh", "zsh", "dash", "ksh", "fish") and any(
+                           a.startswith(("--rcfile", "--init-file")) for a in c["argv"][1:]))
         for c in parsed[0]))
+
+
+# the files a shell reads its environment from, and the variables that change what a tool install builds on
+_RC_FILE = re.compile(r"(?:^|/)(?:\.(?:zshenv|zshrc|zprofile|zlogin|bashrc|bash_profile|bash_login|profile|envrc|pam_environment)|"
+                      r"config\.fish)$|^/etc/(?:environment|profile|zshenv|bash\.bashrc)$")
+_TOOL_ENV = re.compile(r"\b(?:UV_\w+|PIP_\w+|PIPX_\w+|XDG_CONFIG_\w+|XDG_DATA_HOME|HOME)=|^(?:UV_\w+|PIP_\w+|PIPX_\w+|XDG_CONFIG_\w+|XDG_DATA_HOME|HOME)$")
+
+
+def _persists_environment(parsed):
+    """Whether the line writes a variable that changes what a tool install builds on (UV_*, PIP_*, PIPX_*, XDG_CONFIG_*,
+    XDG_DATA_HOME, HOME) into a file a shell reads at start (an rc or profile file), or sets it for the session (launchctl
+    setenv): the person's next `uv tool install --reinstall`, which our own messages give as the remedy, would build on it."""
+    words = [w for c in parsed[0] if c["argv"] for w in (*c["argv"][1:], *c["stdin"])]
+    if any(_program(c["argv"]) == "launchctl" and c["argv"][1:2] == ["setenv"] and any(
+            _TOOL_ENV.search(w) for w in c["argv"][2:3]) for c in parsed[0] if c["argv"]):
+        return True
+    targets = [_text(r) for r in parsed[3]] + [w for c in parsed[0] if c["argv"][:1] == ["tee"] for w in c["argv"][1:]]
+    return any(_RC_FILE.search(_normal(x)) for x in targets) and any(_TOOL_ENV.search(w) for w in words)
 
 
 def _git_fetches_foreign(commands):
@@ -2223,6 +2244,8 @@ def _collect_effects(parsed, work, tags, learned):
         tags += ["INSIDE_TARGET:" + r.partition("=")[2] for r in parsed[2] if _NAME_VALUE.match(r)]
     if any(_program(c["argv"]) == "mktemp" for c in parsed[0] if c["argv"]):   # it makes its file in TMPDIR
         tags += ["NAMED_TARGET:" + v for n in ("TMPDIR", "TMP", "TEMP") for v in _variable(parsed, n)]
+    if _persists_environment(parsed):
+        tags.append("ROOT_TARGET:environment")
     # a CDPATH or OLDPWD set some way the parse doesn't read (printf -v, read, eval) puts a cd anywhere: held with the writes
     if any(c["argv"][0] in _NAVIGATING for c in parsed[0]) and any(
             c["argv"][0] in ("printf", "read", "mapfile", "readarray", "eval") and any(
@@ -2270,6 +2293,7 @@ def _collect_effects(parsed, work, tags, learned):
     resolved = [(k, path) for k, _, path in (t.partition(":") for t in tags)]
     tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _names_root(p)]
     tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _inside_protected(p)]
+    tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _expanded_settings(p)]
     tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "INSIDE_TARGET" and _names_root(p, along=False)]
     tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "INTO_TARGET" and _holds_protected(p.rpartition("/")[0])] + [
         t for k, p in resolved if k in ("TREE_TARGET", "WORKTREE_TARGET") for t in [
@@ -2561,24 +2585,37 @@ def _roots_below(path, home=False, one_part=True):
 
 
 _ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES for k in range(1, len(place) + 1))
-# the settings, hooks and plugins of a harness (its session logs are none): _PROTECTED_PATHS' parts of two or more
-# but for the folders along a trust root, and the files each harness reads its settings from
+# the folders of the agents' own state in a home, where TK-F015 holds a write to any file (an unknown program that names one may write
+# it): all but the folders of their session logs and caches, which a reader names every day
+_AGENT_FOLDERS = frozenset((".claude", ".codex", ".gemini", ".opencode", ".kilo", ".kilocode", ".qwen", ".factory", ".devin",
+                            ".cline", ".hermes", ".openhands", ".copilot", ".jcode", ".kiro", ".openinterpreter", ".codebuddy"))
+_LOG_FOLDERS = frozenset(("projects", "sessions", "todos", "shell-snapshots", "statsig", "history", "log", "logs", "tmp", "debug",
+                          "telemetry", "ide", "backups", "cache", "file-history", "chats", "checkpoints", "tasks"))
+# _PROTECTED_PATHS' parts of two or more but for the folders along a trust root (.cursor/hooks.json, .config/opencode, .github/hooks)
 _SETTINGS_CHAINS = tuple(dict.fromkeys(
-    [chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
-     if len(chain) > 1 and chain not in _ROOT_CHAINS] + [tuple(c.split("/")) for c in (
-        ".claude/settings.json", ".claude/settings.local.json", ".claude/plugins", ".claude/hooks", ".claude/agents",
-        ".claude/skills", ".claude/commands", ".claude.json", ".mcp.json", ".codex/config.toml", ".codex/hooks.json",
-        ".codex/hooks", ".gemini/settings.json", ".cursor/hooks.json", ".cursor/mcp.json", ".cursor/plugins", ".qwen/settings.json",
-        ".factory/settings.json", ".kilocode/settings.json", ".goose/config.yaml", ".kiro/settings", ".devin/config.json",
-        ".opencode/opencode.json", ".openhands/settings.json")]))
+    chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
+    if len(chain) > 1 and chain not in _ROOT_CHAINS))
+_SETTINGS_FILES = frozenset(("settings.json", "settings.local.json", "config.toml", "config.json", "config.yaml", "hooks.json",
+                             "mcp.json", "default.rules"))
 
 
 def _inside_protected(path):
-    """Whether `path` is, or is inside, a folder or file of a harness that _SETTINGS_CHAINS lists (.claude, .codex,
-    .cursor/hooks.json, .config/opencode): a program the parser doesn't know that names one may write it, which the rules on a
-    write to one read."""
+    """Whether `path` is, or is inside, what an agent reads its settings, hooks or plugins from: a file in an agent's folder but
+    its logs' (_AGENT_FOLDERS: a part with a pattern there, `settings.jso?`, is read as a settings file), or one of
+    _SETTINGS_CHAINS. A program the
+    parser doesn't know that names one may write it, which the rules on a write to one read."""
     parts = tuple(_normal(path).casefold().split("/"))
-    return any(parts[j:j + len(chain)] == chain for chain in _SETTINGS_CHAINS for j in range(len(parts) - len(chain) + 1))
+    if any(chain == parts[j:j + len(chain)] for chain in _SETTINGS_CHAINS for j in range(len(parts) - len(chain) + 1)):
+        return True
+    if any(p in _AGENT_FOLDERS and j + 1 < len(parts) and (parts[j + 1] not in _LOG_FOLDERS or shell._GLOB.search(parts[j + 1]))
+           for j, p in enumerate(parts)):
+        return True
+    return False
+
+
+def _expanded_settings(path):
+    """Whether `path` ends in a settings file's name after an expansion the line leaves unresolved (`"$(echo ~/.claude)/settings.json"`)."""
+    return bool(_EXPANSION_AT.search(path)) and path.rstrip("/").rsplit("/", 1)[-1].casefold() in _SETTINGS_FILES
 
 
 def _names_root(path, along=True):
@@ -3499,7 +3536,7 @@ _KNOWN_PROGRAMS = frozenset((
     "jq", "yq", "sort", "uniq", "cut", "tr", "tree", "mkdir", "touch", "export", "set", "unset", "alias", "unalias", "source",
     ".", "exit", "return", "sudo", "nohup", "nice", "time", "timeout", "xargs", "exec", "builtin", "trap", "wait", "locate",
     "mdfind", "lsof", "ps", "hash", "history", "printenv", "ulimit", "umask", "read", "shift", "local", "declare", "readonly",
-    "typeset", "let", "sh", "bash", "zsh", "dash", "ksh", "fish", "env", "uv", "pipx", "pip", "pip3", "virtualenv", "tracekit",
+    "typeset", "let", "code", "open", "sh", "bash", "zsh", "dash", "ksh", "fish", "env", "uv", "pipx", "pip", "pip3", "virtualenv", "tracekit",
     "kill", "pkill", "killall", "pgrep", "systemctl", "launchctl", "chmod", "chown", "chgrp", "nl",
     "column", "comm", "join", "paste", "fold", "fmt", "expand", "unexpand", "rev", "tac", "seq", "yes", "mktemp", "sync",
     "gzip", "bzip2", "xz", "lzma", "lzip", "compress", "zip", "unzip", "tar", "rsync", "curl", "wget", "git", "docker",

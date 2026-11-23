@@ -5150,6 +5150,36 @@ class CodingPack(unittest.TestCase):
                         d = e.decide("Bash", {"command": cmd})
                         self.assertEqual(d["verdict"], "deny", d)
 
+    def test_plugin_review_11_environments_an_upgrade_builds_on_and_every_agents_settings(self):
+        held = (
+            "env UV_PYTHON=/tmp/p uv tool upgrade --all", "/usr/bin/env UV_PYTHON=/tmp/p uv tool upgrade --all",
+            "timeout 600 env UV_PYTHON=/tmp/p uv tool upgrade --all", "command env UV_PYTHON=/tmp/p uv tool upgrade --all",
+            "exec env UV_PYTHON=/tmp/p uv tool upgrade --all", "nohup env UV_PYTHON=/tmp/p uv tool upgrade --all",
+            "env -i PATH=/usr/bin HOME=/Users/me UV_PYTHON=/tmp/p uv tool upgrade --all",
+            "env -S 'UV_PYTHON=/tmp/p uv tool upgrade --all'", "env XDG_CONFIG_HOME=/tmp/cfg uv tool upgrade --all",
+            "env XDG_CONFIG_HOME=/tmp/cfg pipx upgrade-all", "env $(cat /tmp/vars) uv tool upgrade --all",
+            "bash --rcfile /tmp/rc -i -c 'uv tool upgrade --all'", "bash --init-file /tmp/rc -ic 'uv tool upgrade --all'",
+            "echo 'export UV_PYTHON=/tmp/p' >> ~/.zshenv", "echo 'export UV_PYTHON=/tmp/p' >> ~/.bashrc",
+            "echo 'export XDG_CONFIG_HOME=/tmp/cfg' >> ~/.zshrc", "printf 'export UV_PYTHON=/tmp/p\\n' >> ~/.profile",
+            "echo 'export PIP_INDEX_URL=https://example.invalid/simple' >> ~/.bashrc", "launchctl setenv UV_PYTHON /tmp/p",
+            "launchctl setenv XDG_DATA_HOME /tmp/d", "foo -o ~/.copilot/config.json", "foo -o ~/.codebuddy/settings.json",
+            "foo -o ~/.jcode/config.toml", "foo -o ~/.hermes/config.yaml", "foo -o ~/.cline/settings.json",
+            "foo -o ~/.kilo/settings.json", "foo -o ~/.gemini/extensions/x/gemini-extension.json", "foo -o ~/.codex/rules/default.rules",
+            "foo -o ~/.claude/settings.jso?", "foo -o $HOME/.cl*/settings.json", 'foo -o "$(echo ~/.claude)/settings.json"')
+        benign = (
+            "uv tool upgrade --all", "pipx upgrade-all", "cd ~/proj && uv tool upgrade --all", "bash -l -c 'uv tool upgrade --all'",
+            "echo 'export EDITOR=vim' >> ~/.zshrc", "echo 'export PATH=$HOME/bin:$PATH' >> ~/.zshrc", "env FOO=1 make test",
+            "launchctl setenv EDITOR vim", "cat ~/.claude/settings.json", "grep hooks ~/.claude/settings.json", "jq . ~/.claude/settings.json",
+            "code ~/.claude/settings.json", "foo /Users/me/.claude/projects/x/session.jsonl", "foo -o ~/.cursor/cli-config.json",
+            "foo -o ~/out.json")
+        for pack, engine, e in self.every_pack():
+            for cmd in held:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertTrue({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
+            for cmd in benign:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertFalse({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
+
     @pytest.mark.serial
     def test_plugin_review_7_the_quadratic_shapes_are_read_in_bounded_time(self):
         """Four shapes took up to 288 s of a decision (a lazy match from each `$(` or backquote of a path, `cd` lines in
