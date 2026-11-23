@@ -6614,6 +6614,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api -X POST -H 'Accept: application/vnd.github+json' repos/o/r/merges --field base=main -f head=f",
             "gh api repos/o/r/merges -f head=f -f commit_message='merge f now' --raw-field=base=main",
             "hub api repos/o/r/git/refs/heads/master -X PATCH -f sha=abc", "sl push --to main", "sl push -t master",
+            "sl push --to=refs/heads/main", "sl push -t refs/heads/master", "sl push --to remote/main",
+            "jj git push -r @", "jj git push -r@", "jj git push --revisions=@", "jj git push --revision @-",
+            "jj git push -b feature -r @", "jj --no-pager git push -r main",
             "git town ship", "jj git push", "jj git push -b main", "jj git push --bookmark=master", "jj git push --all",
             "jj git push --tracked")], "ask", "TK-A056")
         # a forced update of main through the API is TK-D003's deny (#664 reads the force field); TK-A056 holds it too
@@ -6625,7 +6628,7 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git send-pack origin refs/heads/feature")], "flag")
         self.verdicts([("Bash", {"command": c}) for c in (
             "python -m twine check dist/*", "gh api repos/o/r/git/refs/heads/feature -X PATCH -f sha=abc",
-            "sl push --to feature", "git town sync")], "allow")
+            "sl push --to feature", "sl push --to=refs/heads/feature", "sl pull", "hatch build", "git town sync")], "allow")
         # TK-D003, TK-A002 and TK-A013 read --attr-source's value as git's other global options' (all packs)
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --force origin feature"})], "deny", "TK-D003")
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --delete origin feature"})], "ask", "TK-A002")
@@ -6664,7 +6667,8 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git --config-env=remote.origin.mirror=M push origin x", "git --config-env remote.origin.push=P push origin f")],
                       "deny", "TK-A056")
         self.verdicts([("Bash", {"command": c}) for c in (
-            "git -c remote.origin.url=x push origin feature", "jj git push -b feature")], "flag")
+            "git -c remote.origin.url=x push origin feature", "jj git push -b feature",
+            "jj git push --remote origin -b feature")], "flag")
         self.verdicts([("Bash", {"command": c}) for c in (
             "gh api repos/o/r/contents/README.md", "gh api -X PUT repos/o/r/contents/a -f content=eA== -f branch=feature",
             "gh api repos/o/r/pulls/42/merges", "gh api graphql -f query='query { repository { name } }'")], "allow")
