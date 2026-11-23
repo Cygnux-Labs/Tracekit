@@ -461,6 +461,15 @@ def vectors():
     case("an agent run with no run.registered", bundle_of(lg, "no-registration"), t, 1, "FAILED",
          failed_check=["run chain"], proposed=True,
          decided_by="proposed: a run other than the signer's own starts with its run.registered (§3 lifecycle)")
+    lg = log()
+    lg.register()
+    lg.add("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["PAY"], "decision_id": "d1",
+                               "policy_hash": H}, tool_call_id="t1", attempt=0)
+    lg.add("approval.consumed", {"approval_id": "a1"}, tool_call_id="t1", attempt=0,
+           ext={"approval.decision": "d1"})
+    lg.final()
+    case("a consume names the decision it ran under", bundle_of(lg, "approval-decision"), t, 0, "VERIFIED",
+         "witnessed", decided_by="§10 (ext.approval.decision), §11 step 10")
     shutil.rmtree(os.path.join(VECTORS, ".stores"))
 
 

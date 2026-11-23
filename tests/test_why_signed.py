@@ -423,6 +423,23 @@ class SignedRuntime(unittest.TestCase):
             "ran": ["ask", "ask"],   # attempt 3, still waiting, is not shown in the why log yet
             "why": [("ask", "approve"), ("ask", "reject"), ("ask", "approve")]})
 
+    def test_a_retry_at_a_new_attempt_under_the_earlier_approval_is_that_call(self):
+        """The approval is reused for attempt 1 of the same tool call: the named decision is the held call's retry, not a
+        second hold, in the review, the page and the why import."""
+        needs_node(self)
+        run = self.client.run("new-attempt-retry")
+        run.decide("c1", "Bash", self.ASK)
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        run.decide("c1", "Bash", self.ASK, attempt=1)
+        self.assertEqual(run.call("approval_request", tool_call_id="c1", attempt=1)["approval_id"], aid)
+        self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, attempt=1, approval_id_hint=aid)["ok"])
+        run.complete("c1", attempt=1)
+        self.assertEqual(self.seen(run), {
+            "decisions": {"ask": 1}, "retries": 1,
+            "calls": [["ask", "APPROVED · RAN"]], "perm": [["ask", "APPROVED · RAN"]],
+            "ran": ["ask"], "why": [("ask", "approve")]})
+
     def test_a_call_that_ran_at_two_attempts_is_two_actions_in_the_why_log_and_the_review(self):
         """Attempts of one id collapsed into the last: the why log showed one action, and the review one "approved · ran"."""
         needs_node(self)
