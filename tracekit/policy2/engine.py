@@ -2096,7 +2096,7 @@ def _sets_environment(parsed):
     return bool(parsed[2] or learned.get("any_set") or any(
         c["argv"] and (_program(c["argv"]) in ("source", ".", "direnv", "read", "export", "declare", "typeset", "eval", "mapfile",
                                                 "readarray", "set") or shell._sets_with_v(c["argv"])
-                       or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) or re.search(r"[$`{]", a) for a in c["argv"][1:])
+                       or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) for a in c["argv"][1:])
                        or _program(c["argv"]) in ("bash", "sh", "zsh", "dash", "ksh", "fish") and any(
                            a.startswith(("--rcfile", "--init-file")) for a in c["argv"][1:]))
         for c in parsed[0]))
@@ -2601,13 +2601,13 @@ _SETTINGS_FILES = frozenset(("settings.json", "settings.local.json", "config.tom
 
 def _inside_protected(path):
     """Whether `path` is, or is inside, what an agent reads its settings, hooks or plugins from: a file in an agent's folder but
-    its logs' (_AGENT_FOLDERS: a part with a pattern there, `settings.jso?`, is read as a settings file), or one of
+    its logs' (_AGENT_FOLDERS), or one of
     _SETTINGS_CHAINS. A program the
     parser doesn't know that names one may write it, which the rules on a write to one read."""
     parts = tuple(_normal(path).casefold().split("/"))
     if any(chain == parts[j:j + len(chain)] for chain in _SETTINGS_CHAINS for j in range(len(parts) - len(chain) + 1)):
         return True
-    if any(p in _AGENT_FOLDERS and j + 1 < len(parts) and (parts[j + 1] not in _LOG_FOLDERS or shell._GLOB.search(parts[j + 1]))
+    if any(p in _AGENT_FOLDERS and j + 1 < len(parts) and parts[j + 1] not in _LOG_FOLDERS
            for j, p in enumerate(parts)):
         return True
     return False
