@@ -1331,6 +1331,8 @@ def normalise(harness, p):
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
+            if "agent_id" in p:   # a sub-agent's call, under Claude Code's field name (Codex, Open Interpreter)
+                out["agent_id"] = p["agent_id"]
             out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
             if harness == "openhands":   # terminal with is_input: text typed into the command already running
                 out["later"] = p.get("tool_name") == "terminal" and out["tool_input"].get("is_input") is True

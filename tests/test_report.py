@@ -113,7 +113,9 @@ class WeeklyReport(unittest.TestCase):
         b = self.client.run(agent="claude-code")
         for tcid, tool, args in (("c1", "Bash", {"command": "curl -s https://example.com"}), ("c2", "rm", {"path": "x"}),
                                  ("c3", "Bash", {"command": f"curl -H 'Authorization: token {SECRET}' https://api"})):
-            if b.decide(tcid, tool, args)["decision"] != "deny":
+            # a subagent ran the denied rm (decide's agent_id, as Claude Code's hook sends it)
+            if b.decide(tcid, tool, args, **({"agent_id": "a272a0b95321d4c5d"} if tcid == "c2" else {}))["decision"] \
+                    != "deny":
                 b.complete(tcid)
         # three different payments: an approved approval nothing used yet would let the same payment's next call run
         for tcid, cents, answer in (("c4", 5, "approve"), ("c5", 6, "reject"), ("c6", 7, None)):
@@ -204,6 +206,10 @@ class WeeklyReport(unittest.TestCase):
                            ["Bash curl -s https://example.com", f"Bash · {weekly.NO_ARGS}"]),
                           ("deny", "T-PATH", False, "a path", 1, []),   # a flag rule: not why rm was denied
                           ("deny", "T-RM", True, "deleting files", 1, ['rm {"path":"x"}'])])
+        # a subagent's call says so; the main agent's names none
+        self.assertEqual({x["call"]: x.get("agent_id") for g in rep["rules"] for x in g["examples"]},
+                         {"Bash curl -s https://example.com": None, f"Bash · {weekly.NO_ARGS}": None,
+                          'rm {"path":"x"}': "a272a0b95321d4c5d"})
         # what people did with the rule's holds, from the signed approval records: the retry counted with its hold
         self.assertEqual([(g["approved"], g["rejected_or_expired"]) for g in rep["rules"] if g["decision"] == "ask"],
                          [(1, 2)])
@@ -219,6 +225,7 @@ class WeeklyReport(unittest.TestCase):
                      "  T-RM  1  deleting files", "  also matched (not why it was denied): T-PATH 1",
                      "Flagged calls (2), by rule (one call can match several rules):",
                      f"      e.g. Bash curl -s https://example.com  (run {self.busy})",
+                     f'      e.g. rm {{"path":"x"}}  (run {self.busy}, subagent a272a0b95321d4c5d)',
                      "  tailer_lost 1: the transcript reader stopped: model messages may be missing",
                      f"  most: run {self.busy} (claude-code) 1",
                      "Integrity: 3 of 3 runs verify (assurance: dev)",

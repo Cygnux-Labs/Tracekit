@@ -220,6 +220,22 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         self.assertEqual((types.count("policy.decision"), types.count("tool.result")), (101, 101))
         self.assertFalse([t for t in types if "gap" in t], types)
 
+    def test_a_subagents_calls_are_signed_with_its_agent_id(self):
+        """Claude Code 2.1.316's hook input: a main session's call carries no agent_id; a Task-tool subagent's carries
+        its agent_id and agent_type, on PreToolUse and PostToolUse alike. Both calls are in the session's run."""
+        sub = {"agent_id": "a272a0b95321d4c5d", "agent_type": "general-purpose"}
+        for tcid, fields in (("main-call", {}), ("sub-call", sub)):
+            args = {"command": f"echo {tcid}", "description": "Print"}
+            self.assertEqual(self.d.hook("PreToolUse", tcid, "Bash", args, **fields), (0, ""))
+            self.assertEqual(self.d.hook("PostToolUse", tcid, "Bash", args, tool_response={"stdout": tcid}, **fields),
+                             (0, ""))
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in self.events(self.d.run())
+               if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [("policy.decision", "main-call", "main", None),
+                               ("tool.result", "main-call", "main", None),
+                               ("policy.decision", "sub-call", sub["agent_id"], "main"),
+                               ("tool.result", "sub-call", sub["agent_id"], "main")])
+
     def test_a_refusal_blocks_even_when_the_run_fails_open(self):
         self.set_fail_modes({"default": "open"})
         for method in ("decide", "approval_consume"):

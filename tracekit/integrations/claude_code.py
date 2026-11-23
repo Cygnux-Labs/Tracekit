@@ -717,6 +717,15 @@ def _approval_command_prefix(agent, signer):
     return ""
 
 
+def _agent(p):
+    """decide's `agent_id`: the sub-agent the payload says made the call (Claude Code's `agent_id`, on a Task-tool
+    subagent's tool events only), signed as the harness reported it; its result's comes from the decision.
+    lean: an id the event format can't hold (not a string of 1 to 200 characters) is recorded as the main agent's
+    rather than blocking the call"""
+    a = p.get("agent_id")
+    return {"agent_id": a} if isinstance(a, str) and 0 < len(a) <= 200 else {}
+
+
 def _pre(client, p, sid, tid, end=None):
     # `end`: the hook's deadline(); every signer call is capped to the time left, and to a quarter of it, so the last
     # approval_wait's answer and the consume fit in what an approval wait leaves
@@ -738,7 +747,7 @@ def _pre(client, p, sid, tid, end=None):
         args = approved
         cap()
     run, d = _run(client, sid, send="decide", transcript=_transcript(p), tool_call_id=tid, tool=tool, args=args,
-                  args_source="parsed")
+                  args_source="parsed", **_agent(p))
     if d["decision"] == "deny":
         return block(stopped(f"BLOCKED, nothing ran, and no one can approve it{_rules(d['rule_ids'])}.",
                               d.get("reason")))

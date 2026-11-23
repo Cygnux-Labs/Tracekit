@@ -961,6 +961,17 @@ class Harnesses(DaemonCase):
         self.assertEqual(agent_hooks.normalise("goose", {**call, "event": "PreToolUse"})["cwd"], "/w")
         self.assertIsNone(agent_hooks.normalise("codex", {**call, "hook_event_name": "PreToolUse"})["cwd"])
 
+    def test_a_sub_agents_agent_id_is_kept_for_the_signer(self):
+        """Codex and Open Interpreter send a sub-agent's calls with Claude Code's `agent_id` (docs/coding-agents.md):
+        normalise keeps it, so the v2 hook signs the call as that agent's; a main agent's call has none."""
+        call = {"session_id": "s", "tool_use_id": "t", "tool_name": "shell", "tool_input": {"command": "ls"}}
+        for harness in ("codex", "interpreter"):
+            for ev in ("PreToolUse", "PostToolUse"):
+                with self.subTest(harness=harness, event=ev):
+                    self.assertEqual(agent_hooks.normalise(harness, {**call, "hook_event_name": ev,
+                                                                     "agent_id": "a1"})["agent_id"], "a1")
+                    self.assertNotIn("agent_id", agent_hooks.normalise(harness, {**call, "hook_event_name": ev}))
+
     def test_crush_uses_claude_codes_payload_maps_tools_and_blocks_denied_calls(self):
         # Crush sends Claude Code's payload and event names, with its own lower-case tool names; PreToolUse can
         # block at exit 2, with the reason on stderr (Crush reads its JSON only at exit 0)
