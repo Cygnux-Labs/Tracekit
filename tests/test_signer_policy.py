@@ -3905,7 +3905,10 @@ class CodingPack(unittest.TestCase):
             "kubectl get --raw=/api/v1/namespaces/prod/secrets/db",
             "kubectl get -n prod --raw /api/v1/namespaces/prod/secrets/db",
             "kubectl get --raw /api/v1/namespaces/prod/secrets",
-            "oc get --raw /api/v1/namespaces/prod/secrets/db"]
+            "oc get --raw /api/v1/namespaces/prod/secrets/db",
+            # and a list with a query or a fragment after the path
+            "kubectl get --raw '/api/v1/secrets?limit=500'", "kubectl get --raw /api/v1/namespaces/prod/secrets?watch=1",
+            "kubectl get --raw '/api/v1/secrets#x'"]
         vault = [
             "vault kv get -format=json secret/production/stripe_api_key", "vault kv get secret/app",
             "vault read secret/foo", "vault read -format=json aws/creds/deploy", "vault token create -policy=root -ttl=720h",
@@ -3929,7 +3932,8 @@ class CodingPack(unittest.TestCase):
             "git commit -m 'kubectl get secret db -o yaml'",
             # #981: a raw read of a path with no /secrets/ segment reads no secret
             "kubectl get --raw /api/v1/namespaces/prod/pods", "kubectl get --raw /healthz",
-            "kubectl get secrets/db", "kubectl get --raw /api/v1/namespaces/default/configmaps/mysecrets"]
+            "kubectl get secrets/db", "kubectl get --raw /api/v1/namespaces/default/configmaps/mysecrets",
+            "kubectl get --raw /api/v1/secretsfoo"]
         for pack, engine, e in self.every_pack():
             for cmd in k8s + vault + routine:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
