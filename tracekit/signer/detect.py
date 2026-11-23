@@ -24,7 +24,7 @@ import zipfile
 
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.policy2.compile import DETECT, SECTIONS, policy_hash
-from tracekit.policy2.engine import Engine
+from tracekit.policy2.engine import Engine, spelled
 
 RUN_CAP = 100      # incidents a run opens per trigger; the next one is an incident.capped summary instead
 TENANT_CAP = 60    # incidents a tenant opens per minute
@@ -43,11 +43,12 @@ class Plain:
 
 
 class Rules:
-    """What a Detector reads of a compiled policy, without compiling its patterns: for verifiers."""
-    tool_class = Engine.tool_class
+    """What a Detector and run labels (labels.Sources) read of a compiled policy, without compiling its patterns: for
+    verifiers."""
+    tool_class, listed, untrusted_results = Engine.tool_class, Engine.listed, Engine.untrusted_results
 
     def __init__(self, policy):
-        self.policy, self.policy_hash = policy, policy_hash(policy)
+        self.policy, self.policy_hash, self._spelled = policy, policy_hash(policy), spelled(policy)
 
 
 def new(policy_hash=None, until=None):

@@ -1379,13 +1379,13 @@ class TestAgentApprovals(Case):
         code, lines = self.lines(answer={"approver_kind": None})   # without agent approvals, the report as before
         self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
 
-    def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
-        for kw, want in (({}, True), ({"answer": {"approver_kind": None}}, False),
-                         ({"answer": {"decision": "reject"}}, False)):
+    def test_a_bundle_holds_the_snapshot_of_each_policy_its_decisions_name(self):
+        # whoever answered: the run's labels are replayed under it (a person's approval and a rejection too)
+        for kw in ({}, {"answer": {"approver_kind": None}}, {"answer": {"decision": "reject"}}):
             with self.subTest(kw):
                 name = f"cited-{len(os.listdir(self.d))}"
                 out = agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw)
-                self.assertEqual(any(n.startswith("policies/") for n in v2.read_zip(out)), want)
+                self.assertEqual(len([n for n in v2.read_zip(out) if n.startswith("policies/")]), 1)
 
     def test_without_the_snapshot_the_bounds_are_unchecked(self):
         code, lines = self.lines(snapshot=False)
@@ -1532,6 +1532,13 @@ ENTRIES = {
                                                           "checks": {}}, "cites": []}, "run-f")],
     # a grant the run's own user issued: a self-approval, which a verifier before 1.6.0 can't see (assurance dev)
     "ext.self_approved=True": [registered(), ("ext", {"name": "intent.grant", "self_approved": True}, "run-a")],
+    # run labels (docs/policy-v2.md#run-conditions): without the run's policy in the bundle, signer-asserted
+    "run.label": [registered(), ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                               "source": 0}, "run-a")],
+    "policy.decision.run_labels": [registered(), decision(run_labels=["secrets_access"])],
+    # a run's requesters: another identity that writes it, the client a gateway registered it for
+    "run.writer": [registered(), ("run.writer", {"identity": "uid:990777", "stream": "s2"}, "run-a")],
+    "run.registered.caller": [registered(caller="uid:501")],
 }
 
 

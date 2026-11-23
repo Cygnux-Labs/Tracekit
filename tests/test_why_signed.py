@@ -769,7 +769,8 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(list(import_v2.bundle_records(out, trust)[0]), [self.tk_run])
         parts = os.path.join(self.dir, "parts.tkb")   # the run in parts: the same records, its parts read as one
         with mock.patch.object(v2, "MAX_ENTRY", max(len(b) for n, b in v2.read_zip(out).items()
-                                                    if n.startswith("runs/")) - 1):
+                                                    if n.startswith("runs/")) - 1), \
+                mock.patch("tracekit.bundle_v2.cited_policies", lambda events: set()):   # its policy is over the limit
             export_final(os.path.join(self.dir, "data", "store"), self.tk_run, self.witness, parts)
         self.assertEqual(import_v2.bundle_records(parts, trust)[0], import_v2.bundle_records(out, trust)[0])
         tamper(out, bad)

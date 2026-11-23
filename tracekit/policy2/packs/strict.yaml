@@ -53,7 +53,7 @@ ask:
     label: side_effect
     reason: a release created or published, an image pushed, a tag made through the API, a subtree push or a change to where pushes go
     remedy: Have a person approve the held call; the strict profile holds every change that leaves the workspace.
-  - id: TK-F031
+  - id: TK-F048
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
@@ -61,7 +61,7 @@ ask:
     label: side_effect
     reason: writing a Git or cargo config file or a virtualenv's activate script, which can change where a push goes or what a command publishes
     remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
-  - id: TK-F032
+  - id: TK-F049
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: git_config

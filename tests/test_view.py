@@ -93,7 +93,7 @@ class Translate(unittest.TestCase):
         self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
         self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
                                       "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
-                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 3},
+                                      "decision_id": "dec-1", "cls": "http", "read": {"deny": 7, "ask": 5, "flag": 6},
                                       "secs": {"TK-N001": "deny", "TK-S001": "deny"}, "rules": [
                                           {"id": "TK-N001", "reason": "request to an internal address"},
                                           {"id": "TK-S001", "reason": "cloud metadata service",
@@ -255,7 +255,45 @@ class Translate(unittest.TestCase):
                          ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
-    def test_live_constraints_are_rows_and_head_the_run_review(self):
+    def test_run_labels_are_rows_in_words(self):
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "source": 0}),
+                         v2rec(2, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:7", "person": "alice", "reason": "test values"}),
+                         v2rec(3, "run.label", {"label": "secrets_access", "action": "add", "by": "signer",
+                                                "inherited": {"run_id": "r0", "run_seq": 4}}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL · secrets_access"),
+                          ("HOLD", "info", "RUN LABEL CLEARED · secrets_access"),
+                          ("HOLD", "med", "RUN LABEL · secrets_access")])
+        self.assertEqual([r["text"] for r in rows], [
+            "set by this run's record 0: a later call a run condition reads it for is held for a person (recorded "
+            "only, under a rule in shadow)",
+            'by alice · "test values"',
+            "inherited from run r0, of the same requester: a later call a run condition reads it for is held for a "
+            "person (recorded only, under a rule in shadow)"])
+
+    def test_a_self_cleared_label_is_a_warning(self):
+        # a dev signer's own user cleared it: whom the agent runs as, so it may have been the agent
+        rows = self.feed(v2rec(1, "run.label", {"label": "secrets_access", "action": "clear", "by": "person",
+                                                "identity": "uid:501", "person": "uid:501", "self_cleared": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"]) for r in rows],
+                         [("HOLD", "med", "RUN LABEL SELF-CLEARED · secrets_access")])
+        self.assertIn("the run's own user on a dev signer", rows[0]["text"])
+
+    def test_a_run_writer_is_a_row_in_words(self):
+        rows = self.feed(v2rec(1, "run.writer", {"identity": "uid:990777", "stream": "s2", "gateway": True}))
+        self.assertEqual([(r["tape"], r["severity"], r["title"], r["text"]) for r in rows],
+                         [("SIGNER", "info", "RUN WRITER · uid:990777",
+                           "writes stream s2 through a gateway: the labels this run carries are its as well")])
+
+    def test_a_rule_in_shadow_reads_as_the_hook_says_it(self):
+        # the page and tracekit report: noted, nothing blocked (labels.noted's words), for a rule in shadow only
+        dev = policy_compile.build(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "dev.yaml"))[0]
+        reasons = view.policy_reasons()[policy_compile.policy_hash(dev)]
+        self.assertEqual(reasons["TK-Q001"]["reason"], "noted: this sends data off the machine after the session read a "
+                         "secret. Nothing is blocked in 1.8; it's in the record.")
+        self.assertEqual(reasons["TK-F013"]["reason"], "egress")
         recs = [v2rec(1, "constraint.added", {"kind": "keep_away", "salt_id": "a" * 32,
                                               "object_commitment": "hmac-sha256:" + "b" * 64}),
                 v2rec(2, "constraint.added", {"kind": "no_push"}),
@@ -2670,9 +2708,9 @@ class LiveRuns(unittest.TestCase):
         """A StoreFeed the test refreshes itself (no watch thread); `verdicts(run_id)`: each check's answer."""
         self.checks, real = [], view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             if reader is not self.fake:
-                return real(reader, tenant, run_id, note, trust, out, memo, kept)
+                return real(reader, tenant, run_id, note, trust, out, memo, kept, policy_dir)
             self.checks.append(run_id)
             self.now[0] += 2   # each check takes 2 s
             rep, code, text = verdicts(run_id)
@@ -2861,7 +2899,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("abc")}   # c the newest: checked first
         feed, fake, given = self.feed(lambda run_id: VERIFIED), view.check, []
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             given.append((run_id, dict(kept)))
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * 40)   # what it verified
@@ -2881,7 +2919,7 @@ class LiveRuns(unittest.TestCase):
                      for i, r in enumerate("ab")}   # b the newest: checked first, then a
         feed, fake = self.feed(lambda run_id: VERIFIED), view.check
 
-        def check(reader, tenant, run_id, note, trust, out, memo, kept=None):
+        def check(reader, tenant, run_id, note, trust, out, memo, kept=None, policy_dir=None):
             got = fake(reader, tenant, run_id, note, trust, out, memo)
             kept.update(data=b"x" * (400 if run_id == "a" else 40))   # a alone is past the cap
             return got

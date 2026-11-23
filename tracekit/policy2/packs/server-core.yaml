@@ -44,6 +44,7 @@ deny:
     # a private key in .ssh is id_ and a name, `_` and `-` in it too (id_rsa_work, id_ed25519_sk), with no `.` after it:
     # id_rsa.pub and id_rsa-cert.pub are public (and id_rsa.old isn't read)
     pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9_-]*[a-z0-9_]($|[^.a-z0-9_-])|/proc/(self|thread-self|[0-9]+)(/task/[0-9]+)?/environ\b'
+    label: secrets_access
     reason: reading or touching a credentials file
     remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S004 in their policy.
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.

@@ -1,6 +1,9 @@
-"""The signer RPC contract, version 26: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 27: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 26 adds register_run's `continues` (a later run of an
+Frozen: a change to any schema here is a new RPC_VERSION. Version 27 adds `run_label_clear`, an operator call: a person
+ends one of a run's labels (docs/policy-v2.md#run-conditions), which the signer records as theirs; a run's own owner,
+principal or requester can't (a dev signer's own, self_cleared), and decide's `recorded` (the rules in shadow that would
+hold the call). Version 26 adds register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -46,7 +49,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 26
+RPC_VERSION = 27
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -92,6 +95,7 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+RUN_LABEL = {"enum": ["secrets_access", "untrusted_content"]}   # policy2.compile.RUN_LABELS
 # in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
 INSTEAD = ". Instead: "
 
@@ -468,6 +472,9 @@ REQUESTS = {
     # the shared suspension list: `identity` (scheme:subject, or a prefix ending in :* or /*) is refused every call
     **{m: _obj(["request_id", "identity"], request_id=ID, identity=IDENTITY, reason=REASON)
        for m in ("suspend", "unsuspend")},
+    # a person (as for run_resume) ends one of a run's labels: a run.label of theirs
+    "run_label_clear": _obj(["request_id", "run_id", "label"], request_id=ID, run_id=ID, label=RUN_LABEL,
+                            reason=REASON),
     # proof-carrying messages (experimental), the run's own agent only: sign a message as it (the signer adds pcm, id,
     # ts, nonce and sig); a root grant from the consumed approval of its `pcm.grant` call with these args; a narrower
     # child of a grant held by the caller; and its run's records with inclusion proofs, for claim evidence
@@ -521,6 +528,10 @@ RESPONSES = {
                    # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
                    # redacts it, commits to it and indexes its values for provenance), not a digest of it
                    send_result={"const": True},
+                   # rules in shadow (mode: shadow) that would hold the call: it runs, recorded (`reason` says why)
+                   recorded=RULE_IDS,
+                   # what the person reads of it: where it sends and after what, and that nothing is blocked
+                   noted=REASON,
                    incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
@@ -608,6 +619,7 @@ RESPONSES = {
     **{m: _obj(["enabled"], enabled={"type": "boolean"}) for m in ("response_pause", "response_resume")},
     **{m: _obj(["identity", "state"], identity=IDENTITY, state={"enum": ["suspended", "lifted"]})
        for m in ("suspend", "unsuspend")},
+    "run_label_clear": _obj(["run_id", "label", "run_seq"], run_id=ID, label=RUN_LABEL, run_seq=SEQ),
     "pcm_sign": _obj(["message", "run_seq"], message=PCM_MESSAGE, run_seq=SEQ),
     **{m: _obj(["grant", "run_seq"], grant=PCM_GRANT, run_seq=SEQ) for m in ("pcm_grant", "pcm_delegate")},
     # the latest checkpoint note and, for each record it covers, its inclusion proof under it (a policy.decision's salt
@@ -708,6 +720,7 @@ class SignerAPI(Protocol):
     def run_hold(self, req: dict) -> dict: ...
     def run_quarantine(self, req: dict) -> dict: ...
     def run_resume(self, req: dict) -> dict: ...
+    def run_label_clear(self, req: dict) -> dict: ...
     def response_pause(self, req: dict) -> dict: ...
     def response_resume(self, req: dict) -> dict: ...
     def suspend(self, req: dict) -> dict: ...

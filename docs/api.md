@@ -67,7 +67,7 @@ field that a table does not list is refused, as Versioning says; the notes do no
 
 ## Versioning
 
-The contract has one version number, and this page describes version 26. A released version never changes: any change to
+The contract has one version number, and this page describes version 27. A released version never changes: any change to
 a request or an answer is a new version.
 
 A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
@@ -98,6 +98,7 @@ A call or field that this page does not list below was already in version 15. Th
 | 24 | `call_state`, `call_claim` |
 | 25 | `content_get`'s `type` and `source` |
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
+| 27 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
 
 ## Errors
 
@@ -172,7 +173,7 @@ never granted by default. Each one needs an `authorize` entry, or the rule in th
 
 | Call | Who may use it |
 |---|---|
-| `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend` | The operator calls. See **Operator calls** below. |
+| `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`, `response_pause`, `response_resume`, `suspend`, `unsuspend`, `run_label_clear` | The operator calls. See **Operator calls** below. |
 | `content_get` | Granted as `content_read`, not under its own name. See **The content vault grant** below. |
 | `content_erase`, `approval_agents`, `decision_import` | Only a caller whose `authorize` entry lists the call. |
 | `approval_review` | Only an agent approver whose `authorize` entry lists it. See **Agent approvers** below. |
@@ -204,12 +205,12 @@ call only `register_run`, `decide`, `complete`, `observe`, `model_event`, `state
 and `status`, whatever `authorize` lists. When its daemon is suspended, the channel stops with it.
 
 **Operator calls.** `incident_list`, `incident_show`, `incident_resolve`, `run_hold`, `run_quarantine`, `run_resume`,
-`response_pause`, `response_resume`, `suspend` and `unsuspend` are for people who run containment (see
+`response_pause`, `response_resume`, `suspend`, `unsuspend` and `run_label_clear` are for people who run containment (see
 [Operators](incidents.md#operators)). An agent's identity cannot operate its own containment. The signer refuses to
 start if one `authorize` entry lists `register_run` together with an operator call, and it checks again on every call,
 because an identity can match several entries. A call is also refused with `forbidden` for an identity that may
 `register_run` through all its entries together, or that owns open runs, so give operators an identity of their own.
-`incident_resolve` and `run_resume` apply a second check to the person who calls: see
+`incident_resolve`, `run_resume` and `run_label_clear` apply a second check to the person who calls: see
 [Operators](incidents.md#operators).
 
 **Downloading runs.** `export_run` is for an identity that only reads. One `authorize` entry may list it together with
@@ -356,6 +357,8 @@ lists `decide`. A box's agent channel may call it too.
 | `run_seq` | whole number | yes |  |
 | `expires_at` | text | no | up to 40 characters |
 | `send_result` | always `true` | no |  |
+| `recorded` | list of texts | no | up to 32 items; each item: up to 64 characters |
+| `noted` | text | no | up to 1024 characters |
 | `incident_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>
@@ -1360,7 +1363,7 @@ lists `status`. A box's agent channel may call it too.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `rpc_version` | always `26` | yes |  |
+| `rpc_version` | always `27` | yes |  |
 | `signer` | object | yes |  |
 | `signer.name` | text | yes | up to 128 characters |
 | `signer.version` | text | yes | up to 64 characters |
@@ -2153,6 +2156,45 @@ the owner, principal or requester of the run.
 
 </details>
 <!-- api-doc:end run_resume -->
+
+### `run_label_clear`
+
+Ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)): the signer writes a `run.label` record
+with `action: clear`, `by: person`, the caller's identity and person, and the redacted `reason`. The label also ends
+for the run's client in the run's tenant, so a later run of theirs doesn't inherit it; an identity the run was
+delegated to keeps its own runs' labels. A later call that sets the label sets it again. A label the run doesn't
+carry is refused with `invalid_request`. The answer gives the `run_id`, the `label` and the `run_seq` of the record.
+
+**Who may call:** only a caller whose `authorize` entry lists `run_label_clear`. It is never granted by default. As
+for `run_resume`, the identity must run no agent, and the caller must be a person (an identity mapped in
+`approvals.persons`, or an OIDC person, who is an approver, or a break-glass identity giving a `reason`) who is not
+the owner, principal or requester of the run. More: [operators](incidents.md#operators). On a signer with no
+`approvals` config (a dev signer), any identity of the run's tenant that may `register_run` clears it, the run's own
+owner too, and the record says `self_cleared`.
+
+<!-- api-doc:begin run_label_clear -->
+<details>
+<summary>Request and answer fields</summary>
+
+**Request**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `request_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `label` | one of `secrets_access`, `untrusted_content` | yes |  |
+| `reason` | text | no | up to 1024 characters |
+
+**Answer**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `run_id` | text | yes | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
+| `label` | one of `secrets_access`, `untrusted_content` | yes |  |
+| `run_seq` | whole number | yes |  |
+
+</details>
+<!-- api-doc:end run_label_clear -->
 
 ### `response_pause`
 

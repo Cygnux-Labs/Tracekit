@@ -16,7 +16,7 @@ function ts(t: string): number {
 }
 
 /** fnmatch.fnmatchcase's pattern as a RegExp: `*`, `?` and `[...]` (`[!...]` negated). */
-function glob(pat: string): RegExp {
+export function glob(pat: string): RegExp {
   let out = "";
   for (let i = 0; i < pat.length; i++) {
     const c = pat[i], end = c === "[" ? pat.indexOf("]", i + 2) : -1;

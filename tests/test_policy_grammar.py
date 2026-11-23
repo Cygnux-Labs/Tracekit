@@ -808,7 +808,7 @@ class UnlessCli(unittest.TestCase):
 
     def test_a_git_or_cargo_config_file_a_file_tool_writes(self):
         # round 6's F1 and F5: a file tool writing a Git config file (a remote's push refspec, an alias) or a cargo one
-        # (an [alias] that publishes), as TK-F030 reads a shell write: TK-F031, held by dev and strict
+        # (an [alias] that publishes), as TK-F030 reads a shell write: TK-F048, held by dev and strict
         refspec = '[remote "origin"]\n\tpush = refs/heads/feature:refs/heads/main\n'
         calls = [("Write", {"file_path": "/repo/.git/config", "content": refspec}),
                  ("Edit", {"file_path": "/repo/.git/config", "old_string": "[core]", "new_string": refspec}),
@@ -822,9 +822,9 @@ class UnlessCli(unittest.TestCase):
             for tool, args in calls:
                 d = svc.evaluate(e, tool, args)[0]
                 want = "ask" if name in ("dev", "strict") else "flag"
-                self.assertEqual((d["verdict"], "TK-F031" in d["rule_ids"]), (want, True), (name, backend, tool, d))
+                self.assertEqual((d["verdict"], "TK-F048" in d["rule_ids"]), (want, True), (name, backend, tool, d))
             d = svc.evaluate(e, "Write", {"file_path": "/repo/notes/config.md", "content": "x"})[0]
-            self.assertNotIn("TK-F031", d["rule_ids"], (name, backend, d))
+            self.assertNotIn("TK-F048", d["rule_ids"], (name, backend, d))
 
     def test_aliases_runner_words_groups_and_templates(self):
         # round 6's F2, F3, F4, F5, F6, F9, F11, F13: an alias that pushes or publishes (git's, cargo's), a word a
@@ -979,7 +979,7 @@ class UnlessCli(unittest.TestCase):
 
     def test_a_git_config_section_a_file_tool_writes_anywhere(self):
         # round 7's F5: a file a Git config may include (~/.gitconfig.local, ~/.gitalias, any name) carries aliases,
-        # remotes, URL rewrites and includes as the config does: TK-F032, held by dev and strict
+        # remotes, URL rewrites and includes as the config does: TK-F049, held by dev and strict
         calls = [("Write", {"file_path": "/Users/u/.gitconfig.local", "content": "[alias]\n\tp = push\n"}),
                  ("Write", {"file_path": "/Users/u/.gitalias", "content": "# mine\n[Alias]\n\tp = push\n"}),
                  ("Edit", {"file_path": "/repo/x", "old_string": "a", "new_string": "a\n[remote \"o\"]\n\tpush = :x"}),
@@ -990,10 +990,10 @@ class UnlessCli(unittest.TestCase):
             for tool, args in calls:
                 d = svc.evaluate(e, tool, args)[0]
                 want = "ask" if name in ("dev", "strict") else "flag"
-                self.assertEqual((d["verdict"], "TK-F032" in d["rule_ids"]), (want, True), (name, backend, tool, d))
+                self.assertEqual((d["verdict"], "TK-F049" in d["rule_ids"]), (want, True), (name, backend, tool, d))
             for args in ({"file_path": "/repo/notes.md", "content": "Set an [alias] section; see [url]."},
                          {"file_path": "/repo/a.ini", "content": "[aliases]\nx = 1\n[remotes]\n"}):
-                self.assertNotIn("TK-F032", svc.evaluate(e, "Write", args)[0]["rule_ids"], (name, backend, args))
+                self.assertNotIn("TK-F049", svc.evaluate(e, "Write", args)[0]["rule_ids"], (name, backend, args))
 
     def test_an_activate_script_a_git_output_a_cargo_home_and_a_rewrite_git_doesnt_send_securely(self):
         # round 8's F0, F1, F5, F6: writing a virtualenv's activate script (which a push's line may source; only a
@@ -1067,8 +1067,8 @@ class UnlessCli(unittest.TestCase):
         self.assertEqual(grammar.subcommand_at(["gh", "-R", "o/r", "x"], "gh", frozenset(), ("cache", "nosuch")), 3)
 
     def test_a_git_config_file_or_section_by_git_s_syntax_and_where_git_can_include_it(self):
-        # round 8's F2 and F3: TK-F031 also reads a file named for an included config (.gitconfig.local, .gitalias),
-        # an installation's cargo config and a virtualenv's activate script; TK-F032 reads git's section syntax at a
+        # round 8's F2 and F3: TK-F048 also reads a file named for an included config (.gitconfig.local, .gitalias),
+        # an installation's cargo config and a virtualenv's activate script; TK-F049 reads git's section syntax at a
         # line's start (after a header's `]`, a UTF-8 BOM or a form feed too) in a file git could include, not a source,
         # document or data file, nor another tool's config
         f031 = [("Edit", {"file_path": "/Users/u/.gitconfig.local", "old_string": "\tco = checkout",
@@ -1096,13 +1096,13 @@ class UnlessCli(unittest.TestCase):
                  ("Write", {"file_path": "/repo/inc", "content": "[remote.github]\nowner = \"o\"\n[x]\npush = 1\n"})]
         for (name, backend), e in self.engines.items():
             want = "ask" if name in ("dev", "strict") else "flag"
-            for rule, calls in (("TK-F031", f031), ("TK-F032", f032)):
+            for rule, calls in (("TK-F048", f031), ("TK-F049", f032)):
                 for tool, args in calls:
                     d = svc.evaluate(e, tool, args)[0]
                     self.assertEqual((d["verdict"], rule in d["rule_ids"]), (want, True), (name, backend, args, d))
             for tool, args in quiet:
                 d = svc.evaluate(e, tool, args)[0]
-                self.assertFalse({"TK-F031", "TK-F032"} & set(d["rule_ids"]), (name, backend, args, d))
+                self.assertFalse({"TK-F048", "TK-F049"} & set(d["rule_ids"]), (name, backend, args, d))
 
     def test_mcp_file_tools_by_more_key_names(self):
         # round 6's F8: a rename, copy or move by other key names, and other servers' spellings of a file's path

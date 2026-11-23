@@ -5,6 +5,7 @@ so a decision does not depend on which engine made it. `build` returns every lin
 """
 import functools
 import hashlib
+import collections
 import itertools
 import json
 import ntpath
@@ -19,11 +20,18 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", "label_inherit_s", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "unless_cli", "reason", "rationale", "label", "approval",
-             "from", "remedy"}
+             "from", "remedy", "when", "mode"}
 CLI_KEYS = {"command", "flag", "without", "alone", "required"}   # an unless_cli entry's (_lint_cli)
 _FLAG = re.compile(r"--?[A-Za-z0-9][\w.-]*")
+# the labels a run can carry (docs/policy-v2.md#run-conditions): a closed set. The signer sets one when a call that
+# runs matches a rule whose `label` it is (secrets_access: a read of a secret, dev.yaml's TK-F033), and
+# untrusted_content also when a tool the policy's `untrusted` list names runs or an input is observed as untrusted; a
+# person may clear one
+RUN_LABELS = ("secrets_access", "untrusted_content")
+# a rule's field: the labels of the rules the call matched, sorted and joined by a space (engine.labels_subject)
+LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
@@ -230,6 +238,52 @@ def literals(pattern):
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
 
 
+PREFIX_MAX = 256   # the most strings compile.prefixes gives a pattern (str.startswith reads them in one call)
+
+
+def prefixes(pattern):
+    """The lower-case strings every match of a checked pattern starts with: a tuple, one of which starts each subject
+    it matches (`^(?:curl|wget)( |$)` gives curl and wget), or None when an alternative of its top level isn't anchored
+    (`^`) and then exact for a character or more, or they are over PREFIX_MAX. The engine searches a rule only in a
+    subject that starts with one (Engine.decide), a look at its first characters."""
+    items = list(_sre_p.parse(pattern))
+    alts = items[0][1][1] if len(items) == 1 and items[0][0] == _sre_c.BRANCH else [items]
+    out = set()
+    for alt in alts:
+        alt = list(alt)
+        if not alt or alt[0] != (_sre_c.AT, _sre_c.AT_BEGINNING):
+            return None
+        out |= _prefix(alt[1:])[0]
+        if "" in out or len(out) > PREFIX_MAX:
+            return None
+    return tuple(sorted(s for s in out if not any(t != s and s.startswith(t) for t in out)))
+
+
+def _prefix(items):
+    """(strings, whole) of a sequence: every match starts with one of `strings` (lower case), and with `whole` is one."""
+    run = {""}
+    for op, av in items:
+        if op == _sre_c.AT:   # zero width
+            continue
+        if op == _sre_c.SUBPATTERN:
+            ex, whole = _prefix(list(av[-1]))
+        elif op == _sre_c.BRANCH:
+            parts = [_prefix(list(b)) for b in av[1]]
+            ex, whole = set().union(*(p for p, _ in parts)), all(w for _, w in parts)
+        else:
+            ex, _ = _node(op, av)
+            whole = ex is not None
+        if ex is None:
+            return run, False
+        prod = {a + b for a in run for b in ex}
+        if len(prod) > PREFIX_MAX:
+            return run, False
+        run = prod
+        if not whole:
+            return run, False
+    return run, True
+
+
 def requirements(pattern):
     """A finer prefilter of a checked pattern whose top level holds a group of alternatives (`^(psql…|sqlite3…)`): per
     alternative, each set of lower-case strings of two or more characters one of which every match through it holds
@@ -282,6 +336,20 @@ def _found(items):
     return None, found
 
 
+def _shared(cands):
+    """One set of each alternative's candidates (`cands`: per alternative, the sets one string of each of which its
+    every match holds), joined: per alternative the set most alternatives have too, then _seq's choice (the longest
+    shortest string, then the fewest strings), so a group whose alternatives name the same strings gets those once.
+    None when an alternative has no set without the empty string."""
+    cands = [[frozenset(c) for c in alt if c and "" not in c] for alt in cands]
+    if not all(cands):
+        return None
+    # a set of a string under two characters is no prefilter (literals): shared or not, it is chosen last
+    shared = collections.Counter(c for alt in cands for c in set(alt) if min(map(len, c)) >= 2)
+    return set().union(*(max(alt, key=lambda c: (min(map(len, c)) >= 2, shared[c], min(map(len, c)), -len(c)))
+                         for alt in cands))
+
+
 def _node(op, av):
     if op == _sre_c.LITERAL:
         return ({chr(av).lower()}, None) if av < 128 else (None, None)
@@ -300,11 +368,10 @@ def _node(op, av):
     if op == _sre_c.SUBPATTERN:
         return _seq(av[-1])
     if op == _sre_c.BRANCH:
-        parts = [_seq(b) for b in av[1]]
+        parts = [_found(b) for b in av[1]]
         if all(ex is not None for ex, _ in parts) and len(set().union(*(ex for ex, _ in parts))) <= MAX_EXACT:
             return set().union(*(ex for ex, _ in parts)), None
-        reqs = [ex if ex is not None else req for ex, req in parts]
-        return None, (None if any(r is None or "" in r for r in reqs) else set().union(*reqs))
+        return None, _shared([[ex] if ex is not None else found for ex, found in parts])
     if op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
         lo, hi, items = av
         ex, req = _seq(items)
@@ -418,6 +485,9 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if "label_inherit_s" in pol and not _int(pol["label_inherit_s"], 0, MAX_WINDOW):   # (labels.labels_for)
+        errors.append(f"{path}: label_inherit_s must be whole seconds from 0 to {MAX_WINDOW}: how long a run's labels "
+                      "stay with its requester after it ends")
     if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
         errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
@@ -427,10 +497,15 @@ def _lint(pol, path):
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
-            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval", "unless_cli"})
-                       if not isinstance(r[k], str)]
+            errors += [f"{where}: {k} must be a string"
+                       for k in sorted(set(r) & RULE_KEYS - {"approval", "unless_cli", "when"}) if not isinstance(r[k], str)]
             if "unless_cli" in r:
                 errors += [f"{where}: unless_cli: {e}" for e in _lint_cli(r)]
+            if "when" in r:
+                errors += [f"{where}: {e}" for e in _lint_when(r, sec, pol)]
+            if "mode" in r and not (sec == "ask" and r["mode"] in ("shadow", "enforce")):
+                errors.append(f"{where}: mode is shadow or enforce, on an ask rule (shadow: it records the calls it "
+                              "would hold, as a flag, and holds none)")
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):
@@ -462,7 +537,7 @@ def _lint(pol, path):
             cls, field = r.get("class"), r.get("field")
             if cls is not None and cls not in CLASSES:
                 errors.append(f"{where}: unknown class {cls!r}")
-            elif cls is not None and field is not None and field not in CLASSES[cls]:
+            elif cls is not None and field not in (None, LABELS_FIELD) and field not in CLASSES[cls]:
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
@@ -507,6 +582,24 @@ def _lint_cli(rule):
             errors.append(f"{e['command']!r}: required is true or left out")
         if "flag" not in e and "without" not in e and not e.get("alone"):
             errors.append(f"{e['command']!r}: exempts every use of the command: name a flag, without or alone")
+    return errors
+
+
+def _lint_when(rule, sec, pol):
+    """The errors of a rule's run condition, `when: {run_has: [label, ...]}`: on an ask or flag rule, labels of
+    RUN_LABELS, each once, each one a source in the policy can set; a rule with one carries no run label itself."""
+    w, errors = rule["when"], []
+    if sec == "deny":
+        errors.append("when is for ask and flag rules: a deny rule applies always")
+    if not (isinstance(w, dict) and set(w) == {"run_has"} and isinstance(w["run_has"], list) and w["run_has"]
+            and all(isinstance(x, str) and x in RUN_LABELS for x in w["run_has"])
+            and len(set(w["run_has"])) == len(w["run_has"])):
+        return errors + [f"when must be {{run_has: [label, ...]}}, each label once, of {', '.join(RUN_LABELS)}"]
+    live = {r.get("label") for s in ("ask", "flag") for r in pol.get(s, []) if isinstance(r, dict)}
+    errors += [f"when: {x} can never be set: no ask or flag rule has `label: {x}`" for x in w["run_has"]
+               if x != "untrusted_content" and x not in live]
+    if rule.get("label") in RUN_LABELS:
+        errors.append(f"a rule with when can't have label {rule['label']}: it would set what it reads")
     return errors
 
 

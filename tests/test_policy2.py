@@ -775,7 +775,7 @@ class Prefilter(unittest.TestCase):
         for backend in BACKENDS:
             e = Engine(dev, backend)
             compiled = [c for _, _, tool, pat, unless, *_ in e.rules for c in (tool, pat, unless) if c is not None]
-            compiled += [rx for parts in e._parts.values() for rx, _ in parts]
+            compiled += [rx for parts in e._parts.values() for rx, *_ in parts]
             with self.subTest(backend=backend):
                 self.assertGreater(len(compiled), 150)
                 self.assertEqual([c.pattern[:40] for c in compiled if c.groups], [])
@@ -808,6 +808,27 @@ class Prefilter(unittest.TestCase):
             a, b = split.decide(tool, args), unsplit.decide(tool, args)
             with self.subTest(tool=tool, args=str(args)[:80]):
                 self.assertEqual((a["verdict"], a["rule_ids"]), (b["verdict"], b["rule_ids"]))
+
+    def test_a_subject_that_starts_as_no_match_of_a_rule_does_is_not_searched(self):
+        """A rule whose every alternative is anchored and starts with exact text (compile.prefixes) is searched only in
+        a subject that starts with one of those strings (a part of a split pattern too): a look at its first
+        characters in place of a scan of all of it for each of the rule's strings (the E21 latency gate, 1.8). No
+        decision changes: every corpus call on each shipped pack, with and without."""
+        self.assertEqual(pc.prefixes(r"^(?:curl|wget)( |$)"), ("curl", "wget"))
+        self.assertEqual(pc.prefixes(r"^[Gg]pg2? --export"), ("gpg --export", "gpg2 --export"))
+        self.assertEqual(pc.prefixes(r"^git(?: [^ ]+)* push|^gh "), ("gh ", "git"))
+        for unanchored in (r"(?:^| )egress", r"^curl|wget", r"^.*x", r"^(?:a|.)b"):
+            self.assertIsNone(pc.prefixes(unanchored), unanchored)
+        for pack, backend in itertools.product(("dev", "coding", "server", "strict"), BACKENDS):
+            pol = pc.build(os.path.join(PACKS, f"{pack}.yaml"))[0]
+            fast = Engine(pol, backend)
+            with mock.patch.object(engine, "prefixes", lambda p: None):
+                slow = Engine(pol, backend)
+            self.assertGreater(sum(p is not None for p in fast._pre.values()), 40)
+            for tool, args in corpus_calls():
+                a, b = fast.decide(tool, args), slow.decide(tool, args)
+                with self.subTest(pack=pack, backend=backend, tool=tool, args=str(args)[:80]):
+                    self.assertEqual((a["verdict"], a["rule_ids"]), (b["verdict"], b["rule_ids"]))
 
     def test_lint_warns_of_a_rule_the_prefilter_cannot_skip(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "N", "class": "shell", "pattern": r"[a-z]+@[0-9]+"},

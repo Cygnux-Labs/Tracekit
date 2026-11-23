@@ -267,7 +267,8 @@ class On(Vault):
         try:
             text = checkpoint.body(ORIGIN, store.tree.size, store.tree.root())
             note = text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET)
-            for run_id, need in ((self.run["run_id"], "1.0.0"), ("tracekit/signer", "1.1.0")):
+            # the run's decisions carry `detect` (format 1.2): the laptop default counts calls (TK-L001)
+            for run_id, need in ((self.run["run_id"], "1.2.0"), ("tracekit/signer", "1.1.0")):
                 out = os.path.join(self.dir, "b.tkb")
                 export(store, self.run["tenant"], run_id, note, out)
                 rep, code = v2.verify(out, trust)

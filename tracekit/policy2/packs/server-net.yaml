@@ -4,7 +4,7 @@
 # hosts (a rule in the extending file replaces the parent's). Cloud metadata addresses are denied for every tool by
 # TK-S001 in server.yaml.
 
-version: '2026.10-server-net-4'
+version: '2026.11-server-net-5'
 description: server-hosted agents, HTTP egress
 unknown_tools: ask
 
@@ -45,10 +45,11 @@ deny:
   - id: TK-N002
     class: http
     # a body or a body-carrying method, to a URL outside the allowlist. The subject is the whole call as sorted-key
-    # JSON: `url` must be its last key, so an allowlisted URL nested in the body exempts nothing
+    # JSON: `url` must be its last key, so an allowlisted URL nested in the body exempts nothing, and a key of its own
+    # (after `{` or `,`), so a key that only ends in `"url` (`x\"url`, escaped) exempts nothing either
     pattern: '"method":"([Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])"|"(body|data|json|files|form|content)":'
     # the allowlist: replace example.com with the hosts the agent may send data to
-    unless: '"url":"https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#][^"\\]*)?"}$'
+    unless: '[{,]"url":"https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#][^"\\]*)?"}$'
     reason: sending data to a host outside the allowlist
     rationale: A request with a body is how data leaves; a server agent sends data only to the hosts its deployment names.
 

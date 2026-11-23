@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlsplit
 from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
-PATH_KEYS = ("file_path", "notebook_path", "path")
+PATH_KEYS = ("file_path", "notebook_path", "path", "relative_path", "pathInProject")   # serena's, JetBrains'
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on
 TYPING = ("input", "upload_file", "send_keys", "select_dropdown")
