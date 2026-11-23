@@ -701,36 +701,65 @@ class ManagedHooks(unittest.TestCase):
             json.dump(settings, f)
         return path
 
+    def admin_dropins(self, writable=None):
+        """The drop-in folder and its files as an admin's are on POSIX — root-owned, folder 0755, files 0644 — with
+        `os.name` posix so the check runs its POSIX path. `writable`: the one path (`self.d`'s folder, or a drop-in)
+        that is group- and world-writable instead.
+
+        The check reads `os.lstat` itself (`_untrusted`), so `rows()`'s stub of `trusted_file` does not reach it, and a
+        test that leaves the real one in reads the runner's own user as the owner: on Linux that is
+        "is not owned by root" and the test fails, while on Windows the modes are not read at all and it passes."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        real = os.lstat
+
+        def lstat(p, *a, **kw):
+            name = str(p)
+            if name != folder and not name.startswith(folder + os.sep):
+                return real(p, *a, **kw)
+            loose = writable in (name, folder)
+            return types.SimpleNamespace(st_uid=0, st_mode=(0o40777 if name == folder else 0o100666) if loose
+                                         else (0o40755 if name == folder else 0o100644))
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(doctor.os, "name", "posix"))
+        stack.enter_context(mock.patch.object(doctor.os, "lstat", lstat))
+        return stack
+
     def test_a_dropin_that_turns_every_hook_off_fails_and_names_it(self):
         """Claude Code merges the `managed-settings.d/` drop-ins with the managed file, so a `disableAllHooks` an admin
         puts in a drop-in turns the managed hooks off. Doctor read `managed-settings.json` alone and passed."""
         self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
         path = self.dropin(disableAllHooks=True)
-        got = self.rows()["D-HOOKS-EVENT"]
+        with self.admin_dropins():
+            got = self.rows()["D-HOOKS-EVENT"]
         self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
 
     def test_a_dropin_with_other_keys_leaves_the_hooks_on(self):
         """Setting other keys is what the folder is for: doctor passes and says it read the drop-in."""
         self.dropin(model="claude-sonnet-5", permissions={"deny": ["Bash(rm -rf *)"]})
-        got = self.rows()
+        with self.admin_dropins():   # an admin's folder: the mode check must pass on every OS, not just where it is off
+            got = self.rows()
         self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok", got["D-HOOKS-EVENT"])
         self.assertEqual(got["D-HOOKS-MANAGED"]["status"], "ok", got["D-HOOKS-MANAGED"])
         self.assertIn("drop-in(s) in", got["D-HOOKS-MANAGED"]["detail"])
 
     def test_a_dropin_folder_the_agent_can_write_fails(self):
         """A drop-in only turns the hooks off if the agent's user can write there, which the managed file's own mode
-        doesn't say. Windows reports `0o40777` for every directory, so the mode this reads is the POSIX one."""
+        doesn't say."""
         path = self.dropin(model="claude-sonnet-5")
         folder = os.path.dirname(path)
-        real, writable, admin = os.lstat, types.SimpleNamespace(st_uid=0, st_mode=0o40777), \
-            types.SimpleNamespace(st_uid=0, st_mode=0o100644)
-
-        def lstat(p, *a, **kw):
-            return writable if str(p) == folder else admin if str(p) == path else real(p, *a, **kw)
-        with mock.patch.object(doctor.os, "name", "posix"), mock.patch.object(doctor.os, "lstat", lstat):
+        with self.admin_dropins(writable=folder):
             got = self.rows()["D-HOOKS-MANAGED"]
         self.assertEqual(got["status"], "fail")
         self.assertIn(f"{folder} is group- or world-writable", got["detail"])
+
+    def test_a_dropin_file_the_agent_can_write_fails(self):
+        """The folder can be an admin's while one drop-in in it is not: a file the agent's user can edit is the same
+        way to set `disableAllHooks` and turn every hook off."""
+        path = self.dropin(model="claude-sonnet-5")
+        with self.admin_dropins(writable=path):
+            got = self.rows()["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{path} is group- or world-writable", got["detail"])
 
     def test_inits_hooks_also_in_the_agents_own_settings_are_decided_twice(self):
         """With the managed file in use, init's v2 hooks left in the agent's own settings ran too, deciding every call
