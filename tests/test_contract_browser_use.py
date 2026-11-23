@@ -5,10 +5,14 @@ and, with browser-use installed, the adapter on a real Tools registry.
 The adapter holds an `ask` while it waits for the approval, so the driver runs each action on a thread of its own and
 returns once the approval is requested, as tests/test_contract_mcp.py does.
 """
+import ast
 import asyncio
+import builtins
 import gc
 import hashlib
 import hmac
+import importlib.metadata
+import importlib.util
 import json
 import os
 import re
@@ -27,7 +31,7 @@ import adapter_contract as ac
 from factories import VersionCheckCases
 from tracekit.format.canon import event_hash
 from tracekit.integrations.browser_use import _mask, trace_tools
-from tracekit.policy2 import compile as pc
+from tracekit.policy2 import compile as pc, source
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service as svc
@@ -1064,6 +1068,54 @@ class SourceReaderArgvOnRealSigner(unittest.TestCase):
             asyncio.run(Repl.call(self.repl, "exec", 'subprocess.run(["rm", "-rf", "~"])', 5))
         self.assertIn("TK-D004", str(caught.exception))
         self.assertEqual(self.ran, [])
+
+
+@unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
+class HarnessNames(unittest.TestCase):
+    """The source reader's list of what a 1.x cell finds bound (source.HARNESS_IMPORTS, source.HARNESS_OWN) is what
+    the installed REPL worker puts in its namespace and `from browser_harness.helpers import *` brings. Both are read
+    from their source: importing the helpers loads the workspace's .env and agent_helpers.py."""
+
+    @staticmethod
+    def tree(package, *path):
+        with open(os.path.join(importlib.util.find_spec(package).submodule_search_locations[0], *path),
+                  encoding="utf-8") as f:
+            return ast.parse(f.read())
+
+    def test_the_list_is_what_the_installed_harness_binds(self):
+        imports, own, public = {}, set(), None
+        for node in self.tree("browser_harness", "helpers.py").body:
+            if isinstance(node, ast.Import):
+                imports.update((a.asname or a.name.split(".")[0], a.name if a.asname else a.name.split(".")[0])
+                               for a in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                base = node.module if not node.level else ".".join(filter(None, ("browser_harness", node.module)))
+                imports.update((a.asname or a.name, f"{base}.{a.name}") for a in node.names)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                own.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                for target in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    names = {n.id for n in ast.walk(target) if isinstance(n, ast.Name)}
+                    if "__all__" in names:
+                        public = set(ast.literal_eval(node.value))
+                    own |= names
+        keep = (lambda n: n in public) if public is not None else (lambda n: not n.startswith("_"))
+        imports = {k: v for k, v in imports.items() if keep(k)}
+        own = {n for n in own if keep(n)}
+        for node in ast.walk(self.tree("browser_use", "repl", "worker.py")):   # ns = {...}, ns[k] = ..., ns.update(k=)
+            if isinstance(node, ast.Subscript) and isinstance(node.ctx, ast.Store) \
+                    and getattr(node.value, "id", "") == "ns" and isinstance(node.slice, ast.Constant):
+                own.add(node.slice.value)
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "update" \
+                    and getattr(node.func.value, "id", "") == "ns":
+                own.update(kw.arg for kw in node.keywords)
+            elif isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == "ns" \
+                    and isinstance(node.value, ast.Dict):
+                own.update(k.value for k in node.value.keys)
+        installed = ", ".join(f"{p} {importlib.metadata.version(p)}" for p in ("browser-use", "browser-harness"))
+        why = f"source.py's list was read from browser-use 1.0.3 and browser-harness 0.1.13; installed: {installed}"
+        self.assertEqual(imports, source.HARNESS_IMPORTS, why)
+        self.assertEqual(own - set(dir(builtins)) - set(imports), source.HARNESS_OWN, why)
 
 
 class VersionCheck(VersionCheckCases, unittest.TestCase):

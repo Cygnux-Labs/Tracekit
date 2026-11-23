@@ -6085,7 +6085,8 @@ class SourceReader(unittest.TestCase):
                 ('__builtins__.exec("goto_url(\'file:///x\')")',
                  [("browser_use:navigate", {"url": "file:///x", "page_url": ""})], None),
                 ('__builtins__ = {}\n__builtins__.exec("goto_url(\'file:///x\')")', [], "call"),
-                ('builtins = "x"\nbuiltins.exec("goto_url(\'file:///x\')")', [], None)]:
+                # a str has no exec method, and a method plain data lacks is held as on any other value
+                ('builtins = "x"\nbuiltins.exec("goto_url(\'file:///x\')")', [], "call")]:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), (calls, held))
@@ -6101,7 +6102,7 @@ class SourceReader(unittest.TestCase):
 
     def test_a_helper_module_name_the_cell_shadowed_is_not_read(self):
         r = source.read('helpers = "x"\nhelpers.js("document.title")')
-        self.assertEqual((r.calls, r.held), ([], None))
+        self.assertEqual((r.calls, r.held), ([], "call"))   # not the helper: a method a str lacks, held
 
     def test_what_it_cannot_follow_is_held(self):
         for code, cause in [
@@ -6311,8 +6312,9 @@ class SourceReader(unittest.TestCase):
                 self.assertEqual(r.held, cause)
 
     def test_a_known_name_used_as_a_value_is_held(self):
-        for code in ('goto_url.__call__("file:///etc/passwd")',
-                     'getattr(goto_url, "__call__")("file:///etc/passwd")',
+        r = source.read('goto_url.__call__("file:///etc/passwd")')   # a method of a helper, held as a call
+        self.assertEqual((r.calls, r.held), ([], "call"))
+        for code in ('getattr(goto_url, "__call__")("file:///etc/passwd")',
                      'map(goto_url, ["https://docs.python.org/"])',
                      '@js\ndef f():\n    pass',
                      'def f():\n    return goto_url'):
@@ -6371,8 +6373,6 @@ class SourceReader(unittest.TestCase):
                      'import posix\ndef f():\n    posix.system("id")',
                      'def f():\n    import posix\n    posix.system("id")',
                      'import posix\ngetattr(posix, "system")("id")',
-                     'import json\njson.loads("{}").get("a")',
-                     'import re\nre.compile("a").sub("b", "a")',
                      'import os.path\nos.path.os.system("id")',
                      'import os.path\nos.path.os.execv("/bin/sh", ["sh", "-c", "id"])',
                      'import os.path\nos.path.os.popen("id")'):
@@ -6441,7 +6441,12 @@ class SourceReader(unittest.TestCase):
             ('import os.path\nos.path.os', "value"),
             ('import os.path\nos.path.os.getcwd()', "call"),
             ('import json\ngetattr(json, "x")', "value"),
-            ('import json\nvars(json)', "vars")]
+            ('import json\nvars(json)', "vars"),
+            # a cell may read the clock, not set it or reset the process's time zone
+            ('import time\ntime.time()', None),
+            ('import time\ntime.clock_settime(0, 0)', "call"),
+            ('import time\ntime.clock_settime_ns(0, 0)', "call"),
+            ('import time\ntime.tzset()', "call")]
         for module in (*source.INERT_MODULES, "os.path"):   # two levels below each inert module
             name = min(n for n in source.INERT_CALLS if n.rpartition(".")[0] == module)
             cases += [(f"import {module}\n{name}.attr()", "call"), (f"import {module}\nx = {name}.attr", "value")]
@@ -6463,6 +6468,122 @@ class SourceReader(unittest.TestCase):
                     self.assertTrue(inspect.isclass(cls))
                     if dotted in source.INERT_CALLS:
                         self.assertIs(value.__self__, cls)
+
+    ORDINARY = {   # cells that only compute: none of them waits
+        "json parse": 'import json\ndata = json.loads(\'{"a": 1}\')\nprint(data["a"])',
+        "json dumps": 'import json\nprint(json.dumps({"a": [1, 2]}, indent=2))',
+        "json dict get": 'import json\ndata = json.loads("{}")\nprint(data.get("a"))',
+        "re match": 'import re\nm = re.match(r"(\\d+)", "12 apples")\nprint(m)',
+        "re findall": 'import re\nprint(re.findall(r"\\w+", "a b c"))',
+        "re group": 'import re\nm = re.search("a", "abc")\nprint(m.group(0) if m else None)',
+        "datetime now (module)": 'import datetime\nprint(datetime.datetime.now())',
+        "datetime now (from)": 'from datetime import datetime\nprint(datetime.now())',
+        "date today": 'import datetime\nprint(datetime.date.today())',
+        "timedelta math": 'from datetime import datetime, timedelta\nd = datetime(2024, 1, 1) + timedelta(days=3)\n'
+                          'print(d)',
+        "strptime": 'from datetime import datetime\nprint(datetime.strptime("2024-01-01", "%Y-%m-%d"))',
+        "timezone.utc": 'from datetime import datetime, timezone\nprint(datetime.now(timezone.utc))',
+        "list work": 'items = [3, 1, 2]\nitems.sort()\nprint(sorted(items), len(items))',
+        "list append": 'out = []\nfor i in range(3):\n    out.append(i * 2)\nprint(out)',
+        "dict work": 'd = {"a": 1}\nd["b"] = 2\nprint(list(d.items()))',
+        "comprehension": 'print({k: v for k, v in zip("ab", [1, 2])})',
+        "str methods literal": 'print("a,b".split(","))',
+        "math": 'import math\nprint(math.sqrt(2), math.pi, math.floor(2.5))',
+        "collections": 'from collections import Counter\nprint(Counter("abca"))',
+        "string.digits": 'import string\nprint(string.digits)',
+        "re flags": 'import re\nprint(re.findall("a", "A", re.IGNORECASE))',
+        "os.path join": 'import os\nprint(os.path.join("a", "b"))',
+        "os.path exists": 'import os.path\nprint(os.path.exists("/tmp"))',
+        "json except": 'import json\ntry:\n    json.loads("x")\nexcept json.JSONDecodeError:\n    pass',
+        "decimal": 'from decimal import Decimal\nprint(Decimal("1.10") + Decimal("2"))',
+        # and a method of an inert call's result, the shapes the first review held
+        "inert result method": 'import json\njson.loads("{}").get("a")',
+        "pattern method": 'import re\nre.compile("a").sub("b", "a")',
+        "str chain": 's = " A,b "\nprint(s.strip().lower().split(","), f"{len(s)}".zfill(3))',
+        "harness json": 'print(json.loads("[1]"), time.time())',   # the harness imported json and time
+        "builtin attribute": 'print(str.join(",", ["a"]), dict.fromkeys("ab"))'}
+
+    def test_ordinary_cells_stay_unread(self):
+        for name, code in self.ORDINARY.items():
+            with self.subTest(name=name):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], None))
+
+    def test_a_method_of_anything_but_plain_data_is_held(self):
+        """A method is left unread only on plain data, through a method of its own type (PLAIN_METHODS). A call or
+        attribute through a name the cell did not bind is an earlier cell's value (the REPL keeps its names) or a
+        harness object: held, as is a harness function used as a value."""
+        evaluate = [("browser_use:evaluate", {"code": "x", "page_url": ""})]
+        for code, calls, held in [
+                ('prev.get("a")', [], "call"),
+                ('posix.system("id")', [], "call"),   # imported by an earlier cell
+                ('x = prev.attr', [], "value"),
+                ('print(prev.attr)', [], "value"),
+                ('getattr(prev, "get")("a")', [], "call"),
+                ('getattr(prev, "attr")', [], "value"),
+                ('def f():\n    return later.get("a")\nlater = {}', [], "call"),   # read before this cell binds it
+                ('bu.click(1)', [], "call"),
+                ('AGENT_WORKSPACE.write_text("x")', [], "call"),
+                ('x = bu.click', [], "value"),
+                ('map(screenshot, [1])', [], "value"),
+                ('os.getcwd()', [], "call"),   # the harness imported os: read as the cell's own import
+                ('Path("x").write_text("y")', [], "call"),
+                ('x = js("x")\nx.strip()', evaluate, "call"),
+                ('js("x").strip()', evaluate, "call"),
+                ('import json\ndata = json.loads("{}")\ndata.click()', [], "call"),   # not a dict method
+                ('class C:\n    pass\nC.m()', [], "call"),
+                ('dict = "x"\ndict.fromkeys("ab")', [], "call"),   # no longer the builtin, and no str method
+                ('d = {}\nd.get("a").strip()', [], "call"),   # an element: the cell may have put anything there
+                ('xs = [1]\nxs[0].bit_length()', [], "call"),
+                ('s = str(js("x"))\ns.strip()', evaluate, "call"),   # str() of a value not known to be plain
+                ('import json\njson.loads("{}", object_hook=f).get("a")', [], "call")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, held))
+
+    def test_a_name_a_loop_function_or_branch_may_rebind_is_not_plain_data(self):
+        """A loop or comprehension is read once for every run, and a function body when defined, not when it runs:
+        a name they may rebind is no longer plain data, nor a literal, where it is read."""
+        evaluate = [("browser_use:evaluate", {"code": "x", "page_url": ""})]
+        for code, calls, held in [
+                ('x = []\nfor _ in range(2):\n    x.clear()\n    x = js("x")', evaluate, "call"),
+                ('x = []\nwhile input():\n    x.clear()\n    x = js("x")', evaluate, "call"),
+                ('x = []\n[(x.clear(), (x := js("x"))) for _ in range(2)]', evaluate, "call"),
+                ('x = []\nfor _ in range(2):\n    x.clear()\n    exec("x = 1")', [], "call"),
+                ('x = []\ndef f():\n    x.clear()\nx = js("x")\nf()', evaluate, "call"),
+                ('x = []\nif input():\n    x = js("x")\nx.clear()', evaluate, "call"),
+                ('x = []\ntry:\n    pass\nexcept ValueError as x:\n    x.clear()', [], "call"),
+                ('url = "https://docs.python.org/"\nfor i in range(2):\n    goto_url(url)\n    url = "file:///x"',
+                 [], "arg")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), (calls, held))
+
+    def test_an_inert_package_s_exported_class_is_only_compared(self):
+        """`json.JSONDecodeError` is defined in json.decoder: named in an `except` clause or `isinstance` it is only
+        compared against, so it is left unread there and held anywhere else."""
+        for code, held in [
+                ('import json\ntry:\n    pass\nexcept (ValueError, json.JSONDecodeError) as e:\n    print(e)', None),
+                ('from json import JSONDecodeError\ntry:\n    pass\nexcept JSONDecodeError:\n    pass', None),
+                ('import json\nprint(isinstance(ValueError(), json.JSONDecodeError))', None),
+                ('import json\njson.JSONDecodeError("m", "d", 0)', "call"),
+                ('import json\nx = json.JSONDecodeError', "value"),
+                ('import json\nprint(json.JSONDecodeError.mro())', "call"),
+                ('import json\ntry:\n    pass\nexcept json.decoder.JSONDecodeError:\n    pass', "value"),
+                ('import json\nprint(isinstance(json.JSONDecodeError, type))', "value")]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual((r.calls, r.held), ([], held))
+
+    def test_the_plain_tables_name_what_they_say(self):
+        for kind, names in source.PLAIN_METHODS.items():
+            for name in names.split():
+                with self.subTest(method=f"{kind.__name__}.{name}"):
+                    self.assertTrue(callable(getattr(kind, name)))
+        for name in source.FRESH_CALLS | source.PURE_CALLS:
+            with self.subTest(call=name):
+                self.assertTrue(name in source.INERT_CALLS or name in dir(builtins))
+        self.assertTrue(source.INERT_TYPES >= {"json.JSONDecodeError", "json.JSONDecoder"})
 
     def test_a_raised_visitor_a_reflection_call_and_an_argv_star_are_held(self):
         with mock.patch.object(source.Reader, "visit", side_effect=RuntimeError("boom")):

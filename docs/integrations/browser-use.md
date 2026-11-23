@@ -86,12 +86,24 @@ nested code past three levels, over 256 calls, or over 64 KiB. A value a branch 
 becomes. A call through an imported module waits unless it names, one level down, a public function or class that
 `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`, `string`, `textwrap`, `unicodedata` or
 `decimal` defines itself (`json.loads`, `datetime.datetime`), a classmethod of such a class (`datetime.datetime.now`),
-or a path function directly under `os.path` (`join`, `exists` and the like). A module's attributes include the
-modules it imported, so anything deeper, private or defined elsewhere waits: `os.path.os`, `json.decoder`, and
-`json.JSONDecoder`, which `json.decoder` defines. A function of another imported module used as a value waits, and so does a method called on a
-call result, so `map(posix.system, ...)`, `open(p).write(...)` and `re.compile(...).sub(...)` ask. What
-the reader still leaves to the cell: a builtin, a function it defines and reads, a method on a cell name it already
-follows, and a call into one of the modules above. A cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
+or a path function directly under `os.path` (`join`, `exists` and the like). `time`'s clock and time zone setters
+(`clock_settime`, `clock_settime_ns`, `tzset`) wait. A module's attributes include the modules it imported, so
+anything deeper, private or defined elsewhere waits: `os.path.os`, `json.decoder`, and `json.JSONDecoder`, which
+`json.decoder` defines; such a class a package exports (`json.JSONDecodeError`) is left unread only in an `except`
+clause or `isinstance`, where it is compared, not called. A function of another imported module used as a value
+waits, so `map(posix.system, ...)` asks.
+
+A method is left unread only on plain data: a value whose type is `str`, `bytes`, a list, dict, set or tuple, `int`,
+`float` or a `re` match or pattern, that the cell built itself (a literal, a comprehension, `json.loads`,
+`re.findall`, `sorted` and the like, or an operation on plain data), through one of that type's own methods
+(`items.append(x)`, `data.get("k")`, `s.strip().split(",")`). A method of anything else waits: a helper's result
+(`js(...).strip()`), `open(p).write(...)`, an element taken out of a list or dict, a harness object (`bu.click(...)`),
+or a name a loop, a branch or a later line may rebind, as read where it runs. The REPL keeps its names from cell to
+cell, so a call or attribute through a name the cell didn't bind is an earlier cell's value and waits too, unless it is
+a builtin or a name the harness binds: its imports (`json`, `os`, `time`, `Path` and the rest) read as the cell's own,
+and its own functions and objects wait when used as a value (`map(screenshot, ...)`). What the reader still leaves to
+the cell: a builtin, a function it defines and reads, plain data's methods, and a call into one of the modules above. A
+cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
 completion carries the text and the error status. The `finish_from_repl` delivery is an output tool, which Pydantic AI
 runs without the tool hook above: it is decided and completed at `Repl.call`, which is where its expression runs.
 `Repl.call` gates both ops it runs. The `python` cell's `exec` is the one the tool hook just decided: it marks that
@@ -257,8 +269,9 @@ carries no model call id, so they are not linked to the actions. Which framework
   with the cell at the strictest; what it can't follow is held as `TK-SOURCE-PARSE`. It reads a function or lambda
   body where it is defined, so the calls in it are decided too; a value that may be rebound, an unknown bare callee,
   raw CDP, and an unmapped network, process or FFI import are held. A call through any other imported module waits, as
-  does a method on a call result or a function of that module used as a value; only builtins, the cell's own names,
-  the public functions and classes `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`,
+  does a function of that module used as a value, a method of anything but plain data the cell built, and a call or
+  attribute through a name an earlier cell bound; only builtins, the cell's own names, plain data's own methods, the
+  public functions and classes `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`,
   `string`, `textwrap`, `unicodedata` and `decimal` define themselves (one level down, and a class's classmethods) and
   `os.path`'s own path functions are left unread, and a name built at run time is held. The same goes for the `finish_from_repl`
   expression. A cell can still hide an action behind such code; read a 1.0 decision as a statement about the calls its
