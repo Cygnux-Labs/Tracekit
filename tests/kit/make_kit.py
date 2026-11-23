@@ -610,6 +610,17 @@ def vectors():
         "approver.switched", {"on": True, "rules": ["TK-A025"], "by": "uid:502", "reason": "the mirror is vetted"}, {}),
         ("approver.switched", {"on": False, "by": "uid:502"}, {})), t, 0, "VERIFIED", "witnessed", addon="AI approvals",
          needs="1.8.0", decided_by="§9 (version table, 1.8.0: approver.switched, a person's switch)")
+    index = "pip --index-url https://pypi.internal/…"
+    lesson = {"id": "L-" + "4" * 32, "text": f"don't approve {index} (TK-A025) without a person: alice rejected one on "
+              "11-23 that the AI would have approved", "key": {
+                  "rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": [index]}, "project": "api (17978b62)"},
+              "decision": "reject", "digest": "hmac-sha256:" + "5" * 64,
+              "evidence": ["7" * 32, "8" * 32], "by": "uid:502"}
+    case("a lesson drafted from a disagreement, accepted, and another dropped", closed("ai-approver-lessons", (
+        "playbook.entry", {"action": "accept", **lesson}, {}), ("playbook.entry", {
+            "action": "drop", **lesson, "id": "L-" + "6" * 32}, {})), t, 0, "VERIFIED", "witnessed",
+         addon="AI approvals", needs="1.8.0",
+         decided_by="§9 (version table, 1.8.0: playbook.entry accepts or drops a lesson L-, with its evidence)")
     case("an AI approver's yes after a signed label of the run bound it left out", ai_run(
         "ai-approval-recorded-label", listed=["TK-A025"], recorded="yes"), t, 1, "FAILED", failed_check=["AI run bound"],
          addon="AI approvals", needs="1.8.0",

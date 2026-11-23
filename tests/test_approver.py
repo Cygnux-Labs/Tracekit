@@ -870,7 +870,98 @@ class TestBreaker(Case):
         self.assertNotIn("default\0TK-A025", self.s.log.agent["pairs"])   # enabled: measured afresh
 
 
+class TestLessons(Case):
+    """Each disagreement of a person with the AI drafts a lesson with its evidence; a person accepts or drops it; only
+    accepted lessons reach the reviewer; a later person decision against one flags it."""
+
+    def records(self):
+        return [r["event"] for r in ts.records(self.dir)]
+
+    def lessons(self):
+        proposals = self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+        return [x for x in proposals if x["id"].startswith("L-")]
+
+    def test_a_person_rejecting_a_shadow_yes_drafts_a_lesson_with_its_evidence(self):
+        self.s.close()
+        self.policy = {"mode": "shadow"}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid, reason="same index")   # a suggestion: approve
+        self.assertEqual(self.lessons(), [])
+        self.person(aid, "reject", reason="that package is new to us")
+        [lesson] = self.lessons()
+        when = self.s.log.approvals[aid]["requested_at"][5:10]
+        self.assertEqual(lesson["text"], "don't approve pip --index-url https://pypi.internal/… (TK-A025) without a "
+                                         f"person: alice rejected one on {when} that the AI would have approved (that "
+                                         "package is new to us)")
+        recs = self.records()
+        said = next(e["id"] for e in recs if e["type"] == "approval.suggested" and e["data"]["approval_id"] == aid)
+        no = next(e["id"] for e in recs if e["type"] == "approval" and e["data"]["approval_id"] == aid)
+        self.assertEqual(lesson["evidence"], [said, no])
+        self.assertRegex(lesson["id"], r"^L-[0-9a-f]{32}$")
+        self.precedent(HELD)   # another kind of call the AI may answer (this one people answered both ways now)
+        aid2, _ = self.ask(HELD)   # its reviewer reads no proposal: only accepted lessons
+        view = self.s.call(REVIEWER, "approval_review", {"approval_id": aid2})
+        self.assertNotIn(lesson["text"], json.dumps(view))
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        view = self.s.call(REVIEWER, "approval_review", {"approval_id": aid2})
+        self.assertEqual([x["text"] for x in view["ai"]["playbook"]["entries"]], [lesson["text"]])
+        self.assertEqual(self.lessons(), [])
+        [entry] = [e["data"] for e in self.events() if e["type"] == "playbook.entry"]
+        self.assertEqual((entry["action"], entry["decision"], entry["evidence"]), ("accept", "reject", [said, no]))
+
+    def test_taking_back_an_ai_yes_drafts_one_and_a_person_drops_it(self):
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid, "reason": "wrong project"})
+        [lesson] = self.lessons()
+        self.assertIn(f"without a person: uid:{ALICE.subject} took back one on ", lesson["text"])
+        self.assertIn("that the AI approved (wrong project)", lesson["text"])
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "drop", "id": lesson["id"]})
+        self.assertEqual(self.lessons(), [])
+        self.refused("invalid_request", ALICE, "approver", {"request_id": rid(), "action": "accept",
+                                                            "id": lesson["id"]})
+        self.restart()   # from the records, after a restart too
+        self.assertEqual(self.lessons(), [])
+        [drop] = [e["data"] for e in self.events() if e["type"] == "playbook.entry"]
+        self.assertEqual((drop["action"], drop["id"]), ("drop", lesson["id"]))
+
+    def test_a_later_decision_against_an_accepted_lesson_flags_it(self):
+        self.s.close()
+        self.policy = {"mode": "shadow"}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        self.person(aid, "reject")
+        [lesson] = self.lessons()
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": lesson["id"]})
+        self.assertNotIn(lesson["id"], self.s.log.agent["lessons"])   # in force: no longer kept as a proposal
+        self.precedent(decision="reject")   # a person's no to a call like it agrees with the lesson: nothing to review
+        self.assertNotIn("contradicted", self.s.call(ALICE, "approver", {"action": "status"})["playbook"]["entries"][0])
+        self.precedent()   # a person approves a call like it: the lesson says no, the person said yes
+        [entry] = self.s.call(ALICE, "approver", {"action": "status"})["playbook"]["entries"]
+        self.assertEqual((entry["id"], entry["contradicted"]["decision"], entry["contradicted"]["by"]),
+                         (lesson["id"], "approve", "alice"))
+        cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
+        with cli, contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(reviewer.main(["lessons"]), 0)
+        self.assertIn(f"  {lesson['id']}  don't approve", out.getvalue())
+        self.assertIn("      to review: alice approved a call like it on ", out.getvalue())
+
+
 class TestPlaybook(Case):
+    def test_a_proposal_a_person_drops_is_not_proposed_again(self):
+        for _ in range(svc.PLAYBOOK_MIN):
+            self.precedent()
+        [prop] = self.s.call(ALICE, "approver", {"action": "status"})["proposals"]
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "drop", "id": prop["id"]})
+        self.assertEqual(self.s.call(ALICE, "approver", {"action": "status"})["proposals"], [])
+
     def test_people_accept_what_their_answers_propose_and_answers_record_the_version(self):
         for _ in range(svc.PLAYBOOK_MIN - 1):
             self.precedent()

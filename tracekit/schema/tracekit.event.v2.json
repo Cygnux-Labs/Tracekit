@@ -5354,17 +5354,18 @@
         "key",
         "by"
       ],
-      "description": "format 1.8: a person accepted a playbook entry the AI approver's precedents proposed, or retired one (in the tenant's signer run): its id (P- and 8 hex digits of the text's sha256), text and precedent key",
+      "description": "format 1.8: a person accepted a playbook entry the AI approver proposed (from people's answers, P-, or a lesson drafted from a disagreement with them, L-), retired one, or dropped a proposal (in the tenant's signer run): its id (P- or L- and 32 hex digits of the text's sha256), text and precedent key; a lesson's decision, digest and evidence",
       "properties": {
         "action": {
           "enum": [
             "accept",
-            "retire"
+            "retire",
+            "drop"
           ]
         },
         "id": {
           "type": "string",
-          "pattern": "^P-[0-9a-f]{32}$",
+          "pattern": "^[PL]-[0-9a-f]{32}$",
           "maxLength": 34
         },
         "text": {
@@ -5381,6 +5382,28 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "reject"
+          ],
+          "description": "the people's answer it holds: a later one the other way flags it"
+        },
+        "digest": {
+          "type": "string",
+          "maxLength": 77,
+          "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+          "description": "the precedent key's digest of the calls it is about"
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "description": "the ids of the records it was drafted from: the AI's answer, the person's"
         }
       }
     },

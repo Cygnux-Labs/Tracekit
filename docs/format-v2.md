@@ -631,21 +631,23 @@ A person's `approval` of one carries `run_clean`: whether the run still met the 
 answer to one carries `relied_on`: the precedents and the playbook's version and digest as the signer read them when
 it answered, the policy hash, the run's labels, `view` (a commitment to the `view_digest` of the review it answered),
 `mode` (enforce: it decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the
-reviewer's own word (each model's answer). `playbook.entry`, `precedent.revoked`, `approver.enabled` and `approver.switched` (`{on, rules?, by, reason?}`: a
-person switched the AI approver on, for those rules only, or off) are a person's answers through the signer, in the
-tenant's signer run. A verifier from 1.8.0 prints `AI approvals` for a bundle with
-any of them: an AI yes that decided must carry two answers that approve, a person's precedent, no rejection, and the
-policy hash of its request (`relied_on.policy_hash`). When such a yes's `relied_on.labels` is not empty, or the run's
-own `run.label` records, replayed in order (an add adds, a clear ends), hold a label at the yes or at its
-`approval.consumed`, it prints `AI run bound` too: none of those labels may be one the `approval_agent` run bound of
-the policy it names names, and the bundle must hold that policy's snapshot, readable (its `approval_agent.run` an
-object, `clean` a list of strings); one it lacks fails the line (a bundle can leave a snapshot out, never the signed
-records that cite it). A person's answer counts as a precedent when it is a person's own (not self-approved, not
-break-glass), to a request with the same digest, tenant and requester, clean when asked and when answered (`run_clean:
-true`), before the AI's answer and at most 30 days before it, and not revoked as a precedent before it. Each precedent
-the AI's yes names that the bundle holds must count, and no person's rejection the bundle holds may count; a named
-precedent the bundle doesn't hold (another run's) is counted, not checked. These are critical: an older verifier would
-read an AI approval of an `approval_agent` rule as a rule that doesn't permit agents.
+reviewer's own word (each model's answer). `playbook.entry` (`accept`, `retire` or `drop` of an entry `P-…` or a
+lesson `L-…`, with a lesson's `decision`, `digest` and `evidence`: the ids of the records it was drafted from),
+`precedent.revoked`, `approver.enabled` and `approver.switched` (`{on, rules?, by, reason?}`: a person switched the AI
+approver on, for those rules only, or off) are a person's answers through the signer, in the tenant's signer run. A
+verifier from 1.8.0 prints `AI approvals` for a bundle with any of them: an AI yes that decided must carry two answers
+that approve, a person's precedent, no rejection, and the policy hash of its request (`relied_on.policy_hash`). When
+such a yes's `relied_on.labels` is not empty, or the run's own `run.label` records, replayed in order (an add adds, a
+clear ends), hold a label at the yes or at its `approval.consumed`, it prints `AI run bound` too: none of those labels
+may be one the `approval_agent` run bound of the policy it names names, and the bundle must hold that policy's
+snapshot, readable (its `approval_agent.run` an object, `clean` a list of strings); one it lacks fails the line (a
+bundle can leave a snapshot out, never the signed records that cite it). A person's answer counts as a precedent when
+it is a person's own (not self-approved, not break-glass), to a request with the same digest, tenant and requester,
+clean when asked and when answered (`run_clean: true`), before the AI's answer and at most 30 days before it, and not
+revoked as a precedent before it. Each precedent the AI's yes names that the bundle holds must count, and no person's
+rejection the bundle holds may count; a named precedent the bundle doesn't hold (another run's) is counted, not
+checked. These are critical: an older verifier would read an AI approval of an `approval_agent` rule as a rule that
+doesn't permit agents.
 
 Every v2 definition but `review`'s data and its `verdict`, `error`'s data, `run.start`'s `agent` and `trace.tamper`'s
 `before` and `after` (open since format 1.0) and the `ext` record's (open by design) is closed (`additionalProperties:

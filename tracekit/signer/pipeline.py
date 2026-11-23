@@ -176,7 +176,7 @@ def degrade(tx, prov, state, reason):
 def new_agent():
     """The agent-approval state (agent_state), empty."""
     return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
-            "label_seqs": {}, "switch": {}}
+            "label_seqs": {}, "switch": {}, "lessons": {}, "dropped": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -214,7 +214,7 @@ def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
         who, x = d["approver_identity"], d.get("relied_on") or {}
         first = ((x.get("precedents") or {}).get("approve") or [None])[0]
         set_(a, "agent_answer", {"decision": d.get("decision", "escalate"), "by": f"{who['scheme']}:{who['subject']}",
-                                 "mode": "shadow" if typ == "approval.suggested" else "enforce",
+                                 "mode": "shadow" if typ == "approval.suggested" else "enforce", "record": e["id"],
                                  **{k: v for k, v in (("reason", d.get("reason")), ("view", x.get("view")),
                                                       ("precedent", first)) if v}})
     if typ == "approval":   # who answered, for the bridges; and as whom, for a root grant (SignerService._pcm_grant)
@@ -287,8 +287,18 @@ def approver_state(set_, log, run, e, a, pop):
                 set_(ag["pairs"], k, pairs)
                 if len(pairs) >= AGREEMENT_MIN and sum(pairs) < AGREEMENT_BAR * len(pairs):
                     demote([r], f"the AI agreed with people on {sum(pairs)} of the last {len(pairs)} calls")
+            if a["suggested"] != d["decision"]:   # a disagreement: a lesson, for a person to accept or drop
+                lesson(set_, ag, tenant, a, d, e, "rejected" if d["decision"] == "reject" else "approved")
+        book = ag["playbook"].get(tenant)
+        flagged = {k: dict(v, contradicted={"approval_id": d["approval_id"], "by": d.get("person") or d["approver"],
+                                            "at": e["ts"], "decision": d["decision"]})
+                   for k, v in (book or {"entries": {}})["entries"].items()
+                   if v.get("digest") == ap["digest"] and v.get("decision") not in (None, d["decision"])}
+        if flagged:   # a person decided a call like it the other way: the entry is flagged for review
+            set_(ag["playbook"], tenant, {**book, "entries": {**book["entries"], **flagged}})
     elif typ == "approval.revoked" and ap and a.get("kind") == "agent" and d["by"] != "signer":
         demote(ap["key"]["rules"], f"{d['by']} took back AI approval {d['approval_id']}")
+        lesson(set_, ag, tenant, a, {**d, "decision": "reject"}, e, "took back")
     elif typ == "incident.opened":
         spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{e['run_id']}"],
               f"incident {d['incident_id']} opened in its run")
@@ -306,11 +316,38 @@ def approver_state(set_, log, run, e, a, pop):
                 if f"{tenant}\0{r}" in ag[table]:
                     pop(ag[table], f"{tenant}\0{r}")
     elif typ == "playbook.entry":
+        if d["id"] in ag.get("lessons", {}):   # accepted or dropped: proposed no more
+            pop(ag["lessons"], d["id"])
+        if d["action"] == "drop":   # a proposal a person doesn't want: not proposed again
+            set_(ag.setdefault("dropped", {}), tenant, sorted({*ag["dropped"].get(tenant, ()), d["id"]}))
+            return
         book = ag["playbook"].get(tenant) or {"version": 0, "entries": {}}
         entries = {k: v for k, v in book["entries"].items() if k != d["id"]}
         if d["action"] == "accept":
-            entries[d["id"]] = {"text": d["text"], "key": d["key"]}
+            entries[d["id"]] = {"text": d["text"], "key": d["key"],
+                                **{k: d[k] for k in ("digest", "decision", "evidence") if k in d}}
         set_(ag["playbook"], tenant, {"version": book["version"] + 1, "entries": entries})
+
+
+def lesson(set_, ag, tenant, a, d, e, did):
+    """Draft a lesson, in `ag["lessons"]`, from a person's answer `d` (record `e`) that went against the AI's on
+    approval `a`: what it holds in plain words, the precedent key and its digest, the people's decision, and the
+    evidence (the AI's answer's record id and the person's). Its id is L- and 32 hex digits of its text and evidence's
+    sha256. A person accepts it into the playbook, or drops it (playbook.entry)."""
+    ap, ai = a["ai"], a.get("agent_answer") or {}
+    what = "; ".join(" ".join(v) for v in ap["key"]["target"].values())[:200] or f"{ap['key']['tool'][:64]} calls"
+    who, when = d.get("person") or d.get("approver") or d.get("by"), e["ts"][5:10]
+    text = (f"don't approve {what} ({', '.join(ap['key']['rules'])}) without a person: {who} {did} one on {when} that "
+            f"the AI {'approved' if ai.get('mode') == 'enforce' else 'would have approved'}"
+            if d["decision"] == "reject" else
+            f"{who} approved {what} ({', '.join(ap['key']['rules'])}) on {when}, which the AI would have "
+            f"{'rejected' if ai.get('decision') == 'reject' else 'handed to a person'}") + (
+        f" ({d['reason'][:300]})" if d.get("reason") else "")
+    evidence = [x for x in (ai.get("record"), e["id"]) if x]
+    lid = "L-" + hashlib.sha256(json.dumps([text, evidence]).encode("utf-8", "surrogatepass")).hexdigest()[:32]
+    set_(ag.setdefault("lessons", {}), lid, {
+        "tenant": tenant, "text": text, "key": ap["key"], "digest": ap["digest"], "decision": d["decision"],
+        "evidence": evidence, "approval_id": a.get("id") or d["approval_id"], "by": who, "at": epoch(e["ts"])})
 
 
 def pinned(d):

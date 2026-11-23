@@ -1344,11 +1344,11 @@ The [AI approver](approvals.md#the-ai-approver), for people. `status` says wheth
 (`switch`), the rules and mode the policy gives it, how often people agreed with it per rule (`agreement`), the rules
 its circuit breaker dropped to shadow, the playbook in force and the entries people's answers propose. `on` (for
 `rules` only, when given) and `off` switch it; `off` withdraws its approvals not yet used and hands its waiting calls to
-people (`revoked` lists the approvals withdrawn). `accept` and `retire` change a playbook entry
-(`id`: `P-…`), `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
-breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id` (and, from
-a break-glass identity, a `reason`). A signer
-without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
+people (`revoked` lists the approvals withdrawn). `accept` puts a proposal in force (`id`: `L-…`, a lesson drafted
+from a disagreement with a person, or `P-…`, from people's answers all one way), `drop` drops one, `retire` ends one in
+force, `revoke` takes back a precedent (`id`: the approval id of a person's answer), and `enable` turns rules the
+breaker dropped back on. Each change is a signed record in the tenant's signer run, and needs `request_id` (and, from a
+break-glass identity, a `reason`). A signer without an AI approver (no `approvals.agents`, or no `approval_agent` in its policy) answers `invalid_request`.
 
 **Who may call:** an approver of the caller's tenant (`approvals.approvers` or `break_glass`), with the default grants or
 an `authorize` entry that lists `approver`, and for a change, no agent session open as that identity (unless
@@ -1363,7 +1363,7 @@ an `authorize` entry that lists `approver`, and for a change, no agent session o
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `request_id` | text | depends | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
-| `action` | one of `status`, `on`, `off`, `accept`, `retire`, `revoke`, `enable` | yes |  |
+| `action` | one of `status`, `on`, `off`, `accept`, `retire`, `drop`, `revoke`, `enable` | yes |  |
 | `id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 | `rules` | list of texts | no | 1 to 32 items; each item: up to 64 characters |
 | `reason` | text | no | up to 1024 characters |

@@ -2309,7 +2309,7 @@ class SignerService:
             else a["agent"]["eligible"] and self._agent_refusal(a) or a["agent"]["reason"])}
         if ans:
             served = (a.get("viewed") or {}).get(ans["by"])
-            out["answer"] = {k: v for k, v in ans.items() if k != "precedent"}
+            out["answer"] = {k: v for k, v in ans.items() if k not in ("precedent", "record")}
             if served and "view" in ans and self._opens(ans["view"], f"approval.view:{approval_id}", served[0]):
                 out["answer"]["view"] = served[0]
             if "precedent" in ans:
@@ -4521,8 +4521,12 @@ class SignerService:
                         "demoted": [{"rule": k.split("\0", 1)[1], "reason": v} for k, v in
                                     sorted(self.log.agent["demoted"].items()) if k.startswith(tenant + "\0")],
                         "playbook": {**_playbook_ref(book), "entries": [
-                            {"id": k, "text": v["text"]} for k, v in sorted((book or {"entries": {}})["entries"].items())]},
-                        "proposals": [{"id": k, "text": v["text"]} for k, v in self._proposals(tenant).items()]}
+                            {"id": k, "text": v["text"], **({"contradicted": v["contradicted"]} if "contradicted" in v
+                                                            else {})}
+                            for k, v in sorted((book or {"entries": {}})["entries"].items())]},
+                        "proposals": [{"id": k, "text": v["text"], **({"evidence": v["evidence"]} if "evidence" in v
+                                                                       else {})}
+                                      for k, v in self._proposals(tenant).items()]}
             return self.log.write(status)
         self.quotas.take_event(identity)
 
@@ -4548,14 +4552,21 @@ class SignerService:
             elif action == "accept":   # what the person read is what is signed: the text its id names, proposed now
                 got = self._proposals(tenant).get(req.get("id"))
                 if got is None:
-                    raise RPCError("invalid_request", f"{str(req.get('id'))[:16]} is not proposed now: list them with "
-                                                      "`tracekit reviewer playbook`")
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not proposed now: list them with "
+                                                      "`tracekit reviewer lessons`")
                 typ, data = "playbook.entry", {"action": "accept", "id": req["id"], **got}
+            elif action == "drop":   # a proposal a person doesn't want: never proposed again
+                got = self._proposals(tenant).get(req.get("id"))
+                if got is None:
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not proposed now: "
+                                                      "`tracekit reviewer lessons` lists them")
+                typ, data = "playbook.entry", {"action": "drop", "id": req["id"], **got}
             elif action == "retire":
                 got = book["entries"].get(req.get("id"))
                 if got is None:
-                    raise RPCError("invalid_request", f"{str(req.get('id'))[:16]} is not in the playbook")
-                typ, data = "playbook.entry", {"action": "retire", "id": req["id"], **got}
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not in the playbook")
+                typ, data = "playbook.entry", {"action": "retire", "id": req["id"], **{
+                    k: v for k, v in got.items() if k != "contradicted"}}
             elif action == "revoke":
                 p = ag["precedents"].get(req.get("id"))
                 if p is None or p["tenant"] != tenant or p.get("bad"):
@@ -4578,15 +4589,20 @@ class SignerService:
         return out
 
     def _proposals(self, tenant):
-        """{entry id: {text, key}}: the playbook entries the precedents of `tenant` propose now (docs/approvals.md#the-
-        playbook): each precedent key with PLAYBOOK_MIN or more people's answers that count, in the last PLAYBOOK_S, all
-        one way, that the playbook doesn't hold; the id is P- and 32 hex digits (128 bits) of the text's sha256, so an
-        accept names the text it signs."""
+        """{entry id: {text, key, digest, decision, evidence?}}: the playbook entries proposed in `tenant` now
+        (docs/approvals.md#the-playbook), none a person dropped: each lesson drafted from a disagreement of a person
+        with the AI (L-, with its evidence: pipeline.lesson), and each precedent key with PLAYBOOK_MIN or more people's
+        answers that count, in the last PLAYBOOK_S, all one way, that the playbook doesn't hold (P-); the id is 32 hex
+        digits (128 bits) of a sha256 of the text, so an accept names the text it signs."""
         since, groups = time.time() - PLAYBOOK_S, {}
         for p in self.log.agent["precedents"].values():
             if p["tenant"] == tenant and not p.get("bad") and p["at"] > since:
                 groups.setdefault(p["digest"], []).append(p)
-        held, out = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"], {}
+        held = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"]
+        dropped = set(self.log.agent.get("dropped", {}).get(tenant, ()))
+        out = {k: {x: v[x] for x in ("text", "key", "digest", "decision", "evidence")}
+               for k, v in sorted(self.log.agent.get("lessons", {}).items(), key=lambda kv: kv[1]["at"])
+               if v["tenant"] == tenant and k not in held}
         for ps in groups.values():
             if len(ps) < PLAYBOOK_MIN or len({p["decision"] for p in ps}) > 1:
                 continue
@@ -4598,8 +4614,8 @@ class SignerService:
                 (f" (latest reason: {last['reason'][:200]})" if last.get("reason") else ""))
             pid = "P-" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:32]
             if pid not in held:
-                out[pid] = {"text": text, "key": k}
-        return out
+                out[pid] = {"text": text, "key": k, "digest": ps[0]["digest"], "decision": ps[0]["decision"]}
+        return {k: v for k, v in out.items() if k not in dropped}
 
     def _agents_off(self, tx, why, which=lambda a: True):
         """(on the writer) Agent approvals off for the approvals `which` selects: each agent approval not consumed yet

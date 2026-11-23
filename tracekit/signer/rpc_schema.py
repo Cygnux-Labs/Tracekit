@@ -416,12 +416,13 @@ REQUESTS = {
     "approval_agents": _obj(["request_id", "enabled"], request_id=ID, enabled={"type": "boolean"}, reason=REASON),
     # the AI approver, for people (version 28): status reads; accept and retire a playbook entry (`id`: P-…), revoke a
     # precedent (`id`: the approval id of a person's answer), enable `rules` the circuit breaker dropped to shadow
-    "approver": {**_obj(["action"], request_id=ID, action={"enum": ["status", "on", "off", "accept", "retire", "revoke",
-                                                                     "enable"]},
+    "approver": {**_obj(["action"], request_id=ID, action={"enum": ["status", "on", "off", "accept", "retire", "drop",
+                                                                     "revoke", "enable"]},
                         id=ID, rules={"type": "array", "minItems": 1, "maxItems": 32, "items": _str(64)},
                         reason=REASON),
                  "oneOf": [{"properties": {"action": {"const": "status"}}},   # a read; every other action changes state
-                           {"properties": {"action": {"enum": ["on", "off", "accept", "retire", "revoke", "enable"]}},
+                           {"properties": {"action": {"enum": ["on", "off", "accept", "retire", "drop", "revoke",
+                                                               "enable"]}},
                             "required": ["request_id"]}]},
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
@@ -633,8 +634,8 @@ RESPONSES = {
                                     ["rule", "agreed", "of", "recent"], rule=_str(64), agreed=SEQ, of=SEQ,
                                     recent=_obj(["agreed", "of"], agreed=SEQ, of=SEQ))},
                                 demoted={"type": "array"}, playbook={"type": "object"}, proposals={"type": "array"}),
-                           _obj(["action", "run_seq"], action={"enum": ["on", "off", "accept", "retire", "revoke",
-                                                                        "enable"]},
+                           _obj(["action", "run_seq"], action={"enum": ["on", "off", "accept", "retire", "drop",
+                                                                        "revoke", "enable"]},
                                 run_seq=SEQ, revoked={"type": "array", "maxItems": 100000, "items": ID})]},
     # open: a gateway's close_run, which ends its stream only
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"enum": ["closing", "open"]}, run_seq=SEQ),

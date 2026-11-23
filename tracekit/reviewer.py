@@ -455,13 +455,34 @@ def status_lines(out):
     return lines + (["  none yet"] if not out["agreement"] else [])
 
 
+def lesson_lines(out):
+    """What `tracekit reviewer lessons` prints, and status ends with: the lessons in force (the only ones the AI
+    reviewer reads), each flagged when a person's later decision went the other way, and those proposed, from
+    disagreements with people (with the records they come from) and from people's answers all one way."""
+    book = out["playbook"]
+    lines = [f"lessons in force, which the AI reviewer reads (playbook v{book['version']}, {book['digest']}; "
+             "`tracekit reviewer retire ID` ends one):"]
+    for x in book["entries"]:
+        c = x.get("contradicted")
+        lines += [f"  {x['id']}  {x['text']}"] + ([
+            f"      to review: {c['by']} {'approved' if c['decision'] == 'approve' else 'rejected'} a call like it "
+            f"on {c['at'][5:10]} ({c['approval_id']})"] if c else [])
+    lines += ["  none"] * (not book["entries"]) + [
+        "proposed (`tracekit reviewer accept ID` puts one in force, `tracekit reviewer drop ID` drops it):"]
+    for x in out["proposals"]:
+        lines += [f"  {x['id']}  {x['text']}"] + ([f"      from the records {', '.join(x['evidence'])}"]
+                                                   if x.get("evidence") else [])
+    return lines + ["  none"] * (not out["proposals"])
+
+
 def people(a):
-    """`tracekit reviewer status | on | off | accept | retire | revoke | enable`: the AI approver for people, over the
-    signer RPC `approver` (an approver of the tenant only, with no agent session of its own open)."""
+    """`tracekit reviewer status | lessons | on | off | accept | drop | retire | revoke | enable`: the AI approver for
+    people, over the signer RPC `approver` (an approver of the tenant only, with no agent session of its own open;
+    `lessons` is status's lessons part)."""
     from tracekit.sdk.client import Client, Incompatible
     c = Client(a.signer)
     try:
-        req = {"action": a.cmd, **({"id": a.id} if getattr(a, "id", None) else {}),
+        req = {"action": "status" if a.cmd == "lessons" else a.cmd, **({"id": a.id} if getattr(a, "id", None) else {}),
                **({"rules": a.rules} if getattr(a, "rules", None) else {}),
                **({"reason": a.reason} if getattr(a, "reason", None) else {})}
         out = c.approver(req)
@@ -477,21 +498,20 @@ def people(a):
         print(f"the AI reviewer is {a.cmd}" + (f" for {', '.join(a.rules)}" if getattr(a, "rules", None) else "")
               + (f": {len(out.get('revoked', ()))} AI approval(s) not yet used were withdrawn, and its waiting calls "
                  "go to people" if a.cmd == "off" else "") + f" (signed record {out['run_seq']} in the tenant's signer run)")
-    elif a.cmd != "status":
+    elif a.cmd == "lessons" and not a.json:
+        from tracekit.signer.service import _escaped
+        print("\n".join(_escaped(line) for line in lesson_lines(out)))
+    elif a.cmd not in ("status", "lessons"):
         print(f"{a.cmd}: done (signed record {out['run_seq']} in the tenant's signer run)")
     elif a.json:
         print(json.dumps(out))
     else:   # the text holds what the agent ran: control and bidi characters escaped, as approval_review shows them
         from tracekit.signer.service import _escaped
         print("\n".join(_escaped(line) for line in status_lines(out)))
-        book = out["playbook"]
         print("the AI reviewer only suggests (a person decides) for these rules until you run "
               "`tracekit reviewer enable RULE` (the circuit breaker):")
         print("\n".join(f"  {_escaped(x['rule'])}: {_escaped(x['reason'])}" for x in out["demoted"]) or "  none")
-        print(f"playbook v{book['version']} ({book['digest']}), in force (`tracekit reviewer retire ID`):")
-        print("\n".join(f"  {_escaped(x['id'])}  {_escaped(x['text'])}" for x in book["entries"]) or "  none")
-        print("proposed from people's answers of the last week (`tracekit reviewer accept ID`):")
-        print("\n".join(f"  {_escaped(x['id'])}  {_escaped(x['text'])}" for x in out["proposals"]) or "  none")
+        print("\n".join(_escaped(line) for line in lesson_lines(out)))
     return 0
 
 
@@ -511,12 +531,14 @@ def main(argv=None):
                        ("on", "a person switches the AI reviewer on, for --rules only when given"),
                        ("off", "a person switches it off: its approvals not yet used are withdrawn, waiting calls go to "
                                "people"),
-                       ("accept", "accept a proposed playbook entry"), ("retire", "retire a playbook entry"),
+                       ("lessons", "the lessons in force and those proposed, with the records they come from"),
+                       ("accept", "put a proposed lesson in force: the AI reviewer reads it"),
+                       ("drop", "drop a proposed lesson: never proposed again"), ("retire", "end a lesson in force"),
                        ("revoke", "a person's answer no longer counts as a precedent (a revert, a mistake)"),
                        ("enable", "let the AI reviewer answer rules again that it only suggests for now (the circuit breaker)")):
         p = sub.add_parser(name, help=what)
         p.add_argument("--signer", help="the signer: its Unix socket, tcp://host:port or https://host:port")
-        if name == "status":
+        if name in ("status", "lessons"):
             p.add_argument("--json", action="store_true", help="print the signer's answer as JSON")
         elif name == "enable":
             p.add_argument("rules", nargs="+", help="rule ids, from `tracekit reviewer status`")
@@ -524,11 +546,11 @@ def main(argv=None):
             p.add_argument("--rules", type=lambda v: [r for r in v.split(",") if r], help="only these of the policy's "
                            "approval_agent rules, comma-separated (TK-A025,TK-SHELL-PARSE)")
         elif name != "off":
-            p.add_argument("id", help="P-… (a playbook entry) or apr-… (a person's answer), from `status`")
-        if name != "status":
+            p.add_argument("id", help="L-… or P-… (a lesson) or apr-… (a person's answer), from `status`")
+        if name not in ("status", "lessons"):
             p.add_argument("--reason", help="why, in the signed record")
     a = ap.parse_args(argv)
-    if a.cmd in ("status", "on", "off", "accept", "retire", "revoke", "enable"):
+    if a.cmd in ("status", "lessons", "on", "off", "accept", "drop", "retire", "revoke", "enable"):
         return people(a)
     if a.cmd == "friction":
         try:
