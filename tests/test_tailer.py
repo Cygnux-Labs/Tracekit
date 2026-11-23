@@ -947,16 +947,55 @@ class HookStartsTheTailer(unittest.TestCase):
         self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
         self.assertEqual(self.decide(closed=True)["offsets"], seen)
 
-    def test_a_session_that_goes_on_with_no_state_reads_on_from_where_its_transcript_ends(self):
-        """A SessionEnd removes the session's state; Claude Code then went on with the session (a message to it, a usage
-        limit's reset) with no SessionStart. Its new run had no tailer until a compaction's SessionStart started one
-        from the transcript's first line: every earlier run's call was a hook_missing gap again (2,840 in one run)."""
+    def test_a_session_that_goes_on_after_session_end_reads_on_from_where_its_transcript_ended(self):
+        """A SessionEnd removes the session's state, but its ENDED marker keeps where the transcripts ended; Claude Code
+        then went on with the session (a message to it, a usage limit's reset) with no SessionStart. The new run's tailer
+        starts at the SessionEnd's offsets, so what Claude Code wrote between (the new prompt, the first call's tool
+        use) is read by it: before, the new run had no tailer until a compaction's SessionStart started one from the
+        transcript's first line, and every earlier run's call was a hook_missing gap again (2,840 in one run)."""
         path = self.transcript(PROMPT, TOOL_USE, RESULT)
-        p = {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "transcript_path": path, "prompt": "go on"}
+        self.start(path=path)
+        ended = os.path.getsize(path)
+        p = {"hook_event_name": "SessionEnd", "session_id": "s1", "reason": "other"}
+        with mock.patch.object(self.cc, "system_config", return_value=None):
+            self.assertEqual(self.cc._handle(self.client, p, "SessionEnd", "s1", None), 0)
+        self.assertFalse(os.path.exists(self.cc._state("s1")))
+        self.assertEqual(json.load(open(self.cc._state("s1", self.cc.ENDED))), {path: ended})
+        self.transcript(NEXT)   # Claude Code writes on after the SessionEnd, before the new run's first hook
         popen = self.popen()
-        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
-                mock.patch.object(self.cc, "system_config", return_value=None):
-            self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
+        self.assertEqual(self.prompt(path, popen), 0)
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: ended})
+
+    def test_a_resumed_session_after_session_end_reads_its_transcript_from_where_it_ends(self):
+        """The same session, resumed: a SessionStart's resume names the transcript's history, so the new run's tailer
+        starts where the transcript ends at registration, not at the SessionEnd's offsets."""
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        self.start(path=path)
+        p = {"hook_event_name": "SessionEnd", "session_id": "s1", "reason": "other"}
+        with mock.patch.object(self.cc, "system_config", return_value=None):
+            self.assertEqual(self.cc._handle(self.client, p, "SessionEnd", "s1", None), 0)
+        self.transcript(NEXT)   # Claude Code writes on after the SessionEnd, before the resume
+        handle = json.loads(self.start(path=path, source="resume").return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def test_a_session_whose_end_marker_is_old_reads_on_from_where_its_transcript_ends(self):
+        """An ENDED marker an older Tracekit wrote (`{}`) holds no offsets: the new run's tailer starts where the
+        transcript ends at its first event, as today."""
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        files.write_json(self.cc._state("s1", self.cc.ENDED), {})
+        popen = self.popen()
+        self.assertEqual(self.prompt(path, popen), 0)
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
+
+    def test_a_session_whose_end_marker_names_another_transcript_reads_on_from_where_its_transcript_ends(self):
+        """An ENDED marker naming another transcript holds no offsets for this session's transcript: the new run's
+        tailer starts where the transcript ends at its first event, as today."""
+        path = self.transcript(PROMPT, TOOL_USE, RESULT)
+        files.write_json(self.cc._state("s1", self.cc.ENDED), {"/home/agent/other.jsonl": 7})
+        popen = self.popen()
+        self.assertEqual(self.prompt(path, popen), 0)
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle["offsets"], {path: os.path.getsize(path)})
 
