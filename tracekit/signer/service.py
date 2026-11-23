@@ -4112,8 +4112,16 @@ class SignerService:
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
-                # under this call's tool_call_id; the approval.request it names has the earlier attempt's
-                tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                # under this call's tool_call_id; the approval.request it names has the earlier attempt's. The decision
+                # the use was checked against: the current call when its arguments are the approved ones (a retry), else
+                # the decision the approval was asked for (the call under its id whose arguments changed since). It goes
+                # in the non-critical slot, so a verifier that doesn't interpret it still verifies the bundle (1.8.0)
+                data, ext = {"approval_id": aid}, None
+                if call and call.get("decision_id") and call.get("attempt") == attempt and self._same(call, digest):
+                    ext = {"approval.decision": call["decision_id"]}
+                elif isinstance(a.get("decision_id"), str) and a.get("attempt", 0) == attempt:
+                    ext = {"approval.decision": a["decision_id"]}
+                tx.emit(run, "approval.consumed", data, source="signer", **top, **({"ext": ext} if ext else {}))
                 if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
                     tx.set(call, "refused", None)
                 rec = run.get("rec")
@@ -6011,6 +6019,9 @@ def main(argv=None):
     q = sub.add_parser("serve", help="run the signer in the foreground")
     q.add_argument("--close-on-stop", metavar="FILE",
                    help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
+    q.add_argument("--log-level", choices=("warning", "info", "debug"),
+                   help="log Tracekit's lines to stderr from this level up: warning (the default), info (adds the HTTP "
+                        "request log) or debug; other libraries print only warnings and errors")
     mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
@@ -6070,6 +6081,10 @@ def main(argv=None):
     g.add_argument("--config")
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir")
     a = ap.parse_args(argv)
+    if a.cmd == "serve" and a.log_level:
+        # Tracekit's loggers only: other libraries stay at warning, as botocore's debug log prints AWS credentials
+        logging.basicConfig()
+        logging.getLogger("tracekit").setLevel(a.log_level.upper())
     if a.cmd == "serve" and a.dev:
         return _serve_dev()
     if a.cmd == "reveal":

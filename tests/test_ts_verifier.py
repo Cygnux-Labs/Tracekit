@@ -807,6 +807,24 @@ class Agreement(SignerBundles):
                                  [line])
                 self.assertEqual(line["status"], status)
 
+    def test_both_verifiers_read_an_approval_decision_alike(self):
+        """ext.approval.decision: the line passes as the signer writes it and warns otherwise, the same in both (the
+        kit scores exit codes and verdicts, which a warning doesn't change)."""
+        import test_bundle_v2 as b
+        trust = os.path.join(self.d, "approval-decision-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for name, kw in b.APPROVAL_DECISIONS.items():
+            with self.subTest(name):
+                log = b.Log(os.path.join(self.d, f"approval-decision-{uuid.uuid4().hex}"))
+                self.addCleanup(log.store.close)
+                bundle = b.approval_decision_bundle(log, os.path.join(self.d, f"{uuid.uuid4().hex}.tkb"), **kw)
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "approval decision"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "approval decision"],
+                                 [line])
+                self.assertEqual(line["status"], "warn" if kw else "pass")
+
     @unverified_bundles   # records no signer writes (schema-invalid ones among them), on purpose
     def test_strings_past_utf16_and_schema_invalid_records_read_alike(self):
         """Python counts and sorts strings by code point, JavaScript by UTF-16 unit, and a schema-invalid record must
