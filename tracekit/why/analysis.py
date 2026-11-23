@@ -46,14 +46,12 @@ def is_sensitive(run: Run, ev: Dict[str, Any]) -> Optional[str]:
 
 # --------------------------------------------------------------------------- argument provenance
 
-def atoms(args: Any, keep: Callable[[Tuple[Any, ...]], bool] = lambda path: True) -> List[str]:
+def atoms(args: Any) -> List[str]:
     """Values worth tracing back (_leaves: JSON and query strings in values read too): the addresses and URLs in each
     string argument, the whole string when it has 6+ characters, and numbers the signer's index reads (a digit run of 8
-    or more); of the arguments whose keys (`path`) `keep` keeps."""
+    or more)."""
     out: List[str] = []
-    for path, v in _leaves(args):
-        if not keep(path):
-            continue
+    for _, v in _leaves(args):
         if isinstance(v, str):
             out.extend(_EMAIL.findall(v) + _URL.findall(v))
             if len(v) >= 6:
@@ -69,9 +67,7 @@ _QUERY = re.compile(r"[\w.\[\]-]+=[^&\s]*(?:&[\w.\[\]-]+=[^&\s]*)*")
 def _leaves(args: Any) -> Iterator[Tuple[Tuple[Any, ...], Any]]:
     """Each leaf of a call's arguments, in order, with the keys above it: dicts, lists and tuples walked, and a string
     that holds a JSON object or array, or a query string (`to=…&amount=…`), walked too under its own keys (the string
-    is a leaf as well), three strings deep at most. A name/value pair's value is under the key the pair names
-    (`{"field": "code", "value": …}` is `{"code": …}`, _pair_key). Arguments that hold themselves are refused
-    (ValueError)."""
+    is a leaf as well), three strings deep at most. Arguments that hold themselves are refused (ValueError)."""
     stack: List[Any] = [((), args, 0)]
     # the containers being walked, kept alive so no other takes an id of theirs; one met inside itself is a cycle
     inside: Dict[int, Any] = {}
@@ -87,9 +83,7 @@ def _leaves(args: Any) -> Iterator[Tuple[Tuple[Any, ...], Any]]:
             inside[id(v)] = v
             stack.append(id(v))
             if isinstance(v, dict):
-                name = _pair_key(v)
-                stack.extend((path + (name if name is not None and k in _VALUES else k,), x, depth)
-                             for k, x in reversed(list(v.items())))
+                stack.extend((path + (k,), x, depth) for k, x in reversed(list(v.items())))
             else:
                 stack.extend((path, x, depth) for x in reversed(v))
         else:
@@ -137,23 +131,6 @@ def _shallow(t: str) -> Optional[str]:
 
 
 _JSON_TOKEN = re.compile(r'"(?:[^"\\]|\\.)*"|[\[\]{}]')   # a string, or a bracket outside one
-_NAMES = frozenset(("field", "fieldname", "propertyname", "property", "name", "key", "attribute", "column"))
-_VALUES = frozenset(("value", "values"))
-
-
-def _pair_key(d: Dict[Any, Any]) -> Optional["_Field"]:
-    """The key a name/value pair names (`{"field": "code", "operator": "EQ", "value": …}`, `{"propertyName": …}`):
-    the one string under a naming key, when the dict has a `value` or `values`."""
-    names = [x for k, x in d.items() if isinstance(k, str) and k.replace("_", "").lower() in _NAMES]
-    return _Field(names[0]) if len(names) == 1 and isinstance(names[0], str) and any(k in d for k in _VALUES) \
-        else None
-
-
-class _Field(str):
-    """A key a name/value pair gave (_pair_key): a filter's value whose field the word lists don't name is read as what a
-    lookup is by (_lookup_key)."""
-
-
 def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], memo: Optional[Dict[Any, Any]] = None
                    ) -> List[Dict[str, Any]]:
     """For each argument value, which earlier inputs or tool results hold it, read as the signer's index reads values
@@ -197,6 +174,9 @@ def chosen(src: Dict[str, Any]) -> str:
     """Why a trusted call's answer (a source of value_provenance carrying `given`) counts as untrusted: what the call
     was given, and where that came from."""
     given = src["given"]
+    if not given["from"]:   # more tokens than are read (_rows)
+        return (f"{src['label']}'s answer counts as untrusted: it was called with {given['value']}, and those past 64 "
+                "aren't read.")
     return (f"{src['label']}'s answer counts as untrusted: it was called with '{given['value']}', which came only from "
             f"{', '.join(given['from'])}" + (f", and that only from {', '.join(given['origin'])}"
                                              if given["origin"] != given["from"] else "") + ".")
@@ -267,9 +247,11 @@ def _tainted(rows: List[Dict[str, Any]]) -> bool:
 def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: int, need: Set[int]
           ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """value_provenance's rows of `args` before `before_seq`, and the rows of what the call was called by, which say
-    whether a trusted call's answer counts as untrusted (_tainted): its rows but those only under a filter's key
-    (_filter_key: `status`, `format`, `year`), and its short keys (_short_key); each earlier call whose rows
-    (memo["rows"]) the reading needed and didn't have is added to `need`, and the rows are then provisional."""
+    whether a trusted call's answer counts as untrusted (_tainted): its rows that are trusted or name something
+    (_names: an address, URL or host, a distinctive digit run), and a row for each distinctive token of its arguments
+    (_tokens), the first 64 (past them, a row of untrusted-only for the rest: a call given more fails closed); each
+    earlier call whose rows (memo["rows"]) the reading needed and didn't have is added to `need`, and the rows are then
+    provisional."""
     if _committed(args):
         return [], []
     reads, calls = ix.reads, ix.calls
@@ -383,71 +365,82 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         else:
             status = "trusted"
         rows.append({"value": a, "status": status, "sources": srcs, **({"in_text": True} if in_text else {})})
-    by = list(rows)
-    if any(_filter_key(path[-1]) for path, _ in _leaves(args) if path):   # what only a filter has is no key
-        kept = set(atoms(args, lambda path: not (path and _filter_key(path[-1]))))
-        kept_text = {v for path, v in _leaves(args) if isinstance(v, str) and not (path and _filter_key(path[-1]))}
-        kept |= set(_mentions({t: vals for t, vals in text.items() if t in kept_text}))
-        by = [r for r in rows if r["value"] in kept]
-    asked = dict(x for path, v in _leaves(args) if path for x in _keys(path[-1], v))
-    holders = _key_holders(ix, set(asked.values()), k)
-    for shown, token in asked.items():
+    by = [r for r in rows if r["status"] == "trusted" or r["status"] == "untrusted-only" and _names(r["value"])]
+    tokens = _tokens(args)
+    holders = _key_holders(ix, {t for _, t in tokens[:64]}, k)
+    for shown, token in tokens[:64]:
         came = [{"node": "ev:" + reads[i][0]["id"], "label": reads[i][2], "trust": trust(i),
                  "seq": reads[i][0]["seq"]} for i in holders[token]]
         by.append({"value": shown, "sources": came, "status": "generated" if not came else "trusted" if any(
             x["trust"] == "trusted" for x in came) else "untrusted-only"})
+    if len(tokens) > 64:   # each search is one pass of a pattern of them all; more would slow every check
+        by.append({"value": "more than 64 tokens that name something", "sources": [], "status": "untrusted-only"})
     return rows, by
 
 
-def _keys(key: Any, v: Any) -> List[Tuple[str, str]]:
-    """What a lookup is by in an argument under `key`, each as (the value, read plain): its short key (_short_key), and
-    under a query's key (_query_key: `query`, `q`, `sql`, `where`, `filter`) the literals of its text (_literals)."""
-    out = []
-    t = _short_key(key, v)
-    if t is not None:
-        out.append((str(v), t))
-    if isinstance(v, str) and _query_key(key):
-        # lean: a query's first 64 literals are read (each search is one pass of a pattern of them all over each
-        # content); a literal past them isn't. Read them all when a query that long is seen in use.
-        out += [(x, _plain(x)) for x in _literals(v)[:64]]
-    return [(shown, t) for shown, t in out if sum(map(len, _KEY_PART.findall(t))) >= 3]
+def _tokens(args: Any) -> List[Tuple[str, str]]:
+    """The distinctive tokens (_distinctive) of a call's arguments, as (the token, read plain), in order: of every
+    string and number at every depth, whatever its key, each quoted part (`'ACME-7781'`, `"acme"`; not in JSON
+    text, whose keys are quoted), each word (letters and digits with `-` `_` `.` `#` `/` between) and a word's runs of
+    digits (`7781` of `ACME-7781`), and each number; 65 at most (_rows reads 64)."""
+    out: Dict[str, str] = {}
+    for _, v in _leaves(args):
+        if len(out) > 64:
+            break
+        if isinstance(v, float) and v.is_integer():
+            v = int(v)
+        if isinstance(v, int) and not isinstance(v, bool):
+            found = [(str(abs(v)), False)]
+        elif isinstance(v, str):
+            quoted = [] if v.lstrip()[:1] in ("{", "[") else [a or b for a, b in _QUOTED.findall(v)]
+            found = [(x, True) for x in quoted] + [(x, False) for w in _WORD_TOKEN.findall(v)
+                                                   for x in [w, *_DIGITS.findall(w)]]
+        else:
+            continue
+        for shown, quoted in found:
+            t = _DIGIT_SEP.sub("", shown).lower() if shown.isascii() and not quoted else _plain(shown)   # a word: plain
+            if t not in out and _distinctive(t, quoted):
+                out[t] = shown
+    return [(shown, t) for t, shown in out.items()]
 
 
-def _literals(s: str) -> List[str]:
-    """The literals of a query or a filter's expression: the value of each `field:value` or `field = value` (`==`,
-    `eq`, `is`, `like`) whose field is no filter's (_filter_key), then each quoted string and each word with a digit
-    in it (`ACME-7781`, `7781`)."""
-    out: List[str] = []
+def _distinctive(t: str, quoted: bool = False) -> bool:
+    """Whether a token of a lookup's arguments (read plain) names something a lookup can be by, so that one only
+    untrusted content gave chose the record: letters and digits mixed, 3 or more of them (`a7781`, `acme-7781`,
+    `svc-a12`), but no unit (`30s`, `5ms`, `2nd`); 4 or more digits that are no plausible year or date and no round
+    number (`7781`; not `2026`, `20261101`, `1500`, `100`); or quoted, 3 or more characters but no common word
+    (`'acme'`, `'ACME Ltd'`; not `'open'`). A name alone (`Emma`, `acme`) names nothing here."""
+    run = "".join(_KEY_PART.findall(t))
+    digits = sum(c.isdigit() for c in run)
+    if digits and digits < len(run):
+        return len(run) >= 3 and not _UNIT.fullmatch(run)
+    if digits:
+        if len(run) < 4 or len(run.rstrip("0")) <= 2:
+            return False
+        if len(run) == 4:
+            return not 1900 <= int(run) <= 2100
+        return len(run) != 8 or not _date(run)
+    return quoted and len(t) >= 3 and t not in COMMON
 
-    def pair(m: "re.Match[str]") -> str:
-        if not _filter_key(m.group(1)):
-            out.append(m.group(2).strip("'\""))
-        return " "
-    rest = _PAIR.sub(pair, s)
-    out += [a or b for a, b in _QUOTED.findall(rest)]
-    out += _NUMBERED.findall(_QUOTED.sub(" ", rest))
-    return list(dict.fromkeys(out))
+
+def _date(d: str) -> bool:
+    """Whether 8 digits read as a date of 1900 to 2100: year, month, day, or day and month either way, then year."""
+    y, m, day = int(d[:4]), int(d[4:6]), int(d[6:])
+    a, b, y2 = int(d[:2]), int(d[2:4]), int(d[4:])
+    return 1900 <= y <= 2100 and 1 <= m <= 12 and 1 <= day <= 31 or \
+        1900 <= y2 <= 2100 and 1 <= min(a, b) <= 12 and max(a, b) <= 31
 
 
-def _short_key(key: Any, v: Any) -> Optional[str]:
-    """A key too short to be an atom (3 to 5 characters with 3 or more letters and digits, or a number of 3 to 7
-    digits: `781`, `#7781`, `A-781`, `Eve`, `José`, `7781.0`) under a key a lookup is by (_lookup_key: `id`, `name`,
-    `supplier_code`, `account`), read plain: content that holds its letters and digits as a token (_key_holders) says
-    where it came from."""
-    if not _lookup_key(key):
-        return None
-    if isinstance(v, float) and v.is_integer():
-        v = int(v)
-    if isinstance(v, int) and not isinstance(v, bool):
-        t = str(abs(v))
-        return t if 3 <= len(t) <= 7 else None
-    if not isinstance(v, str) or len(v) >= 6:   # 6 or more characters: an atom
-        return None
-    return _plain(v)
+def _names(value: str) -> bool:
+    """Whether a value a call was given names something (_distinctive): an address, URL or host, a digit run that is no
+    year, date or round number, or a free string with a distinctive token in it (_tokens: base64, `ACME-7781 iban`)."""
+    _, free, _, whole = _atom(value)
+    return bool(_tokens(value)) if free else any(kind != "digits" or _distinctive(v) for kind, v in whole
+                                                 if kind != "string")
 
 
 def _key_holders(ix: "_Index", tokens: Iterable[str], k: int) -> Dict[str, List[int]]:
-    """For each of a call's keys (_keys, read plain), the contents before index `k` that hold it as a token in their
+    """For each of a call's tokens (_tokens, read plain), the contents before index `k` that hold it as a token in their
     text, its runs of letters and of digits with or without one character between (`A-781` holds `A781`, and `A781`
     `A-781`): by one pass over each content of a pattern of them all (a key found in it leaves the pattern, and the
     content is read again for the rest, which a key it matched may hold: `A-781` holds `781` too), each content read
@@ -529,13 +522,11 @@ FREE_TEXT = frozenset(("body", "text", "message", "content", "summary", "descrip
                        "payload", "script", "topic", "label", "motd", "bio", "headline", "post", "prompt", "memo",
                        "signature", "greeting"))
 REFERENCE = frozenset(("ref", "reference"))
-LOOKUP = frozenset(("name", "code", "number", "num", "no", "nr", "ref", "reference", "key", "handle", "identifier",
-                    "user", "username", "login", "customer", "client", "supplier", "vendor", "contact", "member",
-                    "employee", "sku", "query", "q", "search", "term", "who"))
-QUERY = frozenset(("query", "q", "sql", "where", "filter", "search", "expression", "condition", "criteria"))
-FILTER = frozenset(("status", "state", "format", "type", "kind", "year", "month", "day", "date", "sort", "limit",
-                    "page", "offset", "size", "lang", "language", "locale", "mode", "period", "since", "until",
-                    "currency"))
+COMMON = frozenset(("open", "closed", "pending", "active", "inactive", "paid", "unpaid", "overdue", "draft", "sent", "new",
+                    "all", "none", "null", "true", "false", "yes", "asc", "desc", "json", "csv", "xml", "pdf", "html",
+                    "text", "error", "warning", "info", "debug", "prod", "staging", "test", "default", "today", "high",
+                    "low", "medium", "done", "failed", "success", "approved", "rejected", "cancelled", "archived",
+                    "eur", "usd", "gbp"))
 
 
 def _key_words(key: Any) -> List[str]:
@@ -550,30 +541,6 @@ def _identifier_key(key: Any) -> bool:
     words = _key_words(key)
     return bool(words) and not _one_of(words[-1], FREE_TEXT) and any(
         _one_of(w, DESTINATION) for w in words + [a + b for a, b in zip(words, words[1:])])
-
-
-def _filter_key(key: Any) -> bool:
-    """Whether an argument's key names a filter (its last word one of FILTER: `status`, `format`, `year`, `sort`,
-    `page_size`): what a lookup is narrowed by, not what it is by."""
-    words = _key_words(key)
-    return bool(words) and _one_of(words[-1], FILTER)
-
-
-def _lookup_key(key: Any) -> bool:
-    """Whether an argument's key names what a lookup is by: its last word one of LOOKUP (`id`, `name`, `supplier_code`,
-    `customer`, `query`), an identifier's key (_identifier_key: `account`, `iban`), or a name/value pair's field the
-    word lists don't name (_Field); and no filter's (`account_type`)."""
-    if _filter_key(key):
-        return False
-    words = _key_words(key)
-    return isinstance(key, _Field) or bool(words) and (_one_of(words[-1], LOOKUP) or _identifier_key(key))
-
-
-def _query_key(key: Any) -> bool:
-    """Whether an argument's key names a query or a filter's expression (its last word one of QUERY: `query`, `q`,
-    `sql`, `where`, `filter`), whose literals a lookup is by (_literals)."""
-    words = _key_words(key)
-    return bool(words) and _one_of(words[-1], QUERY)
 
 
 def _text_key(key: Any) -> bool:
@@ -625,11 +592,15 @@ def _reference_key(key: Any) -> bool:
 
 def _lone_identifier(v: str) -> bool:
     """Whether text `v` is identifiers only, in punctuation or not, after a label of up to four words or not (`IBAN`,
-    `IBAN:`, `IBAN —`, `Backup host is`): IBANs written in groups or not (`GB29 NWBK …`), addresses, URLs and hosts, one
+    `IBAN:`, `IBAN —`, `Backup host is`; before an IBAN `Emma Smith, IBAN` too), with a name after an IBAN or not: IBANs
+    written in groups or not (`GB29 NWBK …`), addresses, URLs and hosts, one
     or more (`GB29… / DE89…`), and digit runs written in groups or not (`+44 7700 900123`) alone or after a label that
     ends in `:`, `#` or a dash (`Acct # 6016 …`; `about order 77812290` is text)."""
     t = v.strip(_AROUND)
-    label = _LABEL.match(t)
+    iban = _IBANS.search(t) is not None
+    if iban:   # a name after an IBAN (`GB29… Emma Smith`, `GB29… (Emma)`)
+        t = _NAME_AFTER.sub("", t)
+    label = (_IBAN_LABEL if iban else _LABEL).match(t)
     return _identifiers(t, True) or label is not None and _identifiers(
         t[label.end():], label.group().rstrip()[-1] in ":#-–—")
 
@@ -711,13 +682,16 @@ _ALNUMS4 = re.compile(r"[^\W_]{4,}")
 _ALNUM = re.compile(r"[^\W_]{4,}")
 _AROUND = " \t\r\n.,;:!?()[]{}<>\"'"
 _LABEL = re.compile(r"(?:(?!https?:)[^\W\d_]+\.?(?:\s*[:#\-–—]+\s*|\s+)){1,4}")
+_IBAN_LABEL = re.compile(r"(?:[^\W\d_]+\.?(?:\s*[:#,\-–—]+\s*|\s+)){1,4}")
+_NAME_AFTER = re.compile(r"(?:[\s,]+\(?[A-Z][^\W\d_]*\)?){1,3}$")
 _IBANS = re.compile(r"(?<![^\W_])[A-Za-z]{2}\d{2}(?:\s?[A-Za-z0-9]{4}){2,7}(?:\s?[A-Za-z0-9]{1,3})?(?![^\W_])")
 _DIGIT_GROUPS = re.compile(r"(?<![^\W_])\+?\d(?:[\s.-]?\d){7,}(?![^\W_])")
 _SEPARATED = re.compile(r"\s+(?:/|and|or)\s+|\s*[,;|&]\s*|\s+")
-_PAIR = re.compile(r"([^\W\d][\w.]*)\s*(?:[:=]=?|\b(?:eq|is|like)\b)\s*(?!//)('[^']*'|\"[^\"]*\"|[^\s'\"(),;]+)",
-                   re.I)
-_QUOTED = re.compile(r"'([^']*)'|\"([^\"]*)\"")
-_NUMBERED = re.compile(r"[^\s'\"(),;=:<>]*\d[^\s'\"(),;=:<>]*")
+_QUOTED = re.compile(r"(?<!\w)'([^'\n]{3,}?)'(?!\w)|(?<!\w)\"([^\"\n]{3,}?)\"(?!\w)")
+_WORD_TOKEN = re.compile(r"[^\W_]+(?:[-_.#/][^\W_]+)*")
+_DIGITS = re.compile(r"\d+")
+_UNIT = re.compile(r"\d+(?:ms|us|ns|s|sec|secs|m|min|mins|h|hr|hrs|d|w|wk|y|yr|yrs|k|kb|mb|gb|tb|px|em|pt|x|st|nd|rd|th"
+                   r"|am|pm)")
 _KEY_PART = re.compile(r"[^\W\d_]+|\d+")   # a run of letters, or of digits
 
 

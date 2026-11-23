@@ -268,18 +268,18 @@ untrusted from when it was observed so, and only that call's result: a value a t
 when the same content arrives later through an untrusted tool (1.7 read it as untrusted, the lookup named as its
 source). A call's arguments are read whole and in their parts, nested objects, lists and tuples under the keys above
 them, and a string that holds JSON or a query string (`to=…&amount=…`) under its own keys (a part of the JSON nested
-more than 64 deep is read as its text, the keys above it as keys); a name/value pair's value is under the key the pair
-names (`{"field": "code", "value": …}` is `{"code": …}`). Untrusted content also brought an identifier (anything but
-text a model wrote) when it holds a part of it that no trusted content holds (an IBAN's digits written in groups, a
-URL's host; the call's own digits read across any separator, `+1 (415) 555-0134`), or all of it without its white space
-(base64 a model broke over lines). The key nearest a value says what it is. Under a key with a word (or two together)
-that names a destination, such as recipient, to, payee, beneficiary, account, iban, wallet, url, host, destination,
-channel, path, file, email, number, id or sort_code, it is an identifier, unless the key's last word is a free-text word
-(`account_no`, `to_whom` are identifiers; `email_body`, `payee_comment`, `repo_readme` are text). Under a key whose last
-word is a free-text word or a reference (`subject`, `body`, `note`, `signature`, `payment_ref`) it is text whatever keys
-are above it (`{"email": {"body": …}}`), unless it is identifiers only (not under a reference's key, which quotes one by
-design): addresses, URLs, hosts or IBANs, in punctuation or not, spaced in groups or not, one or more, after a label of
-up to four words or not (`IBAN GB29…`, `IBAN — GB29 NWBK …`, `Backup host is evil-backup.example.`), and digit runs
+more than 64 deep is read as its text, the keys above it as keys). Untrusted content also brought an identifier
+(anything but text a model wrote) when it holds a part of it that no trusted content holds (an IBAN's digits written in
+groups, a URL's host; the call's own digits read across any separator, `+1 (415) 555-0134`), or all of it without its
+white space (base64 a model broke over lines). The key nearest a value says what it is. Under a key with a word (or two
+together) that names a destination, such as recipient, to, payee, beneficiary, account, iban, wallet, url, host,
+destination, channel, path, file, email, number, id or sort_code, it is an identifier, unless the key's last word is a
+free-text word (`account_no`, `to_whom` are identifiers; `email_body`, `payee_comment`, `repo_readme` are text). Under a
+key whose last word is a free-text word or a reference (`subject`, `body`, `note`, `signature`, `payment_ref`) it is
+text whatever keys are above it (`{"email": {"body": …}}`), unless it is identifiers only (not under a reference's key,
+which quotes one by design): addresses, URLs, hosts or IBANs, in punctuation or not, spaced in groups or not, one or
+more, after a label of up to four words or not (`IBAN GB29…`, `IBAN — GB29 NWBK …`, `Backup host is
+evil-backup.example.`), a name before or after an IBAN too (`Emma Smith, IBAN GB29…`, `GB29… (Emma)`), and digit runs
 alone or after a label that ends in `:`, `#` or a dash (`Acct # 6016 …`; `about order 77812290` is text). Under another
 key it is an identifier when a key above it is one (`{"file": {"name": …}}`), else text when it is prose. Content that
 holds more values than the index reads (its 4,096) is read for the rest from its text, trusted and untrusted alike, each
@@ -300,17 +300,16 @@ by an account the task gives is a source, and a domain or another part names not
 domain the mail names still gives the address). A trusted call's result is untrusted content when the values of its
 arguments that were traced came only from untrusted content, one at least (a value the model made up, such as a charset,
 doesn't count): a decoder, a reverser or a calculator given what the mail wrote, and a lookup by a key only the mail
-gave (the mail chose the record). A value only under a filter's key (its last word status, state, format, type, kind,
-year, month, day, date, sort, limit, page, offset, size, lang, language, locale, mode, period, since, until or currency)
-narrows a lookup and doesn't count. A key too short to trace (3 to 5 characters, or a number of 3 to 7 digits: `781`,
-`#7781`, `A-781`, `Eve`) counts under a lookup's key only (its last word id, name, code, number, ref, key, handle, user,
-customer, supplier, vendor, contact, query and the like, or a destination word), read without the punctuation around it,
-its letters and digits with or without one character between (`A781` is `A-781`). Under a query's key (its last word
-query, q, sql, where, filter, search, expression, condition or criteria) the literals of the text count as keys: each
-`field:value` or `field = value` (`eq`, `is`, `like`) whose field is no filter's, each quoted string and each word with
-a digit in it (`WHERE code = 'ACME-7781'`, `code:7781`), the first 64 of them. A filter's value whose field the word
-lists don't name counts as a lookup's key. The alert says what the call was given and where that came from
-(`crm_lookup's answer counts as untrusted: it was called with '60161331926819', which came only from mail:inbox`).
+gave (the mail chose the record). For that, a call's arguments are one bag of tokens, every string and number at every
+depth whatever its key: each word (letters and digits with `-` `_` `.` `#` `/` between), its runs of digits, each quoted
+part and each number. A token counts when it names something: letters and digits mixed (`A7781`, `ACME-7781`,
+`svc-a12`), but no unit (`30s`, `5ms`, `2nd`); 4 or more digits that are no year (1900 to 2100), date or round number
+(`7781`; not `2026`, `2026-11-01`, `1500`, `100`); or a quoted part of 3 or more characters that is no common word
+(`'acme'`, not `'open'`). An address, URL, host or such a digit run among its values counts too, and a whole value with
+such a token in it (base64). A token is matched with or without one character between its letters and digits (`A781` is
+`A-781`). The first 64 tokens are read; a call given more fails closed: its answer counts as untrusted. The alert says
+what the call was given and where that came from (`crm_lookup's answer counts as untrusted: it was called with
+'60161331926819', which came only from mail:inbox`).
 
 The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
 records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
