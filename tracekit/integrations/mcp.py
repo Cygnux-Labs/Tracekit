@@ -112,7 +112,10 @@ class TracekitSession(HeldCalls):
         except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
             if not fail_open(self.fail_modes, self.CLASS):
                 raise
-            warnings.warn(f"tracekit: MCP {kind} not recorded: {e}", stacklevel=2)
+            message = recording_warning(f"MCP {kind}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=2)
+            
         return out
 
     async def _send(self, method, *a, **kw):
@@ -198,7 +201,9 @@ class TracekitSession(HeldCalls):
                     if not fail_open(self.fail_modes, self.CLASS):
                         await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                         raise
-                    warnings.warn(f"tracekit: MCP input_required not recorded: {e}", stacklevel=2)
+                    message = recording_warning("MCP input_required", e)
+                    if message is not None:
+                       warnings.warn(f"tracekit: {message}", stacklevel=2)
                 except Exception as e:
                     await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                     raise
