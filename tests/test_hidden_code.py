@@ -247,6 +247,18 @@ def held(args, tool="Bash"):
 class Lines(unittest.TestCase):
     """The lines whose held copy hid code: each copy shows what runs, or the call is denied."""
 
+    def test_a_stage_of_redirections_alone_is_a_stage(self):
+        """A pipeline stage that only redirects (`| > /dev/null |`, `| < <(sh) |`) was read as no stage, so a heredoc's
+        body before it read as data cat passes on to cat: `cat <<'E' | > /dev/null | cat` with a secret-looking value
+        in the body was asked, its copy hiding a value no data reader gets, and in `cat <<'E' | < <(sh) | cat` the body
+        read as data though sh runs it. Such a stage is kept: no program reads data there, so the body is no data."""
+        for line in ("cat <<'E' | > /dev/null | cat\nTOKEN=abcdefgh\nE", "cat <<'E' | < <(sh) | cat\nTOKEN=abcdefgh\nE"):
+            with self.subTest(line=line):
+                r = privacy._read_shell(line)
+                body = line.index("\n") + 1
+                self.assertFalse(any(r.data[body:line.index("\nE", body)]))
+                self.assertTrue(held({"command": line})[1])
+
     def test_a_program_place_the_policys_parser_finds_is_never_hidden(self):
         for command in ("{ A=TOKEN: /tmp/xyzzy; }", "while AKIAZZPAYLOADZZZZZZZ; do :; done",
                         "if true; then ghp_" + "z" * 36 + "; fi", "! /tmp/sk-proj-" + "a" * 24,

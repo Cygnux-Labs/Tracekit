@@ -876,9 +876,10 @@ def _data_stdin(stages, nested):
 
 
 def _command():
-    """A simple command as _read_shell reads it: its words' and herestrings' spans; whether it reads a heredoc;
-    whether its stdin is data (_data_stdin)."""
-    return {"words": [], "here": [], "docs": False, "data": None}
+    """A simple command as _read_shell reads it: its words' and herestrings' spans; whether it reads a heredoc, or
+    has a redirection (a stage of redirections alone is a stage: no program reads data there); whether its stdin is
+    data (_data_stdin)."""
+    return {"words": [], "here": [], "docs": False, "redirs": False, "data": None}
 
 
 class _Reading:
@@ -965,7 +966,7 @@ def _read_shell(s, facts=None):
 
         def end_command(piping):   # the command ends; it pipes into the next one, or its pipeline ends too
             nonlocal cmd, pipe
-            if not (cmd["words"] or cmd["here"] or cmd["docs"]) and (piping or len(pipe) == 1):
+            if not (cmd["words"] or cmd["here"] or cmd["docs"] or cmd["redirs"]) and (piping or len(pipe) == 1):
                 return   # an empty one (a blank line, `;;`, `()`): nothing to read, and the next is read into it
             if not piping:
                 finish(pipe, nested)
@@ -1026,7 +1027,7 @@ def _read_shell(s, facts=None):
                         cmd["docs"], e = True, d[3]
                     else:
                         e = _REDIRECT.match(s, i, z).end()
-                        redir = s[i:e]
+                        redir, cmd["redirs"] = s[i:e], True
                     i = e
                     continue
                 if c in " \t;&|":

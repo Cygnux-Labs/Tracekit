@@ -363,6 +363,15 @@ class ShippedHolds(ApproverCopy, unittest.TestCase):
 
 
 class HeldCopies(ApproverCopy, unittest.TestCase):
+    def test_a_heredoc_before_a_stage_of_redirections_alone_is_denied(self):
+        """(test_hidden_code's Lines, through the signer) a body a stage that only redirects follows is no data: a held
+        call that hides a value there is denied, not asked."""
+        self.register()
+        for i, line in enumerate(("cat <<'E' | > /dev/null | cat\nTOKEN=abcdefgh\nE",
+                                  "cat <<'E' | < <(sh) | cat\nTOKEN=abcdefgh\nE")):
+            with self.subTest(line=line):
+                self.assertEqual(self.held({"command": line}, tcid=f"tc-{i}"), DENIED)
+
     def test_a_value_ends_where_the_shell_ends_it(self):
         self.register()
         for i, (command, shown) in enumerate((
