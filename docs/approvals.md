@@ -501,9 +501,22 @@ can't read, or an unmapped tool given a command line. For a call held by one of 
 a person approved in the last 30 days: the same rules, tool and target (for an install, the same package source),
 the same project and the same agent. It approves only then, and only when two model answers both say yes. It never
 answers a call in a session that read a secret (or untrusted content, when you list it), a call like one a person
-rejected, a call any other rule also holds, or an install that reads a requirements or config file (`-r
-requirements.txt`, `-c`, `--config-settings`, `PIP_CONFIG_FILE`, npm's `--userconfig`, a `.npmrc` or `pip.conf` on the
-line, or for npm a working tree the line changes to), which may name another index. A person decides those.
+rejected, or a call any other rule also holds. A person decides those.
+
+**Installs it can answer.** A person's approval vouches for the index its line names, so the AI reviewer answers an
+install only when the line names the index and switches config files off. Otherwise a config file (`pip.conf`,
+`.npmrc`) could add another index, and a person decides:
+
+```
+pip install --isolated --index-url https://pypi.internal/simple requests
+uv pip install --no-config --index-url https://pypi.internal/simple requests
+npm install --registry https://npm.internal/ left-pad          # unscoped packages only (pnpm, yarn the same)
+```
+
+Never: an install that reads a requirements or config file (`-r requirements.txt`, `-c`, `--config-settings`,
+`PIP_CONFIG_FILE`, npm's `--userconfig`, a `.npmrc` or `pip.conf` on the line, a working tree npm changes to), a scoped
+npm package (`@acme/x`: its registry comes from `.npmrc`), bun, poetry, cargo and gem installs, and a change to a package
+manager's config (`pip config set`). `tracekit approvals show` says which, and how to pin the line.
 
 **What you see.** `tracekit approvals show` and `list` say what it did, or why it won't answer:
 

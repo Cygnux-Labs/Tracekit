@@ -36,7 +36,7 @@ assert not _errors, _errors
 AGENT = ts.ME   # the agent's own user: it owns the project the reviewer reads
 REVIEWER, ALICE = CallerIdentity("uid", "990299", True), CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
-INDEX = "pip install --index-url https://pypi.internal/simple {}"
+INDEX = "pip install --isolated --index-url https://pypi.internal/simple {}"
 # a hold of a reviewed rule alone that sends nothing: after a secret read, an install (a send) is also TK-Q001's
 HELD = "$X run"
 TWO = {"answers": [{"model": "m-a", "decision": "approve"}, {"model": "m-b", "decision": "approve"}]}
@@ -399,7 +399,7 @@ class TestPrecedent(Case):
             with self.subTest(cmd):
                 _, a = self.ask(cmd)
                 self.assertFalse(a["agent"]["eligible"], a["agent"])
-        _, a = self.ask("pip install -i https://pypi.internal/simple x")   # the same option by its short name
+        _, a = self.ask("pip install --isolated -i https://pypi.internal/simple x")   # the same option, short name
         self.assertTrue(a["agent"]["eligible"], a["agent"])
 
     def test_a_break_glass_change_to_the_approver_needs_a_reason(self):
@@ -936,11 +936,40 @@ class TestReplayAndView(Case):
         self.assertEqual({c["rule"] for c in view["conditions"]}, {"approval_agent"})
         self.assertNotIn(self.run["run_id"], json.dumps(view))
 
+    def test_an_install_pins_its_source_on_its_line_or_people_answer_it(self):
+        """A precedent vouches for the source a line names, so the line must name it and switch config files off: pip
+        --isolated, uv --no-config, npm's --registry for unscoped packages."""
+        pip, uv = "https://pypi.internal/simple", "https://pypi.internal/simple"
+        npm = "https://npm.internal/"
+        for vetted, held, why, hint in (
+                (f"pip install --isolated --index-url {pip} a", f"pip install --index-url {pip} b", "pip.conf",
+                 "add --isolated --index-url … to let the AI reviewer answer it"),
+                (f"uv pip install --no-config --index-url {uv} a", f"uv pip install --index-url {uv} b", "uv.toml, pip.conf",
+                 "add --no-config --index-url … (or --default-index …) to let the AI reviewer answer it"),
+                (f"npm install --registry {npm} left-pad", f"npm install --registry {npm} @acme/left-pad", ".npmrc",
+                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
+                (f"npm install --registry {npm} left-pad", f"npm install --registry {npm}", ".npmrc",
+                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
+                (f"pnpm add --registry {npm} left-pad", f"pnpm add --registry={npm} @acme/x", ".npmrc",
+                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
+                (f"bun add --registry {npm} left-pad", f"bun add --registry {npm} left-pad", "bunfig.toml, .npmrc", None)):
+            with self.subTest(held):
+                self.precedent(vetted)
+                if not vetted.startswith("bun"):   # pinned, another package: the AI may answer it
+                    _, a = self.ask(vetted[:-1] + "c" if vetted.endswith(" a") else vetted.replace("left-pad", "is-odd"))
+                    self.assertTrue(a["agent"]["eligible"], a["agent"])
+                _, a = self.ask(held)
+                self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"]), (False, (
+                    f"the install may read a config file that names another index ({why}): a person decides"
+                    + (f"; {hint}" if hint else ""))))
+        _, a = self.ask(f"pip config set global.index-url {pip}")
+        self.assertEqual(a["agent"]["reason"], "the line changes pip's config, which later installs read: a person decides")
+
     def test_an_install_that_reads_a_file_is_peoples(self):
         """A requirements or config file can name another index, and the agent writes it: no precedent vouches for an
         install that reads one."""
         self.precedent()
-        index = "pip install --index-url https://pypi.internal/simple"
+        index = "pip install --isolated --index-url https://pypi.internal/simple"
         for cmd, read in ((f"{index} -r requirements.txt", "requirements.txt"),
                           (f"{index} --requirement=reqs/dev.txt", "reqs/dev.txt"),
                           (f"{index} --req reqs/dev.txt", "reqs/dev.txt"),
