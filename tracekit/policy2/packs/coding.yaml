@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-101'
+version: '2026.11-v2-102'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -310,8 +310,9 @@ deny:
     # lean: a tripwire, as TK-D007: code that calls approval_decide itself (python -c, a script, a copy or link of the
     # entry script an earlier call made, run under another name; one the same call makes is read as tracekit, by
     # shell.py's _tracekit_copies) isn't read, nor an action from stdin (`xargs tracekit`), a
-    # value the parser makes of a literal with an operator other than a default, alternate or replacement (`D=xapprove; tracekit ${D#x}
-    # ID` is read as written and empty), a variable the line gives no literal as the action after approvals' options
+    # value the parser makes of a literal with an operator other than a default, alternate, replacement or a
+    # prefix or suffix removal with a literal pattern (`D=xapprove; tracekit ${D#x*} ID` is read as written and
+    # empty), a variable the line gives no literal as the action after approvals' options
     # (`--signer /tmp/s "$A"`: the joined argv can't tell it from --signer's value), an unquoted --signer value bash splits into a value and an action (`--signer
     # $1 list` with $1 `s approve`), a runner's own options before its subcommand (`uv -q run`) or a runner
     # policy2/shell.py doesn't name (`hatch env run`); when that must hold too, run system mode, whose signer
@@ -480,9 +481,11 @@ ask:
     # (a short cluster with t too, -ht), so only a status carrying one is held (`--help` prints help, not a token:
     # `unless`). `git credential fill` and each helper's own `get` print the stored username and password
     # (approve/store and reject/erase don't read them, so they aren't held); `gh auth git-credential get` prints
-    # the stored token the same way (`store`/`erase` don't read it).
+    # the stored token the same way (`store`/`erase` don't read it). `aws configure get` prints the stored secret
+    # access key or session/security token outright, by its name alone, `PROFILE.name` or `profile.PROFILE.name`;
+    # other fields (region, aws_access_key_id) name no secret, so only a get of the secret fields is held.
     # Paths in lower case: the target is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b)|git-credential\s+get\b)|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b)|git-credential\s+get\b)|^aws( -[^ ]+( [^- ][^ ]*)?){0,8} configure( -[^ ]+( [^- ][^ ]*)?){0,8} get( -[^ ]+( [^- ][^ ]*)?){0,8} ([^ .]+\.){0,2}(aws_secret_access_key|aws_session_token|aws_security_token)\b|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
     unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)|^gopass\s+(init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)(\s|$)|^gh\s+auth\s+(token|status)\b[\w\W]*?--help(\s|$)'
     reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
@@ -1065,12 +1068,13 @@ ask:
     class: shell
     # each command's argv: kubectl's or oc's `get` of a secret with an output that prints it (any -o or --output but
     # name and wide, or a --template), `oc extract` of a secret (to files or to stdout), `view-secret` (the plugin by
-    # either name) and `create token`, with up to eight options before the command. get's type is its first word
+    # either name) and `create token`, with up to eight options before the command; `get --raw` of a path
+    # with a `/secrets/` segment, or ending in `/secrets`, reads the secret or the namespace's secrets. get's type is its first word
     # after up to eight options or earlier TYPE/NAMEs, in any case, with its API group, as TYPE/NAME or one of a list
     # (cm,secrets); the output may come before it or within sixteen words after it. -f, -k, -l, -L, -n, -o, -s, -v
     # and --namespace take the next word as their value (`-n secrets` names a namespace), any other option either
     # way; a word ends the type only at a space, `/` or `,` (secret-reader is a name)
-    pattern: '^(?:kubectl|oc)(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} (?:get(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:(?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?(?: [^ ]+){0,16}? (?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)|(?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?)|view-secret|create(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} token|extract(?: [^ ]+){0,16}? [Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?/[^ ]*)(?: |$)|^kubectl-view-secret(?: |$)'
+    pattern: '^(?:kubectl|oc)(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} (?:get(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:(?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?(?: [^ ]+){0,16}? (?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)|(?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?|--raw[ =][^ ]*/secrets(?:/[^ ]*)?)|view-secret|create(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} token|extract(?: [^ ]+){0,16}? [Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?/[^ ]*)(?: |$)|^kubectl-view-secret(?: |$)'
     reason: reading a Kubernetes secret's value or creating a token
     remedy: Have a person approve the held call, or list secrets by name (kubectl get secrets) or describe one, which shows only sizes.
     rationale: A live secret or a new service account token is a cluster credential the agent can use or send anywhere; listing names and describing sizes stay allowed.
@@ -1228,10 +1232,14 @@ ask:
     # a write (a redirection or tee) into a bash or zsh startup file (TK-F011's: .bashrc, .bash_profile, .bash_login,
     # .profile, .zshrc, .zprofile, .zshenv, .zlogin) whose line holds a network shell: /dev/tcp/ or /dev/udp/, socat,
     # or nc, ncat or netcat with -e, -c, --exec or --sh-exec after up to four of its words, in either order; read in
-    # the raw command and in each line as the parser read it (`tee ${X}-a` is `tee -a`). An rc edit without one stays
-    # unheld. lean: the shell and the write within 128 characters of each other, so the fallback engine scans a
+    # the raw command and in each line as the parser read it (`tee ${X}-a` is `tee -a`). A heredoc written to one, its
+    # `<<` right after the write or up to 64 characters before it (`cat >> ~/.bashrc <<EOF`, `cat <<EOF >> ~/.bashrc`),
+    # holds its body as lines of its own: a network shell in the first 128 characters of one of its first nine lines
+    # (where the heredoc ends isn't read), as TK-A040 reads a flush fed through one; each body line is matched to its
+    # end once. An rc edit without one stays unheld. lean: the shell and the write within 128 characters of each
+    # other, and a heredoc's own line ending within 64 characters of its `<<` word, so the fallback engine scans a
     # bounded stretch from each; a padded line is still TK-F011's flag; read further if a real one is longer
-    pattern: '(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)[^\n]{0,128}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b[^\n]{0,128}?(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)'
+    pattern: '(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)[^\n]{0,128}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b|(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b[^\n]{0,128}?(?:/dev/(?:tcp|udp)/|\bsocat\b|(?:^|[^\w-])(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)|(?:(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b[ \t]*<<-?[ \t]*[''"\\]{0,8}[A-Za-z_]|(?:^|[^<\n])<<-?[ \t]*[''"\\]{0,8}[A-Za-z_][^\n]{0,64}?(?:>>?|\btee(?: -[^\s]+){0,8} )\s*[^\s>;|&]*?\.(?:bashrc|bash_profile|bash_login|profile|zshrc|zprofile|zshenv|zlogin)\b)[^\n]{0,64}(?:\n[^\n]*){0,8}?\n(?:[^\n]{0,127}?[^\w\n-])?(?:/dev/(?:tcp|udp)/|socat\b|(?:nc|ncat|netcat)(?: [^\s;|&]+){0,4}? (?:-[a-z]*[ec]|--(?:sh-)?exec)\b)'
     reason: adding a network shell to a shell startup file
     remedy: Have a person add the startup line; a shell that connects out on every login is not part of the task.
     rationale: A startup file runs in every new shell, so a line that opens a connection gives a remote party access each login; a person confirms it.
@@ -1439,13 +1447,16 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: agent_skill
-    # a call on a .md file under .agents/skills/ (OpenHands loads each, in a project or the home folder) whose text
-    # holds an inline command, !`cmd`, which OpenHands' invoke_skill runs with shell=True; \!`cmd` is kept as text.
-    # Skill text without one stays unheld, as do other agents' skill folders' files (.claude/ is TK-F009's)
+    # a call on a skill OpenHands loads whose text holds an inline command, !`cmd`, which OpenHands' invoke_skill runs
+    # with shell=True; \!`cmd` is kept as text. A skill is a .md file under .agents/skills/ (in a project or the home
+    # folder), or an instruction file OpenHands loads as one: AGENTS.md, agent.md, CLAUDE.md, GEMINI.md or
+    # .cursorrules, by its whole name in any case and in any folder (classes.py _AGENT_SKILL). Text without a !`cmd`
+    # stays unheld, so an ordinary edit of an instruction file is allowed, as are other agents' skill folders' files
+    # (.claude/ is TK-F009's)
     pattern: '(?:^|[^\\])!`[^`]+`'
-    reason: writing an agent skill that runs a shell command when it is invoked
+    reason: writing an agent skill or instruction file that runs a shell command when it is invoked
     remedy: Have a person read the skill's !`cmd` lines and approve the held call, or write the skill without them.
-    rationale: OpenHands runs a skill's inline commands with no hook when the skill is invoked; a person confirms them.
+    rationale: OpenHands runs the inline commands of a skill, and of the instruction files it loads as skills, with no hook when it is invoked; a person confirms them.
 
   - id: TK-A061
     class: fs

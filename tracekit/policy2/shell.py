@@ -262,13 +262,15 @@ KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", 
 # bash's reserved words: an alias of one is expanded where the word is one (`alias do='do cmd;'`)
 _RESERVED = KEYWORDS | {"for", "select", "case", "esac", "in", "function", "coproc", "time", "[[", "]]"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
-KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
+KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")),
+         ("bun", re.compile(r"bun")), ("deno", re.compile(r"deno")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
 # each interpreter's options whose value is its code (php's -B, -R and -E run code before, for and after each line of
 # stdin), the first its usual one, and their long forms
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
-LONG_CODE = {"node": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
+CODE_FLAGS = {"python": "c", "node": "ep", "bun": "ep", "deno": "", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
+_JS_KIND = {"bun": "node", "deno": "node"}   # bun's and deno's code is JavaScript: read it as node's
+LONG_CODE = {"node": ("--eval", "--print"), "bun": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
                      "--experimental-loader"}
@@ -437,9 +439,10 @@ def _reads_only(cmds, ctx):
 
 
 # NAME OP after a ${: a parameter (a special one, an array element, an indirect name too) with a default or an
-# assignment (-, =), an alternate (+), each with or without the colon, or a pattern substitution (/, //, /#, /%): its
-# word follows. Matched on the pieces dquote reads, one character each (\x01 for an expansion or quoted text)
-_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|/[/#%]?)")
+# assignment (-, =), an alternate (+), each with or without the colon, a prefix or suffix removal (#, ##, %, %%) or
+# a pattern substitution (/, //, /#, /%): its word follows. Matched on the pieces dquote reads, one character each
+# (\x01 for an expansion or quoted text)
+_OPERATOR = re.compile(r"!?(?:[A-Za-z_]\w*|\d+|[@*#?$!-])(?:\[[^]]*\])?(:?[-=+]|##?|%%?|/[/#%]?)")
 
 
 def _assignments(ways):
@@ -924,13 +927,13 @@ _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.remo
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
             "perl": re.compile(r"\b(?:rmtree|remove_tree)\b\s*\(?"),
             "ruby": re.compile(r"\bFileUtils\.(?:rm_rf|rm_r|remove_dir|remove_entry(?:_secure)?|rmtree)\b\s*\(?")}
-# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text
+# a write of a file, by language: `call` names it (its target: _written), or `path` is a Path literal's write_text/open
 _WRITES = {
-    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.write_(?:text|bytes)\s*\(|"""
+    "python": re.compile(r"""(?:pathlib\.)?Path\s*\(\s*(['"])(?P<path>[^'"\\\n]+)\1\s*\)\s*\.(?:write_(?:text|bytes)|(?P<open>open))\s*\(|"""
                          r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
-                         r"os\.(?:rename|replace|link|symlink))\s*\("),
+                         r"os\.(?:open|rename|replace|link|symlink))\s*\("),
     "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
-                       r"cp|link|symlink)(?:Sync)?\s*\("),
+                       r"cp|link|symlink|Bun\.write|Deno\.(?:writeTextFile|writeFile|create|truncate|open(?:Sync)?))(?:Sync)?\s*\("),
     "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
     "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
                        r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
@@ -941,13 +944,62 @@ _SECOND = re.compile(r"copy|move|rename|replace|link|symlink|cp|mv|install|ln") 
 
 _PERL_MODE = re.compile(r"\s*(?:\+[<>]|>>?)")   # Perl's writing modes (`+<` reads and writes)
 _MODE_KEYWORD = re.compile(r"""\bmode\s*=\s*(['"])([^'"\n]*)\1""")   # Python's open(…, mode='w')
+_WRITE_FLAG_NAME = re.compile(r"\bO_(?:WRONLY|RDWR|CREAT|TRUNC|APPEND|TMPFILE)\b")   # a writing open flag, by name
+_INT_FLAG_EXPR = re.compile(r"\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+)(?:\s*[|]\s*(?:0[xXoObB][0-9a-fA-F_]+|\d+))*\s*")
+
+
+def _arg_slices(kind, text):
+    """(start, end) character spans of each top-level argument in `text` (inside a call's argument list)."""
+    slices, k = [], 0
+    while k < len(text):
+        k = _blank_end(text, k, ",)")
+        if k >= len(text) or text[k] == ")":
+            break
+        if text[k] == ",":
+            k += 1
+            continue
+        end = _skip_value(kind, text, k, ",)", lambda _: None)
+        slices.append((k, end))
+        k = end + (text[end:end + 1] == ",")
+    return slices
+
+
+def _kw_arg(kind, text, name):
+    """(_arg_text pieces, raw RHS) of keyword argument `name=...` in `text`, else (None, None)."""
+    rx = re.compile(rf"{name}\s*=(?!=)\s*")
+    for start, end in _arg_slices(kind, text):
+        if m := rx.match(text, start, end):
+            return _arg_text(kind, text, m.end(), end, lambda _: None) or None, text[m.end():end].strip()
+    return None, None
+
+
+def _is_write_flags(expr):
+    """Whether an open flags expression writes: a writing flag by name (O_WRONLY, O_RDWR, or one that creates,
+    truncates or appends), or a number whose access-mode bits write or whose create/truncate/append bits are set."""
+    if not expr:
+        return False
+    if _WRITE_FLAG_NAME.search(expr):
+        return True
+    if _INT_FLAG_EXPR.fullmatch(expr):
+        try:
+            val = 0
+            for tok in re.split(r"\s*[|]\s*", expr.strip()):
+                val |= int(tok, 0)
+        except ValueError:   # a number Python doesn't read (08, 0b12, past int's digit limit): read as writing
+            return True
+        return val & 0o20003103 != 0   # O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_TMPFILE (Linux's numbers)
+    return False
+
+
+_DENO_WRITE_OPT = re.compile(r"\b(?:write|append|create|createNew|truncate)\s*:\s*true\b")   # Deno.open's options
 
 
 def _written(kind, call, items, text=""):
     """The file a write call writes (its arguments as _call_args gives them; `text`, the call's own source, for a
-    keyword mode), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument with w,
-    a, x, c or +, Python's as `mode=` too; Perl's `>`, `>>`, `+<` as its mode, with any layers (`>>:utf8`), or in
-    front of its file), a copy's, move's, rename's or link's target, else its first argument."""
+    keyword mode or flags), or None: an open's only in a writing mode (Python's, Ruby's, PHP's and Lua's mode argument
+    with w, a, x, c or +, Python's as `mode=` too, Python's `open` naming its file by `file=` too and `os.open` by
+    `path=` and writing only when its flags do, by name or number; Perl's `>`, `>>`, `+<` as its mode, with any layers
+    (`>>:utf8`), or in front of its file), a copy's, move's, rename's or link's target, else its first argument."""
     name = call.rsplit(".", 1)[-1]
     if kind == "perl" and name == "open":
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else ""
@@ -959,10 +1011,26 @@ def _written(kind, call, items, text=""):
             target = items[2] if len(items) > 2 else None
         else:   # open(FH, ">file")
             target = (rest,)
+    elif kind == "python" and call == "os.open":
+        # its flags are the second argument, positional or flags=, and its path the first, positional or path=
+        slices = _arg_slices(kind, text)
+        if items:
+            target = items[0]
+            flag_text = text[slices[1][0]:slices[1][1]].strip() if len(slices) > 1 else _kw_arg(kind, text, "flags")[1]
+        else:
+            target, _ = _kw_arg(kind, text, "path")
+            _, flag_text = _kw_arg(kind, text, "flags")
+        target = target if _is_write_flags(flag_text) else None
+    elif kind == "node" and call in ("Deno.open", "Deno.openSync"):
+        # Deno.open's options say whether it writes; with none it only reads
+        target = items[0] if items and _DENO_WRITE_OPT.search(text) else None
     elif name in ("open", "fopen"):
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
             (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
-        target = items[0] if items and mode and re.search(r"[waxc+]", mode) else None
+        if mode and re.search(r"[waxc+]", mode):
+            target = items[0] if items else _kw_arg(kind, text, "file")[0]
+        else:
+            target = None
     else:
         target = items[1 if _SECOND.match(name) else 0] if len(items) > (1 if _SECOND.match(name) else 0) else None
     return target if isinstance(target, tuple) else None
@@ -1282,39 +1350,44 @@ def _unread_query(args):
 # own list (`curl --help all`, kept in tests/data and compared with these) and _CURL_NEWER's, each with the release
 # that added it. A long option the tables don't hold is one the reader can't place (download_writes)
 _CURL_NEWER = {"ech": "8.8.0", "ip-tos": "8.9.0", "vlan-priority": "8.9.0", "keepalive-cnt": "8.9.0", "mptcp": "8.9.0",
-               "show-headers": "8.10.0", "skip-existing": "8.10.0", "ssl-sessions": "8.12.0", "upload-flags": "8.13.0"}
+               "show-headers": "8.10.0", "skip-existing": "8.10.0", "dump-ca-embed": "8.10.0", "tls-earlydata": "8.11.0",
+               "ssl-sessions": "8.12.0", "upload-flags": "8.13.0", "sigalgs": "8.14.0", "out-null": "8.16.0",
+               "parallel-max-host": "8.16.0", "follow": "8.16.0", "knownhosts": "8.17.0", "proxy-http3": "8.21.0",
+               "httpsig-algo": "8.22.0", "httpsig-headers": "8.22.0", "httpsig-key": "8.22.0",
+               "httpsig-keyid": "8.22.0"}
 _CURL_VALUED = frozenset((
     "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
     "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
     "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
     "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
     "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
-    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type krb libcurl limit-rate "
+    "httpsig-algo httpsig-headers httpsig-key httpsig-keyid interface ip-tos ipfs-gateway json keepalive-cnt "
+    "keepalive-time key key-type knownhosts krb libcurl limit-rate "
     "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
-    "oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default "
+    "oauth2-bearer output output-dir parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default "
     "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
     "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
     "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
-    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs "
     "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
     "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
     "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
     "write-out").split())
 _CURL_BARE = frozenset((
     "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
-    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
-    "fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure dump-ca-embed fail fail-early "
+    "fail-with-body false-start follow form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
     "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
     "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
     "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
-    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb out-null parallel "
     "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
-    "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
+    "proxy-digest proxy-http2 proxy-http3 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
     "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
     "remote-time remove-on-error retry-all-errors retry-connrefused sasl-ir show-error show-headers silent "
     "skip-existing socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert "
     "ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen "
-    "tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
+    "tcp-nodelay tftp-no-options tls-earlydata tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
     "verbose version xattr").split())
 _CURL_SHORT = {
     "0": "http1.0", "1": "tlsv1", "2": "sslv2", "3": "sslv3", "4": "ipv4", "6": "ipv6", ":": "next", "#": "progress-bar",
@@ -1566,11 +1639,15 @@ def _home_readings(ctx):
                 re.fullmatch(r"-\w*s\w*|--symbolic", a) for a in argv[1:]):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
-            printed[c["pipeline"]] = (c.get("stage", 0), ops)
+            for p, s in dict.fromkeys([(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]):
+                printed.setdefault(p, []).append((s, ops))
         elif argv[0] in ("xargs", "gxargs"):
             fed = c
-        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
-            argv = argv + printed[c["pipeline"]][1]
+        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+            spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
+            extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
+            if extra:
+                argv = argv + extra
         if c["via"][-1:] in (["xargs"], ["gxargs"]):
             argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
@@ -2631,14 +2708,46 @@ def _find_execs(args):
     return out
 
 
+# the options bun and deno must be given a value for, the next word when it isn't joined by `=`; an option whose value
+# is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags; bun's --config, --inspect)
+_DENO_VALUED = {"--ext", "-c", "--config", "--import-map", "--cert", "--seed", "--location", "--conditions", "-L",
+                "--log-level", "--preload", "--require", "--inspect-publish-uid", "--min-dep-age", "--node-modules-linker"}
+_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
+               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
+               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
+               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
+               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
+_DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
+                     "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
+                     "repl", "init", "coverage", "publish", "outdated", "clean"}
+
+
+def _skip_interp_opts(args, i=0, valued=INTERP_VALUE_OPTS):
+    """Advance `i` past interpreter options (including `--opt val`); stops at `--`, `-`, or first non-option word."""
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "--":
+            return i + 1, True
+        i += 2 if args[i] in valued else 1
+    return i, False
+
+
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or None."""
     if kind == "awk":
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
+    if kind == "deno":
+        i, ended = _skip_interp_opts(args, 0, _DENO_VALUED)
+        if ended or i >= len(args) or args[i] != "eval":
+            return None
+        i, _ = _skip_interp_opts(args, i + 1, _DENO_VALUED)
+        rest = args[i:]
+        return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
     flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
-    for i, a in enumerate(args):
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a in long:
             return args[i + 1] if i + 1 < len(args) else None
         if a.partition("=")[0] in long:
@@ -2648,12 +2757,16 @@ def _code_arg(kind, args):
                 if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
                     return a[j + 2:] or (args[i + 1] if i + 1 < len(args) else None)
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
+                    if not a[j + 2:]:
+                        i += 1
                     break
+        i += 1
     return None
 
 
 # each interpreter's options that take the rest of their word as their value
-_VALUED = {"python": "WXm", "node": "r", "perl": "MmIxdD", "ruby": "rIxCEFKT", "php": "dcz", "lua": "l"}
+_VALUED = {"python": "WXm", "node": "r", "bun": "rdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
+           "php": "dcz", "lua": "l"}
 
 
 def _loaded(kind, args):
@@ -2748,6 +2861,8 @@ def _reads_stdin(kind, args):
         return any(_stream_name(f) for f in _program_files(args))
     if _code_arg(kind, args) is not None:
         return False
+    if kind in ("bun", "deno"):   # no script after their options and `run`: `run -`, a REPL, no operand, deno's others
+        return _script_operand(kind, args) is None
     i = 0
     while i < len(args):
         a = args[i]
@@ -4353,7 +4468,8 @@ class _Parser:
                 first, kept = len(self.ctx["cmds"]), {k: type(self.ctx[k])(self.ctx[k]) for k in
                                                       ("unread_values", "arith_names", "code_names", "depth")}
                 try:
-                    self.emit([program, "-" + CODE_FLAGS[_kind(program)][0], text, *gives], cmd["pipeline"], inside)
+                    flag = ["eval"] if _kind(program) == "deno" else ["-" + CODE_FLAGS[_kind(program)][0]]
+                    self.emit([program, *flag, text, *gives], cmd["pipeline"], inside)
                 except ParseError:   # (a literal it runs that isn't shell)
                     if self.ctx["work"][0] > MAX_WORK:
                         raise
@@ -4868,6 +4984,7 @@ class _Parser:
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
         `cmd` opaque."""
+        kind = _JS_KIND.get(kind, kind)
         if kind == "sed":
             for m in _SED_E.finditer(code):
                 if m.group(1).strip():
@@ -4934,6 +5051,14 @@ class _Parser:
         # too: only the shell's `>>` and tee -a are read as appends)
         for m in _WRITES[kind].finditer(code) if kind in _WRITES else ():
             if m.group("path"):   # Path("…").write_text(…): its literal
+                if kind == "python" and m.group("open"):   # Path("…").open(…): a write only in a writing mode
+                    items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
+                    self.charge(end - m.end())
+                    mode = _text_of(items[0]) if items and isinstance(items[0], tuple) else \
+                        (k.group(2) if (k := _MODE_KEYWORD.search(code[m.end():end])) else None)
+                    if mode and re.search(r"[waxc+]", mode):
+                        self.argv([("tee",), (m.group("path"),)], pid, via)
+                    continue
                 self.argv([("tee",), (m.group("path"),)], pid, via)
                 continue
             items, end = _call_args(kind, code, m.end(), "(" in m.group(), self.charge)
@@ -5502,9 +5627,16 @@ class _Parser:
         # pattern matches all of it (the pattern ends at its first / outside quotes and nested expansions, a / first in
         # it its own; a bare & is the text matched, read as nothing; without a /, the matches are removed). Each is one
         # more value (`values`, with as written and empty where those may be), its own expansions read each way too
-        # lean: a value made from the variable's own (#, %, a replacement's &, ^, ",", @Q and the other @ transforms,
+        # lean: a value made from the variable's own (a replacement's &, ^, ",", @Q and the other @ transforms,
         # a substring) is read as written and as nothing, as an unknown one, also of a variable the line gives a
-        # literal (D=xy; ${D#x} isn't read as y); compute them on the literals if real commands need it
+        # literal; a # or % removal with a literal pattern is computed on the literals (D=xy; ${D#x} is y), a glob
+        # in the pattern keeps today's reading; compute the rest on the literals if real commands need it
+        if op and not plain and op.group(1) in ("#", "##", "%", "%%"):
+            # a removal is read this way only, never the generic word's readings below (those would add the pattern
+            # itself as a value the expansion may take); not computed, it keeps today's reading (as written, empty)
+            if (values := self._removal(op.group(1), op, pieces)) is not None:
+                expansion.values = values
+            op = None
         if op and not plain:
             kind = op.group(1)
             end = next((i for i, p in enumerate(pieces) if i and type(p) is str and p == "/"), None)
@@ -5535,6 +5667,43 @@ class _Parser:
             else:
                 self.ctx["assigns"] = True
         return expansion
+
+    def _removal(self, kind, op, pieces):
+        """The values `${NAME#pat}`, `${NAME##pat}`, `${NAME%pat}` or `${NAME%%pat}` expands to, when the line gives
+        NAME a literal and the pattern is literal (no *, ?, [ in it, nothing in it an expansion makes): the literal
+        with its matching prefix or suffix removed (for a literal pattern # and ##, % and %% remove the same: the
+        pattern itself, once, where the value starts or ends with it), each literal the line may have given it; None
+        otherwise (an indirect name, a subscript, a glob in the pattern, a value that isn't a literal, or a variable
+        the line doesn't know: read as written and empty, as today). A quoted piece of the pattern is literal text,
+        even a * in quotes."""
+        name = op.group(0)
+        if name.startswith("!"):
+            return None
+        name = name[:-len(kind)]
+        if not re.fullmatch(r"[A-Za-z_]\w*", name or ""):
+            return None
+        pattern = []
+        for p in pieces:
+            if isinstance(p, _Expansion):
+                return None
+            if isinstance(p, _Quoted):
+                pattern.append(str(p))
+            elif type(p) is str and not re.search(r"[*?\[]", p):
+                pattern.append(p)
+            else:
+                return None
+        pattern = "".join(pattern)
+        known = {} if self.ctx["any_set"] else self.known
+        values = known.get(name, ()) if known.get(name) and not self.ctx["ifs_named"] and \
+            name not in self.ctx["reassigned"] else ()
+        if self.ctx["defaults"] or self.ctx["given"]:
+            values = (*values, *self.ctx["defaults"].get(name, ()), *self.maybe(name, known))
+        values = tuple(dict.fromkeys(values))
+        if not values or any(not isinstance(v, str) for v in values):
+            return None
+        if kind[0] == "#":
+            return tuple(dict.fromkeys(v[len(pattern):] if v.startswith(pattern) else v for v in values))
+        return tuple(dict.fromkeys(v[:-len(pattern)] if pattern and v.endswith(pattern) else v for v in values))
 
     def backtick(self):
         m = re.compile(r"((?:\\.|[^`\\])*)`", re.S).match(self.s, self.i + 1)
@@ -5787,6 +5956,15 @@ def _python_runs(args, copies=frozenset()):
 def _script_operand(kind, args):
     """The index in `args` of the script file an interpreter of `kind` (one of CODE_FLAGS') runs: its first operand
     after its options (and their values); None for a module (python -m), stdin (-, a stream) or no operand."""
+    if kind in ("bun", "deno"):
+        valued = _BUN_VALUED if kind == "bun" else _DENO_VALUED
+        i, ended = _skip_interp_opts(args, 0, valued)
+        if not ended and i < len(args):
+            if args[i] == "run":
+                i, _ = _skip_interp_opts(args, i + 1, valued)
+            elif args[i] == "repl" or kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
+                return None
+        return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "-":
         if args[i] == "--":
