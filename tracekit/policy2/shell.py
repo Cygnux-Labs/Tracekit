@@ -223,6 +223,13 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                           "-i", "--interlaced", "-t", "--topological", "--topological-dev", "-n", "--dry-run",
                           "--no-private")}
 WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
+# the options bun must be given a value for, the next word when it isn't joined by `=` (one whose value is optional
+# takes it only joined by `=`: --config, --inspect); before its x as well, so the value of one isn't its subcommand
+_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
+               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
+               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
+               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
+               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
@@ -239,7 +246,7 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "npm": (("exec", "x"), _NPM_OPTS, 0),
            "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
            "yarn": (("exec", "dlx"), ("-p", "--package", "-j", "--jobs", "--from", "--include", "--exclude"), 0),
-           "bun": (("x",), ("-p", "--package"), 0),
+           "bun": (("x",), ("-p", "--package", *_BUN_VALUED), 0),
            "bundle": (("exec",), ("--gemfile",), 0), "rye": (("run",), ("--pyproject",), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
@@ -2721,15 +2728,10 @@ def _find_execs(args):
     return out
 
 
-# the options bun and deno must be given a value for, the next word when it isn't joined by `=`; an option whose value
-# is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags; bun's --config, --inspect)
+# the options deno must be given a value for, the next word when it isn't joined by `=` (bun's: _BUN_VALUED); an option
+# whose value is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags)
 _DENO_VALUED = {"--ext", "-c", "--config", "--import-map", "--cert", "--seed", "--location", "--conditions", "-L",
                 "--log-level", "--preload", "--require", "--inspect-publish-uid", "--min-dep-age", "--node-modules-linker"}
-_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
-               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
-               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
-               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
-               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
 _DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
                      "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
                      "repl", "init", "coverage", "publish", "outdated", "clean"}
