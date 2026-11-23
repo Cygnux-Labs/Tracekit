@@ -525,6 +525,14 @@ ai          approved by the AI reviewer: it matched the call alice approved on 1
 ai          the AI reviewer won't answer this: the session read a secret: a person decides
 ```
 
+**On and off.** A person switches it: `tracekit reviewer on` (or `on --rules TK-A025` for some rules only) and
+`tracekit reviewer off`, each a signed record that names them. `off` withdraws its approvals not yet used and hands its
+waiting calls to people at once. With no switch, the policy and `signer.yaml` decide alone; `tracekit init` sets up no
+AI reviewer, so a new install starts without one. Only a person who answers approvals switches it, and never as the
+identity an agent session is open as: the signer refuses that, and the policy denies the agent's own `tracekit
+reviewer` changes (TK-D012). `tracekit reviewer status` says whether it is on, who switched it and when, what it may
+answer, what it never answers, and how often people agreed with it per rule.
+
 **Taking one back.** You can take back an AI approval before the agent's retry runs it (the viewer's approvals desk).
 The AI reviewer then only suggests for that rule, and a person decides, until you run `tracekit reviewer enable
 TK-A025`. `tracekit reviewer status` lists those rules and why.

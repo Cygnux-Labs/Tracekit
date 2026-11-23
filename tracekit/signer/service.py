@@ -354,8 +354,8 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog, approval,
-                                      constraint_state, cooldown_key, degrade, epoch, final_run, owner,
+from tracekit.signer.pipeline import (AGREEMENT_MIN, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
+                                      approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
                                       person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
@@ -2335,7 +2335,20 @@ class SignerService:
                 "an agent or a person did not approve this call in this run: people answer it"
                 if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else
                 f"{LABEL_WORDS[unclean[0]]} since it was asked: a person decides"
-                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else None)
+                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else
+                self._switched_off(a))
+
+    def _switched_off(self, a):
+        """Why a person's switch (approver.switched in its tenant) keeps the AI reviewer from approval `a`, or None:
+        off, or on for other rules only. With no switch the policy and signer.yaml decide alone."""
+        sw = self.log.agent.get("switch", {}).get(a["run_key"][0])
+        if not a.get("ai") or sw is None:
+            return None
+        if not sw["on"]:
+            return f"{sw['by']} switched the AI reviewer off: a person decides"
+        out = sorted(set(a["ai"]["key"]["rules"]) - set(sw.get("rules") or a["ai"]["key"]["rules"]))
+        return f"{sw['by']} switched the AI reviewer on for {', '.join(sw['rules'])} only: a person decides" \
+            if out else None
 
     def _agent_mode(self, a):
         """How an agent's answer to approval `a` counts now: "enforce" (it decides), "shadow" (an approval.suggested;
@@ -4478,11 +4491,14 @@ class SignerService:
         return {"approval_id": aid, "state": "rejected"}
 
     def _approver(self, identity, req):
-        """The AI approver, for people (docs/approvals.md#the-ai-approver): `status` (the rules the circuit breaker
-        dropped to shadow, the playbook in force and the entries the precedents propose), `accept` or `retire` a
-        playbook entry by id, `revoke` a precedent (a person's answer that should no longer count: a revert, a
-        mistake) and `enable` rules the breaker dropped. Only an approver of the caller's tenant; each change is a
-        signed record in the tenant's signer run (playbook.entry, precedent.revoked, approver.enabled)."""
+        """The AI approver, for people (docs/approvals.md#the-ai-approver): `status` (a person's switch, the rules and
+        mode the policy gives it, how often people agreed with it per rule, the rules the circuit breaker dropped to
+        shadow, the playbook in force and the entries proposed), `on` (for `rules` only, when given) and `off`, `accept`
+        or `retire` a playbook entry by id, `revoke` a precedent (a person's answer that should no longer count: a
+        revert, a mistake) and `enable` rules the breaker dropped. Only an approver of the caller's tenant with no agent
+        session of its own open (unless self_approval allows); each change is a signed record in the tenant's signer
+        run (approver.switched, playbook.entry, precedent.revoked, approver.enabled). `off` withdraws the AI's
+        approvals not yet consumed and hands its pending ones to people, as the operator's kill switch does."""
         if self.approvals is None or not self._agents or not self.policy.policy.get("approval_agent"):
             raise RPCError("invalid_request", "no AI approver here: signer.yaml's approvals.agents and the policy's "
                                               "approval_agent turn it on")
@@ -4495,8 +4511,14 @@ class SignerService:
         reason = {"reason": privacy.redact_text(req["reason"])[0]} if req.get("reason") else {}
         if action == "status":   # read on the writer: committed state only
             def status(tx):
-                book = self.log.agent["playbook"].get(tenant)
-                return {"demoted": [{"rule": k.split("\0", 1)[1], "reason": v} for k, v in
+                book, ag, aa = self.log.agent["playbook"].get(tenant), self.log.agent, self.policy.policy["approval_agent"]
+                sw = ag.get("switch", {}).get(tenant)
+                pairs = {k.split("\0", 1)[1]: v for k, v in ag["pairs"].items() if k.startswith(tenant + "\0")}
+                return {"switch": sw and {**sw, "at": _iso(sw["at"])}, "rules": aa["rules"], "mode": aa["mode"],
+                        "agreement": [{"rule": r, "agreed": sum(v), "of": len(v), "recent": {
+                            "agreed": sum(v[-AGREEMENT_MIN:]), "of": len(v[-AGREEMENT_MIN:])}}
+                            for r, v in sorted(pairs.items())],
+                        "demoted": [{"rule": k.split("\0", 1)[1], "reason": v} for k, v in
                                     sorted(self.log.agent["demoted"].items()) if k.startswith(tenant + "\0")],
                         "playbook": {**_playbook_ref(book), "entries": [
                             {"id": k, "text": v["text"]} for k, v in sorted((book or {"entries": {}})["entries"].items())]},
@@ -4505,8 +4527,25 @@ class SignerService:
         self.quotas.take_event(identity)
 
         def fn(tx, _):
-            ag, book = self.log.agent, self.log.agent["playbook"].get(tenant) or {"entries": {}}
-            if action == "accept":   # what the person read is what is signed: the text its id names, proposed now
+            ag, book, revoked = self.log.agent, self.log.agent["playbook"].get(tenant) or {"entries": {}}, []
+            mine = owner(identity)
+            busy = None if self.approvals.get("self_approval") == "allow" else next((
+                r["run_id"] for r in self.log.runs.values()
+                if r["tenant"] == tenant and not r["closed"] and mine in labels.requesters(r)), None)
+            if busy:   # the identity an agent runs as is no person here, whatever approvers lists
+                raise RPCError("forbidden", f"{by} has an agent session open (run {busy}): change the AI reviewer as a "
+                                            "person's identity, or close the session first")
+            if action in ("on", "off"):
+                listed = self.policy.policy["approval_agent"]["rules"]
+                rules = list(dict.fromkeys(req.get("rules") or ()))
+                if action == "off" and rules or [r for r in rules if r not in listed]:
+                    raise RPCError("invalid_request", f"rules: on takes rules of the policy's approval_agent "
+                                                      f"({', '.join(listed)}); off takes none")
+                if action == "off":
+                    revoked = self._agents_off(tx, f"{by} switched the AI reviewer off", lambda a: bool(
+                        a.get("ai")) and a["run_key"][0] == tenant)
+                typ, data = "approver.switched", {"on": action == "on", **({"rules": rules} if rules else {})}
+            elif action == "accept":   # what the person read is what is signed: the text its id names, proposed now
                 got = self._proposals(tenant).get(req.get("id"))
                 if got is None:
                     raise RPCError("invalid_request", f"{str(req.get('id'))[:16]} is not proposed now: list them with "
@@ -4530,8 +4569,13 @@ class SignerService:
                 typ, data = "approver.enabled", {"rules": req["rules"]}
             seq = tx.emit(self.log.signer_run(tx, tenant), typ, {**data, "by": by, **reason}, source="signer",
                           request_id=req["request_id"])
-            return {"action": action, "run_seq": seq}
-        return self.log.submit(identity, "approver", req, fn)
+            return {"action": action, "run_seq": seq, **({"revoked": revoked} if revoked else {})}
+        out = self.log.submit(identity, "approver", req, fn)
+        for aid in out.get("revoked", ()):
+            self._drop_args(aid)
+        with self._cond:
+            self._cond.notify_all()
+        return out
 
     def _proposals(self, tenant):
         """{entry id: {text, key}}: the playbook entries the precedents of `tenant` propose now (docs/approvals.md#the-
@@ -4557,6 +4601,22 @@ class SignerService:
                 out[pid] = {"text": text, "key": k}
         return out
 
+    def _agents_off(self, tx, why, which=lambda a: True):
+        """(on the writer) Agent approvals off for the approvals `which` selects: each agent approval not consumed yet
+        is revoked and each pending one an agent could answer is escalated, people answering it from then on; `why`
+        in their records. The approval ids revoked (their sealed copies go after the commit)."""
+        revoked = []
+        for aid, a in list(self.log.approvals.items()):
+            if not which(a):
+                continue
+            if a.get("kind") == "agent" and a["state"] == "approved":
+                self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", why)
+                revoked.append(aid)
+            elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
+                tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
+                    "approval_id": aid, "by": "signer", "reason": why}, source="signer", tool_call_id=a["tool_call_id"])
+        return revoked
+
     def _approval_agents(self, identity, req):
         """The operator's kill switch: switch agent approvals off (every agent approval not consumed yet is revoked,
         every pending one an agent could answer is escalated, and people answer every approval from then on) or on
@@ -4565,16 +4625,7 @@ class SignerService:
         self.quotas.take_event(identity)
 
         def fn(tx, _):
-            revoked = []
-            if not req["enabled"]:
-                for aid, a in list(self.log.approvals.items()):
-                    if a.get("kind") == "agent" and a["state"] == "approved":
-                        self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", "agent approvals switched off")
-                        revoked.append(aid)
-                    elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
-                        tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
-                            "approval_id": aid, "by": "signer", "reason": "agent approvals switched off"},
-                                source="signer", tool_call_id=a["tool_call_id"])
+            revoked = [] if req["enabled"] else self._agents_off(tx, "agent approvals switched off")
             tx.emit(self.log.signer_run(tx), "approval.agents", {
                 "enabled": req["enabled"], "by": by, **({"reason": privacy.redact_text(req["reason"])[0]}
                                                         if "reason" in req else {})}, source="signer",
@@ -4685,7 +4736,7 @@ class SignerService:
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
             elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
                     f"{LABEL_WORDS[u[0]]} since it was approved" if (u := self._unclean(run, a["requester"])) else
-                    None) or ("a person rejected a call like this one" if (p := self._precedents(
+                    None) or self._switched_off(a) or ("a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
                     "the person's approval it matched no longer counts" if not p["approve"] else None)):
                 # the circuit breaker tripped, the run took a label of the bound, or the precedents changed, since the

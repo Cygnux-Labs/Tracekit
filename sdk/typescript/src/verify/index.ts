@@ -1341,7 +1341,7 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
     else if (e.type === "approval.consumed" && !consumed.has(k)) consumed.set(k, new Set(have));
     if (e.type === "approval.request" && has(d, "ai")) asked.set(k, e);
     else if (e.type === "approval" && get(d, "approver_kind") !== "agent") answered.set(k, e);
-    else if (["playbook.entry", "precedent.revoked", "approver.enabled"].includes(e.type)) {
+    else if (["playbook.entry", "precedent.revoked", "approver.enabled", "approver.switched"].includes(e.type)) {
       changes++;
       if (e.type === "precedent.revoked" && !gone.has(k)) gone.set(k, e.seq);
     }
@@ -1412,7 +1412,8 @@ function aiApprovals(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
   if (!asked.size && !shadow && !changes) return;   // a bundle without the AI approver keeps the report it always had
   rep.check("AI approvals", !broken.length, `${yes} AI approval(s) that decided, each with two answers that agree and a `
     + `person's precedent (${checked} precedent(s) checked in this bundle, ${outside} in runs it doesn't hold); ${shadow} `
-    + `shadow suggestion(s); ${changes} playbook, precedent and circuit-breaker record(s)`, broken.slice(0, 20));
+    + `shadow suggestion(s); ${changes} switch, playbook, precedent and circuit-breaker record(s)`,
+    broken.slice(0, 20));
   if (labelled) {
     rep.check("AI run bound", !boundBroken.length, `${labelled} AI approval(s) in a run that carried a label, each read `
       + "against the run bound of the policy snapshot it cites", boundBroken.slice(0, 20));

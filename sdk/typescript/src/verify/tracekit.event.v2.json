@@ -148,6 +148,7 @@
         "playbook.entry",
         "precedent.revoked",
         "approver.enabled",
+        "approver.switched",
         "ext",
         "run.writer"
       ]
@@ -1264,6 +1265,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/approver_enabled"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approver.switched"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approver_switched"
           }
         }
       }
@@ -5398,6 +5415,37 @@
       ],
       "description": "format 1.8: a person turned rules the AI approver's circuit breaker dropped to shadow back on (in the tenant's signer run)",
       "properties": {
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "approver_switched": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "on",
+        "by"
+      ],
+      "description": "format 1.8: a person switched the AI approver on (for `rules` only, when given) or off (in the tenant's signer run); off revokes its approvals not yet consumed and hands pending ones to people",
+      "properties": {
+        "on": {
+          "type": "boolean"
+        },
         "rules": {
           "type": "array",
           "minItems": 1,

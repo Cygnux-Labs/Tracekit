@@ -92,6 +92,7 @@
   "kit/vectors/ai-approval-unlisted.tkb": "62fff4b52af04a27923cd190ab79d0a0ef06817ed337897fc36e632ce86365d2",
   "kit/vectors/ai-approval-unnamed-rejection.tkb": "dbf2069631f0598a8a7e7e4fcd3763f219c6068df402e76d6bcee211925f13bf",
   "kit/vectors/ai-approval.tkb": "b79a10b1050956041440e0a0c73b8f635f9c76ee76e0c16216fe6a2890733f6c",
+  "kit/vectors/ai-approver-switched.tkb": "5bb51f5ca28c1cc8d33539555dd6d1bf784748937a8bbf8fbefb6d067ef4a023",
   "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
   "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
   "kit/vectors/every-type.tkb": "bf26a8d07fa4ebe0490429c700b9d0314887db7f7ad278c8acc03d5a9f73d8bf",
@@ -1433,6 +1434,18 @@
     "AI run bound"
    ],
    "decided_by": "§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)",
+   "addon": "AI approvals",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a person's switch of the AI approver",
+   "input": "kit/vectors/ai-approver-switched.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table, 1.8.0: approver.switched, a person's switch)",
    "addon": "AI approvals",
    "needs": "1.8.0"
   },

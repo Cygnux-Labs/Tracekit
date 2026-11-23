@@ -1339,7 +1339,7 @@ def _ai_approvals(rep, runs, policies):
             asked[key] = e
         elif e.get("type") == "approval" and d.get("approver_kind") != "agent":
             answered[key] = e
-        elif e.get("type") in ("playbook.entry", "precedent.revoked", "approver.enabled"):
+        elif e.get("type") in ("playbook.entry", "precedent.revoked", "approver.enabled", "approver.switched"):
             changes += 1
             if e["type"] == "precedent.revoked":
                 gone.setdefault((e.get("tenant"), d["approval_id"]), e["seq"])
@@ -1411,7 +1411,8 @@ def _ai_approvals(rep, runs, policies):
         rep.check("AI approvals", not broken,
                   f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "
                   f"({checked} precedent(s) checked in this bundle, {outside} in runs it doesn't hold); {shadow} "
-                  f"shadow suggestion(s); {changes} playbook, precedent and circuit-breaker record(s)", broken[:20])
+                  f"shadow suggestion(s); {changes} switch, playbook, precedent and circuit-breaker record(s)",
+                  broken[:20])
     if labelled:
         rep.check("AI run bound", not bound_broken, f"{labelled} AI approval(s) in a run that carried a label, each "
                   "read against the run bound of the policy snapshot it cites", bound_broken[:20])

@@ -1662,6 +1662,10 @@ class TestReviewerOnTheSigner(Case):
             rv.poll()
             self.person(aid, person)
         self.ask("$X run")   # not covered: no precedent
+        [agreed] = self.s.call(ALICE, "approver", {"action": "status"})["agreement"]   # per rule, for people to watch
+        self.assertEqual(agreed, {"rule": "TK-A025", "agreed": 2, "of": 3, "recent": {"agreed": 2, "of": 3}})
+        lines = reviewer.status_lines(self.s.call(ALICE, "approver", {"action": "status"}))
+        self.assertIn("  TK-A025: 2 of the last 3 (the last 3: 2)", lines)
         out = reviewer.friction(self.events())
         self.assertEqual({k: out[k] for k in ("holds", "covered", "benign", "cleared", "cleared_share", "agree",
                                               "disagree", "false_approve")},
@@ -1675,6 +1679,107 @@ class TestReviewerOnTheSigner(Case):
         for action in ("accept", "retire", "revoke", "enable"):
             self.assertTrue(validate(schema, {"action": action, "id": "P-1"}), action)
             self.assertEqual(validate(schema, {"action": action, "id": "P-1", "request_id": "r1"}), [], action)
+
+    def test_a_person_switches_it_off_and_on(self):
+        """No switch: the policy and signer.yaml decide. Off: its approvals not yet used are withdrawn and its waiting
+        calls go to people, at once; on, for some rules only. Each is a signed approver.switched naming the person."""
+        self.precedent()
+        used, _ = self.ask()
+        self.ai(used)   # approved, not consumed yet
+        waiting, _ = self.ask()
+        self.assertIsNone(self.s.call(ALICE, "approver", {"action": "status"})["switch"])
+        out = self.s.call(ALICE, "approver", {"request_id": rid(), "action": "off", "reason": "a week off"})
+        self.assertEqual(out["revoked"], [used])
+        self.assertEqual((self.s.log.approvals[used]["state"], self.s.log.approvals[waiting]["escalated"]),
+                         ("rejected", True))
+        held, _ = self.ask()
+        self.assertEqual(self.get_ai(held), (None, f"uid:{ALICE.subject} switched the AI reviewer off: a person "
+                                                   "decides"))
+        self.assertNotIn(held, [x["approval_id"] for x in self.s.call(REVIEWER, "approval_list", {"for": "agent"})[
+            "approvals"]])
+        st = self.s.call(ALICE, "approver", {"action": "status"})["switch"]
+        self.assertEqual((st["on"], st["by"], st["reason"]), (False, f"uid:{ALICE.subject}", "a week off"))
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on", "rules": ["TK-SHELL-PARSE"]})
+        self.assertEqual(self.get_ai(held), (None, f"uid:{ALICE.subject} switched the AI reviewer on for "
+                                                   "TK-SHELL-PARSE only: a person decides"))
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on"})
+        self.assertEqual(self.ai(held)["state"], "approved")   # a call that waited: on takes it at once too
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on", "rules": ["TK-SHELL-PARSE"]})
+        out = self.consume(held)   # approved for TK-A025, which the switch no longer covers: withdrawn, never run
+        self.assertEqual((out["ok"], self.s.log.approvals[held]["state"]), (False, "rejected"))
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on"})
+        self.refused("invalid_request", ALICE, "approver", {"request_id": rid(), "action": "on", "rules": ["TK-A032"]})
+        self.refused("invalid_request", ALICE, "approver", {"request_id": rid(), "action": "off", "rules": ["TK-A025"]})
+        switched = [e["data"] for e in self.events() if e["type"] == "approver.switched"]
+        self.assertEqual([(x["on"], x.get("rules"), x["by"]) for x in switched], [
+            (False, None, f"uid:{ALICE.subject}"), (True, ["TK-SHELL-PARSE"], f"uid:{ALICE.subject}"),
+            (True, None, f"uid:{ALICE.subject}"), (True, ["TK-SHELL-PARSE"], f"uid:{ALICE.subject}"),
+            (True, None, f"uid:{ALICE.subject}")])
+
+    def get_ai(self, aid):
+        ai = self.s.call(ALICE, "approval_get", {"approval_id": aid})["ai"]
+        return ai["mode"], ai["reason"]
+
+    def test_only_a_person_without_an_agent_session_switches_it(self):
+        for who in (AGENT, REVIEWER, OPS):   # the agent, the reviewer, the operator token: no person who answers
+            with self.subTest(who=who.subject):
+                self.refused("forbidden", who, "approver", {"request_id": rid(), "action": "on"})
+        with self.assertRaises(RPCError):   # the SDK's call is the same RPC, from the agent's identity
+            As(self, AGENT).approver({"action": "off"})
+        self.s.close()   # an approver that is also the identity an agent session runs as
+        self.approvals = {**Case.approvals, "approvers": [f"uid:{ALICE.subject}", f"uid:{AGENT.subject}"],
+                          "persons": {f"uid:{ALICE.subject}": "alice", f"uid:{AGENT.subject}": "me"}}
+        self.s = self.open()
+        self.run, self.seq = self.register()
+        msg = self.refused("forbidden", AGENT, "approver", {"request_id": rid(), "action": "on"})
+        self.assertIn("has an agent session open", msg)
+        self.s.close()   # unless self_approval lets the run's own identity answer, as it lets it approve
+        self.approvals = {**self.approvals, "self_approval": "allow"}
+        self.s = self.open()
+        self.assertEqual(self.s.call(AGENT, "approver", {"request_id": rid(), "action": "on"})["action"], "on")
+
+    def test_the_agent_can_t_change_the_ai_reviewer_from_its_session(self):
+        """TK-D012 denies the agent's own `tracekit reviewer` changes in every spelling it reads (a wrapper, a module
+        runner, `--`, an action it can't read); reading the status stays the agent's."""
+        import importlib.util
+        pol, errors = pc.build(DEV)
+        self.assertEqual(errors, [])
+        denied = ["tracekit reviewer on", "tracekit reviewer on --rules TK-A025", "tracekit reviewer off --reason x",
+                  "tracekit reviewer enable TK-A025", "tracekit reviewer accept L-1", "tracekit reviewer drop L-1",
+                  "tracekit reviewer retire P-1", "tracekit reviewer revoke apr-1", "python3 -m tracekit reviewer on",
+                  "python3 -m tracekit.cli reviewer off", "uvx tracekit reviewer on",
+                  "uv tool run tracekit reviewer on",
+                  "pipx run tracekit reviewer on", "sh -c 'tracekit reviewer on'", "/opt/venv/bin/tracekit reviewer off",
+                  "tracekit -- reviewer on", "tracekit reviewer $A", 'A=on; tracekit reviewer "$A"',
+                  "cd /tmp && tracekit reviewer on"]
+        allowed = ["tracekit reviewer status", "tracekit reviewer status --json", "tracekit reviewer --help",
+                   "tracekit reviewer friction --store /tmp/d", "tracekit approvals list"]
+        for backend in ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",):
+            e = Engine(pol, backend)
+            for line in denied:
+                with self.subTest(backend=backend, line=line):
+                    d = e.decide("Bash", {"command": line})
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D012", d["rule_ids"])
+            for line in allowed:
+                with self.subTest(backend=backend, line=line):
+                    self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
+
+    def test_people_switch_it_from_the_cli_and_status_says_it_plainly(self):
+        cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
+
+        def run(*argv):
+            with cli, contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(reviewer.main(list(argv)), 0)
+            return out.getvalue()
+        self.assertIn("the AI reviewer answers as the policy and signer.yaml say (no one switched it", run("status"))
+        self.assertIn("the AI reviewer is off: 0 AI approval(s) not yet used were withdrawn", run("off", "--reason", "x"))
+        st = run("status")
+        self.assertIn(f"the AI reviewer is off: uid:{ALICE.subject} switched it off at ", st)
+        self.assertIn("  TK-A025: an install from a package index you chose, its line pinned", st)
+        self.assertIn("it never answers: a call in a session that read a secret", st)
+        self.assertIn("the AI reviewer is on for TK-A025 (signed record", run("on", "--rules", "TK-A025"))
+        self.assertIn("the AI reviewer is on for TK-A025 only:", run("status"))
 
     def test_people_run_the_approver_from_the_cli(self):
         for _ in range(svc.PLAYBOOK_MIN):

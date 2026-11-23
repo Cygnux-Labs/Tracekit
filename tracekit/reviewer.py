@@ -424,9 +424,40 @@ def friction(events):
             "median_person_s": median(person)}
 
 
+# what each rule the AI reviewer may answer holds, in people's words (compile.APPROVER_RULES)
+RULE_WORDS = {"TK-SHELL-PARSE": "a line the policy can't read", "TK-A062": "an unmapped tool given a command line",
+              "TK-A025": "an install from a package index you chose, its line pinned (--isolated --index-url …)"}
+
+
+def status_lines(out):
+    """What `tracekit reviewer status` says first, in plain words: whether the AI reviewer is on and who switched it,
+    what it may answer and what it never answers, and how often people agreed with it per rule, with a suggestion
+    when they agreed enough to let it answer a rule it only suggests for."""
+    from tracekit.signer.pipeline import AGREEMENT_BAR, AGREEMENT_MIN
+    sw, demoted = out["switch"], {x["rule"] for x in out["demoted"]}
+    lines = [("the AI reviewer is " + ("on" + (f" for {', '.join(sw['rules'])} only" if sw.get("rules") else "")
+                                       if sw["on"] else "off")
+              + f": {sw['by']} switched it {'on' if sw['on'] else 'off'} at {sw['at'][:16].replace('T', ' ')} UTC"
+              + (f" ({sw['reason']})" if sw.get("reason") else "")) if sw else
+             "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)",
+             ("it may answer" if out["mode"] == "enforce" else "it only suggests (the policy's mode is shadow) for")
+             + ":"] + [f"  {r}: {RULE_WORDS.get(r, r)}" for r in out["rules"]] + [
+        "it never answers: a call in a session that read a secret, a call like one a person rejected, a call another "
+        "rule holds too, and never a deny, a credential read, a payment or a push to main",
+        "how often people agreed with it (its answers and suggestions, against the person's answer to the same call):"]
+    for x in out["agreement"]:
+        good = x["of"] >= AGREEMENT_MIN and x["agreed"] >= AGREEMENT_BAR * x["of"]
+        hint = ("" if not good else f"; `tracekit reviewer enable {x['rule']}` lets it answer again"
+                if x["rule"] in demoted else "; `tracekit reviewer on` lets it answer" if sw and not sw["on"] else
+                "; set approval_agent.mode: enforce in your policy to let it answer" if out["mode"] == "shadow" else "")
+        lines.append(f"  {x['rule']}: {x['agreed']} of the last {x['of']} (the last {x['recent']['of']}: "
+                     f"{x['recent']['agreed']}){hint}")
+    return lines + (["  none yet"] if not out["agreement"] else [])
+
+
 def people(a):
-    """`tracekit reviewer status | accept | retire | revoke | enable`: the AI approver for people, over the signer RPC
-    `approver` (an approver of the tenant only)."""
+    """`tracekit reviewer status | on | off | accept | retire | revoke | enable`: the AI approver for people, over the
+    signer RPC `approver` (an approver of the tenant only, with no agent session of its own open)."""
     from tracekit.sdk.client import Client, Incompatible
     c = Client(a.signer)
     try:
@@ -442,12 +473,17 @@ def people(a):
         return 1
     finally:
         c.close()
-    if a.cmd != "status":
+    if a.cmd in ("on", "off"):
+        print(f"the AI reviewer is {a.cmd}" + (f" for {', '.join(a.rules)}" if getattr(a, "rules", None) else "")
+              + (f": {len(out.get('revoked', ()))} AI approval(s) not yet used were withdrawn, and its waiting calls "
+                 "go to people" if a.cmd == "off" else "") + f" (signed record {out['run_seq']} in the tenant's signer run)")
+    elif a.cmd != "status":
         print(f"{a.cmd}: done (signed record {out['run_seq']} in the tenant's signer run)")
     elif a.json:
         print(json.dumps(out))
     else:   # the text holds what the agent ran: control and bidi characters escaped, as approval_review shows them
         from tracekit.signer.service import _escaped
+        print("\n".join(_escaped(line) for line in status_lines(out)))
         book = out["playbook"]
         print("the AI reviewer only suggests (a person decides) for these rules until you run "
               "`tracekit reviewer enable RULE` (the circuit breaker):")
@@ -470,7 +506,11 @@ def main(argv=None):
         src = p.add_mutually_exclusive_group(required=True)
         src.add_argument("--store", help="a signer's data_dir")
         src.add_argument("--bundle", help="a .tkb bundle")
-    for name, what in (("status", "the circuit breaker's dropped rules and the playbook, in force and proposed"),
+    for name, what in (("status", "whether it is on, what it may answer, how often people agreed with it, the "
+                                  "circuit breaker's dropped rules and the playbook, in force and proposed"),
+                       ("on", "a person switches the AI reviewer on, for --rules only when given"),
+                       ("off", "a person switches it off: its approvals not yet used are withdrawn, waiting calls go to "
+                               "people"),
                        ("accept", "accept a proposed playbook entry"), ("retire", "retire a playbook entry"),
                        ("revoke", "a person's answer no longer counts as a precedent (a revert, a mistake)"),
                        ("enable", "let the AI reviewer answer rules again that it only suggests for now (the circuit breaker)")):
@@ -480,12 +520,15 @@ def main(argv=None):
             p.add_argument("--json", action="store_true", help="print the signer's answer as JSON")
         elif name == "enable":
             p.add_argument("rules", nargs="+", help="rule ids, from `tracekit reviewer status`")
-        else:
+        elif name == "on":
+            p.add_argument("--rules", type=lambda v: [r for r in v.split(",") if r], help="only these of the policy's "
+                           "approval_agent rules, comma-separated (TK-A025,TK-SHELL-PARSE)")
+        elif name != "off":
             p.add_argument("id", help="P-… (a playbook entry) or apr-… (a person's answer), from `status`")
         if name != "status":
             p.add_argument("--reason", help="why, in the signed record")
     a = ap.parse_args(argv)
-    if a.cmd in ("status", "accept", "retire", "revoke", "enable"):
+    if a.cmd in ("status", "on", "off", "accept", "retire", "revoke", "enable"):
         return people(a)
     if a.cmd == "friction":
         try:

@@ -176,7 +176,7 @@ def degrade(tx, prov, state, reason):
 def new_agent():
     """The agent-approval state (agent_state), empty."""
     return {"off": False, "uses": {}, "precedents": {}, "demoted": {}, "pairs": {}, "playbook": {}, "pins": {},
-            "label_seqs": {}}
+            "label_seqs": {}, "switch": {}}
 
 
 def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
@@ -229,17 +229,19 @@ def agent_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
 
 def approver_state(set_, log, run, e, a, pop):
     """Follow record `e` of `run` (`a`: the approval it names) in the AI approver's state (docs/approvals.md#the-ai-
-    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, key, rules, decision, at, run,
-    reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
-    PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL), `demoted` (why the
-    circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of an AI suggestion with
-    the person's answer) and `pins` (the model, version, prompt hash and playbook digest of the AI's last answer); and
-    `playbook` (tenant -> {version, entries: {id: {text, key}}}); and `label_seqs` (each identity a run.label's run
-    has as a requester -> the seq of the last such record, an add or a clear: SignerService._ai_state's label epoch). A precedent goes bad when a person revokes it
-    (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted when a person revokes an AI approval
-    of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an
-    answer comes from another model, version, prompt or playbook than its pin; a person's approver.enabled restores it
-    (the pin stays the answer's that changed it)."""
+    approver), in `log.agent`: `precedents` (approval id -> {tenant, requester, digest, key, rules, decision, at,
+    run, reason?, bad?}: people's answers to approvals whose `ai` says the run was clean, not self-approved, for
+    PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL),
+    `demoted` (why the circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of
+    an AI suggestion with the person's answer) and `pins` (the model, version, prompt hash and playbook digest of
+    the AI's last answer); and `playbook` (tenant -> {version, entries: {id: {text, key}}}); `switch` (tenant -> a
+    person's approver.switched: {on, rules?, by, at, reason?}; none: the policy and signer.yaml decide alone); and
+    `label_seqs` (each identity a run.label's run has as a requester -> the seq of the last such record, an add or a
+    clear: SignerService._ai_state's label epoch). A precedent goes bad when a person revokes it
+    (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted
+    when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over
+    AGREEMENT_MIN pairs or more, or an answer comes from another model, version, prompt or playbook than its pin; a
+    person's approver.enabled restores it (the pin stays the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):
@@ -295,6 +297,9 @@ def approver_state(set_, log, run, e, a, pop):
               "a why finding was written about its run")
     elif typ == "precedent.revoked" and d["approval_id"] in ag["precedents"]:
         spoil([d["approval_id"]], f"{d['by']} took it back" + (f": {d['reason']}" if d.get("reason") else ""))
+    elif typ == "approver.switched":
+        set_(ag.setdefault("switch", {}), tenant, {"on": d["on"], "by": d["by"], "at": epoch(e["ts"]),
+                                                   **{k: d[k] for k in ("rules", "reason") if k in d}})
     elif typ == "approver.enabled":
         for r in d["rules"]:
             for table in ("demoted", "pairs"):

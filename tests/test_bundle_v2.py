@@ -1537,6 +1537,8 @@ ENTRIES = {
         "by": "uid:502"}, "run-a")],
     "precedent.revoked": [registered(), ("precedent.revoked", {"approval_id": "apr-0", "by": "uid:502"}, "run-a")],
     "approver.enabled": [registered(), ("approver.enabled", {"rules": ["TK-A025"], "by": "uid:502"}, "run-a")],
+    "approver.switched": [registered(), ("approver.switched", {"on": False, "by": "uid:502", "reason": "a week off"},
+                                         "run-a")],
 }
 
 

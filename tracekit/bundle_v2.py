@@ -88,7 +88,8 @@ VERSIONS = {
     # applied under, and a run's requesters: a run.writer record and run.registered's caller; and the AI approver
     # (docs/approvals.md#the-ai-approver): what an approval request held by approval_agent's rules was to it (`ai`), what
     # an AI answer relied on (`relied_on`), and its playbook, precedent and circuit-breaker records
-    "1.8.0": {"types": ["run.label", "run.writer", "playbook.entry", "precedent.revoked", "approver.enabled"],
+    "1.8.0": {"types": ["run.label", "run.writer", "playbook.entry", "precedent.revoked", "approver.enabled",
+                        "approver.switched"],
               "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"], "approval.request": ["ai"],
                          "approval": ["relied_on", "run_clean"], "approval.suggested": ["relied_on"],
                          "approval.escalated": ["relied_on"]}, "values": {}},

@@ -606,6 +606,10 @@ def vectors():
         "ai-approval-run-bound-no-snapshot", labels=["secrets_access"]), t, 1, "FAILED",
          failed_check=["AI run bound"], addon="AI approvals", needs="1.8.0",
          decided_by="§9 (version table, 1.8.0: an AI yes in a labelled run needs the snapshot of the policy it cites)")
+    case("a person's switch of the AI approver", closed("ai-approver-switched", (
+        "approver.switched", {"on": True, "rules": ["TK-A025"], "by": "uid:502", "reason": "the mirror is vetted"}, {}),
+        ("approver.switched", {"on": False, "by": "uid:502"}, {})), t, 0, "VERIFIED", "witnessed", addon="AI approvals",
+         needs="1.8.0", decided_by="§9 (version table, 1.8.0: approver.switched, a person's switch)")
     case("an AI approver's yes after a signed label of the run bound it left out", ai_run(
         "ai-approval-recorded-label", listed=["TK-A025"], recorded="yes"), t, 1, "FAILED", failed_check=["AI run bound"],
          addon="AI approvals", needs="1.8.0",
