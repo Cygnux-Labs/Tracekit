@@ -2057,7 +2057,7 @@ class TestWhatPeopleSee(Case):
         aid, _ = self.ask()
         self.ai(aid, "reject", reason="an index it never used")
         show = self.tk("show", aid)
-        self.assertIn("ai          the AI reviewer suggests reject (it only suggests for this rule now: a person "
+        self.assertIn("ai          the AI reviewer suggests rejecting it (it only suggests for this rule now: a person "
                       'decides)\ndetails     model output "an index it never used"', show)
         self.assertIn("ai          the AI reviewer only suggests for this call: a person decides (the policy runs it "
                       "in shadow mode: it suggests, a person decides)", show)

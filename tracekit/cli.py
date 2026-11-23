@@ -1559,7 +1559,8 @@ def _ai_said(ans, brief=False):
     from .signer.service import _escaped
     m = _escaped(ans.get("matched") or {})
     if ans["mode"] == "shadow":
-        return f"the AI reviewer suggests {ans['decision']}" + (
+        return "the AI reviewer suggests " + {"approve": "approving it", "reject": "rejecting it",
+                                              "escalate": "handing it to a person"}[ans["decision"]] + (
             "" if brief else " (it only suggests for this rule now: a person decides)")
     if ans["decision"] == "approve" and "by" in m:
         return (f"approved by the AI reviewer: it matched the call {m['by']} approved on {m['at'][5:10]}"
