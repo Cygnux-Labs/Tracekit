@@ -5707,12 +5707,12 @@
       }
     },
     "max_p99_ref": {
-      "default/re2": 8.76,
-      "default/regex": 10.07,
-      "strict/re2": 8.31,
-      "strict/regex": 9.27,
-      "dev/re2": 9.25,
-      "dev/regex": 10.3
+      "default/re2": 9.17,
+      "default/regex": 10.61,
+      "strict/re2": 8.29,
+      "strict/regex": 10.05,
+      "dev/re2": 9.92,
+      "dev/regex": 11.13
     }
   },
   "over_target": [
