@@ -1558,7 +1558,11 @@ def _gist(c, aid, n=60):
     v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
               and isinstance(args.get(k), str)), None)
     text = " ".join((f"{len(many)} {k}: {json.dumps(many)}" if many else json.dumps(args) if v is None else v).split())
-    n = max(n, 400) if many else n
+    return _cut(text, max(n, 400) if many else n)
+
+
+def _cut(text, n):
+    """`text` in at most `n` characters: cut, ending in "...", when longer."""
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
@@ -1575,6 +1579,65 @@ def _expires_left(x):
     if left < 0:
         return f" ({-left // 60:.0f} min ago)"
     return f" (in {left // 60:.0f} min)" if x["state"] in ("requested", "approved") else ""
+
+
+def _ai_said(ans, brief=False):
+    """What the AI reviewer did with an approval (its `ai.answer`), in people's words, as `approvals show` and (`brief`)
+    `approvals list` print it: a yes names the person's approval it matched. Every string from the signer is escaped
+    again here (a command the agent wrote reaches it), never printed raw."""
+    from .signer.service import _escaped
+    m = _escaped(ans.get("matched") or {})
+    if ans["mode"] == "shadow":
+        return "the AI reviewer suggests " + {"approve": "approving it", "reject": "rejecting it",
+                                              "escalate": "handing it to a person"}[ans["decision"]] + (
+            "" if brief else " (it only suggests for this rule now: a person decides)")
+    if ans["decision"] == "approve" and "by" in m:
+        return (f"approved by the AI reviewer: it matched the call {m['by']} approved on {m['at'][5:10]}"
+                + (f" ({m['target']})" if m.get("target") and not brief else ""))
+    return {"approve": "approved by the AI reviewer", "reject": "rejected by the AI reviewer",
+            "escalate": "the AI reviewer handed it to a person"}[ans["decision"]] + (
+        f": {json.dumps(_cut(ans['reason'], 60))}" if brief and ans.get("reason") and ans["decision"] != "approve"
+        else "")
+
+
+def _ai_may(ai, n=1024):
+    """Whether the AI reviewer may answer an approval that waits (its `ai`), and why not, cut to `n` characters."""
+    from .signer.service import _escaped
+    return {"enforce": "the AI reviewer may answer this",
+            "shadow": "the AI reviewer only suggests for this call: a person decides"}.get(
+        ai["mode"], f"the AI reviewer won't answer this: {_cut(_escaped(ai['reason']), n)}")
+
+
+def _ai_brief(x):
+    """What `approvals list` adds of the AI reviewer to approval `x`: what it did, or while it waits, whether it may
+    answer it (why not, when it won't); "" otherwise."""
+    ai = x.get("ai")
+    return ("" if not ai else "  " + _ai_said(ai["answer"], True) if ai.get("answer") else
+            "  " + _ai_may(ai, 60) if x["state"] == "requested" else "")
+
+
+def _ai_lines(x):
+    """What `approvals show` says of the AI reviewer on approval `x` (its `ai`), in people's words: what it did, and
+    while it waits, whether it may answer it and why; a `details` line keeps the precise terms (the model's own
+    reason, which reviewer, the view it answered, the approval it matched). `--json` has every field."""
+    ai = x.get("ai")
+    if not ai:
+        return []
+    ans, lines = ai.get("answer"), []
+    if ans:
+        lines.append(f"ai          {_ai_said(ans)}")
+        view = ans.get("view") and ans["view"] + (" (its record's commitment: the signer no longer holds that view)"
+                                                  if ans["view"].startswith("hmac-") else "")
+        lines.append("details     " + "; ".join(x for x in (
+            ans.get("reason") and f"model output {json.dumps(ans['reason'])}", f"by {json.dumps(ans['by'])}",
+            view and f"view_digest {view}", (ans.get("matched") or {}).get("approval_id") and
+            f"matched {ans['matched']['approval_id']}") if x))
+    if x["state"] == "requested":
+        from .signer.service import _escaped
+        lines.append(f"ai          {_ai_may(ai)}" + (f" ({_escaped(ai['reason'])})" if ai["mode"] == "shadow" else ""))
+        if ai["mode"] == "enforce":
+            lines.append(f"details     {_escaped(ai['reason'])}")
+    return lines
 
 
 def _stop_lines(c, x):
@@ -1765,7 +1828,7 @@ def _approvals(a):
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                       f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x)}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
-                          else ""))
+                          else "") + _ai_brief(x))
             if a.json:
                 print(json.dumps(approvals))
             elif len(shown) < len(approvals):
@@ -1785,7 +1848,8 @@ def _approvals(a):
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     *_stop_lines(c, x), f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
+                     *_stop_lines(c, x), *_ai_lines(x), f"rules       {', '.join(x['rule_ids'])}",
+                     f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
                      f"call        {x['tool_call_id']} attempt {x['attempt']}",
                      f"binding     {x['binding_digest']}", "arguments (the signer's copy, in full):",

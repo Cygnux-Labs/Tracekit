@@ -463,6 +463,21 @@ def _flush_decided(client, path, st, sid):
     return st
 
 
+def _project(cwd):
+    """{"project": the folder the session works in}, for an approval request: the nearest folder at or above `cwd` (the
+    hook payload's, absolute) that holds a .git, else `cwd` itself; {} without one. The signer keys the AI approver's
+    precedents by it (narrowing them only: it is the agent's own word) and its reviewer reads the project's committed
+    rules there (docs/approvals.md#the-ai-approver). Only names are looked at: nothing in the folder is read or run."""
+    if not (isinstance(cwd, str) and os.path.isabs(cwd) and len(cwd) <= 1024):
+        return {}
+    d = cwd
+    while not os.path.lexists(os.path.join(d, ".git")):
+        if os.path.dirname(d) == d:
+            return {"project": cwd}
+        d = os.path.dirname(d)
+    return {"project": d}
+
+
 def _register(client, path, prev=None, offsets=None, continues=True):
     """A new run for the session whose state was `prev` (None: its first), keeping its transcript and where the
     earlier run was last seen open in it (`offsets` in place of that). `continues`: the session had a run before (an
@@ -798,7 +813,7 @@ def _pre(client, p, sid, tid, end=None):
         try:
             cap()
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
-            asked = run.call("approval_request", tool_call_id=tid)
+            asked = run.call("approval_request", tool_call_id=tid, **_project(p.get("cwd")))
             aid, state = asked["approval_id"], asked["state"]
             cmd = approvals_cmd(client.signer, use_interpreter=AGENT == "codex")
             wait_s = approval_wait_s()

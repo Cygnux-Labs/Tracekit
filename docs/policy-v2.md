@@ -80,6 +80,10 @@ flag:  [<rule>, ...]
 sequences: [<sequence>, ...]    # detection (below): steps across calls
 limits:    [<limit>, ...]       # detection: counts and sums in a window
 respond:   [<respond>, ...]     # detection: what each trigger does (shadow, or enforced: docs/incidents.md)
+approval_agent:                 # the AI approver (below): off unless set
+  mode: shadow                  # or enforce
+  rules: [TK-SHELL-PARSE, TK-A062, TK-A025]
+  run: {clean: [untrusted_content, secrets_access]}
 ```
 
 `extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs`, `structured_output` and
@@ -150,6 +154,24 @@ Lint errors: `approval.agent` with `passkey: required`, or on a `from: untrusted
 (`tracekit policy lint`): `approval.agent` on a `payment` rule without `executor: t2`, where the approval binds the
 arguments the agent reported rather than what runs. The signer refuses to start with a policy that has agent rules
 and no `approvals.agents`.
+
+### The AI approver (`approval_agent`)
+
+`approval_agent: {mode, rules, run: {clean}, veto_s?}` lets a reviewer model answer the holds of the rules it lists,
+each only like a call a person approved before ([approvals](approvals.md#the-ai-approver)). It is part of the policy, so
+of `policy_hash`, and a policy that `extends` the laptop default sets it.
+
+| Key | Meaning |
+|---|---|
+| `mode` | `enforce`, or `shadow`: answers are recorded as `approval.suggested` and change nothing |
+| `rules` | rule ids from the reviewed list: `TK-SHELL-PARSE`, `TK-A062`, `TK-A025` |
+| `run.clean` | `untrusted_content`, `secrets_access`: while the run carries one (read across all of its requester's runs), people answer every hold |
+| `veto_s` | an AI approval runs only after this many seconds, so people may revoke it first |
+
+Lint errors: a rule not on the reviewed list, and by name a deny rule, a `from: untrusted` rule, a credential or secret
+read, a payment rule, Tracekit's own guardrails (field `tracekit`), a push (field `push`, `TK-A033`, `TK-A056`), a
+passkey rule, a rule with its own `approval.agent`, `TK-SHELL-PARSE` under `on_parse_error: deny`, and a `run.clean`
+that is empty or names another label. A warning (`tracekit policy lint`): a `run.clean` that leaves a label out.
 
 ### Intent grants (`approval.grant`)
 

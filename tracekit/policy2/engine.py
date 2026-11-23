@@ -16,11 +16,11 @@ import shlex
 import time
 import tokenize
 import unicodedata
-from urllib.parse import unquote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 from . import classes, grammar, shell
-from .compile import (BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals, policy_hash,
-                      prefixes, requirements, translate)
+from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals,
+                      policy_hash, prefixes, requirements, translate)
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -228,6 +228,50 @@ class Engine:
             if ok and isinstance(v, list) and "max" in b:   # a list of amounts is bounded by its total, not each
                 ok = sum(v) <= b["max"]
             out.append((f"{name}: {canonical(b)}", ok))
+        return out
+
+    def install_unpinned(self, tool, args):
+        """(why, how to pin it or None) when a package command of `tool` with `args` may take its source from anything
+        but its line, as people read it, else None: a precedent of TK-A025 vouches only for the source a line names, so
+        an install must name its index and switch config files off (_install_pins), and read no requirements or config
+        file (_install_reads). A line the parser can't read is unpinned."""
+        args = args if isinstance(args, dict) else {"value": args}
+        command = classes.extract("shell", tool, args, MAX_SUBJECT).get("command")
+        parsed = isinstance(command, str) and self._parse(args, command, [0], fallback=False)[0]
+        if not parsed:
+            return "the install can't be read", None
+        read = _install_reads(parsed[0], parsed[2])
+        return (f"the install reads {read}, which may name another index", None) if read else _install_pins(parsed[0])
+
+    def target(self, rule_ids, tool, args):
+        """{rule id: the kind of target a call of `tool` with `args` acts on, as that rule reads it}, for each rule of
+        `rule_ids` the AI approver may answer (compile.APPROVER_RULES): what its precedents are matched by
+        (docs/approvals.md#precedent). TK-A025: each package source the line selects, as how it was selected (the
+        program and option, config key or variable) and the source as scheme://host[:port]/path without a user or
+        password, sorted; TK-A062: each command or SQL statement the tool is given to run (_runs), exactly;
+        TK-SHELL-PARSE: the shell command, exactly. None when a target can't be read, or when a source is no http(s) URL
+        _source reads (a path or file:// URL: its content is the agent's to write)."""
+        args = args if isinstance(args, dict) else {"value": args}
+        out = {}
+        for rid in sorted(set(rule_ids) & set(APPROVER_RULES)):
+            if rid == "TK-A062":
+                kind = sorted(_runs(args, tool))
+            else:
+                command = classes.extract("shell", tool, args, MAX_SUBJECT).get("command")
+                if not isinstance(command, str):
+                    return None
+                if rid == "TK-SHELL-PARSE":
+                    kind = [command]
+                else:
+                    parsed, _ = self._parse(args, command, [0], fallback=False)
+                    pairs = [(how, _source(v)) for how, v in (
+                        _package_indexes(parsed[0], parsed[2], kinds=True) if parsed else [])]
+                    if any(v is None for _, v in pairs):
+                        return None
+                    kind = sorted({f"{how} {v}" for how, v in pairs})
+            if not kind:
+                return None
+            out[rid] = kind
         return out
 
     def _within(self, rid, name, b, v, deadline):
@@ -1583,11 +1627,16 @@ def _environment_sent(parsed):
     return list(dict.fromkeys(out))
 
 
-def _package_indexes(commands, refs=()):
-    """Return only explicitly selected non-default package sources, one subject per effective option or variable."""
+def _package_indexes(commands, refs=(), kinds=False):
+    """Return only explicitly selected non-default package sources, one subject per effective option or variable; with
+    `kinds`, every selected source, the default's too (pypi.org as an --extra-index-url adds where a package may come
+    from), each as (how it was selected: the variable, or the program and its option or config key, the source), as
+    Engine.target keys a precedent by (an --extra-index-url is no --index-url)."""
+    def counted(value, default):
+        return kinds or _non_default_source(value, default)
     words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
-    out = [value for name, eq, value in (w.partition("=") for w in words)
-           if eq and name.upper() in _SOURCE_VARIABLES and _non_default_source(value, _SOURCE_VARIABLES[name.upper()])]
+    out = [(name.upper(), value) for name, eq, value in (w.partition("=") for w in words)
+           if eq and name.upper() in _SOURCE_VARIABLES and counted(value, _SOURCE_VARIABLES[name.upper()])]
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -1629,8 +1678,8 @@ def _package_indexes(commands, refs=()):
                 if value is not None and (
                         (exe == "pip" and key.rsplit(".", 1)[-1] in {"index-url", "extra-index-url", "find-links"})
                         or (exe in ("npm", "pnpm", "yarn", "bun") and (key == "registry" or key.endswith(":registry")))):
-                    if _non_default_source(value, default):
-                        out.append(value)
+                    if counted(value, default):
+                        out.append((f"{exe} config {key}", value))
             continue
         selected, i = [], 0
         while i < len(args):
@@ -1645,20 +1694,145 @@ def _package_indexes(commands, refs=()):
                     value = args[i + 1]
                     i += 1
                 if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
-                    out += [value] if value is not None and _non_default_source(value, default) else []
+                    out += [(f"{exe} {name}", value)] if value is not None and counted(value, default) \
+                        else []
                 elif exe in ("npm", "pnpm", "yarn", "bun"):
-                    selected = [value] if value is not None else []  # npm uses the last --registry
+                    selected = [(name, value)] if value is not None else []  # npm uses the last --registry
                 elif value is not None:
                     if exe == "uv" and name == "--index" and "=" in value:
                         value = value.split("=", 1)[1]
-                    selected.append(value)
+                    selected.append((name, value))
             elif exe == "pip" and arg.startswith("-i") and arg != "-i":
-                selected.append(arg[2:])
+                selected.append(("-i", arg[2:]))
             i += 1
-        for value in selected:
-            if value is None or _non_default_source(value, default):
-                out.append(value or "<missing>")
-    return out
+        for name, value in selected:
+            if value is None or counted(value, default):
+                out.append((f"{exe} {_LONG_OPTIONS.get(name, name)}", value or "<missing>"))
+    return out if kinds else [value for _, value in out]
+
+
+_LONG_OPTIONS = {"-i": "--index-url", "-f": "--find-links", "-s": "--source", "-a": "--add"}   # one option, two names
+# what an install reads besides its line (_install_reads): pip's and uv's requirement, constraint and build settings
+# options, npm's config file options, and the variables that name a config file
+_READ_OPTIONS = {"pip": {"-r": "{}", "--requirement": "{}", "-c": "{}", "--constraint": "{}",
+                         "-C": "build settings ({})", "--config-settings": "build settings ({})"},
+                 "npm": {"--userconfig": "the npm config file {}", "--globalconfig": "the npm config file {}"}}
+_READ_OPTIONS["uv"] = {**_READ_OPTIONS["pip"], "--override": "{}", "--build-constraint": "{}"}
+_READ_VARIABLES = {"PIP_CONFIG_FILE": "the pip config file {} (PIP_CONFIG_FILE)", "PIP_REQUIREMENT": "{}",
+                   "UV_CONFIG_FILE": "the uv config file {} (UV_CONFIG_FILE)",
+                   "NPM_CONFIG_USERCONFIG": "the npm config file {} (NPM_CONFIG_USERCONFIG)",
+                   "NPM_CONFIG_GLOBALCONFIG": "the npm config file {} (NPM_CONFIG_GLOBALCONFIG)"}
+_CONFIG_NAMES = re.compile(r"(?:^|/)(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.(?:conf|ini)|uv\.toml|bunfig\.toml)$")
+_WORKING_TREE = {"--prefix", "-C", "--cwd", "--dir"}   # npm, pnpm, yarn and bun: the tree whose .npmrc they read
+
+
+# how a line pins a package command's source (_install_pins): its index named, config files off
+_PINS = {"pip": "add --isolated --index-url … to let the AI reviewer answer it",
+         "uv": "add --no-config --index-url … (or --default-index …) to let the AI reviewer answer it",
+         "npm": "name unscoped packages with --registry … to let the AI reviewer answer it"}
+_CONFIGS = {"pip": "pip.conf", "uv": "uv.toml, pip.conf", "npm": ".npmrc", "pnpm": ".npmrc", "yarn": ".npmrc, .yarnrc",
+            "bun": "bunfig.toml, .npmrc", "poetry": "pyproject.toml, poetry's config", "cargo": ".cargo/config.toml",
+            "gem": ".gemrc"}
+
+
+def _install_pins(commands):
+    """(why, how to pin it or None) for the first package command on the line whose source isn't pinned by the line,
+    else None. Pinned: pip with --isolated (no config file or variable) and its index named (-i, --index-url); uv with
+    --no-config and --index-url or --default-index; npm, pnpm and yarn with --registry, naming packages none of which is
+    scoped (a scope's registry comes from .npmrc). bun, poetry, cargo and gem installs, a config change (pip config set,
+    npm set, gem sources), and any other line are never pinned."""
+    for command in commands:
+        argv = command["argv"]
+        if not argv:
+            continue
+        exe, args = _program(argv), argv[1:]
+        if exe.startswith("python") or exe == "py":
+            module = _python_module(args)
+            exe, args = ("pip", module[1:]) if module[:1] == ["pip"] else (exe, args)
+        exe = "pip" if _PIP.fullmatch(exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        if exe not in _CONFIGS:
+            continue
+        words = [a for a in args if not a.startswith("-")]
+        if words[:1] == ["config"] or exe == "npm" and words[:1] == ["set"] or exe == "gem" and words[:1] == ["sources"]:
+            return f"the line changes {exe}'s config, which later installs read", None
+        named = lambda *opts: any(a == o or a.startswith(o + "=") for a in args for o in opts)   # noqa: E731
+        if exe == "pip" and any(a.startswith("--isol") for a in args) and (
+                named("--index-url") or any(a.startswith("-i") and not a.startswith("--") for a in args)):
+            continue
+        if exe == "uv" and named("--no-config") and named("--index-url", "--default-index", "-i"):
+            continue
+        if exe in ("npm", "pnpm", "yarn") and named("--registry"):
+            at = next((i for i, a in enumerate(args) if a in ("install", "i", "add")), None)
+            packages = [a for i, a in enumerate(args) if at is not None and i > at and not a.startswith("-")
+                        and args[i - 1] != "--registry"]
+            if packages and not any(p.startswith("@") for p in packages):
+                continue
+        return (f"the install may read a config file that names another index ({_CONFIGS[exe]})",
+                _PINS.get("npm" if exe in ("pnpm", "yarn") else exe))
+    return None
+
+
+def _install_reads(commands, refs=()):
+    """The first thing a package install on this line reads besides the line that may name another package source,
+    as people read it, or None: a requirements or constraints file (pip's and uv's -r and -c), build settings
+    (--config-settings), a config file an option or a variable names (npm's --userconfig, PIP_CONFIG_FILE), a config
+    file named anywhere on the line (.npmrc, pip.conf), or, for npm, pnpm, yarn and bun, a working tree the line changes
+    to (cd, --prefix), whose .npmrc they read. Writes to a .npmrc or pip.conf are people's to approve (TK-A024, TK-A030);
+    a requirements file, or a config file of another name, is the agent's to write."""
+    words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
+    for name, eq, value in (w.partition("=") for w in words):
+        if eq and name.upper() in _READ_VARIABLES:
+            return _READ_VARIABLES[name.upper()].format(value)
+    moved = None
+    for command in commands:
+        argv = command["argv"]
+        named = next((a for a in argv if _CONFIG_NAMES.search(a.split("=", 1)[-1])), None)
+        if named:
+            return named.split("=", 1)[-1]
+        exe = _program(argv) if argv else ""
+        if exe in ("cd", "pushd") and len(argv) > 1:
+            moved = argv[-1]
+            continue
+        args = argv[1:]
+        if exe.startswith("python") or exe == "py":
+            module = _python_module(args)
+            if module[:1] == ["pip"]:
+                exe, args = "pip", module[1:]
+        exe = "pip" if _PIP.fullmatch(exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        family = "npm" if exe in ("npm", "pnpm", "yarn", "bun") else exe
+        options = _READ_OPTIONS.get(family, {})
+        for i, arg in enumerate(args):
+            name, eq, value = arg.partition("=")
+            if exe == "pip" and len(name) > 2 and name.startswith("--"):   # optparse's unique prefix
+                name = next((o for o in options if o.startswith(name)), name)
+            if name in options:
+                return options[name].format(value if eq else args[i + 1] if i + 1 < len(args) else "")
+            if family in ("pip", "uv") and len(arg) > 2 and arg[:2] in ("-r", "-c") and arg[1] != "-":
+                return arg[2:]   # -rrequirements.txt
+            if family == "npm" and name in _WORKING_TREE:
+                return f"the working tree {value if eq else args[i + 1] if i + 1 < len(args) else ''} (its .npmrc)"
+        if family == "npm" and moved is not None:
+            return f"the working tree {moved} (its .npmrc)"
+    return None
+
+
+def _source(value):
+    """A package source as the AI approver's precedent names it (Engine.target): scheme://host[:port]/path of an
+    http(s) URL, without its user, password, query or fragment, its path percent-encoded (no space in it), or None for
+    any other value or a host or port it can't read."""
+    try:
+        u = urlsplit(value)
+        port = u.port
+    except ValueError:
+        return None
+    host = (u.hostname or "").lower()
+    if u.scheme.lower() not in ("http", "https") or not re.fullmatch(r"[a-z0-9._:-]+", host):
+        return None
+    return (f"{u.scheme.lower()}://{f'[{host}]' if ':' in host else host}{f':{port}' if port else ''}"
+            f"{quote(u.path, safe=_PATH_SAFE)}")
+
+
+_PATH_SAFE = "/%!$&'()*+,;=:@~-._"   # RFC 3986 path characters, kept as written (and percent escapes)
 
 
 def _python_module(args):

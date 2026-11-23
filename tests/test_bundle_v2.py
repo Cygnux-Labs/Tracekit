@@ -1433,6 +1433,12 @@ EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "
           "attribution": "token"}
 UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
 MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
+AI_ASKED = {"key": {"rules": ["TK-A025"], "tool": "Bash", "target": {"TK-A025": ["https://pypi.internal/simple"]},
+                    "project": "api (17978b62)"}, "digest": "hmac-sha256:" + "0" * 64, "labels": [], "clean": True,
+            "precedents": {"approve": ["apr-0"], "reject": []}}
+RELIED_ON = {"precedents": {"approve": ["apr-0"], "reject": []}, "playbook": {"version": 0, "digest": H},
+             "policy_hash": H, "labels": [], "view": "hmac-sha256:" + "7" * 64, "mode": "enforce",
+             "answers": [{"model": "m", "decision": "approve"}, {"model": "m", "decision": "approve"}]}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -1478,6 +1484,8 @@ ENTRIES = {
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
                                                                  "reason": "no agent answered"}, "run-a")],
     "approval.revoked": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1"}, "run-a")],
+    "approval.revoked.person": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1",
+                                                                    "person": "alice"}, "run-a")],
     "approval.suggested": [registered(), ("approval.suggested", {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],
@@ -1539,6 +1547,23 @@ ENTRIES = {
     # a run's requesters: another identity that writes it, the client a gateway registered it for
     "run.writer": [registered(), ("run.writer", {"identity": "uid:990777", "stream": "s2"}, "run-a")],
     "run.registered.caller": [registered(caller="uid:501")],
+    # the AI approver (1.8.0)
+    "approval.request.ai": [registered(), asked(ai=AI_ASKED)],
+    "approval.relied_on": [registered(), answered(relied_on=RELIED_ON)],
+    "approval.run_clean": [registered(), answered(run_clean=True)],
+    "approval.suggested.relied_on": [registered(), ("approval.suggested", {
+        "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "uid:299",
+        "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent", "relied_on": RELIED_ON}, "run-a")],
+    "approval.escalated.relied_on": [registered(), ("approval.escalated", {
+        "approval_id": "apr-1", "by": "signer", "reason": "two keys", "relied_on": RELIED_ON}, "run-a")],
+    "playbook.entry": [registered(), ("playbook.entry", {
+        "action": "accept", "id": "P-0123abcd0123abcd0123abcd0123abcd", "text": "TK-A025 by Bash: approved 3 of 3",
+        "key": AI_ASKED["key"],
+        "by": "uid:502"}, "run-a")],
+    "precedent.revoked": [registered(), ("precedent.revoked", {"approval_id": "apr-0", "by": "uid:502"}, "run-a")],
+    "approver.enabled": [registered(), ("approver.enabled", {"rules": ["TK-A025"], "by": "uid:502"}, "run-a")],
+    "approver.switched": [registered(), ("approver.switched", {"on": False, "by": "uid:502", "reason": "a week off"},
+                                         "run-a")],
 }
 
 

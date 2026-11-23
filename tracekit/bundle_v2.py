@@ -85,11 +85,16 @@ VERSIONS = {
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
     # 1.8: approval.consumed names the decision the signer used the approval for in the non-critical slot (ext), so a
-    # 1.6 verifier still verifies the bundle and says it did not interpret the name; run labels
-    # (docs/policy-v2.md#run-conditions): a run.label record, the labels a decision's run conditions applied under, and
-    # a run's requesters: a run.writer record and run.registered's caller
-    "1.8.0": {"types": ["run.label", "run.writer"],
-              "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"]}, "values": {},
+    # 1.6 verifier still verifies the bundle and says it did not interpret the name; run labels (docs/policy-v2.md#run-conditions): a run.label record, the labels a decision's run conditions
+    # applied under, and a run's requesters: a run.writer record and run.registered's caller; and the AI approver
+    # (docs/approvals.md#the-ai-approver): what an approval request held by approval_agent's rules was to it (`ai`), what
+    # an AI answer relied on (`relied_on`), and its playbook, precedent and circuit-breaker records
+    "1.8.0": {"types": ["run.label", "run.writer", "playbook.entry", "precedent.revoked", "approver.enabled",
+                        "approver.switched"],
+              "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"], "approval.request": ["ai"],
+                         "approval.revoked": ["person"],
+                         "approval": ["relied_on", "run_clean"], "approval.suggested": ["relied_on"],
+                         "approval.escalated": ["relied_on"]}, "values": {},
               "ext": ["approval.decision"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that

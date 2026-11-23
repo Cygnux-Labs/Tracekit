@@ -366,7 +366,8 @@ class TestSigner(Case):
                                                   "run": {"clean": ["secrets_access", "untrusted_content"]}}})
         for lost in (False, True):
             with self.subTest(lost=lost):
-                s = self.signer(pol)
+                # an AI approver's policy needs its identity, and with one every approver is a person
+                s = self.signer(pol, agents=["uid:990299"], approvers=[f"uid:{OP.subject}"])
                 s.s.close()
                 s.eng = bound   # what the AI approver's policy reads: its run bound's labels
                 s.open()

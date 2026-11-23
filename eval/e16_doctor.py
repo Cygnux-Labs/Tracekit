@@ -27,6 +27,7 @@ from tracekit import crypto, doctor, install  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 
 AGENT = types.SimpleNamespace(pw_name="e16-agent", pw_uid=54321, pw_gid=54321, pw_dir="/nonexistent")
+REVIEWER_UID = 54322   # the AI reviewer, a user of its own (docs/approvals.md#the-ai-approver)
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 SIZE = 7
 
@@ -57,7 +58,8 @@ class Layout:
         self.queue({self.wname: {"records": {"size": SIZE, "since": None}}})
         self.yaml = {"data_dir": p("data"), "socket": self.sock, "durability": "ack-on-fsync",
                      "policy": p("etc/policy.json"), "witnesses": [{"url": "https://w.example", "vkey": self.wvkey,
-                                                                     "class": "customer"}]}
+                                                                     "class": "customer"}],
+                     "approvals": {"agents": [f"uid:{REVIEWER_UID}"]}}
         self.signer_yaml()
         self.write("unit/tracekit-signer.service", install.V2_UNIT_TEXT.format(
             user="tracekit-signer", python=self.python, config=p("etc/signer.yaml"), unit="tracekit-signer",
@@ -235,6 +237,9 @@ CASES = [
     ("data dir on FUSE", "D-DATA-FS", _mounts("fuse.sshfs")),
     ("data dir owned by the agent", "D-PROCESS-BOUNDARY",
      lambda L: os.chown(L.path("data"), AGENT.pw_uid, AGENT.pw_gid)),
+    ("the AI reviewer runs as the signer's user", "D-REVIEWER-USER",
+     lambda L: L.signer_yaml(approvals={"agents": [f"uid:{os.stat(L.path('data')).st_uid}"]})),
+    ("a key every user may read, with an AI reviewer", "D-REVIEWER-USER", _chmod("data/keys/log.key", 0o604)),
 ]
 ROOT_ONLY = {"data dir owned by the agent"}
 
@@ -265,7 +270,7 @@ def run_case(mutate):
         for p in L.patches:
             p.start()
         try:
-            return stable(L.run(), top, tmp)
+            return stable(L.run(), top, tmp, f"uid:{me}")   # the signer's uid too: this machine's
         finally:
             for p in L.patches:
                 p.stop()

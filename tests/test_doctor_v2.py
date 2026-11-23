@@ -81,6 +81,24 @@ class E16(unittest.TestCase):
         got = {r["id"]: r for r in e16.run_case(agent_is_me)}
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
 
+    def test_the_reviewer_is_probed_as_its_own_uid(self):
+        """Where doctor can act as the reviewer (root), it tries the keys as that uid: what the modes and ACLs it reads
+        don't show (here, a probe that can read one key) fails D-REVIEWER-USER."""
+        import pwd
+        real, uid = pwd.getpwuid, e16.REVIEWER_UID
+        reviewer = types.SimpleNamespace(pw_uid=uid, pw_name="e16-reviewer", pw_gid=uid, pw_dir="/nonexistent")
+
+        def as_the_reviewer(L):
+            reads = lambda pw, targets: [t for t in targets if pw.pw_uid == uid and t[0].endswith("log.key")]
+            L.patches = [p for p in L.patches if getattr(p, "attribute", None) != "agent_access"] + [
+                mock.patch.object(doctor, "agent_access", reads),
+                mock.patch("pwd.getpwuid", lambda n: reviewer if n == uid else real(n))]
+        got = {r["id"]: r for r in e16.run_case(as_the_reviewer)}["D-REVIEWER-USER"]
+        self.assertEqual((got["status"], got["detail"]), ("fail", f"approvals.agents: uid:{uid} can read "
+                                                                    "<run>/data/keys/log.key"))
+        got = {r["id"]: r for r in e16.run_case(None)}["D-REVIEWER-USER"]   # no such user here: nothing to probe
+        self.assertEqual(got["status"], "ok")
+
 
 class CodingAgentHooks(unittest.TestCase):
     def setUp(self):

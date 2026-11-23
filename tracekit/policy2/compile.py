@@ -20,7 +20,7 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", "oversize", "label_inherit_s", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", "label_inherit_s", "approval_agent", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "unless_cli", "reason", "rationale", "label", "approval",
              "from", "remedy", "when", "mode"}
 CLI_KEYS = {"command", "flag", "without", "alone", "required"}   # an unless_cli entry's (_lint_cli)
@@ -119,6 +119,14 @@ RESPOND_MORE = {"denied_calls": {"max", "window", "scope"}, "refusal_burst": {"m
 AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"type", "min", "max", "enum", "pattern"}, \
     {"count", "sum", "window", "scope"}
 BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
+# the AI approver (docs/approvals.md#the-ai-approver): the rules an operator's `approval_agent` may list, reviewed like
+# any policy change. An allowlist: each has its precedent target in engine.Engine.target, and people answer every other
+APPROVER_RULES = ("TK-SHELL-PARSE", "TK-A062", "TK-A025")
+APPROVER_KEYS, APPROVER_LABELS = {"mode", "rules", "run", "veto_s"}, ("untrusted_content", "secrets_access")
+# rules Tracekit fixes as never an AI approver's, by what they guard (lint names it)
+NEVER_APPROVER = {**dict.fromkeys(("TK-A020", "TK-A021", "TK-A035", "TK-A036", "TK-A037", "TK-A038", "TK-A052",
+                                   "TK-A053"), "a credential or secret read"),
+                  **dict.fromkeys(("TK-A033", "TK-A056"), "a push or merge to main or master")}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
@@ -546,7 +554,64 @@ def _lint(pol, path):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
         errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
-    return errors + _lint_detect(pol, path)
+    return errors + _lint_detect(pol, path) + _lint_approver(pol, path)
+
+
+def _lint_approver(pol, path):
+    """The errors of `approval_agent: {mode, rules, run: {clean}, veto_s?}`: the operator's opt-in to the AI approver,
+    rule by rule from APPROVER_RULES, each an ask rule here that nothing else makes a person's (_never_approver)."""
+    a = pol.get("approval_agent")
+    if a is None:
+        return []
+    where = f"{path}: approval_agent"
+    if not isinstance(a, dict) or not set(a) <= APPROVER_KEYS:
+        return [f"{where} takes {sorted(APPROVER_KEYS)}"]
+    errors = [f"{where}: {e}" for bad, e in (
+        (a.get("mode") not in ("shadow", "enforce"), "mode must be shadow or enforce"),
+        ("veto_s" in a and not _int(a["veto_s"], 1), "veto_s must be a positive integer (seconds)"),
+        (not (isinstance(a.get("run"), dict) and set(a["run"]) == {"clean"} and isinstance(a["run"]["clean"], list)
+              and a["run"]["clean"] and len(set(map(str, a["run"]["clean"]))) == len(a["run"]["clean"])
+              and set(a["run"]["clean"]) <= set(APPROVER_LABELS)),
+         f"run must be {{clean: [{', '.join(APPROVER_LABELS)}]}}: the run labels under which people answer every "
+         "hold"),
+        (not (isinstance(a.get("rules"), list) and a["rules"] and all(isinstance(i, str) for i in a["rules"])),
+         "rules must list rule ids")) if bad]
+    rules = {r["id"]: (sec, r) for sec in SECTIONS for r in pol.get(sec, [])
+             if isinstance(r, dict) and isinstance(r.get("id"), str)}
+    for i in a.get("rules") if isinstance(a.get("rules"), list) else ():
+        why = isinstance(i, str) and _never_approver(i, *rules.get(i, (None, None)), pol)
+        if why:
+            errors.append(f"{where}: {i}: {why}: people answer it")
+    return errors
+
+
+def _never_approver(rid, sec, rule, pol):
+    """Why rule `rid` (in section `sec` of `pol`, None when not a rule of it) can't be an AI approver's, or None."""
+    rule, approval = rule or {}, (rule or {}).get("approval") or {}
+    return ("a deny rule: no one approves its calls" if sec == "deny" else
+            "a `from: untrusted` rule" if "from" in rule else
+            NEVER_APPROVER.get(rid) or
+            ("a payment rule" if _money(rule, pol) else
+             "one of Tracekit's own guardrails" if rule.get("field") == "tracekit" else
+             "a push" if rule.get("field") == "push" else
+             "a passkey rule" if approval.get("passkey") else
+             "it has an approval.agent of its own: bound it there or here, not both" if "agent" in approval else
+             f"not on the reviewed list of rules an AI approver may answer ({', '.join(APPROVER_RULES)})"
+             if rid not in APPROVER_RULES else
+             ("on_parse_error denies it in this policy" if pol.get("on_parse_error", "ask") != "ask" else None)
+             if rid == "TK-SHELL-PARSE" else
+             "not an ask rule of this policy" if sec != "ask" else None))
+
+
+def _money(rule, pol):
+    """Whether `rule` moves money: class payment, or no class and a tool the policy maps to payment."""
+    if rule.get("class") == "payment":
+        return True
+    try:
+        return "class" not in rule and "tool" in rule and any(
+            re.fullmatch(rule["tool"], t) for t, c in pol.get("tools", {}).items() if c == "payment")
+    except (re.error, TypeError):
+        return False
 
 
 def _lint_cli(rule):
@@ -809,32 +874,33 @@ def _unfiltered(pattern):
 def warnings(pol):
     """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
     unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), a rule the prefilter can't skip
-    (`_unfiltered`), and an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
-    without executor t2 binds the approval, not what runs; and an unless_cli entry whose program has no grammar table
-    (missing, or never generated), whose commands then read as text."""
+    (`_unfiltered`), an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
+    without executor t2 binds the approval, not what runs, an AI approver whose run bound leaves a label out, and an
+    unless_cli entry whose program has no grammar table (missing, or never generated), whose commands then read as
+    text."""
     from .grammar import PROGRAMS, program_of
-    payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
-
-    def money(r):
-        if r.get("class") == "payment":
-            return True
-        try:
-            return "class" not in r and "tool" in r and any(re.fullmatch(r["tool"], t) for t in payments)
-        except re.error:
-            return False
     return [f"tool {t!r} maps to class 'unknown', which unknown_tools decides like any unmapped tool: map an "
             "application's own tool to class app (known, no class fields)"
             for t, c in pol.get("tools", {}).items() if c == "unknown"] + [
         f"{sec} rule {r['id']}: no literal of two or more characters is in every match, so the rule is searched on "
         "every call its class and tool reach; name the text it looks for (a command, a key name, a path part)"
         for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and _unfiltered(r.get("pattern"))] + [
-        f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
-        "arguments the agent reported, not what its process runs; add executor: t2"
-        for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"] + [
+        f"ask rule {i}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
+        "arguments the agent reported, not what its process runs; add executor: t2" for i in unbound_payments(pol)] + [
+        f"approval_agent: run.clean leaves out {label}: a run that carries it still gets AI answers"
+        for label in APPROVER_LABELS if isinstance(pol.get("approval_agent"), dict)
+        and isinstance(pol["approval_agent"].get("run"), dict)
+        and label not in (pol["approval_agent"]["run"].get("clean") or ())] + [
         f"{sec} rule {r['id']}: unless_cli {e['command']!r}: no grammar table for {program_of(e['command'])!r} "
         "(policy2/grammars), so its commands read as text"
         for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and isinstance(r.get("unless_cli"), list)
         for e in r["unless_cli"] if isinstance(e, dict) and isinstance(e.get("command"), str)
         and program_of(e["command"]) not in PROGRAMS]
+
+
+def unbound_payments(pol):
+    """The ids of the ask rules with approval.agent on a money-moving tool without executor t2 (a warning; on a laptop,
+    where the agent approver is a uid, the signer refuses to start with one)."""
+    return [r["id"] for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
+            and "agent" in r["approval"] and _money(r, pol) and r["approval"].get("executor") != "t2"]
 

@@ -179,10 +179,11 @@ from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.format.records import RecordError, record_digest, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
+from tracekit.policy2 import compile as policy_compile
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.signer import rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN
+from tracekit.signer.pipeline import PRECEDENT_S, SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
 # capture.gap kinds that say nothing against a run's own records: the witness, anchor, key and bridge lines judge those
@@ -1215,6 +1216,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                                 anchors, monitored, reg_cosigs, self_cleared)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     _approvals(rep, runs, policies)
+    _ai_approvals(rep, runs, policies)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -1300,14 +1302,20 @@ def _approvals(rep, runs, policies):
             try:
                 pol = loads_strict(snap)
                 asks = {r["id"]: r for r in pol.get("ask", [])}
-                flags = {r["id"] for r in pol.get("flag", [])}
+                flags = {r["id"] for r in pol.get("flag", [])} | (
+                    {"TK-UNKNOWN-TOOL"} if pol.get("unknown_tools") == "flag" else set())
+                listed = set((pol.get("approval_agent") or {}).get("rules") or ()) & set(policy_compile.APPROVER_RULES)
             except (ValueError, TypeError, KeyError, AttributeError):
                 problems.append(f"{where}: the policy snapshot is not a policy")
                 continue
             for rid in dec.get("rule_ids") or []:
                 approval = (asks.get(rid) or {}).get("approval") or {}
-                if rid not in flags and (not isinstance(approval, dict) or "agent" not in approval
-                                         or approval.get("passkey") == "required"):
+                # an AI approver's rule: one the policy's approval_agent lists (from the reviewed list), held as an ask
+                # there, or TK-SHELL-PARSE where on_parse_error asks
+                ai = rid in listed and (rid in asks or rid == "TK-SHELL-PARSE"
+                                        and pol.get("on_parse_error", "ask") == "ask") and req.get("ai") is not None
+                if rid not in flags and not ai and (not isinstance(approval, dict) or "agent" not in approval
+                                                    or approval.get("passkey") == "required"):
                     problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
     if agents:   # a bundle without agent approvals keeps the report it always had
         rep.check("approvals by people", True, f"{people} approval(s) answered by people")
@@ -1316,6 +1324,133 @@ def _approvals(rep, runs, policies):
                       "offline (salted commitments): audit one with `tracekit signer reveal`"
                       + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
             f"{agents} approval(s) answered by agents"), (problems or unchecked)[:20], warn=not problems)
+
+
+def _run_bound(snap):
+    """The run bound (approval_agent.run.clean) of policy snapshot `snap` (bytes): () when the policy has no
+    approval_agent; None when there is no snapshot or it can't be read, `run` included (not an object, its `clean` not a
+    list of strings)."""
+    try:
+        aa = loads_strict(snap).get("approval_agent") if snap else None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if snap is None or aa is not None and not isinstance(aa, dict):
+        return None
+    run = (aa or {}).get("run", {})
+    clean = run.get("clean", ()) if isinstance(run, dict) else None
+    return tuple(clean) if isinstance(clean, (list, tuple)) and all(isinstance(c, str) for c in clean) else None
+
+
+def _ai_approvals(rep, runs, policies):
+    """The AI approver's records (docs/approvals.md#the-ai-approver), on a line of their own when the bundle has any: the
+    `ai` of approval requests, what AI answers relied on (`relied_on`), and its playbook, precedent and circuit-
+    breaker records. An AI yes that decided (an agent's `approval` that approves, of a request with `ai`) carries
+    `relied_on` with mode enforce, two answers that approve and a person's precedent, the request's policy hash, and
+    no person's rejection of a call like it; with the snapshot of the policy it names, none of the labels its run
+    carried is one the policy's approval_agent run bound names: those the signer says it read (`relied_on.labels`)
+    and those the run's own run.label records add and clear, replayed up to the yes and up to its consume. That is
+    checked on a line of its own, `AI run bound`, when any AI yes had a label either way, which also fails when the
+    bundle has no readable snapshot of the policy such a yes cites (a bundle can leave a snapshot out, never its
+    signed records; a snapshot whose approval_agent.run isn't an object can't be read). A precedent it names, when
+    the bundle holds it, and any person's rejection the bundle holds of a call like it, count as the signer counts
+    them: a person's own answer (not a self-approval, not break-glass) to a request with the same precedent key (its
+    digest), tenant and requester, made in a run clean when asked and when answered (run_clean), before the answer
+    and at most PRECEDENT_S before it, not revoked as a precedent (precedent.revoked) before it. A named precedent
+    that doesn't count, or a rejection that does, fails the line; a named precedent the bundle doesn't hold (often
+    another run's) is counted, not checked."""
+    events = sorted((r["event"] for rs in runs.values() for r in rs), key=lambda e: e["seq"])
+    asked, answered, gone, broken, bound_broken = {}, {}, {}, [], []
+    yes = shadow = checked = outside = changes = labelled = 0
+    carried, held, consumed = {}, {}, {}   # the labels each run's records add and clear, as of each record of note
+    for e in events:
+        d, key = e["data"], (e.get("tenant"), e["data"].get("approval_id"))
+        have = carried.setdefault((e.get("tenant"), e.get("run_id")), set())
+        if e.get("type") == "run.label" and isinstance(d.get("label"), str):
+            (have.add if d.get("action") == "add" else have.discard)(d["label"])
+        elif e.get("type") in ("approval", "approval.consumed"):
+            (held if e["type"] == "approval" else consumed).setdefault(e["seq"] if e["type"] == "approval" else key,
+                                                                         set(have))
+        if e.get("type") == "approval.request" and "ai" in d:
+            asked[key] = e
+        elif e.get("type") == "approval" and d.get("approver_kind") != "agent":
+            answered[key] = e
+        elif e.get("type") in ("playbook.entry", "precedent.revoked", "approver.enabled", "approver.switched"):
+            changes += 1
+            if e["type"] == "precedent.revoked":
+                gone.setdefault((e.get("tenant"), d["approval_id"]), e["seq"])
+
+    def when(e):
+        return datetime.datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).timestamp()
+
+    def discounted(p, pa, e):
+        """Why person's answer `p` (to request `pa`) doesn't count as a precedent at AI answer `e`, or None."""
+        return ("was self-approved" if p["data"].get("self_approved") else
+                "was a break-glass answer" if p["data"].get("break_glass") else
+                "was made in a run that wasn't clean" if not (pa["data"]["ai"]["clean"]
+                                                              and p["data"].get("run_clean") is True) else
+                "came after the answer" if p["seq"] > e["seq"] else
+                f"is more than {PRECEDENT_S // 86400} days older than the answer" if when(e) - when(p) > PRECEDENT_S
+                else "was revoked as a precedent before the answer"
+                if gone.get((e.get("tenant"), p["data"]["approval_id"]), e["seq"]) < e["seq"] else None)
+    for e in events:
+        d = e["data"]
+        if e.get("type") == "approval.suggested" and "relied_on" in d:
+            shadow += 1
+        if not (e.get("type") == "approval" and d.get("approver_kind") == "agent" and d.get("decision") == "approve"):
+            continue
+        mine = asked.get((e.get("tenant"), d.get("approval_id")))
+        if mine is None:   # an agent approver bounded by argument fields, or a request outside the bundle
+            continue
+        yes, at, x = yes + 1, f"seq {e['seq']}", d.get("relied_on")
+        if x is None or x["mode"] != "enforce" or [a["decision"] for a in x.get("answers", ())] != ["approve"] * 2:
+            broken.append(f"{at}: an AI yes that decided without two answers that approve")
+            continue
+        if not x["precedents"]["approve"] or x["precedents"]["reject"]:
+            broken.append(f"{at}: an AI yes without a person's precedent, or with a person's rejection of a call like it")
+        if x["policy_hash"] != mine["data"]["policy_hash"]:
+            broken.append(f"{at}: an AI yes that cites policy {x['policy_hash']}, not the one its call was held under")
+        # the run bound of the policy it cites decides whether the labels the run carried let it answer: those the
+        # signer read, and those the run's own records held at the yes and at its consume
+        ways = (("that carried {}", set(x["labels"])), ("whose records held {} at the yes", held[e["seq"]]),
+                ("whose records held {} at its consume", consumed.get((e.get("tenant"), d.get("approval_id")), set())))
+        if any(ls for _, ls in ways):
+            labelled, bound = labelled + 1, _run_bound(policies.get(x["policy_hash"]))
+            if bound is None:
+                had = ", ".join(sorted(set().union(*(ls for _, ls in ways))))
+                bound_broken.append(f"{at}: an AI yes in a run that carried {had}, under policy {x['policy_hash']}, "
+                                    "whose snapshot the bundle doesn't hold (or can't be read): export the run with its "
+                                    "policy snapshots")
+            for how, ls in ways if bound is not None else ():
+                if ls & set(bound):
+                    bound_broken.append(f"{at}: an AI yes in a run {how.format(sorted(ls & set(bound))[0])}, which "
+                                        "the policy's run bound names")
+        for pid in x["precedents"]["approve"]:
+            p, pa = answered.get((e.get("tenant"), pid)), asked.get((e.get("tenant"), pid))
+            if p is None or pa is None:
+                outside += 1
+                continue
+            checked += 1
+            why = ("is no person's approval" if p["data"].get("decision") != "approve" else
+                   "is of another kind of call" if pa["data"]["ai"]["digest"] != mine["data"]["ai"]["digest"] else
+                   "is another requester's" if pa["data"]["requester"] != mine["data"]["requester"] else
+                   discounted(p, pa, e))
+            if why:
+                broken.append(f"{at}: precedent {pid[:64]} {why}")
+        for (tenant, pid), p in answered.items():   # a rejection that counted, named or not
+            pa = asked.get((tenant, pid))
+            if tenant == e.get("tenant") and pa is not None and p["data"].get("decision") == "reject" \
+                    and pa["data"]["ai"]["digest"] == mine["data"]["ai"]["digest"] \
+                    and pa["data"]["requester"] == mine["data"]["requester"] and discounted(p, pa, e) is None:
+                broken.append(f"{at}: a person's rejection of a call like it ({pid[:64]}) counted when the AI said yes")
+    if asked or shadow or changes:   # a bundle without the AI approver keeps the report it always had
+        rep.check("AI approvals", not broken,
+                  f"{yes} AI approval(s) that decided, each with two answers that agree and a person's precedent "
+                  f"({checked} precedent(s) checked in this bundle, {outside} in runs it doesn't hold); {shadow} "
+                  f"shadow suggestion(s); {changes} switch, playbook, precedent and circuit-breaker record(s)",
+                  broken[:20])
+    if labelled:
+        rep.check("AI run bound", not bound_broken, f"{labelled} AI approval(s) in a run that carried a label, each "
+                  "read against the run bound of the policy snapshot it cites", bound_broken[:20])
 
 
 def _coverage(matrices, k):

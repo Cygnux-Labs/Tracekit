@@ -309,6 +309,7 @@ import argparse
 import base64
 import collections
 import datetime
+import errno
 import faulthandler
 import functools
 import hashlib
@@ -324,6 +325,7 @@ import re
 import secrets
 import signal
 import socket
+import stat
 import sys
 import threading
 import time
@@ -352,9 +354,9 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, constraint_state,
-                                      cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
-                                      skipped, subject, writer)
+from tracekit.signer.pipeline import (AGREEMENT_MIN, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
+                                      approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
+                                      person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -427,6 +429,13 @@ AGENT_CONSUME_S, AGENT_TIMEOUT_S = 300, 600
 # anti-shopping: approvals routed to agents per run, and per tenant per window; past them, people answer
 # lean: fixed caps; make them approvals.* keys if deployments need others
 AGENT_REVIEWS_PER_RUN, AGENT_REVIEWS_PER_TENANT, AGENT_REVIEWS_WINDOW_S = 10, 1000, 3600
+RECENT_CALLS = 10   # the run's last calls an AI approver's review shows (tool, decision, rule ids)
+# the AI approver (docs/approvals.md#the-ai-approver): the precedents a request or answer names per decision, and the
+# playbook's window and the human answers, all one way, a proposal needs
+PRECEDENTS_NAMED, PLAYBOOK_S, PLAYBOOK_MIN = 8, 7 * 86400, 3
+# a run label of approval_agent's run bound, as the AI approver's reasons say it to people
+LABEL_WORDS = {"secrets_access": "the session read a secret",
+               "untrusted_content": "the session read untrusted content (a web page, an email or a download)"}
 # characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
 # and line/paragraph separators
 _HIDDEN = ("Cc", "Cf", "Zl", "Zp")
@@ -445,7 +454,7 @@ CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content
 DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
-    "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
+    "approval_revoke", "approver", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
     "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state", "call_claim"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
@@ -859,6 +868,121 @@ def _agents(approvals, authorize, multi_tenant_apps):
     return frozenset(agents)
 
 
+def _acl(path):
+    """Whether `path` (a link not followed) carries an ACL, which may let a user in that its mode keeps out: Linux's
+    POSIX and NFSv4 ACL attributes, macOS's extended ACL (one it can't read counts as one)."""
+    # lean: ACLs are read on Linux and macOS only; read another system's when a signer runs there
+    if hasattr(os, "listxattr"):   # Linux
+        try:
+            return bool({"system.posix_acl_access", "system.posix_acl_default", "system.nfs4_acl"} & set(
+                os.listxattr(path, follow_symlinks=False)))
+        except OSError:   # a file system without extended attributes has no ACL either
+            return False
+    if sys.platform != "darwin":
+        return False
+    import ctypes
+    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    libc.acl_get_link_np.restype, libc.acl_get_link_np.argtypes = ctypes.c_void_p, (ctypes.c_char_p, ctypes.c_int)
+    libc.acl_get_entry.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
+    libc.acl_free.argtypes = (ctypes.c_void_p,)
+    acl = libc.acl_get_link_np(os.fsencode(path), 0x100)   # ACL_TYPE_EXTENDED
+    if not acl:
+        return ctypes.get_errno() != errno.ENOENT   # ENOENT: none
+    try:
+        return libc.acl_get_entry(acl, 0, ctypes.byref(ctypes.c_void_p())) == 0   # ACL_FIRST_ENTRY: one at least
+    finally:
+        libc.acl_free(acl)
+
+
+def agent_key_access(agents, data_dir, signer_uid=None):
+    """Why an agent approver that is a local user (`uid:N` in approvals.agents) could answer as the signer or read its
+    data, or None: N is the signer's own user (`signer_uid`, default this process's), root or a member of an admin
+    group (install._privileges), or it can open the data dir, its keys dir or a key in it (it owns it, the mode lets its
+    groups or every user read it, or enter it for a directory, or any of them carries an ACL), or one of them is a
+    symbolic link (whose target's owner, mode and ACLs this doesn't read). The signer refuses to start then, and
+    `tracekit doctor` fails D-REVIEWER-USER: the reviewer runs as an unprivileged user of its own
+    (docs/approvals.md#the-ai-approver)."""
+    if not hasattr(os, "getuid"):
+        return None
+    import pwd   # POSIX only: Windows has no uid to compare
+    from tracekit import install
+    me = os.getuid() if signer_uid is None else signer_uid
+    keys = os.path.join(data_dir, "keys")
+    paths = [p for p in (data_dir, keys) if os.path.isdir(p)] + (
+        [os.path.join(keys, n) for n in sorted(os.listdir(keys))] if os.path.isdir(keys) else [])
+    acl = next((p for p in paths if _acl(p)), None)
+    link = next((p for p in paths if os.path.islink(p)), None)
+    for a in sorted(agents):
+        if not re.fullmatch(r"uid:[0-9]{1,10}", a):
+            continue
+        uid = int(a[4:])
+        if uid == me:
+            return (f"approvals.agents: {a} is the signer's own user, which can read its keys: run the reviewer as a "
+                    "user of its own (docs/approvals.md#the-ai-approver)")
+        try:
+            pw = pwd.getpwuid(uid)
+            groups = set(os.getgrouplist(pw.pw_name, pw.pw_gid))   # as the system resolves them (macOS's staff too)
+            privileged = install._privileges(pw)
+        except KeyError:   # no such user here (root always is): only the bits for every user can let it in
+            groups, privileged = set(), []
+        if privileged:
+            return (f"approvals.agents: {a}: {privileged[0]}, so it can read the signer's keys: run the reviewer as an "
+                    "unprivileged user of its own (docs/approvals.md#the-ai-approver)")
+        if acl:
+            return (f"approvals.agents: {acl} carries an ACL, which may let {a} in: remove it (macOS: chmod -N; Linux: "
+                    "setfacl -b) and keep the signer's data dir its user's alone")
+        if link:
+            return (f"approvals.agents: {link} is a symbolic link, whose target may let {a} in: make the data dir, its "
+                    "keys dir and its keys plain folders and files")
+        for p in paths:
+            st = os.lstat(p)
+            other, group = ((stat.S_IROTH | stat.S_IXOTH, stat.S_IRGRP | stat.S_IXGRP) if stat.S_ISDIR(st.st_mode)
+                            else (stat.S_IROTH, stat.S_IRGRP))
+            if st.st_uid == uid or st.st_mode & other or st.st_mode & group and st.st_gid in groups:
+                return (f"approvals.agents: {a} can open {p}: make the signer's data dir its user's alone (chmod -R "
+                        "go-rwx on it, owned by the signer's user), and run the reviewer as a user of its own")
+    return None
+
+
+def _shown_target(target, dotenv):
+    """What an approval request's `ai.key` shows of each target: TK-A025's sources as how they were selected and the
+    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others'
+    commands redacted as the approver's copy is (dotenv values too), at most 16 of 256 characters each. The full target
+    is in the key's committed digest only."""
+    def one(rule, k):
+        if rule == "TK-A025":
+            how, _, url = k.rpartition(" ")
+            return f"{how} {'/'.join(url.split('/', 3)[:3])}/…"
+        return privacy.redact(k, dotenv)[0][:256]
+    return {r: [one(r, k) for k in v[:16]] for r, v in target.items()}
+
+
+def _project(path):
+    """A project as the AI approver's precedent key names it: its folder's name and 8 hex digits of its path's sha256
+    (two folders of the same name stay apart), or None."""
+    if not path:
+        return None
+    name = re.split(r"[\\/]", path.rstrip("/\\"))[-1][:64] or path[:1]
+    return f"{name} ({hashlib.sha256(path.encode('utf-8', 'surrogatepass')).hexdigest()[:8]})"
+
+
+def precedent_key(tool, target, project):
+    """(key, its digest) of a call the AI approver may answer: the rules, the tool, what each rule read of the call
+    (Engine.target: {rule: [kinds]}) and the project the agent's client named (_project). A precedent matches a call
+    by this digest, its tenant and its requester. The project is the agent's process's word, so it only narrows the
+    match: two calls whose keys match with their projects match without them (tests/test_approver.py)."""
+    key = {"rules": sorted(target), "tool": tool, "target": target, "project": _project(project)}
+    return key, "sha256:" + hashlib.sha256(canonical(key)).hexdigest()
+
+
+def _playbook_ref(book):
+    """{version, digest} of a tenant's playbook in force (pipeline.approver_state; None: none yet): the digest is over
+    its entries, [{id, text}] by id."""
+    entries = sorted((book or {"entries": {}})["entries"].items())
+    return {"version": (book or {"version": 0})["version"],
+            "digest": "sha256:" + hashlib.sha256(canonical([{"id": k, "text": v["text"]} for k, v in entries])).hexdigest()}
+
+
 def _escaped(value):
     """`value` with control, format (bidirectional overrides, TAG characters) and default-ignorable characters
     (variation selectors, Hangul fillers) in its strings (and keys) written as \\uXXXX text."""
@@ -868,6 +992,19 @@ def _escaped(value):
     if isinstance(value, list):
         return [_escaped(v) for v in value]
     return {_escaped(k): _escaped(v) for k, v in value.items()} if isinstance(value, dict) else value
+
+
+def _unjudged(e):
+    """Record `e`'s data as the run's own token reads it: without what agent approvers judged of its calls (an approval
+    request's `agent` and `ai`, an AI answer's reason and `relied_on`), which would coach the agent whose call it is.
+    People, and a bundle export, read the records whole."""
+    d, t = e["data"], e["type"]
+    if t == "approval.request":
+        return {k: v for k, v in d.items() if k not in ("agent", "ai")}
+    if t == "approval.suggested" or t in ("approval", "approval.escalated") and (
+            d.get("approver_kind") == "agent" or d.get("by") == "agent" or "relied_on" in d):
+        return {k: v for k, v in d.items() if k not in ("reason", "relied_on")}
+    return d
 
 
 def _recorded(identity):
@@ -1019,9 +1156,16 @@ class SignerService:
         self._people = any(_person_like(p, (approvals or {}).get("persons", {}))
                            for p in (approvals or {}).get("approvers", ()))
         self._fail_closed = any(r["mode"] == "enforce" and r["action"] in ("hold", "quarantine") for r in respond)
-        if not self._agents and any("agent" in (r.get("approval") or {}) for _, r, *_ in policy.rules):
-            raise ValueError("the policy lets agent approvers answer (approval.agent) but approvals.agents names none: "
-                             "add the reviewer's identity there, or remove approval.agent from the policy")
+        if not self._agents and (policy.policy.get("approval_agent") or any(
+                "agent" in (r.get("approval") or {}) for _, r, *_ in policy.rules)):
+            raise ValueError("the policy lets agent approvers answer (approval.agent or approval_agent) but "
+                             "approvals.agents names none: add the reviewer's identity there, or take them out of the "
+                             "policy")
+        unbound = policy_compile.unbound_payments(policy.policy)
+        if unbound and any(a.startswith("uid:") for a in self._agents):
+            raise ValueError(f"ask rule {unbound[0]}: approval.agent on a payment tool without executor t2, and an agent "
+                             "approver that is a local user (a laptop): its approval would bind the arguments the agent "
+                             "reported, not what runs. Add executor: t2 to the rule, or take approval.agent off it")
         self._webauthn = (approvals or {}).get("webauthn")
         if self._webauthn is not None and not (
                 isinstance(self._webauthn, dict) and set(self._webauthn) == {"rp_id", "origin"}
@@ -1135,6 +1279,9 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
+            why = agent_key_access(self._agents, data_dir)   # the keys made: what an agent approver could open
+            if why:
+                raise ValueError(why)
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
                                  detect.Detector.of(policy), labels.Sources.of(policy))
@@ -1198,8 +1345,8 @@ class SignerService:
         self.ttl_s, self.agent_consume_s, self.agent_timeout_s = (
             (approvals or {}).get(k, d) for k, d in (("ttl_s", APPROVAL_TTL_S), ("agent_consume_s", AGENT_CONSUME_S),
                                                      ("agent_timeout_s", AGENT_TIMEOUT_S)))
-        veto = max((r["approval"]["agent"].get("veto_s", 0) for _, r, *_ in policy.rules
-                    if "agent" in (r.get("approval") or {})), default=0)
+        veto = max([r["approval"]["agent"].get("veto_s", 0) for _, r, *_ in policy.rules
+                    if "agent" in (r.get("approval") or {})] + [policy.policy.get("approval_agent", {}).get("veto_s", 0)])
         if veto >= self.ttl_s:
             raise ValueError(f"an approval.agent veto_s of {veto} s is not under approvals.ttl_s ({self.ttl_s} s): "
                              "every agent approval would expire before it may run")
@@ -2134,13 +2281,69 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
-    def _summary(self, approval_id, a):
+    def _summary(self, approval_id, a, people):
+        """Approval `a` as approval_get and approval_list show it; `people`: the caller is a person who may answer it
+        (_a_person), who alone sees what agent approvers said of it (`ai`, an escalation's reason) and whether one may
+        answer it now (`agent`): to the agent whose call it is, that would say a person approved a call like it."""
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if self._agent_mode(a) == "enforce" else {}),
-                **{k: a[k] for k in ("answered", "escalation") if a.get(k)}}
+                **({"agent": True} if a["agent_mode"] == "enforce" and people else {}),
+                **({"answered": a["answered"]} if a.get("answered") else {}),
+                **({"escalation": a["escalation"] if people else {"by": a["escalation"]["by"]}}
+                   if a.get("escalation") else {}),
+                **({"ai": a["people_ai"]} if a["people_ai"] and people else {})}
+
+    def _person_of(self, identity):
+        """The person `identity` is (an OIDC person claim, or approvals.persons' name for it), or None."""
+        who = person(identity) or self._persons.get(subject(identity))
+        return who[:256] if who else None
+
+    def _a_person(self, identity):
+        """Whether `identity` is a person who answers approvals (approvals.approvers or break_glass; a bridge's person,
+        or a bridge granted ON_BEHALF, which serves them): never the agent whose run it is, which an AI approver's
+        reasons and view would coach."""
+        return self.approvals is not None and (
+            self._in(self._approvers, identity) or self._in(self._break_glass, identity)
+            or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity)))
+
+    def _agent_views(self, approval_id, a):
+        """(on the writer: they read the run's labels) What approval `a`'s summary shows of agent approvers: `agent_mode`
+        (_agent_mode) and `people_ai` (_ai, or None when its request didn't weigh them)."""
+        return {"agent_mode": self._agent_mode(a), "people_ai": self._ai(approval_id, a) if a.get("agent") else None}
+
+    def _ai(self, approval_id, a):
+        """People's view of agent approvers on approval `a`, whose request weighed them (its `agent`): `mode`, how an
+        agent's answer counts now (_agent_mode), and `reason`, why (its eligibility, or why it is refused now); and
+        `answer`, the latest agent answer (pipeline.agent_state's agent_answer), its `view` the view_digest it answered
+        while the signer holds the view it served that approver, else its record's commitment to it, and `matched`, the
+        person's approval its yes named (who, when, what it was of, while the signer holds it as a precedent). A rule
+        the circuit breaker dropped says why, and how a person turns it back on."""
+        ans, mode, demoted = a.get("agent_answer"), self._agent_mode(a), self._demoted(a)
+        rules = " ".join((a.get("ai") or {"key": {"rules": ()}})["key"]["rules"])
+        out = {"mode": mode, "reason": (
+            f"{demoted}, so it only suggests until a person runs `tracekit reviewer enable {rules}`" if mode == "shadow"
+            and demoted else "the policy runs it in shadow mode: it suggests, a person decides" if mode == "shadow"
+            else a["agent"]["eligible"] and self._agent_refusal(a) or a["agent"]["reason"])}
+        if ans:
+            served = (a.get("viewed") or {}).get(ans["by"])
+            out["answer"] = {k: v for k, v in ans.items() if k not in ("precedent", "record")}
+            if served and "view" in ans and self._opens(ans["view"], f"approval.view:{approval_id}", served[0]):
+                out["answer"]["view"] = served[0]
+            if "precedent" in ans:
+                out["answer"]["matched"] = self._precedent_said(ans["precedent"])
+        return out
+
+    def _precedent_said(self, pid):
+        """Person's approval `pid` that an AI yes named, as people see it: who gave it, when and what it was of, while
+        the signer holds it as a precedent. What the agent wrote (its command) and the name are escaped (_escaped)."""
+        p = self.log.agent["precedents"].get(pid)
+        if p is None:
+            return {"approval_id": pid}
+        target = _escaped("; ".join(" ".join(v) for v in p["key"]["target"].values()))   # the agent's own words
+        return {"approval_id": pid, "by": _escaped(p.get("by", "a person"))[:256], "at": _iso(p["at"]),
+                **({"target": target[:1024]} if target else {})}
 
     def _agent_refusal(self, a):
         """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
@@ -2149,15 +2352,38 @@ class SignerService:
                 "the policy changed since it was requested: people answer it"
                 if a["policy_hash"] != self.policy.policy_hash else
                 "an agent or a person did not approve this call in this run: people answer it"
-                if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else None)
+                if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else
+                f"{LABEL_WORDS[unclean[0]]} since it was asked: a person decides"
+                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else
+                self._switched_off(a))
+
+    def _switched_off(self, a):
+        """Why a person's switch (approver.switched in its tenant) keeps the AI reviewer from approval `a`, or None:
+        off, or on for other rules only. With no switch the policy and signer.yaml decide alone."""
+        sw = self.log.agent.get("switch", {}).get(a["run_key"][0])
+        if not a.get("ai") or sw is None:
+            return None
+        who = sw.get("person") or sw["by"]
+        if not sw["on"]:
+            return f"{who} switched the AI reviewer off: a person decides"
+        out = sorted(set(a["ai"]["key"]["rules"]) - set(sw.get("rules") or a["ai"]["key"]["rules"]))
+        return f"{who} switched the AI reviewer on for {', '.join(sw['rules'])} only: a person decides" \
+            if out else None
 
     def _agent_mode(self, a):
         """How an agent's answer to approval `a` counts now: "enforce" (it decides), "shadow" (an approval.suggested;
         people decide) or None (only people answer it)."""
         if not (a.get("agent") or {}).get("eligible") or self._agent_refusal(a):
             return None
-        return "shadow" if any(r["approval"]["agent"]["mode"] == "shadow"
-                               for r in self._agent_rules(a["agent"]["rules"])) else "enforce"
+        return "shadow" if self._demoted(a) or any(r["approval"]["agent"]["mode"] == "shadow"
+                                                   for r in self._agent_rules(a["agent"]["rules"])) else "enforce"
+
+    def _demoted(self, a):
+        """Why the circuit breaker has dropped a rule of approval `a` (held by approval_agent's rules) to shadow in its
+        tenant (pipeline.approver_state), or None."""
+        demoted = self.log.agent["demoted"]
+        return next((demoted[k] for r in (a.get("ai") or {"key": {"rules": ()}})["key"]["rules"]
+                     if (k := f"{a['run_key'][0]}\0{r}") in demoted), None)
 
     def _on_behalf(self, identity, req):
         """The person a bridge acts for (`on_behalf`, for an identity granted approval_decide_on_behalf), else `identity`.
@@ -2263,9 +2489,30 @@ class SignerService:
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
         return (why + INSTEAD * bool(why and instead) + instead)[:1024]
 
+    def _joined(self, rule_ids, engine_ids, run_labels):
+        """Why no agent approver answers an ask whose rule ids `rule_ids` differ on the writer from those of the reading
+        its eligibility was weighed for (`engine_ids`): the run conditions the run's labels made apply (`run_labels`:
+        those labels; TK-Q001 after a secret read, the first to join) or an operator's limit joined it. Its eligibility
+        reason, for people and the record."""
+        added = [i for i in rule_ids if i not in engine_ids]
+        rule = next((r for _, r, *_ in self.policy.rules if r["id"] in added[:1]), {})
+        return ("".join(f"{LABEL_WORDS.get(x, f'the session carries {x}')}, and " for x in run_labels or ())
+                + (f"{added[0]} also matched this call" + (f" ({rule['reason']})" if rule.get("reason") else "")
+                   if added else "the rules that held this call differ from those its eligibility was weighed for")
+                + ": a person decides")[:1024]
+
     def _agent_rules(self, ids):
-        """The rules among rule ids `ids` with approval.agent."""
-        return [r for _, r, *_ in self.policy.rules if r["id"] in ids and "agent" in (r.get("approval") or {})]
+        """The rules among rule ids `ids` with approval.agent, and those the policy's approval_agent lists, each as a
+        rule whose approval.agent is {mode, veto_s?, run, precedent: true}: bounded by a person's precedent and the
+        run's labels instead of argument fields."""
+        out = [r for _, r, *_ in self.policy.rules if r["id"] in ids and "agent" in (r.get("approval") or {})]
+        aa = self.policy.policy.get("approval_agent")
+        if aa:
+            text = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for _, r, *_ in self.policy.rules}}
+            agent = {**{k: aa[k] for k in ("mode", "veto_s", "run") if k in aa}, "precedent": True}
+            out += [{"id": i, **{k: text[i][k] for k in ("reason", "rationale") if k in text.get(i, {})},
+                     "approval": {"agent": agent}} for i in aa["rules"] if i in ids]
+        return out
 
     def _eligibility(self, key, identity, tool, args, digest, d, prov):
         """The `agent` of the approval.request of call `d` (an `ask`) of run `key`: {eligible, reason, rules,
@@ -2273,24 +2520,37 @@ class SignerService:
         takes from each sum budget)}; None when none of its rules has approval.agent. Eligible only when every rule
         it asked by (flags aside) has approval.agent and its bounds pass, the tool is one the policy names exactly,
         no argument carries a value only untrusted content brought and provenance is complete, the run is no replay,
-        agent approvals are on and each budget has room. Off the writer; the writer checks the run's state again."""
+        agent approvals are on and each budget has room; and an install TK-A025 holds pins its source on its line and
+        reads no file that may name another (Engine.install_unpinned). Off the writer; the writer checks the run's state
+        again."""
         rules = self._agent_rules(d["rule_ids"]) if self._agents else []
         if not rules:
             return None
-        ids, flags = {r["id"] for r in rules}, {r["id"] for sec, r, *_ in self.policy.rules if sec == "flag"}
+        # flags aside: the policy's flag rules, and an unmapped tool's TK-UNKNOWN-TOOL where unknown_tools flags it
+        flags = {r["id"] for sec, r, *_ in self.policy.rules if sec == "flag"} | (
+            {"TK-UNKNOWN-TOOL"} if self.policy.policy.get("unknown_tools") == "flag" else set())
+        ids = {r["id"] for r in rules}
         other = next((i for i in d["rule_ids"] if i not in ids | flags), None)
+        fields = [r for r in rules if not r["approval"]["agent"].get("precedent")]
+        # what approval_agent's rules read (the precedent key's target): read when they alone held the call
+        target = self.policy.target(ids, tool, args) if len(fields) < len(rules) and not other else None
         reason = (f"{other} is answered by people" if other else
                   "agent approvals are switched off" if self.log.agent["off"] else
-                  "the policy does not name this tool exactly" if tool not in self.policy.policy.get("tools", {}) else
+                  "the policy does not name this tool exactly" if fields and tool not in self.policy.policy.get(
+                      "tools", {}) else
                   "a replay or findings run is answered by people" if self.log.runs[key].get("replay") else
                   "the decision is nondeterministic" if d.get("nondeterministic") else
                   "an argument carries a value only untrusted content brought into the run, or provenance is not "
-                  "complete" if prov else None)
+                  "complete" if prov else
+                  "what the call acts on can't be read, so no person's precedent can match it"
+                  if len(fields) < len(rules) and target is None else
+                  f"{loose[0][:512]}: a person decides" + (f"; {loose[1]}" if loose[1] else "")
+                  if "TK-A025" in ids and (loose := self.policy.install_unpinned(tool, args)) else None)
         spend = {}
         if reason is None:
             try:
                 deadline = [engine.REGEX_TIMEOUT_S]
-                failed = [c for r in rules for c, ok in self.policy.bounds(r, args, deadline) if not ok]
+                failed = [c for r in fields for c, ok in self.policy.bounds(r, args, deadline) if not ok]
             except TimeoutError:
                 failed = ["a bound's pattern ran out of time"]
             reason = "outside the bounds: " + "; ".join(failed) if failed else None
@@ -2301,7 +2561,63 @@ class SignerService:
         return {"eligible": reason is None, "reason": (reason or f"within the bounds of {', '.join(sorted(ids))}")[:1024],
                 "rules": sorted(ids), "args_key": self._commit(f"person_only:{key[0]}:{key[1]}", digest),
                 "conditions_hash": "sha256:" + hashlib.sha256(canonical([r["approval"]["agent"] for r in rules])).hexdigest(),
-                "spend": spend}
+                "spend": spend, **({"target": target, "untrusted": bool(prov)} if target is not None else {})}
+
+    def _run_labels(self, run, requester):
+        """The run labels (docs/policy-v2.md#run-conditions) a call of `run` that `requester` asks to have approved
+        carries now, never from what a client says: the run's own (its run.label records), those its requesters carry
+        from another run of theirs (labels.labels_for: its client, delegates and gateway callers, in any tenant and
+        under any principal, while that run is open and for label_inherit_s after it ends), those `requester` carries
+        so (an identity the run was delegated to that never wrote it is none of its requesters, nor one whose stream a
+        crash left unknown), and, for a run registered as continuing an earlier one, whose calls it can't see, every
+        label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around them. On the
+        writer (labels_for)."""
+        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys() | labels.labels_of(
+            self.log, requester).keys()
+        if run.get("partial_start"):
+            have |= set(self.policy.policy["approval_agent"]["run"]["clean"])
+        return sorted(have)
+
+    def _unclean(self, run, requester):
+        """The labels of approval_agent's run bound that a call of `run` `requester` asks about carries now
+        (_run_labels): while one is, people answer its holds."""
+        carried = self._run_labels(run, requester)
+        return [x for x in self.policy.policy["approval_agent"]["run"]["clean"] if x in carried]
+
+    def _precedents(self, tenant, requester, digest):
+        """{approve, reject}: the approval ids of people's answers that count as precedents for a call of `requester`
+        in `tenant` with precedent key `digest` now (pipeline.approver_state): not gone bad and at most PRECEDENT_S
+        old, newest first, PRECEDENTS_NAMED of each at most."""
+        # lean: scans every precedent of the last PRECEDENT_S per check; index them by digest if a signer holds ~100k
+        since = time.time() - PRECEDENT_S
+        found = sorted(((p["at"], aid, p["decision"]) for aid, p in self.log.agent["precedents"].items()
+                        if (p["tenant"], p["requester"], p["digest"]) == (tenant, requester, digest)
+                        and not p.get("bad") and p["at"] > since), reverse=True)
+        return {x: [aid for _, aid, d in found if d == x][:PRECEDENTS_NAMED] for x in ("approve", "reject")}
+
+    def _approver_request(self, run, tool, target, untrusted, requester, project, dotenv):
+        """(the `ai` of an approval.request held only by approval_agent's rules, why an AI answer can't decide it or
+        None): its precedent key as shown (_shown_target; no target at all when the run isn't clean) and its digest's
+        commitment (precedent_key), the run's labels, `clean` (the run carried no label of the run bound, and no
+        argument a value only untrusted content brought: a person's answer to it is a precedent only then), the
+        precedents that count now, and `asserted: [project]` when the agent's client named the project."""
+        key, plain = precedent_key(tool, target, project)
+        # a commitment under the tenant's own salt: equal keys match, and what redaction or the cut left out of the
+        # shown key can't be confirmed by guessing it
+        digest = self._commit(f"precedent:{run['tenant']}", plain)
+        unclean, prec = self._unclean(run, requester), self._precedents(run["tenant"], requester, digest)
+        clean = not (unclean or untrusted)
+        ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
+               "digest": digest, "labels": self._run_labels(run, requester), "clean": clean, "precedents": prec,
+               **({"asserted": ["project"]} if project else {})}
+        why = (f"{LABEL_WORDS[unclean[0]]}: a person decides" if unclean else
+               "an argument came from untrusted content (a web page, an email or a download): a person decides"
+               if untrusted else
+               "no person has approved a call like this one yet (the same rules, tool, target and project, in a "
+               "clean session): a person decides" if not (prec["approve"] or prec["reject"]) else
+               "people have answered calls like this one both ways: a person decides" if prec["approve"] and prec["reject"]
+               else None)
+        return ext, why
 
     def _capped(self, key, run, tool, tcid, agent):
         """Why the signer's state (on the writer) makes an eligible call of run `key` a person's to answer, or None:
@@ -3359,6 +3675,10 @@ class SignerService:
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
                         call["agent"] = agent
+                    elif agent:   # a rule the writer applied joined the ask: people answer it, and it says why
+                        call["agent"] = {**{k: v for k, v in agent.items() if k not in ("target", "untrusted")},
+                                         "eligible": False, "reason": self._joined(rule_ids, ruled[0]["rule_ids"],
+                                                                                   data.get("run_labels"))}
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
@@ -3858,14 +4178,19 @@ class SignerService:
                 data["executor"] = "t2"
             if any(o.get("passkey") == "required" for o in options):
                 data["passkey"] = True
-            agent, reask = dict(call.get("agent") or {}), False
-            spend = agent.pop("spend", {})
+            agent, reask, ai = dict(call.get("agent") or {}), False, None
+            spend, target, untrusted = agent.pop("spend", {}), agent.pop("target", None), agent.pop("untrusted", True)
             if agent.get("eligible"):
                 reason = f"held by incident {iid}: people answer it" if iid else \
                     self._capped(key, run, p["tool"], tcid, agent)
                 if reason:
                     agent.update(eligible=False, reason=reason)
                     reask = reason.startswith("reask_after_reject")
+            if target is not None:   # held by approval_agent's rules alone: its precedent key, whoever answers
+                ai, why = self._approver_request(run, p["tool"], target, untrusted, sub, req.get("project"),
+                                                 call["dotenv"])
+                if why and agent.get("eligible"):
+                    agent.update(eligible=False, reason=why[:1024])
             if agent:
                 data["agent"] = agent
             shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
@@ -3879,6 +4204,8 @@ class SignerService:
                 copy["spend"] = spend
             if "reason" in req:
                 copy["reason"] = privacy.redact(req["reason"], call["dotenv"])[0]
+            if ai:
+                data["ai"] = ai
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
             tx.set(self.log.approvals, aid, approval(*key, data, _iso(time.time())))
             tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
@@ -3986,6 +4313,8 @@ class SignerService:
                 data["reason"] = req["reason"]
             if held:
                 data["incident_id"] = held
+            if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then
+                data["run_clean"] = a["ai"]["clean"] and not self._unclean(run, a["requester"])
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -4009,6 +4338,7 @@ class SignerService:
         rules = self._agent_rules(a["agent"]["rules"])
         shadow = any(r["approval"]["agent"]["mode"] == "shadow" for r in rules)
         veto_s = max((r["approval"]["agent"].get("veto_s", 0) for r in rules), default=0)
+        given = dict(req.get("ai") or {})
         copy = self._unseal(aid) if decision == "approve" else {}
         if copy is None:   # its sum budget's spend is in the copy: an approval without one can't be counted
             raise RPCError("approval_not_pending",
@@ -4030,17 +4360,42 @@ class SignerService:
             why = self._agent_refusal(a)
             if why:
                 raise RPCError("forbidden", why)
-            if shadow:
-                tx.emit(run, "approval.suggested", data, **top)
+            ap, demoted, ext, basis = a.get("ai"), self._demoted(a), {}, None
+            if ap:   # what the answer relied on, in its record (relied_on): the signer's own reading of each
+                served, state = (a.get("viewed") or {}).get(sub), self._ai_state(a, run)
+                if served is not None and req.get("view_digest") != served[0]:
+                    raise RPCError("forbidden", f"{aid}: answer the view approval_review served you (its view_digest)")
+                if served is None or served[1] != "sha256:" + hashlib.sha256(canonical(state)).hexdigest():
+                    # no view served (the signer restarted since), or its precedents, labels or playbook changed
+                    raise RPCError("conflict", f"{aid}: what approval_review showed you is not what holds now: read "
+                                               "it again and answer that")
+                prec, carried, book, _ = state
+                pin = pinned({**data, "relied_on": {"playbook": book}})
+                demoted = demoted or next((
+                    "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
+                    ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
+                ext = {"relied_on": {   # the reviewer's word first: the signer's own keys are never its
+                    **given, "precedents": prec, "playbook": book,
+                    "view": self._commit(f"approval.view:{aid}", served[0]), "policy_hash": a["policy_hash"],
+                    "labels": carried, "mode": "shadow" if shadow or demoted else "enforce",
+                    **({"demoted": demoted} if demoted else {})}}
+                basis = decision == "approve" and (
+                    "the AI reviewer's two answers didn't both approve: a person decides"
+                    if [x.get("decision") for x in given.get("answers", ())] != ["approve", "approve"] else
+                    "the person's approval it matched no longer counts: a person decides"
+                    if not prec["approve"] else
+                    "a person rejected a call like this one: a person decides" if prec["reject"] else None)
+            if shadow or demoted:
+                tx.emit(run, "approval.suggested", {**data, **ext}, **top)
                 return {"approval_id": aid, "state": "requested", "self_approved": False, "suggested": True}
             short = decision == "approve" and self._short(self._budgets(run["tenant"], a["requester"], rules, now), spend)
-            if decision == "escalate" or short:
-                esc = {"approval_id": aid, "by": "signer", "reason": f"the budget of rule {short} is used up"} if short \
-                    else {"approval_id": aid, "by": "agent", "approver_identity": data["approver_identity"],
-                          **({"reason": data["reason"]} if "reason" in data else {})}
-                tx.emit(run, "approval.escalated", esc, **top)
+            if decision == "escalate" or short or basis:
+                esc = {"approval_id": aid, "by": "signer", "reason": basis or f"the budget of rule {short} is used up"} \
+                    if short or basis else {"approval_id": aid, "by": "agent", "approver_identity": data["approver_identity"],
+                                            **({"reason": data["reason"]} if "reason" in data else {})}
+                tx.emit(run, "approval.escalated", {**esc, **ext}, **top)
                 return {"approval_id": aid, "state": "requested", "self_approved": False, "escalated": True}
-            d = dict(data)
+            d = {**data, **ext}
             if decision == "approve":   # consumed within agent_consume_s after the veto delay, or never
                 d.update(not_before=_iso(now + veto_s), consume_by=_iso(now + veto_s + self.agent_consume_s),
                          **({"spent": spend} if spend else {}))
@@ -4072,17 +4427,66 @@ class SignerService:
         rules = self._agent_rules(a["agent"]["rules"])
         try:
             deadline = [engine.REGEX_TIMEOUT_S]
-            conditions = [{"rule": r["id"], "condition": c[:1024], "passed": ok}
-                          for r in rules for c, ok in self.policy.bounds(r, real, deadline)]
+            conditions = [{"rule": r["id"], "condition": c[:1024], "passed": ok} for r in rules
+                          if not r["approval"]["agent"].get("precedent")
+                          for c, ok in self.policy.bounds(r, real, deadline)]
         except TimeoutError:
             conditions = [{"rule": "", "condition": "a bound's pattern ran out of time", "passed": False}]
+        more = self.log.write(lambda tx: self._approver_view(a, copy)) if a.get("ai") else {}
+        conditions, state = conditions + more.pop("conditions", []), more.pop("state", None)
         view = {"approval_id": aid, "tool": a["tool"], "expires_at": a["expires_at"],
                 "rules": [{"id": r["id"], **{k: r[k][:1024] for k in ("reason", "rationale") if k in r}} for r in rules],
                 "conditions": conditions, "budget": self._budgets(a["run_key"][0], a["requester"], rules, time.time()),
                 "args": _escaped(shown),
                 "redacted": sorted(_escaped(k)[:4096] for k, v in (shown.items() if isinstance(shown, dict) else ())
-                                   if MARK.search(canonical(v).decode()))}
-        return {**view, "view_digest": "sha256:" + hashlib.sha256(canonical(view)).hexdigest()}
+                                   if MARK.search(canonical(v).decode())), **more}
+        digest = "sha256:" + hashlib.sha256(canonical(view)).hexdigest()
+        if a.get("ai"):   # what this identity was shown: its answer must name it, unchanged since (_agent_answer)
+            def served(tx):
+                live = self.log.approvals.get(aid)
+                if live is not None:
+                    tx.set(live, "viewed", {**(live.get("viewed") or {}), subject(identity): [digest, state]})
+            self.log.write(served)
+        return {**view, "view_digest": digest}
+
+    def _ai_state(self, a, run):
+        """(precedents, labels, playbook {version, digest}, label epoch) an AI answer to approval `a` relies on, read
+        now: what its view shows of them (_approver_view) and what its record names (_agent_answer), which refuses an
+        answer once they changed since the view it answers was served. The epoch (the seq of the last run.label that
+        reached the run's requesters or the approval's, pipeline.approver_state) moves with any such label added or
+        cleared, so a run whose labels came and went is never the state an earlier view showed; another identity's
+        label moves none."""
+        seqs = self.log.agent.get("label_seqs", {})
+        whose = labels.requesters(run) | labels.requesters({"owner": a["requester"]})
+        return (self._precedents(run["tenant"], a["requester"], a["ai"]["digest"]),
+                self._run_labels(run, a["requester"]), _playbook_ref(self.log.agent["playbook"].get(run["tenant"])),
+                max((seqs.get(w, -1) for w in whose), default=-1))
+
+    def _approver_view(self, a, copy):
+        """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
+        conditions as they stand now, and `ai`: the precedent key, the run's labels, the precedents (each
+        person's answer, when, and their reason), the playbook in force and the run's last calls (tool, decision, rule
+        ids). Strings the agent chose are escaped. `state`, for approval_review to keep and not to show: a digest of
+        _ai_state as the view shows it."""
+        ap, run = a["ai"], self.log.runs[a["run_key"]]
+        state = self._ai_state(a, run)
+        (prec, carried, _, _), unclean = state, self._unclean(run, a["requester"])
+        found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
+        book = self.log.agent["playbook"].get(a["run_key"][0])
+        conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label", "passed": x not in unclean}
+            for x in self.policy.policy["approval_agent"]["run"]["clean"]] + [
+            {"rule": "approval_agent", "condition": "a person answered a call like this one (the same rules, tool, "
+                                                    "target and project) in a clean run", "passed": bool(found)},
+            {"rule": "approval_agent", "condition": "people's answers to calls like this one agree",
+             "passed": not (prec["approve"] and prec["reject"])}]
+        return {"state": "sha256:" + hashlib.sha256(canonical(state)).hexdigest(), "conditions": conditions, "ai": {
+                "target": _escaped(ap["key"]), "labels": carried,
+                "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
+                                **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
+                "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in
+                                                                sorted((book or {"entries": {}})["entries"].items())]},
+                "recent": [{"tool": _escaped(c["tool"] or "")[:256], "decision": c["decision"], "rule_ids": c["rule_ids"]}
+                           for c in list(run.get("calls", {}).values())[-RECENT_CALLS:]]}}
 
     def _approval_revoke(self, identity, req):
         """A person vetoes an agent's approval that is not consumed yet (`approval.revoked`): the call never runs."""
@@ -4097,20 +4501,166 @@ class SignerService:
             a = self.log.approvals.get(aid, {})
             if a.get("kind") != "agent" or a["state"] != "approved":
                 raise RPCError("approval_not_pending", "only an agent's approval not consumed yet is revoked")
-            return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"])
+            return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"],
+                                self._person_of(identity))
         out = self.log.submit(identity, "approval_revoke", req, fn, a["run_key"], late=True)
         self._drop_args(aid)
         with self._cond:
             self._cond.notify_all()
         return out
 
-    def _revoke(self, tx, run, aid, by, reason=None, request_id=None):
+    def _revoke(self, tx, run, aid, by, reason=None, request_id=None, who=None):
+        """approval.revoked of approval `aid` by `by` (a person's: `who`, their name)."""
         a = self.log.approvals[aid]
         tx.set(a, "state", "rejected")
-        tx.emit(run, "approval.revoked", {"approval_id": aid, "by": by, **({"reason": privacy.redact_text(reason)[0]}
-                                                                          if reason else {})},
+        tx.emit(run, "approval.revoked", {"approval_id": aid, "by": by, **({"person": who} if who else {}),
+                                          **({"reason": privacy.redact_text(reason)[0]} if reason else {})},
                 source="signer", tool_call_id=a["tool_call_id"], **({"request_id": request_id} if request_id else {}))
         return {"approval_id": aid, "state": "rejected"}
+
+    def _approver(self, identity, req):
+        """The AI approver, for people (docs/approvals.md#the-ai-approver): `status` (a person's switch, the rules and
+        mode the policy gives it, how often people agreed with it per rule, the rules the circuit breaker dropped to
+        shadow, the playbook in force and the entries proposed), `on` (for `rules` only, when given) and `off`, `accept`
+        or `retire` a playbook entry by id, `revoke` a precedent (a person's answer that should no longer count: a
+        revert, a mistake) and `enable` rules the breaker dropped. Only an approver of the caller's tenant with no agent
+        session of its own open (unless self_approval allows); each change is a signed record in the tenant's signer
+        run (approver.switched, playbook.entry, precedent.revoked, approver.enabled). `off` withdraws the AI's
+        approvals not yet consumed and hands its pending ones to people, as the operator's kill switch does."""
+        if self.approvals is None or not self._agents or not self.policy.policy.get("approval_agent"):
+            raise RPCError("invalid_request", "no AI approver here: signer.yaml's approvals.agents and the policy's "
+                                              "approval_agent turn it on")
+        if not (self._in(self._approvers, identity) or self._in(self._break_glass, identity)):
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is not an approver: people who answer approvals run "
+                                        "the AI approver")
+        tenant, by, action = self._tenant_of(identity), subject(identity)[:256], req["action"]
+        if action != "status" and not req.get("reason") and not self._in(self._approvers, identity):
+            raise RPCError("forbidden", "a break-glass identity changes the AI approver only with a reason: give one")
+        reason = {"reason": privacy.redact_text(req["reason"])[0]} if req.get("reason") else {}
+        if action == "status":   # read on the writer: committed state only
+            def status(tx):
+                book, ag, aa = self.log.agent["playbook"].get(tenant), self.log.agent, self.policy.policy["approval_agent"]
+                sw = ag.get("switch", {}).get(tenant)
+                pairs = {k.split("\0", 1)[1]: v for k, v in ag["pairs"].items() if k.startswith(tenant + "\0")}
+                return {"switch": sw and {**sw, "at": _iso(sw["at"])}, "rules": aa["rules"], "mode": aa["mode"],
+                        "agreement": [{"rule": r, "agreed": sum(v), "of": len(v), "recent": {
+                            "agreed": sum(v[-AGREEMENT_MIN:]), "of": len(v[-AGREEMENT_MIN:])}}
+                            for r, v in sorted(pairs.items())],
+                        "demoted": [{"rule": k.split("\0", 1)[1], "reason": v} for k, v in
+                                    sorted(self.log.agent["demoted"].items()) if k.startswith(tenant + "\0")],
+                        "playbook": {**_playbook_ref(book), "entries": [
+                            {"id": k, "text": v["text"], **({"contradicted": v["contradicted"]} if "contradicted" in v
+                                                            else {})}
+                            for k, v in sorted((book or {"entries": {}})["entries"].items())]},
+                        "proposals": [{"id": k, "text": v["text"], **({"evidence": v["evidence"]} if "evidence" in v
+                                                                       else {})}
+                                      for k, v in self._proposals(tenant).items()]}
+            return self.log.write(status)
+        self.quotas.take_event(identity)
+
+        def fn(tx, _):
+            ag, book, revoked = self.log.agent, self.log.agent["playbook"].get(tenant) or {"entries": {}}, []
+            mine = owner(identity)
+            busy = None if self.approvals.get("self_approval") == "allow" else next((
+                r["run_id"] for r in self.log.runs.values()
+                if r["tenant"] == tenant and not r["closed"] and mine in labels.requesters(r)), None)
+            if busy:   # the identity an agent runs as is no person here, whatever approvers lists
+                raise RPCError("forbidden", f"{by} has an agent session open (run {busy}): change the AI reviewer as a "
+                                            "person's identity, or close the session first")
+            if action in ("on", "off"):
+                listed = self.policy.policy["approval_agent"]["rules"]
+                rules = list(dict.fromkeys(req.get("rules") or ()))
+                if action == "off" and rules or [r for r in rules if r not in listed]:
+                    raise RPCError("invalid_request", f"rules: on takes rules of the policy's approval_agent "
+                                                      f"({', '.join(listed)}); off takes none")
+                if action == "off":
+                    revoked = self._agents_off(tx, f"{by} switched the AI reviewer off", lambda a: bool(
+                        a.get("ai")) and a["run_key"][0] == tenant)
+                typ, data = "approver.switched", {"on": action == "on", **({"rules": rules} if rules else {}),
+                                                  **({"person": w} if (w := self._person_of(identity)) else {})}
+            elif action == "accept":   # what the person read is what is signed: the text its id names, proposed now
+                got = self._proposals(tenant).get(req.get("id"))
+                if got is None:
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not proposed now: list them with "
+                                                      "`tracekit reviewer lessons`")
+                typ, data = "playbook.entry", {"action": "accept", "id": req["id"], **got}
+            elif action == "drop":   # a proposal a person doesn't want: never proposed again
+                got = self._proposals(tenant).get(req.get("id"))
+                if got is None:
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not proposed now: "
+                                                      "`tracekit reviewer lessons` lists them")
+                typ, data = "playbook.entry", {"action": "drop", "id": req["id"], **got}
+            elif action == "retire":
+                got = book["entries"].get(req.get("id"))
+                if got is None:
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:40]} is not in the playbook")
+                typ, data = "playbook.entry", {"action": "retire", "id": req["id"], **{
+                    k: v for k, v in got.items() if k != "contradicted"}}
+            elif action == "revoke":
+                p = ag["precedents"].get(req.get("id"))
+                if p is None or p["tenant"] != tenant or p.get("bad"):
+                    raise RPCError("invalid_request", f"{str(req.get('id'))[:64]} is no precedent that counts now")
+                typ, data = "precedent.revoked", {"approval_id": req["id"]}
+            else:
+                off = [r for r in req.get("rules") or () if f"{tenant}\0{r}" not in ag["demoted"]]
+                if off or not req.get("rules"):
+                    raise RPCError("invalid_request", f"{', '.join(off)[:256] or 'no rule'}: the circuit breaker has "
+                                                      "not dropped it; `tracekit reviewer status` lists those it has")
+                typ, data = "approver.enabled", {"rules": req["rules"]}
+            seq = tx.emit(self.log.signer_run(tx, tenant), typ, {**data, "by": by, **reason}, source="signer",
+                          request_id=req["request_id"])
+            return {"action": action, "run_seq": seq, **({"revoked": revoked} if revoked else {})}
+        out = self.log.submit(identity, "approver", req, fn)
+        for aid in out.get("revoked", ()):
+            self._drop_args(aid)
+        with self._cond:
+            self._cond.notify_all()
+        return out
+
+    def _proposals(self, tenant):
+        """{entry id: {text, key, digest, decision, evidence?}}: the playbook entries proposed in `tenant` now
+        (docs/approvals.md#the-playbook), none a person dropped: each lesson drafted from a disagreement of a person
+        with the AI (L-, with its evidence: pipeline.lesson), and each precedent key with PLAYBOOK_MIN or more people's
+        answers that count, in the last PLAYBOOK_S, all one way, that the playbook doesn't hold (P-); the id is 32 hex
+        digits (128 bits) of a sha256 of the text, so an accept names the text it signs."""
+        since, groups = time.time() - PLAYBOOK_S, {}
+        for p in self.log.agent["precedents"].values():
+            if p["tenant"] == tenant and not p.get("bad") and p["at"] > since:
+                groups.setdefault(p["digest"], []).append(p)
+        held = (self.log.agent["playbook"].get(tenant) or {"entries": {}})["entries"]
+        dropped = set(self.log.agent.get("dropped", {}).get(tenant, ()))
+        out = {k: {x: v[x] for x in ("text", "key", "digest", "decision", "evidence")}
+               for k, v in sorted(self.log.agent.get("lessons", {}).items(), key=lambda kv: kv[1]["at"])
+               if v["tenant"] == tenant and k not in held}
+        for ps in groups.values():
+            if len(ps) < PLAYBOOK_MIN or len({p["decision"] for p in ps}) > 1:
+                continue
+            k, last = ps[0]["key"], max(ps, key=lambda p: p["at"])
+            said = "approved" if ps[0]["decision"] == "approve" else "rejected"
+            text = (f"{', '.join(k['rules'])} by {k['tool'][:64]}, " + "; ".join(
+                f"{r} {' '.join(v)[:120]}" for r, v in sorted(k["target"].items())) +
+                (f", in {k['project']}" if k["project"] else "") + f": {said} {len(ps)} of {len(ps)}" +
+                (f" (latest reason: {last['reason'][:200]})" if last.get("reason") else ""))
+            pid = "P-" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()[:32]
+            if pid not in held:
+                out[pid] = {"text": text, "key": k, "digest": ps[0]["digest"], "decision": ps[0]["decision"]}
+        return {k: v for k, v in out.items() if k not in dropped}
+
+    def _agents_off(self, tx, why, which=lambda a: True):
+        """(on the writer) Agent approvals off for the approvals `which` selects: each agent approval not consumed yet
+        is revoked and each pending one an agent could answer is escalated, people answering it from then on; `why`
+        in their records. The approval ids revoked (their sealed copies go after the commit)."""
+        revoked = []
+        for aid, a in list(self.log.approvals.items()):
+            if not which(a):
+                continue
+            if a.get("kind") == "agent" and a["state"] == "approved":
+                self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", why)
+                revoked.append(aid)
+            elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
+                tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
+                    "approval_id": aid, "by": "signer", "reason": why}, source="signer", tool_call_id=a["tool_call_id"])
+        return revoked
 
     def _approval_agents(self, identity, req):
         """The operator's kill switch: switch agent approvals off (every agent approval not consumed yet is revoked,
@@ -4120,16 +4670,7 @@ class SignerService:
         self.quotas.take_event(identity)
 
         def fn(tx, _):
-            revoked = []
-            if not req["enabled"]:
-                for aid, a in list(self.log.approvals.items()):
-                    if a.get("kind") == "agent" and a["state"] == "approved":
-                        self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", "agent approvals switched off")
-                        revoked.append(aid)
-                    elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
-                        tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
-                            "approval_id": aid, "by": "signer", "reason": "agent approvals switched off"},
-                                source="signer", tool_call_id=a["tool_call_id"])
+            revoked = [] if req["enabled"] else self._agents_off(tx, "agent approvals switched off")
             tx.emit(self.log.signer_run(tx), "approval.agents", {
                 "enabled": req["enabled"], "by": by, **({"reason": privacy.redact_text(req["reason"])[0]}
                                                         if "reason" in req else {})}, source="signer",
@@ -4238,6 +4779,15 @@ class SignerService:
                 why = "TK-APPROVAL-EXPIRED", "the approval expired"
             elif a.get("not_before", "") > _iso(time.time()):
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
+            elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
+                    f"{LABEL_WORDS[u[0]]} since it was approved" if (u := self._unclean(run, a["requester"])) else
+                    None) or self._switched_off(a) or ("a person rejected a call like this one" if (p := self._precedents(
+                        run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
+                    "the person's approval it matched no longer counts" if not p["approve"] else None)):
+                # the circuit breaker tripped, the run took a label of the bound, or the precedents changed, since the
+                # AI approved it
+                self._revoke(tx, run, aid, "signer", f"AI approval withdrawn: {stop}")
+                why = "TK-APPROVAL-REJECTED", f"the AI approval was withdrawn: {stop}"[:1024]
             else:
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
                 if a["executor"] == "t2":
@@ -4285,20 +4835,22 @@ class SignerService:
 
     def _approval_get(self, identity, req):
         identity, aid = self._on_behalf(identity, req), req["approval_id"]
-        a = self.log.write(lambda tx: dict(self._visible(identity, aid)))   # committed state only
+        a = self.log.write(lambda tx: {**self._visible(identity, aid),   # committed state only
+                                       **self._agent_views(aid, self.log.approvals[aid])})
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         copy.pop("spend", None)
-        return {**self._summary(aid, a), "binding_digest": a["binding_digest"], **copy}
+        return {**self._summary(aid, a, self._a_person(identity)), "binding_digest": a["binding_digest"], **copy}
 
     def _approval_list(self, identity, req):
         identity = self._on_behalf(identity, req)
-        agent_view = self._is_agent(identity)
+        agent_view, people = self._is_agent(identity), self._a_person(identity)
         if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
         # copied on the writer, so only committed states are listed
         items = iter(self.log.write(lambda tx: [
-            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"]})
+            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"],
+                   **self._agent_views(aid, a)})
             for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
@@ -4309,13 +4861,13 @@ class SignerService:
         for aid, a in items:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
             if req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
                     req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a) and (
-                    "for" not in req or req["for"] == "agent" and self._agent_mode(a) is not None
-                    or req["for"] == "person" and self._agent_mode(a) != "enforce"):
+                    "for" not in req or req["for"] == "agent" and a["agent_mode"] is not None
+                    or req["for"] == "person" and a["agent_mode"] != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
-                page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
-                                                                     "passkey", "answered", "escalation")}
+                # an agent approver keeps whether its answer counts (`agent`); its allow-list drops the rest
+                s = {**self._summary(aid, a, people or agent_view), **({"run_closing": True} if a["run_closing"] else {})}
+                page.append({k: v for k, v in s.items() if k in rpc_schema.AGENT_SUMMARY["properties"]}
                             if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 
@@ -5108,7 +5660,7 @@ class SignerService:
                 **({"content": {"max_record_bytes": self.content["max_record_bytes"]}} if self.content["retain"] else {})}
 
     def _read(self, identity, req):
-        key = self._authorize(identity, req)
+        key, people = self._authorize(identity, req), self._a_person(identity)
         start, limit = req.get("from_seq", 0), req.get("limit", 100)
         events, next_seq = [], None
         try:
@@ -5120,7 +5672,7 @@ class SignerService:
                 if len(events) == limit:
                     next_seq = e["run_seq"]
                     break
-                p = {"run_seq": e["run_seq"], "type": e["type"], "data": e["data"]}
+                p = {"run_seq": e["run_seq"], "type": e["type"], "data": e["data"] if people else _unjudged(e)}
                 p["event_hash"] = event_hash(p)
                 events.append(p)
         except (OSError, StorageUnavailable) as e:
