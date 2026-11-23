@@ -2095,14 +2095,70 @@ class JcodeTools(unittest.TestCase):
             self.install(path, uninstall=True)
             self.assertEqual(path.read_bytes(), b"")
 
-    def test_resaved_config_names_its_unmarked_commands_on_init_and_uninstall(self):
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_gets_its_unmarked_commands_taken_out(self):
+        import tomllib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_bytes(b'model = "x"\n')
+            self.install(path, v2=True)
+            # Config::save serializes the hooks but discards comments, including Tracekit's markers.
+            saved = self.resaved(path)
+            path.write_text(saved, encoding="utf-8")
+            said = self.install(path, uninstall=True)
+            self.assertIn("Tracekit v2 hooks removed from", said)
+            self.assertEqual(path.read_text(encoding="utf-8"), 'model = "x"\n')
+            self.assertIn(saved, [b.read_text(encoding="utf-8") for b in path.parent.glob("config.toml.bak-*")])
+            self.install(path, v2=True)   # init after the removal: a marked table again
+            text = path.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith('model = "x"\n\n' + agent_hooks.JCODE_BEGIN + "\n[hooks]\n"))
+            self.assertEqual(tomllib.loads(text)["hooks"], agent_hooks._jcode_hooks(True, None))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_keeps_a_peoples_command_when_uninstalling(self):
+        import tomllib
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
             self.install(path, v2=True)
-            # Config::save serializes the hooks but discards comments, including Tracekit's markers.
-            saved = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
-                              if not line.startswith("#")) + "\n"
+            hooks = tomllib.loads(path.read_text(encoding="utf-8"))["hooks"]
+            theirs = "/home/u/bin/their-gate"
+            # jcode's own shape: no comments, a hook with several commands saved as a list over several lines
+            saved = ('model = "x"\n\n[hooks]\npre_tool = [\n    ' + json.dumps(theirs) + ",\n    "
+                     + json.dumps(hooks["pre_tool"]) + ",\n]\n"
+                     + "".join(f'{key} = {json.dumps(hooks[key])}\n' for key in
+                               ("post_tool", "session_start", "session_end"))
+                     + f"pre_tool_timeout_ms = {agent_hooks.JCODE_TIMEOUT_MS}\n"
+                     '[tools]\nauto_background_timeout_ms = 3000\n')
+            path.write_text(saved, encoding="utf-8")
+            said = self.install(path, uninstall=True)
+            self.assertIn("Tracekit v2 hooks removed from", said)
+            config = tomllib.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(config["hooks"], {"pre_tool": [theirs]})
+            self.assertEqual((config["model"], config["tools"]), ("x", {"auto_background_timeout_ms": 3000}))
+            self.assertIn(saved, [b.read_text(encoding="utf-8") for b in path.parent.glob("config.toml.bak-*")])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the stripped table with tomllib")
+    def test_resaved_config_keeps_a_peoples_own_timeout_when_uninstalling(self):
+        import tomllib
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.install(path, v2=True)
+            hooks = tomllib.loads(path.read_text(encoding="utf-8"))["hooks"]
+            path.write_text(f'[hooks]\npre_tool = {json.dumps(hooks["pre_tool"])}\npre_tool_timeout_ms = 5000\n',
+                            encoding="utf-8")
+            self.install(path, uninstall=True)
+            self.assertEqual(tomllib.loads(path.read_text(encoding="utf-8")), {"hooks": {"pre_tool_timeout_ms": 5000}})
+
+    def test_a_resaved_command_that_is_not_a_line_of_its_own_is_left_and_printed(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            self.install(path, v2=True)
+            pre_tool = agent_hooks._jcode_hooks(True, None)["pre_tool"]
+            saved = '[hooks]\npre_tool = ["/home/u/bin/their-gate", ' + json.dumps(pre_tool) + ']\n'
             path.write_text(saved, encoding="utf-8")
             for uninstall in (False, True):
                 with self.subTest(uninstall=uninstall):
@@ -2110,8 +2166,13 @@ class JcodeTools(unittest.TestCase):
                     self.assertIn("unmarked Tracekit hook commands", said)
                     self.assertIn("Remove these Tracekit commands from [hooks] by hand", said)
                     self.assertIn("pre_tool =", said)
-                    self.assertIn("session_end =", said)
                     self.assertEqual(path.read_text(encoding="utf-8"), saved)
+                    self.assertEqual(list(path.parent.glob("config.toml.bak-*")), [])
+
+    def resaved(self, path):
+        """What jcode's Config::save writes of init's config.toml: the same settings, no comment (the markers go)."""
+        return "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                         if not line.startswith("#")) + "\n"
 
     @unittest.skipIf(sys.version_info < (3, 11), "checks the appended table with tomllib")
     def test_install_checks_generated_toml_before_writing_non_bmp_interpreter(self):
