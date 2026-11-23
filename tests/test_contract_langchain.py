@@ -263,3 +263,15 @@ class TestCheckpointerMemory(unittest.TestCase):
             cp.put({"configurable": {"thread_id": f"t{i}", "checkpoint_ns": ""}}, empty_checkpoint(), {}, {})
             cp.delete_thread(f"t{i}")
         self.assertEqual((len(cp._seen), len(cp._acked), len(cp._read)), (0, 0, 0))
+
+class TestRecordingWarning(unittest.TestCase):
+    def test_warning_reflects_recording_status(self):
+        for recorded, expected in (
+            (None, "may not have been recorded"),
+            (False, "not recorded"),
+        ):
+            with self.subTest(recorded=recorded):
+                error = RuntimeError("signer unavailable")
+                error.recorded = recorded
+                message = recording_warning("checkpoint commitment", error)
+                self.assertIn(expected, message)
