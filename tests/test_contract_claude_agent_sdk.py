@@ -16,6 +16,7 @@ import test_said as ts
 from factories import VersionCheckCases
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.testing import FakeSigner
+from tracekit.integrations.recording_warning import recording_warning
 
 try:
     from claude_agent_sdk import (AssistantMessage, ClaudeAgentOptions, InMemorySessionStore, ResultMessage, TextBlock,
