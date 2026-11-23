@@ -571,6 +571,15 @@ class Routes(unittest.TestCase):
                               "deno eval \"Deno.writeTextFileSync('out.txt', 'x')\"",
                               "bun -e \"console.log('hi')\"", "deno eval \"console.log('hi')\"",
                               "bun run test.ts", "deno run main.ts", "deno test"), "allow")
+        # #980, xargs fed by a { } group or a subshell: the group's print reaches the xargs stage, so the write
+        # lands on the protected name it prints; a group that isn't piped into it doesn't
+        self.expect(self.bash("{ echo .env; } | xargs sed -i 's/a/b/'", "( echo .env ) | xargs sed -i 's/a/b/'",
+                              "{ printf '.e%s' nv; } | xargs sed -i 's/a/b/'",
+                              "( echo a; echo .env ) | xargs sed -i 's/a/b/'",
+                              "{ find . -name .env; } | xargs sed -i 's/a/b/'"), "deny", "TK-D023")
+        self.expect(self.bash("{ echo src/a.txt; } | xargs sed -i 's/a/b/'",
+                              "( echo src/a.txt ) | xargs sed -i 's/a/b/'"), "allow")
+        self.spare(self.bash("{ echo .env; } && echo src/a.txt | xargs sed -i 's/a/b/'"), "TK-D023")
 
     def test_ssh_keygen_writes_the_file_its_f_mode_names(self):
         """#980 item 3: `-f` is the file a writing mode creates or rewrites, so a key written into `~/.ssh` is the
