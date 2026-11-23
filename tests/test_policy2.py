@@ -4956,7 +4956,8 @@ class HarmlessStops(unittest.TestCase):
             "npx": "-c -C -L -m -n -p -w",   # and npm's bin/npx-cli.js
             "pnpm": "-C -F", "pnpx": "-C -F",   # pnpm 11: pnpm/src/shorthands.ts
             "yarn": "-j -p",   # berry: workspaces foreach's -j (its -p is --parallel: WRAPPER_FLAGS), dlx's -p
-            "bun": "-p", "bunx": "-p", "conda": "-n -p", "mamba": "-n -p", "micromamba": "-a -n -p -r",
+            # bun's own options take theirs before its x too (shell._BUN_VALUED: --preload, --define, --loader, --filter)
+            "bun": "-F -d -l -p -r", "bunx": "-p", "conda": "-n -p", "mamba": "-n -p", "micromamba": "-a -n -p -r",
             "poetry": "-C -P", "pdm": "-p", "pipx": "-i", "doppler": "-c -p", "mise": "-C -j", "pixi": "-c -e -s",
             "dotenv": "-e -p -v", "hatch": "", "pipenv": "", "direnv": "", "op": "", "bundle": "", "rye": "",
             "rustup": ""}
