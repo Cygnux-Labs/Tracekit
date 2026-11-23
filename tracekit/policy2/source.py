@@ -5,9 +5,9 @@ subset of Python: each literal helper or command call becomes the action it stan
 cell taking the strictest. Left unread is only what computes values: a builtin called directly, an inert module's own
 function, a method of plain data the cell built, and a function the cell defines, whose body is read where it is
 defined trusting none of the cell's names. Everything outside the subset is held as TK-SOURCE-PARSE: rebinding a name
-the reader trusts, a dunder, an import outside the list, a store into anything but plain data, a callable handed on as
-a value, a method of anything but plain data, and a call or attribute through a name the cell did not bind (an earlier
-cell's). docs/limits.md lists the subset.
+the reader trusts, a dunder, `:=`, exec and its kin, an import outside the list, a class with a base, a store into
+anything but plain data, a callable handed on as a value, a method of anything but plain data, and a call or attribute
+through a name the cell did not bind (an earlier cell's). docs/limits.md lists the subset.
 """
 import ast
 import builtins
@@ -20,8 +20,7 @@ from . import shell
 
 MAX_SOURCE = 64 * 1024   # bytes of UTF-8; a longer cell or delivery is held, not cut
 MAX_SUBJECT = 64 * 1024  # bytes of UTF-8; no literal the reader resolves is longer (the engine's subject limit)
-MAX_CALLS = 256          # calls read for one decision; nested readers share this counter
-MAX_DEPTH = 3            # nested exec/eval: the cell, then three levels of literal code
+MAX_CALLS = 256          # calls read for one decision
 
 _MISSING = object()
 
@@ -122,7 +121,10 @@ _MODULES = _IMPORTABLE | {"subprocess", "asyncio", "pty", "base64", "importlib",
 REFLECTION = {"globals", "locals", "vars"}
 DYNAMIC_CALLS = {"__import__", "importlib.import_module"}
 SETATTR = {"setattr", "delattr"}
-_HELD_BUILTINS = REFLECTION | SETATTR | {"__import__", "breakpoint", "compile", "help"}
+# code built at run time, and what stops or reads the process interactively: held wherever they are named (the
+# prepass holds these and `__import__`; REFLECTION and SETATTR are held where they are called)
+FORBIDDEN = frozenset({"exec", "eval", "compile", "breakpoint", "help"})
+_HELD_BUILTINS = REFLECTION | SETATTR
 
 
 class _Helper:
@@ -212,7 +214,7 @@ PLAIN_METHODS = {kind: frozenset(names.split()) for kind, names in {
 # and the data attributes a cell may read off plain data
 PLAIN_DATA = {kind: frozenset(names.split()) for kind, names in {
     int: "denominator imag numerator real", bool: "denominator imag numerator real", float: "imag real",
-    re.Match: "endpos lastgroup lastindex pos re regs string", re.Pattern: "flags groupindex groups pattern",
+    re.Match: "endpos lastgroup lastindex pos re regs", re.Pattern: "flags groupindex groups",
     datetime.datetime: "day fold hour microsecond minute month second tzinfo year",
     datetime.date: "day month year", datetime.time: "fold hour microsecond minute second tzinfo",
     datetime.timedelta: "days microseconds seconds", decimal.Decimal: "imag real",
@@ -250,6 +252,7 @@ _CALLS_ARGS = {
     "itertools.accumulate": (1, "func"), "itertools.dropwhile": (0,), "itertools.filterfalse": (0,),
     "itertools.groupby": (1, "key"), "itertools.starmap": (0,), "itertools.takewhile": (0,),
     "collections.defaultdict": (0, "default_factory"),
+    "textwrap.indent": (2, "predicate"),
     "json.loads": ("cls", "object_hook", "object_pairs_hook", "parse_constant", "parse_float", "parse_int"),
     "json.dumps": ("cls", "default")}
 _METHOD_CALLS_ARGS = {"sort": ("key",), "sub": (0, "repl"), "subn": (0, "repl")}
@@ -259,20 +262,18 @@ BUILTIN_ATTRS = frozenset({"bytes.fromhex", "bytes.maketrans", "dict.fromkeys", 
                            "str.join", "str.maketrans"})
 _DECORATORS = frozenset({"classmethod", "property", "staticmethod"})
 _READ_MODES = frozenset({"r", "rt", "tr", "rb", "br"})
-_EXEC = frozenset({"exec", "eval"})
 _TRY = tuple(c for c in (ast.Try, getattr(ast, "TryStar", None)) if c is not None)
 _MATCH = getattr(ast, "Match", None)
 _TYPE_ALIAS = getattr(ast, "TypeAlias", None)
 _CAPTURES = tuple(getattr(ast, n) for n in ("MatchAs", "MatchStar") if hasattr(ast, n))
-_REFERENCES = (ast.Name, ast.Attribute, ast.Subscript)
+_REFERENCES = (ast.Name, ast.Attribute, ast.Subscript, ast.BoolOp, ast.IfExp)   # each evaluates to an existing value
 
 # What an expression evaluates to, as the reader follows it: ("lit", value); ("plain", types, deep) plain data of one
-# of the types, `deep` when all it holds is plain data too; ("func",) a function, class or generator the cell defines,
-# its body read; ("module", dotted); ("known", dotted) a callable the reader knows by name; ("builtin", name);
+# of the types, `deep` when it holds plain data only (State.deep); ("func",) a function, class or generator the cell
+# defines, its body read; ("module", dotted); ("known", dotted) a callable the reader knows by name; ("builtin", name);
 # ("harness", name); ("unknown",); ("unbound", name) a name the cell has not bound, an earlier cell's.
 UNKNOWN = ("unknown",)
 FUNC = ("func",)
-DEEP = ("plain", ANY, True)
 _NOT_VALUES = frozenset({"module", "known", "builtin", "harness"})
 
 
@@ -292,6 +293,11 @@ def _plain(v):
 def _deep(v):
     p = _plain(v)
     return bool(p and p[1])
+
+
+def _item(v):
+    """An item of `v`: plain data holding plain data only when `v` holds plain data only."""
+    return ("plain", ANY, True) if _deep(v) else UNKNOWN
 
 
 def _allowed(table, types, name):
@@ -336,18 +342,30 @@ def _resolve(dotted):
 
 
 class _State:
-    """What every reader of one decision shares: the calls found, the call counter, the stop flag, and the budget."""
+    """What one reading shares: the calls found, the call counter, the stop flag and the budget; whether plain data
+    may hold plain data only (`deep`), and whether the cell put anything else into a container (`mixed`)."""
 
-    def __init__(self, work=None):
+    def __init__(self, work=None, deep=True):
         self.calls = []
         self.count = 0
         self.stop = False
         self.work = [0] if work is None else work
+        self.deep, self.mixed = deep, False
 
 
-def read(code, mode="exec", depth=0, work=None):
-    """(the calls a source names, why it is held or None): [(tool, args)]. Parse only; never run the source."""
-    return Reader(code, mode, depth, state=_State(work)).run()
+def read(code, mode="exec", work=None):
+    """(the calls a source names, why it is held or None): [(tool, args)]. Parse only; never run the source.
+
+    A container holds plain data only when it was built from plain data only (`json.loads`, `str.split`, a `re`
+    result, a literal of such values) and nothing in the whole cell puts anything else into a container: a store or a
+    method that puts in a value the reader can't follow makes the cell read again with no container holding plain data
+    only, so no second name for a container ever matters."""
+    state = _State(work)
+    reading = Reader(code, mode, state=state).run()
+    if state.mixed:
+        state = _State(state.work, deep=False)
+        reading = Reader(code, mode, state=state).run()
+    return reading
 
 
 class _Reading:
@@ -367,15 +385,11 @@ class _Env:
 
 
 class Reader:
-    def __init__(self, code, mode="exec", depth=0, state=None, parent=None):
-        self.code, self.mode, self.depth, self.state = code, mode, depth, state or _State()
+    def __init__(self, code, mode="exec", state=None):
+        self.code, self.mode, self.state = code, mode, state or _State()
         self.held = None
-        if parent is None:
-            self.scope, self.frames, self.deferred = {}, [], False
-            self.bound_anywhere, self.globals = set(), set()
-        else:   # literal exec/eval code without a namespace runs in the cell's own names
-            self.scope, self.frames, self.deferred = parent.scope, parent.frames, parent.deferred
-            self.bound_anywhere, self.globals = set(parent.bound_anywhere), set(parent.globals)
+        self.scope, self.frames, self.deferred = {}, [], False
+        self.bound_anywhere, self.globals = set(), set()
         self.env = _Env(self)
 
     @property
@@ -424,9 +438,9 @@ class Reader:
     # --- before reading: what the cell binds, and what it reaches outside the subset ---
     def prepass(self, tree):
         """Hold a cell that binds a name the reader trusts (a builtin, a harness name, a module or a name an import
-        binds, `__builtins__`) in any form but its own import, uses a dunder name or `builtins`, or imports outside
-        the list; and note every name the cell binds anywhere, which a body that runs later never trusts. (A dunder
-        attribute is held where it is read.)"""
+        binds, `__builtins__`) in any form but its own import, uses a dunder name, `builtins`, `:=` or a FORBIDDEN
+        name anywhere, or imports outside the list; and note every name the cell binds anywhere, which a body that
+        runs later never trusts. (A dunder attribute is held where it is read.)"""
         local, imported = set(), {}
         for sub in ast.walk(tree):
             if not self._charge(1):
@@ -439,6 +453,10 @@ class Reader:
             elif isinstance(sub, ast.Name) and sub.id != "__name__" \
                     and (sub.id in ("__builtins__", "builtins") or _dunder(sub.id)):
                 self.hold("builtins" if "builtins" in sub.id else sub.id if sub.id in DYNAMIC_CALLS else "dunder")
+            elif isinstance(sub, ast.Name) and sub.id in FORBIDDEN:
+                self.hold(sub.id)
+            elif isinstance(sub, ast.NamedExpr):
+                self.hold("walrus")   # a binding inside an expression, which may not run all its parts
             elif isinstance(sub, (ast.Global, ast.Nonlocal)):
                 self.globals.update(sub.names)
         for name, targets in imported.items():
@@ -496,6 +514,11 @@ class Reader:
             return ("harness", name)
         return ("unbound", name)
 
+    def made(self, types, deep):
+        """Plain data the cell builds: holding plain data only when what it is built from does, and no store in the
+        cell puts anything else into a container (State.deep)."""
+        return ("plain", types, deep and self.state.deep)
+
     def bind(self, name, v):
         if not self.deferred:
             self.scope[name] = v
@@ -505,19 +528,14 @@ class Reader:
         return dict(self.scope)
 
     def forget(self, nodes):
-        """After a block that may run or not, or run again, each name it binds holds a value the reader can't follow;
-        a block that may exec code binds names no walk sees, so then forget them all."""
+        """After a block that may run or not, or run again, each name it binds holds a value the reader can't
+        follow."""
         if self.deferred:
             return
         names = set()
         for sub in (s for node in nodes for s in ast.walk(node)):
             if not self._charge(1):
                 return
-            if isinstance(sub, ast.Name) and isinstance(sub.ctx, ast.Load) and sub.id in _EXEC \
-                    or isinstance(sub, ast.Attribute) and sub.attr in _EXEC \
-                    or isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value in _EXEC:
-                names = set(self.scope)
-                break
             names.update(name for name, _ in _bindings(sub, ()))
             if isinstance(sub, ast.alias):
                 names.add((sub.asname or sub.name).split(".")[0])
@@ -566,7 +584,7 @@ class Reader:
             items = self.value(node.iter)
             self.forget([node])   # a run starts with what the last one left
             start = self.snapshot()
-            self.store(node.target, DEEP if _deep(items) else UNKNOWN)
+            self.store(node.target, _item(items))
             self.block(node.body)
             self.scope = start
             self.block(node.orelse)
@@ -626,7 +644,7 @@ class Reader:
                     if not self.deferred:
                         self.scope.pop(target.id, None)
                 else:
-                    self.store(target, DEEP, removes=True)
+                    self.store(target, UNKNOWN, removes=True)
         elif isinstance(node, ast.Return):
             if node.value is not None:
                 self.value(node.value)
@@ -680,17 +698,18 @@ class Reader:
                 self.hold("value")
             for elt in target.elts:
                 if isinstance(elt, ast.Starred):
-                    self.store(elt.value, ("plain", frozenset({list}), _deep(v)))
+                    self.store(elt.value, self.made(frozenset({list}), _deep(v)))
                 else:
-                    self.store(elt, DEEP if _deep(v) else UNKNOWN)
+                    self.store(elt, _item(v))
         elif isinstance(target, ast.Starred):
             self.store(target.value, v, source)
         elif isinstance(target, ast.Subscript):
             base = self.value(target.value)
             self.value(target.slice)
-            p = _plain(base)
-            if not p or p[1] and not removes and not _deep(v):
+            if not _plain(base):
                 self.hold("store")
+            elif not removes and not _deep(v):
+                self.state.mixed = True
         else:   # an attribute
             self.value(target.value, use=False)
             self.hold("store")
@@ -707,10 +726,10 @@ class Reader:
         if folded is not _MISSING:
             self.bind(target.id, ("lit", folded))
             return
-        if _deep(current) and not _deep(v):
-            self.hold("store")   # `items += [x]` puts x inside the list
-        p, q = _plain(current), _plain(v)
-        self.bind(target.id, ("plain", ANY, p[1] and q[1]) if p and q else UNKNOWN)
+        if not _deep(v):
+            self.state.mixed = True   # `items += [x]` puts x inside the list
+        plain = _plain(current) and _plain(v)
+        self.bind(target.id, self.made(ANY, _deep(current) and _deep(v)) if plain else UNKNOWN)
 
     def function(self, node):
         for d in node.decorator_list:
@@ -727,12 +746,17 @@ class Reader:
         self.bind(node.name, FUNC)
 
     def class_def(self, node):
-        for d in node.decorator_list:
-            self.decorator(d)
-        for base in node.bases:
-            self.types(base)
-        for kw in node.keywords:
-            self.value(kw.value)
+        """Only a plain class: no decorator, keyword or type parameter, no base but `object`, and a body of plain
+        `def`s. A base's methods, a metaclass or a decorator run code the class names but the reader does not."""
+        plain = not node.decorator_list and not node.keywords and not getattr(node, "type_params", None) \
+            and all(isinstance(b, ast.Name) and b.id == "object" for b in node.bases) \
+            and all(isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and not stmt.decorator_list
+                    or isinstance(stmt, ast.Pass)
+                    or isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) for stmt in node.body)
+        if not plain:
+            self.hold("class")
+        for part in node.decorator_list + node.bases + [kw.value for kw in node.keywords]:
+            self.value(part, use=False)
         self.type_params(node)
         outer = self.scope
         self.scope = self.snapshot()   # the body runs now, in a namespace of its own that ends with the class
@@ -817,26 +841,22 @@ class Reader:
             p = _plain(base)
             if p and isinstance(node.slice, ast.Slice):
                 return ("plain", p[0], p[1])   # a slice of plain data is plain data of its type
-            return DEEP if p and p[1] else UNKNOWN
+            return _item(base)
         if isinstance(node, (ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp, ast.JoinedStr)):
             return self.operation(node)
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
             values = [self.value(e.value if isinstance(e, ast.Starred) else e) for e in node.elts]
             kind = list if isinstance(node, ast.List) else tuple if isinstance(node, ast.Tuple) else set
-            return ("plain", frozenset({kind}), all(map(_deep, values)))
+            return self.made(frozenset({kind}), all(map(_deep, values)))
         if isinstance(node, ast.Dict):
             values = [self.value(k) for k in node.keys if k is not None] + [self.value(v) for v in node.values]
-            return ("plain", frozenset({dict}), all(map(_deep, values)))
+            return self.made(frozenset({dict}), all(map(_deep, values)))
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)):
             return self.comprehension(node)
         if isinstance(node, ast.Lambda):
             self.defaults(node.args)
             self.later(lambda: self.value(node.body))
             return FUNC
-        if isinstance(node, ast.NamedExpr):
-            v = self.value(node.value)
-            self.store(node.target, v, node.value)
-            return v
         for child in ast.iter_child_nodes(node):   # Starred, Await, Yield, Slice and the like
             if isinstance(child, ast.expr):
                 self.value(child)
@@ -854,25 +874,26 @@ class Reader:
             if folded is not _MISSING:
                 return ("lit", folded)
             return ("plain", frozenset({str}), True) if all(map(_plain, parts)) else UNKNOWN
-        if isinstance(node, ast.UnaryOp):
-            parts = [self.value(node.operand)]
-            if isinstance(node.op, ast.Not):
-                return ("plain", frozenset({bool}), True)
-        elif isinstance(node, ast.BinOp):
-            parts = [self.value(node.left), self.value(node.right)]
-        elif isinstance(node, ast.BoolOp):
-            parts = [self.value(v) for v in node.values]
-        elif isinstance(node, ast.Compare):
+        if isinstance(node, ast.Compare):
             parts = [self.value(node.left)] + [self.value(c) for c in node.comparators]
             return ("plain", frozenset({bool}), True) if all(map(_plain, parts)) else UNKNOWN
-        else:   # IfExp
-            self.value(node.test)
-            parts = [self.value(node.body), self.value(node.orelse)]
+        if isinstance(node, (ast.BoolOp, ast.IfExp)):
+            # the result is one of the operands, the same object: plain only when each operand holds plain data only
+            if isinstance(node, ast.IfExp):
+                self.value(node.test)
+            parts = [self.value(v) for v in (node.values if isinstance(node, ast.BoolOp) else (node.body, node.orelse))]
+            if not all(map(_deep, parts)):
+                return UNKNOWN
+            return ("plain", frozenset().union(*(_plain(p)[0] for p in parts)), True)
+        parts = [self.value(node.operand)] if isinstance(node, ast.UnaryOp) else [self.value(node.left),
+                                                                                  self.value(node.right)]
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return ("plain", frozenset({bool}), True)
         folded = lit(node, self.env)
         if folded is not _MISSING:
             return ("lit", folded)
         plains = [_plain(p) for p in parts]
-        return ("plain", ANY, all(p[1] for p in plains)) if all(plains) else UNKNOWN
+        return self.made(ANY, all(p[1] for p in plains)) if all(plains) else UNKNOWN
 
     def chain(self, node):
         """A name's or an attribute chain's value, not yet handed on."""
@@ -896,7 +917,7 @@ class Reader:
             return ("builtin", f"{base[1]}.{node.attr}")
         p = _plain(base)
         if p and _allowed(PLAIN_DATA, p[0], node.attr):
-            return ("plain", ANY, p[1])
+            return _item(base)   # what it holds: plain only when the value holds plain data only (a datetime's tzinfo)
         self.hold("value")   # a method taken as a value, or an attribute of anything but plain data or a module
         return UNKNOWN
 
@@ -905,7 +926,6 @@ class Reader:
         iterable it trusts none of the cell's names. Its targets are its own, plain when what they come from is."""
         generators = node.generators
         first = self.value(generators[0].iter)   # the first iterable is evaluated here, at once
-        self.forget_walrus(node)
         saved = self.deferred
         if isinstance(node, ast.GeneratorExp):
             self.deferred = True
@@ -914,7 +934,7 @@ class Reader:
         try:
             for i, gen in enumerate(generators):
                 items = first if i == 0 else self.value(gen.iter)
-                self.target(gen.target, DEEP if _deep(items) else UNKNOWN, frame)
+                self.target(gen.target, _item(items), frame)
                 for condition in gen.ifs:
                     self.value(condition)
             if isinstance(node, ast.DictComp):
@@ -924,11 +944,10 @@ class Reader:
         finally:
             self.frames.pop()
             self.deferred = saved
-        self.forget_walrus(node)
         if isinstance(node, ast.GeneratorExp):
             return FUNC
         kind = list if isinstance(node, ast.ListComp) else set if isinstance(node, ast.SetComp) else dict
-        return ("plain", frozenset({kind}), all(map(_deep, parts)))
+        return self.made(frozenset({kind}), all(map(_deep, parts)))
 
     def target(self, target, item, frame):
         """Bind a comprehension's own target; a subscript or attribute target is a store like any other."""
@@ -938,15 +957,9 @@ class Reader:
             for elt in target.elts:
                 self.target(elt, item, frame)
         elif isinstance(target, ast.Starred):
-            self.target(target.value, ("plain", frozenset({list}), _deep(item)), frame)
+            self.target(target.value, self.made(frozenset({list}), _deep(item)), frame)
         else:
             self.store(target, item)
-
-    def forget_walrus(self, node):
-        """`:=` in a comprehension binds in the enclosing scope, once per run."""
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.NamedExpr) and isinstance(sub.target, ast.Name):
-                self.bind(sub.target.id, UNKNOWN)
 
     # --- calls: one decision table ---
     def callee(self, func):
@@ -970,9 +983,7 @@ class Reader:
                 and self.lookup(func.func.id) == ("builtin", "getattr"):
             name = lit(func.args[1], self.env) if len(func.args) == 2 else _MISSING
             if not isinstance(name, str) or func.keywords or isinstance(func.args[0], ast.Starred):
-                self.hold("getattr")
-                self.value(func, use=False)
-                return UNKNOWN
+                return self.value(func, use=False)   # a name picked at run time: `getattr` holds it
             return self.callee(ast.Attribute(value=func.args[0], attr=name, ctx=ast.Load()))
         self.hold("call")   # a callee built at run time: a call's result, a subscript, ...
         self.value(func, use=False)
@@ -1026,11 +1037,7 @@ class Reader:
             if name not in BUILTIN_ATTRS:
                 self.hold("call")
             pos, kws = self.arguments(node)
-            return DEEP if all(map(_deep, pos + list(kws.values()))) else UNKNOWN
-        if name in _EXEC:
-            self.nested(name, node)
-            self.arguments(node)
-            return UNKNOWN
+            return self.made(ANY, True) if all(map(_deep, pos + list(kws.values()))) else UNKNOWN
         if name in ("getattr", "hasattr"):
             return self.reflection(name, node)
         if name in _HELD_BUILTINS:
@@ -1052,13 +1059,13 @@ class Reader:
         handed = [v for i, v in enumerate(pos) if i not in positions] + [
             v for k, v in kws.items() if k not in positions]
         args_deep = all(map(_deep, handed))
-        if deep and name in _INSERTING and not args_deep:
-            self.hold("store")   # would put a value the reader can't follow inside plain data
+        if name in _INSERTING and not args_deep:
+            self.state.mixed = True   # puts a value the reader can't follow inside a container
         if name in _ELEMENT:
-            return DEEP if deep and args_deep else UNKNOWN
+            return ("plain", ANY, True) if deep and args_deep else UNKNOWN
         if name in _VIEWS:
-            return ("plain", frozenset({_Iter}), deep and args_deep)
-        return ("plain", ANY, deep and args_deep)
+            return self.made(frozenset({_Iter}), deep and args_deep)
+        return self.made(ANY, deep and args_deep)
 
     def arguments(self, node, positions=(), types_at=None):
         """Read a call's arguments as values handed on; where the callee calls what it is handed, only a function the
@@ -1093,12 +1100,12 @@ class Reader:
     def result(self, name, pos, kws):
         keywords = all(k is not None and _deep(v) for k, v in kws.items())
         if name in FRESH_CALLS:
-            return DEEP if keywords else UNKNOWN
+            return self.made(ANY, True) if keywords else UNKNOWN
         if name in _BUILT:
             items = pos + [v for k, v in kws.items() if k not in ("key", "reverse")]
-            return ("plain", frozenset({_BUILT[name]}), all(map(_deep, items)))
+            return self.made(frozenset({_BUILT[name]}), all(map(_deep, items)))
         if name in PURE_CALLS:
-            return DEEP if keywords and all(map(_deep, pos)) else UNKNOWN
+            return self.made(ANY, True) if keywords and all(map(_deep, pos)) else UNKNOWN
         return UNKNOWN
 
     def reads_only(self, node):
@@ -1121,25 +1128,6 @@ class Reader:
         for arg in node.args[2:]:
             self.value(arg)
         return ("plain", frozenset({bool}), True) if name == "hasattr" else v
-
-    def nested(self, name, node):
-        code = lit(node.args[0], self.env) if node.args else _MISSING
-        if not isinstance(code, str):
-            self.hold(name)
-            return
-        if node.keywords or len(node.args) > 1:
-            self.hold("namespace")   # a namespace of its own: its names are not the cell's
-            return
-        if self.depth >= MAX_DEPTH:
-            self.hold("depth")
-            return
-        # no namespace: the code runs in the cell's own names, and its assignments stay visible after the call
-        reader = Reader(code, name, self.depth + 1, state=self.state, parent=self)
-        reading = reader.run()
-        self.scope = reader.scope
-        self.globals |= reader.globals
-        if reading.held is not None:
-            self.hold(reading.held)
 
     def argv_call(self, dotted, node):
         argv = self._argv(dotted, node)
