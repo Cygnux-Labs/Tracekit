@@ -2423,7 +2423,20 @@ class CodingPack(unittest.TestCase):
                 ("uv --directory=/var/lib run rm -rf tracekit", "TK-D007"),
                 ("uv --project /var/lib run rm -rf tracekit", "TK-D007"),
                 ("uvx --directory /var/lib rm -rf tracekit", "TK-D007"),
-                ("uv tool run --directory /var/lib rm -rf tracekit", "TK-D007")]
+                ("uv tool run --directory /var/lib rm -rf tracekit", "TK-D007"),
+                # the module spellings python reads for Tracekit's own CLI (_module_run), for a tool too
+                (f"python3 -m uv.__main__ tool run tracekit approve {aid}", "TK-D012"),
+                (f"python3 -m runpy uv tool run tracekit approve {aid}", "TK-D012"),
+                (f"python3 -m cProfile -m uv tool run tracekit approve {aid}", "TK-D012"),
+                (f"python3 -m pipx.__main__ run --spec tracekit-ai tracekit approve {aid}", "TK-D012"),
+                ("python3 -m uv.__main__ tool uninstall tracekit-ai", "TK-A054"),
+                ("python3 -m runpy pipx uninstall tracekit-ai", "TK-A054"),
+                # and uv's folder wherever env -C's is read: a nested shell's, code's or a read's relative path
+                ("uv --directory /var/lib run sh -c 'rm -rf tracekit'", "TK-D007"),
+                ("uv --directory /var/lib run python3 -c 'import shutil; shutil.rmtree(\"tracekit\")'", "TK-D007"),
+                ("uv --directory /var/lib run cat tracekit/key.pem", "TK-D007"),
+                ("uv --project=/var/lib run cat tracekit/key.pem", "TK-D007"),
+                ("uvx --directory /var/lib cat tracekit/key.pem", "TK-D007")]
         for pack, engine, e in self.every_pack():
             for cmd, rule in held:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
@@ -2432,7 +2445,9 @@ class CodingPack(unittest.TestCase):
             for cmd in ("tracekit srt-decider --allow-domain x -- srt-proxy --listen 127.0.0.1:3128",
                         "tracekit mcp-gateway --help", "tracekit mcp-gateway serve --help",
                         "python3 -m uv tool run ruff check .", "uv --directory /tmp run pytest",
-                        "uv --directory /var/lib run python -c 'print(1)'"):
+                        "uv --directory /var/lib run python -c 'print(1)'", "python3 -m uv.__main__ tool run ruff check .",
+                        "python3 -m runpy uv --version", "uv --directory /tmp run cat tracekit/key.pem",
+                        "uv -C x=y run cat tracekit/key.pem"):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertIn(svc.evaluate(e, "Bash", {"command": cmd})[0]["verdict"], ("allow", "flag"))
 

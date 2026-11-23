@@ -6549,10 +6549,29 @@ def _python_module(args):
     return None, i
 
 
+def _module_run(module, rest, done):
+    """(the module python runs, the words after it) at last through module runners: runpy's first word, or the first
+    word not an option after a later -m or --module (cProfile, pdb, trace --module); the first `done(module)` accepts,
+    else None."""
+    while not done(module):
+        if module == "runpy" and rest:
+            module, rest = rest[0], rest[1:]
+        elif (k := next((j for j, w in enumerate(rest) if w in ("-m", "--module")), None)) is not None and \
+                (j := next((j for j in range(k + 1, len(rest)) if not rest[j].startswith("-")), None)) is not None:
+            module, rest = rest[j], rest[j + 1:]
+        else:
+            return None
+    return module, rest
+
+
 def _python_tool(args):
-    """`<tool> …` where python's `args` run one of _PYTHON_TOOLS by its module, else None."""
+    """`<tool> …` where python's `args` run one of _PYTHON_TOOLS by its module (`-m uv`, `-m uv.__main__`), also through
+    a module runner (_module_run: `-m runpy uv`, `-m cProfile -m uv`), else None."""
     found = _python_module(args)
-    return [found[0], *found[1]] if found and found[0] in _PYTHON_TOOLS else None
+    if not found or found[0] is None:
+        return None
+    found = _module_run(*found, lambda m: m.removesuffix(".__main__") in _PYTHON_TOOLS)
+    return None if found is None else [found[0].removesuffix(".__main__"), *found[1]]
 
 
 def _python_runs(args, copies=frozenset()):
@@ -6570,15 +6589,9 @@ def _python_runs(args, copies=frozenset()):
         i += args[i:i + 1] == ["--"]
         return ["tracekit", *args[i + 1:]] if i < len(args) and (
             _TRACEKIT_SCRIPT.fullmatch(args[i]) or _base(args[i]) in copies) else None
-    while not (_TRACEKIT_MODULE.fullmatch(module) or {module, module.rpartition(".")[2] + ".py"} & copies):
-        if module == "runpy" and rest:
-            module, rest = rest[0], rest[1:]
-        elif (k := next((j for j, w in enumerate(rest) if w in ("-m", "--module")), None)) is not None and \
-                (j := next((j for j in range(k + 1, len(rest)) if not rest[j].startswith("-")), None)) is not None:
-            module, rest = rest[j], rest[j + 1:]
-        else:
-            return None
-    return ["tracekit", *rest]
+    found = _module_run(module, rest,
+                        lambda m: _TRACEKIT_MODULE.fullmatch(m) or {m, m.rpartition(".")[2] + ".py"} & copies)
+    return None if found is None else ["tracekit", *found[1]]
 
 
 def _script_operand(kind, args):

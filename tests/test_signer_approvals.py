@@ -999,14 +999,21 @@ class TestFirstDayCli(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
 
-    def lines(self, command, run_id="run-1"):
+    def lines(self, command, run_id="run-1", **args):
         from tracekit.policy2 import compile as pc
         pol, _ = pc.build(os.path.join(ts.ROOT, "tracekit", "policy2", "packs", "dev.yaml"))
         x = {"approval_id": "apr-" + "1" * 32, "state": "requested", "run_id": run_id, "tool": "Bash",
              "rule_ids": ["TK-SHELL-PARSE"], "policy_hash": pc.policy_hash(pol), "args_source": "parsed",
-             "args": {"command": command}, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z",
-                                                                       time.gmtime(time.time() + 3600))}
+             "args": {"command": command, **args}, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z",
+                                                                                time.gmtime(time.time() + 3600))}
         return cli._stop_lines(mock.Mock(signer=None), x)
+
+    def test_show_gives_the_cause_of_a_call_held_for_its_working_directories(self):
+        """A call held for naming more than one working directory was shown TK-SHELL-PARSE's general reason: `approvals
+        show` read the cause from the engine alone, without the working-directory reading the signer adds."""
+        self.assertEqual(self.lines("ls", workdir="/a", cwd="/b")[:2], [
+            "why         its arguments name more than one working directory, or one that isn't text (TK-SHELL-PARSE)",
+            "instead     Name one working directory, as text."])
 
     def test_show_gives_the_cause_the_hook_gives(self):
         self.assertEqual(self.lines('echo "unterminated')[:2], [

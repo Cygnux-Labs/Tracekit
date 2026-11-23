@@ -1558,7 +1558,7 @@ def _stop_lines(c, x):
     from .integrations.claude_code import approvals_cmd
     from .policy2.compile import ENGINE_REASONS
     from .policy2.engine import Engine
-    from .signer.service import dev_data_dir
+    from .signer.service import dev_data_dir, evaluate
     try:
         kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
     except FileNotFoundError:
@@ -1569,9 +1569,10 @@ def _stop_lines(c, x):
     flags = {r["id"] for r in pol.get("flag", [])}   # a flagged call runs
     engine = dict(ENGINE_REASONS)
     if "TK-SHELL-PARSE" in x["rule_ids"] and pol and x["args"] is not None:
-        # the cause the signer gave the hook (its decision's `unread`), from the same engine on the signer's copy
+        # the cause the signer gave the hook (its decision's `unread`), read as the signer reads the call (evaluate:
+        # its working directory too) by the same engine on the signer's copy
         try:
-            cause = Engine(pol).decide(x["tool"], _args(x)).get("unread")
+            cause = evaluate(Engine(pol), x["tool"], _args(x))[0].get("unread")
         except Exception:   # as the signer's _evaluate: an engine error here leaves the general reason
             cause = None
         engine["TK-SHELL-PARSE"] = ENGINE_REASONS["TK-SHELL-PARSE"]["causes"].get(cause) or engine["TK-SHELL-PARSE"]

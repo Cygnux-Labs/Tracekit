@@ -3052,8 +3052,8 @@ def _kills_signer(commands, finds):
 
 def _bases(commands, work, cdpath=()):
     """The folders a cd or pushd on the line enters (a relative one read from the one before it, and from each folder
-    of a CDPATH the line sets), and each one `env -C`, `tar -C`, `git -C` or `make -C` runs in: where a relative path
-    may land. Each once, charged to `work` (shell.charge)."""
+    of a CDPATH the line sets), and each one `env -C`, `tar -C`, `git -C`, `make -C` or uv's or uvx's `--directory` or
+    `--project` runs in: where a relative path may land. Each once, charged to `work` (shell.charge)."""
     out, base = [], None
     for c in commands:
         argv = c["argv"]
@@ -3064,6 +3064,8 @@ def _bases(commands, work, cdpath=()):
             to = next((argv[i + 1] if a in ("-C", "--chdir", "--directory") else a.partition("=")[2] or a[2:]
                        for i, a in enumerate(argv[:-1]) if a in ("-C", "--chdir", "--directory") or
                        a.startswith(("--chdir=", "--directory=")) or a.startswith("-C") and argv[0] != "env"), None)
+        elif argv[0] in ("uv", "uvx"):   # (what uv runs, in the folder its --directory or --project names: _uv_chdir)
+            to = next((folder for folder, _ in _uv_chdir(argv)), None)
         else:
             continue
         if to and to.startswith(("/", "~", "$")):
