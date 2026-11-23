@@ -40,6 +40,7 @@ from mcp.types import CallToolResult, TextContent
 from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import event_hash
 from tracekit.integrations import version_check
+from tracekit.integrations.recording_warning import recording_warning
 from tracekit.integrations.held import HeldCalls
 from tracekit.sdk.client import SignerUnavailable, fail_open, parts, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
@@ -203,7 +204,7 @@ class TracekitSession(HeldCalls):
                         raise
                     message = recording_warning("MCP input_required", e)
                     if message is not None:
-                       warnings.warn(f"tracekit: {message}", stacklevel=2)
+                        warnings.warn(f"tracekit: {message}", stacklevel=2)
                 except Exception as e:
                     await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                     raise
