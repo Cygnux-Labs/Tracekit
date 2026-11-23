@@ -769,7 +769,7 @@ class TestBreaker(Case):
         self.assertIn("took back AI approval", self.s.log.agent["demoted"]["default\0TK-A025"])
         aid2, _ = self.ask()   # the next answer, within one decision, is a suggestion that changes nothing
         ai = self.s.call(ALICE, "approval_get", {"approval_id": aid2})["ai"]   # and people are told why, and the way out
-        self.assertEqual((ai["mode"], ai["reason"]), ("shadow", f"uid:{ALICE.subject} took back AI approval {aid}, so it "
+        self.assertEqual((ai["mode"], ai["reason"]), ("shadow", f"alice took back AI approval {aid}, so it "
                                                                 "only suggests until a person runs `tracekit reviewer "
                                                                 "enable TK-A025`"))
         out = self.ai(aid2)
@@ -784,7 +784,7 @@ class TestBreaker(Case):
         self.assertEqual(self.ai(aid3)["state"], "approved")
         es = self.events()
         [sug] = [e["data"] for e in es if e["type"] == "approval.suggested"]
-        self.assertEqual((sug["relied_on"]["mode"], sug["relied_on"]["demoted"][:5]), ("shadow", "uid:9"))
+        self.assertEqual((sug["relied_on"]["mode"], sug["relied_on"]["demoted"][:5]), ("shadow", "alice"))
         self.assertEqual([e["data"]["rules"] for e in es if e["type"] == "approver.enabled"], [["TK-A025"]])
 
     def test_another_model_prompt_or_playbook_answers_in_shadow_until_a_person_enables_it(self):
@@ -918,7 +918,7 @@ class TestLessons(Case):
         self.ai(aid)
         self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid, "reason": "wrong project"})
         [lesson] = self.lessons()
-        self.assertIn(f"without a person: uid:{ALICE.subject} took back one on ", lesson["text"])
+        self.assertIn("without a person: alice took back one on ", lesson["text"])
         self.assertIn("that the AI approved (wrong project)", lesson["text"])
         self.s.call(ALICE, "approver", {"request_id": rid(), "action": "drop", "id": lesson["id"]})
         self.assertEqual(self.lessons(), [])
@@ -1784,14 +1784,15 @@ class TestReviewerOnTheSigner(Case):
         self.assertEqual((self.s.log.approvals[used]["state"], self.s.log.approvals[waiting]["escalated"]),
                          ("rejected", True))
         held, _ = self.ask()
-        self.assertEqual(self.get_ai(held), (None, f"uid:{ALICE.subject} switched the AI reviewer off: a person "
+        self.assertEqual(self.get_ai(held), (None, "alice switched the AI reviewer off: a person "
                                                    "decides"))
         self.assertNotIn(held, [x["approval_id"] for x in self.s.call(REVIEWER, "approval_list", {"for": "agent"})[
             "approvals"]])
         st = self.s.call(ALICE, "approver", {"action": "status"})["switch"]
-        self.assertEqual((st["on"], st["by"], st["reason"]), (False, f"uid:{ALICE.subject}", "a week off"))
+        self.assertEqual((st["on"], st["by"], st["person"], st["reason"]),
+                         (False, f"uid:{ALICE.subject}", "alice", "a week off"))
         self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on", "rules": ["TK-SHELL-PARSE"]})
-        self.assertEqual(self.get_ai(held), (None, f"uid:{ALICE.subject} switched the AI reviewer on for "
+        self.assertEqual(self.get_ai(held), (None, "alice switched the AI reviewer on for "
                                                    "TK-SHELL-PARSE only: a person decides"))
         self.s.call(ALICE, "approver", {"request_id": rid(), "action": "on"})
         self.assertEqual(self.ai(held)["state"], "approved")   # a call that waited: on takes it at once too
@@ -1866,7 +1867,7 @@ class TestReviewerOnTheSigner(Case):
         self.assertIn("the AI reviewer answers as the policy and signer.yaml say (no one switched it", run("status"))
         self.assertIn("the AI reviewer is off: 0 AI approval(s) not yet used were withdrawn", run("off", "--reason", "x"))
         st = run("status")
-        self.assertIn(f"the AI reviewer is off: uid:{ALICE.subject} switched it off at ", st)
+        self.assertIn("the AI reviewer is off: alice switched it off at ", st)
         self.assertIn("  TK-A025: an install from a package index you chose, its line pinned", st)
         self.assertIn("it never answers: a call in a session that read a secret", st)
         self.assertIn("the AI reviewer is on for TK-A025 (signed record", run("on", "--rules", "TK-A025"))

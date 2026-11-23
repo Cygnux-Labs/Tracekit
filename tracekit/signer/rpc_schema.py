@@ -627,6 +627,7 @@ RESPONSES = {
     "approver": {"oneOf": [_obj(["switch", "rules", "mode", "agreement", "demoted", "playbook", "proposals"],
                                 switch={"oneOf": [{"type": "null"}, _obj(
                                     ["on", "by", "at"], on={"type": "boolean"}, by=_str(256), at=_str(40),
+                                    person=_str(256),
                                     rules={"type": "array", "maxItems": 32, "items": _str(64)}, reason=REASON)]},
                                 rules={"type": "array", "maxItems": 32, "items": _str(64)},
                                 mode={"enum": ["shadow", "enforce"]},

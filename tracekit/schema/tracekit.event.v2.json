@@ -3345,6 +3345,11 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.8: the person approvals.persons (or an OIDC claim) names for `by`"
         }
       },
       "description": "format 1.2: a person (or the kill switch, by signer) vetoed an agent's approval before it was consumed"
@@ -5485,6 +5490,11 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.8: the person approvals.persons (or an OIDC claim) names for `by`"
         }
       }
     },

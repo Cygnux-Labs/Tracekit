@@ -437,7 +437,7 @@ def status_lines(out):
     sw, demoted = out["switch"], {x["rule"] for x in out["demoted"]}
     lines = [("the AI reviewer is " + ("on" + (f" for {', '.join(sw['rules'])} only" if sw.get("rules") else "")
                                        if sw["on"] else "off")
-              + f": {sw['by']} switched it {'on' if sw['on'] else 'off'} at {sw['at'][:16].replace('T', ' ')} UTC"
+              + f": {sw.get('person') or sw['by']} switched it {'on' if sw['on'] else 'off'} at {sw['at'][:16].replace('T', ' ')} UTC"
               + (f" ({sw['reason']})" if sw.get("reason") else "")) if sw else
              "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)",
              ("it may answer" if out["mode"] == "enforce" else "it only suggests (the policy's mode is shadow) for")

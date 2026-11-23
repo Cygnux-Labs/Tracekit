@@ -2281,6 +2281,11 @@ class SignerService:
                    if a.get("escalation") else {}),
                 **({"ai": a["people_ai"]} if a["people_ai"] and people else {})}
 
+    def _person_of(self, identity):
+        """The person `identity` is (an OIDC person claim, or approvals.persons' name for it), or None."""
+        who = person(identity) or self._persons.get(subject(identity))
+        return who[:256] if who else None
+
     def _a_person(self, identity):
         """Whether `identity` is a person who answers approvals (approvals.approvers or break_glass; a bridge's person,
         or a bridge granted ON_BEHALF, which serves them): never the agent whose run it is, which an AI approver's
@@ -2344,10 +2349,11 @@ class SignerService:
         sw = self.log.agent.get("switch", {}).get(a["run_key"][0])
         if not a.get("ai") or sw is None:
             return None
+        who = sw.get("person") or sw["by"]
         if not sw["on"]:
-            return f"{sw['by']} switched the AI reviewer off: a person decides"
+            return f"{who} switched the AI reviewer off: a person decides"
         out = sorted(set(a["ai"]["key"]["rules"]) - set(sw.get("rules") or a["ai"]["key"]["rules"]))
-        return f"{sw['by']} switched the AI reviewer on for {', '.join(sw['rules'])} only: a person decides" \
+        return f"{who} switched the AI reviewer on for {', '.join(sw['rules'])} only: a person decides" \
             if out else None
 
     def _agent_mode(self, a):
@@ -4475,18 +4481,20 @@ class SignerService:
             a = self.log.approvals.get(aid, {})
             if a.get("kind") != "agent" or a["state"] != "approved":
                 raise RPCError("approval_not_pending", "only an agent's approval not consumed yet is revoked")
-            return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"])
+            return self._revoke(tx, run, aid, subject(identity)[:256], req.get("reason"), req["request_id"],
+                                self._person_of(identity))
         out = self.log.submit(identity, "approval_revoke", req, fn, a["run_key"], late=True)
         self._drop_args(aid)
         with self._cond:
             self._cond.notify_all()
         return out
 
-    def _revoke(self, tx, run, aid, by, reason=None, request_id=None):
+    def _revoke(self, tx, run, aid, by, reason=None, request_id=None, who=None):
+        """approval.revoked of approval `aid` by `by` (a person's: `who`, their name)."""
         a = self.log.approvals[aid]
         tx.set(a, "state", "rejected")
-        tx.emit(run, "approval.revoked", {"approval_id": aid, "by": by, **({"reason": privacy.redact_text(reason)[0]}
-                                                                          if reason else {})},
+        tx.emit(run, "approval.revoked", {"approval_id": aid, "by": by, **({"person": who} if who else {}),
+                                          **({"reason": privacy.redact_text(reason)[0]} if reason else {})},
                 source="signer", tool_call_id=a["tool_call_id"], **({"request_id": request_id} if request_id else {}))
         return {"approval_id": aid, "state": "rejected"}
 
@@ -4548,7 +4556,8 @@ class SignerService:
                 if action == "off":
                     revoked = self._agents_off(tx, f"{by} switched the AI reviewer off", lambda a: bool(
                         a.get("ai")) and a["run_key"][0] == tenant)
-                typ, data = "approver.switched", {"on": action == "on", **({"rules": rules} if rules else {})}
+                typ, data = "approver.switched", {"on": action == "on", **({"rules": rules} if rules else {}),
+                                                  **({"person": w} if (w := self._person_of(identity)) else {})}
             elif action == "accept":   # what the person read is what is signed: the text its id names, proposed now
                 got = self._proposals(tenant).get(req.get("id"))
                 if got is None:

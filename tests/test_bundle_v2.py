@@ -1461,6 +1461,8 @@ ENTRIES = {
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
                                                                  "reason": "no agent answered"}, "run-a")],
     "approval.revoked": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1"}, "run-a")],
+    "approval.revoked.person": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1",
+                                                                    "person": "alice"}, "run-a")],
     "approval.suggested": [registered(), ("approval.suggested", {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],

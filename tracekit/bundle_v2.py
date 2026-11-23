@@ -91,6 +91,7 @@ VERSIONS = {
     "1.8.0": {"types": ["run.label", "run.writer", "playbook.entry", "precedent.revoked", "approver.enabled",
                         "approver.switched"],
               "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"], "approval.request": ["ai"],
+                         "approval.revoked": ["person"],
                          "approval": ["relied_on", "run_clean"], "approval.suggested": ["relied_on"],
                          "approval.escalated": ["relied_on"]}, "values": {}},
 }

@@ -297,7 +297,7 @@ def approver_state(set_, log, run, e, a, pop):
         if flagged:   # a person decided a call like it the other way: the entry is flagged for review
             set_(ag["playbook"], tenant, {**book, "entries": {**book["entries"], **flagged}})
     elif typ == "approval.revoked" and ap and a.get("kind") == "agent" and d["by"] != "signer":
-        demote(ap["key"]["rules"], f"{d['by']} took back AI approval {d['approval_id']}")
+        demote(ap["key"]["rules"], f"{d.get('person') or d['by']} took back AI approval {d['approval_id']}")
         lesson(set_, ag, tenant, a, {**d, "decision": "reject"}, e, "took back")
     elif typ == "incident.opened":
         spoil([k for k, p in ag["precedents"].items() if p["run"] == f"{tenant}\0{e['run_id']}"],
@@ -309,7 +309,7 @@ def approver_state(set_, log, run, e, a, pop):
         spoil([d["approval_id"]], f"{d['by']} took it back" + (f": {d['reason']}" if d.get("reason") else ""))
     elif typ == "approver.switched":
         set_(ag.setdefault("switch", {}), tenant, {"on": d["on"], "by": d["by"], "at": epoch(e["ts"]),
-                                                   **{k: d[k] for k in ("rules", "reason") if k in d}})
+                                                   **{k: d[k] for k in ("rules", "reason", "person") if k in d}})
     elif typ == "approver.enabled":
         for r in d["rules"]:
             for table in ("demoted", "pairs"):
