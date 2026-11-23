@@ -5180,6 +5180,41 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
                     self.assertFalse({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
 
+    def test_plugin_review_12_names_from_input_runners_that_load_an_environment_and_rc_files_as_code(self):
+        logs = "~/.claude/pro" + "jects"
+        held = (
+            "echo tracekit-ai | xargs uv tool upgrade --python /tmp/p", "echo tracekit-ai | xargs uv tool upgrade --reinstall",
+            "uv tool upgrade --python /tmp/p $(uv tool list | cut -d' ' -f1)", 'uv tool upgrade --python /tmp/p "$(ls ~/.local/share/uv/tools)"',
+            "UV_PYTHON=/tmp/p uv tool upgrade $(echo dHJhY2VraXQtYWk= | base64 -d)", "uv tool upgrade $(printf -- '--all')",
+            "A=--all; UV_PYTHON=/tmp/p uv tool upgrade $A", "echo --all | xargs env UV_PYTHON=/tmp/p uv tool upgrade",
+            "xargs env UV_PYTHON=/tmp/p uv tool upgrade < /dev/null",
+            "uv run --env-file /tmp/e --no-project -- uv tool upgrade --all", "uv run --no-project --env-file=/tmp/e uv tool upgrade --all",
+            "pipenv run uv tool upgrade --all", "pdm run uv tool upgrade --all", "honcho run uv tool upgrade --all",
+            "foreman run uv tool upgrade --all", "mise exec -- uv tool upgrade --all", "mise x -- uv tool upgrade --all",
+            "arch -e UV_PYTHON=/tmp/p -arm64 uv tool upgrade --all", "systemd-run --user --setenv=UV_PYTHON=/tmp/p uv tool upgrade --all",
+            "echo 'export UV_PYTHON=/tmp/p' >> ~/.zlogin", "echo 'export UV_PYTHON=/tmp/p' >> ~/.config/fish/conf.d/uv.fish",
+            "echo 'UV_PYTHON=/tmp/p' >> ~/.config/environment.d/uv.conf", "echo 'export UV_PYTHON=/tmp/p' >> ~/.oh-my-zsh/custom/uv.zsh",
+            "echo 'export UV_PYTHON=/tmp/p' >> ~/.kshrc", "echo 'export UV_PYTHON=/tmp/p' >> ~/.zshrc.local",
+            "echo 'export UV_PYTHON=/tmp/p' | sudo tee -a /etc/zshenv", "echo 'export UV_PYTHON=/tmp/p' >> /etc/bashrc",
+            "cp /tmp/rc ~/.zshenv", "install -m 644 /tmp/rc ~/.zshenv", "ln -sf /tmp/rc ~/.zshenv", "sed -i '$a export X=1' ~/.zshenv",
+            "perl -pi -e 's/a/b/' ~/.zshenv", "ex -sc '$a|export X=1|.|wq' ~/.zshenv", "dd if=/tmp/rc of=$HOME/.zshenv",
+            "printf 'export UV_%s=/tmp/p\\n' PYTHON >> ~/.zshenv", "echo -e 'export X\\x3d1' >> ~/.zshenv",
+            "echo 'alias uv=\"uv --python /tmp/p\"' >> ~/.zshrc", "echo 'uv() { command uv \"$@\" --python /tmp/p; }' >> ~/.zshrc",
+            "echo 'pip() { command pip \"$@\"; }' >> ~/.bashrc", "echo 'export PATH=/tmp/evil/bin:$PATH' >> ~/.zshrc",
+            "foo -o ~/.claude/shell-snapshots/snapshot-zsh-1.sh", "foo -o ~/.claude/ide/12345.lock", "cp /tmp/x.sh ~/.claude/shell-snapshots/s.sh")
+        benign = (
+            "echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.zshrc", "echo 'alias ll=\"ls -la\"' >> ~/.bashrc",
+            "echo 'export EDITOR=vim' >> ~/.zshrc", "uv tool upgrade --all", "pipx upgrade-all", f"foo -o {logs}/p/MEMORY.md",
+            "foo -o ~/.codex/sessions/x.jsonl", "foo -o ~/.claude/todos/x.json", f"cat {logs}/p/x.jsonl",
+            "uvx --env-file /tmp/e ruff", "echo tracekit-ai | xargs echo")
+        for pack, engine, e in self.every_pack():
+            for cmd in held:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertTrue({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
+            for cmd in benign:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    self.assertFalse({"TK-F015", "TK-D007", "TK-F009"} & set(e.decide("Bash", {"command": cmd})["rule_ids"]))
+
     @pytest.mark.serial
     def test_plugin_review_7_the_quadratic_shapes_are_read_in_bounded_time(self):
         """Four shapes took up to 288 s of a decision (a lazy match from each `$(` or backquote of a path, `cd` lines in

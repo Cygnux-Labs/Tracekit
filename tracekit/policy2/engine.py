@@ -2098,26 +2098,46 @@ def _sets_environment(parsed):
                                                 "readarray", "set") or shell._sets_with_v(c["argv"])
                        or _program(c["argv"]) == "env" and any(_NAME_VALUE.match(a) for a in c["argv"][1:])
                        or _program(c["argv"]) in ("bash", "sh", "zsh", "dash", "ksh", "fish") and any(
-                           a.startswith(("--rcfile", "--init-file")) for a in c["argv"][1:]))
+                           a.startswith(("--rcfile", "--init-file")) for a in c["argv"][1:])
+                       or any(a == "--env-file" or a.startswith(("--env-file=", "--setenv")) for a in c["argv"][1:])
+                       or _program(c["argv"]) in ("pipenv", "honcho", "foreman", "pdm", "mise", "dotenv")
+                       or _program(c["argv"]) == "arch" and "-e" in c["argv"][1:])
         for c in parsed[0]))
 
 
 # the files a shell reads its environment from, and the variables that change what a tool install builds on
-_RC_FILE = re.compile(r"(?:^|/)(?:\.(?:zshenv|zshrc|zprofile|zlogin|bashrc|bash_profile|bash_login|profile|envrc|pam_environment)|"
-                      r"config\.fish)$|^/etc/(?:environment|profile|zshenv|bash\.bashrc)$")
+_RC_FILE = re.compile(r"(?:^|/)(?:\.(?:zshenv|zshrc|zprofile|zlogin|bashrc|bash_profile|bash_login|profile|envrc|pam_environment|kshrc)|"
+                      r"config\.fish|\.config/fish/conf\.d/[^/]+|\.config/environment\.d/[^/]+\.conf|custom/[^/]+\.zsh|\.(?:zshrc|bashrc|zshenv|profile)\.[\w.-]+)$|"
+                      r"^/etc/(?:environment|profile|zshenv|zshrc|bashrc|bash\.bashrc|zsh/zshenv|zsh/zshrc|profile\.d/[^/]+)$")
 _TOOL_ENV = re.compile(r"\b(?:UV_\w+|PIP_\w+|PIPX_\w+|XDG_CONFIG_\w+|XDG_DATA_HOME|HOME)=|^(?:UV_\w+|PIP_\w+|PIPX_\w+|XDG_CONFIG_\w+|XDG_DATA_HOME|HOME)$")
 
 
-def _persists_environment(parsed):
-    """Whether the line writes a variable that changes what a tool install builds on (UV_*, PIP_*, PIPX_*, XDG_CONFIG_*,
-    XDG_DATA_HOME, HOME) into a file a shell reads at start (an rc or profile file), or sets it for the session (launchctl
-    setenv): the person's next `uv tool install --reinstall`, which our own messages give as the remedy, would build on it."""
+# what in an rc file changes how a tool runs: an alias or function for one, a PATH that puts a folder ahead of the usual ones
+_RC_TOOLS = r"(?:uv|uvx|pip3?|pipx|python[\d.]*|tracekit)"
+_RC_CODE = re.compile(r"\balias\s+" + _RC_TOOLS + r"=|\b(?:function\s+)?" + _RC_TOOLS + r"\s*\(\)|\bfunction\s+" + _RC_TOOLS + r"\b|"
+                      r"\bPATH=(?!(?:\$HOME|~|\$\{HOME\})/(?:\.local/)?bin:|\$\{?PATH\b|/usr/local/bin:|/opt/homebrew/bin:|/usr/bin:)")
+# the programs that write a file from content the line doesn't spell out
+_RC_WRITERS = frozenset(("cp", "install", "ln", "mv", "rsync", "sed", "gsed", "perl", "ex", "ed", "awk", "gawk", "dd", "python3", "python"))
+
+
+def _persists_environment(parsed, written):
+    """Whether the line changes what a later shell, or a tool install, runs under: it writes (`written`: the effects reader's
+    WRITE_TARGET and APPEND_TARGET paths, and tee's and a redirect's) a file a shell reads at start (an rc or profile file) with
+    content that isn't plain text of the line (a copy, sed, perl, dd, printf with escapes, echo -e), that defines a tool as an alias or
+    function or puts a folder ahead of PATH, or that sets UV_*, PIP_*, PIPX_*, XDG_CONFIG_*, XDG_DATA_HOME or HOME; or sets one for the session
+    (launchctl setenv). The person's next `uv tool install --reinstall`, which our own messages give as the remedy, would build on it."""
     words = [w for c in parsed[0] if c["argv"] for w in (*c["argv"][1:], *c["stdin"])]
     if any(_program(c["argv"]) == "launchctl" and c["argv"][1:2] == ["setenv"] and any(
             _TOOL_ENV.search(w) for w in c["argv"][2:3]) for c in parsed[0] if c["argv"]):
         return True
-    targets = [_text(r) for r in parsed[3]] + [w for c in parsed[0] if c["argv"][:1] == ["tee"] for w in c["argv"][1:]]
-    return any(_RC_FILE.search(_normal(x)) for x in targets) and any(_TOOL_ENV.search(w) for w in words)
+    targets = [x for x in (*written, *(_text(r) for r in parsed[3]),
+                           *(w for c in parsed[0] if c["argv"][:1] == ["tee"] for w in c["argv"][1:])) if _RC_FILE.search(_normal(x))]
+    if not targets:
+        return False
+    return bool(any(_program(c["argv"]) in _RC_WRITERS for c in parsed[0] if c["argv"])
+                or any(_program(c["argv"]) == "echo" and any(a.startswith("-") and "e" in a for a in c["argv"][1:2]) for c in parsed[0] if c["argv"])
+                or any(_program(c["argv"]) == "printf" and any(re.search(r"[%\\]", w) for w in c["argv"][1:]) for c in parsed[0] if c["argv"])
+                or any(_TOOL_ENV.search(w) or _RC_CODE.search(w) for w in words))
 
 
 def _git_fetches_foreign(commands):
@@ -2212,9 +2232,8 @@ def _collect_effects(parsed, work, tags, learned):
                     tags += _command_effects([{"argv": _find_in(c["argv"][at:], there)}], work)
     # an upgrade of every tool takes each from the configured index: held where the line changes which index, configuration or
     # Python it uses (a variable, uv's --config-file, --directory or --project, another folder's uv.toml after a cd)
-    every = [i for i, c in enumerate(parsed[0]) if c["argv"] and (
-        _program(c["argv"]) == "pipx" and "upgrade-all" in c["argv"] or _program(c["argv"]) == "uv" and "tool" in c["argv"]
-        and "upgrade" in c["argv"] and any(a in ("--all", "-a") for a in c["argv"]))]
+    every = [i for i, c in enumerate(parsed[0]) if c["argv"] and (   # (whatever runs it: a runner's argv holds the words too)
+        "upgrade-all" in c["argv"] or "tool" in c["argv"] and "upgrade" in c["argv"] and any(a in ("--all", "-a") for a in c["argv"]))]
     if every and (_sets_environment(parsed) or any(
             f for i in every for f in where[i] if not f.startswith(("~", "$HOME", "${HOME}"))) or any(
             a.startswith(("--config-file", "--directory", "--project", "--index", "--default-index", "--python"))
@@ -2244,7 +2263,8 @@ def _collect_effects(parsed, work, tags, learned):
         tags += ["INSIDE_TARGET:" + r.partition("=")[2] for r in parsed[2] if _NAME_VALUE.match(r)]
     if any(_program(c["argv"]) == "mktemp" for c in parsed[0] if c["argv"]):   # it makes its file in TMPDIR
         tags += ["NAMED_TARGET:" + v for n in ("TMPDIR", "TMP", "TEMP") for v in _variable(parsed, n)]
-    if _persists_environment(parsed):
+    written = [p for k, _, p in (x.partition(":") for x in tags) if k in ("WRITE_TARGET", "APPEND_TARGET")]
+    if _persists_environment(parsed, written):
         tags.append("ROOT_TARGET:environment")
     # a CDPATH or OLDPWD set some way the parse doesn't read (printf -v, read, eval) puts a cd anywhere: held with the writes
     if any(c["argv"][0] in _NAVIGATING for c in parsed[0]) and any(
@@ -2589,8 +2609,8 @@ _ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _RO
 # it): all but the folders of their session logs and caches, which a reader names every day
 _AGENT_FOLDERS = frozenset((".claude", ".codex", ".gemini", ".opencode", ".kilo", ".kilocode", ".qwen", ".factory", ".devin",
                             ".cline", ".hermes", ".openhands", ".copilot", ".jcode", ".kiro", ".openinterpreter", ".codebuddy"))
-_LOG_FOLDERS = frozenset(("projects", "sessions", "todos", "shell-snapshots", "statsig", "history", "log", "logs", "tmp", "debug",
-                          "telemetry", "ide", "backups", "cache", "file-history", "chats", "checkpoints", "tasks"))
+_LOG_FOLDERS = frozenset(("projects", "sessions", "todos", "statsig", "history", "log", "logs", "tmp", "debug",
+                          "telemetry", "backups", "cache", "file-history", "chats", "checkpoints", "tasks"))
 # _PROTECTED_PATHS' parts of two or more but for the folders along a trust root (.cursor/hooks.json, .config/opencode, .github/hooks)
 _SETTINGS_CHAINS = tuple(dict.fromkeys(
     chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
@@ -3626,6 +3646,11 @@ def _installs(command, exe, args):
         plain = action == "install" and not any(a.startswith("-") for a in args)   # (the name as on PyPI, no option: what the plugin asks for)
         out += ["ROOT_TARGET:" + w for w in words if _TRACEKIT_AI.search(_normalise_name(w)) and not (
             plain and _normalise_name(w) == w == "tracekit-ai")]
+        # a name or a flag a substitution, an expansion or xargs gives (`$(uv tool list | cut …)`, `$A`, `echo --all | xargs uv tool
+        # upgrade`) may be tracekit-ai or --all
+        if action in ("upgrade", "reinstall", "inject") and (
+                any(re.search(r"[$`]", a) for a in args) or "xargs" in command.get("via", [])):
+            out.append("ROOT_TARGET:" + exe + " " + action + " names from input")
         # --force replaces a command another install put in ~/.local/bin; runpip runs pip in a venv; install-all and
         # reinstall-all rebuild every venv (tracekit-ai's too); an upgrade of every tool (`uv tool upgrade --all`, pipx's
         # upgrade-all) takes each from the configured index, which an option here or a write to its settings (TK-A030,
