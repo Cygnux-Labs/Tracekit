@@ -16,15 +16,24 @@ not only the run: a run inherits each label a run of any of its requesters carri
 principal, while that run is open and for the policy's `label_inherit_s` after it ends (labels_for), as a `run.label`
 add naming the record it inherits (`inherited`) before its next decision; so ending a run, starting another, or moving
 to another tenant, principal or delegated run keeps a label. A person clears one with run_label_clear, for the run and
-its client's runs in that tenant; nothing a client sends sets or clears one.
+its client's ended runs in that tenant (an open run that carries it in its own state still passes it on, until it is
+cleared there; a dev signer's self-clear is of that run alone); nothing a client sends sets or clears one. A run's
+requesters are in its records (run.registered's caller, run.writer), so a restart from the records knows them.
 """
+import math
+import os
+import re
 import time
 
+from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
 from tracekit.policy2.compile import SECTIONS
 from tracekit.signer.detect import epoch
 
 UNTRUSTED = "untrusted_content"   # of compile.RUN_LABELS
 UNREAD = "TK-OVERSIZE"   # a call the policy couldn't read: it may have done what any rule reads
+# the gaps of calls the signer never decided (events it never got, a signer that was down, a tailer or an observer that
+# went silent): they may have done what any rule reads, as reconcile.hook_missing's call did
+LOST = ("client_counter_gap", "signer_unavailable", "tailer_lost", "observer_lost")
 LABEL_INHERIT_S = 3600   # label_inherit_s's default: respond's cooldown_s default, for a hold a new run inherits
 
 
@@ -39,6 +48,11 @@ class Sources:
         bound = ((pol.get("approval_agent") or {}).get("run") or {}).get("clean") or ()
         self.tracked = frozenset().union(*self.when.values(), bound)
         self.label = {r["id"]: r["label"] for r in rules if r.get("label") in self.tracked}
+        # for the verifiers: every rule's label, and each run condition rule on the labels field (one with no tool:
+        # its class, its pattern), whose match the call's rule ids and the run's labels decide (engine.labels_subject)
+        self.all_labels = {r["id"]: r["label"] for r in rules if r.get("label")}
+        self.on_labels = [(r["id"], rx, r.get("class")) for r in rules if r.get("field") == "labels" and "when" in r
+                          and "tool" not in r and (rx := _compiled(r["pattern"]))]
         self.window = pol.get("label_inherit_s", LABEL_INHERIT_S)
 
     @classmethod
@@ -71,22 +85,37 @@ class Sources:
             return self.of_call(call.get("tool"), call.get("rule_ids", ()))
         if t == "input.observed" and d.get("trust") == "untrusted" and UNTRUSTED in self.tracked:
             return {UNTRUSTED}
-        if t == "capture.gap" and d.get("kind") == "client_counter_gap":   # calls the signer never got
+        if t == "capture.gap" and d.get("kind") in LOST or t == "reconcile.hook_missing":   # calls never decided
             return set(self.tracked)
         return set()
 
 
+def _compiled(pattern):
+    """`pattern` compiled by Python's re, or None where it reads it otherwise than RE2 (the verifiers skip that rule)."""
+    try:
+        return re.compile(pattern)
+    except re.error:
+        return None
+
+
 def state(set_, run, e):
     """Follow `run.label` record `e` in the run's labels, `run["labels"]`: {label: the run_seq of the record that set
-    it (an inherited one's own)}. `set_`: as pipeline.agent_state's."""
+    it (an inherited one's own)}, and `run["label_src"]`: {label: an inherited add's `inherited`}. `set_`: as
+    pipeline.agent_state's."""
     if e["type"] != "run.label":
         return
-    d, have = e["data"], dict(run.get("labels") or {})
+    d, have, src = e["data"], dict(run.get("labels") or {}), dict(run.get("label_src") or {})
     if d["action"] == "add":
         have[d["label"]] = d.get("source", e["run_seq"])
     else:
         have.pop(d["label"], None)
+    if d["action"] == "add" and "inherited" in d:
+        src[d["label"]] = d["inherited"]
+    else:
+        src.pop(d["label"], None)
     set_(run, "labels", have)
+    if src or "label_src" in run:
+        set_(run, "label_src", src)
 
 
 def _who(identity):
@@ -100,10 +129,6 @@ def requesters(run):
     registered it for, `caller`: the gateway's own writes in it are the client's then) and each other stream's writer
     (an identity the run was delegated to, a gateway's caller). The run's labels are each of theirs, and it carries
     each of theirs."""
-    # lean: writers are run state (memory and snapshot), as quotas' are: a run replayed from the log after the last
-    # snapshot learns each writer again at its next write, on any stream (a gateway's client is in its run.registered);
-    # a delegate that never writes again counts only for the approvals it requests (SignerService._run_labels). Record
-    # delegations if a run's labels must count every delegate across a crash
     own = run.get("owner") and _who(run["owner"])
     client = run.get("caller") or run.get("owner")
     writers = {_who(w.removesuffix(" through a gateway")) for w in (run.get("writers") or {}).values()}
@@ -121,10 +146,13 @@ def carry(set_, log, run, e, pop):
     {tenant and run id joined by a NUL: [the run_seq of the run's run.label add, the ts the run ended or None while
     it is open]}}}, in any tenant and under any principal. For each of requesters(run): a run.label add enters the
     run's entry, a run.closing ends it, and a person's clear removes it and, for the run's client, the label of every
-    run of theirs in the run's tenant (a person answers for their own tenant; another writer's own runs stay theirs).
-    Entries past `log.labels`' window go as their requester's key changes, and all of them at a snapshot (prune).
-    `set_`, `pop`: as pipeline.contain_state's."""
+    run of theirs in the run's tenant that has ended (a person answers for their own tenant; another writer's own runs
+    stay theirs; an open run that carries the label in its own state keeps passing it on), a self-clear only the run's
+    own; a run.writer carries the run's labels to its writer (join). Entries past `log.labels`' window go as their
+    requester's key changes, and all of them at a snapshot (prune). `set_`, `pop`: as pipeline.contain_state's."""
     typ, d = e["type"], e["data"]
+    if typ == "run.writer":
+        join(set_, log, run, d["identity"])
     if typ not in ("run.label", "run.closing") or not run.get("owner"):
         return
     me, now = f"{e['tenant']}\0{e['run_id']}", epoch(e["ts"])
@@ -134,9 +162,13 @@ def carry(set_, log, run, e, pop):
         held = log.carry.get(who) or {}
         if typ == "run.label" and d["action"] == "clear":
             tenant = f"{e['tenant']}\0"
-            new = {x: {r: v for r, v in runs.items()
-                       if x != d["label"] or not (r == me or who == client and r.startswith(tenant))}
-                   for x, runs in held.items()}
+
+            def kept(r, v):   # a self-clear (a dev signer's own user, who may be the agent) ends this run's entry only
+                if r == me or who == client and not d.get("self_cleared") and r.startswith(tenant):
+                    other = log.runs.get(tuple(r.split("\0", 1)))
+                    return r != me and v[1] is None and d["label"] in ((other or {}).get("labels") or {})
+                return True
+            new = {x: {r: v for r, v in runs.items() if x != d["label"] or kept(r, v)} for x, runs in held.items()}
             new = {x: runs for x, runs in new.items() if runs}
         else:
             new = _live(held, window, now)
@@ -151,8 +183,8 @@ def carry(set_, log, run, e, pop):
 
 
 def join(set_, log, run, who):
-    """`who` (pipeline.writer's) writes open `run` for the first time: it carries the labels the run carries now, as
-    their run.label adds would have given it had it written then."""
+    """`who` (a run.writer's identity) writes open `run` for the first time: it carries the labels the run carries now,
+    as their run.label adds would have given it had it written then."""
     who = _who(who.removesuffix(" through a gateway"))
     if not log.labels or run.get("closed") or not run.get("labels") or who in requesters(run):
         return
@@ -179,10 +211,20 @@ def labels_for(log, run, now=None):
     Read it on the signer's writer (a RecordLog.submit fn) for an answer no write races: SignerService._decide adds
     them to the run before its run conditions, and an approver deciding one of the run's calls may read them the same
     way. One lookup per requester: the signer's other requesters cost it nothing."""
+    return _carried(log, requesters(run), now)
+
+
+def labels_of(log, identity, now=None):
+    """The labels `identity` (scheme:subject, pipeline.owner's or pipeline.writer's form: an approval's requester)
+    carries from any run of its, as labels_for reads them for a run's requesters."""
+    return _carried(log, {_who(identity.removesuffix(" through a gateway"))}, now)
+
+
+def _carried(log, whos, now):
     if not log.labels:
         return {}
     now, best = time.time() if now is None else now, {}
-    for who in requesters(run):
+    for who in whos:
         for label, runs in (log.carry.get(who) or {}).items():
             for r, (seq, ended) in runs.items() if label in log.labels.tracked else ():
                 if ended is None or epoch(ended) + log.labels.window > now:
@@ -190,3 +232,88 @@ def labels_for(log, run, now=None):
                     if label not in best or rank < best[label][0]:
                         best[label] = (rank, r, seq)
     return {label: [r.split("\0", 1)[1], seq] for label, (_, r, seq) in best.items()}
+
+
+# what a person reads of a call rules in shadow recorded (decide's `noted`)
+NOTE_TAIL = "Nothing is blocked in 1.8; it's in the record."
+_HOST = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://(?:[^/\s'\"@]*@)?(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)")
+_DETACHED = re.compile(r"(?:^|[\s;&|(])(nohup|setsid|disown|daemonize|screen|tmux|launchctl submit)(?=\s|$)")
+_DONE = {"secrets_access": "read a secret", UNTRUSTED: "took in untrusted content"}
+
+
+def what(tool, args):
+    """The call that set a label, for a person: `read .env` (a file it names), ran `cat .env` (a command, cut at 48
+    characters), else `used <tool>`."""
+    a = args if isinstance(args, dict) else {}
+    path = next((a[k] for k in PATH_KEYS if isinstance(a.get(k), str) and a[k].strip()), None)
+    if path:
+        return "read " + (os.path.basename(path.rstrip("/\\")) or path)
+    cmd = next((a[k] for k in SHELL_KEYS if isinstance(a.get(k), str) and a[k].strip()), None)
+    if cmd:
+        line = " ".join(cmd.split())
+        return f"ran `{line[:48]}{'...' if len(line) > 48 else ''}`"
+    return f"used {tool}"
+
+
+def _dest(tool, args):
+    """Where a call sends: `to <host>` (the first two its URLs name), else `with <program>` (a command's first word
+    that sets no variable, an MCP server, the tool)."""
+    hosts = list(dict.fromkeys(_HOST.findall(" ".join(v for v in args.values() if isinstance(v, str)))))
+    if hosts:
+        return "to " + " and ".join(hosts[:2])
+    cmd = next((args[k] for k in SHELL_KEYS if isinstance(args.get(k), str) and args[k].split()), None)
+    if cmd:
+        return "with " + next((w for w in cmd.split() if "=" not in w), cmd.split()[0])
+    server = re.match(r"mcp__(.+?)__", tool or "") or re.match(r"mcp:([^/]+)/", tool or "")
+    return f"with the {server.group(1)} MCP server" if server else f"with {tool}"
+
+
+def _left(log, run, rid, label, now):
+    """(whether a requester of `run` carries `label` from run `rid`, the seconds it carries for: None while that run is
+    open)."""
+    found, left = False, 0
+    for who in requesters(run):
+        for r, (_, ended) in ((log.carry.get(who) or {}).get(label) or {}).items():
+            if r.endswith("\0" + rid):
+                if ended is None:
+                    return True, None
+                found, left = True, max(left, log.labels.window - (now - epoch(ended)))
+    return found, left
+
+
+def noted(log, run, shadow, rules, rule_ids, tool, args, said, clears, now=None):
+    """What a person reads of a call the rules `shadow` (in shadow; `rules`: their compiled rules by id) recorded: where
+    it sends and after what (this session's read, from `said`: {(run_id, label): labels.what}, or an earlier session's
+    it inherits, how long that carries and, where a person's clear ends it (`clears`), how), or that it starts a send
+    in the background; then NOTE_TAIL. A rule of another kind gives its reason. "" when there is nothing to say."""
+    now = time.time() if now is None else now
+    mine = {log.labels.all_labels[i] for i in rule_ids if i in log.labels.all_labels} if log.labels else set()
+    a = args if isinstance(args, dict) else {}
+    parts = []
+    for rid in shadow:
+        r = rules.get(rid, {})
+        when = (r.get("when") or {}).get("run_has") or []
+        if when and "egress" in mine:
+            label = when[0]
+            src = (run.get("label_src") or {}).get(label)
+            done = said.get(((src or {}).get("run_id", run["run_id"]), label)) or _DONE.get(label, f"set {label}")
+            if src:
+                found, left = _left(log, run, src["run_id"], label, now) if log.labels else (False, 0)
+                carry = "" if not found else "; this carries while that session is open" if left is None else \
+                    f"; this carries for {max(1, math.ceil(left / 60))} more minutes"
+                if clears and carry:
+                    carry += (f", or until a person clears it: tracekit signer incidents clear-label {run['run_id']} "
+                              f"--label {label}")
+                parts.append(f"this sends data {_dest(tool, a)} after an earlier session (run {src['run_id']}) "
+                             f"{done}{carry}")
+            else:
+                parts.append(f"this sends data {_dest(tool, a)} after the session {done}")
+        elif {"background_spawn", "egress"} <= mine:
+            cmd = next((a[k] for k in SHELL_KEYS if isinstance(a.get(k), str)), "")
+            m = _DETACHED.search(cmd)
+            how = "run_in_background" if a.get("run_in_background") is True else m.group(1) if m else \
+                "&" if re.search(r"(?<![&|])&\s*$", cmd) else "detached"
+            parts.append(f"this starts a send in the background ({how}), which may run after a secret is read")
+        elif r.get("reason"):
+            parts.append(r["reason"])
+    return "noted: " + "; ".join(dict.fromkeys(parts)) + ". " + NOTE_TAIL if parts else ""

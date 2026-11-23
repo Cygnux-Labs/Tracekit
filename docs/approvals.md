@@ -612,7 +612,7 @@ with no snapshot, the signer no longer holds that view, and shows its record's c
 waits, it says whether the AI may answer it and, when it won't, why:
 
 ```
-ai          the AI reviewer won't answer this: the session read a secret, and TK-Q001 also matched this call (data sent off the machine after the run read a secret): a person decides
+ai          the AI reviewer won't answer this: the session read a secret, and TK-Q001 also matched this call (this sends data off the machine after the session read a secret): a person decides
 ```
 
 `tracekit approvals list` adds the same, shorter. `--json` prints every field.

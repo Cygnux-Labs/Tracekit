@@ -568,6 +568,8 @@ RESPONSES = {
                    send_result={"const": True},
                    # rules in shadow (mode: shadow) that would hold the call: it runs, recorded (`reason` says why)
                    recorded=RULE_IDS,
+                   # what the person reads of it: where it sends and after what, and that nothing is blocked
+                   noted=REASON,
                    incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,

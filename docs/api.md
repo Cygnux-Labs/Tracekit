@@ -359,6 +359,7 @@ lists `decide`. A box's agent channel may call it too.
 | `expires_at` | text | no | up to 40 characters |
 | `send_result` | always `true` | no |  |
 | `recorded` | list of texts | no | up to 32 items; each item: up to 64 characters |
+| `noted` | text | no | up to 1024 characters |
 | `incident_id` | text | no | 1 to 128 characters; matches `^[A-Za-z0-9._:-]+(?![\s\S])` |
 
 </details>

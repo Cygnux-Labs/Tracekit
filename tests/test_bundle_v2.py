@@ -1519,6 +1519,8 @@ ENTRIES = {
     "run.label": [registered(), ("run.label", {"label": "secrets_access", "action": "add", "by": "signer",
                                                "source": 0}, "run-a")],
     "policy.decision.run_labels": [registered(), decision(run_labels=["secrets_access"])],
+    # a run's requesters: another identity that writes it, the client a gateway registered it for
+    "run.writer": [registered(), ("run.writer", {"identity": "uid:990777", "stream": "s2"}, "run-a")],
     "run.registered.caller": [registered(caller="uid:501")],
     # the AI approver (1.8.0)
     "approval.request.ai": [registered(), asked(ai=AI_ASKED)],

@@ -556,6 +556,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   // a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
   const selfApproved = [...typed("approval"), ...typed("ext").filter((e) => get(at(e, "data"), "name") === "intent.grant")]
     .some((e) => get(at(e, "data"), "self_approved") === true);
+  // a label the run's own user cleared on a dev signer: who that is can be the agent, as for a self-approval
+  const selfCleared = typed("run.label").some((e) => get(at(e, "data"), "self_cleared") === true);
   const gaps = (k: string) => typed("capture.gap").filter((e) => get(at(e, "data"), "kind") === k)
     .map((e) => `seq ${e.seq}: ${cut(str(get(e.data, "reason")), 200)}`);
   const against = gaps("executed_against_policy");
@@ -684,7 +686,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = !anchored ? "none: no trust config pins a log key or witness"
-    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
+    : await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs, selfCleared)
       + (provenTo < relied ? "; key retirements not proven complete" : "");
   approvals(rep, runs, policies, floats);
   aiApprovals(rep, runs, policies, floats);
@@ -1907,14 +1909,14 @@ function level(cosigs: [string, bigint][], witnesses: Map<string, string>, trust
 /** dev: no pinned witness cosigned, or a self-approval in the run; local: only operator-run ones; witnessed: enough
  * independent ones. A run-set's registry notes cap the level by the same rule. */
 async function assurance(origin: string, cosigs: [string, bigint][], witnesses: Map<string, string>, trust: Trust,
-  algs: Set<string>, selfApproved: boolean, registryNotes: [string, bigint][][]) {
+  algs: Set<string>, selfApproved: boolean, registryNotes: [string, bigint][][], selfCleared = false) {
   let hybrid = false;
   for (const k of trust.logs) {
     const p = await parseVkey(k);
     hybrid ||= p.name === origin && p.type === HYBRID;
   }
   const times = cosigs.filter(([k]) => witnesses.get(k) !== "operator").map(([, ts]) => ts);
-  let lvl = selfApproved ? "dev" : level(cosigs, witnesses, trust);
+  let lvl = selfApproved || selfCleared ? "dev" : level(cosigs, witnesses, trust);
   let capped: string | null = registryNotes.map((c) => level(c, witnesses, trust))
     .reduce((a, b) => LEVELS.indexOf(b) < LEVELS.indexOf(a) ? b : a, "witnessed");
   if (LEVELS.indexOf(capped) < LEVELS.indexOf(lvl)) lvl = capped;
@@ -1924,7 +1926,8 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
   return `${lvl}; records ${[...algs].sort(byCodePoint).join("+")}; checkpoint ${hybrid ? "Ed25519 + SLH-DSA-SHA2-128s" : "Ed25519 only"} `
     + `(${origin})` + (cosigned ? `; cosigned ed25519 by ${cosigned}` : "; no witness cosignature")
     + (times.length ? `; earliest independent anchor ${fmt(times.reduce((a, b) => b < a ? b : a))}` : "")
-    + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "");
+    + (capped ? `; capped by the run-set's registry notes (${capped})` : "") + (selfApproved ? "; approvals: self" : "")
+    + (selfCleared ? "; labels: self-cleared" : "");
 }
 
 /** `x` without control characters and the bidirectional and zero-width format characters that would reorder or hide

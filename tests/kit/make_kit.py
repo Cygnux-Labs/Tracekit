@@ -451,8 +451,8 @@ def vectors():
                              "person": "token:svc"}, {})
     case("a label its run's own owner cleared on a dev signer", closed(
         "run-label-self-cleared", secret, added, (cleared[0], {**cleared[1], "self_cleared": True}, {}),
-        policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
-         decided_by="§3 (run labels: a dev signer's self_cleared), §11 step 9")
+        policy_dir=policies), t, 0, "VERIFIED", "dev", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a dev signer's self_cleared, assurance dev), §11 step 9")
     case("a label its run's own owner cleared, not self_cleared", closed(
         "run-label-owner-cleared", secret, added, cleared, policy_dir=policies), t, 1, "FAILED",
          failed_check=["run labels"], addon="run labels", needs="1.8.0",
@@ -464,6 +464,32 @@ def vectors():
         "run-label-two-policies", first, after(secret), (added[0], {**added[1], "source": 2}, {}), after(sent),
         policy_dir=policies), t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
          decided_by="§3 (run labels), §11 step 9 (each record under the policy its decision names)")
+    gap = ("capture.gap", {"kind": "tailer_lost", "reason": "x"}, {})
+    case("a label a lost call sets, and the send after it", closed("run-label-lost", gap, added, sent,
+                                                                   policy_dir=policies),
+         t, 0, "VERIFIED", "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a call the signer never decided sets every label the policy reads), §11 step 9")
+    unsent = (sent[0], {**{k: v for k, v in sent[1].items() if k != "run_labels"}, "decision": "flag",
+                        "rule_ids": ["EGRESS"]}, sent[2])
+    case("a send after a lost call that doesn't name its run condition", closed(
+        "run-label-lost-unnamed", gap, added, unsent, policy_dir=policies), t, 1, "FAILED", failed_check=["run labels"],
+         addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels), §11 step 9 (a run condition on the labels field, replayed from the rule ids)")
+    via = (secret[0], {**secret[1], "via": "token:gw", "caller": "token:cli"}, secret[2])
+    case("a label a gateway's caller cleared", closed(
+        "run-label-caller-cleared", via, added, (cleared[0], {**cleared[1], "identity": "token:cli",
+                                                              "person": "token:cli"}, {}), policy_dir=policies),
+         t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9")
+    writer = ("run.writer", {"identity": "token:cli", "stream": "s2"}, {})
+    added2 = (added[0], {**added[1], "source": 2}, {})   # the secret read after the writer's record
+    case("a run's writer, recorded", closed("run-writer", writer, secret, added2, policy_dir=policies), t, 0,
+         "VERIFIED", "witnessed", addon="run labels", needs="1.8.0", decided_by="§3 (run labels: a run's requesters)")
+    case("a label a run's writer cleared", closed(
+        "run-label-writer-cleared", writer, secret, added2, (cleared[0], {**cleared[1], "identity": "token:cli",
+                                                                         "person": "token:cli"}, {}),
+        policy_dir=policies), t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9")
     case("a label left out in a run decided under two policies", closed(
         "run-label-two-policies-omitted", first, after(secret), after(sent), policy_dir=policies), t, 1, "FAILED",
          failed_check=["run labels"], addon="run labels", needs="1.8.0",

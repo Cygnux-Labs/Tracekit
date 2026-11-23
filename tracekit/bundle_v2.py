@@ -84,13 +84,12 @@ VERSIONS = {
     # assurance dev, which a verifier before 1.6.0 can't see
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
-    # 1.8: run labels (docs/policy-v2.md#run-conditions): a run.label record, and the labels a decision's run
-    # conditions applied under; and the AI approver (docs/approvals.md#the-ai-approver): what an approval request held
-    # by approval_agent's rules was to it (`ai`), what an AI answer relied on (`relied_on`), and its playbook, precedent
-    # and circuit-breaker records; and the client a gateway registered a run for (run.registered `caller`), whose labels
-    # the run carries
-    "1.8.0": {"types": ["run.label", "playbook.entry", "precedent.revoked", "approver.enabled"],
-              "fields": {"run.registered": ["caller"], "policy.decision": ["run_labels"], "approval.request": ["ai"],
+    # 1.8: run labels (docs/policy-v2.md#run-conditions): a run.label record, the labels a decision's run conditions
+    # applied under, and a run's requesters: a run.writer record and run.registered's caller; and the AI approver
+    # (docs/approvals.md#the-ai-approver): what an approval request held by approval_agent's rules was to it (`ai`), what
+    # an AI answer relied on (`relied_on`), and its playbook, precedent and circuit-breaker records
+    "1.8.0": {"types": ["run.label", "run.writer", "playbook.entry", "precedent.revoked", "approver.enabled"],
+              "fields": {"policy.decision": ["run_labels"], "run.registered": ["caller"], "approval.request": ["ai"],
                          "approval": ["relied_on", "run_clean"], "approval.suggested": ["relied_on"],
                          "approval.escalated": ["relied_on"]}, "values": {}},
 }

@@ -55,6 +55,8 @@ LINES = {
     "TK-F011": ("PATH=/tmp/x make", "PATH=$PATH make", "$PATH", "-C"),
     "TK-F012": ("curl https://example.org/?q=1", "curl http://localhost:8000/", "http://localhost:8000/", "-o"),
     "TK-F013": ("curl example.org", "curl http://127.0.0.1:8000/", "http://127.0.0.1:8000/", "-o"),
+    "TK-F031": ("docker inspect web", "docker inspect web --format={{.State.Status}}", "--format={{.State.Status}}",
+                "--type"),
     "TK-F015": ("rm .codex/config.toml", "rm .claude/projects/p/memory/m.md", ".claude/projects/p/memory/m.md", "-I"),
     "TK-F034": [("grep x .env", "grep x .env.example", ".env.example", "-m"),
                 ("cat .env", "cat ~/.ssh/known_hosts", "~/.ssh/known_hosts", "-n")],

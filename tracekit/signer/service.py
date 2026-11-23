@@ -490,6 +490,7 @@ ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what 
 ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
+SAID_KEPT = 10_000   # labels' setting calls a signer keeps for its notes (SignerService._said)
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
 MAX_CONSTRAINTS = 32   # live file constraints a run takes (constraint_add); past it every write is held
 MAX_NAMES = 256   # distinct files of one call checked against a run's file constraints; past it, the call is held
@@ -1310,6 +1311,10 @@ class SignerService:
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
                                               for name in ("approvers", "break_glass"))
         self._persons = dict((approvals or {}).get("persons", {}))
+        # (run_id, label) -> the call that set it, for a person (labels.what; decide's `noted`). lean: memory, the
+        # newest SAID_KEPT: after a restart, or for an approved call, a note says "read a secret"; keep it in the run's
+        # state if notes of older labels matter
+        self._said = collections.OrderedDict()
         self.ttl_s, self.agent_consume_s, self.agent_timeout_s = (
             (approvals or {}).get(k, d) for k, d in (("ttl_s", APPROVAL_TTL_S), ("agent_consume_s", AGENT_CONSUME_S),
                                                      ("agent_timeout_s", AGENT_TIMEOUT_S)))
@@ -2511,8 +2516,8 @@ class SignerService:
         crash left unknown), and, for a run registered as continuing an earlier one, whose calls it can't see, every
         label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around them. On the
         writer (labels_for)."""
-        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys() | labels.labels_for(
-            self.log, {"owner": requester}).keys()
+        have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys() | labels.labels_of(
+            self.log, requester).keys()
         if run.get("partial_start"):
             have |= set(self.policy.policy["approval_agent"]["run"]["clean"])
         return sorted(have)
@@ -3078,7 +3083,7 @@ class SignerService:
                   if a["run_key"][0] == tenant and a["run_key"][1] in run_ids}
         for rid in run_ids:
             r = self.log.runs.get((tenant, rid)) or {}
-            theirs |= {r.get("owner"), r.get("principal"), *r.get("people", ())}
+            theirs |= {r.get("owner"), r.get("principal"), *r.get("people", ()), *labels.requesters(r)}
         theirs |= {self._persons.get(x) for x in theirs}
         if {sub, owner(identity), who, self._persons.get(sub)} & (theirs - {None}):
             raise RPCError("forbidden", f"{sub[:256]} is the owner, principal or requester of a run this concerns: "
@@ -3353,7 +3358,7 @@ class SignerService:
                                                                  or k.startswith(json.dumps([own])[:-1] + ",")))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", own)
-            if caller is not None:   # recorded in run.registered: a replay counts and labels it the same
+            if caller is not None:   # run.registered records it (a restart's replay sets both again)
                 tx.set(run, "quota", count)
                 tx.set(run, "caller", caller)   # whose run it is: its labels are the client's (labels.requesters)
             tx.set(self.log.open_runs, count, n + 1)
@@ -3514,7 +3519,12 @@ class SignerService:
                     if label not in have:
                         tx.emit(run, "run.label", {"label": label, "action": "add", "by": "signer",
                                                    "inherited": {"run_id": rid, "run_seq": seq}}, source="signer")
-                d = self.policy.condition(d, run.get("labels") or ())
+                        if (rid, label) in self._said:   # what set it, along the chain of runs it came through
+                            self._said[(run["run_id"], label)] = self._said[(rid, label)]
+                # and every label the policy reads when this request skips client_seq values: its gap, written before
+                # the decision (Tx.event), sets them, as calls the signer never got may have done anything
+                lost = self.log.labels.tracked if self.log.labels and skipped(run, req) else ()
+                d = self.policy.condition(d, {*(run.get("labels") or ()), *lost})
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
                 both = list(dict.fromkeys(both + rule_ids))
                 if d.get("run_labels"):
@@ -3619,10 +3629,21 @@ class SignerService:
                 out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if d["decision"] == "flag" and (shadow := [i for i in d["rule_ids"] if i in self.policy.shadow]):
                 out["recorded"] = shadow   # rules in shadow that would hold the call: the client tells the person
-                said = {r["id"]: r.get("reason") for _, r, *_ in self.policy.rules if r["id"] in shadow}
-                why = "; ".join(said[i] for i in shadow if said.get(i))   # in the order of `recorded`
+                rules = {r["id"]: r for _, r, *_ in self.policy.rules if r["id"] in shadow}
+                why = "; ".join(rules[i]["reason"] for i in shadow if rules.get(i, {}).get("reason"))   # `recorded`'s order
                 if why and "reason" not in out:
                     out["reason"] = why[:1024]
+                # in plain words: where it sends and after what (labels.noted), redacted as a reason is
+                note = labels.noted(self.log, run, shadow, rules, d["rule_ids"], tool, args, self._said,
+                                    self.approvals is not None)
+                if note:
+                    out["noted"] = privacy.redact_text(note)[0][:1024]
+            if self.log.labels and d["decision"] in ("allow", "flag"):   # what set a label, for a later note
+                for label in self.log.labels.of_call(tool, d["rule_ids"]):
+                    self._said[(run["run_id"], label)] = privacy.redact_text(labels.what(tool, args))[0]
+                    self._said.move_to_end((run["run_id"], label))
+                while len(self._said) > SAID_KEPT:
+                    self._said.popitem(last=False)
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             tx.set(run["calls"][tcid], "reason", out.get("reason", ""))   # what call_state answers
@@ -4731,8 +4752,8 @@ class SignerService:
             for s in req.get("last_client_seq", ()):
                 stream, end = s["stream"], s["client_seq"]
                 last = max(streams.get(stream, -1), tails.get(stream, -1))
-                # only the closer's own streams, one that never reached the signer, or one whose writer a restart
-                # forgot (writers are not in the records): a gap then rather than none
+                # only the closer's own streams, one that never reached the signer, or an owner's stream a restart
+                # forgot (run.writer records only another writer's): a gap then rather than none
                 if writers.get(stream, who) != who or end <= last:
                     continue
                 tx.emit(into, "capture.gap", {

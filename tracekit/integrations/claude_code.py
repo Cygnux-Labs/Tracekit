@@ -815,8 +815,8 @@ def _pre(client, p, sid, tid, end=None):
     if not c["ok"]:
         return block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
     # a rule in shadow that would hold the call (decide's `recorded`): one quiet line for the person, the call runs
-    note = d.get("recorded") and (f"[tracekit] recorded: {d.get('reason') or 'a rule in shadow would hold this call'} "
-                                  f"({', '.join(d['recorded'])}, record-only)")
+    note = d.get("recorded") and "[tracekit] " + (d.get("noted") or f"noted: {d.get('reason') or 'a rule in shadow'} "
+                                                  f"({', '.join(d['recorded'])}). Nothing is blocked; it's in the record.")
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args},

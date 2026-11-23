@@ -115,6 +115,15 @@ class Case(unittest.TestCase):
         self.assertEqual(validate(RESPONSES["approval_decide"], out), [], out)
         return out
 
+    @contextlib.contextmanager
+    def an_hour_on(self):
+        """The signer's label lookups (labels_for, labels_of) read with a clock label_inherit_s (an hour by default)
+        and a second ahead."""
+        f, o = labels.labels_for, labels.labels_of
+        with mock.patch.object(labels, "labels_for", lambda log, run, now=None: f(log, run, now=time.time() + 3601)), \
+                mock.patch.object(labels, "labels_of", lambda log, who, now=None: o(log, who, now=time.time() + 3601)):
+            yield
+
     def precedent(self, cmd="pip", project="/Users/me/api", decision="approve", **kw):
         """A person's answer that counts as a precedent: asked in a run of its own, answered by Alice."""
         aid, _ = self.ask(cmd, project=project, run=self.register(), **kw)
@@ -458,15 +467,13 @@ class TestRunBound(Case):
         self.precedent(HELD)
         reader = self.register()
         self.ask("cat .env", run=reader)
-        real = labels.labels_for
-        later = lambda log, run, now=None: real(log, run, now=time.time() + 3601)   # noqa: E731
         heir = self.register()
-        with mock.patch.object(labels, "labels_for", later):   # while the run that read it is open, whatever the window
+        with self.an_hour_on():   # while the run that read it is open, whatever the window
             _, a = self.ask(HELD, run=heir)
         self.assertEqual(a["ai"]["labels"], ["secrets_access"])
         for run in (reader, heir):   # a run that inherited it carries it on while open, too
             self.s.call(AGENT, "close_run", {"request_id": rid(), **run[0]})
-        with mock.patch.object(labels, "labels_for", later):   # past it (an hour by default): clean again
+        with self.an_hour_on():   # past it (an hour by default): clean again
             _, a = self.ask(HELD, run=self.register())
         self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
         _, a = self.ask(HELD, run=self.register())   # within it: held
@@ -655,9 +662,7 @@ class TestDelegatedRuns(Case):
             "asserted": {"model": "m-a", "version": "1"}})
         self.assertIn("the session read a secret since it was", msg)
         self.s.call(AGENT, "close_run", {"request_id": rid(), **reader[0]})
-        later = lambda log, run, now=None: real(log, run, now=time.time() + 3601)   # noqa: E731
-        real = labels.labels_for
-        with mock.patch.object(labels, "labels_for", later):   # the window past: the AI may answer again
+        with self.an_hour_on():   # the window past: the AI may answer again
             self.ai(aid)
         self.assertEqual(self.s.log.approvals[aid]["state"], "approved")
         self.ask("cat .env")   # read before the consume: the approval can't be used
@@ -671,13 +676,11 @@ class TestDelegatedRuns(Case):
         shutil.rmtree(os.path.join(self.dir, "store", "snapshots"), ignore_errors=True)
         self.s = self.open()
 
-    def test_after_a_crash_a_delegate_is_a_requester_again_once_it_writes_on_its_old_stream(self):
+    def test_after_a_crash_a_delegate_that_wrote_the_run_is_still_a_requester(self):
         handed = self.delegated()
         self.ask("ls", run=handed)   # the agent writes the handed run on stream s
         key = ("default", handed[0]["run_id"])
-        self.crash()
-        self.assertEqual(labels.requesters(self.s.log.runs[key]), {"uid:990777"})   # the crash took its writer
-        self.ask("ls", run=handed)   # its next write, on the same stream
+        self.crash()   # its run.writer record says so
         self.assertEqual(labels.requesters(self.s.log.runs[key]), {"uid:990777", f"uid:{AGENT.subject}"})
 
 
@@ -1761,8 +1764,8 @@ class TestWhatPeopleSee(Case):
         self.ask("cat .env")   # a secret read: an install from the index after it is also TK-Q001's (a send)
         aid, a = self.ask()
         self.assertIn("TK-Q001", a["rule_ids"])
-        why = ("the session read a secret, and TK-Q001 also matched this call (data sent off the machine after the "
-               "run read a secret): a person decides")
+        why = ("the session read a secret, and TK-Q001 also matched this call (this sends data off the machine after "
+               "the session read a secret): a person decides")
         self.assertEqual((a["agent"]["eligible"], a["agent"]["reason"], a["ai"]), (False, why, None))
         self.assertEqual(self.get(aid)["ai"], {"mode": None, "reason": why})
         self.assertIn(f"ai          the AI reviewer won't answer this: {why}\n", self.tk("show", aid))

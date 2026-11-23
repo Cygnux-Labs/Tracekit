@@ -1173,8 +1173,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "
                                      f"{', '.join(sorted(set(issued.values())))}" if issued else
               "asserted: the log declares its record keys; none is attested")
+    # a label the run's own user cleared on a dev signer (self_cleared): who that is can be the agent, as for a
+    # self-approval
+    self_cleared = any(r["event"].get("type") == "run.label" and isinstance(r["event"].get("data"), dict)
+                       and r["event"]["data"].get("self_cleared") is True for r in every)
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
-                                anchors, monitored, reg_cosigs)
+                                anchors, monitored, reg_cosigs, self_cleared)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     _approvals(rep, runs, policies)
     _ai_approvals(rep, runs, policies)
@@ -1570,7 +1574,7 @@ def _run_labels(events, srcs, inherited):
     clear of a label not carried, or by the run's owner; a decision whose run_labels the run didn't carry (nor its own
     rules set) or that don't cover each run condition rule it names. Each inherited add of a label its policy reads goes
     to `inherited`, (where, label, the add it cites)."""
-    problems, carried, owed, may, asked, decided, owner, seqs = [], set(), {}, {}, {}, {}, None, {}
+    problems, carried, owed, may, asked, decided, owner, seqs, callers = [], set(), {}, {}, {}, {}, None, {}, set()
     key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
     for e, cands in zip(events, _policies_at(events, srcs)):
         t, d, where, src = e.get("type"), e["data"], f"seq {e.get('seq')}", cands[0]
@@ -1579,6 +1583,8 @@ def _run_labels(events, srcs, inherited):
         seqs[e["run_seq"]] = e.get("seq")
         if t == "run.registered" and isinstance(d.get("identity"), dict):
             owner = f"{d['identity'].get('scheme')}:{d['identity'].get('subject')}"
+        if t in ("run.registered", "run.writer"):   # the client a gateway registered it for, a writer: requesters
+            callers.add(d.get("caller") if t == "run.registered" else d.get("identity"))
         if t == "run.label":
             x = key(d.get("label"))
             if d.get("action") == "add":
@@ -1599,6 +1605,9 @@ def _run_labels(events, srcs, inherited):
                 problems.append(f"{where}: clears {str(x)[:32]}, which the run doesn't carry")
             elif d.get("identity") == owner and d.get("self_cleared") is not True:
                 problems.append(f"{where}: {str(x)[:32]} cleared by the run's own owner")
+            elif d.get("identity") in callers and d.get("self_cleared") is not True:
+                problems.append(f"{where}: {str(x)[:32]} cleared by a requester of the run (a writer or a gateway's "
+                                "caller)")
             else:
                 carried.discard(x)
             continue
@@ -1614,6 +1623,17 @@ def _run_labels(events, srcs, inherited):
             problems += [f"{where}: run_labels names {x[:32]}, which the run didn't carry" for x in sorted(used - have)]
             problems += [f"{where}: {i} applied without run_labels naming {', '.join(sorted(src.when[i]))}"
                          for i in ids if i in src.when and not src.when[i] <= used]
+            # a run condition on the labels field, replayed from the call's rule ids and what the run carried (not
+            # for a retry the signer answers from its memo, nor a harness call, which meets no run condition)
+            subject = " ".join(sorted({src.all_labels[i] for i in ids if i in src.all_labels}))
+            tool = d.get("tool") if isinstance(d.get("tool"), str) else None
+            if key(e.get("tool_call_id")) not in decided and tool and src.rules.tool_class(tool) != "harness":
+                problems += [f"{where}: {rid} applies (the call's labels {subject}; the run carried "
+                             f"{', '.join(sorted(src.when[rid]))}) but the decision doesn't name it"
+                             for rid, rx, cls in src.on_labels if rid not in ids and src.when[rid] <= have
+                             and cls in (None, src.rules.tool_class(tool)) and rx.search(subject)]
+            if isinstance(d.get("caller"), str):
+                callers.add(d["caller"])
             decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}
         elif t == "approval.request" and isinstance(d.get("binding"), dict):
             asked[key(d.get("approval_id"))] = {"tool": d["binding"].get("tool"), "rule_ids": ids}
@@ -2161,8 +2181,9 @@ def _level(cosigs, witnesses, trust, anchors=()):
 
 
 def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=(),
-               registry_notes=()):
-    """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
+               registry_notes=(), self_cleared=False):
+    """dev: no pinned witness cosigned or anchor verified, or a self-approval or self-cleared label in the run; local:
+    only operator-run
     ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
     witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint.
     A run-set's registry notes (`registry_notes`: the cosignatures of each) cap the level by the same rule."""
@@ -2170,7 +2191,7 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
     times = [datetime.datetime.fromtimestamp(ts, datetime.timezone.utc) for k, ts in cosigs if witnesses[k] != "operator"]
     times += [at for _, cls, at in anchors if cls != "operator"]
     order = ("dev", "local", "witnessed")
-    level = "dev" if self_approved else _level(cosigs, witnesses, trust, anchors)
+    level = "dev" if self_approved or self_cleared else _level(cosigs, witnesses, trust, anchors)
     capped = min((_level(c, witnesses, trust) for c in registry_notes), key=order.index, default="witnessed")
     if order.index(capped) < order.index(level):
         level = capped
@@ -2189,7 +2210,7 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
             + (f"; earliest independent anchor {min(times):%Y-%m-%dT%H:%M:%SZ}" if times else "")
             + "".join(f"; monitored by {name} ({cls}) at {at}" for name, cls, at in monitored)
             + (f"; capped by the run-set's registry notes ({capped})" if capped else "")
-            + ("; approvals: self" if self_approved else ""))
+            + ("; approvals: self" if self_approved else "") + ("; labels: self-cleared" if self_cleared else ""))
 
 
 # the checkpoint check's refusal of a cosignature names the pinned witness by its key name, which docs/public-witness.md
