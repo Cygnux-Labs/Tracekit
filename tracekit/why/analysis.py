@@ -211,7 +211,7 @@ def value_provenance(run: Run, args: Any, before_seq: int, memo: Optional[Dict[A
     ix = _index(run, memo)
     while True:   # a reading that met calls not yet read reads them (_settle), then reads again
         need: Set[int] = set()
-        rows, _ = _rows(run, memo, ix, args, before_seq, need)
+        rows, _ = _rows(run, memo, ix, args, before_seq, need, by=False)
         if not need:
             return rows
         _settle(run, memo, ix, need)
@@ -244,7 +244,7 @@ def _tainted(rows: List[Dict[str, Any]]) -> bool:
     return any(r["status"] == "untrusted-only" for r in rows) and not any(r["status"] == "trusted" for r in rows)
 
 
-def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: int, need: Set[int]
+def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: int, need: Set[int], by: bool = True
           ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """value_provenance's rows of `args` before `before_seq`, and the rows of what the call was called by, which say
     whether a trusted call's answer counts as untrusted (_tainted): its rows that are trusted or name something
@@ -365,6 +365,8 @@ def _rows(run: Run, memo: Dict[Any, Any], ix: "_Index", args: Any, before_seq: i
         else:
             status = "trusted"
         rows.append({"value": a, "status": status, "sources": srcs, **({"in_text": True} if in_text else {})})
+    if not by:   # a call checked before it runs: what it was called by matters once it is an earlier call (_settle)
+        return rows, []
     by = [r for r in rows if r["status"] == "trusted" or r["status"] == "untrusted-only" and _names(r["value"])]
     tokens = _tokens(args)
     holders = _key_holders(ix, {t for _, t in tokens[:64]}, k)

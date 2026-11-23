@@ -2540,6 +2540,8 @@ class PlainPages(unittest.TestCase):
                            for r in runs])["influence"]
         page = self.influence(I["sources"], I["edges"], I["groups"], calls=I, width=1400)[0]
         heads = [html.unescape(text(h)) for h in re.findall(r'<div class="ih">(.*?)</div>', page)]
+        # the cards' own markup: no tag a hostile name could be (the vault reads the cards for live <b> and <i>)
+        self.assertNotRegex(page.split('<p class="dim"')[0], r"<(b|i)\b")
         self.assertEqual(heads, [
             "Blocked: send_money €98.70 to GB29 NWBK 6016 1331 9268 19. The account number came from an email (From: "
             "billing@acme-ltd.example), not from your task.",
@@ -2559,7 +2561,7 @@ class PlainPages(unittest.TestCase):
         self.assertNotIn("no replay has tested it", page)
         self.assertNotIn("in context, 1 untrusted", page)
         # beside each, the same payment that ran with the CRM's account number
-        self.assertEqual(re.findall(r'<div class="itwin"><b>Ran:</b> ([^<]*)</div>', html.unescape(page)),
+        self.assertEqual(re.findall(r'<div class="itwin"><span class="vb">Ran:</span> ([^<]*)</div>', html.unescape(page)),
                          ["the same payment with crm_lookup's account number."] * 2)
         # the routine calls, one quiet line, opened on request
         self.assertIn('data-iquiet="">▸ 3 other calls ran without a stop or a flag</button></div>', page)
@@ -2590,7 +2592,7 @@ class PlainPages(unittest.TestCase):
                 "edges": [{"src": "ev:l", "grade": "seen", "basis": "recorded", "label": "lookup_supplier", "why": why},
                           {"src": "ev:m", "grade": "seen", "basis": "recorded", "label": "mail:inbox"}]}
         page = html.unescape(self.influence([src], edges, groups, calls={"calls": [call], "calls_total": 1}, cards=["ev:p"])[0])
-        self.assertIn("<b>Rejected by a person:</b> send_money.", page)
+        self.assertIn('<span class="vb">Rejected by a person:</span> send_money.', page)
         self.assertIn("send_money (clerk, rejected): no replay has tested it.", page)
         self.assertIn(f'<div class="dim">seen: {why}</div>', page)
         self.assertIn('<span class="tag blk" title="came before send_money calls in 1 run · of those calls, '
@@ -2697,7 +2699,7 @@ class PlainPages(unittest.TestCase):
             f"git_push (dev, held): {unknown} {around} Chain: {chain}"])
         self.assertEqual([(r, n) for _, n, r in said], [(c["run"], c["node"]) for c in calls["calls"]])   # WHY opens it
         # a card's headline says what happened to the call first: those that ran are flagged, the drift said as such
-        self.assertEqual(re.findall(r'<div class="ih"><b>([^<]*)</b>', page),
+        self.assertEqual(re.findall(r'<div class="ih"><span class="vb">([^<]*)</span>', page),
                          ["Strays from the task:", "Flagged:", "Flagged:", "Blocked:", "Held for a person:"])
         self.assertEqual(page.count('class="icard c-flag"'), 3)
         # closed, a card shows its headline, route and grade, and none of the words, lines or chain

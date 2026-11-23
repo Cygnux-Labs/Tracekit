@@ -2324,15 +2324,20 @@
       color: var(--text)
     }
 
-    .icard.c-blk .ih b {
+    .icard .ih .vb,
+    .icard .itwin .vb {
+      font-weight: 700
+    }
+
+    .icard.c-blk .ih .vb {
       color: var(--red)
     }
 
-    .icard.c-held .ih b {
+    .icard.c-held .ih .vb {
       color: var(--amber)
     }
 
-    .icard.c-flag .ih b {
+    .icard.c-flag .ih .vb {
       color: var(--cyan)
     }
 
@@ -2369,12 +2374,11 @@
       border-color: var(--muted)
     }
 
-    .ipath i {
-      font-style: normal;
+    .ipath .ar {
       color: var(--faint)
     }
 
-    .ipath i.bad {
+    .ipath .ar.bad {
       color: var(--red)
     }
 
@@ -2394,7 +2398,7 @@
       color: var(--muted)
     }
 
-    .icard .itwin b {
+    .icard .itwin .vb {
       color: var(--green)
     }
 
@@ -7276,7 +7280,7 @@
     function inflPath(c) {
       const v = c.value;
       if (!v || v.status !== "untrusted-only") return "";
-      const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<i class="${bad ? "bad" : ""}">→</i>`;
+      const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<span class="${bad ? "ar bad" : "ar"}">→</span>`;
       const origin = v.via ? v.via.origin[0] || v.via.from[0] : v.from;
       const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? " " + String(v.preview).replace(/^From:\s*/i, "from ") : "");
       return `<div class="ipath">` + hop(src, true) + arrow(true)
@@ -7295,10 +7299,10 @@
       const tw = twinOf(c, all), g = gradeOf(c), open = ICARD.has(c.node);
       const cls = c.ended === "held" ? "c-held" : c.ended === "flagged" || !c.ended ? "c-flag" : "c-blk";
       const head = inflHead(c), cut = head.indexOf(":");
-      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><b>${esc(head.slice(0, cut + 1))}</b>${esc(head.slice(cut + 1))} `
+      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><span class="vb">${esc(head.slice(0, cut + 1))}</span>${esc(head.slice(cut + 1))} `
         + `<span class="why">${esc(inflBecause(c))}</span></div>` + inflPath(c)
         + `<div class="imeta"><span class="tag" title="${esc(GRADES[g])}">${esc(g)}</span><button type="button" class="cp" data-icard="${esc(c.node)}">${open ? "WHY ▾" : "WHY ▸"}</button></div></div>`
-        + (tw ? `<div class="itwin"><b>Ran:</b> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
+        + (tw ? `<div class="itwin"><span class="vb">Ran:</span> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
         + (open ? inflWhy(c, W) : "") + `</div>`;
     }
     function inflCalls(I, W) {
