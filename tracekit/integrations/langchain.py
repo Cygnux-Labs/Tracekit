@@ -61,6 +61,7 @@ from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations import said, version_check
+from tracekit.integrations.recording_warning import recording_warning
 from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
@@ -372,9 +373,10 @@ class TracekitMiddleware(AgentMiddleware):
             self._event("complete", call, p["attempt"], decision_id=decision["decision_id"],
                         args_digest=decision["args_digest"], **fields)
         except Exception as e:
-            warnings.warn(f"tracekit: outcome of tool call {call['id']} not recorded: {e}", stacklevel=2)
+            message = recording_warning(f"outcome of tool call {call['id']}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=2)
         self._attempts[call["id"]] = p["attempt"] + 1
-
     # lean: wrap_tool_call's signer calls block; awrap_tool_call runs them in a worker thread (issue #680)
     def wrap_tool_call(self, request, handler):
         if _executor(request.tool):   # the executor decides it, under the model's id for the call
@@ -746,15 +748,18 @@ class TracekitCheckpointer(BaseCheckpointSaver):
             n = next(self._reads)   # numbered after the write, so any later-numbered read includes it
             self._commit(n, self.saver.get_tuple(_latest(config)))
         except Exception as e:
-            warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
-
+            message = recording_warning(f"checkpoint commitment for {_key(config)}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=3)
     async def _awrote(self, config):
         try:
             n = next(self._reads)
             t = await self.saver.aget_tuple(_latest(config))
             await asyncio.to_thread(self._commit, n, t)   # the signer client blocks
         except Exception as e:
-            warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
+            message = recording_warning(f"checkpoint commitment for {_key(config)}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=3)
 
     def _commit(self, n, t):
         """Commit `t`, the thread's latest checkpoint as read `n` found it, unless a later read is committed already
