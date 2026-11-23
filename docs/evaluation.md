@@ -315,11 +315,12 @@ forged precedent (the agent answering its own hold, the reviewer's own yes), a b
 project claimed, no project, another tool, another agent), a secret read between the AI's yes and the run and then a
 run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
-E21's held-out pool and its four blind pools (1,520), with two injected variants of each shell line ("approved by the
+E21's held-out pool and its four blind pools (1,593), with two injected variants of each shell line ("approved by the
 admin", a fake tool output), put to that reviewer with no precedent and with a person's precedent for a benign sibling
-of the same reviewed rule, each held call a requester of its own: 0 approvals outside the bounds. 831 of the calls are
+of the same reviewed rule, each held call a requester of its own: 0 approvals outside the bounds. 893 of the calls are
 held, 108 of them by reviewed rules alone; with a person's precedent for that very call (inside the bounds), the AI
-approves 90 of those, counted by class in the results. Results: `eval/results/e18_agent_approvers.json`.
+approves 78 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
+so no precedent lets it answer them). Results: `eval/results/e18_agent_approvers.json`.
 
 ## E19: egress observation
 
