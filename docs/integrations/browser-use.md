@@ -112,7 +112,9 @@ These wait for `on_parse_error` (`TK-SOURCE-PARSE`):
   called or not;
 - an import outside the list above, standard library included; and an import outside a function that binds a command
   or helper under the cell's own name (`from os import system`, `from browser_harness.helpers import goto_url as g`),
-  since the name stays bound for later cells;
+  since the name stays bound for later cells. A command a cell function returns or yields (`h = f()` where `f`
+  imports and returns `system`) stays bound for later cells too, but no cell can call it unread: a call through a
+  call's result, or through a name the cell didn't bind, waits;
 - a decorator that is a function, lambda or class the cell defines; any other decorator but `property`, `classmethod`
   and `staticmethod` is read as the call it is (`@goto_url` reads as `goto_url(f)`, whose argument isn't literal text,
   so it waits);

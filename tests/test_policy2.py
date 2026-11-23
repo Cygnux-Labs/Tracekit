@@ -6844,6 +6844,9 @@ class SourceReader(unittest.TestCase):
         ('@make()\ndef f():\n    pass', "callee"),
         ('@(prev)\ndef f():\n    pass', "callee"),
         ('def d(fn):\n    return fn\n@[d][0]\ndef f():\n    pass', "call"),   # a decorator built at run time
+        # every decorator in a stack is read, not only those up to the first that isn't a builtin wrapper
+        ('def d(fn):\n    return fn\n@print\n@d\ndef f():\n    pass', "value"),
+        ('@print\n@goto_url\ndef f():\n    pass', "arg"),
         # an import that leaves a command bound, in a block too
         ('from os import execv', "import"),
         ('if prev:\n    from os import system', "import"),
@@ -7089,7 +7092,8 @@ class CellSource(unittest.TestCase):
         self.assertEqual(self.cell(self.browser, "")["verdict"], "allow")
 
     def test_a_class_body_and_a_join_are_decided_and_a_builtin_spelling_waits(self):
-        for code in ('class C:\n    goto_url("file:///etc/passwd")', 'goto_url("".join(["file://", "/etc/passwd"]))'):
+        for code in ('class C:\n    goto_url("file:///etc/passwd")', 'goto_url("".join(["file://", "/etc/passwd"]))',
+                     '@print\n@(goto_url("file:///etc/passwd"))\ndef f():\n    pass'):   # each decorator in a stack
             with self.subTest(code=code):
                 d = self.cell(self.browser, code)
                 self.assertEqual(d["verdict"], "deny")
