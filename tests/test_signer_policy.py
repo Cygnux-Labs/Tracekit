@@ -2469,7 +2469,9 @@ class CodingPack(unittest.TestCase):
                 f"pyenv exec {a}", f"rbenv exec {a}", f"nodenv exec {a}", f"volta run --node 20 {a}",
                 f"fnm exec --using=20 -- {a}", f"devbox run {a}", f"perf stat -e cycles {a}", f"perf record -o p -- {a}",
                 f"rr record {a}", f"catchsegv {a}", f"heaptrack {a}", f"faketime '2020-01-01' {a}", f"xvfb-run -a {a}",
-                f"ip netns exec ns1 {a}"]
+                f"ip netns exec ns1 {a}",
+                # (and a runner's own option before its code is no subcommand: bun's --title or --cwd value isn't `x`)
+                *(f"bun {o}-e \"require('child_process').execSync('{a}')\"" for o in ("", "--title x ", "--cwd x "))]
         for pack, engine, e in self.every_pack():
             for cmd in held:
                 with self.subTest(pack=pack, engine=engine, cmd=cmd):
