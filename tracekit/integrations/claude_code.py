@@ -125,6 +125,10 @@ REFUSED_LINE = re.compile(r'- "([^"]+)", refused: (".*")')
 RESUMED = ("resume", "fork")   # SessionStart sources whose transcript already holds the session's earlier history
 FRESH = ("startup", "clear")   # SessionStart sources of a new transcript
 ENDED = "ended"   # _state(sid, ENDED): a SessionEnd of the session came; kept as the session's state is (_prune)
+# _state(sid, HOOK_DECIDED): the calls the hook decided itself with no signer answering (_hook_decided), each sent to the
+# run as an untrusted observation once the signer answers again (_flush_decided) and kept, marked sent, for doctor
+HOOK_DECIDED = "hook-decided"
+HOOK_DECIDED_MAX = 100
 FULL = ("[tracekit] the run has the most file constraints the signer takes: what this prompt says not to change was "
         "not added, so every write of the run is now held for your approval")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
@@ -392,6 +396,8 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
                 st = _register(client, path, st)   # the signer closed the stored run (idle): a new one gets them all
                 full = _constrain(client, path, st)
         _tail(client, path, st)
+        if st and not st.get("ended"):
+            st = _flush_decided(client, path, st, sid)
         seen = _seen(st and st.get("transcript"))   # before this event's call: lines its run's tailer reports there
         if not (st and send):
             if seen and not st.get("ended"):
@@ -413,6 +419,48 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             _constrain(client, path, st)
             _tail(client, path, st)
             return _send(client, path, st, send, fields, seen, skip)
+
+
+def _next_seq(sid):
+    """The session's next client_seq as its state says, or None."""
+    try:
+        return (_load(_state(sid)) or {}).get("seq")
+    except Exception:   # (unreadable state: the call is then counted by a skip, _flush_decided)
+        return None
+
+
+def _hook_decided(sid, tid, tool, args, decision, why, used=False):
+    """Keep a call the hook decided itself, with no signer answering (failclosed): `decision` blocked or allowed, `why`
+    the class or rules that blocked it, `used` whether its send that failed used a client_seq. Under the session lock,
+    as _run sends them."""
+    path = _state(sid, HOOK_DECIDED)
+    with open(_state(sid)[:-len(".json")] + ".lock", "a") as lk:
+        lock_file(lk)
+        kept = (_load(path) or [])[-(HOOK_DECIDED_MAX - 1):]
+        files.write_json(path, kept + [{"ts": time.time(), "tool": str(tool)[:128], "tool_use_id": tid,
+                                        "decision": decision, "why": why, "args": event_hash(args), "used": used}])
+
+
+def _flush_decided(client, path, st, sid):
+    """Send the run each call the hook decided while the signer was down (_hook_decided) and hasn't sent: an untrusted
+    observation `<agent>:hook-decided:<blocked|allowed>:<tool>` whose value is the hook's account (never a signed
+    decision); marked sent. Each such call is one event the signer never got: its send that failed used a client_seq,
+    or (`used` false) its observation goes one past the last sent (_send's skip), so the signer writes and signs a
+    client_counter_gap counting each call once, whatever the harness's transcript shows (a harness recorded said_only
+    shows no call). -> the session state, its client_seq past them. Called under the session lock (_run)."""
+    queue = _state(sid, HOOK_DECIDED)
+    kept = _load(queue) or []
+    for x in kept:
+        if not isinstance(x, dict) or x.get("sent"):
+            continue
+        skip = int(x.get("used") is not True)
+        _send(client, path, st, "observe", {"source": f"{AGENT}:hook-decided:{x.get('decision')}:{x.get('tool')}"[:256],
+                                            "trust": "untrusted", "value": {k: v for k, v in x.items() if k != "sent"}},
+              skip=skip)
+        st = dict(st, seq=st["seq"] + skip + 1)
+        x["sent"] = True
+        files.write_json(queue, kept)
+    return st
 
 
 def _register(client, path, prev=None, offsets=None, continues=True):
@@ -1187,7 +1235,7 @@ def _prune():
     call's, which one that never got its PostToolUse leaves behind, or a lock no state needs) after the signer's
     default run idle timeout, when the signer has closed its run. A session's ENDED marker is kept as its state is."""
     from tracekit.signer.service import IDLE_S
-    now, ended = time.time(), _state("", ENDED).rsplit(".", 2)[1]
+    now, ended, decided = time.time(), _state("", ENDED).rsplit(".", 2)[1], _state("", HOOK_DECIDED).rsplit(".", 2)[1]
     for f in sorted(glob.glob(os.path.join(glob.escape(autospawn.runtime_dir()), "claude-code-*")),
                     key=lambda f: f.endswith(".lock")):   # the state first, then the locks it no longer needs
         # lean: a lock goes only once its session state has; a hook that resumes that very session at this instant
@@ -1197,8 +1245,9 @@ def _prune():
         if ".tailer-" in f and os.path.exists(os.path.join(os.path.dirname(f), os.path.basename(f).split(".")[0]
                                                            + ".json")):   # a run's tailer's: kept with its session
             continue
-        # a session's state (not claude-code-<sid>.<call>.json), or its ENDED marker
-        session = f.endswith(".json") and (os.path.basename(f).count(".") == 1 or f.endswith(f".{ended}.json"))
+        # a session's state (not claude-code-<sid>.<call>.json), its ENDED marker or the calls its hook decided
+        session = f.endswith(".json") and (os.path.basename(f).count(".") == 1 or f.endswith(f".{ended}.json")
+                                           or f.endswith(f".{decided}.json"))
         try:
             if os.path.getmtime(f) < now - (SESSION_KEEP_S if session else IDLE_S):
                 os.remove(f)
@@ -1440,11 +1489,12 @@ def _event(p, end=None):
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
         return code, None
+    seq = _next_seq(sid) if pre else None   # (whether this call's failed send used a client_seq: _hook_decided)
     try:
         return _handle(client, p, name, sid, tid, end), client
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
-        fix = ""
+        fix, sc, why = "", {}, None
         try:
             sc = system_config() or {}
             if sc and not sc.get("signer") and not os.environ.get("TRACEKIT_SIGNER"):   # v1 system mode: no v2 signer
@@ -1455,8 +1505,22 @@ def _event(p, end=None):
                 (_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
         except Exception:
             closed = True
+        if pre and not closed:   # an open fail mode: secrets, deploys, payments and pushes to main still fail closed
+            from tracekit.policy2 import failclosed   # (only with no signer answering: loaded here)
+            try:
+                closed, why = failclosed.decide(p.get("tool_name") or "?", p.get("tool_input"), sc.get("policy"),
+                                                p.get("typed_text"))   # (harness_hooks: text typed into a terminal)
+            except Exception as x:   # (never a reason to let the call run)
+                closed, why = True, f"the hook could not read the call ({type(x).__name__})"
+            try:
+                _hook_decided(sid, tid, p.get("tool_name") or "?", p.get("tool_input"),
+                              "blocked" if closed else "allowed", why, _next_seq(sid) != seq)
+            except Exception:   # unrecorded here: the next event's client_seq skip can't name it (_flush_decided)
+                pass
         if pre:
-            failed, code = ("blocking (fail-closed)", 2) if closed else ("allowing (fail-open)", 0)
+            local = "; decided by the hook while the signer was down" if why or not closed else ""
+            failed, code = (f"blocking (fail-closed{': ' + why if why else ''}){local}", 2) if closed else \
+                (f"allowing (fail-open){local}", 0)
         print(f"[tracekit] signer unreachable ({e}); {failed}{fix}", file=sys.stderr)
         return code, client
     except Exception as e:   # a signer refusal or a crash: never a reason to let the call run

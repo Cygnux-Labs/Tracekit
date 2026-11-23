@@ -66,6 +66,26 @@ deny:
     rationale: Shows what a signed deny looks like.
 
 ask:
+  - id: TK-F031
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # the coding pack's flag, held here as TK-A056 holds a shell write of a Git config file (PUSH:config)
+    pattern: '(^|/)([^/]*\.git/(modules/([^/]+/){1,8}|worktrees/[^/]+/)?config(\.worktree)?|([^/.]*[.-])?git(config|alias(es)?)([.-][^/]*)?|git/config|\.?cargo/config(\.toml)?|(bin|scripts)/activate(\.[a-z0-9]+)?)$'
+    label: side_effect
+    reason: writing a Git or cargo config file or a virtualenv's activate script, which can change where a push goes or what a command publishes
+    remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
+    rationale: A remote's push refspec, an alias or an included file set in a Git config file, or a cargo alias, moves a later push or publish; a person confirms it.
+  - id: TK-F032
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    # the coding pack's flag: a Git config section written into any file, which a Git config may include
+    field: git_config
+    pattern: '(?:^|\n)[ \t\f\v\r]*\[[ \t]*(?:[Aa][Ll][Ii][Aa][Ss][ \t]*\]|(?:[Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][Ii][Ff])[ \t]+"|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][ \t]*\])'
+    label: side_effect
+    reason: writing a Git config section (an alias, a remote, a URL rewrite or an include) into a file a Git config may include
+    remedy: Have a person approve the held call, or set the one setting the task needs with `git config` or on the command line.
+    rationale: An include file (~/.gitconfig.local, ~/.gitalias) carries aliases and remotes as the config that names it does; a person confirms it.
   - id: TK-A032
     class: shell
     # each command's argv: a gsutil, gcloud storage or aws s3 copy, move or sync whose destination is a bucket (gs://,
@@ -89,7 +109,7 @@ ask:
     # picks; HEAD, @ or origin/HEAD; an expansion or a pattern), of tags (--tags, --follow-tags, a refs/tags/ or tags/
     # refspec, `tag v1.0`) or of every branch (--all, --mirror). A force push is TK-D003's deny and a delete push
     # TK-A002's ask. A push of named branches other than main and master stays flagged (TK-F004). Any other command is
-    # its argv: publishing a package (npm, pnpm, yarn or bun publish, npm's pu, pub, publ or publi, which it runs as
+    # its argv: publishing a package (npm, pnpm, yarn or bun publish, npm's pu, pub, publ, publi or publis, which it runs as
     # publish, yarn's `npm publish`, uv, poetry or cargo
     # publish, hatch or flit publish, gem push, twine upload, also as any runner's `-m twine`, `-m hatch` or `-m flit`), pushing an image or a chart (docker or podman
     # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or upgrade,
@@ -99,7 +119,12 @@ ask:
     # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, `PUSH:merge-upstream`
     # for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target the line can't
     # tell), read percent-decoded as GitHub reads its path; `gh repo sync <owner/repo>` into main or master
-    # (engine._gh_repo_sync's `PUSH:repo-sync`);
+    # (engine._gh_repo_sync's `PUSH:repo-sync`); a release created or a draft published (`PUSH:release`: gh release
+    # edit, gh api, GitHub's REST API), an image pushed (`PUSH:image`), a git subtree push (`PUSH:subtree`), a push
+    # setting written (`PUSH:config`) and a publishing CLI's command whose subcommand the line can't tell
+    # (`PUSH:verb`), each read per command however long it runs; a Cloud Run service updated or replaced and traffic
+    # moved to a Cloud Run or App Engine version (update-traffic, set-traffic, versions migrate); a gh command an alias
+    # names (release new), also as the command gh finds from its leading words (engine._pushes: grammar.canonical);
     # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
     # Sapling's `sl push --to main` (also `--to refs/heads/main` and `remote/main`), `git town ship` (or git-town), and
     # Jujutsu's `jj git push` with no arguments, --all, --tracked, a main or master bookmark (exact: too), a glob: or a
@@ -107,12 +132,13 @@ ask:
     # form read from the CLI's own docs (#892): `vercel --prod` or `--environment production` (`deploy` may be left
     # out) and `vercel promote`, `netlify deploy --prod` or `--prod-if-unlocked`, `fly` or `flyctl deploy`, `wrangler
     # deploy` (and the older `publish`), `firebase deploy`, `gcloud run`, `app` or `functions deploy` (alpha and beta
-    # too), `railway up`, `sam`, `serverless`, `sls` or `cdk deploy`, `aws cloudformation deploy` and `gh release
-    # create`. `unless` lets through the forms that don't reach production: a gh release saved as a draft (-d or
+    # too), `railway up`, `sam`, `serverless`, `sls` or `cdk deploy`, `aws cloudformation deploy`, `gh` or `hub
+    # release create`, and `gh workflow run` (a workflow_dispatch: what it runs is the workflow's own,
+    # a deploy job among them, which the line can't tell). `unless` lets through the forms that don't reach production: a gh release saved as a draft (-d or
     # --draft as an option of its own: the word before it is the tag, another option's value, an option with its
     # value after `=`, or one of gh's flags that take no value; after --notes, --title, -R or any other option it is
-    # that option's value, and the release is held), a gcloud run deploy with --no-traffic or app deploy with
-    # --no-promote, and a wrangler --env, railway
+    # that option's value, and the release is held), a gcloud run deploy or run services update with --no-traffic or
+    # app deploy with --no-promote, and a wrangler --env, railway
     # --environment or serverless --stage naming a dev, staging, preview, test, qa, sandbox or local environment (any
     # other name, prod included, is held). A preview deploy stays allowed: vercel without --prod, netlify deploy
     # without --prod, wrangler dev, firebase hosting:channel:deploy.
@@ -125,8 +151,20 @@ ask:
     # with no refspec is: Sapling then pushes to the remote bookmark it guesses from the commit's ancestors, main's
     # for a commit on main (ext/remotenames.py, _guesspushtobookmark), or `--delete`s one; add a verb here when one is
     # in use
-    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^npm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} pu(?:b(?:li?)?)?(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^(?:hatch|flit)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?(?:hatch|flit)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^vercel(?: [^ ]+){0,8}? (?:--prod|--environment[ =]production)(?: |$)|^vercel(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} promote(?: |$)|^netlify(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: [^ ]+){0,8}? --prod(?:-if-unlocked)?(?: |$)|^fly(?:ctl)?(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish)(?: |$)|^firebase(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?(?:run|app|functions) deploy(?: |$)|^railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^(?:sam|serverless|sls|cdk)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^aws(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} cloudformation deploy(?: |$)|^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRefs?|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/|refs/heads/)?(?:main|master)(?: |$)|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push(?: (?:[^- ][^ ]*|-(?:[^-t ][^ ]*)?|--(?:[^t ][^ ]*|t(?:[^o ][^ ]*)?|to[^ =][^ ]*)?)?)*$|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push (?:[\w\W]*? )?(?:-r ?|--revisions?[ =])[^ ]'
-    unless: '^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create (?:(?:[\w\W]*? )?(?:[^- ][^ ]*|-[^ =]+=[^ ]*|-[nFtR][^ ]+|-[dp]|--(?:draft|prerelease|generate-notes|latest|verify-tag|notes-from-tag|fail-on-no-commits)) )?(?:-d|--draft(?:=true)?)(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?run deploy (?:[\w\W]*? )?--no-traffic(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?app deploy (?:[\w\W]*? )?--no-promote(?: |$)|^(?:wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish) (?:[\w\W]*? )?(?:--env[ =]|-e ?)|railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up (?:[\w\W]*? )?(?:--environment[ =]|-e ?)|(?:serverless|sls)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy (?:[\w\W]*? )?(?:--stage[ =]|-s ?))(?:dev|development|staging|stage|preview|test|testing|qa|sandbox|local)(?: |$)'
+    pattern: '^PUSH:|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?(?:run services (?:update-traffic|update|replace)|app services set-traffic|app versions migrate)(?: |$)|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^npm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} pu(?:b(?:l(?:is?)?)?)?(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^(?:hatch|flit)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?(?:hatch|flit)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^vercel(?: [^ ]+){0,8}? (?:--prod|--environment[ =]production)(?: |$)|^vercel(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} promote(?: |$)|^netlify(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: [^ ]+){0,8}? --prod(?:-if-unlocked)?(?: |$)|^fly(?:ctl)?(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish)(?: |$)|^firebase(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?(?:run|app|functions) deploy(?: |$)|^railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^(?:sam|serverless|sls|cdk)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy(?: |$)|^aws(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} cloudformation deploy(?: |$)|^(?:gh|hub)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create(?: |$)|^gh(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} workflow run(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRefs?|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/|refs/heads/)?(?:main|master)(?: |$)|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push(?: (?:[^- ][^ ]*|-(?:[^-t ][^ ]*)?|--(?:[^t ][^ ]*|t(?:[^o ][^ ]*)?|to[^ =][^ ]*)?)?)*$|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push (?:[\w\W]*? )?(?:-r ?|--revisions?[ =])[^ ]'
+    unless: '^(?:gh|hub)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create (?:(?:[\w\W]*? )?(?:[^- ][^ ]*|-[^ =]+=[^ ]*|-[nFtR][^ ]+|-[dp]|--(?:draft|prerelease|generate-notes|latest|verify-tag|notes-from-tag|fail-on-no-commits)) )?(?:-d|--draft(?:=true)?)(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?run (?:deploy|services update) (?:[\w\W]*? )?--no-traffic(?: |$)|^gcloud(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:(?:alpha|beta) )?app deploy (?:[\w\W]*? )?--no-promote(?: |$)|^(?:wrangler(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:deploy|publish) (?:[\w\W]*? )?(?:--env[ =]|-e ?)|railway(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up (?:[\w\W]*? )?(?:--environment[ =]|-e ?)|(?:serverless|sls)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} deploy (?:[\w\W]*? )?(?:--stage[ =]|-s ?))(?:dev|development|staging|stage|preview|test|testing|qa|sandbox|local)(?: |$)'
+    # gh and gcloud as their grammars read them, besides the text above: a draft release (--draft or -d last on, not a
+    # value's), a Cloud Run deploy with --no-traffic, an App Engine deploy whose last --promote or --no-promote is
+    # --no-promote, without a flags file or configuration that may set any flag. A command the grammar can't read
+    # (an expansion it may split into more flags: `set -- --draft=false; gh release create v1 -d "$@"`, a glob, a
+    # runner that adds words) is never exempt (`required`); a double-quoted expansion that is a flag's value or comes
+    # after `--` is read (grammar.read)
+    unless_cli:
+      - {command: gh release create, flag: --draft, required: true}
+      - {command: 'gcloud (alpha |beta )?run (deploy|services update)', flag: --no-traffic,
+         without: [--flags-file, --configuration], required: true}
+      - {command: 'gcloud (alpha |beta )?app deploy', flag: --no-promote, without: [--flags-file, --configuration],
+         required: true}
     reason: a push to the default branch or of tags, or a publish or deploy
     remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
     rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.

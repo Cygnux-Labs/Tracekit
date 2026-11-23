@@ -1297,6 +1297,29 @@ def _acl_perms(out, uid):
     return named if named is not None else other or ""
 
 
+def _hook_decided():
+    """The calls the v2 hooks decided themselves while the signer was down (claude_code.HOOK_DECIDED), oldest first,
+    over every session whose state the runtime dir keeps (none when there is no runtime dir: doctor creates nothing).
+    The files are the agent's to write: an entry that isn't an object is skipped, and one whose ts is no number sorts
+    first."""
+    import glob
+    import hashlib
+    from .integrations import claude_code
+    from .sdk import autospawn
+    try:
+        run = autospawn.runtime_dir(create=False)
+    except OSError:
+        return []
+    tag = hashlib.sha256(claude_code.HOOK_DECIDED.encode()).hexdigest()   # (as claude_code._state names its file)
+    out = []
+    for f in glob.glob(os.path.join(glob.escape(run), f"claude-code-*.{tag}.json")):
+        try:
+            out += [x for x in read_json(f) if isinstance(x, dict)]
+        except (OSError, ValueError, TypeError):
+            continue
+    return sorted(out, key=lambda x: x["ts"] if type(x.get("ts")) in (int, float) and x["ts"] == x["ts"] else 0)
+
+
 def _tailer_checks(add, client_json, agent):
     """D-TAILER-*: what system init sets up for a Claude Code agent's transcript tailer (install._tailer_acl,
     install._tailer_sudo, client.json's `tailer` key). Without it each session records a tailer_lost gap, whose signed
@@ -1775,9 +1798,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             open_.append(f"{client_json} fail_mode")
     except (OSError, ValueError):
         pass
-    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)}" if open_ else "every class fails closed",
+    add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)} (the coding-agent hooks still block secrets, "
+                                    "deploys, payments and pushes to main; the SDK and framework integrations fail "
+                                    "open by class alone)" if open_ else "every class fails closed",
         "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent",
         bad=WARN)
+    if not prod:   # (a system-mode hook fails closed with no signer answering: it decides nothing itself)
+        decided = _hook_decided()
+        add("D-HOOK-DECIDED", not decided, "no call decided by the hook while the signer was down" if not decided else
+            f"{len(decided)} call(s) decided by the hook while the signer was down "
+            f"({sum(x.get('decision') == 'allowed' for x in decided)} allowed, which ran unchecked; "
+            f"{sum(not x.get('sent') for x in decided)} not yet sent to the signer); the latest: "
+            f"{decided[-1].get('decision')} {decided[-1].get('tool')} ({decided[-1].get('why') or 'fail-open'})",
+            "find out why the signer was down, and review each allowed call in tracekit view (THE AGENT-SIDE HOOK "
+            "REPORTS, after the signer's client_counter_gap for it)", bad=WARN)
     if prod and client_json:
         _tailer_checks(add, client_json, agent)
 

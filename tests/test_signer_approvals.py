@@ -846,8 +846,10 @@ class TestCli(unittest.TestCase):
         sock = cfg["socket"]
         shown = tracekit("approvals", "--signer", sock, "show", aids[1])
         self.assertEqual(shown.returncode, 0, shown.stderr)
-        self.assertIn("\nwhy         moving money (a Stripe, PayPal or Square charge, payout, transfer or refund) "
-                      "(TK-A043)\ninstead     Check the amount, currency and payee", shown.stdout)
+        self.assertIn("\nwhy         moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), or a GET "
+                      "to one that curl's config file can turn into a POST (no -q first) (TK-A043)\ninstead     Run a "
+                      "GET as `curl -q -G …` (no config file read); check a payment's amount, currency and payee",
+                      shown.stdout)
         self.assertRegex(shown.stdout, r"\nexpires     \S+Z \(in 5\d min\)\n")
         self.assertIn(f"\nanswer      `tracekit approvals --signer {sock} approve {aids[1]}` to allow it once, "
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)

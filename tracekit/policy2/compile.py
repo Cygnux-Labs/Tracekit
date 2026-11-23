@@ -20,8 +20,10 @@ SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
             "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
-RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
-             "remedy"}
+RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "unless_cli", "reason", "rationale", "label", "approval",
+             "from", "remedy"}
+CLI_KEYS = {"command", "flag", "without", "alone", "required"}   # an unless_cli entry's (_lint_cli)
+_FLAG = re.compile(r"--?[A-Za-z0-9][\w.-]*")
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
@@ -112,8 +114,8 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit", "push", "harness_launch", "environment", "gh_runs"},
-           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill"},
+                     "tracekit", "push", "publish", "requests", "harness_launch", "environment", "gh_runs"},
+           "fs": {"path", "op", "content_digest", "ci_workflow", "agent_skill", "git_config"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args", "run"},
@@ -425,8 +427,10 @@ def _lint(pol, path):
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
-            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
+            errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval", "unless_cli"})
                        if not isinstance(r[k], str)]
+            if "unless_cli" in r:
+                errors += [f"{where}: unless_cli: {e}" for e in _lint_cli(r)]
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if isinstance(r.get("remedy"), str):
@@ -468,6 +472,42 @@ def _lint(pol, path):
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
         errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
     return errors + _lint_detect(pol, path)
+
+
+def _lint_cli(rule):
+    """The errors of a shell rule's unless_cli: a list of {command, flag?, without?, alone?, required?}; `command` a
+    pattern whose first word names a program (one with no grammar in policy2/grammars is a warning: its commands read
+    as text), matched against the whole `program subcommand ...`; `required` true: a command of that program the
+    grammar can't read is never exempt."""
+    from .grammar import program_of
+    if rule.get("class") != "shell" or rule.get("field") not in (None, "argv", "push", "publish"):
+        return ["reads a shell command's words: class shell, field argv (or none), push or publish"]
+    entries = rule["unless_cli"]
+    if not isinstance(entries, list) or not entries:
+        return ["must list {command, flag?, without?, alone?, required?}"]
+    errors = []
+    for e in entries:
+        if not isinstance(e, dict) or not set(e) <= CLI_KEYS or not isinstance(e.get("command"), str):
+            errors.append(f"{e!r}: takes command (a string), flag, without, alone and required")
+            continue
+        if not program_of(e["command"]):
+            errors.append(f"{e['command']!r}: its first word names no program")
+        try:
+            check_pattern(e["command"])
+        except PolicyError as x:
+            errors.append(f"{e['command']!r}: {x}")
+        if "flag" in e and not (isinstance(e["flag"], str) and _FLAG.fullmatch(e["flag"])):
+            errors.append(f"{e['command']!r}: flag must be one flag's name (--draft)")
+        if "without" in e and not (isinstance(e["without"], list) and all(isinstance(x, str) and _FLAG.fullmatch(x)
+                                                                          for x in e["without"])):
+            errors.append(f"{e['command']!r}: without must list flags' names")
+        if e.get("alone", True) is not True:
+            errors.append(f"{e['command']!r}: alone is true or left out")
+        if e.get("required", True) is not True:
+            errors.append(f"{e['command']!r}: required is true or left out")
+        if "flag" not in e and "without" not in e and not e.get("alone"):
+            errors.append(f"{e['command']!r}: exempts every use of the command: name a flag, without or alone")
+    return errors
 
 
 def _lint_remedy(text, sec):
@@ -677,7 +717,9 @@ def warnings(pol):
     """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
     unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), a rule the prefilter can't skip
     (`_unfiltered`), and an agent approver on a money-moving rule (class payment, or a tool the policy maps to payment)
-    without executor t2 binds the approval, not what runs."""
+    without executor t2 binds the approval, not what runs; and an unless_cli entry whose program has no grammar table
+    (missing, or never generated), whose commands then read as text."""
+    from .grammar import PROGRAMS, program_of
     payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
 
     def money(r):
@@ -696,5 +738,10 @@ def warnings(pol):
         f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
         "arguments the agent reported, not what its process runs; add executor: t2"
         for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
+        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"] + [
+        f"{sec} rule {r['id']}: unless_cli {e['command']!r}: no grammar table for {program_of(e['command'])!r} "
+        "(policy2/grammars), so its commands read as text"
+        for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and isinstance(r.get("unless_cli"), list)
+        for e in r["unless_cli"] if isinstance(e, dict) and isinstance(e.get("command"), str)
+        and program_of(e["command"]) not in PROGRAMS]
 

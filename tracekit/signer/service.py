@@ -498,19 +498,31 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
 
 
 # a file tool of another harness or framework (Hermes Agent's tools/file_tools.py, LangChain's FileManagementToolkit)
-# that the policy doesn't map is also decided as the file tool it is (evaluate), on every path it names: what the file
-# rules protect (a credentials file, a startup file, a Git hook, a harness's settings) is read where its own class,
-# unknown, reaches none of them
-FILE_TOOLS = {"write_file": "Write", "patch": "Edit", "read_file": "Read", "search_files": "Grep"}
+# that the policy doesn't map, and an MCP server's by its own name (the filesystem server's write_file, edit_file,
+# create_file, move_file, read_file, search_files; Desktop Commander's edit_block; a copy_file or rename_file; Serena's
+# create_text_file; JetBrains' create_new_file), is also decided as the file tool it is (evaluate), on every path it
+# names (a move's, copy's or rename's source and destination too): what the file rules protect (a credentials file, a
+# startup file, a Git hook, a harness's settings, curl's config file) is read where its own class, unknown or mcp,
+# reaches none of them
+FILE_TOOLS = {"write_file": "Write", "patch": "Edit", "edit_file": "Edit", "create_file": "Write", "move_file": "Write",
+              "copy_file": "Write", "rename_file": "Write", "edit_block": "Edit", "create_text_file": "Write",
+              "create_new_file": "Write", "read_file": "Read", "search_files": "Grep"}
 # a V4A patch's file headers as Hermes Agent's parser reads them (tools/patch_parser.py: `***`, any blanks, Add, Update
 # or Delete File:, and Move File: a -> b, which names both) and as Codex's (Move to:), any blanks before them too
 PATCH_FILE = re.compile(r"^\s*\*\*\*\s*(?:(?:Add|Update|Delete|Move)\s+File|Move\s+to)\s*:(.+)$", re.M)
+_MOVE_KEYS = ("source", "destination", "source_path", "destination_path", "from", "to", "src", "dst", "sourcePath",
+              "destinationPath", "oldPath", "newPath", "old_path", "new_path")
+# other servers' spellings of a file's path (a `file://` URI's path follows a `/`, where every path rule may start)
+_FILE_KEYS = ("filePath", "filename", "file", "file_name", "target", "uri", "relative_path", "pathInProject")
 
 
 def _as_file_tool(tool, args):
     """A FILE_TOOLS call's arguments as its file tool reads them: `paths`, every path a path key names (Hermes reads
-    `path`, LangChain `file_path`: a decoy under the other is decided too) and each file a V4A patch's headers name."""
-    files = [v for k in classes.PATH_KEYS if isinstance(v := args.get(k), str)]
+    `path`, LangChain `file_path`, other servers _FILE_KEYS: a decoy under another is decided too), each file a V4A
+    patch's headers name and a move's, copy's or rename's source and destination (the MCP filesystem server's,
+    LangChain's, _MOVE_KEYS)."""
+    keys = (*classes.PATH_KEYS, *_FILE_KEYS, *(_MOVE_KEYS if tool in ("move_file", "copy_file", "rename_file") else ()))
+    files = [v for k in keys if isinstance(v := args.get(k), str)]
     files += [f for f in args["paths"] if isinstance(f, str)] if isinstance(args.get("paths"), list) else []
     if tool == "patch" and isinstance(args.get("patch"), str):
         files += [f.strip() for h in PATCH_FILE.findall(args["patch"]) for f in [h, *h.split("->")]]
@@ -547,8 +559,10 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
-        if tool in FILE_TOOLS and cls == "unknown":
-            d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
+        name = tool if cls == "unknown" else tool.rpartition("__" if tool.startswith("mcp__") else "/")[2] \
+            if cls == "mcp" and tool.startswith(("mcp__", "mcp:")) else None
+        if name in FILE_TOOLS:
+            d = _stricter(d, policy.decide(FILE_TOOLS[name], _as_file_tool(name, args), untrusted=untrusted))
         # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text
         # earlier calls typed, then its own; the hooks set it), which counts wherever a deny or ask rule matches it,
         # TK-SHELL-PARSE too: a line keys alone put text into that the hook can't read (completion, history) holds a
@@ -2205,7 +2219,8 @@ class SignerService:
 
     def _reasons(self, ids, unread=None, policy=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
-        INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
+        INSTEAD their remedies (what to do instead), each reason and remedy once (two rules that say the same, as
+        TK-A043 and TK-A095 on a curl, say it once; at most 1024 chars); an id the engine gives itself, its
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
         so its label is no reason it was denied or held. `policy`: the Engine whose rules these are (this signer's)."""
@@ -2214,7 +2229,7 @@ class SignerService:
             engine_reasons["TK-SHELL-PARSE"] = cause
         by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in (policy or self.policy).rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
-        why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
+        why = "; ".join(dict.fromkeys(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label")))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
         return (why + INSTEAD * bool(why and instead) + instead)[:1024]
 

@@ -593,6 +593,8 @@ class Routes(unittest.TestCase):
         # optional take it only joined by `=`
         rm_home = "require('child_process').execSync('rm -rf ~')"
         self.expect(self.bash(f"bun --cwd /tmp -e \"{rm_home}\"", f"bun --title build --eval \"{rm_home}\"",
+                              f"bun --title x -e \"{rm_home}\"", f"bun --cwd x -e \"{rm_home}\"",
+                              f"bun --env-file x --eval \"{rm_home}\"",
                               f"deno eval --inspect \"{rm_home}\"", f"deno eval --lock \"{rm_home}\"",
                               f"deno -L debug eval \"{rm_home}\""), "deny", "TK-D004")
         self.expect(self.bash("bun --cwd web run dev", "bun build.ts -p ./dist", "deno run --inspect main.ts",
