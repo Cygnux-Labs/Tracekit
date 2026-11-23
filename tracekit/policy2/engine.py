@@ -3760,7 +3760,8 @@ def _download_runs(commands):
             if (kind := shell._kind(_program(c["argv"]))) in shell.CODE_FLAGS:
                 args = c["argv"][1:]
                 if shell._code_arg(kind, args) is not None:
-                    out.append(f"{tool} | {kind} -{shell.CODE_FLAGS[kind][0]}")
+                    flag = "eval" if kind == "deno" else "-" + shell.CODE_FLAGS[kind][0]
+                    out.append(f"{tool} | {kind} {flag}")
                 elif (i := shell._script_operand(kind, args)) is not None:
                     out.append(f"{tool} | {kind} {args[i]}")
     for tool in fed:

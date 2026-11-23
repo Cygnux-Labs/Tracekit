@@ -262,13 +262,15 @@ KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", 
 # bash's reserved words: an alias of one is expanded where the word is one (`alias do='do cmd;'`)
 _RESERVED = KEYWORDS | {"for", "select", "case", "esac", "in", "function", "coproc", "time", "[[", "]]"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
-KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")), ("perl", re.compile(r"perl[0-9.]*")),
+KINDS = [("python", re.compile(r"python[0-9.]*")), ("node", re.compile(r"node|nodejs")),
+         ("bun", re.compile(r"bun")), ("deno", re.compile(r"deno")), ("perl", re.compile(r"perl[0-9.]*")),
          ("ruby", re.compile(r"ruby[0-9.]*")), ("php", re.compile(r"php[0-9.]*")), ("lua", re.compile(r"lua[0-9.]*|luajit")),
          ("awk", re.compile(r"[gmn]?awk")), ("sed", re.compile(r"g?sed"))]
 # each interpreter's options whose value is its code (php's -B, -R and -E run code before, for and after each line of
 # stdin), the first its usual one, and their long forms
-CODE_FLAGS = {"python": "c", "node": "ep", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
-LONG_CODE = {"node": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
+CODE_FLAGS = {"python": "c", "node": "ep", "bun": "ep", "deno": "", "perl": "eE", "ruby": "e", "php": "rBRE", "lua": "e"}
+_JS_KIND = {"bun": "node", "deno": "node"}   # bun's and deno's code is JavaScript: read it as node's
+LONG_CODE = {"node": ("--eval", "--print"), "bun": ("--eval", "--print"), "php": ("--run", "--process-begin", "--process-code", "--process-end")}
 # options of an interpreter that take a value (so the word after them is not the script)
 INTERP_VALUE_OPTS = {"-W", "-X", "-r", "-I", "--require", "--input-type", "-d", "-c", "--import", "--loader",
                      "--experimental-loader"}
@@ -931,7 +933,7 @@ _WRITES = {
                          r"(?<![\w.])(?P<call>open|io\.open|codecs\.open|shutil\.(?:copy\w*|move)|"
                          r"os\.(?:open|rename|replace|link|symlink))\s*\("),
     "node": re.compile(r"(?P<path>(?!))?\b(?P<call>writeFile|appendFile|createWriteStream|outputFile|copyFile|rename|"
-                       r"cp|link|symlink)(?:Sync)?\s*\("),
+                       r"cp|link|symlink|Bun\.write|Deno\.(?:writeTextFile|writeFile|create|truncate|open(?:Sync)?))(?:Sync)?\s*\("),
     "perl": re.compile(r"(?P<path>(?!))?\b(?P<call>open|copy|move|rename|symlink|link)\b\s*\(?"),
     "ruby": re.compile(r"(?P<path>(?!))?\b(?P<call>(?:File|IO)\.(?:write|binwrite|open|rename|symlink|link)|"
                        r"FileUtils\.(?:cp|mv|install|copy|move|copy_file|ln|ln_s|ln_sf|touch))\b\s*\(?"),
@@ -984,6 +986,7 @@ def _is_write_flags(expr):
             val |= int(tok, 0)
         return val & 0o22003103 != 0
     return False
+_DENO_WRITE_OPT = re.compile(r"\b(?:write|append|create|createNew|truncate)\s*:\s*true\b")   # Deno.open's options
 
 
 def _written(kind, call, items, text=""):
@@ -1013,6 +1016,9 @@ def _written(kind, call, items, text=""):
             target, _ = _kw_arg(kind, text, "path")
             _, flag_text = _kw_arg(kind, text, "flags")
         target = target if _is_write_flags(flag_text) else None
+    elif kind == "node" and call in ("Deno.open", "Deno.openSync"):
+        # Deno.open's options say whether it writes; with none it only reads
+        target = items[0] if items and _DENO_WRITE_OPT.search(text) else None
     elif name in ("open", "fopen"):
         mode = _text_of(items[1]) if len(items) > 1 and isinstance(items[1], tuple) else \
             (k.group(2) if (k := _MODE_KEYWORD.search(text)) else None)
@@ -2693,29 +2699,63 @@ def _find_execs(args):
     return out
 
 
+_DENO_EVAL_VALUED = {"--ext", "-c", "--config", "--import-map", "--lock", "--inspect", "--inspect-brk", "--v8-flags",
+                     "--cert", "--seed", "--location", "--env-file", "--conditions"}
+_DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
+                     "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
+                     "repl", "init", "coverage", "publish", "outdated", "clean"}
+
+
+def _skip_interp_opts(args, i=0, valued=INTERP_VALUE_OPTS):
+    """Advance `i` past interpreter options (including `--opt val`); stops at `--`, `-`, or first non-option word."""
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        if args[i] == "--":
+            return i + 1, True
+        i += 2 if args[i] in valued else 1
+    return i, False
+
+
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, ...), or None."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or None."""
     if kind == "awk":
         return _awk_program(args)
     if kind == "sed":
         return _sed_scripts(args)
+    if kind == "deno":
+        i, ended = _skip_interp_opts(args, 0, _DENO_EVAL_VALUED)
+        if ended or i >= len(args) or args[i] != "eval":
+            return None
+        i, _ = _skip_interp_opts(args, i + 1, _DENO_EVAL_VALUED)
+        rest = args[i:]
+        return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
     flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
-    for i, a in enumerate(args):
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if kind == "bun" and (a == "--" or not a.startswith("-")):
+            break
         if a in long:
             return args[i + 1] if i + 1 < len(args) else None
         if a.partition("=")[0] in long:
             return a.split("=", 1)[1]
+        if kind == "bun" and a in INTERP_VALUE_OPTS:
+            i += 2
+            continue
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
                 if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
                     return a[j + 2:] or (args[i + 1] if i + 1 < len(args) else None)
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
+                    if not a[j + 2:]:
+                        i += 1
                     break
+        i += 1
     return None
 
 
 # each interpreter's options that take the rest of their word as their value
-_VALUED = {"python": "WXm", "node": "r", "perl": "MmIxdD", "ruby": "rIxCEFKT", "php": "dcz", "lua": "l"}
+_VALUED = {"python": "WXm", "node": "r", "bun": "rcdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
+           "php": "dcz", "lua": "l"}
 
 
 def _loaded(kind, args):
@@ -4415,7 +4455,8 @@ class _Parser:
                 first, kept = len(self.ctx["cmds"]), {k: type(self.ctx[k])(self.ctx[k]) for k in
                                                       ("unread_values", "arith_names", "code_names", "depth")}
                 try:
-                    self.emit([program, "-" + CODE_FLAGS[_kind(program)][0], text, *gives], cmd["pipeline"], inside)
+                    flag = ["eval"] if _kind(program) == "deno" else ["-" + CODE_FLAGS[_kind(program)][0]]
+                    self.emit([program, *flag, text, *gives], cmd["pipeline"], inside)
                 except ParseError:   # (a literal it runs that isn't shell)
                     if self.ctx["work"][0] > MAX_WORK:
                         raise
@@ -4930,6 +4971,7 @@ class _Parser:
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
         `cmd` opaque."""
+        kind = _JS_KIND.get(kind, kind)
         if kind == "sed":
             for m in _SED_E.finditer(code):
                 if m.group(1).strip():
@@ -5901,6 +5943,14 @@ def _python_runs(args, copies=frozenset()):
 def _script_operand(kind, args):
     """The index in `args` of the script file an interpreter of `kind` (one of CODE_FLAGS') runs: its first operand
     after its options (and their values); None for a module (python -m), stdin (-, a stream) or no operand."""
+    if kind in ("bun", "deno"):
+        i, ended = _skip_interp_opts(args)
+        if not ended and i < len(args):
+            if args[i] == "run":
+                i, _ = _skip_interp_opts(args, i + 1)
+            elif kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
+                return None
+        return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
     i = 0
     while i < len(args) and args[i].startswith("-") and args[i] != "-":
         if args[i] == "--":
