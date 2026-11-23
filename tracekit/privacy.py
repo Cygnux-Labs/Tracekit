@@ -548,6 +548,7 @@ ACTION_LISTS = ("commands", "paths")
 # a shell line as bash reads it, so an approver's copy hides a value and never what runs after it (redact_command)
 _SPECIAL = re.compile(r"[ \t\n;&|<>()'\"`\\$#]")   # what bash reads outside quotes
 _SPECIAL_DQ = re.compile(r'["\\$`]')   # and inside "...": what a shell running a "..." script reads apart from it
+_UNREAD_END = re.compile(r"[$`]|\\\n")   # in a heredoc's end word: one the reader can't read as bash does
 _ENDS = re.compile(r"(?:[ \t;|]|&(?!>))+")   # blanks and control operators, read at once (&> is a redirection)
 _REDIRECT = re.compile(r"&>>?|<>|<&|>&|>\||>>|[<>]")   # (a heredoc's and a herestring's aside)
 _FD = re.compile(r"[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\}")   # the descriptor a redirection names before it: 2>, {fd}>
@@ -695,11 +696,15 @@ _SEEN = {CODE: _CODE_LIKE, SQ: re.compile(r"[\s|&;()<>$`']"), DQ: re.compile(r'[
          EXPANDED: re.compile(r"[\s|&;()<>$`\\]")}
 
 
+_closers = {}   # _past's search for a bracket pair and a backslash, by the pair: a few, made once each
+
+
 def _past(s, k, close, open_="", depth=1, end=None):
     """Past the `close` that closes the `depth` brackets open before `k` (each `open_` opens one more), else `end`
     (len(s)); a backslash keeps the character after it."""
     end = len(s) if end is None else end
-    find = re.compile("[" + re.escape(open_ + close) + r"\\]").search
+    find = _closers.get(open_ + close) or _closers.setdefault(
+        open_ + close, re.compile("[" + re.escape(open_ + close) + r"\\]").search)
     while depth:
         m = find(s, k, end)
         if not m:
@@ -860,6 +865,10 @@ def _data_stdin(stages, nested):
     shell = _policy("shell")
     out, data = [], True
     for words in reversed(stages):
+        if not words:   # (no program reads it: a redirection alone, `<<A`)
+            data = False
+            out.append(False)
+            continue
         k = next((k for k, w in enumerate(words) if not shell._ASSIGN.match(w)), len(words))
         name = words[k] if k < len(words) and words[k] == shell.base_name(words[k]) else ""   # (./cat: not cat)
         kind = shell._kind(name)
@@ -869,10 +878,10 @@ def _data_stdin(stages, nested):
 
 
 def _command():
-    """A simple command as _read_shell reads it: its words' and herestrings' spans; whether it reads a heredoc, and
-    has a quote or a backslash in a word (so a word may be code the line itself doesn't read); whether its stdin is
+    """A simple command as _read_shell reads it: its words' and herestrings' spans; whether it reads a heredoc, or
+    has a redirection (a stage of redirections alone is a stage: no program reads data there); whether its stdin is
     data (_data_stdin)."""
-    return {"words": [], "here": [], "docs": False, "quoted": False, "data": None}
+    return {"words": [], "here": [], "docs": False, "redirs": False, "data": None}
 
 
 class _Reading:
@@ -925,12 +934,16 @@ def _read_shell(s, facts=None):
             x[a:b + 1] = bytes(b + 1 - a)
         read(a, b, 1)
 
-    def finish(pipe, nested, depth):
-        """Pipeline `pipe` is read: whether each command's heredoc and herestring are data."""
-        r.pipes.append([c["words"] for c in pipe])
-        if not any(c["quoted"] or c["here"] or c["docs"] for c in pipe):
+    def finish(pipe, nested):
+        """Pipeline `pipe` is read: whether each command's heredoc and herestring are data (`nested()`: whether it is
+        read inside a substitution, a subshell, a block or a script read again, or on a line _UNSURE finds anything on)."""
+        r.pipes.append([pipe[0]["words"]] if len(pipe) == 1 else [c["words"] for c in pipe])
+        for c in pipe:   # (only a herestring or a heredoc is marked by it; a loop, not any(): once a command)
+            if c["here"] or c["docs"]:
+                break
+        else:
             return
-        for c, data in zip(pipe, _data_stdin([_words(s, c["words"]) for c in pipe], nested)):
+        for c, data in zip(pipe, _data_stdin([_words(s, c["words"]) for c in pipe], nested())):
             c["data"] = data
             for a, b in c["here"]:
                 _mark(r.data if data else unsure, a, b)
@@ -948,15 +961,17 @@ def _read_shell(s, facts=None):
             if redir == "<<<":
                 cmd["here"].append((ws, e))
             elif not redir and not (s.startswith(("<", ">"), e) and _FD.fullmatch(s, ws, e)):
-                if not cmd["words"]:
-                    cases += {"case": 1, "esac": -(cases > 0)}.get(s[ws:e], 0)
+                if not cmd["words"] and e - ws == 4 and s[ws:e] in ("case", "esac"):
+                    cases += 1 if s[ws:e] == "case" else -(cases > 0)
                 cmd["words"].append((ws, e))
             redir = None
 
         def end_command(piping):   # the command ends; it pipes into the next one, or its pipeline ends too
             nonlocal cmd, pipe
+            if not (cmd["words"] or cmd["here"] or cmd["docs"] or cmd["redirs"]) and (piping or len(pipe) == 1):
+                return   # an empty one (a blank line, `;;`, `()`): nothing to read, and the next is read into it
             if not piping:
-                finish(pipe, nested(), depth)
+                finish(pipe, nested)
                 pipe = []
             cmd = _command()
             pipe.append(cmd)
@@ -975,8 +990,9 @@ def _read_shell(s, facts=None):
             m = (_SPECIAL_DQ if dq else _SPECIAL).search(s, i, z)
             j = m.start() if m else z
             if dq:
-                _mark(inq, i, j)
-                _mark(ctx, i, j, DQ)
+                if j > i:   # (none between two quotes: `""""…` marks nothing)
+                    _mark(inq, i, j)
+                    _mark(ctx, i, j, DQ)
             elif j > i and not word:
                 if frames and _CASE.match(s, i):
                     _mark(unsure, i, z)
@@ -1005,7 +1021,7 @@ def _read_shell(s, facts=None):
                     if s.startswith("<<<", i):
                         redir, e = "<<<", i + 3
                     elif s.startswith("<<", i) and (d := _delimiter(s, i + 2, z)):   # a heredoc: after the line
-                        if re.search(r"[$`]|\\\n", s[i + 2:d[3] + 1]):   # its end line isn't the word as written
+                        if _UNREAD_END.search(s, i + 2, d[3] + 1):   # its end line isn't the word as written
                             _mark(unsure, i, z)
                             i = z
                             break
@@ -1013,12 +1029,12 @@ def _read_shell(s, facts=None):
                         cmd["docs"], e = True, d[3]
                     else:
                         e = _REDIRECT.match(s, i, z).end()
-                        redir = s[i:e]
+                        redir, cmd["redirs"] = s[i:e], True
                     i = e
                     continue
                 if c in " \t;&|":
                     e = _ENDS.match(s, i, z).end()
-                    ops = s[i:e].translate(_BLANKS)
+                    ops = ("" if c in " \t" else c) if e == i + 1 else s[i:e].translate(_BLANKS)   # (one: most often)
                     if ops:
                         end_command(ops in ("|", "|&"))
                     i = e
@@ -1050,7 +1066,7 @@ def _read_shell(s, facts=None):
                     i = unread(i, _past(s, i + 2, ")", "(", 2, end=z))
                     continue
                 if c == ")" and frames and not frames[-1][0]:   # the end of a $( <( >(: its line is read
-                    finish(pipe, True, depth)
+                    finish(pipe, lambda: True)
                     _, word, dq, ws, cmd, pipe, redir = frames.pop()
                 else:   # a subshell's ( or ), or a case pattern's ): the command before it ends where it is
                     end_command(False)
@@ -1070,10 +1086,9 @@ def _read_shell(s, facts=None):
                 _mark(inq, i, i + 1 + (c == "\\"))
                 _mark(ctx, i, i + 1 + (c == "\\"), DQ)
             if c == "\\":
-                cmd["quoted"] = True
                 i += 2
             elif c == "'":
-                cmd["quoted"], quote[i] = True, 1
+                quote[i] = 1
                 e = s.find("'", i + 1, z)
                 e = z if e < 0 else e
                 if e < z:
@@ -1082,7 +1097,7 @@ def _read_shell(s, facts=None):
                 _mark(ctx, i + 1, e + 1, SQ)
                 i = e + 1
             elif c == '"':
-                cmd["quoted"], quote[i] = True, 1
+                quote[i] = 1
                 dq = not dq
                 i += 1
             elif c == "`":
@@ -1095,7 +1110,7 @@ def _read_shell(s, facts=None):
                 cut[i] = 1
                 i = frame(i)
             elif s.startswith("$'", i) and not dq:
-                cmd["quoted"], quote[i] = True, 1
+                quote[i] = 1
                 e = _past(s, i + 2, "'", end=z)
                 closed = s.startswith("'", e - 1) and e - 1 > i + 1
                 if closed:
@@ -1108,9 +1123,9 @@ def _read_shell(s, facts=None):
         if word:
             end_word(min(i, z))
         while frames:
-            finish(pipe, True, depth)
+            finish(pipe, lambda: True)
             pipe = frames.pop()[5]
-        finish(pipe, nested(), depth)
+        finish(pipe, nested)
 
     read(0, len(s), 0)
     for how, at, inner, _ in sorted((p for p in facts.placed if p[1]), key=lambda p: (p[1][0], -p[1][1])) if facts \
@@ -1153,15 +1168,24 @@ def _marks(cmd, r, dotenv, own, expands):
         `=`, before it (`A= cmd` runs cmd); one a blank stands before (`KEY: x`, in quotes or a body too: a word of its
         own to a shell that reads it) is hidden and `crossed`."""
         gap = cmd[b:v]
-        if any(c in " \t\n" for c in gap):
+        if " " in gap or "\t" in gap or "\n" in gap:
             if ("\n" in gap or gap[:1] == "=") and any(c in " \t\n" and cut[k] for k, c in enumerate(gap, b)):
                 return None
             crossed.add(v)
         return bounded(v, e)
 
+    known = [0, cut.find(1)]   # next_cut's: a place, and the first cut at or after it
+
+    def next_cut(x):
+        """The first cut at or after `x`, remembered: values come in order, and text with no cut (a heredoc's body) is
+        read once, not again for each value in it."""
+        if not known[0] <= x <= known[1]:
+            known[:] = x, cut.find(1, x)
+        return known[1]
+
     def stop(b):   # where ASSIGNMENT's value after a name ending at `b` ends at the latest: its word's end
         m = _SEP.match(cmd, b)
-        return cut.find(1, m.end()) if m else b
+        return next_cut(m.end()) if m else b
 
     text = _text_end(cmd)
 
@@ -1178,7 +1202,7 @@ def _marks(cmd, r, dotenv, own, expands):
             return value(b, v, len(cmd))
         if inq[v] and (q := quote.find(1, v)) >= 0:
             return value(b, v, q)
-        return value(b, v, text(b, m, len(cmd) if (k := cut.find(1, v)) < 0 else k) if r.body[v] else m.end(3))
+        return value(b, v, text(b, m, len(cmd) if (k := next_cut(v)) < 0 else k) if r.body[v] else m.end(3))
 
     # each run between blanks apart, the blanks kept (so the copy shows a value, not code: _SEEN)
     found = [(w.start(), w.end(), "assignment") for v, e in _assignments(cmd, whole, stop)

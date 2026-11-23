@@ -19,7 +19,7 @@ import pytest
 from tracekit import privacy
 from tracekit.policy2 import shell
 
-PAYLOADS = ["zzpayload", "sk-ant-api03zzpayloadQQQQQQQQ", "ghp_" + "z" * 36, "AKIAZZPAYLOADZZZZZZZ"]
+PAYLOADS = ["zzpayload", "sk-ant-api03zzpayloadQQQQQQQQ", "ghp_" + "z" * 36, "AKIAZZPAYLOADZZZZZZZ"]   # redaction fixture: agent-flow:allow-secret
 # harmless programs the lines may run; each payload is a program of its own on PATH that leaves a mark when it runs
 SAFE = ["echo", "true", "printf", "cat", "env", "sh", "bash", "perl", "ruby", "nohup", "xargs", "sleep", "tee", "head",
         "grep", "sed", "awk", "find", "dirname", "basename", "date", "chmod", "test", "[", "zsh", "ksh", "python3", "make",
@@ -162,16 +162,16 @@ SHAPES = [
     "printf '%s\\n' 'SECRET_KEY=${Zq8uperSecret}' > config",
     "export SECRET_KEY='${Zq8uperSecret}'",
     "cat > .env <<EOF\nDB_PASS=Zq8abc\nEOF",
-    "psql postgres://u:Zq8pass@h/db",
-    "psql 'postgres://u:Zq8p;ss@h/db'",
-    "psql postgres://u:Zq8p\\;ss@h/db",
+    "psql postgres://u:Zq8pass@h/db",   # redaction fixture: agent-flow:allow-secret
+    "psql 'postgres://u:Zq8p;ss@h/db'",   # redaction fixture: agent-flow:allow-secret
+    "psql postgres://u:Zq8p\\;ss@h/db",   # redaction fixture: agent-flow:allow-secret
     "export DB_PASS=\"Zq8 with spaces\"  # .env",
     "DB_PASS=Zq8ab#cd ./run # .env",
     "export SSH_KEY=\"Zq8line1\nZq8line2\"  # .env",
     "docker run -e POSTGRES_PASSWORD=Zq8abcd img",
     "curl -H 'Authorization: Bearer Zq8abcdefghijklmnop' https://api.example",
     "curl -H Authorization:Bearer\\ Zq8abcdefghijklmnop https://api.example",
-    "git clone https://user:Zq8pass@github.example/x.git",
+    "git clone https://user:Zq8pass@github.example/x.git",   # redaction fixture: agent-flow:allow-secret
     "export AWS_SECRET_ACCESS_KEY=Zq8" + "A" * 37,
     "bash -c 'export TOKEN=Zq8abcd; ./run'",
     "bash <<'EOF'\nexport DB_PASSWORD=Zq8abcd\nEOF",
@@ -180,7 +180,7 @@ SHAPES = [
     "TOKEN=Zq8ab`x`cd ./run",
     "TOKEN=Zq8ab$(x)cd ./run",
     "TOKEN=\"Zq8ab\"cd ./run",
-    "echo -----BEGIN RSA PRIVATE KEY-----Zq8body-----END RSA PRIVATE KEY----- > k",
+    "echo -----BEGIN RSA PRIVATE KEY-----Zq8body-----END RSA PRIVATE KEY----- > k",   # redaction fixture: agent-flow:allow-secret
     "cat > .env <<-EOF\n\tDB_PASS=Zq8abc\n\tEOF",
     "cat > .env << EOF\nDB_PASS=Zq8abc\nEOF",
     "cat >.env <<\"EOF\"\nexport DB_PASS=Zq8abc\nEOF",
@@ -247,14 +247,26 @@ def held(args, tool="Bash"):
 class Lines(unittest.TestCase):
     """The lines whose held copy hid code: each copy shows what runs, or the call is denied."""
 
+    def test_a_stage_of_redirections_alone_is_a_stage(self):
+        """A pipeline stage that only redirects (`| > /dev/null |`, `| < <(sh) |`) was read as no stage, so a heredoc's
+        body before it read as data cat passes on to cat: `cat <<'E' | > /dev/null | cat` with a secret-looking value
+        in the body was asked, its copy hiding a value no data reader gets, and in `cat <<'E' | < <(sh) | cat` the body
+        read as data though sh runs it. Such a stage is kept: no program reads data there, so the body is no data."""
+        for line in ("cat <<'E' | > /dev/null | cat\nTOKEN=abcdefgh\nE", "cat <<'E' | < <(sh) | cat\nTOKEN=abcdefgh\nE"):
+            with self.subTest(line=line):
+                r = privacy._read_shell(line)
+                body = line.index("\n") + 1
+                self.assertFalse(any(r.data[body:line.index("\nE", body)]))
+                self.assertTrue(held({"command": line})[1])
+
     def test_a_program_place_the_policys_parser_finds_is_never_hidden(self):
-        for command in ("{ A=TOKEN: /tmp/xyzzy; }", "while AKIAZZPAYLOADZZZZZZZ; do :; done",
+        for command in ("{ A=TOKEN: /tmp/xyzzy; }", "while AKIAZZPAYLOADZZZZZZZ; do :; done",   # redaction fixture: agent-flow:allow-secret
                         "if true; then ghp_" + "z" * 36 + "; fi", "! /tmp/sk-proj-" + "a" * 24,
-                        "time AKIAZZPAYLOADZZZZZZZ", "bash ghp_" + "z" * 36, ". AKIAZZPAYLOADZZZZZZZ",
+                        "time AKIAZZPAYLOADZZZZZZZ", "bash ghp_" + "z" * 36, ". AKIAZZPAYLOADZZZZZZZ",   # redaction fixture: agent-flow:allow-secret
                         "F=/tmp/sk-proj-" + "a" * 24 + "; . \"$F\"", "X=ghp_" + "z" * 36 + "; $X",
-                        "bash <<< 'sh -c 'command ghp_" + "z" * 36 + "''", "coproc AKIAZZPAYLOADZZZZZZZ",
-                        "select x in 1; do AKIAZZPAYLOADZZZZZZZ; done", "python3 ghp_" + "z" * 36 + " --x",
-                        "/tmp/AKIAZZPAYLOADZZZZZZZ.sh x"):
+                        "bash <<< 'sh -c 'command ghp_" + "z" * 36 + "''", "coproc AKIAZZPAYLOADZZZZZZZ",   # redaction fixture: agent-flow:allow-secret
+                        "select x in 1; do AKIAZZPAYLOADZZZZZZZ; done", "python3 ghp_" + "z" * 36 + " --x",   # redaction fixture: agent-flow:allow-secret
+                        "/tmp/AKIAZZPAYLOADZZZZZZZ.sh x"):   # redaction fixture: agent-flow:allow-secret
             with self.subTest(command=command):
                 self.assertTrue(held({"command": command})[1])
 
@@ -325,7 +337,7 @@ class Lines(unittest.TestCase):
                         "aws s3 cp ./a s3://team-bucket/; echo reboot; git -c alias.api_key=!reboot api_key",
                         "gh pr merge 912 --squash; echo ./payload; echo x \\\n#don't\nA=TOKEN: ./payload\necho 'y'\n",
                         "gh pr merge 912 --squash\necho ./payload\ncat <<EOF\nx\\\nEOF\ndon't\nEOF\nA=TOKEN: ./payload\n"
-                        "echo 'x'\n", "echo AKIAZZPAYLOADZZZZZZZ; echo x \\\n#don't\nAKIAZZPAYLOADZZZZZZZ\necho 'y'"):
+                        "echo 'x'\n", "echo AKIAZZPAYLOADZZZZZZZ; echo x \\\n#don't\nAKIAZZPAYLOADZZZZZZZ\necho 'y'"):   # redaction fixture: agent-flow:allow-secret
             with self.subTest(command=command):
                 self.assertTrue(held({"command": command})[1])
 
@@ -352,7 +364,7 @@ class Lines(unittest.TestCase):
         for command in ("sqlite3 :memory: '.system A=TOKEN: ./payload'", "sqlite3 :memory: '.system TOKEN=abcd'",
                         "osascript -e 'do shell script \"A=TOKEN: ./payload\"'",
                         "expect -c 'exec sh -c {A=TOKEN: ./payload}'", "vim -es -c '!A=TOKEN: ./payload' -c 'q!'",
-                        "tar -xf a.tar --to-command='TOKEN=abcd'", "LD_PRELOAD='./sk-ant-api03zzpayloadQQQQQQQQ.so' ls",
+                        "tar -xf a.tar --to-command='TOKEN=abcd'", "LD_PRELOAD='./sk-ant-api03zzpayloadQQQQQQQQ.so' ls",   # redaction fixture: agent-flow:allow-secret
                         "make SHELL='/bin/sh -c A=TOKEN:./payload' all", "docker run --entrypoint sh img -c 'TOKEN=abcd'",
                         "kubectl exec pod -- sh -c 'TOKEN=abcd'", "echo \"$(osascript -e 'x TOKEN=abcd')\"",
                         "sqlite3 db 'X-Token: abcd1234'", "sqlite3 db password: hunter22",
@@ -371,7 +383,7 @@ class Lines(unittest.TestCase):
         data reader's word that starts a word of its own (`X-Token: x`), a value given a data name in the environment
         (_DATA_ENV), and the option values and connection URIs of _DATA_OPTIONS. Each one's twin, the same program with
         a word it may run, or a name the program may run, denies."""
-        url, key = "postgres://app:hunter2@db/app", "/tmp/sk-proj-" + "a" * 24
+        url, key = "postgres://app:hunter2@db/app", "/tmp/sk-proj-" + "a" * 24   # redaction fixture: agent-flow:allow-secret
         for command, twin in (
                 # a data reader's word that starts a word of its own, and the same in a word a program may run
                 ("curl -H 'X-Token: abcd1234' https://x", "sqlite3 db 'X-Token: abcd1234'"),
@@ -382,7 +394,7 @@ class Lines(unittest.TestCase):
                 (f'DATABASE_URL="{url}" npm run migrate', f"NODE_OPTIONS='--require {key}' npm run migrate"),
                 ("PGPASSWORD='S3cr3tpass' npm test", f"PYTHONSTARTUP='{key}' python3"),
                 ("GH_TOKEN='ghp_" + "a" * 36 + "' gh pr merge 1", f"EDITOR='{key}' git commit"),
-                ("AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' make deploy", f"BASH_ENV='{key}' make"),
+                ("AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY' make deploy", f"BASH_ENV='{key}' make"),   # redaction fixture: agent-flow:allow-secret
                 ("STRIPE_API_KEY='sk_live_" + "a" * 24 + "' npm start", f"MY_HOOK='{key}' npm start"),
                 # an option's value, and the same program's word it may run
                 ("terraform apply -var 'db_password=hunter2pass' -auto-approve", "terraform apply -target='token=abcd1234'"),
@@ -398,9 +410,9 @@ class Lines(unittest.TestCase):
                 (f"psql '{url}' -c 'select 1'", "psql -c 'select 1 -- token=abcd1234'"),
                 (f"psql -U app -h db -d '{url}'", f"psql -h db -f '{key}'"),
                 ("mysql -h db -u root --password='Zq8abcd' app", "mysql -e 'select 1 /* token=abcd1234 */'"),
-                ("mysql 'mysql://u:hunter2@db/app'", "mysql app -e 'system token=abcd1234'"),
-                ('mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app"', "mongosh --eval 'token=\"abcd1234\"'"),
-                ("redis-cli -u 'redis://default:hunter2@cache:6379' ping", "redis-cli EVAL 'token=abcd1234' 0"),
+                ("mysql 'mysql://u:hunter2@db/app'", "mysql app -e 'system token=abcd1234'"),   # redaction fixture: agent-flow:allow-secret
+                ('mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app"', "mongosh --eval 'token=\"abcd1234\"'"),   # redaction fixture: agent-flow:allow-secret
+                ("redis-cli -u 'redis://default:hunter2@cache:6379' ping", "redis-cli EVAL 'token=abcd1234' 0"),   # redaction fixture: agent-flow:allow-secret
                 # where the words before place the option: past an option it doesn't name, under its subcommand
                 ("helm upgrade --install app ./c --set 'token=abcd1234'",
                  "helm upgrade app ./c --post-renderer-args --set 'token=abcd1234'"),
@@ -422,18 +434,18 @@ class Lines(unittest.TestCase):
                 "redis-cli EVAL 'return loadstring(ARGV[1])()' 0 -a 'token=abcd1234'",   # past redis-cli's command
                 # (and past a word that may be it: a script may start with `-`, a Lua comment)
                 "redis-cli --no-auth-warning EVAL '-- x\nreturn loadstring(ARGV[1])()' 0 -a 'token=abcd1234'",
-                "redis-cli 'redis://u:hunter2@h' 'token=abcd1234'",   # its first positional: its command
+                "redis-cli 'redis://u:hunter2@h' 'token=abcd1234'",   # its first positional: its command   # redaction fixture: agent-flow:allow-secret
                 "mongosh -p '--eval=token=\"abcd1234\"'",   # an option to mongosh's parser, not -p's value
                 "mysql -p '-esystem token=abcd1234'",   # mysql's -p takes a value only joined
                 "mongosh --eval '-undefined;token=\"abcd1234\"'",   # the value of an option it doesn't name
                 "psql -X -c '-hx; token=abcd1234'",   # and so after one (-X may take -c)
-                "mongosh -uf 'mongodb://u:hunter2@h/x.js'",   # yargs's -uf: -u, and -f taking the next word
+                "mongosh -uf 'mongodb://u:hunter2@h/x.js'",   # yargs's -uf: -u, and -f taking the next word   # redaction fixture: agent-flow:allow-secret
                 "psql $O '-hx; token=abcd1234'",   # O may be -c, and in the reading where it is empty, data
                 "psql * '-hx; token=abcd1234'",   # a file named -c may be first
-                "mongosh 'mongodb://h/db' 'mongodb://u:hunter2@h/x.js'",   # mongosh runs every positional but its
-                "mongosh --quiet x.js 'mongodb://u:hunter2@h/y.js'",   # first as a file,
-                "mongosh 'mongodb://u:hunter2@h/x.js' --nodb",   # and that one too under --nodb,
-                "mongosh 'https://u:hunter2@h/x.js'",   # and one not its scheme's ending .js
+                "mongosh 'mongodb://h/db' 'mongodb://u:hunter2@h/x.js'",   # mongosh runs every positional but its   # redaction fixture: agent-flow:allow-secret
+                "mongosh --quiet x.js 'mongodb://u:hunter2@h/y.js'",   # first as a file,   # redaction fixture: agent-flow:allow-secret
+                "mongosh 'mongodb://u:hunter2@h/x.js' --nodb",   # and that one too under --nodb,   # redaction fixture: agent-flow:allow-secret
+                "mongosh 'https://u:hunter2@h/x.js'",   # and one not its scheme's ending .js   # redaction fixture: agent-flow:allow-secret
                 "helm install app 'oci://registry/charts/x?token=abcd1234'"):   # no database client's URI
             with self.subTest(twin=twin):
                 self.assertTrue(held({"command": twin})[1])
@@ -551,13 +563,13 @@ class Lines(unittest.TestCase):
         """A value hidden in an interpreter's program may be its code: perl's qx//, ruby's %x(), a heredoc python3
         reads, an argv's program, an interpreter the parser doesn't read (deno)."""
         for args in ({"command": "perl -e '$token=qx/zzpayload/'"}, {"command": "ruby -e 'TOKEN=%x(zzpayload)'"},
-                     {"command": "python3 - <<'EOF'\nk='sk-ant-api03zzpayloadQQQQQQQQ'\nEOF"},
-                     {"command": "python3 -c 'k=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},
-                     {"cmd": ["python3", "-c", "k='sk-ant-api03zzpayloadQQQQQQQQ'"]},
-                     {"command": "deno eval 'const TOKEN=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},
-                     {"command": "awk 'BEGIN{token=\"sk-ant-api03zzpayloadQQQQQQQQ\"}'"},
-                     {"command": "python3 -c k=sk-ant-api03zzpayloadQQQQQQQQ"},   # (unquoted: interp all the same)
-                     {"command": "deno eval k=sk-ant-api03zzpayloadQQQQQQQQ"},
+                     {"command": "python3 - <<'EOF'\nk='sk-ant-api03zzpayloadQQQQQQQQ'\nEOF"},   # redaction fixture: agent-flow:allow-secret
+                     {"command": "python3 -c 'k=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},   # redaction fixture: agent-flow:allow-secret
+                     {"cmd": ["python3", "-c", "k='sk-ant-api03zzpayloadQQQQQQQQ'"]},   # redaction fixture: agent-flow:allow-secret
+                     {"command": "deno eval 'const TOKEN=\"sk-ant-api03zzpayloadQQQQQQQQ\"'"},   # redaction fixture: agent-flow:allow-secret
+                     {"command": "awk 'BEGIN{token=\"sk-ant-api03zzpayloadQQQQQQQQ\"}'"},   # redaction fixture: agent-flow:allow-secret
+                     {"command": "python3 -c k=sk-ant-api03zzpayloadQQQQQQQQ"},   # (unquoted: interp all the same)   # redaction fixture: agent-flow:allow-secret
+                     {"command": "deno eval k=sk-ant-api03zzpayloadQQQQQQQQ"},   # redaction fixture: agent-flow:allow-secret
                      {"command": "X='token=\"abcd1234\"'; python3 -c \"$X\""}):   # (a variable's value: the program)
             with self.subTest(args=args):
                 self.assertTrue(held(args)[1])
@@ -658,7 +670,7 @@ class Lines(unittest.TestCase):
     def test_the_noise_a_held_honest_command_meets(self):
         """Honest commands with secrets in them, held: only those whose hidden value holds what a program may read as
         code (a blank in a file a shell may source, a ; or $ for a program that may run it, a sed program) are denied."""
-        j = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        j = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"   # redaction fixture: agent-flow:allow-secret
         denied = {
             "cat > .env <<'EOF'\nAPP_NAME=My App\nSECRET_KEY=abc def\nEOF",
             'mysql -h db -u root --password="p@ss;word" -e "select 1"',
@@ -673,15 +685,15 @@ class Lines(unittest.TestCase):
                 f'curl -H "Authorization: Bearer {j}" https://api.example.com/v1/me',
                 "docker login -u ci -p hunter2pass registry.example.com",
                 "docker login --username ci --password=hunter2pass registry.example.com",
-                "psql postgres://app:hunter2@db.internal:5432/app -c 'select 1'",
-                'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',
-                "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",
-                'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',
-                'DATABASE_URL="postgres://app:hunter2@db/app?sslmode=require" npm run migrate',
+                "psql postgres://app:hunter2@db.internal:5432/app -c 'select 1'",   # redaction fixture: agent-flow:allow-secret
+                'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',   # redaction fixture: agent-flow:allow-secret
+                "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",   # redaction fixture: agent-flow:allow-secret
+                'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',   # redaction fixture: agent-flow:allow-secret
+                'DATABASE_URL="postgres://app:hunter2@db/app?sslmode=require" npm run migrate',   # redaction fixture: agent-flow:allow-secret
                 'curl "https://api.example.com/v1/items?api_key=abcd1234&limit=10"',
                 "curl 'https://api.example.com/v1/items?access_token=abcd1234&page=2'",
-                "git clone https://oauth2:glpat-abcdefghijklmnop@gitlab.com/team/app.git",
-                "cat > .env <<EOF\nDATABASE_URL=postgres://app:hunter2@db/app?sslmode=require\nEOF",
+                "git clone https://oauth2:glpat-abcdefghijklmnop@gitlab.com/team/app.git",   # redaction fixture: agent-flow:allow-secret
+                "cat > .env <<EOF\nDATABASE_URL=postgres://app:hunter2@db/app?sslmode=require\nEOF",   # redaction fixture: agent-flow:allow-secret
                 "cat > .env <<'EOF'\nOPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz\nDEBUG=true\nEOF",
                 "cat > .env <<'EOF'\nNEXT_PUBLIC_URL=http://localhost:3000\nAUTH_SECRET=Zq8+/abc==\nEOF",
                 "echo 'OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz' >> .env",
@@ -689,17 +701,17 @@ class Lines(unittest.TestCase):
                 "kubectl create secret generic db --from-literal=password='S3cr3t!pass'",
                 "kubectl create secret generic db --from-literal=password='S3cr3t pass' && kubectl rollout restart "
                 "deploy/web",
-                "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",
-                'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',
-                'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',
+                "psql 'postgresql://app:hunter2@db.internal/app?sslmode=require&connect_timeout=10' -c 'select 1'",   # redaction fixture: agent-flow:allow-secret
+                'psql "postgres://app:hunter2@db.internal:5432/app?sslmode=require" -c "select 1"',   # redaction fixture: agent-flow:allow-secret
+                'mongosh "mongodb+srv://app:hunter2@cluster0.example.net/app?retryWrites=true&w=majority"',   # redaction fixture: agent-flow:allow-secret
                 'helm upgrade app ./chart --set "secrets.apiToken=abc,def"',
-                "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout "
+                "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout "   # redaction fixture: agent-flow:allow-secret
                 "restart deploy/web",
                 "terraform apply -var 'db_password=hunter2pass' -auto-approve",
-                "GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 gh pr merge 1 --squash",
-                "npm config set //registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789",
-                "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY aws s3 cp ./a s3://b/",
-                "redis-cli -u redis://default:hunter2@cache:6379 ping",
+                "GH_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123456789 gh pr merge 1 --squash",   # redaction fixture: agent-flow:allow-secret
+                "npm config set //registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789",   # redaction fixture: agent-flow:allow-secret
+                "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY aws s3 cp ./a s3://b/",   # redaction fixture: agent-flow:allow-secret
+                "redis-cli -u redis://default:hunter2@cache:6379 ping",   # redaction fixture: agent-flow:allow-secret
                 'curl -u "admin:hunter2" https://jenkins.example.com/api/json',
                 'vercel env add API_TOKEN production <<< "abcd1234efgh"',
                 'echo "token: abcd1234efgh" > ~/.config/tool.yml',
@@ -708,7 +720,7 @@ class Lines(unittest.TestCase):
                 "TF_VAR_db_password=hunter2pass terraform apply",
                 "aws s3 cp ./build s3://team-site/ --recursive && curl -X POST "
                 "'https://api.example.com/hooks?token=abcd1234&env=prod'",
-                "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout restart "
+                "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout restart "   # redaction fixture: agent-flow:allow-secret
                 "deploy/web"]:
             with self.subTest(command=command):
                 copy, hides = privacy.approver_copy({"command": command}, privacy.mentions_dotenv(command), "Bash")
