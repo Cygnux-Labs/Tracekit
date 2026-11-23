@@ -705,11 +705,13 @@ class Translator(observe.Translator):
                          constraint=d.get("kind"))
         if t == "run.label":   # a run label (docs/policy-v2.md#run-conditions): what the run's conditions read
             if d.get("action") == "clear" and d.get("self_cleared"):   # a dev signer's own user: maybe the agent
-                return alert("med", f"RUN LABEL SELF-CLEARED · {d.get('label')}",
+                return alert("med", f"RUN LABEL SELF-CLEARED · {d.get('label')}"
+                             + (f" · of run {d['run_id']}" if d.get("run_id") else ""),
                              f"by {d.get('identity')}, the run's own user on a dev signer, whom the agent runs as"
                              + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
             if d.get("action") == "clear":
-                return alert("info", f"RUN LABEL CLEARED · {d.get('label')}",
+                return alert("info", f"RUN LABEL CLEARED · {d.get('label')}"
+                             + (f" · of run {d['run_id']}" if d.get("run_id") else ""),
                              f"by {d.get('person') or d.get('identity')}"
                              + (f" · {json.dumps(d['reason'])}" if d.get("reason") else ""), "HOLD")
             how = f"inherited from run {(d.get('inherited') or {}).get('run_id')}, of the same requester" \

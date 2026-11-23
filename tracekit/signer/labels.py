@@ -153,6 +153,15 @@ def carry(set_, log, run, e, pop):
     typ, d = e["type"], e["data"]
     if typ == "run.writer":
         join(set_, log, run, d["identity"])
+    if typ == "run.label" and d["action"] == "clear" and "run_id" in d:   # an ended run's, in the tenant's signer run
+        gone = derived(log, e["tenant"], d["run_id"], d["label"])
+        for who in sorted(log.carry):
+            held = log.carry[who]
+            if gone & (held.get(d["label"]) or {}).keys():
+                new = {x: {r: v for r, v in runs.items() if x != d["label"] or r not in gone} for x, runs in held.items()}
+                new = {x: runs for x, runs in new.items() if runs}
+                set_(log.carry, who, new) if new else pop(log.carry, who)
+        return
     if typ not in ("run.label", "run.closing") or not run.get("owner"):
         return
     me, now = f"{e['tenant']}\0{e['run_id']}", epoch(e["ts"])
@@ -180,6 +189,34 @@ def carry(set_, log, run, e, pop):
                        for x, runs in new.items()}
         if new != held:
             set_(log.carry, who, new) if new else pop(log.carry, who)
+
+
+def derived(log, tenant, rid, label):
+    """The carry's keys (tenant NUL run id) of run `rid` and of every run that took `label` from it, along their
+    inherited adds (label_src), among the runs the carry holds `label` of: what a clear of `rid`'s label ends."""
+    keys = {k for held in log.carry.values() for k in (held.get(label) or {})}
+    out, ids, more = {f"{tenant}\0{rid}"}, {rid}, True
+    while more:
+        more = False
+        for k in sorted(keys - out):
+            src = ((log.runs.get(tuple(k.split("\0", 1))) or {}).get("label_src") or {}).get(label)
+            if src and src.get("run_id") in ids:
+                out.add(k)
+                ids.add(k.split("\0", 1)[1])
+                more = True
+    return out
+
+
+def origin(log, run, label):
+    """The run `run` took `label` from first, along inherited adds (label_src) through runs the carry holds: the run
+    whose clear ends it."""
+    keys = {k.split("\0", 1)[1]: k for held in log.carry.values() for k in (held.get(label) or {})}
+    rid, seen = run["run_id"], set()
+    while (src := ((run or {}).get("label_src") or {}).get(label)) and src.get("run_id") not in seen:
+        rid = src["run_id"]
+        seen.add(rid)
+        run = log.runs.get(tuple(keys[rid].split("\0", 1))) if rid in keys else None
+    return rid
 
 
 def join(set_, log, run, who):
@@ -285,7 +322,9 @@ def noted(log, run, shadow, rules, rule_ids, tool, args, said, clears, now=None)
     """What a person reads of a call the rules `shadow` (in shadow; `rules`: their compiled rules by id) recorded: where
     it sends and after what (this session's read, from `said`: {(run_id, label): labels.what}, or an earlier session's
     it inherits, how long that carries and, where a person's clear ends it (`clears`), how), or that it starts a send
-    in the background; then NOTE_TAIL. A rule of another kind gives its reason. "" when there is nothing to say."""
+    in the background; then NOTE_TAIL. A rule of another kind gives its reason. "" when there is nothing to say.
+    `clears`: "self" on a dev signer (its user clears the run a label came from), "person" where a person clears it,
+    else None."""
     now = time.time() if now is None else now
     mine = {log.labels.all_labels[i] for i in rule_ids if i in log.labels.all_labels} if log.labels else set()
     a = args if isinstance(args, dict) else {}
@@ -301,7 +340,10 @@ def noted(log, run, shadow, rules, rule_ids, tool, args, said, clears, now=None)
                 found, left = _left(log, run, src["run_id"], label, now) if log.labels else (False, 0)
                 carry = "" if not found else "; this carries while that session is open" if left is None else \
                     f"; this carries for {max(1, math.ceil(left / 60))} more minutes"
-                if clears and carry:
+                if clears == "self" and carry:   # a dev signer: its user clears the run it came from
+                    carry += (f", or clear it: tracekit signer incidents clear-label {origin(log, run, label)} "
+                              f"--label {label}")
+                elif clears and carry:
                     carry += (f", or until a person clears it: tracekit signer incidents clear-label {run['run_id']} "
                               f"--label {label}")
                 parts.append(f"this sends data {_dest(tool, a)} after an earlier session (run {src['run_id']}) "

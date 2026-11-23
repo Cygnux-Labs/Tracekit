@@ -234,7 +234,9 @@ add (its tenant isn't named). A bundle holds one run, so an inherited label is s
 bundle shows its add).
 `run.label{label, action: clear, by: person, identity, person, reason?, break_glass?, self_cleared?}`: a person ended
 the label (`run_label_clear`), for the run and its client's ended runs in its tenant (an open run that carries it
-keeps it, and passes it on, until it is cleared there), never the run's owner, principal or
+keeps it, and passes it on, until it is cleared there; a clear of a run that has ended is in its tenant's signer run
+and names it, `run_id`, and ends the label for every run that took it from that one, each open one with a clear of its
+own), never the run's owner, principal or
 requester, but on a signer with no `approvals` config (a dev signer, whose one user answers their own run's
 approvals), where any identity of the run's tenant may, its owner too, `self_cleared: true` (for that run only: the
 run's own user may be the agent, so the assurance is `dev`, `labels: self-cleared`, as for a self-approval); a later

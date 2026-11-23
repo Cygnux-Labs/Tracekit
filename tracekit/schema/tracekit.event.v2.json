@@ -5000,6 +5000,12 @@
             "self_cleared": {
               "const": true,
               "description": "a dev signer's (no approvals config): the run's own owner, or any identity of its tenant, cleared it"
+            },
+            "run_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200,
+              "description": "a clear of a run that has ended, in its tenant's signer run: that run, whose label it ends for every run that took the label from it"
             }
           }
         }

@@ -18,7 +18,7 @@ from urllib.parse import unquote, urlsplit
 
 from . import classes, shell
 from .compile import (BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals, policy_hash,
-                      requirements, translate)
+                      prefixes, requirements, translate)
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -167,14 +167,18 @@ class Engine:
         # alternation as it can in one part (TK-S002 took 36 us over a curl line, its parts 9 and 2 us), and a search
         # of a|b matches where one of a or b does: {id(compiled pattern): [(compiled part, its strings), ...]}
         self._parts = {}
+        # the strings each rule's matches start with (compile.prefixes): a subject that starts with none is not searched
+        self._pre = {r["id"]: prefixes(r["pattern"]) for _, r, *_ in self.rules}
         if not self.engine.startswith("re2@"):
             for _, r, _, pat, *_ in self.rules:
                 parts = _alternatives(r["pattern"]) or ()
                 if parts and all(map(literals, parts)):
-                    self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a)) for a in parts]
+                    self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a), prefixes(a) or "")
+                                            for a in parts]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
+        self.flag_ids = frozenset(r["id"] for sec, r, *_ in self.rules if sec == "flag")   # signer.service.evaluate's
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
         self._names = {} if self.engine.startswith("re2@") else None
@@ -352,7 +356,7 @@ class Engine:
             # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts; the run condition rules
             # (`when`) apart, read after the others
             of = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
-                        "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
+                        "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])), self._pre[x[1]["id"]])
                   for x in self.rules if _reaches(x[1], cls) and x[1].get("field") != LABELS_FIELD]
             self._of[cls] = [x for x in of if x[1]["id"] not in self.when]
             self._of[cls, "when"] = [x for x in of if x[1]["id"] in self.when]
@@ -390,7 +394,7 @@ class Engine:
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects it can read
             and one is over MAX_SUBJECT), else None; TimeoutError past the deadline. `held`: its subjects' joined text
             is known to hold one of its prefilter strings."""
-            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
+            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts, pre = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             if key not in memo:
@@ -425,12 +429,13 @@ class Engine:
                         folded.add(low)
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
+                    if (pre is None or low.startswith(pre)) and (
+                            lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
                             req is None or len(low) < REQUIREMENTS_FROM or
                             any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and (
                             self._match(pat, subject, False, deadline) if parts is None else any(
-                                self._match(rx, subject, False, deadline) for rx, strings in parts
-                                if any(map(low.__contains__, strings)))) and not (
+                                self._match(rx, subject, False, deadline) for rx, strings, starts in parts
+                                if low.startswith(starts) and any(map(low.__contains__, strings)))) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
@@ -452,7 +457,11 @@ class Engine:
             # is over MAX_SUBJECT) gives nothing: hit() would match nothing (_quoted, they hold no more of them); one
             # whose subjects hold one, hit() doesn't look for again
             held = False
-            if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
+            # (on the fallback, where a rule's strings are a scan each: on RE2 one Set lookup tells that first)
+            if (m := memo.get(entry[8])) and not m[3] and entry[11] is not None and self._set is None and \
+                    not any(map(str.startswith, m[1], itertools.repeat(entry[11]))):   # no subject starts so
+                continue
+            if entry[2] is None and m and not m[3] and (
                     not m[0] or entry[5] is not None and not (held := holds(entry[5], entry[9], m[2]))):
                 continue
             try:

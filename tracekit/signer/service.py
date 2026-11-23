@@ -578,7 +578,7 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
             b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
             d = _stricter(d, b) if b["verdict"] in ("ask", "deny") else _carry(policy, d, b)
-        flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
+        flags = policy.flag_ids
         data = args.get("data")
         if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
                 isinstance(data, str):
@@ -2936,7 +2936,10 @@ class SignerService:
         """A person ends one of a run's labels (docs/policy-v2.md#run-conditions), recorded as theirs: who may is who may
         resume a run (_resolver), never its owner, principal or requester; on a signer with no approvals config (a dev
         signer, where a person answers their own run's approvals: self_approved), any identity of the run's tenant,
-        its owner too, recorded self_cleared. A later record that sets it sets it again."""
+        its owner too, recorded self_cleared, of a label the run set itself: an inherited one is cleared where it came
+        from (labels.origin). A run that has ended has its clear in the tenant's signer run (`run_id`), and it ends the
+        label for every run that took it from that one (labels.derived): a clear of each open one, and the carry. A later
+        record that sets it sets it again."""
         reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
         mine = self.approvals is None and "register_run" in self._granted(identity)
         if mine:
@@ -2945,18 +2948,43 @@ class SignerService:
             tenant = self._operator(identity)
             who, glass = self._resolver(identity, tenant, [req["run_id"]], reason)
         self.quotas.take_event(identity)
+        label, rid = req["label"], req["run_id"]
+
+        def clear(**more):
+            return {"label": label, "action": "clear", "by": "person", "identity": subject(identity)[:256],
+                    "person": who[:256], **({"reason": reason} if reason else {}),
+                    **({"break_glass": True} if glass else {}), **({"self_cleared": True} if mine else {}), **more}
+
+        def check(run):
+            if label not in (run.get("labels") or {}):
+                raise RPCError("invalid_request", f"run {rid[:128]} doesn't carry {label}")
+            if mine and (run.get("label_src") or {}).get(label):   # a copy: the run it came from ends it
+                first = labels.origin(self.log, run, label)
+                raise RPCError("invalid_request", f"run {rid[:128]} took {label} from run {first[:128]}: clear it "
+                                                  f"there (tracekit signer incidents clear-label {first[:128]} --label "
+                                                  f"{label}), which ends it for every session that took it from there")
 
         def fn(tx, run):
-            if req["label"] not in (run.get("labels") or {}):
-                raise RPCError("invalid_request", f"run {run['run_id'][:128]} doesn't carry {req['label']}")
-            seq = tx.emit(run, "run.label", {"label": req["label"], "action": "clear", "by": "person",
-                                             "identity": subject(identity)[:256], "person": who[:256],
-                                             **({"reason": reason} if reason else {}),
-                                             **({"break_glass": True} if glass else {}),
-                                             **({"self_cleared": True} if mine else {})},
-                          source="signer", request_id=req["request_id"])
-            return {"run_id": run["run_id"], "label": req["label"], "run_seq": seq}
-        return self.log.submit(identity, "run_label_clear", req, fn, (tenant, req["run_id"]))
+            check(run)
+            seq = tx.emit(run, "run.label", clear(), source="signer", request_id=req["request_id"])
+            return {"run_id": rid, "label": label, "run_seq": seq}
+
+        def ended(tx, _):
+            run = self.log.runs[(tenant, rid)]
+            check(run)
+            gone = labels.derived(self.log, tenant, rid, label) - {f"{tenant}\0{rid}"}
+            seq = tx.emit(self.log.signer_run(tx, tenant), "run.label", clear(run_id=rid), source="signer",
+                          request_id=req["request_id"])
+            for k in sorted(gone):   # each open run that took it from this one
+                other = self.log.runs.get(tuple(k.split("\0", 1))) or {}
+                if not other.get("closed") and label in (other.get("labels") or {}):
+                    tx.emit(other, "run.label", clear(reason=f"it came from run {rid[:128]}, whose label was cleared"),
+                            source="signer")
+            return {"run_id": rid, "label": label, "run_seq": seq}
+        run = self.log.runs.get((tenant, rid))
+        if run is not None and (run["closed"] or run["final"]):
+            return self.log.submit(identity, "run_label_clear", req, ended)
+        return self.log.submit(identity, "run_label_clear", req, fn, (tenant, rid))
 
     def _response_pause(self, identity, req):
         return self._response(identity, req, False)
@@ -3356,7 +3384,7 @@ class SignerService:
                     out["reason"] = why[:1024]
                 # in plain words: where it sends and after what (labels.noted), redacted as a reason is
                 note = labels.noted(self.log, run, shadow, rules, d["rule_ids"], tool, args, self._said,
-                                    self.approvals is not None)
+                                    "self" if self.approvals is None else "person")
                 if note:
                     out["noted"] = privacy.redact_text(note)[0][:1024]
             if self.log.labels and d["decision"] in ("allow", "flag"):   # what set a label, for a later note

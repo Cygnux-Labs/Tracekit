@@ -76,8 +76,9 @@ NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neithe
 
 
 def final_run(run):
-    """What a final run keeps: enough to refuse late writes, check a token's run and answer its owner."""
-    return {k: run[k] for k in FINAL_KEYS}
+    """What a final run keeps: enough to refuse late writes, check a token's run and answer its owner, and its labels'
+    (a clear of one: labels.origin, labels.derived, and its requesters: labels.requesters)."""
+    return {**{k: run[k] for k in FINAL_KEYS}, **{k: run[k] for k in ("caller", "labels", "label_src") if run.get(k)}}
 
 
 def _monotonic(t):
