@@ -537,12 +537,16 @@ class Routes(unittest.TestCase):
             "python3 -c \"import os; os.open('.env', flags=os.O_APPEND)\"",
             "python3 -c \"open(file='.env', mode='a').write('x')\"",
             "python3 -c \"open(mode='w', file='.env')\"",
-            "python3 -c \"io.open(file='.env', mode='w')\""), "deny", "TK-D023")
+            "python3 -c \"io.open(file='.env', mode='w')\"",
+            # a flags number Python can't read was a ValueError out of decide(); it is read as writing
+            "python3 -c \"import os; os.open('.env', 08)\"", "python3 -c \"import os; os.open('.env', 0b12)\""),
+            "deny", "TK-D023")
         readonly_py = self.bash(
             "python3 -c \"from pathlib import Path; Path('.env').open()\"",
             "python3 -c \"from pathlib import Path; Path('.env').open('r')\"",
             "python3 -c \"import os; os.open('.env', os.O_RDONLY)\"",
             "python3 -c \"import os; os.open('.env', 0)\"",
+            "python3 -c \"import os; os.open('.env', 0o2000000)\"",   # O_CLOEXEC alone: a read
             "python3 -c \"open(file='.env')\"",
             "python3 -c \"open(file='.env', mode='r')\"")
         self.expect(readonly_py, "flag")

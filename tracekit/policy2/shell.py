@@ -981,11 +981,16 @@ def _is_write_flags(expr):
     if _WRITE_FLAG_NAME.search(expr):
         return True
     if _INT_FLAG_EXPR.fullmatch(expr):
-        val = 0
-        for tok in re.split(r"\s*[|]\s*", expr.strip()):
-            val |= int(tok, 0)
-        return val & 0o22003103 != 0
+        try:
+            val = 0
+            for tok in re.split(r"\s*[|]\s*", expr.strip()):
+                val |= int(tok, 0)
+        except ValueError:   # a number Python doesn't read (08, 0b12, past int's digit limit): read as writing
+            return True
+        return val & 0o20003103 != 0   # O_WRONLY, O_RDWR, O_CREAT, O_TRUNC, O_APPEND, O_TMPFILE (Linux's numbers)
     return False
+
+
 _DENO_WRITE_OPT = re.compile(r"\b(?:write|append|create|createNew|truncate)\s*:\s*true\b")   # Deno.open's options
 
 
