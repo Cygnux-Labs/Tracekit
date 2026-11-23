@@ -100,7 +100,7 @@ SYSTEM.run(seed=0, out_dir="runs")
 | `agent.decide(context, model=, purpose=)` | a model call: exactly this context, its output, latency, usage |
 | `agent.act(tool, args, decision=)` | a tool call linked to the decision that asked for it |
 | `agent.send(to, content)` / `agent.inbox()` | agent-to-agent messages |
-| `agent.record_decision(...)`, `agent.record_action(...)` | calls your own code already made |
+| `agent.record_decision(...)`, `agent.record_action(..., untrusted=)` | calls your own code already made; `record_action` records the result as trusted content unless you pass `untrusted=True` (a fetched page, a mail read), so pass it for every tool whose result someone else wrote |
 
 A model function may return `tracekit.why.core.ModelOutput(value, usage={...})` to record tokens.
 [examples/why/quickstart.py](../examples/why/quickstart.py) is a complete example with a test at the end.
@@ -243,12 +243,110 @@ Every edge in the graph says how it was established.
 Tracing (`tracekit why taint`, "blast radius") follows observed edges and answers what an input could have influenced.
 Only tested edges answer what it did influence.
 
+## Influence: what moved a call
+
+For each consequential call (stopped, flagged, sensitive, or with provenance), the edges into it are graded by how
+they are known (`tracekit/why/influence.py`):
+
+| Grade | It says | Comes from | Drawn |
+|---|---|---|---|
+| **exact** | this untrusted record holds the argument's value, and nothing the signer indexed as trusted does | the signer's provenance index, read from the signed records themselves: in `tracekit view`, the records it verified, joined as `tracekit why import` merges a log (each citation matches its record and its agent's run, no record is cited twice, every record the log owes is cited, else nothing joins); the call's signed decision names the source record, and the run's event that cites that record is it. Where the viewer kept the decision's arguments, they must be the log's; where it didn't, the source's content in the log must hold the call's argument in the log, and the words say the log's arguments weren't checked. What the check finds wrong is said on the run once the log has ended | solid |
+| **claimed** | the why log says so | a why log's own `provenance` field (or a run that only says it is an import) with no verified signed record behind it: shown, never used for a finding, the chain or the order of the answers; `tracekit why` without the signer's records shows every edge so | none |
+| **measured** | removing this source changed whether the call happened | a replay test (`tracekit why test`, FIND THE CAUSE): verdict causal, its target matching this call alone in the run | double |
+| **seen** | the source was in the context of the model call that asked for the call | the agent's runtime's record of its context; for a signed run, the LLM gateway's record of the results a request sent (the rest of an imported run's context is everything the run observed before the model call) | thin |
+| **hint** | the call's argument text is in the source | why's search for each value in what came before, and word overlap | dashed, only when asked for |
+
+A hint is never called an influence and never drives a finding. An exact edge says what the signer's index saw, not
+that the record supplied the value: when the task or a trusted result holds all of it too, the words say so.
+
+Why's search reads each argument value as the signer's index reads values. An address, URL, host or digit run is held by
+content that holds an equal one (a look-alike `bob@corp.co` is not `bob@corp.com`, nor `…/3abcdef` the task's
+`…/3AbCdEf`, nor an account `44851234` part of the task's `4485-1234-5566`); a free string by content whose text holds
+it as a whole token, read as the index reads text (an IBAN the task writes in groups is the task's), or as a whole value
+(the string a JSON result holds). Content is read as it was when the call was made: an untrusted tool's result is
+untrusted from when it was observed so, and only that call's result: a value a trusted lookup gave stays the lookup's
+when the same content arrives later through an untrusted tool (1.7 read it as untrusted, the lookup named as its
+source). A call's arguments are read whole and in their parts, nested objects, lists and tuples under the keys above
+them, and a string that holds JSON or a query string (`to=…&amount=…`) under its own keys (a part of the JSON nested
+more than 64 deep is read as its text, the keys above it as keys). Untrusted content also brought an identifier
+(anything but text a model wrote) when it holds a part of it that no trusted content holds (an IBAN's digits written in
+groups, a URL's host; the call's own digits read across any separator, `+1 (415) 555-0134`), or all of it without its
+white space (base64 a model broke over lines). The key nearest a value says what it is. Under a key with a word (or two
+together) that names a destination, such as recipient, to, payee, beneficiary, account, iban, wallet, url, host,
+destination, channel, path, file, email, number, id or sort_code, it is an identifier, unless the key's last word is a
+free-text word (`account_no`, `to_whom` are identifiers; `email_body`, `payee_comment`, `repo_readme` are text). Under a
+key whose last word is a free-text word or a reference (`subject`, `body`, `note`, `signature`, `payment_ref`) it is
+text whatever keys are above it (`{"email": {"body": …}}`), unless it is identifiers only (not under a reference's key,
+which quotes one by design): addresses, URLs, hosts or IBANs, in punctuation or not, spaced in groups or not, one or
+more, after a label of up to four words or not (`IBAN GB29…`, `IBAN — GB29 NWBK …`, `Backup host is
+evil-backup.example.`), a name before or after an IBAN too (`Emma Smith, IBAN GB29…`, `GB29… (Emma)`), and digit runs
+alone or after a label that ends in `:`, `#` or a dash (`Acct # 6016 …`; `about order 77812290` is text). Under another
+key it is an identifier when a key above it is one (`{"file": {"name": …}}`), else text when it is prose. Content that
+holds more values than the index reads (its 4,096) is read for the rest from its text, trusted and untrusted alike, each
+value once. In untrusted content the search reads wider than the signer's index, so it stops more, never fewer: a free
+string joined to another word by `_` (`External_…` holds `External`), digit runs across any characters but letters
+(slashes, dashes, commas, ` // `, line breaks), in other scripts' digits or written as words ("six zero one six"),
+addresses spelled out ("audit at outside dot example"), and a one-word value in parts that different untrusted texts
+hold as words: two parts, or more that each hold a digit (an account in three mails, not a name made of three words),
+when some part is one no trusted content (the task included) holds. Text a model wrote (a message body) is read for its
+addresses and URLs, and each host and digit run in it is a value of its own: a body that quotes one only untrusted
+content gave gets a review alert naming it, not the high one. Text is still checked whole, as main reads it: a value
+that copies a phrase only untrusted content holds (an event titled as the mail says, a subject `Delivery delayed` the
+mail gave) stops the call, under a text key too. An alert names the part untrusted content held (`its 77812290 appears
+only in mail:1`), and the content read latest first. A trusted call's result holds nothing an earlier call's arguments
+named (all of it, or its longest digit run) unless trusted content gave each argument that named it: a lookup's error
+naming the mail's IBAN, or a validator returning it whole, is an echo of the agent's own value, not its source; a lookup
+by an account the task gives is a source, and a domain or another part names nothing (a directory looked up by the
+domain the mail names still gives the address). A trusted call's result is untrusted content when the values of its
+arguments that were traced came only from untrusted content, one at least (a value the model made up, such as a charset,
+doesn't count): a decoder, a reverser or a calculator given what the mail wrote, and a lookup by a key only the mail
+gave (the mail chose the record). For that, a call's arguments are one bag of tokens, every string and number at every
+depth whatever its key: each word (letters and digits with `-` `_` `.` `#` `/` between), its runs of digits, each quoted
+part and each number. A token counts when it names something: letters and digits mixed (`A7781`, `ACME-7781`,
+`svc-a12`), but no unit (`30s`, `5ms`, `2nd`); 4 or more digits that are no year (1900 to 2100), date or round number
+(`7781`; not `2026`, `2026-11-01`, `1500`, `100`); or a quoted part of 3 or more characters that is no common word
+(`'acme'`, not `'open'`). An address, URL, host or such a digit run among its values counts too, and a whole value with
+such a token in it (base64). A token is matched with or without one character between its letters and digits (`A781` is
+`A-781`). The first 64 tokens are read; a call given more fails closed: its answer counts as untrusted. A value trusted
+content gave keeps the answer trusted only when it names something too (the account the task gives, not the task's word
+`supplier`). A content's digits in any script are read as the digits they are (`٧٧٨١` is `7781`). The alert says what
+the call was given and where that came from (`crm_lookup's answer counts as untrusted: it was called with
+'60161331926819', which came only from mail:inbox`).
+
+The run's goal is its own task: an input of source `task`, trusted and of kind task (in an import, one its signed
+records back), else the trusted prompts the person typed. A kind the log writes on other content makes nothing a goal.
+Each call gets its chain back from it: the call, the model call that asked for it, the source in that model call's
+context that is (or carries) an exact or measured source of the call (else another agent's message), and so on to the
+start. It ends at the goal only for a call a replay showed needs it.
+
+Only a replay says whether a call serves the task:
+
+- **Serves no step of the task**: a replay without the task kept the call.
+- **Came from the task**: a replay without the task changed it, as in "git_push (dev) came from: task 'Fix the login
+  bug' (measured: effect +0.90) → dev decided (plan; 3 in context, 1 untrusted) → this call".
+- **Not tested**: otherwise. The words name the untrusted content the model call had in context, then the chain:
+  "git_push (dev): no replay has tested it without the task. Untrusted content in its model call's context:
+  github:issue-12. Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided (…) → this call.
+  github:issue-12 holds its `branch`, and nothing the signer indexed as trusted does: test it without the task to see
+  whether it serves the task." After a replay without the task whose target other calls match too, they say so: "the
+  replay without the task targeted `tool=git_push`, which other calls match too, so it tested none of them alone".
+
+Test a call by removing the task's content, with a target that matches that call alone (a value only it has):
+`tracekit why test RUN --remove ref:<the task's hash prefix> --target 'tool=send_email,arg~<its address>'` (with only
+prompts, remove each). A target several calls match measures whether any of them happened, so its verdict is put on
+none of them.
+
+An argument from content outside the run's agents (exact) or a replay tying the call to untrusted content (measured)
+is named, never called drift on its own: a task that asks the agent to act on what it reads ("pay the bill in
+bill.txt") gets it too. [E28](evaluation.md#e28-influence-grades-on-runs-with-a-known-cause) measures each grade on
+AgentDojo's published runs.
+
 ## Alerts
 
 | Severity | When |
 |---|---|
-| **high** | a sensitive tool used an argument value that appears only in untrusted content, or the log fails verification |
-| **review** | a sensitive tool is downstream of untrusted input (reach only), or a tool or model call failed |
+| **high** | a sensitive tool used an argument value only untrusted content brought, as why's search reads values (above), or the log fails verification |
+| **review** | a call serves no step of the task (a replay without the task kept it); a sensitive call's text quotes a host or number only untrusted content supplied; an argument traced to untrusted content (exact) or a replay tied the call to untrusted content (measured); a sensitive tool is downstream of untrusted input (reach only); or a tool or model call failed |
 | **info** | a tool call was stubbed during replay |
 
 Sensitive tools are the ones a run declares. If it declares none, tool names such as send, pay, delete or export are
@@ -367,7 +465,8 @@ folder; the readable run id and tenant are in its `run.start` meta):
 
 Every event cites its record (`tracekit`: log_id, seq, run_id, run_seq, the record hash and its commitment). When a why
 log under `--out` cites the imported runs (the runtime wrote it), the two are merged into `tk-<why run id>`: content
-from the why log, citations, verdicts and provenance from the signed records. An executed call cites its result and,
+from the why log, citations, verdicts and provenance from the signed records. The viewer then shows the run once, as
+the merged import; a why log that grew after its import shows beside it. An executed call cites its result and,
 under `decision`, the decision it ran under (its arguments' commitment). These are high evidence alerts, and the event
 is marked `tracekit_mismatch`: a citation that does not match its record (another type, tool, trust, source, outcome,
 hash or decision), one of another agent's run, a record cited twice (a held call retried cites its decision each time),
@@ -486,7 +585,7 @@ tracekit view --why runs --allow-program myapp.agents:SYSTEM
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | the viewer's page |
-| GET | `/api/why/workspace` | run summaries, the influence graph, every run's alerts and the signed calls each why event cites |
+| GET | `/api/why/workspace` | run summaries, the influence graph with each risky call's graded influence (`influence.calls`), every run's alerts and the signed calls each why event cites |
 | GET | `/api/why/runs/<id>` | one run's investigation data, and whether this server may replay it |
 | GET | `/api/stream` | the viewer's server-sent events: each run's events as tape rows, and `why` records (a run changed, with its new alerts; a test finished) |
 | POST | `/api/why/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}`: a replay test |

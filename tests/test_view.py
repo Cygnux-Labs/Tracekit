@@ -3101,6 +3101,7 @@ class LiveRuns(unittest.TestCase):
         self.assertTrue(wait_for(lambda: set(os.listdir(why)) == live, 10), (sorted(os.listdir(why)), sorted(live)))
         store.scan(announce=False)
         self.assertEqual(set(store._cache), {os.path.join(why, n) for n in live})
+        self.assertEqual(set(feed.signed_runs), set(feed.latest))   # the join's records: the runs on the live view
 
     def test_a_clock_stepped_back_still_checks_a_run_again(self):
         """RECHECK_S and BACKOFF were timed by the wall clock: after it stepped back (an NTP step, a manual change), an
@@ -3127,6 +3128,7 @@ class LiveRuns(unittest.TestCase):
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
         rows = len(feed.records)
+        self.assertEqual({k[1]: len(v) for k, v in feed.signed_runs.items()}, {"r1": len(self.recs["r1"])})
         self.now[0] += view.RECHECK_S
         self.refresh(feed)
         self.assertEqual(self.checks, ["r1"])   # its bytes unchanged: not checked again
@@ -3147,6 +3149,7 @@ class LiveRuns(unittest.TestCase):
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
             self.assertTrue(all(r is observe.RETRACTED for r in feed.records[:-1]))   # every row of it taken back
+            self.assertEqual(feed.signed_runs, {})   # and the why server's join of it
 
     def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
         """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a

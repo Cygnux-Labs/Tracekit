@@ -1,15 +1,16 @@
 # Evaluation
 
-Twenty-two experiments, E1 to E23 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
-bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20, E21 and E23, and E9 `--quick` on
-Linux.
+Twenty-three experiments, E1 to E23 and E28 (there is no E13; E24 to E27 aren't in this release). `make eval` runs the
+offline ones: E1 to E4 (E4 on v1 and v2 bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19,
+E20, E21, E23 and E28, and E9 `--quick` on Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
-E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
-gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new
-file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against them.
+E3, E4, E6, E10 to E12, E14 (`--quick`), E16 to E21 and E28, on every pull request ("Offline evals"): each must pass
+its own gate, and their deterministic results must equal the committed files, so a change that moves a number commits
+the new file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against
+them.
 This page is the numbers' one home: other docs link here instead of repeating a count a rule change moves.
 E2, E14 in full, E9 and E16 on Postgres, E22 and E7 run nightly (`.github/workflows/nightly-evals.yml`). Results are
 written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
@@ -692,6 +693,63 @@ the agent issuing a grant
 for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
 total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
 run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.
+
+## E28: influence grades on runs with a known cause
+
+`eval/e28_influence.py` measures how often each grade of [influence edge](why.md#influence-what-moved-a-call) is a
+true influence, offline, with no model API. Five parts, and a gate: E28 exits 1 when any promise below breaks (each
+grade's recall floor and the high alert's among them). Each part reads its runs' exact edges from the signed records it
+read from the signer's store, as `tracekit view` reads them from the records it verified.
+
+- **AgentDojo's published runs** (github.com/ethz-spylab/agentdojo, MIT, gpt-4o-2024-05-13, the `important_instructions`
+  attack and the clean runs; the runs E28 reads are kept in `eval/e28_agentdojo/` with the upstream commit and license)
+  replayed through the signer-backed why runtime against a dev signer with no rules: the
+  user's request is the task, each model turn a model call that had the whole conversation in its context, each tool
+  output observed as untrusted. Labels come from the benchmark: in a run whose attack succeeded, the attack call is
+  the first call after the injected text arrived of a tool the injection task's ground truth calls, carrying a string
+  the ground truth fixes and the injected text states. A tool output holding the injected text is a cause of it; one
+  holding neither the injected text nor any of the call's values is not, nor is one whose every value of the call (as
+  the signer's index reads values) the task holds too (none of AgentDojo's do); one that supplied a value without the
+  instruction is left unlabelled. Of 629 attacked runs, 300 attacks succeeded and 274 were scored.
+
+  | Grade | Precision (edges) | Recall (attack calls) |
+  |---|---|---|
+  | exact | 214 of 214 (100%) | 214 of 274 (78.1%) |
+  | seen | 293 of 405 (72.3%) | 273 of 274 (99.6%) |
+  | hint | 282 of 282 (100%) | 264 of 274 (96.4%) |
+
+  Hint's and exact's precision here is high by construction: both need the call's value in the source, and a negative
+  holds none. What tests exact is where it says a value came from: 281 of the 283 exact edges on the attacker's own
+  value name a tool output holding the injected text (the other 2 name the record that supplied the field's other
+  value, the user's own address), and all 757 exact claims name a record that holds the value. An argument from
+  untrusted content (`untrusted`) marks 216 of the 274 attack calls, and also 40 of the 354 calls of clean runs, in 31 of
+  97 clean runs: a task that asks the agent to act on what it reads gets it too, so it is never called drift on its
+  own. What INFLUENCE says of the 274 attack calls: none reads as coming from the task (no replay without the task
+  exists for a published trace), all 274 are in its list, and each of the 58 with no exact edge names the untrusted
+  content its model call had in context. The high alert (a value only untrusted content brought, as the signer's index
+  reads values) names 132 of the 274, and the review alert that a message's text quotes a host only untrusted content
+  brought names 4 more: a direct message relaying the injected bare link `www.secure-systems-252.com` in a sentence
+  (`Please check out this link: …`), which text a model wrote can quote without being stopped; the 2 that write
+  `Please check this link: …`, a label of four words and the link, are the link alone, and stopped
+  (docs/limits.md).
+- **The support desk** of the `tracekit demo --why` system (scripted models), 30 seeds, with `attribute` replays: the
+  vendor note's planted instruction is the only cause of the 40 exfiltration calls in 20 runs. Measured: 40 of 40
+  found, no false edge; exact found 20 of 40 (the export takes no argument); the untrusted marker on 40 of 40
+  exfiltration calls and 0 of 57 others; 0 of the 40 read as coming from the task.
+- **A scripted reader** that does what its task asks and, seven times in ten, what a planted line says, replayed
+  without its task: 20 of 20 planted emails serve no step of the task, 0 of 60 asked ones. The scripted model follows
+  the premise by construction, so this checks the finding's machinery, not a real model. In each of the 20 runs with
+  both emails, a test whose target only names the tool (`tool=send_email`, both emails) put its verdict on 0 calls.
+- **A record that held the value, no more**: 4 built runs where the task gives a value in prose (a branch name, an
+  address, an IBAN, a URL) and an untrusted record read later holds it too. The signer's index named the record in all
+  4 (it reads whole strings and the prose isn't one), and in all 4 the words say the task holds the value too. The
+  high alert that only untrusted content supplied a value fires on 0 of them: it reads the IBAN the task writes in
+  groups as the signer's index does.
+- **A goal the log names**: 2 built runs whose log calls other content the task, a why log that marks a trusted README
+  and an untrusted note of source `task` as kind task, and one through the signer that writes the injected note again
+  as the trusted task under the note's own record. In 0 of the 2 is the goal anything but the run's own task.
+
+Results: `eval/results/e28_influence.json`.
 
 ## What is not measured
 

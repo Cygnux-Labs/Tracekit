@@ -1086,6 +1086,11 @@ class StoreFeed:
         self.store = store_name(cfg)
         self.vkeys, self.note = store_trust(cfg, log_vkey)
         self.records, self.base, self.lock = [], 0, threading.Condition()
+        # (tenant, run_id) -> a client run's records as they verified, while its rows are on the live view: the why
+        # server joins why logs to them (why.server.Store._verify); signed_version counts each change, under self.lock
+        # lean: holds each live run's records in memory once more; read them from the store when the join needs them if
+        # a store's live runs outgrow memory
+        self.signed_runs, self.signed_version = {}, 0
         # past it the oldest records leave the live view (base counts them), as observe.Feed's
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report, "checked": when
@@ -1408,6 +1413,12 @@ class StoreFeed:
                 for k in [k for k in self.rowcache if k[:2] == key]:   # and /api/rows' answers
                     del self.rowcache[k]
             self._append([dict(x, tenant=tenant) for x in new], key)
+            if key[1] != SIGNER_RUN[1]:   # what the why server joins why logs to (signed_runs)
+                if code:
+                    self.signed_runs.pop(key, None)
+                else:
+                    self.signed_runs[key] = records
+                self.signed_version += 1
         if self.on_run and key[1] != SIGNER_RUN[1] and not hidden:   # after the tape has the records
             with self._mlock:   # a file store's run as the bytes that verified: an import waiting holds no records
                 self._mirror[key] = kept.get("data") or records
@@ -1511,6 +1522,8 @@ class StoreFeed:
                 if key and self.latest.get(key) is x:
                     del self.latest[key]
                     self.kept[key] = x
+                    if self.signed_runs.pop(key, None) is not None:
+                        self.signed_version += 1
                     if self.on_run and key[1] != SIGNER_RUN[1]:
                         with self._mlock:
                             self._mirror[key] = None
