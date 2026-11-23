@@ -2939,7 +2939,8 @@ class SignerService:
         its owner too, recorded self_cleared, of a label the run set itself: an inherited one is cleared where it came
         from (labels.origin). A run that has ended has its clear in the tenant's signer run (`run_id`), and it ends the
         label for every run that took it from that one (labels.derived): a clear of each open one, and the carry. A later
-        record that sets it sets it again."""
+        record that sets it sets it again. A dev signer's user clears only their own runs' labels (the run's owner or
+        another of its requesters)."""
         reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
         mine = self.approvals is None and "register_run" in self._granted(identity)
         if mine:
@@ -2956,6 +2957,10 @@ class SignerService:
                     **({"break_glass": True} if glass else {}), **({"self_cleared": True} if mine else {}), **more}
 
         def check(run):
+            if mine and owner(identity) not in {run.get("owner"), *labels.requesters(run)}:   # another user's run
+                raise RPCError("forbidden", f"run {rid[:128]} is {str(run.get('owner'))[:256]}'s, not "
+                                            f"{owner(identity)}'s: on a dev signer a user clears only their own runs' "
+                                            "labels")
             if label not in (run.get("labels") or {}):
                 raise RPCError("invalid_request", f"run {rid[:128]} doesn't carry {label}")
             if mine and (run.get("label_src") or {}).get(label):   # a copy: the run it came from ends it

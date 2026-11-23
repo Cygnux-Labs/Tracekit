@@ -3116,7 +3116,11 @@ def _runs_signer(code):
 # the SDK names that find the dev signer's data or start and stop it (tracekit.signer's own are _runs_signer's), the
 # CLI's modules code may run it through, and the ones of its autospawn module code may use
 _SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__|run_label_clear)\b|\btracekit\.cli\b"
-                  r"|\bimport\s+cli\b")
+                  r"|\bimport\s+cli\b|run_label")
+# code an interpreter runs from its words: python's -c, node's (and nodejs') -e, --eval, -p or --print, deno eval and
+# bun's -e or --eval, after options
+_CODE_WORDS = re.compile(r"^(?:\S*/)?(?:(?:python|pypy)[0-9.]*t?(?: -\S+)*? -c|(?:node|nodejs|bun)(?: -\S+)*? "
+                         r"(?:-e|--eval|-p|--print)|deno(?: -\S+)*? eval(?: -\S+)*?) ")
 _SDK_READS = {"status", "Hung", "SignerUnavailable", "Incompatible"}
 # where a Python comment or string literal may start, and the rest of each kind of literal: its text (a backslash
 # escapes any character, a newline too) up to its closing quote, or to its line's end (the code's, triple-quoted)
@@ -3160,9 +3164,12 @@ def _reaches_sdk(code, work):
     if _PY_LOOKUP.search(code) and re.search(r"(?<!/)\bautospawn\b(?!\.py)", code):
         return True
     raw, code = code, _py_code(code)
-    # the run_label_clear RPC named in code that imports Tracekit (Client(...).call('run_label_clear', ...)): a dev
-    # signer takes it from its one user, whom the agent runs as
-    if re.search(r"\brun_label_clear\b", raw) and re.search(r"\b(?:import|from)\s+tracekit\b", code):
+    # code an interpreter runs from its words (_CODE_WORDS) that names the run_label_clear RPC or a part of it that
+    # holds run_label, anywhere, strings included (__import__('tracekit…'), 'run_label_' + 'clear', a require of the
+    # npm package): a dev signer takes the clear from its one user, whom the agent runs as. Code that only names
+    # Tracekit stays harmless (HarmlessStops: its version, autospawn.status()). lean: a spelling that splits
+    # run_label (chr() codes) passes, as a script file does; the clear is marked self_cleared all the same
+    if _CODE_WORDS.match(raw) and "run_label" in raw:
         return True
     if (re.search(r"\b(?:import|from)\s+tracekit\.__main__\b|\bfrom\s+tracekit\s+import\s+[\w\s,()]*?\b__main__\b",
                   code) or re.search(r"\bmain\s*\(", code) and re.search(
