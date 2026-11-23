@@ -28,7 +28,7 @@ sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent code
 These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook replaces a v1 one. System mode's init
 runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks
 into the agent user's own config, which that user can edit: `--managed` (hooks in admin-managed settings the agent can't
-edit or turn off) is for Claude Code only, and init refuses it with these agents
+edit or turn off) is wired for Claude Code and Gemini CLI, and init refuses it with these others
 ([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line runs after
 [laptop system mode](deploy.md#laptop-system-mode)'s install. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
 `--v2` and write the same files:

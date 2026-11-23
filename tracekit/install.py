@@ -1218,9 +1218,10 @@ def managed_path(agent="claude", darwin=None):
 
 
 def managed_paths():
-    """Every admin-managed settings file Tracekit writes: Claude Code's and each other agent's here."""
-    return [MANAGED_SETTINGS["linux"], MANAGED_SETTINGS["darwin"],
-            *[p for paths in AGENT_MANAGED.values() for p in paths.values()]]
+    """Every admin-managed settings file Tracekit writes: Claude Code's and each other agent's here. Read through
+    values(), not by key: a caller (and several tests) may patch MANAGED_SETTINGS with only this platform's entry."""
+    return [*[p for p in MANAGED_SETTINGS.values() if p],
+            *[p for paths in AGENT_MANAGED.values() for p in paths.values() if p]]
 
 
 def install_managed(proxy_url=None, managed_only=False, path=None, python=None, uninstall=False, agent="claude", **kw):
