@@ -2115,7 +2115,7 @@ _TOOL_ENV = re.compile(r"\b(?:UV_\w+|PIP_\w+|PIPX_\w+|XDG_CONFIG_\w+|XDG_DATA_HO
 # what in an rc file changes how a tool runs: an alias or function for one, a PATH that puts a folder ahead of the usual ones
 _RC_TOOLS = r"(?:uv|uvx|pip3?|pipx|python[\d.]*|tracekit)"
 _RC_CODE = re.compile(r"\balias\s+" + _RC_TOOLS + r"=|\b(?:function\s+)?" + _RC_TOOLS + r"\s*\(\)|\bfunction\s+" + _RC_TOOLS + r"\b|"
-                      r"\bPATH=(?!(?:\$HOME|~|\$\{HOME\})/(?:\.local/)?bin:|\$\{?PATH\b|/usr/local/bin:|/opt/homebrew/bin:|/usr/bin:)")
+                      r"\bPATH=(?![\"']?(?:(?:\$HOME|~|\$\{HOME\})/(?:\.local/)?bin:|\$\{?PATH\b|/usr/local/bin:|/opt/homebrew/bin:|/usr/bin:))")
 # the programs that write a file from content the line doesn't spell out
 _RC_WRITERS = frozenset(("cp", "install", "ln", "mv", "rsync", "sed", "gsed", "perl", "ex", "ed", "awk", "gawk", "dd", "python3", "python"))
 

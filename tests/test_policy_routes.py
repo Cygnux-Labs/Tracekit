@@ -111,8 +111,11 @@ class Routes(unittest.TestCase):
                     "ask", "TK-A083")
 
     def test_a_shell_startup_file_written_by_any_writer_is_flagged_and_held_on_strict(self):
-        # as TK-F011 reads a redirection into one: a coding agent's PATH line in ~/.bashrc is ordinary setup
+        # as TK-F011 reads a redirection into one: a coding agent's PATH line in ~/.bashrc is ordinary setup. An rc file is code: a
+        # copy, sed or perl writes content the line doesn't spell out, so it is held (TK-F015) on every pack
         self.expect(self.bash("sed -i 's/a/b/' ~/.bashrc", "cp x ~/.zshrc", "perl -pi -e 's/a/b/' ~/.profile"),
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "ask"}, "TK-F025")
+        self.expect(self.bash("echo 'export PATH=$HOME/bin:$PATH' >> ~/.bashrc"),
                     {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
 
     def test_a_pattern_is_read_as_each_protected_name_it_may_make(self):
@@ -120,8 +123,9 @@ class Routes(unittest.TestCase):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
         self.expect(self.bash("echo x > .en?", "sed -i 's/a/b/' .e[n]v"), held, "TK-D023")
         self.expect(self.bash("echo k >> ~/.ssh/authorized_key?"), "deny", "TK-D023")   # any file in .ssh/, as TK-D005
-        self.expect(self.bash("echo x > ~/.bashr?", "sed -i 's/a/b/' ~/.b*", "echo x >> ~/.zsh*"),
+        self.expect(self.bash("echo x > ~/.bashr?", "echo x >> ~/.zsh*"),
                     {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
+        self.expect(self.bash("sed -i 's/a/b/' ~/.b*"), {"dev": "ask", "coding": "ask", "server": "ask", "strict": "ask"}, "TK-F025")
         self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A083")
         self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D023")
 
