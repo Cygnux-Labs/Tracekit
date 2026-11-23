@@ -568,8 +568,8 @@ The hold says what to check:
 
 ```text
 [tracekit] HELD, nothing ran: apr-… (TK-A043), expires 09:27 UTC.
-Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
-Instead: Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), or a GET to one that curl's config file can turn into a POST (no -q first)
+Instead: Run a GET as `curl -q -G …` (no config file read); check a payment's amount, currency and payee before approving (no amount refunds in full; confirm, capture or pay moves the amount set earlier).
 Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
 Agent: …
 ```

@@ -594,6 +594,10 @@ ask:
     # each of these CLIs prints its help and exits on --help (-h is dropdb's host). Only a last `--help` after at most
     # two short lower-case words counts: the subject joins argv with spaces, so `-m ' --help'` must not read as one
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
+    # terraform as its grammar reads it (policy2/grammars): help and nothing else. A terraform command its grammar
+    # reads is exempt only when this and the text `unless` both exempt it (a quoted `"x --help"` is no help)
+    unless_cli:
+      - {command: 'terraform( [a-z-]+)+', flag: --help, alone: true}
     reason: destroying a deployment, database or volume
     remedy: Have a person approve the held call, or plan the change without applying it (terraform plan); run teardowns in a disposable environment.
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
@@ -612,6 +616,9 @@ ask:
     # two short lower-case words (a volume name there would be a third), or podman's `volume prune help`
     pattern: '^(?:(?:docker|podman(?:-remote)?) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,6}(?:volume(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:rm|remove|prune)|system(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} prune(?: [^ ]+){0,16}? --volumes(?:=(?:1|t|T|true|TRUE|True))?|compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v(?:t[^ ]*)?|--v(?:o(?:l(?:u(?:m(?:es?)?)?)?)?)?)(?:=(?:1|t|T|true|TRUE|True))?)|(?:docker|podman)-compose (?:-[^ ]+ (?:[^- ][^ ]* )?){0,8}down(?: [^ ]+){0,16}? (?:-v(?:t[^ ]*)?|--v(?:o(?:l(?:u(?:m(?:es?)?)?)?)?)?)(?:=(?:1|t|T|true|TRUE|True))?)(?: |$)'
     unless: '^[a-z]{1,16}(-remote)?( [a-z]{1,16}){1,2} (--help|-h)$|^(docker|podman(-remote)?) volume prune help$'
+    # docker as its grammar reads it, besides the text above (compose, a CLI plugin, is read as text): help alone
+    unless_cli:
+      - {command: 'docker( [a-z-]+)+', flag: --help, alone: true}
     reason: deleting Docker or Podman volumes
     remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.
     rationale: A volume usually holds a project's database or cache; deleting it can't be undone, and a person confirms it.
@@ -953,7 +960,9 @@ ask:
     # confirm or capture, invoices pay and treasury outbound_payments or outbound_transfers create, with up to eight
     # options (with a value) before the resource and again before its operation; `stripe post` to one of those
     # endpoints (also a charge's refund or capture and a transfer's reversals, and the v2 money_management outbound
-    # payments and transfers); and a POST to one of them on api.stripe.com, or to a PayPal payout, order or
+    # payments and transfers; a subscription, invoice or credit note created, which bills or refunds, a payment
+    # intent's authorization incremented and an Issuing authorization approved); and a POST to one of them on
+    # api.stripe.com, or to a PayPal payout, order or
     # authorization capture or capture refund on api.paypal.com or api-m.paypal.com, or to a Square payment, refund or
     # payment completion on connect.squareup.com, through curl, wget, HTTPie or xh (any number of slashes after the
     # host). A POST is each client's own: curl's -X/--request POST or a body option (-d, -F, --data*, --form*,
@@ -964,19 +973,44 @@ ask:
     # space-separated pieces. Stripe's mode isn't read (a sandbox call is held too: the key, not --live, can make it
     # live); PayPal's and Square's sandbox hosts aren't these. Amount-less calls (a full refund, a confirm, capture or
     # invoice pay) are held as any other. Not held: listing, retrieving or cancelling, stripe listen, trigger, logs tail
-    # and login, a GET (Stripe's docs list with `curl -G … -d limit=3`), and `stripe <resource> <operation> --help`.
+    # and login, a curl GET that reads no config file (`curl -q -G … -d limit=3`), and `stripe <resource> <operation>
+    # --help`.
     # lean: a URL is read as typed (lowercase host, no port), and a word is read as an option wherever it sits, so a
     # body value holding a money URL is held too, and a curl option that isn't a POST but reads like one (-X GET, an
     # attached value with an X before its first non-letter) stops the reach from an earlier one; read the argv structurally when one gets in
     # the way
-    pattern: '^(?:stripe (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:(?:refunds|payouts|transfers|topups|transfer_reversals) (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}create|charges (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:create|capture)|payment_intents (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:create|confirm|capture)|invoices (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}pay|treasury (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}outbound_(?:payments|transfers) (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}create)(?: |$)|stripe (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}post (?:[\w\W]*? )?/*(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^ ]*)?(?: |$)|curl (?:[\w\W]*? )?(?:(?:(?:-[A-Za-z]*X ?|--request[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json))[^ ]*(?: (?:(?:[^- ][^ ]*|-[A-EG-WYZa-ce-z]*(?:[^-A-Za-z ][^ ]*)?|--(?:[^dfjr ][^ ]*|d(?:[^a ][^ ]*)?|da(?:[^t ][^ ]*)?|dat(?:[^a ][^ ]*)?|f(?:[^o ][^ ]*)?|fo(?:[^r ][^ ]*)?|for(?:[^m ][^ ]*)?|j(?:[^s ][^ ]*)?|js(?:[^o ][^ ]*)?|jso(?:[^n ][^ ]*)?|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:(?:-[A-Za-z]*X ?|--request[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json))[^ ]*)|wget (?:[\w\W]*? )?(?:(?:--method[ =][Pp][Oo][Ss][Tt]|--post-(?:data|file))[^ ]*(?: (?:(?:[^- ][^ ]*|-(?:[^- ][^ ]*)?|--(?:[^mp ][^ ]*|m(?:[^e ][^ ]*)?|me(?:[^t ][^ ]*)?|p(?:[^o ][^ ]*)?|po(?:[^s ][^ ]*)?|pos(?:[^t ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:--method[ =][Pp][Oo][Ss][Tt]|--post-(?:data|file))[^ ]*)|(?:https?|xhs?) (?:[\w\W]*? )?(?:(?:[Pp][Oo][Ss][Tt]|--raw[^ ]*)(?: (?:(?:[^Pp -][^ ]*|[Pp](?:[^Oo ][^ ]*)?|[Pp][Oo](?:[^Ss ][^ ]*)?|[Pp][Oo][Ss](?:[^Tt ][^ ]*)?|[Pp][Oo][Ss][Tt][^ ]+|-(?:[^- ][^ ]*)?|--(?:[^r ][^ ]*|r(?:[^a ][^ ]*)?|ra(?:[^w ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:--raw|[^ =:@-][^ =:@]*(?:=[^=]|=$|:=|@))))'
-    # curl -G (first) sends its data as a query string: a GET, unless a -X or --request word (a cluster with X too)
-    # sets the method. Help only as `stripe <resource> [<operation>] --help` (or -h) and nothing else: an option takes
+    pattern: '^(?:stripe (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:(?:refunds|payouts|transfers|topups|transfer_reversals) (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}create|charges (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:create|capture)|payment_intents (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}(?:create|confirm|capture)|invoices (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}pay|treasury (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}outbound_(?:payments|transfers) (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}create)(?: |$)|stripe (?:-[^ ]+ +(?:[^- ][^ ]* +)?){0,8}post (?:[\w\W]*? )?/*(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^ ]*)?(?: |$)|curl (?:[\w\W]*? )?(?:(?:(?:-[A-Za-z]*X ?|--request[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json))[^ ]*(?: (?:(?:[^- ][^ ]*|-[A-EG-WYZa-ce-z]*(?:[^-A-Za-z ][^ ]*)?|--(?:[^dfjr ][^ ]*|d(?:[^a ][^ ]*)?|da(?:[^t ][^ ]*)?|dat(?:[^a ][^ ]*)?|f(?:[^o ][^ ]*)?|fo(?:[^r ][^ ]*)?|for(?:[^m ][^ ]*)?|j(?:[^s ][^ ]*)?|js(?:[^o ][^ ]*)?|jso(?:[^n ][^ ]*)?|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:(?:-[A-Za-z]*X ?|--request[ =])[Pp][Oo][Ss][Tt]|-[A-Za-z]*[dF]|--(?:data|form|json))[^ ]*)|wget (?:[\w\W]*? )?(?:(?:--method[ =][Pp][Oo][Ss][Tt]|--post-(?:data|file))[^ ]*(?: (?:(?:[^- ][^ ]*|-(?:[^- ][^ ]*)?|--(?:[^mp ][^ ]*|m(?:[^e ][^ ]*)?|me(?:[^t ][^ ]*)?|p(?:[^o ][^ ]*)?|po(?:[^s ][^ ]*)?|pos(?:[^t ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:--method[ =][Pp][Oo][Ss][Tt]|--post-(?:data|file))[^ ]*)|(?:https?|xhs?) (?:[\w\W]*? )?(?:(?:[Pp][Oo][Ss][Tt]|--raw[^ ]*)(?: (?:(?:[^Pp -][^ ]*|[Pp](?:[^Oo ][^ ]*)?|[Pp][Oo](?:[^Ss ][^ ]*)?|[Pp][Oo][Ss](?:[^Tt ][^ ]*)?|[Pp][Oo][Ss][Tt][^ ]+|-(?:[^- ][^ ]*)?|--(?:[^r ][^ ]*|r(?:[^a ][^ ]*)?|ra(?:[^w ][^ ]*)?)?))?)*? (?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: |$)|(?:https?://)?(?:api\.stripe\.com/+(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#]+/(?:capture|refunds?)|payment_intents/[^/ ?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#]+/pay|transfers/[^/ ?#]+/reversals|issuing/authorizations/[^/ ?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/+(?:v1/payments/payouts|v2/checkout/orders/[^/ ?#]+/capture|v2/payments/(?:authorizations/[^/ ?#]+/capture|captures/[^/ ?#]+/refund))|connect\.squareup\.com/+(?:v2/(?:payments|refunds)|v2/payments/[^/ ?#]+/complete))/?(?:[?#][^ ]*)?(?: [^ ]*){0,16}? (?:--raw|[^ =:@-][^ =:@]*(?:=[^=]|=$|:=|@))))|^curl (?:[\w\W]*? )?--expand-url(?:[ =]|$)'
+    # and a curl whose URL comes from a variable (--expand-url, curl 8.3 on: `--variable %U --expand-url '{{U}}'`),
+    # which the line can't tell isn't one of these: a GET of it is let through as any GET is, below.
+    # curl -q (or --disable) first reads no config file (a curlrc anywhere curl looks may set a method or data: one on
+    # disk already, one any later write lands, one a moved CURL_HOME, HOME or XDG_CONFIG_HOME names), then -G sends its
+    # data as a query string: a GET, unless a -X or --request word (a cluster with X too) sets the method. Help only as `stripe <resource> [<operation>] --help` (or -h) and nothing else: an option takes
     # the next word as its value (`--description -h`), so a -h anywhere else is no help
-    unless: '^curl (?:-G|--get)(?: (?:[^- ][^ ]*|-[^-X ][^X ]*|--(?:[^r ][^ ]*|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?)?|-)?)*$|^stripe(?: [a-z_]+){1,3} (?:--help|-h)$'
-    reason: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
-    remedy: Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+    unless: '^curl (?:-q|--disable) (?:-G|--get)(?: (?:[^- ][^ ]*|-[^-X ][^X ]*|--(?:[^r ][^ ]*|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?)?|-)?)*$|^stripe(?: [a-z_]+){1,3} (?:--help|-h)$'
+    # curl as its grammar reads it, besides the text above: a GET (--get last on: not undone by --no-get) that no option
+    # makes another request: no --request (also --expand-request), --next (a second request with its own options),
+    # --config (options from a file), --form or --form-string (a multipart POST), --upload-file (a PUT) or --json. A
+    # curl the grammar can't read (a glob, an expansion, xargs adding words) is never exempt (`required`)
+    unless_cli:
+      - {command: curl, flag: --get, without: [--request, --next, --config, --form, --form-string, --upload-file, --json],
+         required: true}
+    reason: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), or a GET to one that curl's config file can turn into a POST (no -q first)
+    remedy: Run a GET as `curl -q -G …` (no config file read); check a payment's amount, currency and payee before approving (no amount refunds in full; confirm, capture or pay moves the amount set earlier).
     rationale: A coding agent with a developer's own key moves real money in one call, and Stripe holds only agent-tagged keys' calls for approval; a person confirms each one.
+  - id: TK-A095
+    class: shell
+    field: requests
+    # TK-A043's money endpoints for curl as curl's grammar reads the command (engine._curl_requests): each request's
+    # method and URL, whatever option spells the body (--expand-data, --expand-json, --expand-form), wherever the URL
+    # sits among any number of words, as curl requests it (its globs expanded: `refund[s-s]`, `{refunds}`; dot
+    # segments removed: `v1/./refunds`, `v1/x/../refunds`; the host's case, a user, a port and doubled slashes
+    # dropped): a POST, or a method or URL the line can't tell (`*`: an expansion, --next, -K, a {{variable}} URL, each
+    # word of a curl the grammar can't read). A GET (-G with -q first and no -X) is no POST; one without -q is (its
+    # config file may make it one), so the reason and the remedy are TK-A043's, which a held call shows once
+    pattern: '^(?:POST|\*) (?:\*$|https?://(?:api\.stripe\.com/(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/?#]+/(?:capture|refunds?)|payment_intents/[^/?#]+/(?:confirm|capture|increment_authorization)|invoices/[^/?#]+/pay|transfers/[^/?#]+/reversals|issuing/authorizations/[^/?#]+/approve)|v2/money_management/outbound_(?:payments|transfers))|api(?:-m)?\.paypal\.com/(?:v1/payments/payouts|v2/checkout/orders/[^/?#]+/capture|v2/payments/(?:authorizations/[^/?#]+/capture|captures/[^/?#]+/refund))|connect\.squareup\.com/(?:v2/(?:payments|refunds)|v2/payments/[^/?#]+/complete))/?(?:[?#]|$))'
+    reason: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), or a GET to one that curl's config file can turn into a POST (no -q first)
+    remedy: Run a GET as `curl -q -G …` (no config file read); check a payment's amount, currency and payee before approving (no amount refunds in full; confirm, capture or pay moves the amount set earlier).
+    rationale: TK-A043 for curl as it reads its options and URLs, so a spelling of a POST or of the endpoint that the command's text doesn't show is held too.
   - id: TK-A044
     class: mcp
     # Stripe's MCP tools that move money (docs.stripe.com/mcp: send_money, transfer_money and convert_currency on a
@@ -997,7 +1031,7 @@ ask:
     # lean: Stripe doesn't document the tool's argument names, so the whole call is read and a refund named anywhere in
     # it is held (a product described as "no refunds" too); match the method and path once Stripe documents them
     tool: 'mcp(:[^/]+/|__.*[_-])stripe_api_write'
-    pattern: '[Rr][Ee][Ff][Uu][Nn][Dd]|"(?:https://api\.stripe\.com)?/?(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#"]+/(?:capture|refunds?)|payment_intents/[^/ ?#"]+/(?:confirm|capture)|invoices/[^/ ?#"]+/pay|transfers/[^/ ?#"]+/reversals)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^"]*)?"'
+    pattern: '[Rr][Ee][Ff][Uu][Nn][Dd]|"(?:https://api\.stripe\.com)?/?(?:v1/(?:refunds|payouts|transfers|topups|charges|payment_intents|subscriptions|invoices|credit_notes|treasury/outbound_(?:payments|transfers)|charges/[^/ ?#"]+/(?:capture|refunds?)|payment_intents/[^/ ?#"]+/(?:confirm|capture|increment_authorization)|invoices/[^/ ?#"]+/pay|transfers/[^/ ?#"]+/reversals|issuing/authorizations/[^/ ?#"]+/approve)|v2/money_management/outbound_(?:payments|transfers))/?(?:[?#][^"]*)?"'
     reason: moving money through Stripe's MCP write tool (a refund, charge, payout or transfer)
     remedy: Check the amount, currency and payee in the call's arguments before approving it; a refund with no amount refunds in full.
     rationale: Stripe asks a person to confirm some of these writes only when the agent acts as that person; a person confirms each one here, whatever the key.
@@ -1014,6 +1048,25 @@ ask:
     reason: applying a patch through the shell
     remedy: Have a person approve the held call, or edit files with the apply_patch tool, which Tracekit decides file by file.
     rationale: A patch applied from the shell writes files that no file rule reads; a person confirms it.
+  - id: TK-A093
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # curl's config file (.curlrc, _curlrc on Windows, curlrc under XDG_CONFIG_HOME), in any case: the agent's file system
+    # may ignore it. Another harness's file tool and an MCP server's (write_file, edit_file) are decided as these too
+    # (service.FILE_TOOLS)
+    pattern: '(?:^|[/\\])[._]?[Cc][Uu][Rr][Ll][Rr][Cc]$'
+    reason: writing curl's config file
+    remedy: Have a person approve the held call, or give curl its options on the command line.
+    rationale: curl reads its config file before its command line, so a method, data, URL or proxy set there changes every later curl call that doesn't start with -q.
+  - id: TK-A094
+    class: shell
+    field: effects
+    # each file a command writes, as TK-A093 names curl's config file
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?[._]?[Cc][Uu][Rr][Ll][Rr][Cc]$'
+    reason: writing curl's config file
+    remedy: Have a person approve the held call, or give curl its options on the command line.
+    rationale: curl reads its config file before its command line, so a method, data, URL or proxy set there changes every later curl call that doesn't start with -q.
   - id: TK-A035
     class: shell
     # each command's argv: AWS Secrets Manager's get-secret-value, SSM Parameter Store's reads with --with-decryption
@@ -1029,6 +1082,10 @@ ask:
     # `--scope "/a --only-names"`, could hide it); infisical's commands that print no stored value
     pattern: '^(aws (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secretsmanager (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-secret-value|batch-get-secret-value)(["]| |$)|ssm (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get-parameters-by-path|get-parameters?|get-parameter-history)( [\w\W]*?)? --w(i(t(h(-(d(e(c(r(y(p(t(i(o(n)?)?)?)?)?)?)?)?)?)?)?)?)?)?(["]| |$))|gcloud (-[^ ]+ +([^- ][^ ]* +)?){0,8}((alpha|beta) (-[^ ]+ +([^- ][^ ]* +)?){0,8})?secrets (-[^ ]+ +([^- ][^ ]* +)?){0,8}versions (-[^ ]+ +([^- ][^ ]* +)?){0,8}access(["]| |$)|az (-[^ ]+ +([^- ][^ ]* +)?){0,8}keyvault (-[^ ]+ +([^- ][^ ]* +)?){0,8}secret (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|show-deleted|download)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}(read|inject)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}item (-[^ ]+ +([^- ][^ ]* +)?){0,8}get .*(--reveal|--fields(=| )[^ ]+|--otp|--format(=| )json)(["]| |$)|op (-[^ ]+ +([^- ][^ ]* +)?){0,8}document (-[^ ]+ +([^- ][^ ]* +)?){0,8}get(["]| |$)|bw (-[^ ]+ +([^- ][^ ]* +)?){0,8}(get (password|item|notes|totp|attachment)|list items|export)(["]| |$)|doppler (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets(["]| |$)|infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}(secrets|export)(["]| |$)|lpass (-[^ ]+ +([^- ][^ ]* +)?){0,8}(show|export)(["]| |$))'
     unless: '^(aws secretsmanager (batch-)?get-secret-value|gcloud( alpha| beta)? secrets versions access|az keyvault secret (show|show-deleted|download)|op (read|inject|item get|document get)|bw (get (password|item|notes|totp|attachment)|list items|export)|doppler secrets( [a-z][a-z-]{0,20})?|infisical (secrets( [a-z][a-z-]{0,30})?|export)|lpass (show|export)) --help$|^(doppler|infisical) --help( [a-z][a-z0-9-]{0,40}){1,3}$|^doppler secrets( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8} --only-names( (-p|--project|-c|--config) [A-Za-z0-9][A-Za-z0-9_.-]{0,80}| --(json|raw|visibility|type|silent|debug)){0,8}$|^infisical (-[^ ]+ +([^- ][^ ]* +)?){0,8}secrets +(set|delete|folders +(create|get)|generate-example-env)([ \t]|$)'
+    # aws and gcloud as their grammars read them, besides the text above: help and nothing else
+    unless_cli:
+      - {command: 'aws secretsmanager (batch-)?get-secret-value', flag: --help, alone: true}
+      - {command: 'gcloud (alpha |beta )?secrets versions access', flag: --help, alone: true}
     reason: reading a secret's value from a secret store
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: An agent that can read a live password or key can use it or send it anywhere; commands that only list names or metadata stay allowed.
@@ -1161,7 +1218,8 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)\.git/(modules/([^/]+/){1,8})?hooks/'
+    # the hooks folder itself too (a file tool moving a script there names the folder: move_file)
+    pattern: '(^|/)\.git/(modules/([^/]+/){1,8})?hooks(/|$)'
     reason: writing a Git hook
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
@@ -1169,9 +1227,11 @@ ask:
     class: shell
     field: target
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
-    # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
-    # held
-    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    # `push`, setting core.hooksPath (the key and a value) or unsetting it, or including a file (include.path,
+    # includeIf.<condition>.path), which may set it, or editing the file (--edit, -e, `config edit`: an editor writes
+    # any key, `GIT_EDITOR='tee -a'` too), and `git clone` setting either in the new repository's config (-c,
+    # --config); reading it (`--get`, the key alone) is not held
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(config ([\w\W]*? )?((core\.hookspath|include(if\.[^ ]*)?\.path)[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$)|(--edit|-e)( |$))|config edit( |$)|clone ([\w\W]*? )?(-c ?|--config[ =])(core\.hookspath|include(if\.[^ =]*)?\.path)=)'
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
@@ -1180,7 +1240,7 @@ ask:
     field: effects
     # TK-A012's hooks folders as every file a command writes (engine._effects, as TK-D023 reads them): perl -i and
     # the other writers TK-A013's list leaves out
-    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.git/(?:modules/(?:[^/]+/){1,8})?hooks/'
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.git/(?:modules/(?:[^/]+/){1,8})?hooks(?:/|$)'
     reason: writing a Git hook
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for every way the shell writes a file.
@@ -1514,14 +1574,16 @@ flag:
     class: shell
     field: line
     # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
-    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ or publi, which
+    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ, publi or publis, which
     # it runs as publish, pip of any version, uv, pipx, poetry, conda, cargo, gem,
-    # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publi too, also after up to eight options, as
+    # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publis too, also after up to eight options, as
     # TK-A056 reads one: npm --dry-run publish as npm publish --dry-run, and an npm, pnpm, yarn or bun install too: npm
     # --prefix x install), a docker or podman run or push (container run, image push, after up to eight options),
     # terraform or tofu apply, pulumi up, helm install, upgrade or push and kubectl apply or delete (both after up to
-    # eight options). The strict pack holds it, so its list is what "every install" means there
-    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(li?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    # eight options). A release created or published, an image built or set with a push, a subtree push, a push
+    # setting written and a publishing CLI's command the line can't tell are TK-F030's, read per command. The strict
+    # pack holds both, so their lists are what "every install" means there
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(l(is?)?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
@@ -1673,3 +1735,49 @@ flag:
     # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
     pattern: '^'
     label: skill_run
+  - id: TK-F030
+    class: shell
+    field: publish
+    # a push or publish read per command (engine._pushes, as the `publish` field gives it: only for the programs its
+    # readers take, so other calls read no push field), however many words it runs to: a GitHub release created
+    # (gh or hub release create; release new as the command gh's grammar names it, whatever else the argv holds) but
+    # one saved as a draft, read as TK-A056's unless and unless_cli read it (a draft isn't published, and a line subject
+    # would let a draft's -d exempt another command's publish); a release created or a draft published through GitHub's
+    # API (`PUSH:release`: gh api, curl and the other REST clients), gh or hub release edit (a last --draft that isn't
+    # true) or goreleaser; an image pushed (`PUSH:image`: build or buildx build with --push or a registry output,
+    # buildx bake, compose push and build --push, imagetools create, push, image push and manifest push, by docker,
+    # podman, nerdctl, buildah, docker-compose and podman-compose, and crane's, oras's and skopeo's writes); a tag made,
+    # moved or deleted through GitHub's refs API (`PUSH:tag`); a subtree push (`PUSH:subtree`); a push setting written
+    # (`PUSH:config`: remote.<name>.push and the others that change where a push goes, git config --edit, a clone's
+    # -c, a config file written, --git-dir or a moved config on a push line); and a command of a CLI that publishes
+    # whose subcommand the line can't tell (`PUSH:verb`: `git $X origin main`, a word xargs or parallel fills in).
+    # The strict pack holds it without the draft exemption
+    pattern: '^PUSH:(?:release|image|subtree|config|verb|tag) |^(?:gh|hub)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create(?: |$)'
+    unless: '^(?:gh|hub)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} release create (?:(?:[\w\W]*? )?(?:[^- ][^ ]*|-[^ =]+=[^ ]*|-[nFtR][^ ]+|-[dp]|--(?:draft|prerelease|generate-notes|latest|verify-tag|notes-from-tag|fail-on-no-commits)) )?(?:-d|--draft(?:=true)?)(?: |$)'
+    unless_cli:
+      - {command: gh release create, flag: --draft, required: true}
+    label: side_effect
+  - id: TK-F031
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a Git config file a file tool writes (a repository's, a bare one's, a submodule's, a worktree's config.worktree,
+    # ~/.gitconfig and the files named for one a config includes, .gitconfig.local, .gitalias, XDG's git/config, the
+    # system's etc/gitconfig: a remote's push refspec or an alias set there moves a later push, as TK-F030 reads a
+    # shell write of one), a cargo config file (.cargo/config.toml, an installation's cargo/config.toml, whose [alias]
+    # may name a publish) and a virtualenv's activate script (bin/activate, activate.fish, Scripts/Activate.ps1: a
+    # later push's line may source it); another harness's and an MCP server's file tools too (service.FILE_TOOLS). The
+    # dev and strict packs hold it
+    pattern: '(^|/)([^/]*\.git/(modules/([^/]+/){1,8}|worktrees/[^/]+/)?config(\.worktree)?|([^/.]*[.-])?git(config|alias(es)?)([.-][^/]*)?|git/config|\.?cargo/config(\.toml)?|(bin|scripts)/activate(\.[a-z0-9]+)?)$'
+    label: side_effect
+  - id: TK-F032
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    # a Git config section, in git's syntax, a file tool writes into a file a Git config may include by any name, which
+    # TK-F031's paths don't name: an [alias], a [remote "…"] (its push refspec, push URL, mirror), a [url "…"] rewrite
+    # or an [include]/[includeIf "…"] at a line's start (engine._git_config_text, which reads git's old dotted
+    # [remote.<name>] with a push, push URL or mirror key as [remote "<name>"]: not a source, document or data file by
+    # its extension, nor another tool's config). The dev and strict packs hold it
+    field: git_config
+    pattern: '(?:^|\n)[ \t\f\v\r]*\[[ \t]*(?:[Aa][Ll][Ii][Aa][Ss][ \t]*\]|(?:[Rr][Ee][Mm][Oo][Tt][Ee]|[Uu][Rr][Ll]|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][Ii][Ff])[ \t]+"|[Ii][Nn][Cc][Ll][Uu][Dd][Ee][ \t]*\])'
+    label: side_effect

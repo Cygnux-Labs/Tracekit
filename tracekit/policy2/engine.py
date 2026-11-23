@@ -18,7 +18,7 @@ import tokenize
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
-from . import classes, shell
+from . import classes, grammar, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
@@ -172,6 +172,13 @@ class Engine:
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
+        # a shell rule's unless_cli: (the programs its entries name, [(program, compiled command, flag, without,
+        # alone)], the programs an entry requires a reading of), by rule id (_exempt)
+        self._cli = {r["id"]: ({grammar.program_of(e["command"]) for e in r["unless_cli"]},
+                               [(grammar.program_of(e["command"]), compile_("(?:%s)" % e["command"]), e.get("flag"),
+                                 frozenset(e.get("without", ())), e.get("alone", False)) for e in r["unless_cli"]],
+                               {grammar.program_of(e["command"]) for e in r["unless_cli"] if e.get("required")})
+                     for _, r, *_ in self.rules if r.get("unless_cli")}
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
         self._names = {} if self.engine.startswith("re2@") else None
@@ -340,9 +347,10 @@ class Engine:
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
             # each with the subjects it reads, its memo key (rules on the same subjects read them once; a shell rule with
-            # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts
+            # no field reads argv), its prefilter strings' ids in the RE2 Set, its _parts and its unless_cli (_cli)
             self._of[cls] = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
-                                   "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
+                                   "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])),
+                              self._cli.get(x[1]["id"]) if cls == "shell" else None)
                              for x in self.rules if _reaches(x[1], cls)]
             self._of[cls, "deny"] = [x for x in self._of[cls] if x[0] == "deny"]
 
@@ -378,15 +386,18 @@ class Engine:
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects it can read
             and one is over MAX_SUBJECT), else None; TimeoutError past the deadline. `held`: its subjects' joined text
             is known to hold one of its prefilter strings."""
-            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
+            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts, cli = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             if key not in memo:
-                try:
-                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
-                except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
-                    subjects, spent[:] = [], [e.cause]
-                memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
+                if cls == "shell" and key[0] not in args and key[0] not in _SHELL_READ:
+                    memo[key] = _NO_SUBJECTS   # an argument the call doesn't give (_subjects: args.get, none)
+                else:
+                    try:
+                        subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
+                    except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread
+                        subjects, spent[:] = [], [e.cause]   # line is
+                    memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
             if lits is None or held or holds(lits, ids, joined):
                 # a rule matching in any case (rx in __init__) reads an ASCII subject as it reads one of the same lower
@@ -406,24 +417,37 @@ class Engine:
                             any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and (
                             self._match(pat, subject, False, deadline) if parts is None else any(
                                 self._match(rx, subject, False, deadline) for rx, strings in parts
-                                if any(map(low.__contains__, strings)))) and not (
-                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                                if any(map(low.__contains__, strings)))) and (
+                            cli is not None or not (unless is not None and self._match(unless, subject, False,
+                                                                                         deadline))) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
-                        return rule["id"]
+                        if cli is None:
+                            return rule["id"]
+                        # the pattern matches: read its commands by their grammars (_cli_hit); none hits, the subjects
+                        # over MAX_SUBJECT still decide below
+                        if found := self._cli_hit(rule, pat, unless, cli, key, args, fields, parsed, untrusted,
+                                                  deadline, name):
+                            return found
+                        break
             if big:   # the rule's own verdict: a flag rule cannot block a large call
                 field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
                 oversize.append(f"{rule['id']}'s subject ({field})")
                 return "TK-OVERSIZE"
             return None
         # (an argument's command: its denies) less the rules whose tool pattern needs a string the tool's name lacks
-        # (_named would refuse the name without a search): kept per class and name
-        if (rules := self._of.get((cls, bool(_hidden), low_name))) is None:
+        # (_named would refuse the name without a search): kept per class and name, with their _masks
+        if (got := self._of.get((cls, bool(_hidden), low_name))) is None:
             rules = [x for x in (self._of[cls, "deny"] if _hidden else self._of[cls])
                      if x[7] is None or any(map(low_name.__contains__, x[7]))]
+            got = rules, _masks(rules)
             if len(self._of) < 4096 and len(low_name) <= 256:
-                self._of[cls, bool(_hidden), low_name] = rules
-        for entry in rules:
+                self._of[cls, bool(_hidden), low_name] = got
+        rules, masks = got
+        out = 0   # the rules (a bit each, by place) that a field read already rules out, as the check below would
+        for place, entry in enumerate(rules):
+            if out >> place & 1:
+                continue
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
             # is over MAX_SUBJECT) gives nothing: hit() would match nothing; one whose subjects hold one, hit() doesn't
             # look for again
@@ -431,6 +455,7 @@ class Engine:
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
                     not m[0] or entry[5] is not None and not (held := holds(entry[5], entry[9], m[2]))):
                 continue
+            fresh = entry[8] not in memo
             try:
                 if (found := hit(entry, parsed, memo, oversize, held)) is not None:
                     hits[entry[0]].append(found)
@@ -438,6 +463,19 @@ class Engine:
                 nondeterministic = True
                 hits["deny"].append(entry[1]["id"])
                 break
+            # a field just read rules out at once each later rule on it the check above would pass over, by the RE2
+            # Set's ids of what its subjects hold (where the Set finished: `^` among them)
+            if fresh and (m := memo.get(entry[8])) and not m[3] and (mask := masks.get(entry[8])):
+                on, always, ids, by_id = mask
+                if not m[0]:
+                    out |= on
+                elif self._set is not None:
+                    if (have := in_set.get(m[2])) is None:
+                        have = in_set[m[2]] = frozenset(self._set.Match(m[2]))
+                    if self._every in have:
+                        for s in have & ids:
+                            always |= by_id[s]
+                        out |= on & ~always
         # a deny that only a second reading of the command makes (an expansion read as empty, a pattern as matching
         # nothing: `rm -rf "$D"/`), and not the command as written, takes on_parse_error's section: the line can't say
         # whether $D is empty, so by default a person answers it. A line with no $, backquote or pattern character has
@@ -503,6 +541,53 @@ class Engine:
             out.update((k, base[k]) for k in ("nondeterministic", "oversize") if k in base and k not in out)
         return out
 
+    def _cli_hit(self, rule, pat, unless, cli, key, args, fields, parsed, untrusted, deadline, tool):
+        """The id a shell rule with `unless_cli` gives a call whose subjects its pattern matches, else None. A grammar
+        only takes an exemption away: a command of a program its entries name that fits that program's grammar
+        (grammar.read) and no entry takes (_exempt) is read without the text `unless`, so what the text reads as an
+        exemption (a flag in a quoted word or in another flag's value) exempts nothing; every other command (one an
+        entry takes, one no grammar reads) is read as before, with it, but one of a program an entry `required` the
+        reading of, which the grammar can't read (a glob, an expansion, a runner that adds words): without it. An xargs
+        or parallel command is also read with the commands read without it, in its place: what it runs is read with
+        its -I word (_run_by: `echo m | xargs -IX gh api … -f branch=Xain`)."""
+        programs, entries, required = cli
+        read, text = [], []
+        for c in parsed[0]:
+            reading = grammar.read(c) if c["argv"][0] in programs else None
+            exempt = reading is not None and self._exempt(reading, entries, deadline) or \
+                reading is None and c["argv"][0] not in required
+            (text if exempt else read).append(c)
+            if exempt and c["argv"][0] in ("xargs", "gxargs", "parallel"):
+                read.append(c)
+        for cmds, exemption in ((read, None), (text, unless)):
+            if not cmds:
+                continue
+            subjects = self._subjects("shell", key[0], args, fields, (cmds, *parsed[1:]), key[1], None, None, tool)
+            for subject in _prepare(subjects, _TAGGED.get(key[0], 0))[0]:
+                if self._match(pat, subject, False, deadline) and not (
+                        exemption is not None and self._match(exemption, subject, False, deadline)) and (
+                        "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
+                                                                                 fields)):
+                    return rule["id"]
+        return None
+
+    def _exempt(self, reading, entries, deadline):
+        """Whether an unless_cli entry takes a Reading: its command (the program and the subcommands) matches the
+        entry's whole; its `flag` is set (a switch whose last value is true, or for --no-X the false last value of X's);
+        none of its `without` flags is given; with `alone`, nothing else is."""
+        line = " ".join(filter(None, (reading.program, reading.command)))
+        for program, command, flag, without, alone in entries:
+            if program != reading.program or not self._match(command, line, True, deadline):
+                continue
+            if without & set(reading.flags):
+                continue
+            if flag is not None and not _on(reading.flags, flag):
+                continue
+            if alone and (reading.positionals or set(reading.flags) - {flag}):
+                continue
+            return True
+        return False
+
     def _parse(self, args, command, work, readings=True, fallback=True, pieces=True):
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
@@ -558,28 +643,12 @@ class Engine:
                 cls, field, a, classes.extract(cls, "", a, MAX_SUBJECT), parsed, split)))
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
-        if cls == "shell" and field == "effects":
-            return _effects(parsed)
-        if cls == "shell" and field == "tracekit":
-            return _tracekit(parsed, finds, [0] if work is None else work)
-        if cls == "shell" and field == "package_index":
-            return _package_indexes(parsed[0], parsed[2])
-        if cls == "shell" and field == "environment":
-            return _environment_sent(parsed)
-        if cls == "shell" and field == "harness_launch":
-            return _harness_launches(parsed[0], parsed[2], parsed[5] if len(parsed) > 5 else {})
-        if cls == "shell" and field == "gh_runs":
-            return _gh_runs(parsed[0])
-        if cls == "shell" and field == "container_host_access":
-            return _container_host_access(parsed[0])
-        if cls == "shell" and field == "push":
-            return _pushes(parsed[0])
+        if cls == "shell" and (read := _SHELL_FIELDS.get(field)) is not None:   # (one lookup for each)
+            return read(parsed, finds, [0] if work is None else work)
         if cls in ("unknown", "mcp") and field == "run":
             return _runs(args, tool)
         if cls == "sql" and field == "code":
             return fields.get("code", [])
-        if cls == "shell" and field == "code":
-            return _code(parsed, [0] if work is None else work)
         if cls == "shell" and field in (None, "argv"):
             # and each again with its words' own spaces as WORD_SPACE where a word before its last has one (the last
             # word's move no word after it: sqlite3's SQL is searched once), and with each word that is only a variable
@@ -604,6 +673,8 @@ class Engine:
                 p for c in parsed[0] if (p := _published(c["argv"]))))
         if cls == "fs" and field == "ci_workflow" and isinstance(fields.get(field), str):   # and its wrappers unwrapped
             return list(dict.fromkeys([fields[field], *shell.unwrapped(fields[field])]))
+        if cls == "fs" and field == "git_config":
+            return _git_config_text(args)
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
@@ -673,6 +744,156 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _on(flags, flag):
+    """Whether a Reading's switch `flag` is on: its last value true; for --no-X, X's last value false."""
+    values = flags.get(flag)
+    if values is None and flag.startswith("--no-"):
+        values = [{"true": "false", "false": "true"}.get(v, v) for v in flags.get("--" + flag[5:], ())]
+    return bool(values) and values[-1] == "true"
+
+
+# the curl options that send a body (canonical, as curl's table names them: --expand-data is --data)
+_CURL_BODY = {"--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form",
+              "--form-string"}
+_CURL_GLOBS = 256   # the URLs one word's globs may make, read one by one; past it, a URL the line can't tell
+
+
+def _curl_requests(commands):
+    """`<METHOD> <url>` for each request each curl command makes, as curl's grammar reads it (grammar.read): each URL
+    (a positional, --url, also --expand-url's; curl's globs expanded unless -g: `refund[s-s]`, `{refunds}`; dot
+    segments removed unless --path-as-is; _curl_urls) with the method curl sends: the last -X/--request (also
+    --expand-request), else PUT with -T/--upload-file, else with a body (-d, --data*, --json, -F, --form*, also as
+    --expand-*) POST, or GET where -G sends it as a query (not with --json or a form) and -q first keeps curl's
+    config file unread (one may set a method or data), else HEAD with -I, else GET. `*` for a method the line can't
+    tell (an expansion, --next's other requests, -K's options) and for each word of a curl command the grammar can't
+    read that may be a URL. --request-target names the path sent (_targeted; one the line can't tell, `*`), and a
+    request that isn't a GET following a redirect with credentials (--location-trusted, or -L with -n,
+    --netrc-optional or --netrc-file) is also one the line can't tell (`* *`: a redirect takes it, and its
+    credentials, anywhere)."""
+    out = []
+    for c in commands:
+        argv = c["argv"]
+        if argv[:1] != ["curl"]:
+            continue
+        reading = grammar.read(c)
+        if reading is None:   # (and with --request-target, a path it may send to any of them: `* *`)
+            out += [f"* {u}" for w in argv[1:] if "." in w for u in _curl_urls(w) if u != "*"] + [
+                "* *"] * ("--request-target" in argv)
+            continue
+        f = reading.flags
+        request = f.get("--request", [None])[-1]
+        method = "*" if "--next" in f or "--config" in f or request is not None and re.search(r"[$`{]", request) \
+            else request.upper() if request is not None else "PUT" if "--upload-file" in f else (
+                "GET" if _on(f, "--get") and not {"--json", "--form", "--form-string"} & f.keys() and
+                argv[1:2] in (["-q"], ["--disable"]) else "POST") if _CURL_BODY & f.keys() else \
+            "HEAD" if _on(f, "--head") else "GET"
+        # --request-target is the path curl sends, whatever the URL's; a request that isn't a GET and follows a redirect
+        # with credentials (--location-trusted's to any host, or -L with a netrc file's for the host it lands on) goes
+        # anywhere with them, a 307 keeping its method: one the line can't tell
+        target = f.get("--request-target", [None])[-1]
+        for url in [*reading.positionals, *f.get("--url", ())]:
+            out += [f"{method} {_targeted(u, target)}" for u in _curl_urls(url, _on(f, "--globoff"),
+                                                                       _on(f, "--path-as-is"))]
+        if method not in ("GET", "HEAD") and (_on(f, "--location-trusted") or _on(f, "--location") and (
+                _on(f, "--netrc") or _on(f, "--netrc-optional") or "--netrc-file" in f)):
+            out.append("* *")
+    return list(dict.fromkeys(out))
+
+
+def _targeted(url, target):
+    """A normalised URL (_curl_urls) with curl's --request-target as its path and query, normalised as a path is; `*`
+    for a target the line can't tell (an expansion, a backquote, a {{variable}})."""
+    if target is None or url == "*":
+        return url
+    if re.search(r"[$`]|\{\{", target):
+        return "*"
+    base = re.match(r"[a-z][\w+.-]*://[^/?#]*", url).group()
+    return base + (target if target == "*" else _normal_url("http://h" + ("" if target[:1] == "/" else "/") +
+                                                            target)[len("http://h"):])
+
+
+def _curl_urls(url, globoff=False, as_is=False):
+    """The URLs curl requests for one URL word, each as a server routes it: scheme and host in lower case (http
+    where none is given, as curl guesses), no user, port or trailing dot on the host, runs of `/` as one, a
+    percent-encoded unreserved character decoded, and dot segments removed (unless `as_is`); each URL its globs make
+    (unless `globoff`); `*` for one the line can't tell: more URLs than _CURL_GLOBS, a {{variable}} (--expand-url)."""
+    urls = None if "{{" in url else [url] if globoff else _curl_globs(url)
+    return ["*"] if urls is None else list(dict.fromkeys(_normal_url(u, as_is) for u in urls))
+
+
+def _curl_globs(url):
+    """The URLs curl's globbing makes of one: each {a,b} set and [a-z] or [1-9:2] range taken every way, at most
+    _CURL_GLOBS of them (None past it); a bracket or brace curl can't read is read as written."""
+    if not ("{" in url or "[" in url or "\\" in url):
+        return [url]
+    parts, i, unclosed = [[""]], 0, set()   # (a bracket or brace with no end after it: none after it ends either)
+    while i < len(url):
+        c = url[i]
+        if c == "\\" and i + 1 < len(url):
+            parts.append([url[i + 1]])
+            i += 2
+            continue
+        end = url.find("}" if c == "{" else "]", i) if c in "{[" and c not in unclosed else -1
+        if end < 0:
+            if c in "{[":
+                unclosed.add(c)
+            parts.append([c])
+            i += 1
+            continue
+        inner = url[i + 1:end]
+        if c == "{":
+            parts.append(inner.split(","))
+        elif m := re.fullmatch(r"(?:([a-zA-Z])-([a-zA-Z])|(\d{1,9})-(\d{1,9}))(?::(\d{1,9}))?", inner):
+            step = int(m.group(5) or 1) or 1
+            if m.group(1):
+                items = [chr(k) for k in range(ord(m.group(1)), ord(m.group(2)) + 1, step)]
+            else:
+                lo, hi, width = int(m.group(3)), int(m.group(4)), len(m.group(3))
+                if (hi - lo) // step >= _CURL_GLOBS:
+                    return None
+                items = [str(k).zfill(width) for k in range(lo, hi + 1, step)]
+            parts.append(items or [""])
+        else:
+            parts.append([url[i:end + 1]])
+        i = end + 1
+    total = 1
+    for p in parts:
+        total *= len(p)
+        if total > _CURL_GLOBS:
+            return None
+    return ["".join(x) for x in itertools.product(*parts)]
+
+
+_UNRESERVED = re.compile(r"%(2[dDeE]|3[0-9]|[46][1-9a-fA-F]|[57][0-9aA]|5[fF]|7[eE])")
+
+
+def _normal_url(url, as_is=False):
+    """One URL as a server routes it (_curl_urls)."""
+    m = re.match(r"([A-Za-z][A-Za-z0-9+.-]*)://", url)
+    scheme, rest = (m.group(1).lower(), url[m.end():]) if m else ("http", url)
+    cut = re.search(r"[/?#]", rest)
+    authority, tail = (rest[:cut.start()], rest[cut.start():]) if cut else (rest, "")
+    host = unquote(authority.rpartition("@")[2])   # (curl decodes a percent-encoded host: api%2estripe.com)
+    host = host[:host.index("]") + 1] if host.startswith("[") and "]" in host else host.partition(":")[0]
+    path, sep, after = re.split(r"([?#])", tail, maxsplit=1) if re.search(r"[?#]", tail) else (tail, "", "")
+    path = _UNRESERVED.sub(lambda x: chr(int(x.group(1), 16)), re.sub(r"/{2,}", "/", path))
+    return f"{scheme}://{host.lower().rstrip('.')}{path if as_is else _dot_segments(path)}{sep}{after}"
+
+
+def _dot_segments(path):
+    """RFC 3986's remove_dot_segments, as curl normalises a URL's path."""
+    if "/." not in path and path[:1] != ".":   # (no segment is `.` or `..`)
+        return path
+    out = []
+    for seg in path.split("/")[1:] if path.startswith("/") else path.split("/"):
+        if seg == "..":
+            out = out[:-1]
+        elif seg != ".":
+            out.append(seg)
+    trailing = path.endswith(("/.", "/..")) and bool(out) and out[-1] != ""
+    return ("/" if path.startswith("/") else "") + "/".join(out) + "/" * trailing
 
 
 def _alternatives(pattern):
@@ -1416,7 +1637,148 @@ _PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "p
               "set-upstream": "", "progress": "", "verify": "", "no-verify": "", "signed": "", "atomic": "",
               "ipv4": "", "ipv6": ""}
 _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
-_REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
+# a config key that changes where a push with a refspec goes, casefolded (a remote's name keeps case): a remote's
+# push refspec, whose mapping `git push origin feature` follows (refs/heads/feature:refs/heads/main), its push URL
+# and mirror setting, a URL rewrite, and a file included (include.path, includeIf.<cond>.path), which may set any of
+# them; push.default, remote.pushDefault and branch.<name>.pushRemote pick only a bare push's target, which is held
+# url.<base>.insteadOf rewrites a push URL too, where no pushInsteadOf is set: to another host or path it sends a push
+# to another repository (_rewrites); one that changes only the scheme or the user (ssh, a token) changes how git connects
+_PUSH_KEY = re.compile(r"remote\..+\.(?:push|pushurl|mirror)|url\..+\.(?:push)?insteadof|include(?:if\..+)?\.path",
+                       re.S)
+
+
+def _push_key(setting):
+    """Whether a `key=value` setting git is given (-c, --config-env, clone's --config, `git config key value`) may
+    change where a push goes: a _PUSH_KEY (insteadOf only to another repository: _rewrites), a key the line can't tell
+    (an expansion or backquote before its `=`), or an alias that may push (_alias_pushes)."""
+    key, _, value = setting.partition("=")
+    low = key.casefold()
+    if low.startswith("url.") and low.endswith(".insteadof"):   # (an expansion in its URL leaves it a rewrite)
+        return _rewrites(key[4:-10], value)
+    if "$" in key or "`" in key:
+        return True
+    if low.startswith("alias."):
+        return _alias_pushes(value)
+    return bool(_PUSH_KEY.fullmatch(low))
+
+
+# the git commands an alias may name that neither push nor run a command of the alias's own, and the switches git takes
+# before one (`-p log`); another alias (`pu`), config, remote, submodule or anything else may (an allowlist)
+_ALIAS_SAFE = frozenset(("add", "am", "blame", "branch", "cat-file", "checkout", "cherry", "cherry-pick", "clean",
+                         "commit", "count-objects", "describe", "diff", "fetch", "for-each-ref", "format-patch", "fsck",
+                         "gc", "grep", "log", "ls-files", "ls-tree", "merge", "merge-base", "mv", "name-rev", "prune",
+                         "pull", "range-diff", "rebase", "reflog", "reset", "restore", "rev-list", "rev-parse", "revert",
+                         "rm", "shortlog", "show", "show-branch", "stash", "status", "switch", "tag", "whatchanged",
+                         "worktree"))
+_ALIAS_SWITCHES = frozenset(("-p", "--paginate", "-P", "--no-pager", "--no-replace-objects", "--literal-pathspecs",
+                             "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks"))
+# the options of those commands that run a command, each also as a unique prefix git reads as it: rebase's --exec (-x),
+# grep's --open-files-in-pager (-O), fetch's and pull's --upload-pack (a local repository's runs here). (A file their
+# --output writes is the effects field's: the parser reads a saved alias as the command it runs)
+_ALIAS_RUNS = {"rebase": re.compile(r"--ex|-[a-zA-Z]*x"), "grep": re.compile(r"--op|-[a-zA-Z]*O"),
+               "fetch": re.compile(r"--upl"), "pull": re.compile(r"--upl")}
+# merge's own strategies: any other runs git-merge-<name> from the PATH
+_MERGE_STRATEGIES = frozenset(("ort", "recursive", "resolve", "octopus", "ours", "subtree"))
+
+
+def _alias_pushes(value):
+    """Whether a git alias's value (`alias.<name>`) may push or run a command of its own: anything but one of
+    _ALIAS_SAFE's commands after git's own switches (_ALIAS_SWITCHES), and one of them given an option that runs a
+    command (_ALIAS_RUNS; a merge or pull strategy but git's own) or a word the line can't tell; a value git's
+    quoting can't split too."""
+    try:
+        words = shlex.split(value)
+    except ValueError:
+        return True
+    while words[:1] and words[0] in _ALIAS_SWITCHES:
+        words = words[1:]
+    if not words or words[0] not in _ALIAS_SAFE:
+        return True
+    runs = _ALIAS_RUNS.get(words[0])
+    strategies = [b for a, b in zip(words, words[1:] + [""]) if a in ("-s", "--strategy")] + [
+        w.partition("=")[2] if w.startswith("--") else w[2:] for w in words if re.match(r"--strategy=|-s.", w)]
+    return any("$" in w or "`" in w or runs and runs.match(w) for w in words[1:]) or \
+        words[0] in ("merge", "pull") and not _MERGE_STRATEGIES.issuperset(strategies)
+
+
+def _rewrites(base, value):
+    """Whether url.<base>.insteadOf <value> sends what names <value> to another repository: another host, port or
+    path prefix (_git_url_parts, compared exactly: `…/org` for `…/org/` joins the next word to it), a transport that
+    isn't https or ssh, or a URL whose parts the line can't tell. One that changes only the scheme between those or
+    the user (git@github.com: for https://github.com/, a token added) changes how git connects."""
+    a, b = _git_url_parts(base), _git_url_parts(value)
+    return a is None or b is None or a != b or any(re.search(r"[$`]", p) for p in (*a, *b) if p)
+
+
+# a Git URL over https or ssh: scheme://[user@]host[:port][/path], whose authority ends at a `/` (a `?`, `#` or `\`
+# anywhere, or a user with any other character, `%` among them, is no shape read here), and scp's [user@]host:path;
+# not http or git://, which send in the clear, nor file://, a local path whatever host it names
+_GIT_URL = re.compile(r"(?i:https|ssh|git\+ssh|ssh\+git)://(?:[\w.~+:${}-]*@)?(\[[\w:.%]*\]|[^:/?#\\@\[\]\s]*)"
+                      r"(?::(\d*))?(?:/([^?#\\\s]*))?")
+_GIT_SCP = re.compile(r"(?:[\w.~+${}-]*@)?([^:/?#\\@\[\]\s]+):(?!//)([^?#\\\s]*)")
+
+
+def _git_url_parts(url):
+    """(host casefolded, port, path after the host) of a Git URL (_GIT_URL, _GIT_SCP), else None."""
+    url = url.strip("'\"")
+    if m := _GIT_URL.fullmatch(url):
+        return (m.group(1).casefold(), m.group(2) or "", m.group(3) or "") if m.group(1) else None
+    if m := _GIT_SCP.fullmatch(url):
+        return m.group(1).casefold(), "", m.group(2)
+    return None
+
+
+# variables that move the config files a git push reads (the global and system ones: HOME's and XDG_CONFIG_HOME's
+# .gitconfig and git/config too; GIT_DIR's and GIT_COMMON_DIR's repository's config) or that make bash read a file
+# first, which may set any of them (BASH_ENV)
+_PUSH_CONFIG_ENV = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "HOME", "XDG_CONFIG_HOME", "GIT_DIR", "GIT_COMMON_DIR",
+                    "BASH_ENV")
+# a Git config file a push reads, in any case: a repository's (`.git/config`, a bare one's `x.git/config`, a submodule's,
+# a worktree's config.worktree), the global ones (~/.gitconfig, any XDG_CONFIG_HOME's git/config) and the system one
+# (/etc/gitconfig, Homebrew's etc/gitconfig), as TK-F031 reads a file tool's write of one
+_GIT_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:[^/\\]*\.git[/\\](?:modules[/\\](?:[^/\\]+[/\\]){1,8}|worktrees[/\\]"
+                              r"[^/\\]+[/\\])?config(?:\.worktree)?|\.gitconfig|git[/\\]config|"
+                              r"etc[/\\]gitconfig)$")
+# a cargo config file, in any case (a project's, a parent folder's, CARGO_HOME's: .cargo/config.toml, .cargo/config;
+# an installation's cargo/config.toml, /usr/local/cargo's; $CARGO_HOME/config.toml)
+_CARGO_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:\.?cargo|\$\{?CARGO_HOME\}?)[/\\]config(?:\.toml)?$")
+# a virtualenv's activate script, in any case and for any shell (bin/activate, activate.fish, activate.csh,
+# Scripts/Activate.ps1): a later line sources it before a push (_VENV_ACTIVATE), so writing one moves that push's config
+_ACTIVATE_FILE = re.compile(r"(?i)(?:^|[/\\])(?:bin|Scripts)[/\\]activate(?:\.[a-z0-9]+)?$")
+# the activate script of a virtualenv in the project, its path written out and relative (.venv/, venv/, env/, also in a
+# subfolder): sourcing it sets no Git variable, as writing one is held (_ACTIVATE_FILE, TK-F031)
+_VENV_ACTIVATE = re.compile(r"(?:\./)?(?:[\w-][\w.-]*/)*(?:\.venv|venv|env)/bin/activate")
+# a file no Git config is given by its name: a source, document or data file's extension (cargo's config.toml is
+# TK-F031's), or another tool's config (Mercurial's hgrc)
+_NOT_GIT_CONFIG = re.compile(r"(?i)\.(?:md|markdown|mdx|rst|txt|adoc|org|html?|css|py|pyi|ipynb|js|jsx|mjs|cjs|ts|tsx|"
+                             r"json|ya?ml|toml|xml|csv|go|rs|java|kt|c|h|cc|cpp|hpp|cs|rb|php|swift|sh|bash|zsh|lock)$|"
+                             r"(?:^|[/\\])(?:\.?hgrc|mercurial\.ini)$")
+# git's old dotted remote header, `[remote.<name>]`, with its section's lines (to the next header), and a key there
+# that moves a push: its push refspec, push URL or mirror (a bare `mirror` is true)
+_DOTTED_REMOTE = re.compile(r"(?im)^([ \t\f\v\r]*)\[[ \t]*remote\.([^\]\n]*)\]((?:\n(?![ \t\f\v\r]*\[)[^\n]*)*)")
+_PUSH_LINE = re.compile(r"(?im)^[ \t\f\v\r]*(?:push(?:url)?|mirror)[ \t]*(?:=|$)")
+
+
+def _git_config_text(args):
+    """The fs field `git_config`: the text a file tool writes (every string of its arguments but its paths: content,
+    new_string and old_string, each edit's) as git reads a config file's sections, where the file is one a Git config
+    may include, none for one _NOT_GIT_CONFIG names: a UTF-8 BOM dropped, a section header's `]` ending it, so a `[`
+    after it starts the next (`[core][alias]`, `[core] [alias]`), and git's old dotted `[remote.<name>]` with a key
+    that moves a push (_DOTTED_REMOTE) written as the `[remote "<name>"]` it is."""
+    paths = [p for p in [classes.first(args, *classes.PATH_KEYS),
+                         *(args["paths"] if isinstance(args.get("paths"), list) else ())] if isinstance(p, str)]
+    if paths and all(_NOT_GIT_CONFIG.search(p) for p in paths):
+        return []
+    text = "\n".join(classes._texts({k: v for k, v in args.items() if k not in (*classes.PATH_KEYS, "paths")}))
+    text = re.sub(r"\][ \t\f\v\r]*\[", "]\n[", text.replace("\ufeff", ""))
+    return [_DOTTED_REMOTE.sub(lambda m: f'{m[1]}[remote "{m[2]}"]{m[3]}' if _PUSH_LINE.search(m[3]) else m[0],
+                               text)] if text else []
+
+
+# git subtree's options (git-subtree.sh's OPTS_SPEC, read by rev-parse --parseopt: anywhere, a long one by a unique
+# prefix): those that take a value, and the switches (-S, --gpg-sign takes one only attached)
+_SUBTREE_VALUED = {"prefix", "annotate", "branch", "onto", "message"}
+_SUBTREE_SWITCHES = {"help", "quiet", "debug", "ignore-joins", "rejoin", "squash", "gpg-sign", "no-gpg-sign"}
 # gh api's options that take a value (gh api --help), each with what it gives here: -F fills gh's placeholders
 # ({owner}, {repo}, {branch}) in its value, -f doesn't; hub api reads -t as --flat, which takes none
 _GH_VALUED = {"-X": "method", "--method": "method", "-F": "field", "--field": "field", "-f": "raw", "--raw-field": "raw",
@@ -1514,26 +1876,38 @@ def _git_push(argv):
     expansion or a pattern, or a remote's push or mirror setting given with -c or --config-env); tags (--tags,
     --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch (--all, --mirror, the `:` refspec); an
     option push doesn't take, or an ambiguous prefix, which git refuses (send-pack's --stdin, whose refs come from its
-    input, among them). A force or a delete is another rule's (_PUSH_LONG).
-    lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
-    bare name (`git push origin v1.0`), which reads as a branch"""
+    input, among them). A force or a delete is another rule's (_PUSH_LONG). `git subtree push <repository> <ref>` (and
+    git-subtree) is read as the push it makes, of the split to that ref (_subtree_push), each reason as `subtree <why>`,
+    and one to a named branch is held too (`subtree <ref>`): it publishes a part of the tree on its own.
+    lean: a git alias (`git p`) isn't read, as TK-D003 doesn't read one; nor a tag pushed by its bare name (`git push
+    origin v1.0`), which reads as a branch"""
     name = _program(argv)
-    why = []
+    why, subtree = [], False
     if name in ("git", "hub"):
         i = 1
         while i < len(argv) and argv[i].startswith("-"):
-            # a remote's push or mirror setting given for this run (`-c remote.origin.push=HEAD:main`) picks the target
+            # a push setting given for this run (`-c remote.origin.push=HEAD:main`, _PUSH_KEY, or a key the line
+            # can't tell: `-c "$X"`) picks the target, and so may another repository's config (--git-dir)
             value = argv[i + 1] if argv[i] in ("-c", "--config-env") and i + 1 < len(argv) else \
                 argv[i].removeprefix("--config-env=") if argv[i].startswith("--config-env=") else None
-            if value is not None and _REMOTE_PUSH.fullmatch(value.partition("=")[0].casefold()):
-                why.append("unknown " + value)
+            if value is not None and _push_key(value):
+                why.append("config " + value)
+            elif argv[i].partition("=")[0] == "--git-dir":
+                why.append("config " + argv[i])
             i += 2 if argv[i] in _GIT_VALUED else 1
-        if argv[i:i + 1] not in (["push"], ["send-pack"]):
+        if name == "git" and argv[i:i + 1] == ["subtree"]:
+            words, subtree = _subtree_push(argv[i + 1:], why), True
+        elif argv[i:i + 1] not in (["push"], ["send-pack"]):
             return None
-        words = argv[i + 1:]
+        else:
+            words = argv[i + 1:]
     elif name in ("git-push", "git-send-pack"):
         words = argv[1:]
+    elif name == "git-subtree":
+        words, subtree = _subtree_push(argv[1:], why), True
     else:
+        return None
+    if words is None:
         return None
     positional, i = [], 0
     while i < len(words):
@@ -1586,7 +1960,459 @@ def _git_push(argv):
             why.append("default " + r)
         elif not target or target in ("HEAD", "@") or target.endswith("/HEAD") or any(c in target for c in "$`*?[{"):
             why.append("unknown " + r)
+    if subtree:
+        why = ["subtree " + w for w in why] or ["subtree " + " ".join(refspecs)]
     return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
+
+
+def _subtree_push(args, why):
+    """The words of the push `git subtree push` makes, as `git push` would take them ([repository, HEAD:<ref>]: it
+    pushes the split to refs/heads/<ref>, or to <dst> of a <src>:<dst>), or None for another subtree command. Its
+    options are read anywhere, a long one by a unique prefix (_SUBTREE_VALUED, _SUBTREE_SWITCHES); one it can't place
+    leaves the push's target unknown (`why`)."""
+    positional, unknown, i = [], False, 0
+    while i < len(args):
+        w, i = args[i], i + 1
+        if w == "--":
+            positional += args[i:]
+            break
+        if w.startswith("--"):
+            name, eq, _ = w[2:].partition("=")
+            names = [n for n in (*_SUBTREE_VALUED, *_SUBTREE_SWITCHES) if n.startswith(name)] if name else []
+            names = [name] if name in names else names
+            unknown |= len(names) != 1
+            i += bool(names[:1] and len(names) == 1 and names[0] in _SUBTREE_VALUED and not eq)
+        elif w.startswith("-") and len(w) > 1:
+            k = next((k for k, c in enumerate(w[1:], 1) if c in "PbmS"), None)   # -P, -b, -m take a value; -S its rest
+            unknown |= any(c not in "hqdPbmS" for c in w[1:k or len(w)])
+            i += k is not None and w[k] != "S" and k == len(w) - 1
+        else:
+            positional.append(w)
+    if positional[:1] != ["push"]:
+        return None
+    if unknown:
+        why.append("unknown subtree option")
+    ref = positional[2] if len(positional) > 2 else ""
+    return positional[1:2] + (["HEAD:" + (ref.partition(":")[2] if ":" in ref else ref)] if ref else [])
+
+
+def _push_config(argv):
+    """`PUSH:config <key>` for a git command that changes where later pushes go: `git config` (also `git config set`)
+    writing a push setting (_PUSH_KEY: a remote's push refspec, which `git push origin feature` then maps, its push URL
+    and mirror setting, a URL rewrite, a file included), `git config --edit` (-e, `git config edit`: an editor writes
+    any key, `GIT_EDITOR='tee -a'` included), `git clone` writing one into the new repository's config (-c, --config:
+    _push_key, a key the line can't tell too), and `git remote set-url --push`. A read (the key alone, --get…, --list,
+    get, list) or an unset changes no push."""
+    if _program(argv) != "git":
+        return []
+    i = 1
+    while i < len(argv) and argv[i].startswith("-"):
+        i += 2 if argv[i] in _GIT_VALUED else 1
+    sub, args = argv[i:i + 1], argv[i + 1:]
+    # git's own -c for this command: an alias that pushes, for the command it names (`git -c alias.p=push p origin
+    # main`; through --config-env its value is a variable's, one the line can't tell), and a template folder, whose
+    # config a new repository takes (-c init.templateDir=t clone)
+    given = [(a, v) for a, v in zip(argv[1:i], argv[2:i + 1]) if a in ("-c", "--config-env")] + [
+        ("--config-env", a[13:]) for a in argv[1:i] if a.startswith("--config-env=")]
+    out = ["PUSH:config " + v[:64] for a, v in given if
+           v.casefold().startswith("alias.") and (a == "--config-env" or _push_key(v)) or
+           sub in (["clone"], ["init"]) and v.partition("=")[0].casefold() == "init.templatedir"]
+    if sub == ["remote"] and args[:1] == ["set-url"] and "--push" in args:
+        return out + ["PUSH:config remote set-url --push"]
+    if sub in (["clone"], ["init"]):   # a template folder's config (--template), and the settings clone writes into
+        given = [b if a in ("-c", "--config") else a.removeprefix("--config=") if a.startswith("--config=") else a[2:]
+                 if a.startswith("-c") and len(a) > 2 else None for a, b in zip(args, args[1:] + [""])]   # the new
+        return out + ["PUSH:config clone " + v[:64] for v in given if v is not None and _push_key(v)] + [   # config
+            "PUSH:config template " + a[:64] for a in args if a.partition("=")[0] == "--template"]
+    if sub != ["config"]:
+        return out
+    verb = args[0] if args[:1] in (["set"], ["get"], ["list"], ["unset"], ["rename-section"], ["remove-section"],
+                                   ["edit"]) else None
+    if verb == "edit" or any(w in ("-e", "--edit") for w in args):   # an editor writes the whole file, any key in it
+        return ["PUSH:config edit"]
+    positional, reads, k = [], verb not in (None, "set"), 1 if verb else 0
+    while k < len(args):
+        w, k = args[k], k + 1
+        if w in ("-f", "--file", "--blob", "-t", "--type", "--default", "--comment", "--value"):
+            k += 1
+        elif w.startswith("-") and not re.search(r"\s", w):   # (no option has a blank: '-p push' is a value)
+            reads |= w.partition("=")[0] in ("--get", "--get-all", "--get-regexp", "--get-urlmatch", "-l", "--list",
+                                             "--unset", "--unset-all", "--remove-section", "--rename-section",
+                                             "--get-color", "--get-colorbool")
+        else:
+            positional.append(w)
+    key = positional[0] if positional else ""
+    if reads or len(positional) < 2 or not (_push_key(f"{key}={positional[1]}") or
+                                            key.casefold() == "init.templatedir"):
+        return out
+    return out + ["PUSH:config " + key[:64]]
+
+
+def _push_config_env(parsed):
+    """`PUSH:config <name>` for a line that sets a variable that moves the config files a git push on it reads
+    (_PUSH_CONFIG_ENV: a file there may map `git push origin feature` to main), in any way bash sets one (_set_names),
+    or sources a file (source, `.`), which may set one, but the activate script of a virtualenv in the project
+    (_VENV_ACTIVATE); that sets the template folder a git clone or init on it copies (GIT_TEMPLATE_DIR: its config is
+    the new repository's); or that sets a cargo alias or cargo's home for a cargo command on it (CARGO_ALIAS_<NAME>:
+    `cargo ship` may be `cargo publish`; CARGO_HOME, whose config.toml may name one). And `PUSH:config <path>` for
+    each Git config file a command writes (as _effects reads a write: `>> .git/config`, tee, cp, sed -i, git's
+    --output …), where a remote's push refspec set there maps a later `git push origin feature` to main, each cargo
+    config file (.cargo/config.toml, a CARGO_HOME's the line sets), whose [alias] may name a publish, and each
+    virtualenv's activate script (_ACTIVATE_FILE), which a later push's line may source."""
+    learned = parsed[5] if len(parsed) > 5 else {}
+    homes = [h.rstrip("/") + "/config" for h in learned.get("given", {}).get("CARGO_HOME", ()) if h]
+    written = [t[len("WRITE_TARGET:"):] for t in _effects(parsed) if t.startswith("WRITE_TARGET:")]
+    out = ["PUSH:config " + t[:64] for t in written if _GIT_CONFIG_FILE.search(t) or _CARGO_CONFIG_FILE.search(t) or
+           _ACTIVATE_FILE.search(t) or t.removesuffix(".toml") in homes]
+    argvs = [c["argv"] for c in parsed[0] if c["argv"]]
+    pushes = any(_push_program(a[0])[0] in _GIT_PUSHERS and _git_push(a) is not None for a in argvs)
+    starts = any(_program(a) == "git" and {"clone", "init"} & set(a) for a in argvs)
+    cargo = any(_program(a) == "cargo" for a in argvs)
+    if not (pushes or starts or cargo):
+        return out
+    sets = _set_names(parsed[0], parsed[2], learned.get("given", ()))
+    if pushes:   # and a file the line sources, which may set any of them (`source ./env.sh; git push origin feature`)
+        out += ["PUSH:config " + n for n in _PUSH_CONFIG_ENV if n in sets] + [
+            "PUSH:config " + " ".join(a)[:64] for a in argvs if a[0] in ("source", ".") and not (
+                len(a) == 2 and _VENV_ACTIVATE.fullmatch(a[1]))]
+    if starts and "GIT_TEMPLATE_DIR" in sets:
+        out.append("PUSH:config GIT_TEMPLATE_DIR")
+    if cargo:
+        out += ["PUSH:config " + n for n in sorted(sets) if n.upper().startswith("CARGO_ALIAS_") or n == "CARGO_HOME"]
+    return out
+
+
+def _release_published(command):
+    """`PUSH:release <argv>` for a `gh release edit` or `hub release edit` that publishes a draft: gh's grammar reads
+    its last --draft as false; where the grammar can't read the command (and hub's, which has none), any `--draft=`
+    word after it whose value isn't a literal true (false, `$D`, `$(echo false)`: an over-read only holds more). The
+    command path is gh's from the leading words alone (grammar.command_path)."""
+    argv = command["argv"]   # (no alias names either word: the path needs both)
+    prog = _program(argv)
+    if prog not in ("gh", "hub") or "edit" not in argv or "release" not in argv or \
+            prog == "gh" and grammar.command_path(command) != ("release", "edit"):
+        return []
+    reading = grammar.read(command) if prog == "gh" else None
+    published = reading.flags.get("--draft", ["true"])[-1] == "false" if reading else any(
+        w.startswith("--draft=") and w[8:] not in _TRUE_WORDS for w in argv)
+    return ["PUSH:release " + " ".join(argv)[:64]] if published else []
+
+
+# words a docker or podman global option may be followed by, a verb's name, for _docker_words; buildx's own option
+# that takes a value; compose's (docker compose --help)
+_IMAGE_VERBS = {"build", "buildx", "builder", "compose", "image", "push"}
+_COMPOSE_VALUED = {"-f", "--file", "-p", "--project-name", "--profile", "--env-file", "--project-directory", "--ansi",
+                   "--parallel", "--progress"}
+_PUSH_SWITCH = re.compile(r"--push(?:=(.*))?", re.S)
+_REGISTRY = re.compile(r"(?:^|[,=.])\s*(?:type=registry|push=(?:true|1))\s*(?:,|$)", re.I)   # (bake's --set too)
+_TRUE_WORDS = {"1", "t", "T", "TRUE", "true", "True"}
+
+
+def _docker_words(argv, verbs):
+    """A docker or podman argv's words after the CLI's global options: one that takes a value takes it whatever it is
+    named (_GLOBAL_VALUED), one that never does none, another takes one unless an option or one of `verbs` follows."""
+    words, i = argv[1:], 0
+    while i < len(words) and words[i].startswith("-"):
+        w = words[i]
+        i += 1 if "=" in w or w in _GLOBAL_FLAGS or w not in _GLOBAL_VALUED and i + 1 < len(words) and (
+            words[i + 1].startswith("-") or words[i + 1] in verbs) else 2
+    return words[i:]
+
+
+def _image_pushed(argv):
+    """`PUSH:image <argv>` for a command that pushes an image to a registry. docker, podman and the CLIs that take
+    their commands (nerdctl, buildah): push, image push and manifest push; a build (build, image build, builder build,
+    buildx build or b) whose last --push is on or whose output (--output, -o) is a registry (type=registry, push=true);
+    buildx bake with --push or such an output set (--set); compose push and compose build --push (docker-compose's and
+    podman-compose's too); buildx imagetools create; and buildx bake with none of those, whose bake file may set a
+    push or a registry output, unless its last --push is off or --load or --print is given. The command's other words
+    are read wherever they are, by their text: docker's table names no plugin (buildx, compose), so no grammar reads
+    them, and an over-read only holds more. The registry tools (_registry_write): crane, oras and skopeo."""
+    prog = _program(argv)
+    if prog in _REGISTRY_READS or prog in ("skopeo", "regctl", "ctr", "ko"):
+        return _registry_write(argv)
+    if prog in ("docker-compose", "podman-compose"):   # (compose's own command: docker compose's)
+        argv = ["docker", "compose", *argv[1:]]
+    elif prog not in _IMAGE_CLIS:
+        return []
+    words = _docker_words(argv, _IMAGE_VERBS)
+    if words[:2] == ["farm", "build"] or words[:1] == ["commit"] and any(w.startswith("docker://") for w in words):
+        return ["PUSH:image " + " ".join(argv)[:64]]   # (podman farm build pushes its manifest; buildah commit to a
+    if words[:1] in (["image"], ["builder"], ["manifest"], ["artifact"]):   # registry)
+        words = words[1:]
+    elif words[:1] in (["buildx"], ["compose"]):
+        own, k = words[0], 1
+        while k < len(words) and words[k].startswith("-"):
+            k += 2 if words[k] in ({"--builder"} if own == "buildx" else _COMPOSE_VALUED) else 1
+        words = words[k:] if own == "buildx" else ["compose:" + w for w in words[k:k + 1]] + words[k + 1:]
+    sub, rest = (words[0] if words else ""), words[1:]
+    on = [m.group(1) is None or m.group(1) in _TRUE_WORDS for w in rest if (m := _PUSH_SWITCH.fullmatch(w))]
+    outputs = [b if a in ("-o", "--output", "--set") else a.partition("=")[2] if a.startswith(("--output=", "--set="))
+               else a[2:] if a.startswith("-o") else None for a, b in zip(rest, rest[1:] + [""])]
+    pushed = sub in ("push", "compose:push") or sub == "imagetools" and rest[:1] == ["create"] and \
+        "--dry-run" not in rest or sub in ("build", "b", "bake", "compose:build") and (
+            on[-1:] == [True] or any(_REGISTRY.search(o) for o in outputs if o)) or \
+        sub == "bake" and on[-1:] != [False] and not any(w == "--load" or w.partition("=")[0] == "--print" for w in rest)
+    return ["PUSH:image " + " ".join(argv)[:64]] if pushed else []
+
+
+_IMAGE_CLIS = {"docker", "podman", "nerdctl", "buildah", "finch"}
+_IMAGE_PUSHERS = {*_IMAGE_CLIS, "docker-compose", "podman-compose", "crane", "oras", "skopeo", "regctl", "ctr",
+                  "ko"}   # (_image_pushed)
+# the commands of a registry tool that only read (crane's and oras's: any other may write to a registry: push, copy,
+# append, mutate, tag, rebase, flatten, delete, attach), and oras's manifest and blob commands that only read
+_REGISTRY_READS = {"crane": {"auth", "blob", "catalog", "completion", "config", "digest", "export", "help", "ls",
+                             "manifest", "pull", "validate", "version"},
+                   "oras": {"completion", "discover", "help", "login", "logout", "pull", "repo", "resolve", "version"}}
+_ORAS_READS = {"fetch", "fetch-config"}
+# skopeo's transports that write to a registry: docker://; the others are local (dir:, oci:, docker-archive: …)
+_SKOPEO_VALUED = {"--authfile", "--src-authfile", "--dest-authfile", "--creds", "--src-creds", "--dest-creds",
+                  "--src-cert-dir", "--dest-cert-dir", "--format", "-f", "--sign-by", "--sign-passphrase-file",
+                  "--registries.d", "--src-registries.d", "--dest-registries.d", "--override-arch", "--override-os",
+                  "--override-variant", "--tmpdir", "--command-timeout", "--policy", "--retry-times", "--retry-delay",
+                  "--src", "-s", "--dest", "-d", "--multi-arch", "--digestfile", "--encryption-key",
+                  "--decryption-key", "--additional-tag", "--image-parallel-copies", "--src-username",
+                  "--src-password", "--dest-username", "--dest-password", "--dest-compress-format",
+                  "--dest-compress-level", "--scoped", "--preserve-digests"}
+
+
+def _registry_write(argv):
+    """`PUSH:image <argv>` for a registry tool's command that may write to a registry: crane's and oras's commands but
+    those that only read (_REGISTRY_READS; oras's manifest and blob fetch), a subcommand the line can't tell too; and
+    skopeo's copy to a docker:// destination or one the line can't tell, sync to docker (--dest, -d), and delete."""
+    prog = _program(argv)
+    words = _docker_words(argv, set(_REGISTRY_READS.get(prog, ())) | {"copy", "sync", "delete", "push"})
+    sub, rest = (words[0] if words else ""), words[1:]
+    if prog in ("regctl", "ctr", "ko"):   # (regctl's writes; containerd's push; ko's build, which pushes unless local)
+        wrote = prog == "regctl" and bool({"copy", "put", "mod", "delete", "import", "create", "add", "rm"} & {
+            sub, *rest[:1]}) or prog == "ctr" and sub in ("images", "image", "i") and rest[:1] == ["push"] or \
+            prog == "ko" and sub in ("build", "publish", "resolve", "apply", "create", "run") and not any(
+                w in ("--local", "-L") or w.startswith("--push=") and w[7:] not in _TRUE_WORDS for w in rest)
+        return ["PUSH:image " + " ".join(argv)[:64]] if wrote else []
+    if prog == "skopeo":
+        positional, i = [], 0
+        while i < len(rest):
+            w, i = rest[i], i + 1
+            if w in _SKOPEO_VALUED:
+                i += 1
+            elif not w.startswith("-"):
+                positional.append(w)
+        dest = [b for a, b in zip(rest, rest[1:] + [""]) if a in ("--dest", "-d")] + \
+            [a.partition("=")[2] for a in rest if a.startswith("--dest=")]
+        wrote = sub == "delete" or sub == "copy" and (not positional[1:] or re.match(r"docker://|[$`]",
+                                                                                    positional[-1])) or \
+            sub == "sync" and any(d == "docker" or "$" in d or "`" in d for d in dest)
+    else:
+        wrote = sub not in _REGISTRY_READS[prog] and not (
+            prog == "oras" and sub in ("manifest", "blob") and rest[:1] and rest[0] in _ORAS_READS)
+    return ["PUSH:image " + " ".join(argv)[:64]] if wrote and sub else []
+
+
+def _cargo_alias(argv):
+    """`PUSH:config <setting>` for a cargo command given an alias in its --config (`--config alias.b=publish b`,
+    `alias.x=['publish','--allow-dirty']`) that names a publish, or one the line can't tell: its command may run it."""
+    if _program(argv) != "cargo":
+        return []
+    given = [b if a == "--config" else a[9:] for a, b in zip(argv[1:], argv[2:] + [""])
+             if a == "--config" or a.startswith("--config=")]
+    return ["PUSH:config " + v[:64] for v in given if re.match(r"""\s*['"]?alias\.""", v) and (
+        "publish" in v or "$" in v or "`" in v)]
+
+
+def _config_reach(parsed):
+    """`PUSH:config <setting>` for what a line gives a git command on it through git's config environment
+    (GIT_CONFIG_KEY_<n> with GIT_CONFIG_VALUE_<n>, each pair as -c gives it): an alias that may push (_alias_pushes),
+    or a key or value the line can't tell; and `PUSH:config link <path>` for a link made to a Git or cargo config file
+    or folder (_CONFIG_LINK: ln, cp -s or -l), whose own name a file tool then writes it by."""
+    argvs = [c["argv"] for c in parsed[0] if c["argv"]]
+    out = ["PUSH:config link " + w[:64] for a in argvs if _program(a) == "ln" or _program(a) == "cp" and any(
+        re.fullmatch(r"-[a-zA-Z]*[sl][a-zA-Z]*|--(?:symbolic-)?link", w) for w in a[1:]) for w in a[1:]
+        if _CONFIG_LINK.search(w)]
+    if not any(_program(a) == "git" for a in argvs):
+        return out
+    given = (parsed[5] if len(parsed) > 5 else {}).get("given", {})
+    return out + ["PUSH:config " + f"{k}={v}"[:64] for n in sorted(given) if n.startswith("GIT_CONFIG_KEY_")
+                  for k in given[n] if k.casefold().startswith("alias.") or re.search(r"[$`]", k)
+                  for v in given.get("GIT_CONFIG_VALUE_" + n[15:]) or ["$?"] if _push_key(f"{k}={v}")]
+
+
+# a path that is a Git or cargo config file or the folder of one: a repository's .git (a bare x.git) or anything in it,
+# .cargo, ~/.gitconfig (and .gitconfig.local), XDG's .config/git, the system's etc/gitconfig
+_CONFIG_LINK = re.compile(r"(?i)(?:^|[/\\])(?:[^/\\]*\.git(?:[/\\]|$)|\.cargo(?:[/\\]|$)|\.gitconfig|"
+                          r"\.config[/\\]git(?:[/\\]|$)|etc[/\\]gitconfig$)")
+
+
+def _goreleaser(argv):
+    """`PUSH:release <argv>` for a goreleaser release, which publishes (its root command runs one too: a command with
+    no word but options, --help and --version aside), unless --snapshot or a --skip naming publish (or the older
+    --skip-publish) keeps it local. lean: `release` anywhere among its words counts, an option's value too."""
+    if _program(argv) != "goreleaser":
+        return []
+    words = [w for w in argv[1:] if not w.startswith("-")]
+    skips = [w.partition("=")[2] or b for w, b in zip(argv[1:], argv[2:] + [""]) if w.partition("=")[0] == "--skip"]
+    local = "--snapshot" in argv or "--skip-publish" in argv or any("publish" in s.split(",") for s in skips)
+    release = "release" in words or words[:1] == ["r"] or not words and not {"-h", "--help", "-v", "--version"} & set(
+        argv)   # (r: release's alias)
+    return ["PUSH:release " + " ".join(argv)[:64]] if release and not local else []
+
+
+# CLIs whose commands push, publish or deploy: one whose subcommand the line can't tell (an expansion it doesn't
+# resolve, `git $X origin main`; none, where xargs or parallel adds it) may be one (_verb_unknown)
+_DEPLOYERS = {"git", "hub", "gh", "npm", "pnpm", "yarn", "bun", "docker", "podman", "helm", "kubectl", "terraform",
+               "tofu", "terragrunt", "pulumi", "cargo", "gem", "twine", "uv", "poetry", "gcloud", "aws", "firebase",
+               "vercel", "netlify", "fly", "flyctl", "wrangler", "railway", "serverless", "sls", "cdk", "sam",
+               "nerdctl", "buildah", "docker-compose", "podman-compose", "crane", "oras", "skopeo", "goreleaser",
+               "finch", "regctl", "ctr", "ko"}
+# the options of a _DEPLOYERS CLI no grammar table reads that take a value before its subcommand (each from the CLI's
+# own reference of its global options; git's for hub, which runs git), for _verb_unknown: any other option is read as a
+# switch, so an expansion after it may be the subcommand (`yarn --silent "$X"`), and the command is held
+_VALUED_OPTIONS = {
+    "hub": _GIT_VALUED,
+    "pnpm": {"-C", "--dir", "--filter", "-F", "--filter-prod", "--test-pattern", "--changed-files-ignore-pattern",
+             "--reporter", "--loglevel", "--workspace-concurrency"},
+    "yarn": {"--cwd", "--mutex", "--cache-folder", "--modules-folder", "--global-folder", "--link-folder",
+             "--network-timeout", "--network-concurrency", "--registry", "--use-yarnrc", "--preferred-cache-folder"},
+    "bun": set(),   # (bun finds its command as the first word that isn't an option: no option takes a value there)
+    "podman": {"--connection", "-c", "--url", "--identity", "--log-level", "--root", "--runroot", "--storage-driver",
+               "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--network-cmd-path",
+               "--network-config-dir", "--runtime", "--runtime-flag", "--tmpdir", "--volumepath", "--imagestore",
+               "--module", "--ssh", "--out", "--conmon", "--db-backend"},
+    "helm": {"--kube-context", "--kubeconfig", "-n", "--namespace", "--registry-config", "--repository-cache",
+             "--repository-config", "--kube-apiserver", "--kube-as-group", "--kube-as-user", "--kube-ca-file",
+             "--kube-tls-server-name", "--kube-token", "--burst-limit", "--qps", "--content-cache"},
+    "terragrunt": {"--working-dir", "--terragrunt-working-dir", "--config", "--terragrunt-config", "--log-level",
+                   "--terragrunt-log-level", "--tf-path", "--terragrunt-tfpath", "--iam-assume-role",
+                   "--terragrunt-iam-role", "--download-dir", "--terragrunt-download-dir"},
+    "pulumi": {"-C", "--cwd", "--color", "-v", "--verbose", "--profiling", "--tracing", "--memprofilerate", "-s",
+               "--stack", "--config-file"},
+    "cargo": {"--color", "-C", "--config", "-Z"},
+    "gem": {"--config-file"},
+    "uv": {"--directory", "--project", "--cache-dir", "--python-preference", "--color", "--config-file",
+           "--allow-insecure-host"},
+    "poetry": {"-C", "--directory", "-P", "--project"},
+    "firebase": {"-P", "--project", "--account", "--token", "-c", "--config"},
+    "vercel": {"--cwd", "-A", "--local-config", "-Q", "--global-config", "-t", "--token", "-S", "--scope", "-T",
+               "--team"},
+    "netlify": {"--auth", "--filter"},
+    "fly": {"-a", "--app", "-c", "--config", "-t", "--access-token", "-o", "--org", "-r", "--region"},
+    "wrangler": {"-c", "--config", "-e", "--env", "--env-file"},
+    "railway": {"-s", "--service", "-e", "--environment"},
+    "serverless": {"-s", "--stage", "-r", "--region", "-c", "--config", "--aws-profile", "--app", "--org"},
+    "cdk": {"-a", "--app", "-c", "--context", "-p", "--plugin", "--profile", "-o", "--output", "--role-arn", "-r",
+            "--ca-bundle-path"},
+    "nerdctl": {"-n", "--namespace", "-a", "--address", "--snapshotter", "--storage-driver", "--cni-path",
+                "--cni-netconfpath", "--data-root", "--cgroup-manager", "--host-gateway-ip", "--hosts-dir",
+                "--bridge-ip"},
+    "buildah": {"--root", "--runroot", "--storage-driver", "--storage-opt", "--registries-conf",
+                "--registries-conf-dir", "--short-name-alias-conf", "--cgroup-manager", "--log-level",
+                "--userns-uid-map", "--userns-gid-map", "--default-mounts-file"},
+    "crane": {"--platform"},
+    "skopeo": _SKOPEO_VALUED,
+    "goreleaser": {"-f", "--config", "-p", "--parallelism", "--timeout"},
+}
+_VALUED_OPTIONS.update(flyctl=_VALUED_OPTIONS["fly"], sls=_VALUED_OPTIONS["serverless"],
+                       **{"docker-compose": _COMPOSE_VALUED, "podman-compose": _COMPOSE_VALUED})
+
+
+def _verb_unknown(argv, runner=False):
+    """`PUSH:verb <argv>` for a command of a _DEPLOYERS CLI whose subcommand the line can't tell, read along its
+    command path: the word in its subcommand position (grammar.subcommand_at, with the CLI's _VALUED_OPTIONS) and,
+    while each word names a group of commands (_group), the word in that group's own position (with _GROUP_VALUED's
+    options); a group that runs a command of the CLI's own after its own words (_RUNS_ITS_OWN: `yarn workspace w
+    <command>`, `yarn workspaces foreach -A <command>`) leads to that command's path. An expansion the line doesn't
+    resolve in any of those places is one (`gh release "$X" v1`, `docker buildx imagetools "$X"`, `gcloud beta run
+    "$X"`, `yarn workspace w npm "$X"`), unless what comes before it starts none of the commands the group's table
+    names (`git config url.https://${T}@github.com/.insteadOf …`: a key, not a command); so is none there where a
+    `runner` (xargs, parallel) adds words. cargo's first word may be rustup's `+toolchain`, before its subcommand."""
+    prog = _program(argv)
+    if prog not in _DEPLOYERS:
+        return []
+    av = argv[:1] + argv[2:] if prog == "cargo" and argv[1:2] and argv[1][:1] == "+" else argv
+    valued, path, unknown = _VALUED_OPTIONS.get(prog, frozenset()), (), False
+    for _ in range(8):   # (a command path's depth)
+        i = grammar.subcommand_at(av, prog, valued, path)
+        if i >= len(av):
+            unknown = bool(runner)
+            break
+        word = av[i]
+        if "$" in word or "`" in word:
+            head, kids = re.split(r"[$`]", word, maxsplit=1)[0], grammar.children(prog, path)
+            unknown = not path or not kids or any(k.startswith(head) for k in kids)
+            break
+        path, av, valued = path + (word,), [av[0], *av[i + 1:]], _GROUP_VALUED.get((prog, word), valued)
+        if (prog, *path) in _RUNS_ITS_OWN:   # its own positionals, then a command of the CLI's own
+            for _ in range(_RUNS_ITS_OWN[(prog, *path)]):
+                av = [av[0], *av[grammar.subcommand_at(av, prog, valued) + 1:]]
+            path = ()
+        elif not _group(prog, path):
+            break
+    return ["PUSH:verb " + " ".join(argv)[:64]] if unknown else []
+
+
+def _gcloud_path_first(argv):
+    """A gcloud command with its command path first, as gcloud reads a flag anywhere along it: each word in its
+    subcommand position (grammar.subcommand_at, with gcloud's table) while the path names a group (_group), then the
+    rest as written (`gcloud run --project p deploy svc` is `gcloud run deploy --project p svc`); None where that is
+    the argv as written, or the path holds an expansion (_verb_unknown's)."""
+    if not any(w[:1] == "-" for w in argv[1:-1]):   # (no flag before a later word: as written)
+        return None
+    words, path = list(argv), []
+    for _ in range(8):   # (a command path's depth)
+        i = grammar.subcommand_at(words, "gcloud", frozenset(), tuple(path))
+        if i >= len(words) or re.search(r"[$`]", words[i]):
+            break
+        path.append(words.pop(i))
+        if not _group("gcloud", tuple(path)):
+            break
+    out = [words[0], *path, *words[1:]]
+    return " ".join(out) if out != list(argv) else None
+
+
+def _group(prog, path):
+    """Whether a command path of a _DEPLOYERS CLI names a group of commands, whose next word names the command that
+    runs: one its table names commands under, a first word _GROUPS names and a deeper one _SUBGROUPS does, and any
+    first word of aws and gcloud (gcloud's after a release track too, which is one)."""
+    bare = path[1:] if prog == "gcloud" and path[0] in ("alpha", "beta", "preview") else path
+    return bool(grammar.children(prog, path)) or prog in ("aws", "gcloud") and len(bare) <= 1 or \
+        len(path) == 1 and path[0] in _GROUPS.get(prog, ()) or \
+        len(bare) > 1 and bare[-1] in _SUBGROUPS.get((prog, *bare[:-1]), ())
+
+
+# the groups of commands of the _DEPLOYERS CLIs no table reads, or that their tables leave out (docker's plugins), whose
+# next word names the command that runs (`docker compose push`, `yarn npm publish`, `terragrunt run-all apply`), and
+# the options of a group that take a value before it
+_DOCKER_GROUPS = {"compose", "buildx", "artifact", "farm", "kube", "machine", "pod", "manifest", "image", "container",
+                  "volume", "network", "system", "context", "builder"}
+_GROUPS = {"docker": _DOCKER_GROUPS, "podman": _DOCKER_GROUPS, "nerdctl": _DOCKER_GROUPS, "finch": _DOCKER_GROUPS,
+           "buildah": {"manifest"}, "git": {"subtree"}, "hub": {"release", "issue", "pr"},
+           "yarn": {"npm", "workspaces", "plugin", "constraints"},
+           "terragrunt": {"run-all", "run", "stack", "hcl", "catalog", "scaffold"},
+           "helm": {"repo", "plugin", "registry", "dependency", "dep", "get", "show", "inspect", "search"},
+           "oras": {"manifest", "blob", "repo"}, "crane": {"index", "auth"},
+           "uv": {"pip", "tool", "python", "cache", "self", "auth"},
+           "poetry": {"self", "source", "env", "cache", "debug", "python"},
+           "vercel": {"env", "dns", "domains", "certs", "secrets", "teams", "project", "alias", "git", "integration",
+                      "blob", "cache"},
+           "fly": {"apps", "machine", "machines", "secrets", "volumes", "scale", "ips", "certs", "postgres", "redis",
+                   "config", "releases", "image", "auth", "tokens", "orgs"},
+           "wrangler": {"d1", "kv", "r2", "queues", "pages", "versions", "deployments", "secret", "vectorize",
+                        "hyperdrive", "workflows"},
+           "sam": {"local", "remote", "pipeline"}}
+_GROUPS["flyctl"] = _GROUPS["fly"]
+# deeper groups no table names: buildx's imagetools, Cloud Run's and App Engine's resources (each of their commands
+# under them may deploy, update traffic or promote), terragrunt's stack run (a terraform command)
+_SUBGROUPS = {**{(prog, "buildx"): {"imagetools"} for prog in ("docker", "podman", "nerdctl", "finch")},
+              ("gcloud", "run"): {"services", "jobs", "revisions", "domain-mappings", "multi-region-services",
+                                  "worker-pools", "compose", "integrations"},
+              ("gcloud", "app"): {"versions", "services", "instances", "domain-mappings", "firewall-rules",
+                                  "ssl-certificates", "operations"},
+              ("terragrunt", "stack"): {"run"}}
+# a group that runs a command of the CLI's own after its own positionals (yarn workspace <name> <command>, yarn
+# workspaces foreach [options] <command>)
+_RUNS_ITS_OWN = {("yarn", "workspace"): 1, ("yarn", "workspaces", "foreach"): 0}
+_GROUP_VALUED = {(prog, "compose"): _COMPOSE_VALUED for prog in ("docker", "podman", "nerdctl", "finch")}
+_GROUP_VALUED.update({(prog, "buildx"): {"--builder"} for prog in ("docker", "podman", "nerdctl", "finch")})
+_GROUP_VALUED[("yarn", "foreach")] = {"--from", "--include", "--exclude", "-j", "--jobs"}
 
 
 def _gh_api(argv, replaced=None, runner=False):
@@ -1661,7 +2487,45 @@ def _gh_api(argv, replaced=None, runner=False):
         out.append("PUSH:merge-upstream " + branch[:64])
     elif (put or delete) and "contents" in routes and not named:
         out.append("PUSH:contents " + method[:64])
+    elif write and "releases" in routes and _release_write(positional[0] if positional else "", replaced,
+                                                         [v for _, key, v in fields if key == "draft"], unread_body):
+        out.append("PUSH:release " + method[:64])
+    elif write and "git" in routes and _tag_write(positional[0] if positional else "", replaced,
+                                                  [v for _, key, v in fields if key == "ref"], unread_body):
+        out.append("PUSH:tag " + method[:64])
     return out
+
+
+# repos/<o>/<r>/releases (a POST there creates one; an id the line can't tell may be none) and one release (a write
+# there edits it)
+_RELEASES = re.compile(r"/releases/?(?:[?#]|$)|/releases/[^/?#]*\0[^/?#]*/?(?:[?#]|$)", re.I)
+_RELEASE = re.compile(r"/releases/[^/?#]+/?(?:[?#]|$)", re.I)
+
+
+def _release_write(endpoint, replaced, drafts, unread):
+    """Whether a write to GitHub's releases API publishes a release: one created (the releases list) unless a single
+    draft value says true, or one edited (releases/<id>) with a draft value that isn't true (false, 0, an expansion);
+    with a body the line can't read (`unread`: --input, a file, an expansion) either may. `drafts`: the body's draft
+    values as written."""
+    masked = _gh_mask(endpoint, replaced)
+    path = "/" + masked[_GH_HOST.match(masked).end():].strip("/")
+    told = [v.strip().casefold() for v in drafts]
+    if _RELEASES.search(path):
+        return unread or told != ["true"]
+    return bool(_RELEASE.search(path)) and (unread or any(v != "true" for v in told))
+
+
+def _tag_write(endpoint, replaced, refs, unread):
+    """Whether a write to GitHub's git refs API makes, moves or deletes a tag, as a tag push does: a ref created
+    (git/refs) whose `ref` names refs/tags/… or one the line can't tell (an expansion, a file, none, a body it can't
+    read: `unread`), or a tag's own ref written (git/refs/tags/…). `refs`: the ref values as written."""
+    masked = _gh_mask(endpoint, replaced)
+    path = "/" + masked[_GH_HOST.match(masked).end():].strip("/").lower()
+    path = re.split(r"[?#]", path, maxsplit=1)[0]
+    if re.search(r"/git/refs/tags(?:/|$)", path):
+        return True
+    return bool(re.search(r"/git/refs$", path)) and (unread or len(refs) != 1 or not refs[0].startswith(
+        "refs/heads/") or bool(re.search(r"[$`@\0{]", refs[0])))
 
 
 def _pushes(commands):
@@ -1670,12 +2534,63 @@ def _pushes(commands):
     api call also percent-decoded (_gh_api), and GitHub's REST API through curl, wget, HTTPie or xh as gh api's is
     read (_github_rest); a kubectl dry run (_kubectl_dry_run) or a publish's (_publish_dry_run) as `DRYRUN:<argv>`,
     unless xargs, parallel, find -exec or fd -x runs it, which may add any word to it (`false`, --dry-run=none); each
-    also with its program as its base name (_program), where that differs, and a publish as `<program> publish`
-    (_published)."""
-    out, replaced = [], None
-    for command in commands:
+    also with its program as its base name (_program), where that differs, a publish as `<program> publish`
+    (_published) and a command an alias names as the command it is (grammar.canonical). Also `PUSH:<why>` for a
+    publish or a change to where pushes go that its words show however long they run: a draft release published
+    (_release_published), an image pushed (_image_pushed), a push setting written (_push_config), and a command of a
+    CLI that publishes whose subcommand the line can't tell (_verb_unknown). A word a runner fills in (_filled) is one
+    the line can't tell, for the readers of a push, a push setting and a subcommand."""
+    out = []
+    for command, runner, replaced in _run_by(commands):
         argv = command["argv"]
-        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
+        fed = not runner.isdisjoint(_FEEDERS)
+        prog, read = _push_program(argv[0]) if argv else ("", True)
+        if not read:   # (no reader below takes this program: its argv, also as its base name, as they would give)
+            out.append(" ".join(argv))
+            if prog != argv[0]:
+                out.append(" ".join([prog, *argv[1:]]))
+            continue
+        told = _filled(argv, runner, replaced)
+        # each reader only for the programs it reads itself (_program's name: prog), each checking it again
+        push = _git_push(told) if prog in _GIT_PUSHERS else None
+        if push is not None:
+            out += push
+        else:
+            dry = "DRYRUN:" * (not runner and (prog == "kubectl" and _kubectl_dry_run(argv) or
+                                               prog in _PUBLISHERS and _publish_dry_run(argv)))
+            # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
+            # publish after any options as its program's publish: _published)
+            out.append(dry + " ".join(argv))
+            if prog != argv[0]:
+                out.append(dry + " ".join([prog, *argv[1:]]))
+            if prog.partition("@")[0] in _PUBLISHERS and (p := _published(argv)):
+                out.append(dry + p)
+            if grammar.aliased(argv[0]) and (p := grammar.canonical(command)):
+                out.append(dry + p)
+            if prog == "gcloud" and (p := _gcloud_path_first(argv)):
+                out.append(p)
+            if prog in ("gh", "hub") and argv[1:2] == ["api"]:
+                out += [s for s in _gh_api(argv, replaced if fed else None, bool(runner)) if s not in out]
+        more = (*(_github_rest(argv) if prog in _REST_CLIENTS else ()),
+                *(_gh_repo_sync(argv, bool(runner)) if prog == "gh" else ()),
+                *(_release_published(command) if prog in ("gh", "hub") else ()),
+                *(_image_pushed(argv) if prog in _IMAGE_PUSHERS else ()),
+                *(_goreleaser(argv) if prog == "goreleaser" else ()),
+                *(_cargo_alias(argv) if prog == "cargo" else ()),
+                *(_push_config(told) if prog == "git" else ()),
+                *(_verb_unknown(told, fed) if prog in _DEPLOYERS else ()))
+        if more:
+            out += [s for s in dict.fromkeys(more) if s not in out]
+    return out
+
+
+def _run_by(commands):
+    """Each command with the runners that run it (xargs, parallel, find -exec, fd -x: its `via`) and the word xargs' or
+    parallel's -I puts the input in place of where one of them runs it (None for none)."""
+    replaced = None
+    for command in commands:
+        argv, via = command["argv"], command.get("via")
+        runner = _RUNNERS.intersection([v.split(" ", 1)[0] for v in via]) if via else frozenset()
         if argv[:1] in (["xargs"], ["gxargs"]):   # the word its -I puts the input in place of, for what it runs
             inner = next(shell._unwrap(argv[0], argv[1:]))
             replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
@@ -1684,21 +2599,28 @@ def _pushes(commands):
             while i < len(argv) and argv[i].startswith("-"):
                 i += 2 if argv[i] in shell.PARALLEL_OPTS else 1
             replaced = shell._xargs_replace(argv[1:i])
-        elif not {"xargs", "gxargs", "parallel"} & runner:
+        elif runner.isdisjoint(_FEEDERS):
             replaced = None   # (the word was that runner's only)
-        push = _git_push(argv)
-        dry = "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv)))
-        # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
-        # publish after any options as its program's publish: _published)
-        out += push if push is not None else [dry + " ".join(argv)] + [
-            dry + " ".join([_program(argv), *argv[1:]])] * (_program(argv) != argv[0]) + [
-            dry + p for p in [_published(argv)] if p]
-        if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
-            given = replaced if {"xargs", "gxargs", "parallel"} & runner else None
-            out += [s for s in _gh_api(argv, given, bool(runner)) if s not in out]
-        out += [s for s in _github_rest(argv) if s not in out]
-        out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
-    return out
+        yield command, runner, replaced if not runner.isdisjoint(_FEEDERS) else None
+
+
+_BRACED = re.compile(r"\{[^{}]*\}")
+
+
+def _filled(argv, runner, replaced):
+    """`argv` with each word after its first that a runner fills in read as `${_}`, an expansion the line doesn't
+    resolve (`echo push | xargs -I{} git {} origin main` is `git $X origin main`): one holding the word xargs' or
+    parallel's -I names (`replaced`) or, under parallel, find -exec or fd -x, a `{…}` (`{}`, `{.}`, `{1}`); and one
+    more `${_}` last where the runner adds its input's words after the command's own: xargs without -I (from its
+    input or -a's file), parallel and fd -x or -X where no word holds a placeholder (their input, ::: words, the files
+    found)."""
+    if not runner:
+        return argv
+    braced = not runner.isdisjoint(("parallel", "find", "fd"))
+    words = ["${_}" if replaced and replaced in w or braced and "{" in w and _BRACED.search(w) else w for w in argv[1:]]
+    adds = not runner.isdisjoint(("xargs", "gxargs")) and not replaced or \
+        not runner.isdisjoint(("parallel", "fd")) and words == argv[1:]
+    return [argv[0], *words, *["${_}"] * adds] if adds or words != argv[1:] else argv
 
 
 _PIP_URL_OPTS = {"-i", "--index-url", "--extra-index-url", "-f", "--find-links", "--proxy", "-c", "--constraint",
@@ -1854,6 +2776,11 @@ def _github_rest(argv):
     prog = _program(argv)
     if prog not in _REST_CLIENTS:
         return []
+    # (where no word is percent-encoded or holds a letter beyond ASCII, which re.I may fold to one of the host's, a
+    # word can only match with the host or the path in it, in any case)
+    if (words := " ".join(argv[1:])).isascii() and "%" not in words and \
+            "api.github.com" not in (low := words.lower()) and "/api/v3" not in low:
+        return []
     args = [unquote(a) for a in argv[1:]]
     urls = [a.removeprefix("--url=") for a in args if _GITHUB_API.search(a)]
     if not urls:
@@ -1899,6 +2826,7 @@ def _github_rest(argv):
     branch = branch.removeprefix("refs/").removeprefix("heads/")
     named = told and bool(branch) and "@" not in text and not re.search(r"[$`]", text + branch) and \
         branch.casefold() not in ("main", "master", "head")
+    drafts = ["".join(d) for d in re.findall(r'"draft"\s*:\s*([^\s,}]+)|\bdraft:?=([^\s&]*)', text)]
     out = []
     for url in urls:
         routes, unknown, _ = _gh_routes(url, strict=False)
@@ -1911,6 +2839,11 @@ def _github_rest(argv):
             out.append(f"PUSH:merges {method[:64]}")
         elif "merge-upstream" in routes and not named:
             out.append(f"PUSH:merge-upstream {branch[:64]}")
+        elif "releases" in routes and _release_write(url, None, drafts, "@" in text or bool(re.search(r"[$`]", text))):
+            out.append(f"PUSH:release {method[:64]}")
+        elif "git" in routes and _tag_write(url, None, ["".join(r) for r in re.findall(
+                r'"ref"\s*:\s*"([^"]*)"|\bref:?=([^\s&]*)', text)], "@" in text or bool(re.search(r"[$`]", text))):
+            out.append(f"PUSH:tag {method[:64]}")
         elif (put or delete) and "contents" in routes and not named:
             out.append(f"PUSH:contents {method[:64]}")
     return out
@@ -1989,6 +2922,18 @@ def _kubectl_dry_run(argv):
 # the package publishers whose publish takes --dry-run, and the flags of theirs that take no value (so a --dry-run
 # after one is no option's value)
 _PUBLISHERS = {"npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"}
+# the programs _git_push reads, and every program one of _pushes' readers reads (each checks its own again)
+_GIT_PUSHERS = {"git", "hub", "git-push", "git-send-pack", "git-subtree"}
+_RUNNERS, _FEEDERS = frozenset(("xargs", "gxargs", "parallel", "find", "fd")), frozenset(("xargs", "gxargs", "parallel"))
+_PUSH_PROGRAMS = {*_GIT_PUSHERS, "kubectl", "gh", "docker", "podman", *_REST_CLIENTS, *_PUBLISHERS, *_DEPLOYERS}
+
+
+@functools.lru_cache(maxsize=4096)
+def _push_program(word):
+    """(the program a command's first word runs, _program's; whether one of _pushes' readers takes it: _PUSH_PROGRAMS,
+    also after `@version`, or a CLI whose grammar names an alias)."""
+    prog = shell.base_name(word)
+    return prog, prog in _PUSH_PROGRAMS or prog.partition("@")[0] in _PUSH_PROGRAMS or grammar.aliased(word)
 _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-root", "--ignore-scripts", "--json",
                   "--force", "-f", "--quiet", "-q", "--silent", "--verbose", "-v", "--no-git-checks", "--recursive",
                   "-r", "--build", "--allow-dirty", "--no-verify", "--locked", "--frozen", "--offline"}
@@ -1997,7 +2942,7 @@ _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-r
 def _published(argv):
     """`<program> publish` for a command that publishes a package, after any number of options (each with a value
     or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish (a program
-    corepack or a package runner names with its version too: npm@10), npm's pu to publi, cargo's after a +toolchain,
+    corepack or a package runner names with its version too: npm@10), npm's pu to publis, cargo's after a +toolchain,
     pnpm's after recursive, multi or m, and yarn's npm publish (after its workspaces foreach or workspace <name>); else
     None. The command a package manager's exec, x or dlx runs, and a wrapper's, are commands of their own the parser
     gives (shell.runner_at, shell._unwrap). The push and line fields read it beside the command as written."""
@@ -2008,7 +2953,7 @@ def _published(argv):
     valued = False   # (the word before is an option, so this one may be its value)
     while i < len(argv):
         w = argv[i]
-        if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
+        if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi", "publis") or prog == "yarn" and \
                 argv[i:i + 2] == ["npm", "publish"]:
             return f"{prog} publish"
         skip = 2 if prog == "yarn" and (argv[i:i + 2] == ["workspaces", "foreach"] or w == "workspace") else \
@@ -2861,6 +3806,11 @@ def _command_effects(commands):
                                                               for a in args):
                 out.extend("WRITE_TARGET:" + f for f in [b for a, b in zip(args, args[1:]) if a in ("-f", "--file")] +
                            [a.partition("=")[2] for a in args if a.startswith("--file=")])
+            # the file git's --output writes (diff, log, show and the others that print a diff; archive's -o too)
+            if exe == "git":
+                out.extend("WRITE_TARGET:" + f for f in [b for a, b in zip(args, args[1:]) if a == "--output" or
+                                                         a == "-o" and "archive" in args] +
+                           [a[9:] for a in args if a.startswith("--output=")])
             # the writer they are or run from their own words (git rm or mv, docker exec c rm, kubectl cp, parallel rm
             # ::: …), read from its name on (a git message or grep pattern is data)
             data = shell.data_words(argv)
@@ -3947,6 +4897,48 @@ def _prepare(subjects, tag=0):
         texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
+
+
+# the shell fields read from the parse alone, each by its reader (Engine._subjects): (parse, finds, work)
+_SHELL_FIELDS = {
+    "effects": lambda parsed, finds, work: _effects(parsed),
+    "tracekit": lambda parsed, finds, work: _tracekit(parsed, finds, work),
+    "package_index": lambda parsed, finds, work: _package_indexes(parsed[0], parsed[2]),
+    "environment": lambda parsed, finds, work: _environment_sent(parsed),
+    "harness_launch": lambda parsed, finds, work: _harness_launches(parsed[0], parsed[2],
+                                                                    parsed[5] if len(parsed) > 5 else {}),
+    "gh_runs": lambda parsed, finds, work: _gh_runs(parsed[0]),
+    "container_host_access": lambda parsed, finds, work: _container_host_access(parsed[0]),
+    "push": lambda parsed, finds, work: _pushes(parsed[0]) + _push_config_env(parsed) + _config_reach(parsed),
+    "requests": lambda parsed, finds, work: _curl_requests(parsed[0]),
+    # (push's, for the commands a reader of _pushes takes)
+    "publish": lambda parsed, finds, work: _pushes([c for c in parsed[0] if c["argv"] and (
+        _push_program(c["argv"][0])[1] or c["argv"][0] in ("xargs", "gxargs", "parallel"))]) + _push_config_env(parsed)
+    + _config_reach(parsed),
+    "code": lambda parsed, finds, work: _code(parsed, work),
+}
+# the fields _subjects reads a shell call's parse or its class fields for (any other is the raw argument of its name),
+# and what _prepare gives no subjects
+_SHELL_READ = frozenset(("argv", "target", *CLASSES["shell"]))
+_NO_SUBJECTS = ([], [], "", False)
+
+
+def _masks(rules):
+    """{memo key: (the rules on it with no tool pattern, those of them a prefilter never rules out: no strings, or none
+    in the RE2 Set; the Set ids of the others' strings, {id: the rules holding it})}, each set of rules a bit mask by
+    place in `rules` (decide). On the fallback a rule's ids are the number of the set of strings it shares (no Set
+    ids): it is never ruled out by them."""
+    out = {}
+    for place, (_, _, tool_re, _, _, lits, _, _, key, ids, _, _) in enumerate(rules):
+        if tool_re is None:
+            on, always, every, by_id = out.get(key, (0, 0, frozenset(), {}))
+            in_set = lits is not None and isinstance(ids, frozenset)
+            if not in_set:
+                always |= 1 << place
+            for s in ids if in_set else ():
+                by_id[s] = by_id.get(s, 0) | 1 << place
+            out[key] = on | 1 << place, always, every | (ids if in_set else frozenset()), by_id
+    return out
 
 
 def _text(s):

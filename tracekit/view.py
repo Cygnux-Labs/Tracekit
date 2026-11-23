@@ -410,6 +410,7 @@ class Translator(observe.Translator):
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
         self.grants = observe._Bounded(observe.MAX_RUNS_KEPT)   # grant id -> its intent.grant record's data
+        self.isolation = observe._Bounded(observe.MAX_RUNS_KEPT)   # run id -> its run.registered signer_isolation
 
     def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
@@ -483,6 +484,7 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "tk_note"), "title": title, "text": text, "tape": tape, "v2": v2}]
         if t == "run.registered":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "agent"
+            self.isolation[e["run_id"]] = d.get("signer_isolation")
             if d.get("analyzes"):
                 self.analyzes[e["run_id"]] = d["analyzes"], _who(d.get("identity"))
             return [{**self._base(e, rec, "SessionStart"),
@@ -490,6 +492,19 @@ class Translator(observe.Translator):
                                + (f" · findings about run {d['analyzes']}" if d.get("analyzes") else "")}]
         if t == "input.observed":   # with its kept content when it was read (wanted): what TIPS' lessons read
             kept = self.content.pop((e["run_id"], e.get("run_seq")), None)
+            agent, _, rest = str(d.get("source")).partition(":hook-decided:")
+            if rest and d.get("trust") == "untrusted":   # (claude_code._flush_decided: the hook's account; a trusted
+                # one is no hook's, and reads as any input). A hook decides a call itself only in dev mode, where the
+                # signer runs as the agent's user: under another signer it is unexpected
+                decision, _, tool = rest.partition(":")
+                odd = self.isolation.get(e["run_id"]) not in (None, "same-user")
+                return note(f"{'UNEXPECTED: ' if odd else ''}THE AGENT-SIDE HOOK REPORTS · {decision} {tool} while "
+                            "the signer was down",
+                            f"{agent}'s hook says it {decision} this call itself, with no signer answering: the agent's "
+                            "own account, no signed decision" + (
+                                "; a hook under this signer fails closed and decides no call itself" if odd else ""),
+                            "INPUT", trust=d.get("trust"), source=d.get("source"),
+                            **({"value": kept} if kept is not None else {}))
             return note(f"INPUT · {d.get('source')}", f"{d.get('trust')} content the run read; the record holds "
                                                        "only its commitment", "INPUT", trust=d.get("trust"),
                         source=d.get("source"), **({"value": kept} if kept is not None else {}))

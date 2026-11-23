@@ -73,8 +73,16 @@ class _Quoted(str):
 
 class _Expanded(str):
     """A word holding variables this shell expands in it (`names`: not one the line gives a literal), whose values
-    become code where bash parses the word again (_Parser.code)."""
+    become code where bash parses the word again (_Parser.code). `whole`: each of its expansions is double-quoted, none
+    is all of a list ("$@", "${a[@]}") and it has no pattern, so bash neither splits nor globs it: it stays one word,
+    whatever its value (grammar.read)."""
     names = frozenset()
+    whole = False
+
+
+class _Whole(str):
+    """Another reading's text of a `whole` word (_Expanded) that still holds one of its expansions: one word too."""
+    whole = True
 
 
 class _Spliced(_Expanded):
@@ -1626,6 +1634,8 @@ def _home_readings(ctx):
     the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`) or a here-string gives it (_xargs_here_words),
     and a Windows root or home (_windows_home: C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so
     TK-D004 reads them as that home or root, and TK-D014 as a system folder.
+    Every other command xargs runs (also through env, sudo …) is read again with the words echo or printf pipes into
+    it too (`echo URL | xargs curl -d x`), so a rule reads the words it gets.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed, fed = None, {}, {}, None
     for c in list(ctx["cmds"]):
@@ -1643,14 +1653,17 @@ def _home_readings(ctx):
                 printed.setdefault(p, []).append((s, ops))
         elif argv[0] in ("xargs", "gxargs"):
             fed = c
-        if c["via"][-1:] in (["xargs"], ["gxargs"]):
+        given = False   # (the words echo or printf pipes in, to what xargs runs: through env, sudo … too)
+        if "xargs" in c["via"] or "gxargs" in c["via"]:
             spots = [(c["pipeline"], c.get("stage", 0)), *(c.get("reaches") or ())]
             extra = [w for p, s in spots for ps, ws in printed.get(p, ()) if ps < s for w in ws]
             if extra:
-                argv = argv + extra
+                argv, given = argv + extra, True
         if c["via"][-1:] in (["xargs"], ["gxargs"]):
             argv = argv + _xargs_here_words(fed, c)
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
+            if given:
+                ctx["cmds"].append({**c, "argv": argv, "via": c["via"] + ["read with its input"]})
             continue
         read = [argv[0]]
         for a in argv[1:]:
@@ -3882,6 +3895,8 @@ class _Parser:
                 elif self.spliced or self.expanded or self.unknown or g:
                     text = (_Spliced if self.spliced else _Expanded)(text)
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
+                    text.whole = not g and bool(self.exps) and all(p.quoted and not _ALL_ITEMS.match(p)
+                                                                   for p in self.exps)   # ("$@": a word each)
                 words.append(text)
                 raws.append(raw)
                 dynamic |= "$" in raw or "`" in raw
@@ -3952,7 +3967,9 @@ class _Parser:
             texts = [None if v and not t or k > 5 and p else t   # None: gone
                      for t, v, p in zip(columns[k % 6], vanish, patterns)]
             kept = [i for i, t in enumerate(texts) if t is not None]
-            alt = [texts[i] for i in kept]
+            # (a whole word's other texts are whole too: its expansions left are as quoted as before)
+            alt = [_Whole(texts[i]) if getattr(words[i], "whole", False) and texts[i] is not words[i] and (
+                "$" in texts[i] or "`" in texts[i]) else texts[i] for i in kept]
             read[key] = [(idx[i], t) for i, t in enumerate(texts) if t != words[i]]
             self.ctx["more"] |= bool(read[key])
             self.gone[k].update(read[key])   # and the line (flush)

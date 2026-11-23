@@ -89,7 +89,8 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-A081", "TK-DEMO-ASK")], server["ask"])
+                                                                   "TK-A081", "TK-F031", "TK-F032", "TK-DEMO-ASK")],
+                         server["ask"])
         # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
         # the laptop has no detection, and the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
@@ -99,8 +100,10 @@ class Packs(unittest.TestCase):
                          [("line", False), ("target", True), ("target", False), (None, False)])   # F005: the templates'
         self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-5:-1]))
         self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
-        mine = [r for r in server["flag"] if r["id"] not in (*wide, "TK-F028")]   # the laptop has no TK-F028
+        mine = [r for r in server["flag"] if r["id"] not in (*wide, "TK-F028", "TK-F031", "TK-F032")]   # (the laptop
+        # has no TK-F028; dev holds TK-F031 and TK-F032)
         self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
+        self.assertFalse({"TK-F031", "TK-F032"} & {r["id"] for r in dev["flag"]})
         self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
                          ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
@@ -1071,8 +1074,10 @@ class CodingPack(unittest.TestCase):
                  "curl https://api.stripe.com/v1/charges -F amount=5", "curl -sd charge=ch_FAKE https://api.stripe.com/v1/refunds",
                  "curl -dcharge=ch_FAKE https://api.stripe.com/v1/refunds", "curl -X post https://api.stripe.com/v1/refunds/",
                  "curl -X POST 'https://api.stripe.com/v1/refunds?expand[]=charge'", "curl api.stripe.com/v1/refunds -d x=1",
-                 # -G is a GET only when it comes first and nothing sets the method; a ` -G` inside a value is a value
-                 "curl -G -X POST https://api.stripe.com/v1/refunds -d charge=ch_FAKE",
+                 # -G is a GET only after -q first (no config file read) and when nothing sets the method; a ` -G`
+                 # inside a value is a value
+                 "curl -G https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d limit=3",
+                 "curl -q -G -X POST https://api.stripe.com/v1/refunds -d charge=ch_FAKE",
                  "curl https://api.stripe.com/v1/refunds -d 'metadata[note]=a -G b' -d charge=ch_FAKE",
                  "curl -s -G https://api.stripe.com/v1/refunds -d charge=ch_FAKE",
                  # PayPal and Square
@@ -1118,10 +1123,11 @@ class CodingPack(unittest.TestCase):
                    "stripe post /v1/customers -d email=a@example.com", "stripe post /v1/payment_intents/pi_FAKE -d metadata[x]=y",
                    "stripe post /v1/payment_intents/pi_FAKE/cancel", "stripe post /v1/payouts/po_FAKE/cancel",
                    "stripe refunds --help",
-                   # GETs, Stripe's documented list form (`curl -G … -d limit=3`) too
+                   # GETs, Stripe's documented list form with -q first (`curl -q -G … -d limit=3`: curl reads no
+                   # config file, which could make it a POST; without -q it is held)
                    "curl https://api.stripe.com/v1/refunds -u sk_test_FAKE:",
-                   "curl -G https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d limit=3",
-                   "curl --get https://api.stripe.com/v1/charges -u sk_test_FAKE: -d limit=3 --retry 2",
+                   "curl -q -G https://api.stripe.com/v1/refunds -u sk_test_FAKE: -d limit=3",
+                   "curl --disable --get https://api.stripe.com/v1/charges -u sk_test_FAKE: -d limit=3 --retry 2",
                    "curl 'https://api.stripe.com/v1/refunds?limit=3' -u sk_test_FAKE:",
                    "curl -X GET https://api-m.paypal.com/v1/payments/payouts",
                    "curl https://api-m.paypal.com/v2/checkout/orders/5O190127TN364715T/capture",
@@ -5921,25 +5927,26 @@ class GuardrailsAndPushes(unittest.TestCase):
                   "serverless deploy --stage dev", "sls deploy -s staging", "gh release create v1.0 --draft",
                   "gh release create v1.0 -d", "gh release create -d v1.0", "gh release create v1.0 --notes x -d",
                   "gh release create v1.0 --notes=x -d", "gh release create v1.0 -p -d",
-                  "gh release create v1.0 --latest=false --draft", "gh release create v1.0 --notes -d --draft",
-                  "gh release list", "fly status", "cdk diff", "sam build", "hatch build", "flit build"):
+                  "gh release create v1.0 --latest=false --draft", "gh release list", "fly status", "cdk diff",
+                  "sam build", "hatch build", "flit build"):
             for e in self.engines:
                 with self.subTest(engine=e.engine, command=c):
                     d = e.decide("Bash", {"command": c})
                     self.assertEqual(d["verdict"], "allow", d)
                     self.assertNotIn("TK-A056", d["rule_ids"], d)
+        # a draft the grammar can't read is held (the entry is `required`, round 5's F4): a value given apart from its
+        # flag that starts with `-` (`--notes -d`) is one the reader doesn't take
+        for e in self.engines:
+            self.assertIn("TK-A056", e.decide("Bash", {"command": "gh release create v1.0 --notes -d --draft"})[
+                "rule_ids"], e.engine)
 
-    def test_a_draft_flag_inside_a_quoted_value_reads_as_a_draft(self):
-        """#908 review, a documented limit (docs/limits.md): TK-A056 reads a command's words joined by spaces, so a -d
-        inside another option's quoted value reads as an option of its own and the release is allowed, though it
-        publishes. A -d that is a whole value stays that option's value and is held."""
-        for c in ("gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'"):
-            for e in self.engines:
-                with self.subTest(engine=e.engine, command=c):
-                    d = e.decide("Bash", {"command": c})
-                    self.assertEqual(d["verdict"], "allow", d)
-                    self.assertNotIn("TK-A056", d["rule_ids"], d)
-        self.verdicts([("Bash", {"command": "gh release create v1.0 --notes '-d'"})], "ask", "TK-A056")
+    def test_a_draft_flag_inside_a_quoted_value_is_that_values(self):
+        """#908 review's limit, closed in 1.8: TK-A056 read a command's words joined by spaces, so a -d inside another
+        option's quoted value read as an option of its own and the release was allowed, though it publishes. gh's
+        grammar reads the value as one word (policy-v2.md#cli-grammars): held, as a -d that is a whole value is."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh release create v1.0 --notes 'see -d'", "gh release create v1.0 --title 'v1 --draft'",
+            "gh release create v1.0 --notes '-d'")], "ask", "TK-A056")
 
     def test_the_server_pack_leaves_a_production_deploy_to_the_agent(self):
         """#892: TK-A056 is in dev.yaml only; a server agent's deploy is often its job."""
@@ -6778,8 +6785,11 @@ class StrictPack(unittest.TestCase):
     def test_it_only_re_tiers_the_coding_packs_rules(self):
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
         mine = {r["id"]: r for r in self.pol["ask"] if r["id"] in coding}
-        # TK-F024 (#757): an upload tool's file waits too, as a network command does; TK-F025 a shell startup file
-        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024", "TK-F025"])
+        # TK-F024 (#757): an upload tool's file waits too, as a network command does; TK-F025 a shell startup file;
+        # TK-F031 a Git or cargo config file a file tool writes, as TK-F030 holds a shell write of one; TK-F032 a Git
+        # config section written anywhere
+        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024", "TK-F025", "TK-F030", "TK-F031",
+                                        "TK-F032"])
         for rid, r in mine.items():
             keys = ("pattern", "label") + tuple(k for k in ("field", "tool") if k in r or k in coding[rid])
             if rid == "TK-F011":   # the coding pack's flag reads each assignment now (`target`) and adds a startup
@@ -7143,10 +7153,23 @@ class SignerPolicy(unittest.TestCase):
         self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
         d = self.decide("Bash", {"command": "stripe refunds create --charge=ch_3FAKE"})
         self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-A043"]))
-        self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). "
-                                      "Instead: Check the amount, currency and payee in the command or the file it "
-                                      "sends before approving it; a refund with no amount refunds in full, and a "
-                                      "confirm, capture or pay moves the amount set earlier.")
+        self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund), "
+                                      "or a GET to one that curl's config file can turn into a POST (no -q first). "
+                                      "Instead: Run a GET as `curl -q -G …` (no config file read); check a payment's "
+                                      "amount, currency and payee before approving (no amount refunds in full; "
+                                      "confirm, capture or pay moves the amount set earlier).")
+
+    def test_a_held_get_says_to_run_it_with_q_first_and_then_runs(self):
+        """A plain GET to a payment API is held, as curl's config file may make it a POST: the hold names -q, and the
+        same GET with -q first, which reads no config file, runs."""
+        self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
+        get = "curl -G https://api.stripe.com/v1/charges -u sk_test_FAKE: -d limit=3"
+        d = self.decide("Bash", {"command": get})
+        self.assertEqual((d["decision"], "TK-A043" in d["rule_ids"]), ("ask", True), d)
+        self.assertIn("Instead: Run a GET as `curl -q -G …`", d["reason"])
+        d = self.decide("Bash", {"command": "curl -q " + get[5:]}, tcid="tc-q")
+        self.assertNotIn("TK-A043", d["rule_ids"], d)
+        self.assertNotEqual(d["decision"], "ask", d)
 
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}
