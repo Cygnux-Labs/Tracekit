@@ -16,6 +16,7 @@ import adapter_contract as ac
 from factories import VersionCheckCases
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.integrations.recording_warning import recording_warning
 
 try:
     from langchain.agents import create_agent
