@@ -780,27 +780,58 @@ class TestClear(Case):
         if not tv.SKIP:
             self.assertEqual(tv.ts_verify(path, trust)["assurance"], rep.assurance)
 
-    def test_a_self_clear_clears_its_own_run_only(self):
-        # a run the agent registers, inherits the label in and clears: the run that read the secret (open, or ended
-        # within label_inherit_s) and the requester's next run still carry it, and the cleared run inherits it again
+    def test_a_dev_user_clears_the_run_that_read_it_after_it_ended(self):
+        # the run that read the secret has ended (closed; final): its user clears it there, which ends it for every
+        # run that took it from that one; a run that took it can't clear it alone, and is told where to
         from test_containment import e17
-        for ended in (False, True):
-            with self.subTest(ended=ended):
+        for final in (False, True):
+            with self.subTest(final=final):
                 s = e17.Signer(engine())
                 self.addCleanup(s.close)
                 first = s.register()
                 s.decide(first, SECRET)
-                if ended:
-                    s.call("close_run", first)
-                throwaway = s.register()
-                s.decide(throwaway, ("read_file", {"path": "/srv/app/README"}))
-                s.call("run_label_clear", {"run_id": throwaway["run_id"], "label": "secrets_access"})
-                if not ended:
-                    self.assertEqual(s.decide(first, EGRESS)["decision"], "ask")
-                self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "ask")
-                self.assertEqual(s.decide(throwaway, EGRESS)["decision"], "ask")
-                self.assertEqual([e["data"]["action"] for e in s.events(throwaway) if e["type"] == "run.label"],
-                                 ["add", "clear", "add"])
+                s.call("close_run", first)
+                if final:
+                    s.s.sweep(time.time() + 3600)
+                key = ("default", first["run_id"])
+                self.assertEqual(bool(s.s.log.runs[key]["final"]), final)
+                later = s.register()
+                s.decide(later, ("read_file", {"path": "/srv/app/README"}))   # takes it from the first
+                with self.assertRaises(RPCError) as c:
+                    s.call("run_label_clear", {"run_id": later["run_id"], "label": "secrets_access"})
+                self.assertEqual(c.exception.code, "invalid_request")
+                self.assertIn(f"took secrets_access from run {first['run_id']}: clear it there (tracekit signer "
+                              f"incidents clear-label {first['run_id']} --label secrets_access)", c.exception.message)
+                s.call("run_label_clear", {"run_id": first["run_id"], "label": "secrets_access", "reason": "test values"})
+                cleared = [e["data"] for e in s.events(later) if e["type"] == "run.label"][-1]
+                self.assertEqual(cleared, {"label": "secrets_access", "action": "clear", "by": "person",
+                                           "identity": f"uid:{ME.subject}", "person": f"uid:{ME.subject}",
+                                           "reason": f"it came from run {first['run_id']}, whose label was cleared",
+                                           "self_cleared": True})
+                self.assertEqual(s.decide(later, EGRESS)["decision"], "allow")
+                self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "allow")
+                carry = json.loads(json.dumps(s.s.log.carry))
+                s.crash()
+                shutil.rmtree(os.path.join(s.dir, "store", "snapshots"), ignore_errors=True)
+                s.open()
+                self.assertEqual(s.s.log.carry, carry)
+                self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "allow")
+                code, line = self.check(*bundle(s, later))
+                self.assertEqual((code, line["status"]), (0, "pass"), line)
+
+    def test_a_person_clears_an_ended_run_s_label(self):
+        s = self.signer()
+        first = s.register()
+        s.decide(first, SECRET)
+        s.call("close_run", first)
+        s.s.sweep(time.time() + 3600)
+        nxt = s.register()
+        s.decide(nxt, FETCH)
+        s.as_(OP, "run_label_clear", {"run_id": first["run_id"], "label": "secrets_access", "reason": "checked"})
+        self.assertEqual([e["data"].get("reason") for e in s.events(nxt) if e["type"] == "run.label"][-1],
+                         f"it came from run {first['run_id']}, whose label was cleared")
+        self.assertEqual(s.decide(nxt, EGRESS)["decision"], "allow")
+        self.assertEqual(s.decide(s.register(), EGRESS)["decision"], "allow")
 
     def test_the_cli_sends_the_label_it_is_given(self):
         calls = []
@@ -956,6 +987,9 @@ class TestVerifier(Case):
                          ["seq 3: secrets_access cleared by the run's own owner"])
         mine = {**clear, "data": {**clear["data"], "self_cleared": True}}   # a dev signer's own user
         self.assertEqual(v2._run_labels([reg, dec, add, mine], {"h": src}, got), [])
+        # an ended run's clear, in the tenant's signer run: about that run, not this one's labels
+        ended = {**clear, "data": {**clear["data"], "run_id": "r9", "identity": "uid:7"}}
+        self.assertEqual(v2._run_labels([reg, ended], {"h": src}, got), [])
         # a gateway's run: its client (the decision's caller) is a requester too
         gw = {**reg, "data": {"identity": {"scheme": "uid", "subject": "900"}}}
         via = {**dec, "data": {**dec["data"], "via": "uid:900", "caller": "uid:501"}}

@@ -700,9 +700,13 @@ operator call), recorded as a `run.label` of theirs. Who may is who may resume a
 never the run's own owner, principal or requester. It clears the label for the run's client too, in the run's
 tenant: a new run of theirs no longer inherits it from an ended run (an identity the run was delegated to keeps its
 own runs'), while an open run that carries it, the one that read the secret, keeps it and passes it on until it is
-cleared there too. The next call that sets it sets it again. On a dev signer (no `approvals` config), whose one user answers their own run's
-approvals, that user clears their own run's label (`tracekit signer incidents clear-label <run_id> --label
-secrets_access --reason "..."`), recorded `self_cleared`, for that run alone: the agent runs as the same user, and
+cleared there too. The next call that sets it sets it again. A run that has ended is cleared too: the clear is
+recorded in its tenant's signer run (naming it, `run_id`), and it ends the label for every run that took it from that
+one (each open one gets a clear of its own). On a dev signer (no `approvals` config), whose one user answers their own
+run's approvals, that user clears the label of the run that read the secret, open or ended (`tracekit signer incidents
+clear-label <run_id> --label secrets_access --reason "..."`), recorded `self_cleared`; a run that took the label from
+another can't clear it alone, and the refusal names that run (`clear it there: tracekit signer incidents clear-label
+<run> --label secrets_access`), as the note a recorded send shows does. The agent runs as the same user, and
 `TK-D007` denies it that command.
 
 `dev.yaml`, the laptop default, names a send (`egress`) once the run carries `secrets_access` (`TK-Q001`), and a

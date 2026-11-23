@@ -142,12 +142,14 @@ class HookV2(unittest.TestCase):
         first = self.run_handle("s1").run_id
         self.assertEqual(json.loads(stdout("gh issue comment 1 -b x", "s2", "t4"))["systemMessage"],
                          f"[tracekit] noted: this sends data with gh after an earlier session (run {first}) ran `cat "
-                         ".env`; this carries while that session is open." + tail)
+                         f".env`; this carries while that session is open, or clear it: tracekit signer incidents "
+                         f"clear-label {first} --label secrets_access." + tail)
         for sid in ("s1", "s2"):   # both ended: the label carries from the one that ended last
             self.hook("SessionEnd", sid=sid, reason="prompt_input_exit")
         self.assertRegex(json.loads(stdout("gh issue comment 1 -b x", "s3", "t5"))["systemMessage"],
                          r"after an earlier session \(run [0-9a-f]{32}\) ran `cat \.env`; this carries for (60|59) "
-                         r"more minutes\.")
+                         rf"more minutes, or clear it: tracekit signer incidents clear-label {first} --label "
+                         r"secrets_access\.")
 
     def test_allow_then_post_completes_with_the_binding(self):
         self.assertEqual(self.hook("SessionStart")[0], 0)

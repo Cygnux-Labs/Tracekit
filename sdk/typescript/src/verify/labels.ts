@@ -120,6 +120,7 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
       owner = `${str(d.identity.scheme ?? null)}:${str(d.identity.subject ?? null)}`;
     // the client a gateway registered it for, a writer: requesters of the run
     if (t === "run.registered" || t === "run.writer") callers.add(t === "run.registered" ? d.caller : d.identity);
+    if (t === "run.label" && d.action === "clear" && Object.hasOwn(d, "run_id")) continue;   // an ended run's
     if (t === "run.label") {
       const x = key(d.label);
       if (d.action === "add") {

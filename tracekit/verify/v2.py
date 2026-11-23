@@ -1585,6 +1585,8 @@ def _run_labels(events, srcs, inherited):
             owner = f"{d['identity'].get('scheme')}:{d['identity'].get('subject')}"
         if t in ("run.registered", "run.writer"):   # the client a gateway registered it for, a writer: requesters
             callers.add(d.get("caller") if t == "run.registered" else d.get("identity"))
+        if t == "run.label" and d.get("action") == "clear" and "run_id" in d:   # an ended run's, in the signer run
+            continue
         if t == "run.label":
             x = key(d.get("label"))
             if d.get("action") == "add":

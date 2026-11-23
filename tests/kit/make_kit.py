@@ -481,6 +481,11 @@ def vectors():
                                                               "person": "token:cli"}, {}), policy_dir=policies),
          t, 1, "FAILED", failed_check=["run labels"], addon="run labels", needs="1.8.0",
          decided_by="§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9")
+    case("a clear of an ended run's label, in another run", closed(
+        "run-label-ended-cleared", plain, (cleared[0], {**cleared[1], "identity": "token:ops", "person": "token:ops",
+                                                        "run_id": "run-z"}, {}), policy_dir=policies), t, 0, "VERIFIED",
+         "witnessed", addon="run labels", needs="1.8.0",
+         decided_by="§3 (run labels: a clear of a run that has ended names it, run_id, in its tenant's signer run)")
     writer = ("run.writer", {"identity": "token:cli", "stream": "s2"}, {})
     added2 = (added[0], {**added[1], "source": 2}, {})   # the secret read after the writer's record
     case("a run's writer, recorded", closed("run-writer", writer, secret, added2, policy_dir=policies), t, 0,

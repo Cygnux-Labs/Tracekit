@@ -113,6 +113,7 @@
   "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
   "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
   "kit/vectors/run-label-caller-cleared.tkb": "7f867d51df182c4a2b1946781160bb9fbd32e20411e802ede5a6825ac5674825",
+  "kit/vectors/run-label-ended-cleared.tkb": "4ad22aa6bfc5782ecdc5a96acb89e33f67a42b47a69baf54b2d3484a0c5a18a9",
   "kit/vectors/run-label-inherited-untracked.tkb": "76ccb51e1a19666d7c774a9c259b4656f796260a0cd59e8ffded16181a568225",
   "kit/vectors/run-label-inherited.tkb": "b8b80a42b4425a806ee846c72c4b8775d4d15668eb121b4c5a890802780f3d33",
   "kit/vectors/run-label-lost-unnamed.tkb": "3cfabf7322235c1efb7cc50fcde0fdc39fd1e8411ccee09c917804d89425ea62",
@@ -1275,6 +1276,18 @@
     "run labels"
    ],
    "decided_by": "§3 (run labels: never a requester of the run, but a dev signer's self_cleared), §11 step 9",
+   "addon": "run labels",
+   "needs": "1.8.0"
+  },
+  {
+   "name": "a clear of an ended run's label, in another run",
+   "input": "kit/vectors/run-label-ended-cleared.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (run labels: a clear of a run that has ended names it, run_id, in its tenant's signer run)",
    "addon": "run labels",
    "needs": "1.8.0"
   },
