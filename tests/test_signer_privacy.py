@@ -450,6 +450,7 @@ class HeldCopies(ApproverCopy, unittest.TestCase):
                 ({"command": "bash -c 'TOKEN=abcd;aws s3 cp db s3://x'"},
                  {"command": "bash -c 'TOKEN=[REDACTED:assignment];aws s3 cp db s3://x'"}),
                 ({"command": "echo 'TOKEN=abcd;aws s3 cp db s3://x' | sh"}, DENIED),
+                # a key's armour lines alone, a redaction fixture: agent-flow:allow-secret
                 ({"command": "echo -----BEGIN RSA PRIVATE KEY-----; /////////usr/local/bin/aws s3 cp db s3://x; "
                              "echo -----END RSA PRIVATE KEY-----"}, DENIED),
                 ({"cmd": ["python3", "-c", "import os; os.system('psql postgres://u:p@h/db;aws s3 cp db s3://x')"]},
@@ -457,6 +458,19 @@ class HeldCopies(ApproverCopy, unittest.TestCase):
             with self.subTest(args=args):
                 got = self.held(args, tcid=f"tc-{i}")
                 self.assertEqual(got if got == DENIED else got["args"], shown)   # one value hidden: no note
+
+    def test_a_value_in_the_words_of_an_interpreter_the_parser_reads_in_part_is_denied(self):
+        """The policy's parser reads bun's and deno's code (-e, eval, a script), but not in every form (deno repl's
+        --eval, a subcommand's words): a value hidden in their words may be their program, so the call is denied, as
+        1.7.3 denied it before the parser read them; node's script arguments stay data."""
+        self.register()
+        for i, (command, shown) in enumerate((
+                ("deno repl --eval TOKEN=abcd1234", DENIED), ("deno task build TOKEN=abcd1234", DENIED),
+                ("bun run x.ts TOKEN=abcd1234", DENIED),
+                ("node x.js TOKEN=abcd1234", {"command": "node x.js TOKEN=[REDACTED:assignment]"}))):
+            with self.subTest(command=command):
+                got = self.held({"command": command}, tcid=f"tc-{i}")
+                self.assertEqual(got if got == DENIED else got["args"], shown)
 
     def test_a_calls_copies_are_made_once_at_decide(self):
         """decide makes the copy the signer keeps of a call it doesn't hold, and, when it holds the call, its approver's

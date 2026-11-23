@@ -767,8 +767,10 @@ def _words(s, spans):
 
 
 def _unread_interpreter(name):
-    """Whether `name` is an interpreter's (engine._INTERPRETER) whose program the parser doesn't read (deno, bun)."""
-    return bool(_policy("engine")._INTERPRETER.fullmatch(name)) and not _policy("shell")._kind(name)
+    """Whether `name` is an interpreter's (engine._INTERPRETER) whose program the parser doesn't read in every form:
+    deno's and bun's (shell._JS_KIND; not `deno repl --eval`, nor a subcommand's words), or one it doesn't read."""
+    shell = _policy("shell")
+    return bool(_policy("engine")._INTERPRETER.fullmatch(name)) and (not shell._kind(name) or name in shell._JS_KIND)
 
 
 class _Facts:
