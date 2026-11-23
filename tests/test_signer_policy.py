@@ -5886,7 +5886,8 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git push -o ci.skip origin", "git push --repo origin feature", "git push --for origin feature",
             "git push --bogus origin feature", "git-push origin main", "npm publish", "pnpm -r publish",
             "yarn npm publish", "cargo publish", "hatch publish", "hatch publish --repo pypi",
-            "flit publish", "flit publish --repository pypi", "twine upload dist/*", "docker push x",
+            "flit publish", "flit publish --repository pypi", "python -m flit publish", "python3 -m hatch publish",
+            "twine upload dist/*", "docker push x",
             "helm upgrade --install a b",
             "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x",
             # #892: a platform CLI's production deploy, each form from the CLI's own docs
@@ -6665,6 +6666,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api repos/o/r/merges -f head=f -f commit_message='merge f now' --raw-field=base=main",
             "hub api repos/o/r/git/refs/heads/master -X PATCH -f sha=abc", "sl push --to main", "sl push -t master",
             "sl push --to=refs/heads/main", "sl push -t refs/heads/master", "sl push --to remote/main",
+            # with no --to, sl pushes to the bookmark it guesses (main's for a commit on main), as git's push with no
+            # refspec does to the one push.default picks
+            "sl push", "sl push -r .", "sl push upstream", "sl push -f", "sl push --rev . --tool x",
             "jj git push -r @", "jj git push -r@", "jj git push --revisions=@", "jj git push --revision @-",
             "jj git push -b feature -r @", "jj --no-pager git push -r main",
             "git town ship", "jj git push", "jj git push -b main", "jj git push --bookmark=master", "jj git push --all",
