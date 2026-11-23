@@ -347,6 +347,18 @@ class VersionCheck(VersionCheckCases, unittest.TestCase):
         return (lambda: integration.tracekit_hooks(mock.Mock(), run),
                 lambda: integration.TracekitSessionStore(mock.Mock(), mock.Mock(), run))
 
+class TestRecordingWarning(unittest.TestCase):
+    def test_warning_reflects_recording_status(self):
+        for recorded, expected in (
+            (None, "may not have been recorded"),
+            (False, "not recorded"),
+        ):
+            with self.subTest(recorded=recorded):
+                error = RuntimeError("signer unavailable")
+                error.recorded = recorded
+                message = recording_warning("transcript commitment", error)
+                self.assertIn(expected, message)
+
 
 if __name__ == "__main__":
     unittest.main()
