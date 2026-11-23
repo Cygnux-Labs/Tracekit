@@ -317,6 +317,9 @@ def _parser():
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
     p.add_argument("--project", nargs="?", const=".", metavar="DIR", help="hooks in DIR/.claude/settings.json (DIR: "
                    "the working directory when not given) instead of ~/.claude")
+    p.add_argument("--allow-hook-python", action="store_true", help="with --v2 in dev mode: record this Python for the "
+                   "Claude Code plugin's hook even if it isn't a uv tool or pipx install of tracekit-ai (the default "
+                   "records only those)")
     p.add_argument("--no-hooks", action="store_true", help="install no agent hooks (an SDK agent, or the Claude Code "
                    "plugin's own hooks)")
     p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
@@ -657,10 +660,13 @@ def _init_remote_v2(a, url):
                                              thinking=not a.no_thinking_summaries)
         if hooks and not a.project:
             install.record_hooks_settings(hooks)
+        note = install.record_hook_python(a.allow_hook_python)
     except install.SettingsError as e:
         print(f"tracekit: {e}", file=sys.stderr)
         return 1
     print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
+    if note:
+        print(note, file=sys.stderr)
     if hooks and not a.no_thinking_summaries:
         print(install.thinking_line(hooks, on))
     if hooks:
@@ -811,6 +817,13 @@ def _run(a):
                 from .signer.service import dev_data_dir
                 anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
+                try:
+                    note = install.record_hook_python(a.allow_hook_python)   # the one Python that hook runs
+                except install.SettingsError as e:
+                    print(f"tracekit: {e}", file=sys.stderr)
+                    return 1
+                if note:
+                    print(note, file=sys.stderr)
                 plugin = hooks and install.plugin_enabled(project=a.project)
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin

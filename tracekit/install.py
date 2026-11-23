@@ -498,6 +498,41 @@ def record_hooks_settings(path):
     _write_client_dir(d, {**cfg, **({"hooks_settings": os.path.abspath(path)} if path else {"no_hooks": True})})
 
 
+def tool_venvs():
+    """The folders a uv tool or pipx install of tracekit-ai lives in, where uv (UV_TOOL_DIR) and pipx (PIPX_HOME) put it
+    as this process sees them, else by default: the plugin's hook (plugin/scripts/tracekit-hook) reads the same."""
+    home, share = os.path.expanduser("~"), os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return [os.path.join(v, "tracekit-ai") for v in (
+        os.environ.get("UV_TOOL_DIR") or os.path.join(share, "uv", "tools"),
+        os.path.join(os.environ.get("PIPX_HOME") or os.path.join(share, "pipx"), "venvs"),
+        os.path.join(home, ".local", "pipx", "venvs"), os.path.join(home, "Library", "Application Support", "pipx", "venvs"))]
+
+
+def record_hook_python(allow=False):
+    """Record the Python init runs with as hook_python in the client config (its other keys stay): the only Python the
+    plugin's hook runs in once there is one. Only that of a uv tool or pipx install of tracekit-ai is recorded, unless
+    `allow` (init's --allow-hook-python, which a person gives): a Python anywhere else is one an agent can put code in.
+    Returns None when it is recorded, else the line that says what to run."""
+    from . import __version__
+    python = sys.executable
+    inside = any(python.startswith(v + os.sep) for v in tool_venvs())
+    if not allow and not inside:
+        return (f"hook Python not recorded: {python} is not the Python of a uv tool or pipx install of tracekit-ai, the only "
+                f"kind the plugin's hook runs. Run: uv tool install tracekit-ai=={__version__} && tracekit init --dev "
+                f"--v2 --no-hooks (or pass --allow-hook-python to record {python}, which any program that can write "
+                f"its site-packages then controls)")
+    d = client.client_dir()
+    fd = files.open_dir(d)
+    try:
+        cfg = _read_config(fd)
+    finally:
+        files.close(fd)
+    cfg.pop("hook_python_allowed", None)
+    # hook_python_allowed: a person gave --allow-hook-python, which the hook then honours for a Python outside a tool install
+    _write_client_dir(d, {**cfg, "hook_python": python, **({} if inside else {"hook_python_allowed": True})})
+    return None
+
+
 AGENT_FILE_MAX = 4 << 20   # bytes of an agent's settings file doctor and init read at most
 
 
@@ -800,7 +835,7 @@ def _write_client_dir(path, cfg):
         files.close(parent)
     try:
         files.close(files.subdir(d, "runs", 0o755, _my_uid()))
-        files.write(d, "config.json", files.json_bytes(cfg))
+        files.write(d, "config.json", files.json_bytes(cfg, ensure_ascii=False))   # (the plugin's hook reads hook_python as it is)
     finally:
         files.close(d)
     return os.path.join(path, "config.json")

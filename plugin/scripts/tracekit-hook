@@ -1,35 +1,54 @@
 #!/bin/sh
-# Claude Code hook entry point for the Tracekit plugin: the v2 hook (tracekit.integrations.claude_code), as
-# `tracekit init --v2` wires it, with the hook event hooks.json names as its argument. Needs the `tracekit` package:
-#   pip install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
+# Hook entry point for the Tracekit plugin: `tracekit-hook EVENT [AGENT]` runs Tracekit's v2 hook for EVENT as
+# `tracekit init --v2` wires it: Claude Code's (tracekit.integrations.claude_code) with no AGENT (hooks/hooks.json),
+# else that of `tracekit init --agent AGENT` (tracekit.integrations.harness_hooks AGENT EVENT; hooks/<agent>.json).
+# Needs the `tracekit` package:
+#   uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
 # Every install command it prints names the version in .claude-plugin/plugin.json (tests/test_hook_invocation.py
 # checks), since that package decides which calls run; the agent is asked to show it to the person, not run it.
 # Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs.
-# Exit 0 lets the event proceed. Only a PreToolUse is ever blocked (2): a hook that starts but cannot finish blocks the
-# call. Any other event that fails exits 1, a non-blocking error the transcript shows (2 would erase a prompt, or send
-# Claude back to work at Stop).
+# Exit 0 lets the event proceed. Only a pre-tool event (PreToolUse; Copilot CLI's and Cursor's preToolUse) is ever
+# blocked (2): a hook that starts but cannot finish blocks the call. Any other event that fails exits 1, a non-blocking
+# error the harness shows (2 would erase a prompt, or send Claude back to work at Stop). A notice that lets a call run
+# exits 1 too, except under Copilot CLI and Cursor, which block a pre-tool call on any exit but 0 (Cursor: failClosed).
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
-# Otherwise the hook runs in the first of TRACEKIT_PYTHON, python3 and python that imports tracekit (user
-# site-packages added back for `pip install --user`). A tracekit before 1.2, or one whose hook won't import, blocks
-# the call. With none, the call is blocked once Tracekit is set up for this user (the dev signer's data dir exists,
-# which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is set); before that every event
-# says so in the transcript and proceeds, unrecorded.
-HOOK=tracekit.integrations.claude_code
+# In dev mode, once `tracekit init` has recorded its Python (hook_python in ~/.tracekit-client/config.json) that one runs
+# the hook and no other: a record that can't run it, or Tracekit set up with none, blocks the call. Before that (no dev data
+# dir yet) the hook runs in TRACEKIT_PYTHON when it imports tracekit; else in the python of a uv tool or pipx install
+# of Tracekit where uv (UV_TOOL_DIR) or pipx (PIPX_HOME) put it, as this process sees them, else by default (folders
+# TK-D007 and TK-D013 keep the agent from writing), and then only there, even when that install is broken (the call is
+# blocked); never a folder the `tracekit` command on PATH links into. Else the hook runs in the first of python3, python
+# and the python beside any other `tracekit` that imports tracekit (user site-packages added back for `pip install
+# --user`, without running its .pth files). A tracekit before the version below, or one whose hook won't import, blocks
+# the call. With none, the call is blocked once Tracekit is set up for this user (the
+# dev signer's data dir exists, which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is
+# set); before that every event says so and proceeds, unrecorded. hooks/*.json run this with /bin/sh, so it runs
+# without its exec bit (TK-F015 holds a mode change of it, chmod 000 too).
+MIN_TRACEKIT=1.7.2   # the oldest tracekit it runs with, as plugin.json's version (tests/test_hook_invocation.py checks)
 SYSTEM_CONFIG=/etc/tracekit/client.json
 SYSTEM_PYTHON=/opt/tracekit/bin/python
 EV=${1:-}
+AGENT=${2:-}
+if [ -n "$AGENT" ]; then
+  HOOK=tracekit.integrations.harness_hooks
+  set -- "$AGENT" "$EV"
+else
+  HOOK=tracekit.integrations.claude_code
+fi
+case $EV in PreToolUse|preToolUse) PRE=1 ;; *) PRE= ;; esac
+case $AGENT in copilot|cursor) RUNS=0 ;; *) RUNS=1 ;; esac
 
-# finish STATUS WHAT FIX [open]: the hook exited STATUS. A PreToolUse it blocked (2) stays blocked, and one it could
+# finish STATUS WHAT FIX [open]: the hook exited STATUS. A pre-tool call it blocked (2) stays blocked, and one it could
 # not finish is blocked too (with "open": runs, with the error shown). Any other event's failure is 1; the hook's own
 # message (status 1 or 2) comes first, else WHAT and FIX are said here.
 finish() {
   [ "$1" = 0 ] && exit 0
-  if [ "$EV" = PreToolUse ]; then
+  if [ -n "$PRE" ]; then
     [ "$1" = 2 ] && exit 2
     if [ "${4:-}" = open ]; then
       echo "tracekit plugin: $2, so this call was NOT recorded (fail_mode open). $3" >&2
-      exit 1
+      exit $RUNS
     fi
     echo "tracekit plugin: $2, so this call was blocked (fail-closed). $3" >&2
     exit 2
@@ -41,39 +60,41 @@ finish() {
 if [ -e "$SYSTEM_CONFIG" ]; then
   "$SYSTEM_PYTHON" -I -m $HOOK "$@"; s=$?
   [ $s = 0 ] && exit 0
-  grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null && open=open
+  while IFS= read -r line || [ -n "$line" ]; do   # (no program is found through PATH here)
+    case $line in *'"fail_mode"'*:*'"open"'*) open=open ;; esac
+  done < "$SYSTEM_CONFIG" 2>/dev/null
   finish $s "$SYSTEM_PYTHON could not run the tracekit hook" "Re-run system init from a root-owned clone: sudo \
 /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks" "${open:-}"
 fi
-PATHS='import site, sys; site.addsitedir(site.getusersitepackages())'
-RUN="$PATHS"'
+USER_SITE='import site, sys; sys.path.append(site.getusersitepackages())'   # (addsitedir would run its .pth files)
+RUN='
 import inspect
-pre = sys.argv[1:2] == ["PreToolUse"]
+args = sys.argv[1:]
+pre = args[-1:] in (["PreToolUse"], ["preToolUse"])
 try:
-    from tracekit.integrations.claude_code import _entry
-    why = "" if inspect.signature(_entry).parameters else "is older than 1.2"
+    if len(args) > 1:
+        from tracekit.agent_hooks import HARNESSES
+        from tracekit.integrations.harness_hooks import entry
+        why = "" if args[0] in HARNESSES else "has no %s hook (it is older than this plugin)" % args[0]
+    else:
+        from tracekit.integrations.claude_code import _entry as entry
+        why = "" if inspect.signature(entry).parameters else "is older than 1.2"
 except Exception as e:
     why = "cannot import its hook (%s: %s)" % (type(e).__name__, e)
+if not why:
+    import re, tracekit
+    now = tuple(map(int, re.findall(r"\d+", getattr(tracekit, "__version__", "0"))[:3]))
+    why = "" if now >= tuple(map(int, MIN.split("."))) else "is older than this plugin, which needs %s" % MIN
 if why:
     import tracekit
-    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: pip install tracekit-ai==1.7.2 && "
+    print("tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: uv tool install tracekit-ai==1.7.2 && "
           "tracekit init --dev --v2 --no-hooks" % (getattr(tracekit, "__version__", "?"), sys.executable, why,
                                      "call was blocked" if pre else "event was NOT recorded"), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
-raise SystemExit(_entry(*sys.argv[1:2]))'
-for py in "${TRACEKIT_PYTHON:-}" python3 python; do
-  [ -n "$py" ] || continue
-  if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import tracekit" >/dev/null 2>&1; then
-    "$py" -I -c "$RUN" "$@"
-    finish $? "$py could not run the tracekit hook" "Ask the person to reinstall: pip install tracekit-ai==1.7.2"
-  fi
-done
-case $(uname -s 2>/dev/null) in
-  Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
-  MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
-  *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
-esac
-if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
+raise SystemExit(entry(*args))'
+RUN="
+MIN = '$MIN_TRACEKIT'$RUN"
+plugin_off() {   # how a person turns this plugin off, in `off`
   # Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version> and names it
   # <plugin>@<marketplace>. Elsewhere (a --plugin-dir or local marketplace loads in place, a claude.ai-synced one) its
   # key isn't known, so the message only says `/plugin` rather than name a plugin that isn't installed.
@@ -88,9 +109,109 @@ if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
     */cache) [ -n "$plugin" ] && [ -n "$marketplace" ] &&
       off="turn the plugin off: /plugin disable $plugin@$marketplace" ;;
   esac
-  finish 3 "no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up" \
-    "Ask the person to install it (pip install tracekit-ai==1.7.2), set TRACEKIT_PYTHON to the Python that has it, or $off"
+  [ -n "$AGENT" ] && off="turn the Tracekit plugin off"
+  return 0
+}
+data_dir() {   # where the dev signer's data dir is, by this system's own uname (never one found through PATH)
+  un=/usr/bin/uname
+  [ -x "$un" ] || un=/bin/uname
+  case $("$un" -s 2>/dev/null) in
+    Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
+    MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
+    *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
+  esac
+}
+
+# The Python `tracekit init` recorded in $HOME/.tracekit-client (a folder TK-D007 keeps from the agent) runs the hook once
+# there is one, and only it: not TRACEKIT_PYTHON, PATH or a default folder. One that can't run it stops the call, and so
+# does a Tracekit that is set up (its data dir exists) with none recorded: neither falls back to another Python. The record
+# is read here, first, with the shell's own builtins: nothing is found through PATH before it. It is the config's JSON
+# string (a backslash escape unescaped; a \u escape is refused), and a Python outside the folders of a uv tool or pipx
+# install of Tracekit is refused unless init recorded that a person allowed it (--allow-hook-python).
+rec= allowed= bad= cfg=$HOME/.tracekit-client/config.json
+if [ -r "$cfg" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case $line in *'"hook_python_allowed"'*true*) allowed=1 ;; esac
+    case $line in
+      *'"hook_python"'*)
+        rest=${line#*'"hook_python"'}
+        rest=${rest#*\"}
+        while [ -n "$rest" ]; do
+          c=${rest%"${rest#?}"}
+          rest=${rest#?}
+          [ "$c" = '"' ] && break
+          if [ "$c" = '\' ]; then
+            c=${rest%"${rest#?}"}
+            rest=${rest#?}
+            case $c in u) bad=1; break ;; esac
+          fi
+          rec=$rec$c
+        done ;;
+    esac
+  done < "$cfg"
+fi
+if [ -n "$rec" ] || [ -n "$bad" ]; then
+  share=${XDG_DATA_HOME:-$HOME/.local/share}
+  inside=
+  for v in "${UV_TOOL_DIR:-$share/uv/tools}" "${PIPX_HOME:-$share/pipx}/venvs" "$HOME/.local/pipx/venvs" \
+           "$HOME/Library/Application Support/pipx/venvs"; do
+    case $rec in "$v/tracekit-ai/"*) inside=1 ;; esac
+  done
+  if [ -n "$bad" ] || { [ -z "$inside" ] && [ -z "$allowed" ]; }; then
+    finish 3 "the Python tracekit init recorded for this hook (${rec:-one with a unicode escape}) is not one of a uv tool or pipx install of Tracekit" \
+      "Ask the person to run: uv tool install --reinstall tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+  fi
+  if [ -x "$rec" ] && "$rec" -I -c "import tracekit" >/dev/null 2>&1; then
+    "$rec" -I -c "import sys$RUN" "$@"
+    finish $? "$rec could not run the tracekit hook" "Ask the person to reinstall: uv tool install --reinstall \
+tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+  fi
+  finish 3 "$rec, the Python tracekit init recorded for this hook, cannot import tracekit" "Ask the person to run: uv tool \
+install --reinstall tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks"
+fi
+data_dir
+[ -d "$data" ] && plugin_off && finish 3 "tracekit init has recorded no Python for this hook, though Tracekit is set up" \
+  "Ask the person to run: uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks, or $off"
+# A uv tool or pipx install's python is the tracekit the person runs: with one, nothing else runs the hook, so a
+# tracekit in python3's user site-packages can't stand in for it. The install is only where uv or pipx put it: the folders
+# UV_TOOL_DIR and PIPX_HOME name as this process sees them, else the defaults. Never one a `tracekit` on PATH resolves to
+# (the agent can make a folder of that shape anywhere and put its link first on PATH), and the folder alone is enough, so
+# an install that is broken (its interpreter removed) stops the call instead of falling back to python3. Any other
+# `tracekit` command's python goes last.
+tk=$(command -v tracekit 2>/dev/null) n=0
+while [ $n -lt 40 ] && [ -L "$tk" ] && l=$(readlink "$tk"); do
+  case $l in /*) tk=$l ;; *) tk=${tk%/*}/$l ;; esac
+  n=$((n + 1))
+done
+venv= tool=
+case $tk in /*) tool=${tk%/*}/python ;; esac
+share=${XDG_DATA_HOME:-$HOME/.local/share}
+for v in "${UV_TOOL_DIR:-$share/uv/tools}" "${PIPX_HOME:-$share/pipx}/venvs" "$HOME/.local/pipx/venvs" \
+         "$HOME/Library/Application Support/pipx/venvs"; do
+  [ -z "$venv" ] && [ -d "$v/tracekit-ai/bin" ] && venv=$v/tracekit-ai/bin/python
+done
+for py in "${TRACEKIT_PYTHON:-}" "$venv" python3 python "$tool"; do
+  [ -n "$py" ] || continue
+  site=$USER_SITE
+  if [ "$py" = "$venv" ]; then
+    site='import sys'   # isolated: no user site-packages next to the install's own
+  elif [ -n "$venv" ] && [ "$py" != "${TRACEKIT_PYTHON:-}" ]; then
+    break
+  fi
+  if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$site; import tracekit" >/dev/null 2>&1; then
+    "$py" -I -c "$site$RUN" "$@"
+    finish $? "$py could not run the tracekit hook" "Ask the person to reinstall: uv tool install --reinstall \
+tracekit-ai==1.7.2"
+  fi
+done
+[ -n "$venv" ] && finish 3 "$venv cannot import tracekit" "Ask the person to reinstall it: uv tool install \
+--reinstall tracekit-ai==1.7.2 (or pipx install --force tracekit-ai==1.7.2)"
+if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
+  plugin_off
+  finish 3 "no Python here (TRACEKIT_PYTHON, python3, python, the tracekit command's) has the tracekit package, though \
+Tracekit is set up" "Ask the person to install it (uv tool install tracekit-ai==1.7.2), set TRACEKIT_PYTHON to the Python that \
+has it, or $off"
 fi
 echo "tracekit plugin: the tracekit package is not installed for python3, so this $EV event was NOT recorded. Ask the person to set it up: \
-pip install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks" >&2
-exit 1
+uv tool install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks" >&2
+exit $RUNS

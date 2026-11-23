@@ -1,0 +1,23 @@
+{
+  "name": "tracekit",
+  "version": "1.7.2",
+  "description": "Signed, tamper-evident evidence of what your coding agent did: every tool call checked by a policy before it runs, risky ones held for you, and each one recorded in a hash-chained, Ed25519-signed log that verifies offline.",
+  "keywords": [
+    "audit",
+    "security",
+    "provenance",
+    "hooks"
+  ],
+  "skills": "./skills/",
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "Tracekit",
+    "shortDescription": "Every tool call checked, held for you when risky, and signed",
+    "longDescription": "Tracekit's hooks check each tool call before it runs: allowed, held until you approve it, or blocked. Every call and decision is signed into a record anyone can verify offline. Skills set it up and explain what it did.",
+    "developerName": "Cygnux Labs",
+    "category": "Coding",
+    "websiteURL": "https://github.com/Cygnux-Labs/Tracekit",
+    "logo": "./.claude-plugin/icon.png",
+    "defaultPrompt": "Set up Tracekit for this agent"
+  }
+}

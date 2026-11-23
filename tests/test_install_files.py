@@ -79,6 +79,50 @@ class ClientConfig(_Sentinel, unittest.TestCase):
 
 
 @unittest.skipUnless(CAN_SYMLINK, "needs symlinks")
+class HookPythonRecord(unittest.TestCase):
+    """The Python the plugin's hook runs is recorded only when it is a uv tool or pipx install's, unless a person allows it."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.share = os.path.join(self.d, "share")
+        env = {"HOME": self.d, "USERPROFILE": self.d, "XDG_DATA_HOME": self.share,
+               "TRACEKIT_CLIENT_HOME": os.path.join(self.d, "client")}
+        patch = mock.patch.dict(os.environ, env)
+        patch.start()
+        self.addCleanup(patch.stop)
+        for k in ("UV_TOOL_DIR", "PIPX_HOME"):
+            os.environ.pop(k, None)
+        self.config = os.path.join(self.d, "client", "config.json")
+
+    def test_a_python_that_is_no_tool_install_is_not_recorded_and_init_says_what_to_run(self):
+        line = install.record_hook_python()
+        self.assertIn("uv tool install tracekit-ai==", line)
+        self.assertIn("--allow-hook-python", line)
+        self.assertFalse(os.path.exists(self.config))
+
+    def test_a_person_may_allow_one_and_the_hook_reads_that_record(self):
+        self.assertIsNone(install.record_hook_python(allow=True))
+        self.assertEqual(install.read_json(self.config), {"hook_python": sys.executable, "hook_python_allowed": True})
+
+    def test_a_uv_or_pipx_installs_python_is_recorded_without_the_allowance_and_a_later_init_drops_it(self):
+        for root in (("uv", "tools"), ("pipx", "venvs")):
+            tool = os.path.join(self.share, *root, "tracekit-ai", "bin", "p\u00e9thon")
+            install.record_hook_python(allow=True)
+            with mock.patch.object(sys, "executable", tool):
+                self.assertIsNone(install.record_hook_python())
+            self.assertEqual(install.read_json(self.config), {"hook_python": tool})
+            with open(self.config, encoding="utf-8") as f:
+                self.assertIn("p\u00e9thon", f.read())   # (as it is: the hook reads the string without a JSON parser)
+        with mock.patch.dict(os.environ, {"UV_TOOL_DIR": os.path.join(self.d, "tools")}):
+            moved = os.path.join(self.d, "tools", "tracekit-ai", "bin", "python")
+            with mock.patch.object(sys, "executable", moved):
+                self.assertIsNone(install.record_hook_python())
+            self.assertEqual(install.read_json(self.config)["hook_python"], moved)
+        with mock.patch.object(sys, "executable", os.path.join(self.share, "uv", "tools", "tracekit-ai-evil", "bin", "python")):
+            self.assertIn("not recorded", install.record_hook_python())   # (a folder named like it isn't it)
+
+
 class Settings(_Sentinel, unittest.TestCase):
     def setUp(self):
         super().setUp()
@@ -525,7 +569,7 @@ class ClaudeConfigDir(unittest.TestCase):
                     self.assertEqual(cli.main(argv), 0)
                 self.assertEqual(install._hook_summary(install.read_json(settings))["versions"], ["v2"])
                 self.assertEqual(install.read_json(os.path.join(client_home, "config.json")),
-                                 {"socket": "s", "hooks_settings": settings})
+                                 {"socket": "s", "hooks_settings": settings})   # (this Python is no tool install's: not recorded)
                 with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(doctor._dev_settings(), settings)
                     self.assertEqual(install.uninstall(), settings)

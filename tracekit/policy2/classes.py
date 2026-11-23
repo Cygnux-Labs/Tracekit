@@ -12,6 +12,9 @@ from urllib.parse import unquote, urlsplit
 from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
+# a shell tool's own working directory, under each harness's name (Codex's and OpenCode's workdir, Gemini CLI's and Qwen
+# Code's dir_path or directory, Cursor's working_directory, Crush's working_dir, agy's Cwd): the command runs there
+WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir")
 PATH_KEYS = ("file_path", "notebook_path", "path", "relative_path", "pathInProject")   # serena's, JetBrains'
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on
@@ -49,6 +52,18 @@ def _texts(value):
         elif isinstance(v, (dict, list)):
             todo.extend(v.values() if isinstance(v, dict) else v)
     return out
+
+
+def with_workdir(args):
+    """A shell call's `args` with each command (a string, or each of a list) as `cd <workdir> && <command>` when the call
+    names the folder it runs in (WORKDIR_KEYS): its relative paths are decided there."""
+    where = next((v for k, v in args.items() if k.casefold() in WORKDIR_KEYS and isinstance(v, str) and v), None)
+    if not where:
+        return args
+    where = "./" + where if where.startswith("-") else where   # (a name, not an option or cd's -)
+    prefix = "cd " + (where if re.fullmatch(r"[\w@%+=:,./~-]+", where) else "'" + where.replace("'", "'\\''") + "'") + " && "
+    return {k: prefix + v if k in SHELL_KEYS and isinstance(v, str) else [prefix + c if isinstance(c, str) else c for c in v]
+            if k in SHELL_KEYS and isinstance(v, list) else v for k, v in args.items()}
 
 
 def first(args, *keys):

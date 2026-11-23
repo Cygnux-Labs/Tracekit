@@ -1221,9 +1221,17 @@ class HookV2(unittest.TestCase):
         self.assertEqual(code, 2, err)
         self.assertIn("pushes to main", err)
 
+    def record_hook_python(self):
+        """What `tracekit init` leaves in the client config: the Python the plugin's hook runs in."""
+        client = os.path.join(os.environ["HOME"], ".tracekit-client")
+        os.makedirs(client, exist_ok=True)
+        with open(os.path.join(client, "config.json"), "w") as f:
+            json.dump({"hook_python": sys.executable, "hook_python_allowed": True}, f)
+
     def test_the_plugin_decides_through_the_dev_signer(self):
-        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"), TRACEKIT_PYTHON=sys.executable)
-        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"))
+        self.record_hook_python()
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
             cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
         for tid, command, code in (("t1", "pkill tracekitd", 2), ("t2", "ls", 0)):   # no hook_event_name: hooks.json names it
             p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
@@ -1239,6 +1247,41 @@ class HookV2(unittest.TestCase):
                                                                         "tool_name": "Bash", "tool_input": {}}))
             self.assertEqual(p.returncode, code, (event, p.stderr))
             self.assertIn("signer unreachable", p.stderr.splitlines()[0])
+
+    def test_the_plugins_codex_copilot_and_cursor_hooks_decide_through_the_dev_signer(self):
+        """The plugin's hooks for Codex, Copilot CLI and Cursor run each harness's own hook (harness_hooks), with the
+        harness's payload, from the variable each sets to the plugin's directory, and answer in the harness's own form
+        (Claude Code's hook, which those harnesses ran from the plugin's default hooks file, answers in Claude Code's)."""
+        self.record_hook_python()
+        plugin = os.path.join(ROOT, "plugin")
+        harnesses = {   # (root variable, the pre-tool event, its entry's command field, a payload for a shell call,
+            # the deny the harness reads on stdout)
+            "codex": ("PLUGIN_ROOT", "PreToolUse", lambda g: g["hooks"][0]["command"],
+                      lambda tid, c: {"session_id": "cx", "turn_id": "1", "hook_event_name": "PreToolUse",
+                                      "tool_name": "Bash", "tool_use_id": tid, "tool_input": {"command": c}},
+                      lambda out: set(out) == {"hookSpecificOutput"} and
+                      out["hookSpecificOutput"]["permissionDecision"] == "deny"),
+            "copilot": ("COPILOT_PLUGIN_ROOT", "preToolUse", lambda g: g["bash"],
+                        lambda tid, c: {"sessionId": "cp", "toolCallId": tid, "toolName": "bash",
+                                        "toolArgs": {"command": c}},
+                        lambda out: out["permissionDecision"] == "deny"),
+            "cursor": ("CURSOR_PLUGIN_ROOT", "preToolUse", lambda g: g["command"],
+                       lambda tid, c: {"conversation_id": "cu", "generation_id": "1", "hook_event_name": "preToolUse",
+                                       "tool_name": "Shell", "tool_use_id": tid, "tool_input": {"command": c}},
+                       lambda out: out["permission"] == "deny"),
+        }
+        for harness, (var, pre, field, payload, denied) in harnesses.items():
+            with self.subTest(harness=harness):
+                with open(os.path.join(plugin, "hooks", harness + ".json")) as f:
+                    cmd = field(json.load(f)["hooks"][pre][0])
+                env = dict(os.environ, **{var: plugin})
+                for tid, command, code in ((f"{harness}-1", "pkill tracekitd", 2), (f"{harness}-2", "ls", 0)):
+                    p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                                       env=env, input=json.dumps(payload(tid, command)))
+                    self.assertEqual(p.returncode, code, p.stderr)
+                    if code == 2:
+                        self.assertIn("TK-D007", p.stdout + p.stderr)
+                        self.assertTrue(denied(json.loads(p.stdout)), p.stdout)
 
     def test_only_a_tool_call_is_blocked_by_the_hooks_init_writes(self):
         """A hook that could not finish exited 2 on every event: an unreachable signer erased each prompt and sent
@@ -1775,6 +1818,21 @@ class HeldCalls(unittest.TestCase):
         code, _, err = self.pre('curl -G https://api.stripe.com/v1/charges -u "$STRIPE_KEY:" -d limit=3', "t1")
         self.assertEqual((code, "TK-A043" in err, "TK-A095" in err), (2, True, True), err)
         self.assertEqual(err.count("moving money"), 1, err)
+
+    def test_a_denied_call_names_only_the_denys_reason_and_remedy_beside_a_hold(self):
+        """A write of a sitecustomize.py into the tool venv is denied (TK-D013) and held (TK-A067), and its message said
+        "no one can approve it" beside "Have a person approve the held call": a deny's reason and remedy are all it shows."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        me = types.SimpleNamespace(policy=pol)
+        why = service.SignerService._reasons(me, ["TK-D013", "TK-A067"])
+        self.assertIn("writing Tracekit's own files", why)
+        self.assertNotIn(".pth", why)
+        self.assertNotIn("approve", why)
+        held = service.SignerService._reasons(me, ["TK-A067"])   # (a hold alone keeps its own)
+        self.assertIn(".pth", held)
+        self.assertIn("approve", held)
+        mixed = service.SignerService._reasons(me, ["TK-SHELL-PARSE", "TK-D007"])   # an engine hold beside a deny: the deny's
+        self.assertNotIn("can't read", mixed)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays

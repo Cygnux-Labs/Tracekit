@@ -187,13 +187,49 @@ class DocCommands(unittest.TestCase):
 
 
 class PluginSkills(unittest.TestCase):
+    def test_every_skill_states_the_fixed_rule(self):
+        """A harness loads each skill on its own, so each says it: the agent never answers a hold or changes Tracekit,
+        and gives the person the approve command to run. Each is named as its folder, as Agent Skills requires."""
+        skills = glob.glob(os.path.join(ROOT, "plugin", "skills", "*", "SKILL.md"))
+        self.assertGreaterEqual(len(skills), 4)
+        for path in skills:
+            text = read(path)
+            words = " ".join(text.split())
+            with self.subTest(skill=os.path.basename(os.path.dirname(path))):
+                self.assertTrue(text.startswith(f"---\nname: {os.path.basename(os.path.dirname(path))}\n"))
+                self.assertIn("change Tracekit's policy, signer, hooks or files", words)
+                self.assertIn("`tracekit approvals approve", words)
+                # what the policy does, as it does it (the plugin review: "blocks any change to its files" wasn't so
+                # for the hooks and plugins, which TK-F009 and TK-F015 hold)
+                if "**The fixed rule.**" in text:
+                    self.assertIn("blocks an agent's own approval (TK-D012) and changes to Tracekit's own files "
+                                  "(TK-D007, TK-D013), and holds changes to the agent's hooks and plugins, Tracekit's "
+                                  "among them, for a person (TK-F009, TK-F015)", words)
+
+    def test_the_setup_skill_knows_where_the_plugins_hooks_run_and_what_it_installs(self):
+        """The plugin review: the setup skill told Codex, Copilot CLI and Cursor plugin users to run init with
+        --no-hooks and to discount doctor's D-HOOKS-PRESENT, which left the agent unguarded on native Windows, where
+        the plugin's POSIX shell hooks don't run; its "came from the plugin" check (a skills/ folder next to any hooks/
+        folder) matched a standalone install beside a user's own hooks, so init ran with --no-hooks and none ran; and
+        it installed whatever tracekit-ai the index or uv's cache gave, which can be older than the plugin's hooks."""
+        text = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md"))
+        words = " ".join(text.split())
+        self.assertIn("On native Windows (not WSL), the plugin's hooks don't run", words)
+        self.assertIn("run `tracekit init --dev --v2 --agent <name>` without `--no-hooks`", words)
+        self.assertIn("On native Windows, where init wrote the hooks, a `D-HOOKS-PRESENT` warning is real", words)
+        self.assertIn("both the plugin's `hooks/<agent>.json`", words)
+        self.assertIn("and `scripts/tracekit-hook` are there", words)
+        installs = re.findall(r"(?:install|--from)\s+'?(tracekit-ai[^\s']*)", text)
+        self.assertEqual(len(installs), 3)   # uvx --from, uv tool install, pip install
+        self.assertEqual(set(installs), {"tracekit-ai>=1.7.0"})
+
     def test_the_plugins_setup_skill_is_the_public_one(self):
         """The plugin ships Cygnux-Labs/tracekit-skills' skills/tracekit-setup/SKILL.md byte for byte, so skill indexes
         find one text. Change it there first, copy it here, then pin its git blob id: `git rev-parse
         main:skills/tracekit-setup/SKILL.md` in that repository."""
         data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
         self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
-                         "91a5eb5ca2a8c2acf89250299a3aba98faea80a3")   # tracekit-skills#3 (skills/kiro)
+                         "a792c2ddc745f83318e438814e8dec430cf0c920")   # the plugin's skills, for every agent
 
 
 class DocTableCells(unittest.TestCase):
