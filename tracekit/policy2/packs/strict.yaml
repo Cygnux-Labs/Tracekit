@@ -8,7 +8,7 @@
 # docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.11-strict-15'
+version: '2026.11-strict-16'
 description: server-hosted agents where installs, pushes, network commands, uploads and environment changes wait for a person
 on_parse_error: deny
 
