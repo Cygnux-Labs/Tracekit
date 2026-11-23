@@ -281,9 +281,48 @@ def call_influence(run: Run, g: Graph, nid: str, goal: Optional[List[str]] = Non
            "in_context": list(dict.fromkeys(g.nodes[e["src"]]["label"] for e in bad)),
            "replays": _replays(run, g, nid, gs) if serves == "unknown" else {},
            "step": _step(g, step, nid, edges, memo)["text"] if step else None,
+           "args": _args(args), "value": _value(run, prov),
            **({"tracekit": ev["tracekit"]} if ev.get("tracekit") else {})}
     out["words"] = words(out)
     return out
+
+
+def _args(args: Any) -> Optional[Dict[str, Any]]:
+    """A call's arguments as the viewer's card shows them (an amount, a recipient): each string cut to 200 characters;
+    None for a committed or non-dict argument."""
+    if not isinstance(args, dict) or _committed(args):
+        return None
+    return {k: _short(v, 200) if isinstance(v, str) else v for k, v in args.items()
+            if isinstance(v, (str, int, float, bool)) or v is None}
+
+
+def _value(run: Run, prov: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The value a call's card is about: the first only untrusted content gave (a text's quote is no such value), else
+    the first trusted content gave; where it came from (`from`: a source's label, `trust`, `part` when untrusted
+    content held only a part of it), the start of that content (`preview`), and for a trusted call's answer that counts
+    as untrusted, what that call was called with and where that came from (`via`)."""
+    row = next((r for r in prov if r["status"] == "untrusted-only" and not r.get("in_text")), None) or \
+        next((r for r in prov if r["status"] == "trusted"), None)
+    if row is None or not row["sources"]:
+        return None
+    srcs = row["sources"]
+    via = next((s for s in srcs if "given" in s), None)
+    src = via or next((s for s in srcs if s["trust"] == row["status"].split("-")[0]
+                       and s["label"] != "task"), srcs[0])
+    origin = via["given"]["origin"][0] if via and via["given"]["origin"] else src["label"]
+    out = {"value": _short(row["value"], 200), "status": row["status"], "from": src["label"], "trust": src["trust"],
+           "part": src.get("part"), "preview": _preview(run, origin)}
+    if via:
+        out["via"] = {"tool": via["label"], "given": _short(via["given"]["value"], 80), "from": via["given"]["from"],
+                      "origin": via["given"]["origin"]}
+    return out
+
+
+def _preview(run: Run, label: str) -> Optional[str]:
+    """The start of the first content of the run read as `label` (an input's source: `mail:inbox`), its first line."""
+    ev = next((e for e in run.of_type("input") if e.get("source") == label), None)
+    v = run.value(ev["ref"]) if ev else None
+    return None if v is None or _committed(v) else _short(str(v).strip().split("\n")[0], 80)
 
 
 def _replays(run: Run, g: Graph, nid: str, gs: Set[str]) -> Dict[str, List[str]]:

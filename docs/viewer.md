@@ -333,21 +333,23 @@ traced an argument to the record), measured (a replay without the source changed
 model's context when it decided) and hint (text overlap, never an influence). A why log's own provenance, with no
 verified signed record behind it, is shown as "claimed by the log".
 
-- **The answer, first.** The risky calls (stopped, flagged, with an exact or measured link, serving no step of the task,
-  or whose model call had untrusted content in front of it), worst first: those a replay without the task kept, then
-  those whose argument or cause was untrusted content, then the stopped ones. Only a replay without the task says a call
-  came from the task; otherwise the words say no replay has tested it, name the untrusted content its model call had in
-  context and give the chain, for example "git_push (dev): no replay has tested it without the task. Untrusted content
-  in its model call's context: github:issue-12. Chain: read github:issue-12 (untrusted; exact: `branch`) → dev decided
-  (plan; 3 in context, 1 untrusted) → this call." A call nothing links says "no influence found". A stopped call says
-  how: blocked, rejected (a person said no to it while it was held), held or flagged. A value a trusted call's answer
-  gave, which counts as untrusted because untrusted content chose what the call was given, ends the words with the
-  guard's reason and is on the edge from that call ("lookup_supplier's answer counts as untrusted: it was called with
-  'ACME-7781', which came only from mail:inbox."). Below the words, its chain top to bottom: a thin line per step, a
-  solid line from a step the signer traced an argument to, a double line from one a replay tied to the call. **show
-  hints** adds the text-overlap hints, dashed. **WHY** opens the call in its run.
+- **The answer, first: a card per call stopped or flagged.** A call blocked, held, rejected by a person or flagged, one
+  a replay without the task kept, and one the signer or a replay tied to untrusted content each get a card, worst first.
+  Its headline says what happened and why, with the facts, in one line: "Blocked: send_money €98.70 to GB29 NWBK 6016
+  1331 9268 19. The account number came from an email (From: billing@acme-ltd.example), not from your task." For a value
+  a trusted call's answer gave, which counts as untrusted because untrusted content chose what the call was given: "The
+  account number came from lookup_supplier, looked up with ACME-7781, which appeared only in an email." Below it, the
+  value's route, its untrusted start marked: email from billing@acme-ltd.example → lookup_supplier(ACME-7781) → IBAN
+  GB29 NWBK … → send_money. A tag says how it is known (exact, measured, claimed or seen; its meaning on hover). Beside
+  the card, the same call that ran with a value trusted content gave, if the runs have one ("Ran: the same payment with
+  crm_lookup's account number."). **WHY** opens the rest: the call's words (only a replay without the task says a call
+  came from the task; otherwise they say no replay has tested it), its chain top to bottom (a thin line per step, a solid
+  line from a step the signer traced an argument to, a double line from one a replay tied to the call), each link's
+  line with a replay's effect and interval and what a replay ruled out, and **OPEN IN ITS RUN**. The other calls are one
+  quiet line ("3 other calls ran without a stop or a flag") that opens to a line each. **show hints** adds the
+  text-overlap hints to WHY, dashed.
 - **The flow.** What the agents had in front of them when they decided, across runs: each kind of content on the left
-  (its trust, untrusted framed red, and its sources) and the tools called after it on the right. Only the lines that matter are drawn, coloured as the table's chips: red where calls
+  (its trust, untrusted framed red, and its sources) and the tools called after it on the right. Where a stopped call's value came through a trusted call's answer (an email to lookup_supplier to send_money), that call sits between them, on the value's route. Only the lines that matter are drawn, coloured as the table's chips: red where calls
   were blocked, amber where held, blue where flagged, bold red with its effect for a confirmed cause, dashed where a
   replay ruled the link out. A line is thicker the more runs it came before (log scale). The plain lines (calls that
   ran with no flag) are hidden; a note says how many. Point at content or a tool to see all its lines and dim the

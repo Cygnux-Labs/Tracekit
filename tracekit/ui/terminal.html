@@ -2278,19 +2278,139 @@
       margin: -4px 8px 2px
     }
 
-    /* INFLUENCE's answer per risky call: its words, then its chain top to bottom (a thin hop per step), a solid line
+    /* INFLUENCE's card's WHY: the call's words, then its chain top to bottom (a thin hop per step), a solid line
        from a step the signer traced an argument to (exact), a double one from a step a replay showed changed the call
        (measured: a wide stroke with the panel's colour down its middle), a dashed hint only when asked for */
-    .icall {
-      margin: 6px 0 10px
-    }
-
-    .icall .w {
+    .iwhy .w {
       font-size: 13px
     }
 
-    .icall.drift .w {
+    /* INFLUENCE's card per call stopped or flagged: what happened and why in one line, the value's route below, how
+       it is known as a tag; the same call that ran with a trusted value beside it; the rest one quiet line */
+    .icards {
+      display: grid;
+      gap: 8px;
+      margin: 6px 0 4px
+    }
+
+    .icard {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 14px;
+      align-items: flex-start
+    }
+
+    .icard .main {
+      flex: 1 1 420px;
+      min-width: 0;
+      border-left: 3px solid var(--line2);
+      padding: 2px 0 4px 10px
+    }
+
+    .icard.c-blk .main {
+      border-left-color: var(--red)
+    }
+
+    .icard.c-held .main {
+      border-left-color: var(--amber)
+    }
+
+    .icard.c-flag .main {
+      border-left-color: var(--cyan)
+    }
+
+    .icard .ih {
+      font-size: 14px;
+      color: var(--text)
+    }
+
+    .icard.c-blk .ih b {
       color: var(--red)
+    }
+
+    .icard.c-held .ih b {
+      color: var(--amber)
+    }
+
+    .icard.c-flag .ih b {
+      color: var(--cyan)
+    }
+
+    .icard .ih .why {
+      color: var(--muted)
+    }
+
+    .ipath {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px;
+      margin: 4px 0;
+      font-size: 11px
+    }
+
+    .ipath .hop {
+      border: 1px solid var(--line2);
+      padding: 1px 6px;
+      border-radius: 4px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 34ch
+    }
+
+    .ipath .hop.bad {
+      border-color: var(--red);
+      color: var(--red)
+    }
+
+    .ipath .hop.end {
+      color: var(--text);
+      border-color: var(--muted)
+    }
+
+    .ipath i {
+      font-style: normal;
+      color: var(--faint)
+    }
+
+    .ipath i.bad {
+      color: var(--red)
+    }
+
+    .icard .imeta {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 2px
+    }
+
+    .icard .itwin {
+      flex: 0 1 260px;
+      border: 1px solid var(--line2);
+      border-left: 3px solid var(--green);
+      padding: 3px 8px;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .icard .itwin b {
+      color: var(--green)
+    }
+
+    .icard .iwhy {
+      flex-basis: 100%;
+      margin: 2px 0 4px 13px
+    }
+
+    .iquiet {
+      margin: 4px 0;
+      font-size: 12px;
+      color: var(--muted)
+    }
+
+    .iquiet div {
+      margin-left: 14px
     }
 
     .ichain {
@@ -7100,7 +7220,8 @@
       });
       return s + `</svg>`;
     }
-    function inflCall(c, W) {
+    // what a call's WHY shows: its words, its chain, and each link and replay in a line
+    function inflWhy(c, W) {
       // an argument the signer traced twice (as an address and as a string, say) is one line
       const by = g => c.edges.filter(e => e.grade === g), seen = by("seen");
       const lines = [
@@ -7111,18 +7232,87 @@
         ...c.edges.filter(e => e.why).map(e => `${e.grade}: ${e.why}`),
         c.ruled_out.length ? `a replay ruled out: ${c.ruled_out.join(", ")}` : "",
         ...(IFL.hint ? c.hints.map(h => `hint, not an influence: ${h.basis === "value" ? `the value ${h.value} is in` : "its text overlaps"} ${h.label}`) : [])];
-      return `<div class="${esc(c.serves === "drift" ? "icall drift" : "icall")}"><div class="w">${esc(c.words)} <button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">WHY</button></div>`
-        + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "") + [...new Set(lines.filter(Boolean))].map(l => `<div class="dim">${esc(l)}</div>`).join("") + `</div>`;
+      return `<div class="iwhy"><div class="w">${esc(c.words)}</div>` + (c.chain.length > 1 && W >= 360 ? inflChain(c, W) : "")
+        + [...new Set(lines.filter(Boolean))].map(l => `<div class="dim">${esc(l)}</div>`).join("")
+        + `<button type="button" class="cp" data-wwhy="${esc(c.node)}" data-wr="${esc(c.run)}">OPEN IN ITS RUN</button></div>`;
+    }
+    // A card per call stopped or flagged (or one a replay without the task kept): what happened, in plain words with
+    // its facts; why, in one line (the value that came only from untrusted content, and from where); the value's route;
+    // how it is known; beside it, the same call that ran with a trusted value. The words, chain and numbers are behind
+    // WHY (ICARD: the cards opened). The rest are one quiet line, opened by IQUIET.
+    const ICARD = new Set(), IQ = { open: false };
+    const VERB = { blocked: "Blocked", rejected: "Rejected by a person", held: "Held for a person", flagged: "Flagged" };
+    const CUR = { EUR: "€", USD: "$", GBP: "£" }, TO = /^(recipient|to|iban|account|payee|beneficiary|destination|url|email|address|creditor)/i;
+    const isIban = v => /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/i.test(String(v).replace(/\s/g, ""));
+    // an IBAN in its groups of four, as a person reads one
+    const spaced = v => isIban(v) ? String(v).replace(/\s/g, "").replace(/(.{4})(?=.)/g, "$1 ") : String(v);
+    const nounOf = v => isIban(v) ? "account number" : /@/.test(v) ? "address" : /^https?:/.test(v) ? "link"
+      : /^[\w-]+(\.[\w-]+)+$/.test(v) ? "host" : /^\+?[\d\s.-]{8,}$/.test(v) ? "number" : "value";
+    // where content came from, in words: a mail is an email, a fetched page a web page, a tool's result its output
+    const fromWords = l => /^(mail|email|inbox)\b/i.test(l) ? "an email" : /^(web|page|fetch|url)\b/i.test(l) ? "a web page"
+      : l === "task" ? "your task" : String(l).startsWith("tool:") ? `${String(l).slice(5)}'s output` : String(l);
+    const lead = p => p ? ` (${fit(String(p), 40)})` : "";
+    function inflHead(c) {
+      const a = c.args || {}, amount = a.amount ?? null, cur = a.currency;
+      const to = Object.keys(a).find(k => TO.test(k)), what = to != null ? a[to] : c.value?.value;
+      return `${c.serves === "drift" && !c.ended ? "Strays from the task" : VERB[c.ended] || "Flagged"}: ${c.tool}`
+        + (amount != null && amount !== "" ? ` ${CUR[cur] || ""}${amount}${CUR[cur] || !cur ? "" : " " + cur}` : "")
+        + (what != null ? (to != null ? " to " : " with ") + spaced(what) : "") + ".";
+    }
+    function inflBecause(c) {
+      const v = c.value, trusted = [...new Set(c.edges.filter(e => e.grade === "seen" && e.trust === "trusted" && e.type === "action" && e.label !== v?.via?.tool).map(e => e.label))];
+      if (v && v.status === "untrusted-only") {
+        const noun = nounOf(v.value), cap = "The " + noun;
+        if (v.via) return `${cap} came from ${v.via.tool}, ${/look|search|find|get|query|crm|directory/i.test(v.via.tool) ? "looked up" : "called"} with ${v.via.given}, which appeared only in ${fromWords(v.via.origin[0] || v.via.from[0])}${lead(v.preview)}.`;
+        return `${cap} came from ${fromWords(v.from)}${lead(v.preview)}, not from your task${trusted.length ? " or " + trusted.join(", ") : ""}.`;
+      }
+      if (c.serves === "drift") return "A replay without your task still made this call: it serves no step of the task.";
+      const u = c.untrusted;
+      if (u) return `Its ${u.field ? "`" + u.field + "`" : "argument"} came from ${fromWords(u.label)} (${u.grade}).`;
+      return "Nothing it was given came only from untrusted content.";
+    }
+    // the value's route: the content it came from (untrusted marked), the call that turned it into the value, the value,
+    // the call
+    function inflPath(c) {
+      const v = c.value;
+      if (!v || v.status !== "untrusted-only") return "";
+      const hop = (t, bad) => `<span class="${esc(bad ? "hop bad" : "hop")}" title="${esc(t)}">${esc(t)}</span>`, arrow = bad => `<i class="${bad ? "bad" : ""}">→</i>`;
+      const origin = v.via ? v.via.origin[0] || v.via.from[0] : v.from;
+      const src = fromWords(origin).replace(/^an? /, "") + (v.preview ? " " + String(v.preview).replace(/^From:\s*/i, "from ") : "");
+      return `<div class="ipath">` + hop(src, true) + arrow(true)
+        + (v.via ? hop(`${v.via.tool}(${v.via.given})`, false) + arrow(false) : "")
+        + hop((isIban(v.value) ? "IBAN " : "") + spaced(v.value), false) + arrow(false) + `<span class="hop end">${esc(c.tool)}</span></div>`;
+    }
+    // how the card's answer is known, at its best: exact (the signer traced it), measured (a replay), seen (in context)
+    const GRADES = { exact: "the signer traced this argument to that content, in signed records this viewer verified",
+                     measured: "a replay without that content changed the call", claimed: "the log says so; nothing checked it against the signer",
+                     seen: "that content was in front of the model when it decided; nothing traced or replayed it further" };
+    const gradeOf = c => ["exact", "measured", "claimed"].find(g => c.edges.some(e => e.grade === g)) || "seen";
+    // the same call that ran with a value trusted content gave (the payment with the CRM's account number), if any
+    const twinOf = (c, all) => c.value?.status === "untrusted-only" && all.find(t => t !== c && !t.ended && t.tool === c.tool && t.value?.status === "trusted"
+      && JSON.stringify(t.args?.amount ?? null) === JSON.stringify(c.args?.amount ?? null));
+    function inflCard(c, all, W) {
+      const tw = twinOf(c, all), g = gradeOf(c), open = ICARD.has(c.node);
+      const cls = c.ended === "held" ? "c-held" : c.ended === "flagged" || !c.ended ? "c-flag" : "c-blk";
+      const head = inflHead(c), cut = head.indexOf(":");
+      return `<div class="icard ${esc(cls)}"><div class="main"><div class="ih"><b>${esc(head.slice(0, cut + 1))}</b>${esc(head.slice(cut + 1))} `
+        + `<span class="why">${esc(inflBecause(c))}</span></div>` + inflPath(c)
+        + `<div class="imeta"><span class="tag" title="${esc(GRADES[g])}">${esc(g)}</span><button type="button" class="cp" data-icard="${esc(c.node)}">${open ? "WHY ▾" : "WHY ▸"}</button></div></div>`
+        + (tw ? `<div class="itwin"><b>Ran:</b> ${esc(`the same ${c.tool === "send_money" || /pay|transfer/i.test(c.tool) ? "payment" : "call"} with ${tw.value.from === "task" ? "the" : tw.value.from + "'s"} ${nounOf(tw.value.value)}` + (tw.value.from === "task" ? " your task gave." : "."))}</div>` : "")
+        + (open ? inflWhy(c, W) : "") + `</div>`;
     }
     function inflCalls(I, W) {
-      const calls = I.calls || [], sw = cls => `<svg class="ichain" width="22" height="8"><path class="${esc(cls)}" d="M0,4H22"/>${cls === "g-measured" ? `<path class="g-gap" d="M0,4H22"/>` : ""}</svg>`;
-      return `<div class="inans"><div class="q">WHAT LED TO EACH RISKY CALL?</div>`
-        + (calls.length ? calls.map(c => inflCall(c, W - 36)).join("") : `<div class="none">No risky call: nothing was stopped or flagged, and no model call had untrusted content in front of it.</div>`)
+      // a card: a call stopped, one a replay without the task kept, or one the signer or a replay tied to untrusted content
+      const calls = I.calls || [], cards = calls.filter(c => c.ended || c.serves === "drift" || c.untrusted), rest = calls.filter(c => !cards.includes(c));
+      const quiet = c => `${c.tool}` + (c.value?.status === "untrusted-only" ? `: called with ${fit(String(c.value.value), 40)}, from ${fromWords(c.value.from)}` : ": nothing untrusted in its arguments");
+      return `<div class="inans"><div class="q">WHAT WAS STOPPED OR FLAGGED, AND WHY</div>`
+        + (cards.length ? `<div class="icards">` + cards.map(c => inflCard(c, calls, W - 36)).join("") + `</div>`
+          : `<div class="none">No risky call: nothing was stopped or flagged, and no model call had untrusted content in front of it.</div>`)
+        + (rest.length ? `<div class="iquiet"><button type="button" class="cp" data-iquiet="">${esc(`${IQ.open ? "▾" : "▸"} ${many(rest.length, "other call")} ran without a stop or a flag`)}</button>`
+          + (IQ.open ? rest.map(c => `<div>${esc(quiet(c))}</div>`).join("") : "") + `</div>` : "")
         + (I.calls_total > calls.length ? `<div class="dim">${esc(`and ${I.calls_total - calls.length} more`)}</div>` : "")
-        + (!calls.length ? "" : `<div class="wbar glegend"><span>` + sw("g-exact") + ` exact: the signer traced an argument to it</span><span>` + sw("g-measured") + ` measured: a replay showed it changed the call</span>`
-        + `<span>` + sw("hop") + ` seen: in the model's context when it decided</span>`
-        + (calls.some(c => c.hinted) ? `<span>` + (IFL.hint ? sw("g-hint") + " hint: text overlap, never an influence " : "") + `<button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span>` : "")
-        + `</div>`) + `</div>`;
+        + (calls.some(c => c.hinted) ? `<div class="wbar glegend"><span><button type="button" class="cp" data-inhint="">${esc(IFL.hint ? "hide hints" : "show hints")}</button></span></div>` : "")
+        + `</div>`;
     }
     // INFLUENCE's flow: a node per kind of content (the table's rows, in its order) and per tool, a line per kind and
     // tool it came before, as thick as its runs (log scale: one busy line leaves the rest readable), coloured as its
@@ -7133,7 +7323,7 @@
     // drawn; IFL.hov: the node or line under the pointer; IFL.hint: the answers show their hints
     const INFLTOOLS = 16, INFLQUIET = 4, IFL = { keys: [], tools: [], mark: null, go: null, hov: null, hint: false };
     // lean: every kind is a node (12 read well, past about 30 the flow grows tall); gather the rest as the tools are if a store has that many kinds
-    function inflFlow(groups, tools, W) {
+    function inflFlow(groups, tools, W, calls = []) {
       const name = g => kindName(g.kind), cl = (...c) => c.filter(Boolean).join(" "), nm = tools.filter(t => t.marked).length;
       let n = nm > INFLTOOLS ? INFLTOOLS : nm + INFLQUIET;
       if (tools.length - n <= 1) n = tools.length;   // never "+1 more" in place of the tool itself
@@ -7181,6 +7371,23 @@
       });
       if (rest.length) s += `<g class="${esc(cl("nd tl more", onJ.has(shown.length) && "on"))}" data-ift="+" transform="${esc(`translate(${X2},${f(ty(shown.length) - TH / 2)})`)}"><rect class="box" width="${esc(TW)}" height="${esc(TH)}" rx="6"/>`
         + `<text x="14" y="15">${esc(`+${rest.length} more`)}</text><title>${esc(`${plural(rest.length, "tool")} not shown: ${rest.map(t => t.tool).join(", ")}`)}</title></g>`;
+      // the value's route through a tool (mail → lookup_supplier → send_money): for each stopped call whose value a
+      // trusted call's answer gave, the content that call was given, the call, and the call it led to, in the middle
+      const V = [];
+      for (const c of calls) {
+        const v = c.value, k = v?.via ? groups.findIndex(g => g.kind === (v.via.origin[0] || v.via.from[0]) || g.mine.some(x => (x.labels || []).includes(v.via.origin[0] || v.via.from[0]))) : -1;
+        if (k < 0 || !(c.tool in at) || !(c.ended || c.serves === "drift") || V.some(x => x.k === k && x.via === v.via.tool && x.j === at[c.tool])) continue;
+        V.push({ k, via: v.via.tool, j: at[c.tool], c });
+      }
+      const VW = 150, VX = KW + (X2 - KW) * .3 - VW / 2;   // left of the middle, where a line's effect is said
+      V.forEach((x, i) => {
+        const y = HEAD + (i + .5) * (H - HEAD) / V.length, mx1 = (KW + VX) / 2, mx2 = (VX + VW + X2) / 2, y1 = ky(x.k), y2 = ty(x.j), v = x.c.value.via;
+        const d1 = `M${KW},${f(y1)} C${f(mx1)},${f(y1)} ${f(mx1)},${f(y)} ${f(VX)},${f(y)}`, d2 = `M${f(VX + VW)},${f(y)} C${f(mx2)},${f(y)} ${f(mx2)},${f(y2)} ${X2},${f(y2)}`;
+        const said2 = `${groups[x.k].kind} → ${x.via} (called with ${v.given}) → ${x.c.tool} (${x.c.ended || "flagged"}): the ${nounOf(x.c.value.value)} came from ${x.via}`;
+        s += `<g class="ln blk via"><path class="v" d="${esc(d1)}" stroke-width="2"/><path class="v" d="${esc(d2)}" stroke-width="2"/><title>${esc(said2)}</title></g>`
+          + `<g class="nd tl blk vt" transform="${esc(`translate(${f(VX)},${f(y - TH / 2)})`)}"><rect class="box" width="${esc(VW)}" height="${esc(TH)}" rx="6"/><rect class="bar" x="5" y="5" width="3" height="${esc(TH - 10)}" rx="1.5"/>`
+          + `<text x="14" y="15">${esc(fit(x.via, Math.floor((VW - 22) / 6.6)))}</text><title>${esc(said2)}</title></g>`;
+      });
       const plain = L.filter(l => !tone(l.t)).length;
       return s + `</svg>` + (plain ? `<p class="dim iflnote">${esc(`${many(plain, "grey line")} hidden: content before calls that ran with no flag. Point at content or a tool to see all its lines; click it to keep them.`)}</p>` : "");
     }
@@ -7226,7 +7433,7 @@
       // the tool marked in a row's chips: the one clicked in the flow or the answer, in its kind's row (a tool: in every row)
       const M = IFL.mark, markOf = key => M && (M.key == null || M.key === key) ? M.tool : null;
       // the flow, from a panel 600 px wide (a phone has the answer and each kind as a card); its line in each item of the key
-      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16) : "";
+      const flow = S2.length && el.clientWidth >= 600 ? inflFlow(groups, tools, el.clientWidth - 16, I.calls || []) : "";
       const sw = cls => flow ? `<svg class="ifl" width="22" height="8"><g class="${esc(cls ? "ln " + cls : "ln")}"><path class="v" d="M0,4H22" stroke-width="${esc(cls === "deny" ? 3.5 : 2)}"/></g></svg>` : "";
       const answers = S2.length || I.calls_total ? inflCalls(I, el.clientWidth) : "";
       put("whyv", !S2.length ? answers || `<div class="empty">Nothing yet: no model call in these runs had content the agents read in front of it, so there is nothing to show. Runs that record their model calls show here what the agents read before each tool call.</div>`
@@ -7246,7 +7453,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-inhint],[data-icard],[data-iquiet],[data-ifk],[data-ift],[data-ifl],[data-tipsre],[data-lrec]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -7257,6 +7464,8 @@
         wvKey = ""; return schedule();
       }
       if (t.dataset.inhint !== undefined) { IFL.hint = !IFL.hint; wvKey = ""; return schedule(); }
+      if (t.dataset.icard) { ICARD.has(t.dataset.icard) ? ICARD.delete(t.dataset.icard) : ICARD.add(t.dataset.icard); wvKey = ""; return schedule(); }
+      if (t.dataset.iquiet !== undefined) { IQ.open = !IQ.open; wvKey = ""; return schedule(); }
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
