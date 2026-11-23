@@ -283,11 +283,13 @@ func TestKeyOriginNameBoundaries(t *testing.T) {
 		bad  bool
 	}{
 		{"tracekit.local/k" + strings.Repeat("a", 65), false},
+		{"tracekit.local/k" + strings.Repeat("a", 63), false},
 		{"tracekit.local/k" + strings.Repeat("A", 64), false},
 		{"tracekit.local/k" + hex.EncodeToString(own[:]), false},
 		{"tracekit.local/k" + hex.EncodeToString(own[:]) + "/registry/" + strings.Repeat("0", 32), false},
 		{"x.tracekit.local/k" + hex.EncodeToString(other[:]), false},
 		{"tracekit.local/k" + strings.Repeat("a", 64) + "/registry/" + strings.Repeat("0", 32), true},
+		{"tracekit.local/k" + strings.Repeat("a", 64) + "/x", true},
 	} {
 		name := tc.name
 		config["logs"] = []any{fixtureVKey(name, encoded[0], encoded[1:])}
@@ -305,6 +307,7 @@ func TestKeyOriginNameBoundaries(t *testing.T) {
 		}
 	}
 }
+
 func copyFiles(f map[string][]byte) map[string][]byte {
 	out := make(map[string][]byte)
 	for k, v := range f {
