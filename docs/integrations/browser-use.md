@@ -96,15 +96,26 @@ What the reader leaves to the cell, unread:
   `x or y` and `x if c else y` are one of their operands: plain only when each operand holds plain data only;
 - a builtin type's own function (`str.join`, `dict.fromkeys`);
 - a function, lambda or plain class the cell defines, called by its name: its body is read where it is defined. A plain
-  class has no base but `object`, no keyword, decorator or type parameter, and a body of `def`s without decorators.
+  class has no base but `object`, no keyword, decorator or type parameter, and a body of `def`s without decorators; the
+  dunder methods it defines (`__init__`, `__call__`, `__new__`) are read like any other method. A function keeps that
+  standing under `property`, `classmethod` or `staticmethod` only: `@d` is `f = d(f)`, so after any other decorator
+  the name holds what `d` returned, and calling it waits.
 
 These wait for `on_parse_error` (`TK-SOURCE-PARSE`):
 
 - binding, in any form, a builtin, a name the harness binds (`goto_url`, `json`, `os` and the rest), a name an import
-  in the cell binds, or `__builtins__`; an import may bind a harness name only to what it already is (`import os`);
-- a dunder name or attribute, `builtins` and `__builtins__`;
-- `:=` anywhere; `exec`, `eval`, `compile`, `breakpoint` and `help` wherever they are named, called or not;
-- an import outside the list above, standard library included;
+  in the cell binds, or `__builtins__`; an import may bind a harness name only to what it already is (`import os`). A
+  function's parameters and a comprehension's targets are exempt: they bind in their own scope, where the reader
+  trusts no name;
+- a dunder name or attribute, `builtins` and `__builtins__` (a plain class's own dunder methods are exempt);
+- `:=` anywhere; `exec`, `eval`, `compile`, `breakpoint`, `help`, `input`, `exit` and `quit` wherever they are named,
+  called or not;
+- an import outside the list above, standard library included; and an import outside a function that binds a command
+  or helper under the cell's own name (`from os import system`, `from browser_harness.helpers import goto_url as g`),
+  since the name stays bound for later cells;
+- a decorator that is a function, lambda or class the cell defines; any other decorator but `property`, `classmethod`
+  and `staticmethod` is read as the call it is (`@goto_url` reads as `goto_url(f)`, whose argument isn't literal text,
+  so it waits);
 - any other class: a base, a metaclass, a decorator or a body of anything but `def`s runs code the reader does not;
 - a store into anything but plain data, and any attribute store;
 - a helper, builtin, module or module function used as anything but a direct call (`map(goto_url, ...)`, `key=len`,

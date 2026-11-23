@@ -6044,15 +6044,15 @@ class SourceReader(unittest.TestCase):
                 self.assertEqual((r.calls, r.held), (calls, None))
 
     def test_a_literal_name_an_import_alias_and_a_literal_getattr_are_read(self):
-        r = source.read('from browser_harness.helpers import js as run_js\n'
-                        'url = "file:///etc/passwd"\n'
-                        'run_js("document.title")\n'
+        r = source.read('url = "file:///etc/passwd"\n'
                         'goto_url(url)\n'
                         'getattr(helpers, "js")("location")\n')
         self.assertIsNone(r.held)
-        self.assertEqual([t for t, _ in r.calls],
-                         ["browser_use:evaluate", "browser_use:navigate", "browser_use:evaluate"])
-        self.assertEqual(r.calls[1][1], {"url": "file:///etc/passwd", "page_url": ""})
+        self.assertEqual([t for t, _ in r.calls], ["browser_use:navigate", "browser_use:evaluate"])
+        self.assertEqual(r.calls[0][1], {"url": "file:///etc/passwd", "page_url": ""})
+        # the same alias at the cell's level is still read, but it stays bound for later cells, which reach it unread
+        r = source.read('from browser_harness.helpers import js as run_js\nrun_js("document.title")')
+        self.assertEqual(([t for t, _ in r.calls], r.held), (["browser_use:evaluate"], "import"))
         # a helper is only called by its name, never named again: the call is still decided
         r = source.read('f = js\nf("x")')
         self.assertEqual((r.calls, r.held), ([("browser_use:evaluate", {"code": "x", "page_url": ""})], "value"))
@@ -6120,7 +6120,7 @@ class SourceReader(unittest.TestCase):
 
     def test_what_it_cannot_follow_is_held(self):
         for code, cause in [
-                ('url = input()\ngoto_url(url)', "arg"),
+                ('url = str(prev)\ngoto_url(url)', "arg"),
                 ('goto_url(prefix + "x")', "arg"),
                 ('globals()["goto_url"]("x")', "call"),
                 ('getattr(helpers, name)("x")', "getattr"),
@@ -6215,9 +6215,9 @@ class SourceReader(unittest.TestCase):
                 ('import textwrap\ntextwrap.indent("import os", "", exec)', "exec"),
                 ('url = "file:///etc/passwd"\nlen("x") or exec("url = \'https://docs.python.org/\'")\ngoto_url(url)',
                  "exec"),
-                ('u = "https://docs.python.org/"\n[(u := input()) for _ in [1]]\ngoto_url(u)', "walrus"),
-                ('u = "https://docs.python.org/"\n[0 for _ in [1] if (u := input())]\ngoto_url(u)', "walrus"),
-                ('u = "https://docs.python.org/"\nany((u := input()) for _ in [1])\ngoto_url(u)', "walrus"),
+                ('u = "https://docs.python.org/"\n[(u := str(prev)) for _ in [1]]\ngoto_url(u)', "walrus"),
+                ('u = "https://docs.python.org/"\n[0 for _ in [1] if (u := str(prev))]\ngoto_url(u)', "walrus"),
+                ('u = "https://docs.python.org/"\nany((u := str(prev)) for _ in [1])\ngoto_url(u)', "walrus"),
                 ('if (n := len("ab")) > 1:\n    pass', "walrus")]:
             with self.subTest(code=code):
                 self.assertEqual(source.read(code).held, held)
@@ -6232,10 +6232,10 @@ class SourceReader(unittest.TestCase):
 
     def test_match_comprehension_and_condition_targets_are_forgotten(self):
         for code, cause in [
-                ('[url] = [input()]\ngoto_url(url)', "arg"),
-                ('for url in [input()]:\n    pass\ngoto_url(url)', "arg"),
-                ('[goto_url(url) for url in [input()]]', "arg"),
-                ('if input():\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg"),
+                ('[url] = [str(prev)]\ngoto_url(url)', "arg"),
+                ('for url in [str(prev)]:\n    pass\ngoto_url(url)', "arg"),
+                ('[goto_url(url) for url in [str(prev)]]', "arg"),
+                ('if str(prev):\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg"),
                 ('try:\n    url = "https://docs.python.org/"\n'
                  'except Exception:\n    url = "https://docs.python.org/"\ngoto_url(url)', "arg")]:
             with self.subTest(code=code):
@@ -6245,8 +6245,8 @@ class SourceReader(unittest.TestCase):
     @unittest.skipUnless(sys.version_info >= (3, 10), "match statement")
     def test_a_match_capture_target_is_forgotten(self):
         for code, cause in [
-                ('match input():\n    case url:\n        pass\ngoto_url(url)', "arg"),
-                ('match input():\n    case press_key:\n        pass\npress_key("Enter")', "bind")]:
+                ('match str(prev):\n    case url:\n        pass\ngoto_url(url)', "arg"),
+                ('match str(prev):\n    case press_key:\n        pass\npress_key("Enter")', "bind")]:
             with self.subTest(code=code):
                 r = source.read(code)
                 self.assertEqual((r.calls, r.held), ([], cause))
@@ -6255,14 +6255,14 @@ class SourceReader(unittest.TestCase):
         """Each of these was decided as a call other than the one that runs, or not read at all."""
         for code, urls, held in [
                 # an assignment in a branch may not run: it is not the value after the branch
-                ('url = "file:///etc/passwd"\nif input():\n    url = "https://docs.python.org/"\ngoto_url(url)', [],
+                ('url = "file:///etc/passwd"\nif str(prev):\n    url = "https://docs.python.org/"\ngoto_url(url)', [],
                  "arg"),
                 # a body runs when called, with the names as they are then
                 ('u = "https://docs.python.org/"\ndef f():\n    goto_url(u)\nu = "file:///etc/passwd"\nf()', [], "arg"),
                 ('def f(press_key):\n    press_key("Enter")', [], "call"),   # a parameter is whatever is passed
                 ('f()("file:///etc/passwd")', [], "call"),
                 ('functools.partial(goto_url, "file:///etc/passwd")()', [], "call"),
-                ('while input():\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
+                ('while str(prev):\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
                 # a while's else runs when its test is false, so `while False` runs it: it was left unread
                 ('while False:\n    pass\nelse:\n    goto_url("file:///etc/passwd")', ["file:///etc/passwd"], None),
                 ('d = {}\nd[goto_url("file:///etc/passwd")]: int', ["file:///etc/passwd"], None)]:
@@ -6325,7 +6325,7 @@ class SourceReader(unittest.TestCase):
         for code, held in [('goto_url.__call__("file:///etc/passwd")', "dunder"),
                            ('getattr(goto_url, "__call__")("file:///etc/passwd")', "dunder"),
                            ('map(goto_url, ["https://docs.python.org/"])', "value"),
-                           ('@js\ndef f():\n    pass', "value"),
+                           ('@js\ndef f():\n    pass', "arg"),   # js(the function): not literal text
                            ('def f():\n    return goto_url', "value")]:
             with self.subTest(code=code):
                 r = source.read(code)
@@ -6610,11 +6610,11 @@ class SourceReader(unittest.TestCase):
         evaluate = [("browser_use:evaluate", {"code": "x", "page_url": ""})]
         for code, calls, held in [
                 ('x = []\nfor _ in range(2):\n    x.clear()\n    x = js("x")', evaluate, "call"),
-                ('x = []\nwhile input():\n    x.clear()\n    x = js("x")', evaluate, "call"),
+                ('x = []\nwhile str(prev):\n    x.clear()\n    x = js("x")', evaluate, "call"),
                 ('x = []\n[(x.clear(), (x := js("x"))) for _ in range(2)]', evaluate, "walrus"),
                 ('x = []\nfor _ in range(2):\n    x.clear()\n    exec("x = 1")', [], "exec"),
                 ('x = []\ndef f():\n    x.clear()\nx = js("x")\nf()', evaluate, "call"),
-                ('x = []\nif input():\n    x = js("x")\nx.clear()', evaluate, "call"),
+                ('x = []\nif str(prev):\n    x = js("x")\nx.clear()', evaluate, "call"),
                 ('x = []\ntry:\n    pass\nexcept ValueError as x:\n    x.clear()', [], "call"),
                 ('url = "https://docs.python.org/"\nfor i in range(2):\n    goto_url(url)\n    url = "file:///x"',
                  [], "arg")]:
@@ -6643,7 +6643,7 @@ class SourceReader(unittest.TestCase):
         # a callable stored anywhere but under a plain name, then handed to something that calls it
         ('d = {}\nd["k"] = os.system\nsorted(["id"], key=d["k"])', "value"),
         ('class C:\n    pass\nC.f = os.system\nlist(map(C.f, ["id"]))', "value"),
-        ('if input():\n    g = os.system\nelse:\n    g = os.system\nlist(map(g, ["id"]))', "value"),
+        ('if str(prev):\n    g = os.system\nelse:\n    g = os.system\nlist(map(g, ["id"]))', "value"),
         ('global g\ng = os.system\nlist(map(g, ["id"]))', "value"),
         ('try:\n    e = exec\nexcept Exception:\n    pass\nlist(map(e, ["x = 1"]))', "exec"),
         ('d = {}\nd["k"] = goto_url\nlist(map(d["k"], ["https://x.test/"]))', "value"),
@@ -6719,7 +6719,7 @@ class SourceReader(unittest.TestCase):
                 ('r = js("x")\nr2 = r', evaluate, "value"),   # another name for a value it can't follow
                 # a block that may not run, or may stop early, leaves its names unknown after it
                 ('x = js("x")\nfor _ in range(1):\n    break\nelse:\n    x = []\nx.clear()', evaluate, "call"),
-                ('x = js("x")\nwhile input():\n    break\nelse:\n    x = []\nx.clear()', evaluate, "call"),
+                ('x = js("x")\nwhile str(prev):\n    break\nelse:\n    x = []\nx.clear()', evaluate, "call"),
                 ('x = js("x")\nwith open("a"):\n    x = []\nx.clear()', evaluate, "call"),
                 ('x = js("x")\ntry:\n    x = []\nexcept Exception:\n    pass\nx.clear()', evaluate, "call"),
                 # a body that runs later trusts no name the cell binds, nor a module
@@ -6727,7 +6727,7 @@ class SourceReader(unittest.TestCase):
                 ('def f(len):\n    return len("a")', [], "call"),
                 ('try:\n    pass\nexcept bu:\n    pass', [], "value"),
                 # what the subset leaves unread: an else branch starts where the if did, a class body has its own names
-                ('x = []\nif input():\n    x = js("x")\nelse:\n    x.clear()', evaluate, None),
+                ('x = []\nif str(prev):\n    x = js("x")\nelse:\n    x.clear()', evaluate, None),
                 ('x = []\ntry:\n    pass\nfinally:\n    x.clear()', [], None),
                 # a handler or an else may have run, or not
                 ('x = []\ntry:\n    pass\nexcept Exception:\n    x = js("x")\nx.clear()', evaluate, "call"),
@@ -6820,6 +6820,48 @@ class SourceReader(unittest.TestCase):
         # a default is evaluated where the function is defined: its calls are the cell's
         r = source.read('def f(x=goto_url("file:///etc/passwd")):\n    pass')
         self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (["file:///etc/passwd"], None))
+
+    # cells the reader left unread at f822ef9dc5: a decorated name holds what the decorator returned (each a shape:
+    # the commands are placeholders)
+    WALKED_AROUND_3 = [
+        ('from os import system\ndef d(fn):\n    return system\n@d\ndef f():\n    pass\nf("id")', "import"),
+        ('from browser_harness.helpers import goto_url as g\ndef d(fn):\n    return g\n@d\ndef f():\n    pass\n'
+         'f("file:///etc/passwd")', "import"),
+        ('from os import system', "import"),   # the first of two cells: the name stays bound for the next
+        ('def d(fn):\n    return system\n@d\ndef f():\n    pass\nf("id")', "value"),   # the second
+        ('from os import popen\ndef d(fn):\n    return popen\n@d\ndef f():\n    pass\nf("id")', "import"),
+        ('from os import system\n@(lambda fn: system)\ndef f():\n    pass\nf("id")', "import"),
+        ('@(lambda fn: system)\ndef f():\n    pass\nf("id")', "value"),
+        ('from os import system\nclass C:\n    def __new__(cls, fn):\n        return system\n@C\ndef f():\n    pass\n'
+         'f("id")', "import"),
+        ('class C:\n    def __new__(cls, fn):\n        return system\n@C\ndef f():\n    pass\nf("id")', "value"),
+        # a decorator read as a call, after which the name is one the reader can't follow
+        ('@str\ndef f():\n    pass\nf("id")', "call"),
+        ('import json\n@json.loads\ndef f():\n    pass\nf("id")', "call"),
+        ('@prev\ndef f():\n    pass', "callee"),
+        ('@prev.wrap\ndef f():\n    pass', "call"),
+        ('@goto_url\ndef f():\n    pass', "arg"),
+        ('@make()\ndef f():\n    pass', "callee"),
+        ('@(prev)\ndef f():\n    pass', "callee"),
+        ('def d(fn):\n    return fn\n@[d][0]\ndef f():\n    pass', "call"),   # a decorator built at run time
+        # an import that leaves a command bound, in a block too
+        ('from os import execv', "import"),
+        ('if prev:\n    from os import system', "import"),
+        # what reads or stops the process
+        ('exit()', "exit"), ('quit()', "quit"), ('input()', "input"), ('x = input', "input")]
+
+    def test_what_walked_around_the_reader_a_third_time_is_held(self):
+        for code, held in self.WALKED_AROUND_3:
+            with self.subTest(code=code):
+                self.assertEqual(source.read(code).held, held)
+        # a builtin wrapper keeps the function the reader read
+        for code, urls in [('@staticmethod\ndef f():\n    goto_url("file:///etc/passwd")\nf()', ["file:///etc/passwd"]),
+                           ('@property\ndef f():\n    pass', [])]:
+            with self.subTest(code=code):
+                r = source.read(code)
+                self.assertEqual(([c[1]["url"] for c in r.calls], r.held), (urls, None))
+        # a command imported inside a function binds there only, and that body trusts no name the cell binds
+        self.assertEqual(source.read('def f():\n    from os import system\n    system("id")').held, "call")
 
     def test_a_name_rebound_by_an_import_a_def_or_a_handler_is_never_plain(self):
         """Each of these was left unread when the reader kept a name plain across a rebinding: an import, a `def`, an
@@ -6929,7 +6971,7 @@ class CellSource(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"]), ("allow", []))
 
     def test_a_source_it_cannot_read_waits_for_on_parse_error(self):
-        for code in ('url = input()\ngoto_url(url)', 'globals()["goto_url"]("https://x")', 'def f(:\n pass',
+        for code in ('url = str(prev)\ngoto_url(url)', 'globals()["goto_url"]("https://x")', 'def f(:\n pass',
                      'import posix\nposix.system("id")'):
             with self.subTest(code=code):
                 d = self.cell(self.browser, code)
@@ -6939,7 +6981,7 @@ class CellSource(unittest.TestCase):
                 self.assertIn("TK-SOURCE-PARSE", d["rule_ids"])
 
     def test_a_deny_outranks_a_source_it_cannot_read(self):
-        d = self.cell(self.browser, 'goto_url("file:///etc/passwd")\nurl = input()\ngoto_url(url)')
+        d = self.cell(self.browser, 'goto_url("file:///etc/passwd")\nurl = str(prev)\ngoto_url(url)')
         self.assertEqual(d["verdict"], "deny")
         self.assertIn("TK-B001", d["rule_ids"])
         self.assertIn("TK-SOURCE-PARSE", d["rule_ids"])

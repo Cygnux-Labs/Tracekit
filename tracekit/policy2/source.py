@@ -5,9 +5,10 @@ subset of Python: each literal helper or command call becomes the action it stan
 cell taking the strictest. Left unread is only what computes values: a builtin called directly, an inert module's own
 function, a method of plain data the cell built, and a function the cell defines, whose body is read where it is
 defined trusting none of the cell's names. Everything outside the subset is held as TK-SOURCE-PARSE: rebinding a name
-the reader trusts, a dunder, `:=`, exec and its kin, an import outside the list, a class with a base, a store into
-anything but plain data, a callable handed on as a value, a method of anything but plain data, and a call or attribute
-through a name the cell did not bind (an earlier cell's). docs/limits.md lists the subset.
+the reader trusts, a dunder, `:=`, exec and its kin, an import outside the list or one that leaves a command bound, a
+class with a base, a decorator the cell defines, a store into anything but plain data, a callable handed on as a value,
+a method of anything but plain data, and a call or attribute through a name the cell did not bind (an earlier cell's).
+docs/limits.md lists the subset.
 """
 import ast
 import builtins
@@ -121,9 +122,9 @@ _MODULES = _IMPORTABLE | {"subprocess", "asyncio", "pty", "base64", "importlib",
 REFLECTION = {"globals", "locals", "vars"}
 DYNAMIC_CALLS = {"__import__", "importlib.import_module"}
 SETATTR = {"setattr", "delattr"}
-# code built at run time, and what stops or reads the process interactively: held wherever they are named (the
+# code built at run time, and what reads or stops the process interactively: held wherever they are named (the
 # prepass holds these and `__import__`; REFLECTION and SETATTR are held where they are called)
-FORBIDDEN = frozenset({"exec", "eval", "compile", "breakpoint", "help"})
+FORBIDDEN = frozenset({"exec", "eval", "compile", "breakpoint", "help", "input", "exit", "quit"})
 _HELD_BUILTINS = REFLECTION | SETATTR
 
 
@@ -261,6 +262,9 @@ _TYPE_ARGS = {"isinstance": 1, "issubclass": 1}
 BUILTIN_ATTRS = frozenset({"bytes.fromhex", "bytes.maketrans", "dict.fromkeys", "float.fromhex", "int.from_bytes",
                            "str.join", "str.maketrans"})
 _DECORATORS = frozenset({"classmethod", "property", "staticmethod"})
+# the function a decorator is handed, read as an argument: a function whose body the reader has read
+_FUNCTION = ast.Lambda(args=ast.arguments(posonlyargs=[], args=[], vararg=None, kwonlyargs=[], kw_defaults=[],
+                                          kwarg=None, defaults=[]), body=ast.Constant(None))
 _READ_MODES = frozenset({"r", "rt", "tr", "rb", "br"})
 _TRY = tuple(c for c in (ast.Try, getattr(ast, "TryStar", None)) if c is not None)
 _MATCH = getattr(ast, "Match", None)
@@ -442,6 +446,7 @@ class Reader:
         name anywhere, or imports outside the list; and note every name the cell binds anywhere, which a body that
         runs later never trusts. (A dunder attribute is held where it is read.)"""
         local, imported = set(), {}
+        carried = {id(n) for n in _outside_functions(tree.body if isinstance(tree, ast.Module) else [])}
         for sub in ast.walk(tree):
             if not self._charge(1):
                 return
@@ -450,6 +455,8 @@ class Reader:
             elif isinstance(sub, (ast.Import, ast.ImportFrom)):
                 for name, target in self.imports(sub):
                     imported.setdefault(name, set()).add(target)
+                    if id(sub) in carried and (target in SHELL or target in SHELL_ARGV or _helper(target)):
+                        self.hold("import")   # a command or helper under a name of the cell's: later cells reach it
             elif isinstance(sub, ast.Name) and sub.id != "__name__" \
                     and (sub.id in ("__builtins__", "builtins") or _dunder(sub.id)):
                 self.hold("builtins" if "builtins" in sub.id else sub.id if sub.id in DYNAMIC_CALLS else "dunder")
@@ -732,8 +739,7 @@ class Reader:
         self.bind(target.id, self.made(ANY, _deep(current) and _deep(v)) if plain else UNKNOWN)
 
     def function(self, node):
-        for d in node.decorator_list:
-            self.decorator(d)
+        builtin_wrappers = all([self.decorator(d) for d in node.decorator_list])
         self.defaults(node.args)
         for arg in [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs, node.args.vararg,
                     node.args.kwarg]:
@@ -743,7 +749,8 @@ class Reader:
             self.types(node.returns)
         self.type_params(node)
         self.later(lambda: self.block(node.body))
-        self.bind(node.name, FUNC)
+        # a decorator's result is what the name holds: only a builtin wrapper keeps the function the reader read
+        self.bind(node.name, FUNC if builtin_wrappers else UNKNOWN)
 
     def class_def(self, node):
         """Only a plain class: no decorator, keyword or type parameter, no base but `object`, and a body of plain
@@ -778,10 +785,23 @@ class Reader:
             self.value(d)
 
     def decorator(self, node):
-        """A decorator is called with what it decorates: only a builtin wrapper or a function the cell defines."""
-        v = self.callee(node) if isinstance(node, (ast.Name, ast.Attribute)) else self.value(node)
-        if not (v[0] == "func" or v[0] == "builtin" and v[1] in _DECORATORS):
+        """`@d` on a def is `name = d(the function)`. A function or class the cell defines is held as a value handed
+        on; any other decorator is read as that call. True only for a builtin wrapper (`property`, `classmethod`,
+        `staticmethod`): after any other, the name holds what the call returned, which the reader can't follow."""
+        if not isinstance(node, (ast.Name, ast.Attribute)):
+            if self.value(node, use=False)[0] != "func":
+                self.hold("call")   # a decorator built at run time
+            else:
+                self.hold("value")
+            return False
+        v = self.callee(node)
+        if v[0] == "builtin" and v[1] in _DECORATORS:
+            return True
+        if v[0] == "func":
             self.hold("value")
+        else:
+            self.call(ast.Call(func=node, args=[_FUNCTION], keywords=[]))
+        return False
 
     def later(self, read):
         """Read a body that runs later (a function, lambda or generator): it trusts none of the cell's names."""
@@ -1233,6 +1253,18 @@ class Reader:
             self.hold("program")
             return
         self.calls.append(("shell", {"command": command}))
+
+
+def _outside_functions(body):
+    """The statements of a body and of the blocks in it, not those in a function or class: what binds the cell's own
+    names, which later cells keep."""
+    for node in body:
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for field in ("body", "orelse", "finalbody", "handlers", "cases"):
+            for child in getattr(node, field, ()):
+                yield from _outside_functions([child] if isinstance(child, ast.stmt) else child.body)
 
 
 def _bindings(node, local):
