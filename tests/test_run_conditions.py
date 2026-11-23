@@ -1374,8 +1374,9 @@ class TestDevPack(unittest.TestCase):
         for c in ("gh auth token '\t--help'", "gh auth token --hostname --help", "gh auth token -h --help",
                   "gh auth token -- --help", "gh 'auth\ttoken' --help", "pass 'init\tx'"):
             self.assertIn("TK-A021", ids(c), c)
-        # curl -G: a GET, up to an option that starts another request or reads options from a file
-        get = "curl -G https://api.stripe.com/v1/refunds -d charge=ch_1 -u sk_test_x:"
+        # curl -q -G: a GET (-q first: no config file read, 1.8 C), up to an option that starts another request or
+        # reads options from a file
+        get = "curl -q -G https://api.stripe.com/v1/refunds -d charge=ch_1 -u sk_test_x:"
         self.assertNotIn("TK-A043", ids(get))
         api = "https://api.stripe.com/v1/refunds"
         for more in (f"--next -d charge=ch_1 {api}", f"-: -d x {api}", "-K /tmp/c", "--config /tmp/c", "-sK /tmp/c",

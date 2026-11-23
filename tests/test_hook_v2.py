@@ -1150,7 +1150,9 @@ class HookV2(unittest.TestCase):
         gaps = [e for e in evs if e["type"] == "capture.gap" and e["data"]["kind"] == "client_counter_gap"]
         self.assertEqual(len(gaps), 1)
         self.assertEqual(gaps[0]["data"]["missed_events"], 6)
-        self.assertEqual(evs[evs.index(gaps[0]) + 1]["data"]["source"], "claude-code:hook-decided:allowed:Bash")
+        # (the gap's lost calls may have read a secret: the run's label, 1.8 A, is signed first)
+        after = [e for e in evs[evs.index(gaps[0]) + 1:] if e["type"] != "run.label"]
+        self.assertEqual(after[0]["data"]["source"], "claude-code:hook-decided:allowed:Bash")
         tr = view.Translator()
         title = lambda e: tr.feed({"event": {"run_id": "r1", **e}, "seq": 1})[0]["title"]   # noqa: E731
         tr.feed({"event": {**evs[0], "run_id": "r1"}, "seq": 0})   # (its run.registered: a same-user signer)

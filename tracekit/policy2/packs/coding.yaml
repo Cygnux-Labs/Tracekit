@@ -1008,10 +1008,11 @@ ask:
     # disk already, one any later write lands, one a moved CURL_HOME, HOME or XDG_CONFIG_HOME names), then -G sends its
     # data as a query string: a GET, unless a -X or --request word (a cluster with X too) sets the method, or an
     # --expand- option may (curl 8.3 expands variables into any option's value: `--expand-request '{{m}}'`, a
-    # body, a config file's options), so any --expand- option starts a POST too, and -K, --config and --next keep
-    # a GET from being exempt. Help only as `stripe <resource> [<operation>] --help` (or -h) and nothing else: an
-    # option takes the next word as its value (`--description -h`), so a -h anywhere else is no help
-    unless: '^curl (?:-q|--disable) (?:-G|--get)(?: (?:[^- ][^ ]*|-[^-XK: ][^XK: ]*|--(?:[^rnce ][^ ]*|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?|n(?:[^e ][^ ]*)?|ne(?:[^x ][^ ]*)?|c(?:[^o ][^ ]*)?|co(?:[^n ][^ ]*)?|con(?:[^f ][^ ]*)?|e(?:[^x ][^ ]*)?|ex(?:[^p ][^ ]*)?|exp(?:[^a ][^ ]*)?)?|-)?)*$|^stripe(?: [a-z_]+){1,3} (?:--help|-h)$'
+    # body, a config file's options), so any --expand- option but --expand-url (the URL alone, as above) starts a
+    # POST too, and -K, --config and --next keep a GET from being exempt. Help only as `stripe <resource>
+    # [<operation>] --help` (or -h) and nothing else: an option takes the next word as its value (`--description
+    # -h`), so a -h anywhere else is no help
+    unless: '^curl (?:-q|--disable) (?:-G|--get)(?: (?:[^- ][^ ]*|-[^-XK: ][^XK: ]*|--(?:[^rnce ][^ ]*|r(?:[^e ][^ ]*)?|re(?:[^q ][^ ]*)?|n(?:[^e ][^ ]*)?|ne(?:[^x ][^ ]*)?|c(?:[^o ][^ ]*)?|co(?:[^n ][^ ]*)?|con(?:[^f ][^ ]*)?|e(?:[^x ][^ ]*)?|ex(?:[^p ][^ ]*)?|exp(?:[^a ][^ ]*)?|expand-url)?|-)?)*$|^stripe(?: [a-z_]+){1,3} (?:--help|-h)$'
     # curl as its grammar reads it, besides the text above: a GET (--get last on: not undone by --no-get) that no option
     # makes another request: no --request (also --expand-request), --next (a second request with its own options),
     # --config (options from a file), --form or --form-string (a multipart POST), --upload-file (a PUT) or --json. A

@@ -442,7 +442,8 @@ class UnlessCli(unittest.TestCase):
 
     def held_everywhere(self, lines, allowed=()):
         """Each line held by the dev pack (TK-A056) and the strict pack (TK-F030), flagged by TK-F030 in the others;
-        each of `allowed` left alone by the dev pack."""
+        each of `allowed` neither held nor flagged as a publish by the dev pack (its run labels' egress flags record a gh
+        write: TK-F037)."""
         for (name, backend), e in self.engines.items():
             for line in lines:
                 d = e.decide("Bash", {"command": line})
@@ -451,7 +452,9 @@ class UnlessCli(unittest.TestCase):
                 self.assertEqual((d["verdict"], want[1] in d["rule_ids"]), (want[0], True), (name, backend, line, d))
             if name == "dev":
                 for line in allowed:
-                    self.assertEqual(e.decide("Bash", {"command": line})["verdict"], "allow", (backend, line))
+                    d = e.decide("Bash", {"command": line})
+                    self.assertEqual((d["verdict"] in ("allow", "flag"), {"TK-A056", "TK-F030"} & set(d["rule_ids"])),
+                                     (True, set()), (backend, line, d))
 
     def test_an_alias_is_read_as_its_command_from_its_leading_words(self):
         # cobra finds `release new` from the leading words, whatever else the argv holds (a glob, a value spelled as a
