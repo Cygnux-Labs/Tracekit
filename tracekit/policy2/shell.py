@@ -2708,8 +2708,15 @@ def _find_execs(args):
     return out
 
 
-_DENO_EVAL_VALUED = {"--ext", "-c", "--config", "--import-map", "--lock", "--inspect", "--inspect-brk", "--v8-flags",
-                     "--cert", "--seed", "--location", "--env-file", "--conditions"}
+# the options bun and deno must be given a value for, the next word when it isn't joined by `=`; an option whose value
+# is optional takes it only joined by `=` (deno's --inspect, --lock, --env-file, --v8-flags; bun's --config, --inspect)
+_DENO_VALUED = {"--ext", "-c", "--config", "--import-map", "--cert", "--seed", "--location", "--conditions", "-L",
+                "--log-level", "--preload", "--require", "--inspect-publish-uid", "--min-dep-age", "--node-modules-linker"}
+_BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--conditions", "--main-fields", "--extension-order",
+               "--tsconfig-override", "-d", "--define", "--drop", "-l", "--loader", "--jsx-factory", "--jsx-fragment",
+               "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
+               "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
+               "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
 _DENO_SUBCOMMANDS = {"eval", "test", "fmt", "lint", "check", "compile", "install", "uninstall", "cache", "info",
                      "doc", "bench", "task", "add", "remove", "upgrade", "completions", "types", "jupyter", "serve",
                      "repl", "init", "coverage", "publish", "outdated", "clean"}
@@ -2731,25 +2738,20 @@ def _code_arg(kind, args):
     if kind == "sed":
         return _sed_scripts(args)
     if kind == "deno":
-        i, ended = _skip_interp_opts(args, 0, _DENO_EVAL_VALUED)
+        i, ended = _skip_interp_opts(args, 0, _DENO_VALUED)
         if ended or i >= len(args) or args[i] != "eval":
             return None
-        i, _ = _skip_interp_opts(args, i + 1, _DENO_EVAL_VALUED)
+        i, _ = _skip_interp_opts(args, i + 1, _DENO_VALUED)
         rest = args[i:]
         return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
     flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
     i = 0
     while i < len(args):
         a = args[i]
-        if kind == "bun" and (a == "--" or not a.startswith("-")):
-            break
         if a in long:
             return args[i + 1] if i + 1 < len(args) else None
         if a.partition("=")[0] in long:
             return a.split("=", 1)[1]
-        if kind == "bun" and a in INTERP_VALUE_OPTS:
-            i += 2
-            continue
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
                 if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
@@ -2763,7 +2765,7 @@ def _code_arg(kind, args):
 
 
 # each interpreter's options that take the rest of their word as their value
-_VALUED = {"python": "WXm", "node": "r", "bun": "rcdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
+_VALUED = {"python": "WXm", "node": "r", "bun": "rdl", "deno": "c", "perl": "MmIxdD", "ruby": "rIxCEFKT",
            "php": "dcz", "lua": "l"}
 
 
@@ -5955,10 +5957,11 @@ def _script_operand(kind, args):
     """The index in `args` of the script file an interpreter of `kind` (one of CODE_FLAGS') runs: its first operand
     after its options (and their values); None for a module (python -m), stdin (-, a stream) or no operand."""
     if kind in ("bun", "deno"):
-        i, ended = _skip_interp_opts(args)
+        valued = _BUN_VALUED if kind == "bun" else _DENO_VALUED
+        i, ended = _skip_interp_opts(args, 0, valued)
         if not ended and i < len(args):
             if args[i] == "run":
-                i, _ = _skip_interp_opts(args, i + 1)
+                i, _ = _skip_interp_opts(args, i + 1, valued)
             elif args[i] == "repl" or kind == "deno" and args[i] in _DENO_SUBCOMMANDS:
                 return None
         return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
