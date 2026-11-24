@@ -189,6 +189,9 @@ def run(record=False):
     # 6.22 / 7.35, strict 5.91 / 7.06, dev 6.47 / 7.49 on RE2 / regex; this code 7.58 / 8.35, 7.15 / 8.01, 7.83 /
     # 8.62). Each max_p99_ref is 5% over the highest of that day's four runs (--record, 2026-11-14 for the loop and
     # pattern readings, a held-out call more caught); the results file's latency rows are its first run's.
+    # Recorded again (--record) on 2026-11-24 for 1.8: the plugin-everywhere reading of what a line writes costs +10 us p50 and
+    # +76 us p99 over main (server pack, RE2: 182 / 535 us against 172 / 459), the whole assembly 191 / 566 us; caps
+    # 9.93 to 13.98 times the reference (docs/limits.md, Queue 11-24 debt row says what is left).
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
