@@ -308,8 +308,8 @@ class Engine:
             # a 1.x cell or delivery runs code no tool call names: decide each literal helper and command call it
             # makes on this decision's budget, at the strictest; a source the reader cannot follow waits for
             # on_parse_error (TK-SOURCE-PARSE)
-            key, mode = source_reader.CELLS[tool]
-            text = args.get(key)
+            field, mode = source_reader.CELLS[tool]
+            text = args.get(field)
             reading = source_reader.read(text, mode, work=work) if isinstance(text, str) else None
             held = "text" if reading is None else reading.held
             for sub_tool, sub_args in (() if reading is None else reading.calls):
