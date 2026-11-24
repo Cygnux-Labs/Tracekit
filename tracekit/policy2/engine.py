@@ -907,7 +907,7 @@ _PIP = re.compile(r"pip[0-9.]*")
 # and gptme's front ends, which load its plugins as it does)
 _HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
                            "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent", "copilot",
-                           "codebuddy", "gptme"))
+                           "codebuddy", "gptme", "jcode", "kiro-cli", "interpreter"))
 _HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": "qwen", "opencode-ai": "opencode",
                   "hermes-agent": "hermes", "hermes-acp": "hermes", "hermes_cli": "hermes",
                   "openhands-ai": "openhands", "codebuddy-code": "codebuddy", "cbc": "codebuddy",
@@ -927,9 +927,10 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
 # model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
 _SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME|"
+                                r"JCODE_HOOKS_DISABLED|JCODE_HOOK_PRE_TOOL\w*|"
                                 r"(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|"
                                 r"AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
-                                r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
+                                r"CODEBUDDY|JCODE|KIRO|INTERPRETER)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
                                 re.I)
 _SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
