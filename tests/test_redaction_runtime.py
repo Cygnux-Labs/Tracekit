@@ -90,6 +90,15 @@ class RedactionRuntimeTests(unittest.TestCase):
                 self.assertEqual(out, "connect [REDACTED:connection_string] now")
 
     @pytest.mark.serial
+    def test_a_long_name_of_secret_looking_words_reads_in_linear_time(self):
+        """`PASSWORD` repeated to 256 KiB with no `=` took 24 s: the word pass read a secret-looking NAME= with one
+        pattern, quadratic in a name of such words; it reads the name's run, then a secret word in it."""
+        for s in (repeated("PASSWORD"), repeated("token_"), repeated("PASSWORD")[:-1] + "="):
+            with self.subTest(s=s[:16]):
+                self.assertLess(seconds(lambda: privacy.redact_command(s)), BOUND)
+                self.assertLess(seconds(lambda: privacy.approver_copy({"command": s}, False, "Bash")), BOUND)
+
+    @pytest.mark.serial
     def test_long_scheme_run_before_url_is_fast_and_redacted(self):
         s = repeated("a-")[:-100] + "postgres://user:pass@host/db"
         self.assertLess(seconds(lambda: privacy.redact_text(s)), BOUND)
