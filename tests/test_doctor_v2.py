@@ -2006,6 +2006,70 @@ class GeminiSandbox(unittest.TestCase):
         self.assertEqual(got["status"], "ok")
 
 
+class CodexSandbox(unittest.TestCase):
+    """#949: D-CODEX-SANDBOX. Codex's hook sends a shell call's command alone, so whether a person answers Codex's
+    requests to run outside its sandbox, and whether every call runs a hook at all, rests on settings nothing checked."""
+
+    def check(self, toml=None):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        if toml is not None:
+            with open(os.path.join(d, "config.toml"), "w") as f:
+                f.write(toml)
+        rows = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev",
+                                                     harnesses={"codex": os.path.join(d, "hooks.json")})}
+        return rows["D-CODEX-SANDBOX"]
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_exec_permission_approvals_on_warns_and_names_the_key(self):
+        got = self.check("[features]\nexec_permission_approvals = true\n")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("features.exec_permission_approvals is true", got["detail"])
+        self.assertIn("turn features.exec_permission_approvals off", got["fix"])
+        self.assertEqual(self.check("[features]\nexec_permission_approvals = false\n")["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_model_reviewer_warns_and_a_person_is_ok(self):
+        for reviewer in ("auto_review", "guardian_subagent"):
+            got = self.check(f'approval_policy = "on-request"\napprovals_reviewer = "{reviewer}"\n')
+            self.assertEqual(got["status"], "warn", reviewer)
+            self.assertIn("a model, not a person", got["detail"])
+            self.assertIn('set approvals_reviewer = "user"', got["fix"])
+        got = self.check('approval_policy = "on-request"\napprovals_reviewer = "user"\n')
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("asks a person", got["detail"])
+        self.assertEqual(self.check("")["status"], "ok")   # Codex's defaults
+        self.assertEqual(self.check()["status"], "ok")   # no config.toml
+        self.assertIn('approval_policy = "never"', self.check('approval_policy = "never"\n')["detail"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_the_selected_profile_wins_each_key(self):
+        got = self.check('profile = "fast"\n[profiles.fast]\napprovals_reviewer = "auto_review"\n'
+                         "[profiles.fast.features]\nexec_permission_approvals = true\n")
+        self.assertEqual(got["status"], "warn")
+        self.assertIn('[profiles.fast] approvals_reviewer = "auto_review"', got["detail"])
+        self.assertIn("[profiles.fast] features.exec_permission_approvals", got["detail"])
+        got = self.check('profile = "safe"\napprovals_reviewer = "auto_review"\n'
+                         '[profiles.safe]\napprovals_reviewer = "user"\n')
+        self.assertEqual(got["status"], "ok")
+        unselected = self.check('[profiles.fast]\napprovals_reviewer = "auto_review"\n')
+        self.assertEqual(unselected["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_value_it_doesnt_know_gives_no_warn(self):
+        got = self.check("[approval_policy.granular]\nsandbox_approval = true\n")
+        self.assertEqual(got["status"], "ok")
+        self.assertIn("doesn't know", got["detail"])
+
+    def test_without_tomllib_or_with_bad_toml_it_says_it_couldnt_check(self):
+        with mock.patch.dict(sys.modules, {"tomllib": None}):
+            got = self.check('approvals_reviewer = "auto_review"\n')
+        self.assertEqual(got["status"], "info")
+        self.assertIn("Python 3.11 or newer reads Codex's config.toml", got["detail"])
+        if sys.version_info >= (3, 11):
+            self.assertEqual(self.check("not = [toml")["status"], "info")
+
+
 class FolderTrust(unittest.TestCase):
     """#973: Gemini CLI and Qwen Code (a fork) load no project settings when folder trust is on and the folder isn't
     trusted (trustedFolders.json): D-GEMINI-SANDBOX read a project's tools.sandbox that Gemini ignores, and nothing
