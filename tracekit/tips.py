@@ -996,11 +996,13 @@ def signed_rows(cfg, since, say=None, content=None, known=None):
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
     which give no rows. Before any run is placed in time, every record of the store is checked against the signer's
     newest checkpoint, as tracekit report checks it (report._check_store): a run holding an edited record, or every
-    client run when the store fails that check, counts in `failed`, so an edited time can't move a run out of the
-    window unseen. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
-    kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
-    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read. `known`: a set
-    given the store's run ids."""
+    client run when the store fails that check, counts in `failed`. A run is then placed by its last record the
+    checkpoint covers, as report places it, and one with no record covered yet is always checked, so an edited time
+    can't move a run out of the window unseen. `say(text)`: told how many runs are checked before the checks.
+    `content(run_id, records)`: the kept content of the records the viewer reads it for (view.wanted;
+    view.dev_content_source, one signed content.accessed record per run and CHUNK records), which the rows then carry:
+    what lessons read. `known`: a set given the store's run ids."""
+    import bisect
     import tempfile
 
     from . import view
@@ -1011,9 +1013,16 @@ def signed_rows(cfg, since, say=None, content=None, known=None):
     from .why.signed import EvidenceAlert
 
     def recent(run):
-        # its last record's time, read once the store's check below found the run's records intact
+        # placed by its last record the checkpoint covers, as tracekit report places it: the check below found that
+        # record intact and in the checkpoint's root, so its time is signed. A record past the checkpoint isn't in the
+        # root, so an edit that rewrites its hash too goes unseen: its time places nothing. A run with no record the
+        # checkpoint covers is always checked, and fails there as not covered yet.
+        placed = bisect.bisect_left(run["seqs"], size)
+        if not placed:
+            return True
+        last = run["seqs"][placed - 1]
         try:
-            return ts_seconds(next(r.iter_range(run["seqs"][-1], run["seqs"][-1] + 1))["event"]["ts"]) >= since
+            return ts_seconds(next(r.iter_range(last, last + 1))["event"]["ts"]) >= since
         except (KeyError, TypeError, ValueError):   # a time it can't read: checked, and fails there if it must
             return True
     vkeys, _ = view.store_trust(cfg)
@@ -1027,7 +1036,7 @@ def signed_rows(cfg, since, say=None, content=None, known=None):
             if note and note[0] > r.tree.size:   # a checkpoint written while it opened: read again, as report does
                 r.close()
                 r = view.reader(cfg)
-            problem, edited = None, {}
+            problem, edited, size = None, {}, 0
             if note:   # with no checkpoint yet nothing is checked, and no run is placed
                 try:
                     _, size, root, _ = checkpoint.open_note(note[1], vkeys)

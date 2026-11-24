@@ -2,6 +2,7 @@
 
     python3 -m pytest tests/test_tips.py -v
 """
+import base64
 import collections
 import contextlib
 import hashlib
@@ -26,6 +27,7 @@ import test_signer_service as tsvc  # noqa: E402
 from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
 from tracekit import cli, lessons, observe, tips, view  # noqa: E402
+from tracekit.format import canon  # noqa: E402
 from tracekit.sdk.client import Client, RunHandle  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
 from tracekit.signer.rpc_schema import RPCError  # noqa: E402
@@ -927,6 +929,121 @@ class Command(unittest.TestCase):
         self.assertEqual(({x["session_id"] for x in rows}, failed), (runs - {run.run_id}, 1))
         # the intact run is placed by its time as before: after it, it gives no rows and isn't a failure
         self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 1))
+
+    def store(self, name, data=None):
+        """The bytes of file `name` of the signer's store; with `data`, write them first."""
+        path = os.path.join(self.cfg["data_dir"], "store", name)
+        if data is not None:
+            with open(path, "wb") as f:
+                f.write(data)
+        with open(path, "rb") as f:
+            return f.read()
+
+    def edit(self, run_id, ts, seqs=slice(-1, None), rehash=False):
+        """With the signer stopped, set the time of run `run_id`'s records `seqs` (its last by default) to `ts`, keeping
+        each stored hash unless `rehash`, as the agent's own user can in dev mode."""
+        lines = self.store("records.jsonl").decode("utf-8").splitlines()
+        for i in [n for n, line in enumerate(lines) if json.loads(line)["event"]["run_id"] == run_id][seqs]:
+            rec = json.loads(lines[i])
+            rec["event"]["ts"] = ts
+            if rehash:
+                rec["hash"] = canon.event_hash(rec["event"])
+            lines[i] = json.dumps(rec, separators=(",", ":"))
+        self.store("records.jsonl", ("\n".join(lines) + "\n").encode("utf-8"))
+
+    def codex_run(self):
+        """A second client run, closed, once a checkpoint covers the whole store."""
+        run = self.client.run(agent="codex")
+        run.decide("c2", "Read", {"path": "README.md"})
+        run.close()
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        return run
+
+    def test_an_edited_run_inside_the_window_counts_once_and_gives_no_rows(self):
+        run = self.codex_run()
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        rows, failed = tips.signed_rows(self.cfg, since)
+        runs = {x["session_id"] for x in rows}
+        self.service.close()
+        self.edit(run.run_id, "2026-11-02T00:00:00.000000Z")   # still in the window
+        rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual(({x["session_id"] for x in rows}, failed), (runs - {run.run_id}, 1))
+
+    def test_a_checkpoint_whose_signature_is_damaged_fails_every_client_run(self):
+        self.service.close()
+        head, _, sig = self.store("checkpoint.note").rstrip(b"\n").rpartition(b" ")
+        raw = bytearray(base64.b64decode(sig))
+        raw[-1] ^= 1
+        self.store("checkpoint.note", head + b" " + base64.b64encode(bytes(raw)) + b"\n")
+        said = []
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(tips.signed_rows(self.cfg, since, say=said.append), ([], 1))
+        self.assertIn("its newest checkpoint doesn't verify against the log key it pins", said[0])
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 1))   # whatever its times
+
+    def test_a_store_with_fewer_records_than_its_checkpoint_fails_every_client_run(self):
+        self.codex_run()
+        self.service.close()
+        lines = self.store("records.jsonl").splitlines(keepends=True)
+        self.store("records.jsonl", b"".join(lines[:-1]))
+        said = []
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        self.assertEqual(tips.signed_rows(self.cfg, since, say=said.append), ([], 2))
+        self.assertIn(f"the signer's checkpoint covers {len(lines):,} records and the store holds {len(lines) - 1:,}",
+                      said[0])
+        # whatever the times the store holds: none is placed, each counts once
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 2))
+
+    def test_a_checkpoint_written_while_the_store_opened_is_read_with_the_store_again(self):
+        """A reader holds the records written when it opened; the checkpoint note is read after, and may cover records
+        written since. Checked against that reader, the store would hold fewer records than its checkpoint."""
+        old = self.store("records.jsonl")
+        self.assertEqual(int(self.store("checkpoint.note").split(b"\n")[1]), len(old.splitlines()))
+        self.codex_run()
+        self.service.close()
+        new = self.store("records.jsonl")
+        self.store("records.jsonl", old)
+        opened, reader = [], view.reader
+
+        def opening(cfg):   # the signer appends its newer records and checkpoint while the first reader opens
+            r = reader(cfg)
+            if not opened:
+                with open(os.path.join(self.cfg["data_dir"], "store", "records.jsonl"), "ab") as f:
+                    f.write(new[len(old):])
+            opened.append(r)
+            return r
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        with mock.patch.object(view, "reader", opening):
+            rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual((len({x["session_id"] for x in rows}), failed, len(opened)), (2, 0, 2))
+
+    def test_a_run_is_placed_by_its_last_record_the_checkpoint_covers(self):
+        """A record past the checkpoint isn't in its root: an edit that rewrites its hash too isn't seen, so its time
+        can't place a run. A run is placed by its last record the checkpoint covers, as tracekit report places it, and
+        one with no record covered is always checked."""
+        part = self.client.run(agent="codex")
+        part.decide("c2", "Read", {"path": "README.md"})
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        note = self.store("checkpoint.note")
+        part.complete("c2")
+        part.close()
+        late = self.client.run(agent="aider")
+        late.decide("c3", "Read", {"path": "a.py"})
+        late.close()
+        self.service.close()
+        self.store("checkpoint.note", note)   # the checkpoint before the newer records
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+
+        def placed():
+            rows, failed = tips.signed_rows(self.cfg, since)
+            return part.run_id in {x["session_id"] for x in rows}, failed
+        # the codex run is checked to the checkpoint; the aider run, with no record covered, fails as not covered yet
+        self.assertEqual(placed(), (True, 1))
+        self.edit(part.run_id, "2001-01-01T00:00:00.000000Z", rehash=True)
+        self.edit(late.run_id, "2001-01-01T00:00:00.000000Z", slice(None), rehash=True)
+        self.assertEqual(placed(), (True, 1))
 
     def test_with_nothing_read_it_says_what_it_read_in_one_line(self):
         empty = {"data_dir": os.path.join(tmp(self), "data")}
