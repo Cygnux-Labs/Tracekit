@@ -476,7 +476,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: python -m pip install -e . pytest PyYAML regex "strands-agents>=1.65,<2"
+      - run: python -m pip install -e . pytest PyYAML regex "strands-agents>=1.66,<2"
       - run: python -m pytest -q tests/test_strands.py
       - run: python -m pytest -q tests/test_examples_v2.py -k test_strands
 

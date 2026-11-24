@@ -13,7 +13,7 @@ itself is not changed.
 pip install tracekit-ai "strands-agents>=1.61,<2"
 ```
 
-Tested with Strands Agents 1.61 and 1.65. A later 1.x installs, the hook says once that it is untested, and CI runs
+Tested with Strands Agents 1.61 and 1.66. A later 1.x installs, the hook says once that it is untested, and CI runs
 the newest 1.x on every change.
 Strands needs Python 3.10+ and an environment of its own: it needs `mcp` below 2.2,
 and Tracekit's other integrations are tested with `mcp` 2.3. Add the extra for your model provider
