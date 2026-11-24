@@ -994,20 +994,24 @@ class Page:
 def signed_rows(cfg, since, say=None, content=None, known=None):
     """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
-    which give no rows. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
+    which give no rows. Before any run is placed in time, every record of the store is checked against the signer's
+    newest checkpoint, as tracekit report checks it (report._check_store): a run holding an edited record, or every
+    client run when the store fails that check, counts in `failed`, so an edited time can't move a run out of the
+    window unseen. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
     kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
     content.accessed record per run and CHUNK records), which the rows then carry: what lessons read. `known`: a set
     given the store's run ids."""
     import tempfile
 
     from . import view
+    from .format import checkpoint
+    from .report import _check_store
     from .signer.pipeline import SIGNER_RUN
     from .why.core import ts_seconds
     from .why.signed import EvidenceAlert
 
     def recent(run):
-        # lean: a run is placed by its last record's time as the store says it, before the check; place it by the
-        # records a checkpoint covers, as tracekit report does, if a store edited to hide a run matters here
+        # its last record's time, read once the store's check below found the run's records intact
         try:
             return ts_seconds(next(r.iter_range(run["seqs"][-1], run["seqs"][-1] + 1))["event"]["ts"]) >= since
         except (KeyError, TypeError, ValueError):   # a time it can't read: checked, and fails there if it must
@@ -1020,7 +1024,23 @@ def signed_rows(cfg, since, say=None, content=None, known=None):
         r = view.reader(cfg)
         try:
             note = r.checkpoint_latest()
-            keys = [k for k, run in sorted(r.runs.items()) if note and k[1] != SIGNER_RUN[1] and recent(run)]
+            if note and note[0] > r.tree.size:   # a checkpoint written while it opened: read again, as report does
+                r.close()
+                r = view.reader(cfg)
+            problem, edited = None, {}
+            if note:   # with no checkpoint yet nothing is checked, and no run is placed
+                try:
+                    _, size, root, _ = checkpoint.open_note(note[1], vkeys)
+                    problem, edited, _, _ = _check_store(r, size, root)
+                except checkpoint.NoteError as e:
+                    problem = f"its newest checkpoint doesn't verify against the log key it pins ({e})"
+            bad = {k for k in r.runs if k in edited or problem and k[1] != SIGNER_RUN[1]}
+            failed = len(bad)
+            if say and problem:
+                say(f"the store fails its check against the signer's checkpoint: {problem}; every run counts as one "
+                    "that didn't verify")
+            keys = [k for k, run in sorted(r.runs.items())
+                    if note and k[1] != SIGNER_RUN[1] and k not in bad and recent(run)]
             if known is not None:
                 known.update(k[1] for k in r.runs)
             if say and keys:

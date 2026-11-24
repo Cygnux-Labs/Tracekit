@@ -804,12 +804,12 @@ class Command(unittest.TestCase):
             self.addCleanup(p.stop)
         d = tsvc.tmpdir(self)
         self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock")}
-        service = svc.open_service(self.cfg, policy=tsvc.PAY_ASKS)
+        self.service = service = svc.open_service(self.cfg, policy=tsvc.PAY_ASKS)
         self.addCleanup(service.close)
         for srv in svc.serve(self.cfg, service):
             self.addCleanup(srv.server_close)
             self.addCleanup(srv.shutdown)
-        client = Client(self.cfg["socket"])
+        self.client = client = Client(self.cfg["socket"])
         self.addCleanup(client.close)
         run = client.run(agent="claude-code")
         self.assertEqual(run.decide("c1", "pay", {"cents": 5})["decision"], "ask")
@@ -899,6 +899,34 @@ class Command(unittest.TestCase):
                                                                      ("holds", True)])
         self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
         self.assertEqual(got["window"][0], datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+
+    def test_a_run_whose_last_time_was_edited_out_of_the_window_counts_as_failed(self):
+        """Runs were placed in the window by their last record's time read from the store before any check: in dev mode
+        the agent's user can set that time to before the window, and the run was never checked nor counted. The store
+        is checked against the signer's checkpoint first, as tracekit report checks it."""
+        run = self.client.run(agent="codex")
+        run.decide("c2", "Read", {"path": "README.md"})
+        run.close()
+        st = self.service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        since = datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp()
+        rows, failed = tips.signed_rows(self.cfg, since)
+        runs = {x["session_id"] for x in rows}
+        self.assertEqual((len(runs), failed), (2, 0))
+        self.service.close()
+        path = os.path.join(self.cfg["data_dir"], "store", "records.jsonl")
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        i = max(n for n, line in enumerate(lines) if json.loads(line)["event"]["run_id"] == run.run_id)
+        rec = json.loads(lines[i])
+        rec["event"]["ts"] = "2001-01-01T00:00:00.000000Z"   # its stored hash kept, as the agent's own user can
+        lines[i] = json.dumps(rec, separators=(",", ":"))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        rows, failed = tips.signed_rows(self.cfg, since)
+        self.assertEqual(({x["session_id"] for x in rows}, failed), (runs - {run.run_id}, 1))
+        # the intact run is placed by its time as before: after it, it gives no rows and isn't a failure
+        self.assertEqual(tips.signed_rows(self.cfg, time.time() + 3600), ([], 1))
 
     def test_with_nothing_read_it_says_what_it_read_in_one_line(self):
         empty = {"data_dir": os.path.join(tmp(self), "data")}
