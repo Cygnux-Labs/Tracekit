@@ -392,7 +392,9 @@ source it mixes, and the page's first line says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's and OpenAI's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
-once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
+once a minute, and at once on **READ AGAIN**. The viewer reads each transcript in full once and keeps what it read in
+memory: from then on a transcript that only grew is read from where the last read stopped, one changed any other way from
+its start (`tracekit tips` reads them all each time). Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
 
 #### Lessons
