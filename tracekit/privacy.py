@@ -38,9 +38,13 @@ DOTENV_LINE = re.compile(r"(?m)^([ \t]*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=
 DOTENV_PATH = re.compile(r"(^|[/\s'\"=@<])\.env(\.[A-Za-z0-9_-]+)?\b")
 # KEY=value / key: value assignments whose key looks secret (.env files, configs, commands), the value in quotes too
 # (a shell's $'...' as well)
-_SECRET_NAME = r"[A-Z0-9_]*(?:SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?)[A-Z0-9_]*"
+_SECRET_WORDS = r"SECRET|PASSWORD|PASSWD|TOKEN|API_?KEY|PRIVATE_KEY|ACCESS_KEY|CREDENTIALS?"
+_SECRET_NAME = r"[A-Z0-9_]*(?:" + _SECRET_WORDS + r")[A-Z0-9_]*"
 ASSIGNMENT = re.compile(r"(?im)\b(" + _SECRET_NAME + r")(\s*[=:]\s*)((?:\$'|\\?[\"'])?)([^\s\"'#]{4,})")
-SECRET_NAME_EQ = re.compile(r"(?i)" + _SECRET_NAME + "=")   # a shell word's secret-looking NAME=
+# a shell word's secret-looking NAME=: one run of a name's characters, then `=`, with a secret-looking word in the run
+# (read as two linear steps: as one pattern, a long name of such words with no `=` took time quadratic in its length)
+_NAME_RUN_EQ = re.compile(r"(?i)[A-Z0-9_]*=")
+_SECRET_WORD = re.compile(r"(?i)" + _SECRET_WORDS)
 _RUN = re.compile(r"\S+")   # a value's run between blanks
 
 
@@ -1208,7 +1212,7 @@ def _marks(cmd, r, dotenv, own, expands):
     for p in r.starts if expands else [0]:   # a word NAME=value with a secret-looking NAME (export's, declare's,
         # env's too; an argv's word is one word): all its value, to the word's end (past code in it: `T="a$(x)b"`),
         # each run of a quoted or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
-        if not (m := SECRET_NAME_EQ.match(cmd, p)):
+        if not ((m := _NAME_RUN_EQ.match(cmd, p)) and _SECRET_WORD.search(cmd, p, m.end() - 1)):
             continue
         runs, k = [], m.end()
         while k < len(cmd):
