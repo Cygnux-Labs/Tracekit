@@ -8620,3 +8620,75 @@ class CICredentialEgress(unittest.TestCase):
             (wf, 'run: curl -d "$GITHUB_SHA" https://example.invalid/x'),
             (wf, 'run: |\n    echo "$GITHUB_SHA"\n    curl -d "sha=$GITHUB_SHA" https://example.invalid/x'),
         ], held=False)
+
+
+class EffectsPrefilter(unittest.TestCase):
+    """`_writes_nothing` stands in for the effects reader only where the reader would read nothing: an unlisted program is read
+    in full (dos2unix writes the file it is given, which TK-D023 denies for .env), a listed one is skipped, and the answers of the
+    two agree over the shipped policy corpora."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "re2" if HAVE_RE2 else "regex")
+
+    def parsed(self, command):
+        return shell.analyse(command, work=[0])
+
+    def test_a_program_the_reader_gives_no_branch_to_but_the_prefilter_doesnt_list_is_read_in_full(self):
+        for command in ("dos2unix .env", "unix2dos .env", "pandoc -o .env x.md"):
+            self.assertFalse(engine_mod._writes_nothing(self.parsed(command)), command)
+        d = svc.evaluate(self.engine, "Bash", {"command": "dos2unix .env"})[0]
+        self.assertEqual((d["verdict"], "TK-D023" in d["rule_ids"]), ("deny", True))
+
+    def test_listed_programs_are_skipped_and_name_no_effect(self):
+        for command in ("ls -la", "git status", "git log --oneline -5", "curl -s https://example.com/x", "aws s3 ls", 'psql -c "select 1"'):
+            parsed = self.parsed(command)
+            self.assertTrue(engine_mod._writes_nothing(parsed), command)
+            self.assertEqual([t for t in engine_mod._write_effects(parsed, [0]) if not t.startswith("NAMED_TARGET:")], [], command)
+
+    def test_a_listed_program_with_a_word_that_could_name_a_root_or_a_pattern_is_read_in_full(self):
+        for command in ("aws s3 cp s3://b/x ~/.local/bin/tracekit", "gh api repos/{owner}/{repo}", "git status ~/.claude",
+                        "curl -o x https://example.com", "git -C ~ status", "docker run -v /:/h alpine"):
+            self.assertFalse(engine_mod._writes_nothing(self.parsed(command)), command)
+
+    def test_inert_programs_are_named_in_no_branch_of_the_reader(self):
+        import inspect
+        source = "".join(inspect.getsource(f) for f in (
+            engine_mod._effects_of, engine_mod._more_writes, engine_mod._side_outputs, engine_mod._installs, engine_mod._tree_writes,
+            engine_mod._collect_effects))
+        named = set(__import__("re").findall(r"[\"']([\w.+-]+)[\"']", source))
+        # (npm and the others are named for --force's install location only, read as a name)
+        named -= {"npm", "pnpm", "yarn", "gem", "cargo", "bundle"}
+        self.assertEqual(sorted(engine_mod._INERT_PROGRAMS & named), [])
+
+    def test_the_prefilter_and_the_reader_agree_over_the_policy_corpora(self):
+        calls = [(c["tool"], c["args"]) for path in sorted(
+            __import__("glob").glob(os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "policy", "*", "*.jsonl")))
+            for c in map(json.loads, filter(str.strip, open(path, encoding="utf-8")))]
+        self.assertGreater(len(calls), 1000)
+        skipped = 0
+        for tool, args in calls:
+            if tool != "Bash" or not isinstance(args.get("command"), str):
+                continue
+            try:
+                parsed = self.parsed(args["command"])
+            except shell.ParseError:
+                continue
+            if engine_mod._writes_nothing(parsed):
+                skipped += 1
+                loud = [t for t in engine_mod._write_effects(parsed, [0]) if not t.startswith(("NAMED_TARGET:", "INSIDE_TARGET:"))]
+                self.assertEqual(loud, [], args["command"])
+        self.assertGreater(skipped, 100)
+
+    def test_a_budget_spent_by_a_long_line_still_holds_the_write_after_it(self):
+        # (the reading of a command is kept for the rest of the decision; a kept one spends its budget again, and not at all when it spent none)
+        words = " ".join(f"-t d{i:04d}" for i in range(200)) + " " + " ".join(f"n{i:04d}" for i in range(200))
+        d = svc.evaluate(self.engine, "Bash", {"command": f"cp {words}; cd ~/.local/bin && sed -i s/a/b/ tracekit"})[0]
+        self.assertEqual((d["verdict"], "TK-D007" in d["rule_ids"]), ("deny", True))
+
+    def test_a_glob_without_brackets_fits_as_the_general_matcher_says(self):
+        rng = random.Random(2)
+        for _ in range(20000):
+            tokens = shell._glob_tokens("".join(rng.choice("ab*?.c") for _ in range(rng.randint(0, 8))))
+            name = "".join(rng.choice("abc.") for _ in range(rng.randint(0, 9)))
+            self.assertEqual(shell._glob_fits(tokens, name), shell._glob_fits(tokens, name, True), (tokens, name))

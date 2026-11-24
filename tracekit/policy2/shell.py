@@ -2293,17 +2293,40 @@ def _glob_tokens(part):
     return out
 
 
+_STARS_AND_ANY = re.compile(r"(\*+|\?)")
+
+
 def _plain_tokens(part):
     out = []
-    for c in part:
-        if c != "*" or not out or out[-1] is not _STAR:
-            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
+    for run in _STARS_AND_ANY.split(part):
+        if run[:1] == "*":
+            out.append(_STAR)
+        elif run == "?":
+            out.append(_ANY)
+        else:
+            out.extend(run)
     return out
 
 
 def _glob_fits(tokens, name, nocase=False):
     """Whether `name` matches a component's tokens (_glob_tokens): one pass over the name, keeping each token it may
     stand at, so time grows with the name times the tokens (_unglob tries only names as long as its fixed tokens)."""
+
+    if not nocase and tuple not in map(type, tokens):   # (no bracket set: two cursors, one star to go back to)
+        at, pos, star, mark = 0, 0, -1, 0
+        while pos < len(name):
+            if at < len(tokens) and tokens[at] is _STAR:
+                star, mark, at = at, pos, at + 1
+            elif at < len(tokens) and (tokens[at] is _ANY or tokens[at] == name[pos]):
+                at, pos = at + 1, pos + 1
+            elif star >= 0:
+                at, mark = star + 1, mark + 1
+                pos = mark
+            else:
+                return False
+        while at < len(tokens) and tokens[at] is _STAR:
+            at += 1
+        return at == len(tokens)
 
     def one(t, c):
         if t is _ANY:

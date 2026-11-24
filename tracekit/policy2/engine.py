@@ -3421,10 +3421,31 @@ def _effects(parsed, work=None):
     reads it as that inline code is: shell.read_file), and may write each word the run gives it, MAY_WRITE. A link ln
     or cp -s/-l makes is also MAY_WRITE: a later write through it writes the file it points at. Read once per parse
     (the `effects` field and _tracekit both read it): kept in what the parse learned."""
-    learned = parsed[5] if len(parsed) > 5 else {}
+    if len(parsed) <= 5:   # (a parse of what the parser couldn't read: nothing learned to keep them in)
+        return _plain_effects(parsed, work)
+    learned = parsed[5]
     if "effects" not in learned:
-        learned["effects"] = _write_effects(parsed, [0] if work is None else work)
+        learned["effects"] = [] if _writes_nothing(parsed) else _write_effects(parsed, [0] if work is None else work)
     return learned["effects"]
+
+
+# the effects of the last few parses without a learned dict (the decision's rules read each once per rule), with the budget their
+# reading spent; one that spent the budget is read again, as it reads by what is left
+# lean: four entries, newest kept; a decision that reads more parses than that reads each again
+_PLAIN_EFFECTS = []
+
+
+def _plain_effects(parsed, work):
+    work = [0] if work is None else work
+    for kept, effects, spent in _PLAIN_EFFECTS:
+        if kept is parsed and work[0] + spent <= shell.MAX_WORK:
+            work[0] += spent
+            return effects
+    before = work[0]
+    effects = [] if _writes_nothing(parsed) else _write_effects(parsed, work)
+    if work[0] <= shell.MAX_WORK:
+        _PLAIN_EFFECTS[:] = [*_PLAIN_EFFECTS[-3:], (parsed, effects, work[0] - before)]
+    return effects
 
 
 # a host key added to known_hosts: an append to it (`>>`, `tee -a`, `ssh-keyscan … >>`) is APPEND_TARGET, which no
@@ -3561,7 +3582,6 @@ def _persists_environment(parsed, written):
     content that isn't plain text of the line (a copy, sed, perl, dd, printf with escapes, echo -e), that defines a tool as an alias or
     function or puts a folder ahead of PATH, or that sets UV_*, PIP_*, PIPX_*, XDG_CONFIG_*, XDG_DATA_HOME or HOME; or sets one for the session
     (launchctl setenv). The person's next `uv tool install --reinstall`, which our own messages give as the remedy, would build on it."""
-    words = [w for c in parsed[0] if c["argv"] for w in (*c["argv"][1:], *c["stdin"])]
     if any(_program(c["argv"]) == "launchctl" and c["argv"][1:2] == ["setenv"] and any(
             _TOOL_ENV.search(w) for w in c["argv"][2:3]) for c in parsed[0] if c["argv"]):
         return True
@@ -3569,6 +3589,7 @@ def _persists_environment(parsed, written):
                            *(w for c in parsed[0] if c["argv"][:1] == ["tee"] for w in c["argv"][1:])) if _RC_FILE.search(_normal(x))]
     if not targets:
         return False
+    words = [w for c in parsed[0] if c["argv"] for w in (*c["argv"][1:], *c["stdin"])]
     return bool(any(_program(c["argv"]) in _RC_WRITERS for c in parsed[0] if c["argv"])
                 or any(_program(c["argv"]) == "echo" and any(a.startswith("-") and "e" in a for a in c["argv"][1:2]) for c in parsed[0] if c["argv"])
                 or any(_program(c["argv"]) == "printf" and any(re.search(r"[%\\]", w) for w in c["argv"][1:]) for c in parsed[0] if c["argv"])
@@ -3602,12 +3623,13 @@ def _collect_effects(parsed, work, tags, learned):
     if env:   # git given another repository or work tree by the environment is read as given them by option
         parsed = ([dict(c, argv=[c["argv"][0], *env, *c["argv"][1:]]) if _program(c["argv"]) == "git" else c
                    for c in parsed[0]], *parsed[1:])
+    memo = {}
     appended = collections.Counter(learned.get("appended", ()))
     for ref in parsed[3]:
         add = appended[ref] > 0 and bool(_KNOWN_HOSTS.search(_text(ref)))
         appended[ref] -= 1
         tags.append(("APPEND_TARGET:" if add else "WRITE_TARGET:") + _text(ref))
-    tags += _command_effects(parsed[0], work)
+    tags += _command_effects(parsed[0], work, memo)
     # a write to `{}` in code a find's -exec runs (its sh -c script given {} as $1) writes each file the find finds
     if "{}" in parsed[3]:
         tags += ["WRITE_TARGET:" + f for c in parsed[0] if _program(c["argv"]) == "find" and any(
@@ -3655,9 +3677,9 @@ def _collect_effects(parsed, work, tags, learned):
             for o in c.get("out", ()):   # (an append is one only as many times as the line appends to it)
                 outs.append(("APPEND_TARGET:" if appends[o] > 0 else "WRITE_TARGET:") + o)
                 appends[o] -= 1
-            tags += joined(base, outs + _command_effects([c], work), c["argv"][0] == "find")
+            tags += joined(base, outs + _command_effects([c], work, memo), c["argv"][0] == "find")
             if c["argv"][0] == "find":   # (its start paths, read from the folder, for the trust roots under them)
-                tags += _command_effects([dict(c, argv=_find_in(c["argv"], base))], work)
+                tags += _command_effects([dict(c, argv=_find_in(c["argv"], base))], work, memo)
         folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
         if folder and at:
             for base in bases or [""]:
@@ -3731,11 +3753,12 @@ def _collect_effects(parsed, work, tags, learned):
     # line gives one, or an unresolved expansion followed by a root's own name (`$D/tracekit-ai/bin/python`) may be it
     where = "|".join(re.escape(n) for n, text in learned.get("assigned", ()) if _from_where(text))
     tags += ["ROOT_TARGET:" + path for k, _, path in (t.partition(":") for t in tags)
-             if k in ("WRITE_TARGET", "DELETE_TARGET", "MODE_TARGET", "INTO_TARGET", "TREE_TARGET", "WORKTREE_TARGET") and (
+             if k in ("WRITE_TARGET", "DELETE_TARGET", "MODE_TARGET", "INTO_TARGET", "TREE_TARGET", "WORKTREE_TARGET")
+             and ("$" in path or "`" in path) and (   # (each of the four reads an expansion or a substitution)
                  _from_where(path) or _root_named(path) or _root_glob(path) or where and re.search(
                      r"\$\{?(?:%s)\b" % where, path))]
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
-             if k != "MAY_WRITE" and (n := _normal(path)) != path]
+             if k != "MAY_WRITE" and _may_change(path) and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude), and a
     # pattern anywhere each protected path it may make (`cp x ~/.cur?or/plugins/…`: _protected_forms)
     forms = [kf for k, _, path in (t.partition(":") for t in tags) if k != "MAY_WRITE" and shell._GLOB.search(path)
@@ -3746,13 +3769,17 @@ def _collect_effects(parsed, work, tags, learned):
     # where it may take a trust root's place, and a name copied into a folder is a write where the folder holds a
     # protected path
     resolved = [(k, path) for k, _, path in (t.partition(":") for t in tags)]
-    tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _names_root(p)]
-    tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _inside_protected(p)]
-    tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _expanded_settings(p)]
-    tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "INSIDE_TARGET" and _names_root(p, along=False)]
-    tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "INTO_TARGET" and _holds_protected(p.rpartition("/")[0])] + [
-        t for k, p in resolved if k in ("TREE_TARGET", "WORKTREE_TARGET") for t in [
-            "WRITE_TARGET:" + p, *_held_roots(p, k == "TREE_TARGET")]]
+    kinds = {k for k, _ in resolved}
+    if "NAMED_TARGET" in kinds:
+        tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _names_root(p)]
+        tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _inside_protected(p)]
+        tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "NAMED_TARGET" and _expanded_settings(p)]
+    if "INSIDE_TARGET" in kinds:
+        tags += ["ROOT_TARGET:" + p for k, p in resolved if k == "INSIDE_TARGET" and _names_root(p, along=False)]
+    if kinds & {"INTO_TARGET", "TREE_TARGET", "WORKTREE_TARGET"}:
+        tags += ["WRITE_TARGET:" + p for k, p in resolved if k == "INTO_TARGET" and _holds_protected(p.rpartition("/")[0])] + [
+            t for k, p in resolved if k in ("TREE_TARGET", "WORKTREE_TARGET") for t in [
+                "WRITE_TARGET:" + p, *_held_roots(p, k == "TREE_TARGET")]]
 
 
 # where the Python the plugin's hook runs and a harness's hooks folder that no whole-folder rule keeps live, in full
@@ -3823,6 +3850,7 @@ _HOME_FOLDERS = ("Documents", "Library")   # (the first folders of _ROOT_PLACES 
 _STAR_PATHS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES if place[0] != "Documents"
                         for k in range(1, len(place) + 1)) | frozenset(
     tuple(c.casefold() for c in chain) for chain in _PROTECTED_PATHS if chain[0][:1] == ".")
+_MADE_BY_STAR = {path: tuple(c.casefold() for c in path) in _STAR_PATHS for path in _PROTECTED_PATHS}
 _BY_FIRST = {}   # each path of _PROTECTED_PATHS under its first component, casefolded: a literal one is a lookup
 for _path in _PROTECTED_PATHS:
     _BY_FIRST.setdefault(_path[0].casefold(), []).append(_path)
@@ -3875,16 +3903,17 @@ def _forms_of(parts, options, whole, named=False):
     tokens = {i: shell._glob_tokens(parts[i]) for i in patterned}   # (a component past them reads as written)
     # each pattern's runs of plain characters, which a name it makes holds: a quick no before _glob_fits, read from its
     # tokens (a bracket holding `[` ends where bash ends it); none read for one with a backslash, which escapes them
-    pieces = {i: None if "\\" in parts[i] else "".join(t if isinstance(t, str) else "\0" for t in tokens[i]).split("\0")
+    pieces = {i: None if "\\" in parts[i] else "".join([t if t.__class__ is str else "\0" for t in tokens[i]]).split("\0")
               for i in patterned}
-    if nocase:
-        pieces = {i: p and [c.casefold() for c in p] for i, p in pieces.items()}
+    pieces = {i: p and [c.casefold() if nocase else c for c in p if c] for i, p in pieces.items()}   # (an empty run is in any name)
     dot = {i: tokens[i][:1] == ["."] for i in patterned}   # a literal leading dot, escaped too: it may make a dot name
     # `*`, `.*`: any name (any dot name), the dot rule aside
     anything = {i for i in patterned if set(parts[i][1:] if parts[i][:1] == "." else parts[i]) == {"*"}}
 
+    folded = [p.casefold() for p in parts]
+
     def fits(i, n):
-        if parts[i].casefold() == n.casefold():   # a folder written out: the file system may ignore its case (macOS)
+        if folded[i] == n.casefold():   # a folder written out: the file system may ignore its case (macOS)
             return True
         if i not in tokens or not (dot[i] or dotglob) and n[:1] == "." or pieces[i] and not all(
                 c in (n.casefold() if nocase else n) for c in pieces[i]):
@@ -3894,13 +3923,14 @@ def _forms_of(parts, options, whole, named=False):
     def rooted(i):   # where a dot folder is a harness's: in a home, or the folder the line starts in
         return not i or bool(_HOME_START.fullmatch("/".join(parts[:i]) or "/")) or set(parts[:i]) <= {"", "."}
     for i in sorted({i - j for i in patterned for j in range(_LONGEST) if i - j >= 0}):
-        firsts = [parts[i]] if parts[i].casefold() in _BY_FIRST else [
-            n for n in (_FIRSTS[True] * (dotglob and rooted(i)) + _FIRSTS[False] if dotglob else _FIRSTS[dot[i]])
+        home = rooted(i)
+        firsts = [parts[i]] if folded[i] in _BY_FIRST else [
+            n for n in (_FIRSTS[True] * (dotglob and home) + _FIRSTS[False] if dotglob else _FIRSTS[dot[i]])
             if fits(i, n)] if i in tokens else []
         # (a pattern makes a folder that only a home has, Documents or Library, only in a home)
         for names in (names for n in firsts for names in _BY_FIRST[n.casefold()] if (
-                rooted(i) or i not in tokens or names[0] not in _HOME_FOLDERS) and (
-                not named or tuple(c.casefold() for c in names) in _STAR_PATHS)):
+                home or i not in tokens or names[0] not in _HOME_FOLDERS) and (
+                not named or _MADE_BY_STAR[names])):
             span = range(i, i + len(names))
             if span[-1] < len(parts) and any(k in tokens for k in span) and all(map(fits, span[1:], names[1:])) and (
                     not named or span[-1] + 1 == len(parts) or not shell._GLOB.search(parts[span[-1] + 1])):
@@ -3925,6 +3955,11 @@ def _env_chdir(argv):
         else:
             break
     return folder, (i + 1 if i < len(args) else None)
+
+
+def _may_change(path):
+    """Whether _normal may read `path` as another (a `.` or `..` component, a repeated or trailing separator, a `\\`)."""
+    return "/." in path or path[:1] == "." or "//" in path or path[-1:] == "/" or "\\" in path
 
 
 def _normal(path):
@@ -4028,9 +4063,12 @@ def _under_roots(path, home=False, one_part=True):
     path = _normal(path).rstrip("/") or "/"
     parts = path.casefold().split("/")
     at_home = home and _HOME_START.fullmatch(path)
+    if not at_home and parts[-1] not in _ROOT_TAILS:   # (a place is matched by its last parts: its own last name ends the path)
+        return []
     in_home = len(parts) > 1 and bool(_HOME_START.fullmatch("/".join(path.split("/")[:-1]) or "/"))   # (~/Library, not a project's)
-    return [place[k:] for place in _ROOT_PLACES for k in range(len(place) - 1, -1, -1)
-            if k == 0 and at_home or k and parts[-k:] == [c.casefold() for c in place[:k]] and (
+    tail = tuple(parts[-4:])
+    return [place[k:] for place, folded in zip(_ROOT_PLACES, _ROOT_FOLDED) for k in range(len(place) - 1, -1, -1)
+            if k == 0 and at_home or k and tail[-k:] == folded[:k] and (
                 k > 1 or place[0][:1] == "." or in_home and one_part)]
 
 
@@ -4039,6 +4077,8 @@ def _roots_below(path, home=False, one_part=True):
     return [path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path, home, one_part)]
 
 
+_ROOT_TAILS = frozenset(c.casefold() for place in _ROOT_PLACES for c in place)
+_ROOT_WORD = re.compile("|".join(re.escape(n) for n in sorted(_ROOT_TAILS)))
 _ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES for k in range(1, len(place) + 1))
 # the folders of the agents' own state in a home, where TK-F015 holds a write to any file (an unknown program that names one may write
 # it): all but the folders of their session logs and caches, which a reader names every day
@@ -4050,6 +4090,10 @@ _LOG_FOLDERS = frozenset(("projects", "sessions", "todos", "statsig", "history",
 _SETTINGS_CHAINS = tuple(dict.fromkeys(
     chain for chain in (tuple(c.casefold() for c in ch) for ch in _PROTECTED_PATHS)
     if len(chain) > 1 and chain not in _ROOT_CHAINS))
+_CHAINS_AT = {}   # _SETTINGS_CHAINS by their first part
+for _chain in _SETTINGS_CHAINS:
+    _CHAINS_AT.setdefault(_chain[0], []).append(_chain)
+_PROTECTED_WORD = re.compile("|".join(re.escape(n) for n in sorted(_AGENT_FOLDERS | _CHAINS_AT.keys())))
 _SETTINGS_FILES = frozenset(("settings.json", "settings.local.json", "config.toml", "config.json", "config.yaml", "hooks.json",
                              "mcp.json", "default.rules"))
 
@@ -4059,12 +4103,13 @@ def _inside_protected(path):
     its logs' (_AGENT_FOLDERS), or one of
     _SETTINGS_CHAINS. A program the
     parser doesn't know that names one may write it, which the rules on a write to one read."""
+    if not _PROTECTED_WORD.search(path.casefold()):   # (a name is a part of the path as written, whatever _normal makes of it)
+        return False
     parts = tuple(_normal(path).casefold().split("/"))
-    if any(chain == parts[j:j + len(chain)] for chain in _SETTINGS_CHAINS for j in range(len(parts) - len(chain) + 1)):
-        return True
-    if any(p in _AGENT_FOLDERS and j + 1 < len(parts) and parts[j + 1] not in _LOG_FOLDERS
-           for j, p in enumerate(parts)):
-        return True
+    for j, p in enumerate(parts):
+        if any(chain == parts[j:j + len(chain)] for chain in _CHAINS_AT.get(p, ())) or (
+                p in _AGENT_FOLDERS and j + 1 < len(parts) and parts[j + 1] not in _LOG_FOLDERS):
+            return True
     return False
 
 
@@ -4076,7 +4121,7 @@ def _expanded_settings(path):
 def _names_root(path, along=True):
     """Whether `path` is a trust root, is under one, or (`along`) is a folder along one (`~/.local/share/uv`,
     `~/.local/bin`). A bare home is none: what is written in it is the member or path that names a root."""
-    if path[:1] not in ("/", "~", "$"):
+    if path[:1] not in ("/", "~", "$") or not _ROOT_WORD.search(path.casefold()):
         return False
     path = _normal(path).rstrip("/") or "/"
     parts = tuple(path.casefold().split("/"))
@@ -4596,7 +4641,9 @@ def _copies(dests, sources, work, merges=False, folder=False, contents=False, pa
     return written, into, tree
 
 
-def _command_effects(commands, work):
+def _command_effects(commands, work, memo=None):
+    """What `commands` write (_effects_of each). `memo`: the reading of each argv, kept while no stage prints for a writer xargs
+    runs (the reading is then of the argv alone), with the work it spent, which a repeat spends again."""
     out = []
     # what each pipeline's find, echo or printf prints, for a writer xargs runs there: it writes or deletes each name
     # (`find . -name .env | xargs sed -i …`, `echo .env | xargs …`, `printf '.e%s' nv | xargs …`); a stage that prints
@@ -4620,8 +4667,18 @@ def _command_effects(commands, work):
                 for p, s in dict.fromkeys([(c.get("pipeline"), c.get("stage", 0)), *(c.get("reaches") or ())]):
                     prints.setdefault(p, []).append((s, found))
     for command in commands:
+        key = None if prints or memo is None else tuple(command["argv"])
         try:
-            out.extend(_effects_of(command, prints, work))
+            if key is not None and key in memo:
+                found, spent = memo[key]
+                if spent:
+                    shell.charge(work, spent)
+            else:
+                before = work[0]
+                found = _effects_of(command, prints, work)
+                if key is not None:
+                    memo[key] = found, work[0] - before
+            out.extend(found)
         except shell.ParseError:   # the budget is spent: the command's own words stand in for what it writes
             out.extend(_literal_effects(command))
     return out
@@ -4920,6 +4977,8 @@ def _option_values(args, *names):
     """The values of options as `-o X`, `-oX`, `-o=X`, `--output X` and `--output=X` give them."""
     out = []
     for i, a in enumerate(args):
+        if a[:1] != "-":   # (every name starts with one)
+            continue
         for n in names:
             if a == n:
                 out += args[i + 1:i + 2]
@@ -6568,3 +6627,81 @@ def _spelling(name):
     """A tool name as CrewAI's sanitize_tool_name leaves it, without its `_`: accents dropped (NFKD, then ASCII),
     lower-cased, letters and digits only."""
     return re.sub(r"[^0-9a-z]", "", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower())
+
+
+# programs that, whatever their options and operands, write nothing, delete nothing and name nothing the effects reader reads:
+# no branch of _effects_of, _tree_writes, _installs or _side_outputs takes them, and they aren't unknown to the parser (NAMED_TARGET)
+_WRITES_NOTHING = frozenset((
+    "ls", "ll", "la", "dir", "cat", "head", "tail", "wc", "pwd", "true", "false", "date", "uname", "whoami", "id", "hostname", "which",
+    "stat", "file", "du", "df", "grep", "egrep", "fgrep", "rg", "basename", "dirname", "realpath", "readlink", "test", "[", "sleep",
+    "printenv", "cut", "tr", "diff", "cmp", "md5sum", "shasum", "sha1sum", "sha256sum", "sha512sum", "cksum", "jq", "column", "nl",
+    "echo", "tac", "rev", "seq", "yes", "nproc", "uptime", "ps", "pgrep", "lsof", "tty", "groups", "arch", "sw_vers", "pbpaste"))
+_NAVIGATORS = frozenset(("cd", "pushd", "popd"))
+_WRITER_WORDS = frozenset(("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln", "dd", "sed", "perl", "find"))
+# git's subcommands that write no file (a reader, or only the repository's own refs and objects), when no option sends output to a file,
+# names a folder or a repository
+_GIT_INERT = _GIT_READS | frozenset(("push", "commit", "add", "fetch", "remote", "branch", "tag", "reflog", "rev-list", "ls-remote"))
+# programs no branch of the effects reader names (grep of _effects_of, _more_writes, _side_outputs, _installs and _tree_writes; a test reads
+# each as an unknown program would be): their words are read only as names (NAMED_TARGET), which a hint-free word can't make a root
+_INERT_PROGRAMS = frozenset((
+    "aws", "gh", "gcloud", "gsutil", "stripe", "terraform", "terragrunt", "tofu", "psql", "mysql", "mongosh", "redis-cli", "valkey-cli", "az",
+    "vault", "vercel", "pulumi", "helm", "railway", "glab", "fly", "heroku", "cdk", "oc", "supabase", "journalctl", "setcap", "pytest", "crontab",
+    "diskutil", "ruff", "wipefs", "usermod", "ssh-add", "mkfs.ext4", "nc", "scp", "rails", "uvicorn", "security", "mix", "npm", "pnpm", "yarn", "cargo", "go",
+    "gem", "bundle"))
+# an option of curl that writes no file and names none (the others are read by shell.download_writes)
+_CURL_INERT = frozenset(("-s", "-S", "-sS", "-f", "-L", "-k", "-v", "-I", "-i", "-G", "-X", "-H", "-d", "-u", "-A", "-e", "-m", "-4", "-6",
+                         "-sSL", "-sL", "-fsSL", "-fsS", "-sf", "-LsS", "-sSf", "-g", "--silent", "--show-error", "--fail", "--location",
+                         "--insecure", "--verbose", "--head", "--include", "--request", "--header", "--data", "--data-raw",
+                         "--data-binary", "--data-urlencode", "--json", "--user", "--max-time", "--connect-timeout", "--compressed",
+                         "--retry", "--url", "--fail-with-body"))
+# what a path that names a trust root, a harness's settings or a folder along one must contain, whatever the case: any component of
+# _ROOT_PLACES, _PROTECTED_PATHS and _SETTINGS_CHAINS but the commonest (every one of their chains holds another), or a character that
+# makes a word a pattern, a tilde or an expansion
+_COMMON_PARTS = frozenset(("bin", "share", "lib", "tools", "venvs", "python", "data", "keys", "run", "local"))
+
+
+def _hint_pattern():
+    parts = {c.casefold() for chain in (*_PROTECTED_PATHS, *_ROOT_PLACES, *_SETTINGS_CHAINS) for c in chain}
+    parts |= {"tracekit", "settings", "hooks", "plugins", "config", "environment"}
+    return re.compile("|".join(re.escape(x) for x in sorted(parts - _COMMON_PARTS)) + r"|[$`*?\\[{~\\\\]", re.I)
+
+
+_HINT = _hint_pattern()
+
+
+def _writes_nothing(parsed):
+    """Whether the effects reader would read no effect in this parse, decided from the programs and a few flags before any of
+    its work: no redirection, assignment or command that can write (a program of _WRITES_NOTHING, git reading its repository or
+    only its refs, a curl with options that name no file, or one of _INERT_PROGRAMS whose words name nothing a trust root, a
+    harness's settings or a pattern could be), no command the parser couldn't read or that runs input, and few enough cd for _walk
+    to hold none. The answer the full reading gives (tests/test_signer_policy.py reads both over the corpora)."""
+    commands = parsed[0]
+    if parsed[3] or parsed[2] or len(commands) > 6 or (len(parsed) > 5 and (
+            parsed[5].get("any_set") or parsed[5].get("unread") or parsed[5].get("unresolved"))):
+        return False
+    for c in commands:
+        argv = c["argv"]
+        if not argv or c.get("opaque") or c.get("out") or c.get("script_args") or c.get("via"):
+            return False
+        exe = shell.base_name(argv[0])
+        if exe in _WRITES_NOTHING or exe in _NAVIGATORS:
+            if exe in _NAVIGATORS and any(_HINT.search(a) for a in argv[1:]):
+                return False
+            continue
+        rest = argv[1:]
+        if exe == "git":
+            i = shell._git_sub(rest)
+            if i is None or rest[i] not in _GIT_INERT or any(
+                    a.startswith(("--output", "-o", "-C", "-c", "--work-tree", "--git-dir")) or shell.base_name(a) in _WRITER_WORDS
+                    for a in rest) or any(_HINT.search(a) for a in rest):
+                return False
+        elif exe == "curl":
+            if any(a.startswith("-") and a not in _CURL_INERT for a in rest) or any(_HINT.search(a) for a in rest):
+                return False
+        elif exe in ("docker", "podman", "kubectl"):
+            if _WRITE_WORD.search(" ".join(rest)) or any(shell.base_name(a) in _WRITER_WORDS for a in rest) or any(
+                    _HINT.search(a) or a.startswith(("-v", "--volume", "--mount")) for a in rest):
+                return False
+        elif exe not in _INERT_PROGRAMS or any(_HINT.search(a) for a in rest) or any("upgrade" in a for a in rest):
+            return False
+    return True
