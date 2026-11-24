@@ -249,7 +249,7 @@ class PluginShim(unittest.TestCase):
         # that package decides which calls run, so the plugin names the version it was built for
         with open(os.path.join(ROOT, "plugin", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
             version = json.load(f)["version"]
-        for name in ("scripts/tracekit-hook", "README.md"):
+        for name in ("scripts/tracekit-hook", "scripts/tracekit-hook.ps1", "README.md"):
             with open(os.path.join(ROOT, "plugin", name), encoding="utf-8") as f:
                 pins = re.findall(r"tracekit-ai([^\s)'\"]*)", f.read())
             with self.subTest(file=name):
@@ -414,6 +414,72 @@ class PluginShim(unittest.TestCase):
                 self.assertIn("call was blocked", err)
             for event in ("UserPromptSubmit", "Stop"):
                 self.assertEqual(self.hook(event)[0], 1, (status, event))
+
+
+@unittest.skipUnless(os.name == "nt", "Claude Code runs the plugin's hooks in PowerShell on Windows without Git Bash")
+class PluginInPowerShell(unittest.TestCase):
+    """#1097: the PreToolUse command as hooks.json names it, run as Claude Code runs it on Windows without Git Bash (in
+    PowerShell, ${CLAUDE_PLUGIN_ROOT} rewritten to ${env:CLAUDE_PLUGIN_ROOT}), with no sh on PATH, against the dev
+    signer."""
+
+    def setUp(self):
+        from tracekit.sdk import autospawn
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.powershell = shutil.which("powershell")
+        system32 = os.path.join(os.environ["SystemRoot"], "System32")
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": os.path.join(self.d, "run"), "TRACEKIT_DEV_IDLE": "60",
+                                           "LOCALAPPDATA": os.path.join(self.d, "data"),
+                                           "TRACEKIT_CLIENT_HOME": os.path.join(self.d, "client"),
+                                           "TRACEKIT_PYTHON": sys.executable,
+                                           "CLAUDE_PLUGIN_ROOT": os.path.join(ROOT, "plugin"),
+                                           "PATH": os.pathsep.join((os.path.dirname(self.powershell), system32))})
+        env.start()
+        self.addCleanup(env.stop)
+        for k in ("TRACEKIT_SIGNER", "TRACEKIT_FAIL_CLOSED", "TRACEKIT_POLICY"):
+            os.environ.pop(k, None)
+        self.addCleanup(autospawn.down)
+        self.assertIsNone(shutil.which("sh"))
+        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json"), encoding="utf-8") as f:
+            self.command = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+
+    def pre(self, command, tid):
+        payload = {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "Bash",
+                   "tool_input": {"command": command}, "tool_use_id": tid, "cwd": self.d}
+        r = subprocess.run([self.powershell, "-NoProfile", "-Command",
+                            self.command.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}")],
+                           input=json.dumps(payload), capture_output=True, text=True, cwd=self.d, timeout=120)
+        return r.returncode, r.stderr
+
+    def test_a_denied_call_is_blocked_and_an_allowed_one_runs_and_is_recorded(self):
+        from tracekit.integrations import claude_code
+        from tracekit.sdk.client import Client, RunHandle
+        code, err = self.pre("pkill tracekitd", "t1")
+        self.assertEqual(code, 2, err)
+        self.assertIn("BLOCKED", err)
+        self.assertEqual(self.pre("ls", "t2"), (0, ""))
+        with open(claude_code._state("s1"), encoding="utf-8") as f:
+            run = RunHandle(Client(), json.load(f))
+        decisions = [(e["data"]["tool_use_id"], e["data"]["decision"]) for e in run.call("read")["events"]
+                     if e["type"] == "policy.decision"]
+        self.assertEqual(decisions, [("t1", "deny"), ("t2", "allow")])
+
+    def test_without_tracekit_a_tool_call_is_blocked_once_it_is_set_up(self):
+        os.environ["TRACEKIT_PYTHON"] = os.path.join(self.d, "gone", "python.exe")
+        code, err = self.pre("ls", "t1")
+        self.assertEqual(code, 2, err)
+        self.assertIn("so this call was blocked (fail-closed)", err)
+
+    def test_a_script_that_never_starts_blocks_the_call(self):
+        root = os.path.join(self.d, "a[1] b")   # PowerShell's cd would read [1] as a wildcard
+        shutil.copytree(os.path.join(ROOT, "plugin", "scripts"), os.path.join(root, "scripts"))
+        os.environ["CLAUDE_PLUGIN_ROOT"] = root
+        self.assertEqual(self.pre("pkill tracekitd", "t1")[0], 2)   # the script runs from there
+        with open(os.path.join(root, "scripts", "tracekit-hook.ps1"), "w", encoding="utf-8") as f:
+            f.write("if ( {\n")   # a parse error: the script never starts, as under a Group Policy execution policy
+        self.assertEqual(self.pre("ls", "t2")[0], 2)
+        os.environ["CLAUDE_PLUGIN_ROOT"] = os.path.join(self.d, "gone")
+        self.assertEqual(self.pre("ls", "t3")[0], 2)
 
 
 class PruneRunState(unittest.TestCase):

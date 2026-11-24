@@ -138,7 +138,13 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ' + ev)   # v2: names its event
+            # sh execs tracekit-hook; PowerShell (Windows without Git Bash) skips that inside <# #> and runs
+            # tracekit-hook.ps1, exiting with the failure code set first if the script never starts (#1097)
+            fail = 2 if ev == "PreToolUse" else 1
+            self.assertEqual(h["command"],
+                             f'echo `# <#`>/dev/null; exec "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} #> >$null; '
+                             f'$LASTEXITCODE = {fail}; & "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook.ps1" {ev}; '
+                             'exit $LASTEXITCODE')
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 
@@ -164,6 +170,41 @@ class PluginPackage(unittest.TestCase):
                                env={"PATH": "/nonexistent", "HOME": home, "TRACEKIT_PYTHON": ""})
         self.assertEqual(r.returncode, 1)   # a non-blocking error Claude Code shows; exit 0's stderr is never seen
         self.assertIn("NOT recorded", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_sh_runs_the_wrapper_from_the_hooks_command(self):
+        import json
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+            cmd = json.load(f)["hooks"]["Stop"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory() as home:
+            r = subprocess.run(["/bin/sh", "-c", cmd], input="{}", capture_output=True, text=True,
+                               env={"PATH": "/usr/bin:/bin", "HOME": home, "TRACEKIT_PYTHON": "/nonexistent",
+                                    "CLAUDE_PLUGIN_ROOT": os.path.join(ROOT, "plugin")})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertEqual(r.stdout, "")
+        self.assertIn("this Stop event was NOT recorded", r.stderr)
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_sh_passes_the_hooks_exit_code_through_silently(self):
+        import json
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+            cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "scripts"))
+            hook = os.path.join(root, "scripts", "tracekit-hook")
+            with open(hook, "w") as f:
+                f.write('#!/bin/sh\n[ "$1" = PreToolUse ] && exit "$CODE"\nexit 9\n')
+            os.chmod(hook, 0o755)
+            for code in ("0", "1", "2"):
+                for flags in ("-c", "-uc"):
+                    r = subprocess.run(["/bin/sh", flags, cmd], capture_output=True, text=True,
+                                       env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root, "CODE": code})
+                    with self.subTest(code=code, flags=flags):
+                        self.assertEqual((r.returncode, r.stdout, r.stderr), (int(code), "", ""))
 
 
 if __name__ == "__main__":
