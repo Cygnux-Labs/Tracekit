@@ -816,6 +816,29 @@ class ManagedHooks(unittest.TestCase):
                 got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
                 self.assertEqual((got["status"], got["detail"]), want)
 
+    def test_a_dropin_that_sets_allow_managed_hooks_only_is_read_in_merge_order(self):
+        """A review item I fixed without a test: `allowManagedHooksOnly` was read from `managed-settings.json` alone, so
+        a drop-in that set it differently was not seen. It is a single value, so the later file wins — a drop-in's true
+        stops the agent's own hooks running, and a later false lifts the managed file's true."""
+        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        own = os.path.join(self.d, ".claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        both, unused = (("warn", f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so every call "
+                                 "is decided twice"),
+                        ("ok", f"v2 hooks in {self.managed}; those in {own} don't run (allowManagedHooksOnly)"))
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "the control: off in the managed file, nothing else set")
+        later = self.dropin("20-security.json", allowManagedHooksOnly=True)   # after managed-settings.json
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), unused, "a drop-in's true is read")
+        self.assertTrue(os.path.exists(later))
+        os.unlink(later)
+        early = self.dropin("10-telemetry.json", allowManagedHooksOnly=False)   # the managed file's true, then a false
+        got = self.rows(managed={"allowManagedHooksOnly": True})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "a later false lifts the managed file's true")
+        self.assertTrue(os.path.exists(early))
+
     def test_the_plugin_beside_managed_hooks_counts_only_where_claude_code_runs_it(self):
         """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host when only the agent's own
         settings enabled the plugin: the agent's user could fail doctor by turning the plugin on in its own settings.
