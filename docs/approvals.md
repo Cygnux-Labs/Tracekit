@@ -378,7 +378,8 @@ is within `max` too; two arguments the class reads as one
 **The floor: people answer** unless every rule the call was held by (flags aside) has `approval.agent` and its bounds
 pass; the tool is one `tools` names exactly; no argument carries a value only untrusted content brought into the run
 and the run's provenance is complete; the run is no replay or findings run; agent approvals are on; and the budget has
-room. Synthetic rules (`TK-UNKNOWN-TOOL`, `TK-SQL-PARSE`, `TK-SHELL-PARSE`, `TK-OVERSIZE`) always need a person.
+room. Synthetic rules (`TK-UNKNOWN-TOOL`, `TK-SQL-PARSE`, `TK-SHELL-PARSE`, `TK-SOURCE-PARSE`, `TK-OVERSIZE`) always
+need a person.
 `approval.request` records the outcome as `agent: {eligible, reason, rules, conditions_hash, args_key}` (only when a
 rule has `approval.agent`, so person-only bundles stay readable by a 1.1 verifier).
 
