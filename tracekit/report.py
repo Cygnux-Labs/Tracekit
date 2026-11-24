@@ -225,8 +225,8 @@ def _tally(key, records, tr, rules, unread):
 
 
 def _where(x):
-    """Where an example call was made: its run, and the sub-agent that made it."""
-    return f"run {x['run_id']}" + (f", subagent {x['agent_id']}" if x.get("agent_id") else "")
+    """Where an example call was made: its run, and the sub-agent the harness said made it."""
+    return f"run {x['run_id']}" + (f", subagent {x['agent_id']} as reported" if x.get("agent_id") else "")
 
 
 def _oversight(holds, waits, span):

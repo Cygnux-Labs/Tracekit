@@ -225,7 +225,7 @@ class WeeklyReport(unittest.TestCase):
                      "  T-RM  1  deleting files", "  also matched (not why it was denied): T-PATH 1",
                      "Flagged calls (2), by rule (one call can match several rules):",
                      f"      e.g. Bash curl -s https://example.com  (run {self.busy})",
-                     f'      e.g. rm {{"path":"x"}}  (run {self.busy}, subagent a272a0b95321d4c5d)',
+                     f'      e.g. rm {{"path":"x"}}  (run {self.busy}, subagent a272a0b95321d4c5d as reported)',
                      "  tailer_lost 1: the transcript reader stopped: model messages may be missing",
                      f"  most: run {self.busy} (claude-code) 1",
                      "Integrity: 3 of 3 runs verify (assurance: dev)",
