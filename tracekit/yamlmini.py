@@ -303,4 +303,7 @@ def load_any(text):
         if text.lstrip().startswith("{"):
             return json.loads(text)
         return loads(text)
-    return yaml.safe_load(text)
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        raise YAMLError(str(e)) from e

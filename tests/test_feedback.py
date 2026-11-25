@@ -8,13 +8,17 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import unittest
 import urllib.parse
 from unittest import mock
 
 from tracekit import __version__, cli, feedback, view
+from tracekit.format.canon import event_hash
+from tracekit.identity.base import CallerIdentity
 from tracekit.privacy import redact_text
 from tracekit.report import AGENTS, APPROVAL_RULES, DECISIONS, HOLDS_BY_RULE, tracekit_rules
+from tracekit.signer.service import SignerService
 
 REPORTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "field-reports")
 COUNTS_CAP, LINE_CAP = 4000, 300   # the counts block's characters; any other line's
@@ -225,7 +229,7 @@ class TestFeedback(unittest.TestCase):
 
     def test_file_writes_a_report_shaped_file_once_and_says_where_it_goes(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
-                mock.patch("tracekit.feedback._week", lambda: WEEK):
+                mock.patch("tracekit.feedback._week", return_value=WEEK):
             path = os.path.join(d, "report.md")
             code, out, _ = _run("--file", path)
             self.assertEqual(code, 0)
@@ -242,6 +246,86 @@ class TestFeedback(unittest.TestCase):
         filled = text.replace("a person / an agent (name it)", "an agent (Claude Code)").replace(
             "(optional):\n", "(optional): two holds a week felt right\n")
         self.assertEqual(report_problems(filled), [])
+
+    def test_weekly_counts_come_from_the_selected_store_in_the_file_and_link(self):
+        def write_run(path, calls):
+            with contextlib.closing(SignerService(path, grace_s=0)) as signer:
+                identity = CallerIdentity("uid", "1001", True)
+
+                def rpc(method, fields):
+                    return signer.call(identity, method, {"request_id": os.urandom(8).hex(), **fields})
+
+                registered = rpc("register_run", {"agent": {"name": "codex"}})
+                run = {key: registered[key] for key in ("run_id", "run_token")}
+                args = {"file_path": "README.md"}
+                for i in range(calls):
+                    call = dict(run, stream="hook", tool_call_id=f"call-{i}")
+                    decision = rpc("decide", dict(call, client_seq=2 * i, tool="Read", args=args, args_source="parsed"))
+                    rpc("complete", dict(call, client_seq=2 * i + 1, status="ok", decision_id=decision["decision_id"],
+                                         args_digest=event_hash({"tool": "Read", "args": args})))
+                rpc("close_run", run)
+                signer.sweep(time.monotonic() + 1)
+                signer.checkpoint()
+
+        with tempfile.TemporaryDirectory() as root, mock.patch("tracekit.feedback._hooks", return_value=[]):
+            dev, other = (os.path.join(root, name) for name in ("dev", "other"))
+            write_run(dev, 1)
+            write_run(other, 2)
+            config = os.path.join(root, "signer.yaml")
+            with open(config, "w", encoding="utf-8") as f:
+                f.write("data_dir: other\n")
+            with mock.patch("tracekit.sdk.autospawn.data_dir", return_value=dev):
+                for i, (source, calls) in enumerate((((), 1), (("--dev",), 1),
+                                                     (("--config", config), 2), (("--data-dir", other), 2),
+                                                     (("--data-dir", ""), 1))):
+                    with self.subTest(source=source):
+                        expected = f"Tool calls: {calls}   allow {calls}, flag 0, ask 0, deny 0"
+                        code, out, err = _run(*source)
+                        self.assertEqual(code, 0, err)
+                        fields = urllib.parse.parse_qs(urllib.parse.urlsplit(out.splitlines()[0]).query)
+                        self.assertIn(expected, fields["share"][0].splitlines())
+                        path = os.path.join(root, f"report-{i}.md")
+                        code, _, err = _run("--file", path, *source)
+                        self.assertEqual(code, 0, err)
+                        with open(path, encoding="utf-8") as f:
+                            self.assertIn(expected, f.read().splitlines())
+
+    def test_store_options_are_exclusive_and_only_apply_to_weekly_reports(self):
+        for argv in (("--dev", "--data-dir", "data"), ("--config", "signer.yaml", "--data-dir", "data"),
+                     ("--dev", "--config", "signer.yaml")):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()) as err, \
+                    self.assertRaises(SystemExit) as error:
+                cli.main(["feedback", *argv])
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("not allowed with argument", err.getvalue())
+
+    def test_store_options_do_not_apply_to_harmless(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as error:
+            cli.main(["feedback", "--harmless", "apr-0123", "--dev"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("are for weekly field reports", err.getvalue())
+
+    def test_missing_explicit_store_does_not_generate_a_report(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = os.path.join(root, "report.md")
+            source = ("--config", os.path.join(root, "missing.yaml"))
+            for output in ((), ("--file", path)):
+                with self.subTest(output=output):
+                    code, out, err = _run(*output, *source)
+                    self.assertEqual((code, out), (1, ""))
+                    self.assertIn("cannot read the selected signer store", err)
+            self.assertFalse(os.path.exists(path))
+
+    def test_a_malformed_signer_yaml_is_an_error_line_and_writes_no_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, path = os.path.join(root, "signer.yaml"), os.path.join(root, "report.md")
+            with open(config, "w", encoding="utf-8") as f:
+                f.write("::: [\n")
+            code, out, err = _run("--file", path, "--config", config)
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("cannot read the selected signer store", err)
+            self.assertNotIn("Traceback", err)
+            self.assertFalse(os.path.exists(path))
 
     def test_counts_name_only_what_share_prints(self):
         """An agent, an outcome or a rule --share never prints (a script's name, a command, a policy's own rule id)
