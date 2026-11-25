@@ -946,14 +946,15 @@ def agent_key_access(agents, data_dir, signer_uid=None):
 
 def _shown_target(target, dotenv):
     """What an approval request's `ai.key` shows of each target: TK-A025's sources as how they were selected and the
-    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others'
-    commands redacted as the approver's copy is (dotenv values too), at most 16 of 256 characters each. The full target
-    is in the key's committed digest only."""
+    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others' calls
+    (their arguments, as canonical JSON) redacted as the approver's copy is (_shown: dotenv values too, redacted before
+    JSON escapes a line break), at most 16 of 256 characters each. The full target is in the key's committed digest
+    only."""
     def one(rule, k):
         if rule == "TK-A025":
             how, _, url = k.rpartition(" ")
             return f"{how} {'/'.join(url.split('/', 3)[:3])}/…"
-        return privacy.redact(k, dotenv)[0][:256]
+        return policy_compile.canonical(_shown(json.loads(k), dotenv))[:256]
     return {r: [one(r, k) for k in v[:16]] for r, v in target.items()}
 
 

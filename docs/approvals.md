@@ -596,8 +596,10 @@ the same project and the same requesting identity. The target: for `TK-A025`, ea
 selected (`pip --index-url`, `pip --extra-index-url`, `pip --find-links`, a config key or a variable are each their
 own), the default index too when the line names it (pypi.org as an extra index adds where a package may come from),
 any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
-`TK-SHELL-PARSE`, the same command, exactly. The person's answer counts when the run was clean both when the call was
-asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
+`TK-SHELL-PARSE`, the same call, exactly: every argument as sent, so SQL with other literals or identifiers, another
+database, host or working folder, a run in the background, a sandbox escalation or another program of the same name is
+another call (Claude Code's Bash `description` too). The person's answer counts when the run was clean both when the
+call was asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
 answer it. Only people's own answers count: never an agent's, a self-approval or a break-glass answer. A precedent
 stops counting when a person revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in
@@ -635,7 +637,8 @@ label that came and went is a new state, and another identity's label changes no
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
 own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
-source's scheme, host and port only (a path can hold a token), and other commands redacted as the approver's copy is;
+source's scheme, host and port only (a path can hold a token), and the other rules' calls (their arguments as JSON)
+redacted as the approver's copy is;
 in a run that isn't clean it shows no target at all. A person's answer carries `run_clean`. Each AI answer
 (`approval`, `approval.suggested`, `approval.escalated`) carries `relied_on`: the precedents, the playbook's version
 and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided

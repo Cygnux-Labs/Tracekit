@@ -89,12 +89,12 @@ class Case(unittest.TestCase):
         r = self.s.call(AGENT, "register_run", {"request_id": rid(), "agent": {"name": "claude-code"}, **kw})
         return {"run_id": r["run_id"], "run_token": r["run_token"]}, itertools.count()
 
-    def ask(self, cmd="pip", tcid=None, project="/Users/me/api", run=None, tool="Bash"):
-        """Decide a call (Bash `cmd`; "pip": an install from the internal index) and request its approval: (approval
-        id, its state), or (None, the decision) when it isn't held."""
+    def ask(self, cmd="pip", tcid=None, project="/Users/me/api", run=None, tool="Bash", args=None):
+        """Decide a call (Bash `cmd`; "pip": an install from the internal index; or `args` as given) and request its
+        approval: (approval id, its state), or (None, the decision) when it isn't held."""
         run, seq = run or (self.run, self.seq)
         tcid = tcid or rid()
-        args = {"command": INDEX.format(tcid) if cmd == "pip" else cmd}
+        args = args or {"command": INDEX.format(tcid) if cmd == "pip" else cmd}
         d = self.s.call(AGENT, "decide", {"request_id": rid(), **run, "stream": "s", "client_seq": next(seq),
                                          "tool_call_id": tcid, "tool": tool, "args_source": "parsed", "args": args})
         if d["decision"] != "ask":
@@ -222,9 +222,10 @@ class TestTargets(unittest.TestCase):
         self.assertEqual(self.e.target(["TK-A025"], "Bash", {"command": INDEX.format("a")}),
                          self.e.target(["TK-A025"], "Bash", {"command": INDEX.format("b")}))   # any package
         self.assertEqual(self.e.target(["TK-A062", "TK-UNKNOWN-TOOL"], "run_tool", {"command": "make  test"}),
-                         {"TK-A062": ["CMD:make  test"]})   # exactly as given
-        self.assertEqual(self.e.target(["TK-SHELL-PARSE"], "Bash", {"command": "$PY -m pytest"}),
-                         {"TK-SHELL-PARSE": ["$PY -m pytest"]})
+                         {"TK-A062": ['{"command":"make  test"}']})   # exactly as given: every argument
+        self.assertEqual(self.e.target(["TK-SHELL-PARSE"], "Bash", {"command": "$PY -m pytest", "timeout": 60}),
+                         {"TK-SHELL-PARSE": ['{"command":"$PY -m pytest","timeout":60}']})
+        self.assertIsNone(self.e.target(["TK-A062"], "run_tool", {"path": "x"}))   # nothing it runs
         self.assertIsNone(self.e.target(["TK-SHELL-PARSE"], "Bash", {"command": ["not", "text"]}))
         self.assertIsNone(self.e.target(["TK-A025"], "Bash", {"command": "ls"}))   # no index read
         self.assertIsNone(self.e.target(["TK-SHELL-PARSE", "TK-A025"], "Bash", {   # a line it can't parse
@@ -435,6 +436,39 @@ class TestPrecedent(Case):
         self.assertEqual(self.s.log.agent["precedents"], {})
         [ans] = [e["data"] for e in self.events() if e["type"] == "approval" and e["data"]["approval_id"] == aid]
         self.assertIs(ans["run_clean"], False)
+
+
+class TestTheSameCallExactly(Case):
+    """A precedent of TK-A062 or TK-SHELL-PARSE is the call exactly, every argument as sent: what their rules read of
+    it (a command's words, SQL with its literals blanked) says nothing of a host, a folder, a flag or a literal."""
+
+    def sql(self, sql, database="staging"):
+        return {"tool": "run_query", "args": {"sql": sql, "database": database}}
+
+    def test_a_near_sibling_of_a_precedent_is_peoples(self):
+        bob = self.sql("UPDATE users SET role = 'viewer' WHERE name = 'bob'")
+        for precedent, near in (
+                (bob, [self.sql("UPDATE users SET role = 'admin' WHERE name = 'mallory'"),   # other literals
+                       self.sql(bob["args"]["sql"], "prod")]),   # another non-command argument
+                (self.sql('DELETE FROM "test"."t"'), [self.sql('DELETE FROM "prod"."t"')]),   # other identifiers
+                ({"tool": "run_tool", "args": {"command": "/tmp/x/reboot"}},   # another program of the same name
+                 [{"tool": "run_tool", "args": {"command": "/sbin/reboot"}}]),
+                ({"tool": "Bash", "args": {"command": HELD}}, [   # a foreground line, run in the background
+                    {"tool": "Bash", "args": {"command": HELD, "run_in_background": True}},
+                    {"tool": "Bash", "args": {"command": HELD, "workdir": "/etc"}},   # in another folder
+                    {"tool": "Bash", "args": {"command": HELD, "sandbox_permissions": "require_escalated"}}])):
+            with self.subTest(precedent):
+                p = self.precedent(**precedent)
+                self.assertIsNotNone(p)
+                for call in near:
+                    aid, a = self.ask(**call)
+                    self.assertEqual((a["agent"]["eligible"], a["ai"]["precedents"]), (
+                        False, {"approve": [], "reject": []}), call)
+                    self.assertIn("no person has approved a call like this one yet", a["agent"]["reason"])
+                aid, a = self.ask(**precedent)   # the same call again: the AI may answer it
+                self.assertEqual((a["agent"]["eligible"], a["ai"]["precedents"]["approve"]), (True, [p]))
+                self.assertEqual(self.ai(aid)["state"], "approved")
+
 
 class TestRunBound(Case):
     def test_a_run_that_read_a_secret_sends_every_hold_to_people(self):
@@ -1346,11 +1380,12 @@ class TestTheViewItAnswers(Case):
 class TestWhatTheKeyShows(Case):
     def test_no_dotenv_value_or_index_path_and_no_target_once_unclean(self):
         _, a = self.ask("$X\nAPI_PIN=correct-horse-battery-staple # from .env")   # TK-SHELL-PARSE alone: clean
-        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X\nAPI_PIN=[REDACTED:dotenv]"]})
+        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ['{"command":"$X\\nAPI_PIN=[REDACTED:dotenv]"}']})
         _, a = self.ask("pip install --index-url https://dl.cloudsmith.io/AbCdEf0123456789/acme/simple/ x")
         self.assertEqual(a["ai"]["key"]["target"], {"TK-A025": ["pip --index-url https://dl.cloudsmith.io/…"]})
         _, a = self.ask("$X --env-file .env\nDB_HOST_PIN=correct-horse-battery-staple")   # names .env, reads nothing
-        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X --env-file .env\nDB_HOST_PIN=[REDACTED:dotenv]"]})
+        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": [
+            '{"command":"$X --env-file .env\\nDB_HOST_PIN=[REDACTED:dotenv]"}']})   # redacted before JSON escapes
         self.ask("cat .env")   # a secret read
         _, a = self.ask(HELD)   # and the requester's next call
         self.assertEqual((a["ai"]["clean"], a["ai"]["key"]["target"]), (False, {}))
@@ -1732,14 +1767,14 @@ class TestReviewerOnTheSigner(Case):
                     contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(reviewer.main(["status"]), 0)
             self.assertNotIn("\x1b", out.getvalue())
-            self.assertIn("\\u001b[2K\\u000d\\u001b[1A tidy", out.getvalue())
+            self.assertIn("\\u001b[2K\\r\\u001b[1A tidy", out.getvalue())   # the key holds the call as JSON
         status()   # a proposal
         prop = self.s.call(ALICE, "approver", {"action": "status"})["proposals"][0]
         self.s.call(ALICE, "approver", {"request_id": rid(), "action": "accept", "id": prop["id"]})
         status()   # an entry in force
         aid, _ = self.ask(line)
         [entry] = self.s.call(REVIEWER, "approval_review", {"approval_id": aid})["ai"]["playbook"]["entries"]
-        self.assertIn("\\u001b[2K\\u000d\\u001b[1A tidy", entry["text"])   # and the playbook the model reads
+        self.assertIn("\\u001b[2K\\r\\u001b[1A tidy", entry["text"])   # and the playbook the model reads
 
     def test_the_friction_of_a_shadow_week(self):
         self.s.close()
