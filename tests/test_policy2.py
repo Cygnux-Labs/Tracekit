@@ -533,6 +533,13 @@ class Engines(unittest.TestCase):
         self.assertEqual(self.regex.tool_class("mcp__s__t"), "mcp")
         self.assertEqual(self.regex.tool_class("Other"), "unknown")
 
+    def test_a_deep_agents_tool_has_the_class_of_the_tool_it_maps_to(self):
+        for tagged, tool in classes.DEEP_AGENTS_TOOLS.items():
+            with self.subTest(tool=tagged):
+                self.assertEqual(self.regex.tool_class(tagged), self.regex.tool_class(tool))
+        self.assertEqual(self.regex.tool_class("deepagents:write_file"), self.regex.tool_class("Write"))
+        self.assertNotEqual(self.regex.tool_class("deepagents:write_file"), "unknown")
+
     def test_a_tool_is_classified_once(self):
         e = Engine(corpus_policy(), "regex")
         with mock.patch.object(engine.fnmatch, "fnmatchcase", wraps=engine.fnmatch.fnmatchcase) as glob:

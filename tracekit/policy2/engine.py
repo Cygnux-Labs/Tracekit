@@ -259,6 +259,7 @@ class Engine:
         return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("structured_output", ()))
 
     def tool_class(self, tool):
+        tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
         tools = self.policy.get("tools", {})
         if tool in tools:
             return tools[tool]

@@ -3184,7 +3184,7 @@ class SignerService:
             else ({}, False)
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
-        cls = self.policy.tool_class(policy_tool)
+        cls = self.policy.tool_class(tool)
         # read only where the engine read these arguments without failing (a host matters to no deny)
         host = classes.extract(cls, tool, args).get("host") if ruled and "error" not in ruled[0] and cls in (
             "http", "browser") and isinstance(args, dict) else None
