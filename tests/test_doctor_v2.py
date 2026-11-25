@@ -71,6 +71,14 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(bad(shape))}
                 self.assertIn(want, got)
 
+    def test_a_settings_file_too_deep_to_parse_is_a_result_not_a_crash(self):
+        def deep(L):
+            with open(L.settings, "w") as f:
+                f.write("[" * 5000 + "]" * 5000)
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = {r["id"]: r["status"] for r in e16.run_case(deep)}
+        self.assertIn("D-HOOKS-PRESENT", got)
+
     def test_hooks_installed_before_1_2_only_need_init_again(self):
         got = {r["id"]: r["status"] for r in e16.run_case(e16._unnamed)}
         self.assertEqual((got["D-HOOKS-EVENT"], got["D-HOOKS-VENV"]), ("warn", "ok"))
@@ -2191,6 +2199,12 @@ class CodexSandbox(unittest.TestCase):
         self.assertIn("features.exec_permission_approvals is true", got["detail"])
         self.assertIn("turn features.exec_permission_approvals off", got["fix"])
         self.assertEqual(self.check("[features]\nexec_permission_approvals = false\n")["status"], "ok")
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        got = self.check("a = " + "[" * 5000 + "]" * 5000)
+        self.assertEqual(got["status"], "info")
+        self.assertIn("can't check Codex's approval settings", got["detail"])
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_a_model_reviewer_warns_and_a_person_is_ok(self):

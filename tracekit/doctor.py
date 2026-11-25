@@ -856,7 +856,7 @@ def _codex_sandbox(add, harnesses):
         cfg = {}
     except ImportError:
         why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
-    except (OSError, ValueError) as e:   # unreadable, or not TOML
+    except (OSError, ValueError, RecursionError) as e:   # unreadable, not TOML, or nested too deep to parse
         why = f"{toml}: {e}"
     if why:
         add("D-CODEX-SANDBOX", False, f"can't check Codex's approval settings ({why})",
@@ -985,7 +985,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         pass
     except ImportError:
         why = f"Python 3.11 or newer reads {name}'s config.toml, this is " + sys.version.split()[0]
-    except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
+    except (OSError, ValueError, AttributeError, RecursionError) as e:   # unreadable, not TOML (or too deep), not tables
         why = f"{store}: {e}"
     entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
     untrusted = sorted({keys[k][0] for k, s in entry.items() if not s.get("trusted_hash")})
@@ -1262,8 +1262,11 @@ def _text(path):
 
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
-    doctor)."""
-    return json.loads(install.agent_file(path))
+    doctor; one nested too deep to parse is a ValueError, as a malformed one is)."""
+    try:
+        return json.loads(install.agent_file(path))
+    except RecursionError as e:
+        raise ValueError(str(e)) from e
 
 
 _setting = install.setting   # a Claude Code settings file's key, or None

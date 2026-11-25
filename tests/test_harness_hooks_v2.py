@@ -2361,6 +2361,14 @@ class CodexHookTrust(unittest.TestCase):
                                                         f"{self.hooks} ({self.toml}: "))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        self.row()
+        with open(self.toml, "w") as f:
+            f.write("a = " + "[" * 5000 + "]" * 5000)
+        self.assertTrue(self.row(install=False)["detail"].startswith(
+            f"can't confirm that Codex trusts Tracekit's hooks in {self.hooks} ({self.toml}: "))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_open_interpreter_keeps_codexs_trust_in_its_own_home(self):
         """#698: Open Interpreter, a Codex fork, runs a hook only once it is trusted, kept as Codex keeps it, in
         $INTERPRETER_HOME's config.toml (else ~/.openinterpreter's): recorded on 0.0.61, where a trusted_hash written
