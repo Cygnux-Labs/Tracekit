@@ -5457,8 +5457,8 @@ class _Parser:
                 continue
             elif name in ("npx", "npm") and (script := _npm_call(name, args)) is not None:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
-            elif name == "hub":   # git's wrapper: its words are git's
-                argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
+            elif name in ("hub", "ntl"):   # git's wrapper, and the Netlify CLI's own short name: their words are git's, netlify's
+                argv, via, unreadable = ["git" if name == "hub" else "netlify", *args], via + [name], unreadable
                 continue
             elif (at := _kubectl_at(name, args)) is not None:   # a Kubernetes distribution's kubectl: its words are kubectl's
                 argv, via, unreadable = ["kubectl", *args[at:]], via + [name], unreadable[at:]

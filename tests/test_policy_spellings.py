@@ -79,7 +79,8 @@ class Spellings(unittest.TestCase):
         """TK-A056 (dev) read lerna's and changesets' publish only bare or through npx, bunx, pnpx, pnpm or yarn with
         options, and nx's release not at all: `yarn lerna publish`, a pinned `npx @changesets/cli@2 publish`, `yarn
         workspaces foreach changeset publish`, `bun run changeset publish` and `nx release publish` through any runner
-        were allowed; and `oc apply`, OpenShift's kubectl, was read by neither TK-A056 nor TK-F004."""
+        were allowed; `oc apply`, OpenShift's kubectl, was read by neither TK-A056 nor TK-F004; and `ntl`, the Netlify
+        CLI's own short name, by no netlify rule."""
         self.held("TK-A056", "ask", [
             "yarn lerna publish", "pnpm lerna publish --yes", "npx lerna@8 publish", "npx --yes lerna@8.1.2 publish",
             "bun run lerna publish", "npx @changesets/cli@2 publish", "npx --yes @changesets/cli@2.27.0 publish",
@@ -88,11 +89,11 @@ class Spellings(unittest.TestCase):
             "bun run changeset publish", "bun changeset publish", "nx release publish", "npx nx release publish",
             "pnpm nx release publish", "yarn nx release publish", "bunx nx release publish", "pnpm exec nx release publish",
             "npx --yes nx@19.8.0 release publish", "nx release --yes", "nx release minor", "oc apply -f k8s/",
-            "oc --context prod delete deploy web"], packs=("dev.yaml",))
+            "oc --context prod delete deploy web", "ntl deploy --prod"], packs=("dev.yaml",))
         self.kept("TK-A056", ["nx release --skip-publish", "nx release version", "nx release changelog",
                               "nx release publish --dry-run", "nx run-many -t build", "lerna run test",
                               "yarn workspaces foreach -A run build", "changeset version", "oc apply --dry-run=client -f k8s/",
-                              "oc get pods"], packs=("dev.yaml",))
+                              "oc get pods", "ntl deploy"], packs=("dev.yaml",))
         for pack, name, e in engines(("coding.yaml", "server.yaml", "strict.yaml")):
             with self.subTest(pack=pack, engine=name):
                 self.assertIn("TK-F004", e.decide("Bash", {"command": "oc apply -f k8s/"})["rule_ids"])
@@ -102,7 +103,7 @@ class Spellings(unittest.TestCase):
         by every kubectl rule (TK-A021, TK-A052, TK-A056); `config view` with `--flatten` (which skips the redaction
         as --raw does), with --raw before `view`, or after more than sixteen of view's options, was allowed; and so
         were gcloud's tokens on the alpha or beta track and `gcloud config config-helper`, whose default output holds
-        the access token."""
+        the access token, and `aws ecr get-login-password`, a registry password."""
         self.held("TK-A021", "ask", [
             "microk8s kubectl config view --raw", "microk8s.kubectl config view --raw", "k3s kubectl config view --raw",
             "k0s kubectl config view --raw", "minikube kubectl -- config view --raw",
@@ -113,12 +114,13 @@ class Spellings(unittest.TestCase):
             "gcloud --project p beta auth print-access-token", "gcloud beta --project p auth print-access-token",
             "gcloud beta auth application-default print-access-token", "gcloud config config-helper",
             "gcloud config config-helper --format='value(credential.access_token)'",
-            "gcloud --format=json config config-helper"])
+            "gcloud --format=json config config-helper", "aws ecr get-login-password --region eu-west-1",
+            "aws --profile p ecr-public get-login-password"])
         self.held("TK-A052", "ask", ["microk8s kubectl get secret db -o yaml", "k3s kubectl get secrets -o json",
                                      "minikube kubectl -- get secret db -o jsonpath='{.data}'"])
         self.kept("TK-A021", ["microk8s kubectl config view", "kubectl config view --raw=false",
                               "minikube kubectl -- get pods", "gcloud beta auth list", "gcloud config list",
-                              "gcloud config get-value project", "microk8s status"])
+                              "gcloud config get-value project", "microk8s status", "aws ecr describe-repositories"])
 
     def test_a_shell_call_is_read_in_its_own_working_directory_and_environment_on_every_reading(self):
         """The signer read a shell call's working directory only under the tool's own name: an MCP server's shell tool
