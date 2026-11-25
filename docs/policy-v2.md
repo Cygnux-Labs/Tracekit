@@ -845,7 +845,8 @@ ask:
 | every label the policy reads | is a call the policy couldn't read (`TK-OVERSIZE`, over 64 KiB); and calls the signer never decided: events it never got (a `client_counter_gap`, whose labels the call that shows it meets), a signer, tailer or observer that went down (`signer_unavailable`, `tailer_lost`, `observer_lost`), a tool result with no decide (`reconcile.hook_missing`) | a person's approval of one, which says nothing of what it did; calls a client lost or held back |
 
 A call runs when its decision allows or flags it, when the approval of its ask is consumed, or when it ran against its
-decision (an `executed_against_policy` gap). The signer alone sets a label: a `run.label` record right after the
+decision (an `executed_against_policy` gap); a call that didn't run sets no label, though the AI approver's run bound
+counts a read of a secret the policy denied or held ([approvals](approvals.md#the-ai-approver)). The signer alone sets a label: a `run.label` record right after the
 record that set it, naming that record ([format](format-v2.md#3-events)). Nothing a client sends sets or clears one,
 but an input it observes as untrusted, which can only hold more. A run carries only the labels its policy reads:
 those its run conditions name and those the AI approver's run bound names (`approval_agent.run.clean`), so a

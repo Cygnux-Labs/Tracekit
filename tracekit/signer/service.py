@@ -437,6 +437,10 @@ PRECEDENTS_NAMED, PLAYBOOK_S, PLAYBOOK_MIN = 8, 7 * 86400, 3
 # a run label of approval_agent's run bound, as the AI approver's reasons say it to people
 LABEL_WORDS = {"secrets_access": "the session read a secret",
                "untrusted_content": "the session read untrusted content (a web page, an email or a download)"}
+# and one only a call that didn't run set (labels.Sources.tried), and one the held call itself sets when it runs
+TRIED_WORDS = {"secrets_access": "the session tried to read a secret"}
+CALL_WORDS = {"secrets_access": "this call reads a secret",
+              "untrusted_content": "this call reads untrusted content (a web page, an email or a download)"}
 # characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
 # and line/paragraph separators
 _HIDDEN = ("Cc", "Cf", "Zl", "Zp")
@@ -972,16 +976,17 @@ def agent_key_access(agents, data_dir, signer_uid=None):
     return None
 
 
-def _shown_target(target, dotenv):
+def _shown_target(target, dotenv, tool):
     """What an approval request's `ai.key` shows of each target: TK-A025's sources as how they were selected and the
-    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others'
-    commands redacted as the approver's copy is (dotenv values too), at most 16 of 256 characters each. The full target
-    is in the key's committed digest only."""
+    source's scheme, host and port (a path can hold a token; engine._source leaves no space in it); the others' calls
+    (their arguments, as canonical JSON) redacted as the approver's copy is (_shown: dotenv values too, redacted before
+    JSON escapes a line break), at most 16 of 256 characters each. The full target is in the key's committed digest
+    only."""
     def one(rule, k):
         if rule == "TK-A025":
             how, _, url = k.rpartition(" ")
             return f"{how} {'/'.join(url.split('/', 3)[:3])}/…"
-        return privacy.redact(k, dotenv)[0][:256]
+        return policy_compile.canonical(_shown(tool, json.loads(k), dotenv))[:256]
     return {r: [one(r, k) for k in v[:16]] for r, v in target.items()}
 
 
@@ -2387,8 +2392,9 @@ class SignerService:
                 if a["policy_hash"] != self.policy.policy_hash else
                 "an agent or a person did not approve this call in this run: people answer it"
                 if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else
-                f"{LABEL_WORDS[unclean[0]]} since it was asked: a person decides"
-                if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]], a["requester"])) else
+                f"{self._unclean_words(self.log.runs[a['run_key']], a['requester'], unclean)} since it was asked: a "
+                "person decides" if a.get("ai") and (unclean := self._unclean(self.log.runs[a["run_key"]],
+                                                                              a["requester"])) else
                 self._switched_off(a))
 
     def _switched_off(self, a):
@@ -2559,7 +2565,8 @@ class SignerService:
         """The `agent` of the approval.request of call `d` (an `ask`) of run `key`: {eligible, reason, rules,
         conditions_hash, args_key (the person-only set's key of these arguments), spend (memory only: what an approval
         takes from each sum budget)}; None when none of its rules has approval.agent. Eligible only when every rule
-        it asked by (flags aside) has approval.agent and its bounds pass, the tool is one the policy names exactly,
+        it asked by (flags aside) has approval.agent and its bounds pass, no rule it matched (flags too) gives it a
+        label of approval_agent's run bound (labels.Sources.of_call), the tool is one the policy names exactly,
         no argument carries a value only untrusted content brought and provenance is complete, the run is no replay,
         agent approvals are on and each budget has room; and an install TK-A025 holds pins its source on its line and
         reads no file that may name another (Engine.install_unpinned). Off the writer; the writer checks the run's state
@@ -2575,7 +2582,12 @@ class SignerService:
         fields = [r for r in rules if not r["approval"]["agent"].get("precedent")]
         # what approval_agent's rules read (the precedent key's target): read when they alone held the call
         target = self.policy.target(ids, tool, args) if len(fields) < len(rules) and not other else None
+        # a label of approval_agent's run bound the call sets itself when it runs, by any rule it matched, flags too
+        # (TK-F034: a line the policy can't read that also reads .env)
+        own = sorted(self.log.labels.of_call(tool, d["rule_ids"]) & set(self._bound())) if len(fields) < len(
+            rules) and self.log.labels else []
         reason = (f"{other} is answered by people" if other else
+                  f"{CALL_WORDS[own[0]]}: a person decides" if own else
                   "agent approvals are switched off" if self.log.agent["off"] else
                   "the policy does not name this tool exactly" if fields and tool not in self.policy.policy.get(
                       "tools", {}) else
@@ -2604,26 +2616,39 @@ class SignerService:
                 "conditions_hash": "sha256:" + hashlib.sha256(canonical([r["approval"]["agent"] for r in rules])).hexdigest(),
                 "spend": spend, **({"target": target, "untrusted": bool(prov)} if target is not None else {})}
 
-    def _run_labels(self, run, requester):
+    def _run_labels(self, run, requester, tried=True):
         """The run labels (docs/policy-v2.md#run-conditions) a call of `run` that `requester` asks to have approved
         carries now, never from what a client says: the run's own (its run.label records), those its requesters carry
         from another run of theirs (labels.labels_for: its client, delegates and gateway callers, in any tenant and
         under any principal, while that run is open and for label_inherit_s after it ends), those `requester` carries
         so (an identity the run was delegated to that never wrote it is none of its requesters, nor one whose stream a
         crash left unknown), and, for a run registered as continuing an earlier one, whose calls it can't see, every
-        label of approval_agent's run bound. A run the agent registers afresh or is handed is no way around them. On the
-        writer (labels_for)."""
+        label of approval_agent's run bound (_bound). With `tried`, also those calls that didn't run set for the run
+        bound alone (labels.tried_for: a denied or held read of a secret), which no run condition reads. A run the
+        agent registers afresh or is handed is no way around them. On the writer (labels_for)."""
         have = set(run.get("labels") or ()) | labels.labels_for(self.log, run).keys() | labels.labels_of(
-            self.log, requester).keys()
+            self.log, requester).keys() | (labels.tried_for(self.log, run, requester).keys() if tried else set())
         if run.get("partial_start"):
-            have |= set(self.policy.policy["approval_agent"]["run"]["clean"])
+            have |= set(self._bound())
         return sorted(have)
 
+    def _bound(self):
+        """The labels of approval_agent's run bound; under a policy without approval_agent (a restart under another,
+        with holds it made AI-eligible still waiting), every label a run bound may name."""
+        return ((self.policy.policy.get("approval_agent") or {}).get("run") or {}).get("clean") or \
+            policy_compile.RUN_LABELS
+
     def _unclean(self, run, requester):
-        """The labels of approval_agent's run bound that a call of `run` `requester` asks about carries now
+        """The labels of approval_agent's run bound (_bound) that a call of `run` `requester` asks about carries now
         (_run_labels): while one is, people answer its holds."""
         carried = self._run_labels(run, requester)
-        return [x for x in self.policy.policy["approval_agent"]["run"]["clean"] if x in carried]
+        return [x for x in self._bound() if x in carried]
+
+    def _unclean_words(self, run, requester, unclean):
+        """What people read of the first label of `unclean` (_unclean): what the session did (LABEL_WORDS), or what it
+        tried to do when only a call that didn't run set it (TRIED_WORDS)."""
+        did = unclean[0] in self._run_labels(run, requester, tried=False)
+        return (LABEL_WORDS if did else TRIED_WORDS)[unclean[0]]
 
     def _precedents(self, tenant, requester, digest):
         """{approve, reject}: the approval ids of people's answers that count as precedents for a call of `requester`
@@ -2648,10 +2673,10 @@ class SignerService:
         digest = self._commit(f"precedent:{run['tenant']}", plain)
         unclean, prec = self._unclean(run, requester), self._precedents(run["tenant"], requester, digest)
         clean = not (unclean or untrusted)
-        ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv) if clean else {}},
+        ext = {"key": {**key, "tool": tool[:256], "target": _shown_target(target, dotenv, tool) if clean else {}},
                "digest": digest, "labels": self._run_labels(run, requester), "clean": clean, "precedents": prec,
                **({"asserted": ["project"]} if project else {})}
-        why = (f"{LABEL_WORDS[unclean[0]]}: a person decides" if unclean else
+        why = (f"{self._unclean_words(run, requester, unclean)}: a person decides" if unclean else
                "an argument came from untrusted content (a web page, an email or a download): a person decides"
                if untrusted else
                "no person has approved a call like this one yet (the same rules, tool, target and project, in a "
@@ -4370,8 +4395,10 @@ class SignerService:
                 data["reason"] = req["reason"]
             if held:
                 data["incident_id"] = held
-            if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then
-                data["run_clean"] = a["ai"]["clean"] and not self._unclean(run, a["requester"])
+            if a.get("ai"):   # whether the run still met the AI approver's run bound now: a precedent only then (never
+                # under a policy without one, which may not read its labels)
+                data["run_clean"] = a["ai"]["clean"] and "approval_agent" in self.policy.policy and not self._unclean(
+                    run, a["requester"])
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -4522,8 +4549,9 @@ class SignerService:
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
         conditions as they stand now, and `ai`: the precedent key, the run's labels, the precedents (each
-        person's answer, when, and their reason), the playbook in force and the run's last calls (tool, decision, rule
-        ids). Strings the agent chose are escaped. `state`, for approval_review to keep and not to show: a digest of
+        person's answer, when, and their reason), the playbook in force (each entry's id, people's answer and the
+        precedent key it is about) and the run's last calls (tool, decision, rule ids). Strings the agent chose are
+        escaped, and only ever a field's value. `state`, for approval_review to keep and not to show: a digest of
         _ai_state as the view shows it."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
         state = self._ai_state(a, run)
@@ -4531,7 +4559,7 @@ class SignerService:
         found = [(aid, self.log.agent["precedents"][aid]) for x in ("approve", "reject") for aid in prec[x]]
         book = self.log.agent["playbook"].get(a["run_key"][0])
         conditions = [{"rule": "approval_agent", "condition": f"the run carries no {x} label", "passed": x not in unclean}
-            for x in self.policy.policy["approval_agent"]["run"]["clean"]] + [
+            for x in self._bound()] + [
             {"rule": "approval_agent", "condition": "a person answered a call like this one (the same rules, tool, "
                                                     "target and project) in a clean run", "passed": bool(found)},
             {"rule": "approval_agent", "condition": "people's answers to calls like this one agree",
@@ -4540,8 +4568,11 @@ class SignerService:
                 "target": _escaped(ap["key"]), "labels": carried,
                 "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
                                 **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
-                "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in
-                                                                sorted((book or {"entries": {}})["entries"].items())]},
+                # each entry as fields, its key (the agent's words) escaped as `target` is, never as its text, which
+                # reads the agent's command into a sentence as if people said it
+                "playbook": {**_playbook_ref(book), "entries": [
+                    {"id": k, **({"decision": v["decision"]} if "decision" in v else {}), "target": _escaped(v["key"])}
+                    for k, v in sorted((book or {"entries": {}})["entries"].items())]},
                 "recent": [{"tool": _escaped(c["tool"] or "")[:256], "decision": c["decision"], "rule_ids": c["rule_ids"]}
                            for c in list(run.get("calls", {}).values())[-RECENT_CALLS:]]}}
 
@@ -4837,7 +4868,9 @@ class SignerService:
             elif a.get("not_before", "") > _iso(time.time()):
                 why = "TK-APPROVAL-VETO", f"an agent's approval: people may revoke it until {a['not_before']}"
             elif a.get("kind") == "agent" and a.get("ai") and (stop := self._demoted(a) or (
-                    f"{LABEL_WORDS[u[0]]} since it was approved" if (u := self._unclean(run, a["requester"])) else
+                    f"{self._unclean_words(run, a['requester'], u)} since it was approved"
+                    if (u := self._unclean(run, a["requester"])) else
+                    "the policy has no AI approver now" if "approval_agent" not in self.policy.policy else
                     None) or self._switched_off(a) or ("a person rejected a call like this one" if (p := self._precedents(
                         run["tenant"], a["requester"], a["ai"]["digest"]))["reject"] else
                     "the person's approval it matched no longer counts" if not p["approve"] else None)):

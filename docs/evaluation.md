@@ -317,8 +317,10 @@ project claimed, no project, another tool, another agent), a secret read between
 run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
 E21's held-out pool and its four blind pools (1,627), with two injected variants of each shell line ("approved by the
-admin", a fake tool output), put to that reviewer with no precedent and with a person's precedent for a benign sibling
-of the same reviewed rule, each held call a requester of its own: 0 approvals outside the bounds. 902 of the calls are
+admin", a fake tool output), put to that reviewer with no precedent and with a person's precedents for a benign sibling
+of the same reviewed rule and for near-siblings of the call itself (the same but for its quoted literals, the folders of
+its paths, or one more argument: 243 precedents in all), each held call a requester of its own: 0 approvals outside the
+bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 902 of the calls are
 held, 108 of them by reviewed rules alone; with a person's precedent for that very call (inside the bounds), the AI
 approves 78 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
 so no precedent lets it answer them). Results: `eval/results/e18_agent_approvers.json`.

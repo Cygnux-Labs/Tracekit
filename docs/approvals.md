@@ -578,7 +578,8 @@ from a chosen index. Lint errors name what is never eligible: a deny rule, a `fr
 secret read (`TK-A020`, `TK-A021`, `TK-A035` to `TK-A038`, `TK-A052`, `TK-A053`), a payment rule, Tracekit's own
 guardrails, a push or merge to main or master (`TK-A033`, `TK-A056`), a passkey rule, a rule with an `approval.agent`
 of its own, and `TK-SHELL-PARSE` where `on_parse_error` denies. A call also held by any other rule (flags aside) is a
-person's. On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
+person's, and so is one that sets a label of the run bound itself when it runs, by any rule it matched, flags too (a
+line the policy can't read that also reads `.env`: `TK-F034`'s flag). On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
 `executor: t2` (a warning on a server).
 
 **The run.** While the run carries a label `run.clean` names, people answer every hold. These are the run labels of
@@ -588,7 +589,11 @@ since what they did is unknown; the policy records them whenever its run bound n
 requesters (its client, each identity it was delegated to, a gateway's caller) and to the identity that asks for the
 approval (counted even when it never wrote the run) across all of their runs, in any tenant and under any principal, while the run that took one is open and for `label_inherit_s` after it ends (an hour
 by default, at most a day), so a run the agent registers afresh or is handed is no way around them. A run that continues an earlier run of its session, whose calls it can't see, carries every label of the
-bound. The bound is as wide as the rules that set a label: a script that opens a secret file itself labels nothing
+bound. For this bound alone, a call the policy denied or held that a rule labelled `secrets_access` matched sets
+`secrets_access` too, carried the same way (the session tried to read a secret; whether it may is a person's to say),
+and the AI's reasons say "the session tried to read a secret"; no run condition counts it, as nothing ran. No
+`clear-label` ends this one: it lasts while the run that tried is open and for `label_inherit_s` after. The bound is as
+wide as the rules that set a label: a script that opens a secret file itself labels nothing
 ([limits](limits.md#approvals)).
 
 **Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target,
@@ -596,8 +601,11 @@ the same project and the same requesting identity. The target: for `TK-A025`, ea
 selected (`pip --index-url`, `pip --extra-index-url`, `pip --find-links`, a config key or a variable are each their
 own), the default index too when the line names it (pypi.org as an extra index adds where a package may come from),
 any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
-`TK-SHELL-PARSE`, the same command, exactly. The person's answer counts when the run was clean both when the call was
-asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
+`TK-SHELL-PARSE`, the same call, exactly: every argument as sent, so SQL with other literals or identifiers, another
+database, host or working folder, a run in the background, a sandbox escalation or another program of the same name is
+another call (Claude Code's Bash `description` too). The person's answer counts when the run was clean both when the
+call was asked and when they answered (`run_clean` in their record), in the last 30 days; under a policy without
+`approval_agent` (a restart under another) it is no precedent, and an AI approval not yet used doesn't run. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
 answer it. Only people's own answers count: never an agent's, a self-approval or a break-glass answer. A precedent
 stops counting when a person revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in
@@ -626,7 +634,9 @@ reviewer reads the playbook; it never widens a bound. A person's later answer to
 precedent key, the other way, flags the entry for review.
 
 **What the reviewer sees.** `approval_review` adds `ai`: the precedent key, the run's labels, each precedent (the
-answer, when, the person's reason), the playbook in force, and the run's last 10 calls (tool, decision, rules). The
+answer, when, the person's reason), the playbook in force (each entry as its id, people's answer and the precedent
+key it is about: what the agent wrote is only ever a field's value, never read into the entry's text), and the run's
+last 10 calls (tool, decision, rules). The
 reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
 `approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
 reviewer for that approval, and only while what the view showed of it (its precedents, the run's labels, the
@@ -635,7 +645,8 @@ label that came and went is a new state, and another identity's label changes no
 
 **The record.** The `approval.request` carries `ai`: the key as shown, its digest (a commitment under the tenant's
 own salt), the run's labels, whether the run was clean, and the precedents that counted. The key shows a `TK-A025`
-source's scheme, host and port only (a path can hold a token), and other commands redacted as the approver's copy is;
+source's scheme, host and port only (a path can hold a token), and the other rules' calls (their arguments as JSON)
+redacted as the approver's copy is;
 in a run that isn't clean it shows no target at all. A person's answer carries `run_clean`. Each AI answer
 (`approval`, `approval.suggested`, `approval.escalated`) carries `relied_on`: the precedents, the playbook's version
 and digest, the policy hash, the run's labels, a commitment to the view it answered (`view`), whether it decided

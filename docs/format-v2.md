@@ -623,11 +623,14 @@ Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
 1.8.0 is the [AI approver](approvals.md#the-ai-approver)'s, and run labels' (above). An `approval.request` held only
 by the policy's `approval_agent` rules carries `ai`: its precedent key as shown (the rules, the tool, what each rule
-read of the call, redacted and cut, with no target when the run isn't clean, and the project), the key's digest over
+read of the call: a `TK-A025` source, the arguments as JSON for `TK-A062` and `TK-SHELL-PARSE`; redacted and cut, with
+no target when the run isn't clean; and the project), the key's digest over
 what was read in full as a commitment under the tenant's own salt (equal keys match; what redaction or the cut left
 out can't be confirmed by a guess), the run's labels, whether the run met the run bound (`clean`), the precedents
 (approval ids of people's answers) that counted, and `asserted: [project]` when the agent's client named the project.
-A person's `approval` of one carries `run_clean`: whether the run still met the run bound when they answered. Each AI
+Its run's labels and `clean` count, for the run bound alone, a read of a secret the policy denied or held (no
+`run.label` record says so: it is the decision's). A person's `approval` of one carries `run_clean`: whether the run
+still met the run bound when they answered. Each AI
 answer to one carries `relied_on`: the precedents and the playbook's version and digest as the signer read them when
 it answered, the policy hash, the run's labels, `view` (a commitment to the `view_digest` of the review it answered),
 `mode` (enforce: it decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the

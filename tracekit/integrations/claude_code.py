@@ -467,8 +467,8 @@ def _flush_decided(client, path, st, sid):
 def _project(cwd):
     """{"project": the folder the session works in}, for an approval request: the nearest folder at or above `cwd` (the
     hook payload's, absolute) that holds a .git, else `cwd` itself; {} without one. The signer keys the AI approver's
-    precedents by it (narrowing them only: it is the agent's own word) and its reviewer reads the project's committed
-    rules there (docs/approvals.md#the-ai-approver). Only names are looked at: nothing in the folder is read or run."""
+    precedents by it (narrowing them only: it is the agent's own word); the reviewer reads nothing of the project
+    (docs/approvals.md#the-ai-approver). Only names are looked at: nothing in the folder is read or run."""
     if not (isinstance(cwd, str) and os.path.isabs(cwd) and len(cwd) <= 1024):
         return {}
     d = cwd
