@@ -292,10 +292,18 @@ class TestFeedback(unittest.TestCase):
 
     def test_store_options_are_exclusive_and_only_apply_to_weekly_reports(self):
         for argv in (("--dev", "--data-dir", "data"), ("--config", "signer.yaml", "--data-dir", "data"),
-                     ("--dev", "--config", "signer.yaml"), ("--harmless", "apr-0123", "--dev")):
-            with self.subTest(argv=argv), self.assertRaises(SystemExit) as error:
-                _run(*argv)
+                     ("--dev", "--config", "signer.yaml")):
+            with self.subTest(argv=argv), contextlib.redirect_stderr(io.StringIO()) as err, \
+                    self.assertRaises(SystemExit) as error:
+                cli.main(["feedback", *argv])
             self.assertEqual(error.exception.code, 2)
+            self.assertIn("not allowed with argument", err.getvalue())
+
+    def test_store_options_do_not_apply_to_harmless(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as error:
+            cli.main(["feedback", "--harmless", "apr-0123", "--dev"])
+        self.assertEqual(error.exception.code, 2)
+        self.assertIn("are for weekly field reports", err.getvalue())
 
     def test_missing_explicit_store_does_not_generate_a_report(self):
         with tempfile.TemporaryDirectory() as root:
