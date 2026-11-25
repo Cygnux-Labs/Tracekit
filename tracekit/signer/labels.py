@@ -23,7 +23,7 @@ requesters are in its records (run.registered's caller, run.writer), so a restar
 The AI approver's run bound reads one more thing, for itself alone: a call the policy denied or held that a rule
 labelled secrets_access matched (the session tried to read a secret) gives its requesters that label for the bound and
 for whether a person's answer is a precedent, as a run label is carried (tried_state, tried_for), with no record of
-its own: it is a function of the decision's record. Run conditions read only what ran.
+its own: it is a function of the decision's record, read under the policy it names. Run conditions read only what ran.
 """
 import math
 import os
@@ -46,9 +46,10 @@ LABEL_INHERIT_S = 3600   # label_inherit_s's default: respond's cooldown_s defau
 
 
 class Sources:
-    def __init__(self, rules):
-        """`rules`: an Engine, or a detect.Rules (a verifier's, which compiles no pattern)."""
-        pol, self.rules = rules.policy, rules
+    def __init__(self, rules, kept=None):
+        """`rules`: an Engine, or a detect.Rules (a verifier's, which compiles no pattern). `kept(policy_hash)`: the
+        policy (an Engine) the signer kept of that hash, or None (tried reads a decision under the policy it names)."""
+        pol, self.rules, self.kept, self._at = rules.policy, rules, kept, {}
         # each run condition rule's labels, by id; the labels some rule's condition or the AI approver's run bound
         # names; the rules that set one
         rules = [r for sec in SECTIONS for r in pol.get(sec, [])]
@@ -75,11 +76,21 @@ class Sources:
         self.window = pol.get("label_inherit_s", LABEL_INHERIT_S)
 
     @classmethod
-    def of(cls, rules):
+    def of(cls, rules, kept=None):
         """Sources when the policy reads a label (a run condition, the AI approver's run bound), else None (its runs
         carry no label)."""
-        src = cls(rules)
+        src = cls(rules, kept)
         return src if src.tracked else None
+
+    def under(self, policy_hash):
+        """The Sources of the policy `policy_hash` (a decision's): this one, else the one the signer kept, else this
+        one."""
+        if policy_hash == self.rules.policy_hash or not self.kept or not isinstance(policy_hash, str):
+            return self
+        if policy_hash not in self._at:
+            rules = self.kept(policy_hash)
+            self._at[policy_hash] = self if rules is None else Sources(rules)
+        return self._at[policy_hash]
 
     def of_call(self, tool, rule_ids):
         """The labels a call of `tool` that matched `rule_ids` sets when it runs."""
@@ -111,13 +122,16 @@ class Sources:
     def tried(self, e):
         """The labels record `e` sets for the AI approver's run bound alone: secrets_access, where the bound names it,
         when `e` is a decision that denies or holds a call (not a harness call) a rule labelled secrets_access
-        matched. The session tried to read a secret, and whether it gets to is a person's to say: the AI answers
+        matched, each read under the policy the decision names (under): a restart under another policy replays it as
+        it was written. The session tried to read a secret, and whether it gets to is a person's to say: the AI answers
         none of its holds meanwhile. Nothing that didn't run sets a run label (sets)."""
         d = e["data"]
-        if e["type"] != "policy.decision" or d.get("decision") not in ("deny", "ask") or SECRETS not in self.bound or (
-                isinstance(d.get("tool"), str) and self.rules.tool_class(d["tool"]) == "harness"):
+        if e["type"] != "policy.decision" or d.get("decision") not in ("deny", "ask"):
             return set()
-        return {SECRETS} if any(self.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
+        src = self.under(d.get("policy_hash"))
+        if SECRETS not in src.bound or isinstance(d.get("tool"), str) and src.rules.tool_class(d["tool"]) == "harness":
+            return set()
+        return {SECRETS} if any(src.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
 
 
 def _compiled(pattern):

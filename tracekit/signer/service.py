@@ -1266,6 +1266,7 @@ class SignerService:
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         self._kept = {}   # policy_hash -> the policy kept in <data_dir>/policies, None if not (_kept_policy)
+        self.data_dir = data_dir   # (_kept_policy reads it as the records are replayed, labels.Sources.under)
         authorize = dict(authorize or {})
         grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
         if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
@@ -1329,7 +1330,7 @@ class SignerService:
                 raise ValueError(why)
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
-                                 detect.Detector.of(policy), labels.Sources.of(policy))
+                                 detect.Detector.of(policy), labels.Sources.of(policy, self._kept_policy))
         except BaseException:
             storage.close()
             raise
@@ -1372,7 +1373,7 @@ class SignerService:
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
-        self.approvals, self.data_dir, self.storage_config, self.oidc = approvals, data_dir, storage_config, oidc
+        self.approvals, self.storage_config, self.oidc = approvals, storage_config, oidc
         self.id_prefix = f"{route}." if route else ""
         self._harnesses, self._helper = harnesses, hb.get("helper")
         self._harness_required = {k: True for k in hb.get("required", ())}
