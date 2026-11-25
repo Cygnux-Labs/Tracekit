@@ -513,8 +513,15 @@ class Grammar(unittest.TestCase):
                 ("keep them", lambda n: "Leave " + "a.py " * (2 * n) + "alone. " + "keep them, " * n, 750),
                 ("keep them, each file once", lambda n: f"Leave {files(n)} alone. " + "keep them, " * n, 750)):
             with self.subTest(label):   # linear: 4n takes 4 times as long as n, quadratic 16; in CPU time, which
-                best = [min(timeit.repeat(lambda: read(t), timer=time.process_time, number=3, repeat=3))   # load
-                        for t in (text(n), text(4 * n))]   # on the machine doesn't change; the best of three
+                # load on the machine doesn't change. Grow the timed loop until n is past Windows' ~15.6 ms
+                # process_time tick so one tick can't make 4n look worse than 8×n.
+                number = 3
+                while True:
+                    best = [min(timeit.repeat(lambda t=t: read(t), timer=time.process_time, number=number, repeat=3))
+                            for t in (text(n), text(4 * n))]
+                    if best[0] >= 0.05 or number >= 48:
+                        break
+                    number *= 2
                 self.assertLess(best[1], 8 * best[0], best)
         for text in ("Don't touch " + files(1400, " or "), "Don't change anything except " + files(1400),
                      "Don't change anything, except " + files(1400, ", except ")):
