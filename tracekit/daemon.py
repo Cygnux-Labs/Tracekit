@@ -39,6 +39,7 @@ from . import schema as schema_mod
 from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts, scrub
 from .ledger import Keys, Ledger
 from .policy import policy_hash
+from .privacy import SUMMARY_CHARS
 from .witness import from_spec, make_checkpoint
 
 DEFAULT_HOME = "/var/lib/tracekit"
@@ -502,7 +503,7 @@ class Signer:
             aid = new_id()
         hpid, htty = harness_of(peer[0]) if peer and peer[0] else (None, 0)
         self.approvals[aid] = {"id": aid, "run_id": run_id, "tool_use_id": tid, "agent_id": agent_id,
-                               "summary": str(req.get("summary") or "")[:500], "rule_ids": rule_ids,
+                               "summary": str(req.get("summary") or "")[:SUMMARY_CHARS], "rule_ids": rule_ids,
                                "agent_uid": agent_uid, "hook_pid": peer[0] if peer else None,
                                "harness_pid": hpid, "harness_tty": htty, "created": time.time(), "deadline": time.time() + timeout,
                                "decision": None, "approver": None, "channel": None}
@@ -513,7 +514,7 @@ class Signer:
                                     "approver_uid": approver_uid, "same_user": same_user,
                                     "wait_ms": int((time.time() - a["created"]) * 1000)}, a["run_id"])
         a["decision"], a["approver"], a["channel"] = decision, approver, channel
-        a["decided_at"] = time.time()
+        a["decided_at"], a["summary"] = time.time(), ""   # (shown only while pending: a decided one keeps no copy)
         self.cond.notify_all()
 
     def _identity_reason(self, a, uid):

@@ -6,12 +6,48 @@ shell.py in the engine. Fields that need signer state (payment.new_payee) are no
 import ipaddress
 import posixpath
 import re
+import shlex
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
 from tracekit.format.canon import canonical, event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
+# a shell tool's own working directory, in any case: Gemini CLI's and Qwen Code's dir_path (directory in older
+# releases), Cursor's working_directory, Codex's and OpenCode's workdir, agy's Cwd, Crush's working_dir
+WORKDIR_KEYS = ("dir_path", "directory", "working_directory", "workdir", "cwd", "working_dir")
+
+
+UNREAD = object()   # workdir's and in_workdir's: a working directory no one reading places
+
+
+def workdir(args):
+    """The working directory a shell call's arguments name (WORKDIR_KEYS, in any case): None for none (or an empty
+    one); UNREAD for more than one (each key, any case, counts) or one that isn't text."""
+    named = [v for k, v in args.items() if isinstance(k, str) and k.casefold() in WORKDIR_KEYS and v is not None]
+    if not named or named == [""]:
+        return None
+    return named[0] if len(named) == 1 and isinstance(named[0], str) else UNREAD
+
+
+def in_workdir(args):
+    """A shell call's arguments as run in the working directory they name (workdir), each reading of it: the command
+    as `cd <dir> && <command>` (an argv as the line it is), so a relative path it names is read in that folder; a
+    `commands` list both as one shell runs it there (`cd <dir> && ` before its lines joined, where a `cd` in one moves
+    the next) and as each entry run in a shell of its own (`cd <dir> && <entry>` each). The command field is the one
+    the engine reads: the first that isn't None. None for a call that names no working directory, or has no command;
+    UNREAD for one whose working directory workdir can't place."""
+    if (d := workdir(args)) is None or d is UNREAD:
+        return d
+    key = next((k for k in SHELL_KEYS if args.get(k) is not None), None)
+    command, cd = args.get(key), f"cd {shlex.quote(d)} && "
+    rest = {k: v for k, v in args.items() if k != key}
+    if isinstance(command, list) and command and all(isinstance(w, str) for w in command):
+        return [{**rest, "command": cd + "\n".join(command)}, {**rest, "commands": [cd + w for w in command]}] \
+            if key == "commands" else [{**rest, "command": cd + shlex.join(command)}]
+    return [{**rest, "command": cd + command}] if isinstance(command, str) else None
+
+
 PATH_KEYS = ("file_path", "notebook_path", "path")
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 # Browser Use actions that send data to the page they run on

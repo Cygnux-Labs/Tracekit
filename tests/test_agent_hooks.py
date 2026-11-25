@@ -4358,6 +4358,86 @@ class Installer(unittest.TestCase):
                     for w in want:
                         self.assertIn(w, shown)
 
+    def test_a_v1_approver_sees_what_a_held_command_runs_after_a_value(self):
+        """The v1 hook asks its approver about the call as its record keeps it (privacy.tool_input), which hid a
+        secret-looking name's value to its next blank, across `;`, and the lines after a heredoc's first as .env
+        content: `TOKEN=abcd;rm ...` was asked about as `Bash command=TOKEN=[REDACTED:assignment]`; a connection string
+        to its next blank, and a value in a heredoc a shell runs to its line's end. Each is hidden to where the shell
+        ends it, a .env value after a heredoc's first line too."""
+        from tracekit import hook, privacy
+        for command, runs in (("TOKEN=abcd;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=[REDACTED:dotenv]; rm -rf ~/w"),
+                              # a fake connection string, a redaction fixture: agent-flow:allow-secret
+                              ("psql postgres://u:abcd@h/db;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("bash -s <<EOF\nTOKEN=abcd;rm -rf ~/w\nEOF", ";rm -rf ~/w\nEOF")):
+            with self.subTest(command=command):
+                seen = []
+                call = {"run_id": "r", "agent_id": "a",   # as the hook records it, reading its command for a hold
+                        "data": {"name": "Bash", "tool_use_id": "t",
+                                 "input": privacy.tool_input("Bash", {"command": command}, unclean=[])}}
+                with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                        {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else {"decision": "timeout"})), \
+                        mock.patch.object(hook, "APPROVAL_CAP_S", 1), contextlib.redirect_stderr(io.StringIO()):
+                    hook.wait_for_approval(call, {"rule_ids": ["R"], "reasons": ["r"]}, {"approval_timeout_s": 1})
+                summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                self.assertIn(runs, summary)
+                self.assertNotIn("abcd", summary)
+
+    def test_a_v1_hold_whose_record_would_hide_code_is_denied(self):
+        """v1's approver reads the call as its record keeps it: a hold whose record would hide more than clean values in
+        the command (a value with a ; or a blank in it, a key) is denied with TK-HIDDEN-CODE's reason, recorded so, and
+        never asked; one that hides only clean values is asked, the summary saying how much it hid when that's more
+        than a few values. So is a hold whose summary its approver would get cut (past privacy.SUMMARY_CHARS): what
+        follows the cut was never shown."""
+        from tracekit import hook, policy as policy_mod, privacy
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        pol = {**policy_mod.load()[0], "deny": [], "flag": [], "ask": [{"id": "T-HOLD", "tool": "Bash", "pattern": "."}]}
+        many = "\n".join(f"K{i}={'v' * 100}" for i in range(3))   # 300 characters of plain values
+        fits = f"echo {'x' * (privacy.SUMMARY_CHARS - len('Bash command=echo ; rm -rf ~/w'))}; rm -rf ~/w"
+        long = "echo x" + fits[len("echo "):]   # a summary one character longer than its approver is sent
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}):
+            for i, (command, decision, reason) in enumerate((
+                    ("cat > .env <<EOF\nDB_PASS=p@ss;word\nEOF\nmake", "deny", privacy.HIDDEN_CODE_REASON),
+                    ("cat > .env <<EOF\nDB_PASS=hunter2\nEOF\nmake", "ask", None),
+                    (f"cat > db.conf <<EOF\n{many}\nEOF\nmake # .env", "ask", None),
+                    ("TOKEN=abcd;make", "ask", None),
+                    ("echo 'TOKEN=abcd;rm -rf ~/w' | sh", "deny", privacy.HIDDEN_CODE_REASON),
+                    (long, "deny", privacy.LONG_REASON), (fits, "ask", None))):
+                with self.subTest(command=command):
+                    evs, d = hook.build_events({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                                "tool_name": "Bash", "tool_use_id": f"t{i}",
+                                                "tool_input": {"command": command}}, pol)
+                    [rec] = [e for e in evs if e["type"] == "policy.decision"]
+                    self.assertEqual((d["decision"], rec["data"]["decision"]), (decision, decision))
+                    self.assertEqual(d["rule_ids"][-1], "TK-HIDDEN-CODE" if decision == "deny" else "T-HOLD")
+                    if reason:
+                        self.assertTrue(d["reasons"][-1].startswith(reason + ". Instead: "), d["reasons"])
+                    if decision == "ask":
+                        seen = []
+                        call = next(e for e in evs if e["type"] == "tool.call")
+                        with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                                {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else
+                                {"decision": "timeout"})), mock.patch.object(hook, "APPROVAL_CAP_S", 1), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            hook.wait_for_approval(call, d, {"approval_timeout_s": 1})
+                        summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                        self.assertEqual(summary.startswith("Bash # [300 characters hidden by redaction]\n"), i == 2)
+                        self.assertEqual(summary == f"Bash command={fits}", command == fits)   # whole
+        for command, said in (("TOKEN='ab;cd' make", "this command puts code behind text that looks like a secret, so a "
+                               "person can't see what they'd approve; rewrite it without inline secrets (read them from "
+                               "the environment or a file the command names)"),
+                              (long, f"this call is too long for its approval request ({privacy.SUMMARY_CHARS} "
+                               "characters), so a person can't see what they'd approve; split it into shorter calls")):
+            err = io.StringIO()
+            with self.subTest(command=command), mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}), \
+                    mock.patch.object(hook.policy_mod, "load", lambda: (pol, "")), \
+                    mock.patch.object(hook.client, "send", lambda *a, **k: {"ok": True}), contextlib.redirect_stderr(err):
+                code = hook.main(raw=json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                                 "tool_name": "Bash", "tool_use_id": "t9",
+                                                 "tool_input": {"command": command}}))
+                self.assertEqual((code, err.getvalue().strip()), (2, f"Blocked by Tracekit: {said} (TK-HIDDEN-CODE)"))
+
     def test_cline_caps_the_approval_wait_as_the_hook_reads_it(self):
         # the extension runs a call whose hook takes over 30 s: every value float() reads above the cap is capped
         for value, want in (("300.5", "20"), ("1e3", "20"), ("1_000", "20"), ("inf", "20"), ("5", "5"), ("x", "x"),

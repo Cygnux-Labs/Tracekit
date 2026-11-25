@@ -18,6 +18,7 @@ import tokenize
 import unicodedata
 from urllib.parse import unquote, urlsplit
 
+from .. import privacy
 from . import classes, shell, source as source_reader
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
@@ -26,6 +27,35 @@ MAX_SUBJECT = source_reader.MAX_SUBJECT   # bytes of UTF-8; a longer subject is 
 # where a quoted value with a space looked like two words (`git -C 'my dir' push --force`); this one is no blank (\s)
 # on either engine, no word character, matched by [^ ], and one byte, so that subject is never longer than the other
 WORD_SPACE = "\x7f"
+
+
+class _Joined(str):
+    """A subject that joins argv words with spaces (after a tag, ACT:); `marked`: the same with each word's own blanks
+    as WORD_SPACE (None when no word has one), which a rule's exemption (`unless`) must match too, so a word it names
+    (`--help`) counts only as a word of its own, not as the end of a quoted value (`gh auth token 'x --help'`)."""
+    marked = None
+
+
+def _joined(words, tag=""):
+    s = tag + " ".join(words)
+    if s.count(" ") - tag.count(" ") == len(words) - 1 and not _OTHER_BLANK.search(s):   # no word has a blank
+        return s
+    s = _Joined(s)
+    s.marked = tag + " ".join(_BLANK.sub(WORD_SPACE, w) for w in words)
+    return s
+
+
+def _form(s, f):
+    """f(s), a form of subject `s` (tagged, casefolded, with `\\` as `/`), with its marked form's when it has one."""
+    if (marked := getattr(s, "marked", None)) is None:
+        return f(s)
+    out = _Joined(f(s))
+    out.marked = f(marked)
+    return out
+
+
+_BLANK = re.compile(r"\s")
+_OTHER_BLANK = re.compile(r"[^\S ]")
 # a word that is only a variable the parser doesn't know there ($x, "${x}", $_), in a third argv subject: TK-D012 reads
 # it as an action it can't read; a loop's or a literal's variable stays as written
 UNKNOWN_WORD = "$\x7f"
@@ -447,7 +477,9 @@ class Engine:
                             self._match(pat, subject, False, deadline) if parts is None else any(
                                 self._match(rx, subject, False, deadline) for rx, strings in parts
                                 if any(map(low.__contains__, strings)))) and not (
-                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                            unless is not None and self._match(unless, subject, False, deadline) and (
+                                (marked := getattr(subject, "marked", None)) is None or
+                                self._match(unless, marked, False, deadline))) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
                         return rule["id"]
@@ -680,7 +712,7 @@ class Engine:
             urls = [t for t in _url_targets([u for w in found if ":" in w for u in _URL.findall(w)]) if t]
             bare = [t for t in _url_targets(["http://" + w for w in found if _BARE_ADDRESS.match(w)])
                     if t and _BARE_TARGET.fullmatch(t)]
-            targets = [" ".join(w) for w in words] + parsed[2] + stdin
+            targets = [_joined(w) for w in words] + parsed[2] + stdin
             return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
@@ -785,7 +817,7 @@ def _slashes(texts):
     """Texts of a shell call, each with a `\\` in it also read as `/`: a Windows path (Git Bash keeps a quoted or
     escaped `\\`, and C:\\x is C:/x, as classes.fs_path reads one). A second reading: it adds matches. The parser's
     texts hold a `\\` only where the shell keeps one; a line it can't read is read as written (_plain), so too."""
-    more = [t.replace("\\", "/") for t in texts if "\\" in t]
+    more = [_form(t, lambda x: x.replace("\\", "/")) for t in texts if "\\" in t]
     have = set(texts) if more else ()
     return texts + [n for n in dict.fromkeys(more) if n not in have]
 
@@ -799,7 +831,9 @@ def _path_forms(targets):
                                      for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))
                          if n not in have]
     have = set(targets)
-    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+    folds = (_form(t, str.casefold) for t in targets) if any(type(t) is _Joined for t in targets) else \
+        map(str.casefold, targets)
+    return targets + [f for f in dict.fromkeys(folds) if f not in have]
 
 
 def commands_each(args):
@@ -1735,8 +1769,8 @@ def _pushes(commands):
         dry = "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv)))
         # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
         # publish after any options as its program's publish: _published)
-        out += push if push is not None else [dry + " ".join(argv)] + [
-            dry + " ".join([_program(argv), *argv[1:]])] * (_program(argv) != argv[0]) + [
+        out += push if push is not None else [_joined(argv, dry)] + [
+            _joined([_program(argv), *argv[1:]], dry)] * (_program(argv) != argv[0]) + [
             dry + p for p in [_published(argv)] if p]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             given = replaced if {"xargs", "gxargs", "parallel"} & runner else None
@@ -2121,8 +2155,9 @@ def _kubectl_takes(word):
     return False
 
 
-# what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
-_COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
+# what a tool no pack maps is given to run (_runs): TK-S010's command arguments (the ones an approver's copy reads as
+# shell lines too) and the SQL ones, in any case
+_COMMAND_KEYS = privacy.COMMAND_KEYS
 _SQL_KEYS = {"sql", "query", "statement", "sql_query", "stmt"}
 _BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,
@@ -2240,7 +2275,7 @@ def _write_effects(parsed):
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
     # a relative target a command after a cd writes is also read in the folder the cd entered, resolved (`cd ~/.hermes
     # && sed -i … config.yaml`; a pattern there as each protected name it may make, which the parse read)
-    # (and what env -C runs, in its folder)
+    # (and what env -C runs, in its folder, and what uv runs in the one its --directory or --project names)
     def joined(folder, effects):
         out = [(k, _normal(folder.rstrip("/") + "/" + path)) for k, _, path in (t.partition(":") for t in effects)
                if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "") and not shell._GLOB.search(path)]
@@ -2258,10 +2293,12 @@ def _write_effects(parsed):
                 outs.append(("APPEND_TARGET:" if appends[o] > 0 else "WRITE_TARGET:") + o)
                 appends[o] -= 1
             tags += joined(base, outs + _command_effects([c]))
-        folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
-        if folder and at:
-            folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
-            tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
+        moves = [_env_chdir(c["argv"])] if c["argv"][0] == "env" else _uv_chdir(c["argv"]) if c["argv"][0] in (
+            "uv", "uvx") else ()
+        for folder, at in moves:
+            if folder and at:
+                folder = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
+                tags += joined(folder, _command_effects([{"argv": c["argv"][at:]}]))
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude)
@@ -2287,6 +2324,23 @@ def _env_chdir(argv):
         else:
             break
     return folder, (i + 1 if i < len(args) else None)
+
+
+def _uv_chdir(argv):
+    """(a folder uv's or uvx's --directory or --project names, where in argv a command it runs starts) for each: as
+    env -C's (_env_chdir), the command `uv run`, `uv tool run` or uvx runs, each place the parser reads it may start."""
+    args = argv[1:]
+    folders = [v for a, v in zip(args, args[1:]) if a in ("--directory", "--project")] + [
+        a.partition("=")[2] for a in args if a.startswith(("--directory=", "--project="))]
+    if not folders:
+        return []
+    if argv[0] == "uvx":
+        inners = list(shell._unwrap("uvx", args))
+    else:
+        inners = [x for k in shell.runner_at("uv", args) for x in shell._unwrap("uv", args[k:])] + [
+            x for c in shell._uv_operands(args, 0) if args[c] == "tool" for k in shell._uv_operands(args, c + 1)
+            if args[k] in ("run", "uvx") for x in shell._unwrap("uvx", args[k + 1:])]
+    return [(f, len(argv) - len(x)) for f in folders for x in inners if x]
 
 
 def _normal(path):
@@ -2983,8 +3037,8 @@ def _reading(argv):
     program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
     name, args = argv[0], argv[1:]
     if name == "sed":
-        script = shell._sed_scripts(args)
-        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+        scripts = {shell._sed_options(args, bsd)[0] for bsd in (False, True)}   # (as GNU sed and BSD sed read it)
+        return "read" if "-n" in args and None not in scripts and all(map(shell._sed_prints, scripts)) and all(
             _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
     if name in ("grep", "egrep", "fgrep"):
         return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
@@ -3004,13 +3058,14 @@ _TAKES_INPUT = {"xargs", "gxargs", "parallel"}
 
 
 def _help_marked(command, quoted):
-    """A command's words as one subject. A last word `--help` that more words may follow (xargs gives its input to the
-    command; a line that quotes `--help` somewhere is not read word by word) gets UNKNOWN_WORD after it, so a rule's
-    exemption for the exact line `<program> <verb> --help` (TK-A054, TK-A057) does not cover it."""
+    """A command's words as one subject (_joined: with its words' own blanks marked). A last word `--help` that more
+    words may follow (xargs gives its input to the command; a line that quotes `--help` somewhere is not read word by
+    word) gets UNKNOWN_WORD after it, so a rule's exemption for a line ending in `--help` (TK-A054, TK-A057) does not
+    cover it."""
     argv = command["argv"]
     if argv[-1:] == ["--help"] and (quoted or any(v.split()[0] in _TAKES_INPUT for v in command["via"] if v)):
         argv = argv + [UNKNOWN_WORD]
-    return " ".join(argv)
+    return _joined(argv)
 
 
 _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
@@ -3334,8 +3389,8 @@ def _kills_signer(commands, finds):
 
 def _bases(commands, work, cdpath=()):
     """The folders a cd or pushd on the line enters (a relative one read from the one before it, and from each folder
-    of a CDPATH the line sets), and each one `env -C`, `tar -C`, `git -C` or `make -C` runs in: where a relative path
-    may land. Each once, charged to `work` (shell.charge)."""
+    of a CDPATH the line sets), and each one `env -C`, `tar -C`, `git -C`, `make -C` or uv's or uvx's `--directory` or
+    `--project` runs in: where a relative path may land. Each once, charged to `work` (shell.charge)."""
     out, base = [], None
     for c in commands:
         argv = c["argv"]
@@ -3346,6 +3401,8 @@ def _bases(commands, work, cdpath=()):
             to = next((argv[i + 1] if a in ("-C", "--chdir", "--directory") else a.partition("=")[2] or a[2:]
                        for i, a in enumerate(argv[:-1]) if a in ("-C", "--chdir", "--directory") or
                        a.startswith(("--chdir=", "--directory=")) or a.startswith("-C") and argv[0] != "env"), None)
+        elif argv[0] in ("uv", "uvx"):   # (what uv runs, in the folder its --directory or --project names: _uv_chdir)
+            to = next((folder for folder, _ in _uv_chdir(argv)), None)
         else:
             continue
         if to and to.startswith(("/", "~", "$")):
@@ -3447,9 +3504,9 @@ def _tracekit(parsed, finds, work):
             if roams:
                 deep += at(named)
             else:
-                act += [" ".join(words)] + at(named)
+                act += [_joined(words)] + at(named)
         elif kind is None:
-            act += [" ".join(words)] + at(named)[len(named):]
+            act += [_joined(words)] + at(named)[len(named):]
         else:
             {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(at(named))
         act += [] if c.get("data_stdin") else c["stdin"]
@@ -3463,7 +3520,7 @@ def _tracekit(parsed, finds, work):
     act += at([t.partition(":")[2] for t in _effects(parsed)])
 
     def tag(name, texts):
-        return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
+        return [_form(s, lambda t: name + t) for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
     act = [unicodedata.normalize("NFKC", s) for s in act]   # (Python reads a name so: `ｓigner` is `signer`)
     joined = "\n".join(act)
@@ -3989,7 +4046,7 @@ def _prepare(subjects, tag=0):
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT + tag:
             continue
-        texts.append(s if b is s else b.decode("utf-8"))
+        texts.append(s if b is s else _form(s, _text))
     lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 
