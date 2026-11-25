@@ -51,6 +51,8 @@ REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
 V2_FLAGS = "--approver, --policy, --harness, --egress, --project DIR, --managed-only"   # some of what init --v2 records
+# the environment names that move where the dev hook finds its signer and data, or the Python it runs (D-HOOK-ENV)
+_HOOK_ENV = ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER")
 DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
 # witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
@@ -1858,6 +1860,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
+    if not prod and (settings or active_plugin):
+        # Claude Code gives the hooks its settings' `env`: one that sets where the dev signer and its data are, or the
+        # Python the hook runs, sends the hook's calls elsewhere (a later layer wins; any layer that sets one is named)
+        moved = [f"{p} sets {', '.join(n for n in _HOOK_ENV if n in e)}" for p in layers
+                 if isinstance(e := _setting(p, "env"), dict) and any(n in e for n in _HOOK_ENV)]
+        add("D-HOOK-ENV", not moved, "; ".join(moved) or "no settings file sets the hook's HOME, XDG_DATA_HOME, "
+            "TRACEKIT_PYTHON or TRACEKIT_SIGNER", "remove those names from each file's env, unless you set them yourself",
+            bad=WARN)
 
     sandbox = _sandbox(sandbox_settings)
     if sandbox.get("enabled") is True:
