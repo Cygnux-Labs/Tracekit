@@ -1,6 +1,8 @@
-"""The signer RPC contract, version 26: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 27: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 26 adds register_run's `continues` (a later run of an
+Frozen: a change to any schema here is a new RPC_VERSION. Version 27 adds decide's `agent_id` (the harness's id of the
+sub-agent that made the call, which the signer records as the agent reported it and checks nothing against).
+Version 26 adds register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -46,7 +48,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 26
+RPC_VERSION = 27
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -139,6 +141,9 @@ _OS_REQ = ["kind", "ts", "pid", "binary"]
 _decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
                tool_call_id=ID, attempt=SEQ, tool=_str(256, minLength=1),
                tool_class_hint=_str(64),         # a hint only: the signer classifies the tool itself
+               # the sub-agent that made the call, as the harness reported it (Claude Code's subagent id): descriptive,
+               # never an identity; signed as the decision's and its result's agent_id, as the event format holds it
+               agent_id=_str(200, minLength=1),
                args_source={"enum": ["raw", "parsed", "coerced"]},
                args=ANY)                         # the raw model string when args_source is raw, else the value
 _RAW = {"if": {"properties": {"args_source": {"const": "raw"}}}, "then": {"properties": {"args": _str(MAX_RAW_ARGS)}}}
