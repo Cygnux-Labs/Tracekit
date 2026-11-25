@@ -521,7 +521,7 @@ def agent_loads(text):
     try:
         return json.loads(text)
     except RecursionError as e:
-        raise ValueError(str(e)) from e
+        raise ValueError("nested too deep to parse") from e
 
 
 def agent_json(path):

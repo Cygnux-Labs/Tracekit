@@ -6,4 +6,4 @@ def loads(text):
     try:
         return tomllib.loads(text)
     except RecursionError as e:
-        raise ValueError(str(e)) from e
+        raise ValueError("nested too deep to parse") from e

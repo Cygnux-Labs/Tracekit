@@ -2122,6 +2122,15 @@ class JcodeTools(unittest.TestCase):
                         self.install(path, v2=True)
                     self.assertEqual(path.read_bytes(), original)
 
+    def test_without_a_toml_parser_a_table_value_too_deep_to_parse_is_a_value_error(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory, no_tomllib():
+            path = Path(directory) / "config.toml"
+            path.write_text(f"{agent_hooks.JCODE_BEGIN}\n[hooks]\npre_tool = {'[' * 5000}{']' * 5000}\n"
+                            f"{agent_hooks.JCODE_END}\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "nested too deep to parse"):
+                agent_hooks.jcode_config(str(path))
+
     def test_install_creates_a_missing_config(self):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory:

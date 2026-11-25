@@ -2136,7 +2136,6 @@ class CodexReasoningSummary(unittest.TestCase):
         agent_hooks.codex_reasoning(self.hooks)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE + 'model = "m"')
 
-    @unittest.skipIf(sys.version_info < (3, 11), "tomllib")
     @unittest.skipIf(sys.version_info < (3, 11), "checks the file with tomllib")
     def test_a_config_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
         for text in ("a = [\n", "a = " + "[" * 5000 + "]" * 5000):
@@ -2155,6 +2154,7 @@ class CodexReasoningSummary(unittest.TestCase):
         with self.assertRaisesRegex(install.SettingsError, "settings.json is not valid JSON"):
             install._parse_settings(deep.encode(), "settings.json")
 
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib")
     def test_a_multi_line_array_stays_valid_toml(self):
         import tomllib
         text = 'notify = [\n["x"],\n["a", "b"]\n]\nmodel = "m"\n[profiles.fast]\nmodel = "f"\n'   # a line like a table

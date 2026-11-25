@@ -2880,9 +2880,10 @@ def jcode_config(path):
     try:
         from . import tomlsafe as tomllib
     except ImportError:
+        from .install import agent_loads
         ours = JCODE_TABLE.search(text)
         lines = ours.group().splitlines()[2:-1] if ours else []
-        return {"hooks": {k: json.loads(v) for k, _, v in (line.partition(" = ") for line in lines)}} if ours else {}
+        return {"hooks": {k: agent_loads(v) for k, _, v in (line.partition(" = ") for line in lines)}} if ours else {}
     return tomllib.loads(text)
 
 
