@@ -4,6 +4,7 @@
  * kept in step with the reference by tests/test_run_conditions.py.
  */
 import { Detector, glob } from "./detect.js";
+import { Budget, Pattern, PolicyError } from "./rx.js";
 
 type J = any;
 const SECTIONS = ["deny", "ask", "flag"];
@@ -29,7 +30,8 @@ export class Sources {
   tracked = new Set<string>();
   label = new Map<string, string>();
   allLabels = new Map<string, string>();
-  onLabels: [string, RegExp, string | null][] = [];
+  onLabels: [string, Pattern, string | null][] = [];
+  refused = new Map<string, string>();   // rule id -> why its labels pattern can't be compiled as the signer does
   untrusted: string[];
   tools: Record<string, string>;
   spelled = new Map<string, string[]>();
@@ -44,9 +46,13 @@ export class Sources {
     for (const r of rules) if (typeof r.label === "string") this.allLabels.set(r.id, r.label);
     for (const r of rules)
       if (r.field === "labels" && Object.hasOwn(r, "when") && !Object.hasOwn(r, "tool")) {
-        try {
-          this.onLabels.push([r.id, new RegExp(r.pattern), r.class ?? null]);
-        } catch { /* read otherwise than RE2: labels.py skips it too */ }
+        try {   // a bundle's own policy may hold any pattern: searched in linear time, as RE2 reads it (rx.ts)
+          if (typeof r.pattern !== "string") throw new PolicyError("the pattern is not a string");
+          this.onLabels.push([r.id, new Pattern(r.pattern, r.class === "a2a"), r.class ?? null]);
+        } catch (e) {
+          if (!(e instanceof PolicyError)) throw e;
+          this.refused.set(r.id, e.message);
+        }
       }
     this.untrusted = policy.untrusted ?? [];
     this.tools = policy.tools ?? {};
@@ -107,7 +113,8 @@ export function policiesAt(events: J[], srcs: Map<string, Sources>): Sources[][]
 /** The problems of one run's labels under `srcs` (policy_hash -> Sources), each record under its policy
  * (tracekit/verify/v2.py _run_labels); each inherited add of a label its policy reads goes to `inherited` as [where,
  * label, the add it cites]. */
-export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [string, string, J][]): string[] {
+export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [string, string, J][],
+  budget = new Budget()): string[] {
   const problems: string[] = [], carried = new Set<string>(), asked = new Map<J, J>(), decided = new Map<J, J>();
   const seqs = new Map<number, J>(), at = policiesAt(events, srcs);
   let owed = new Map<string, number>(), may = new Map<string, number>(), owner: string | null = null;
@@ -168,7 +175,7 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
       if (!decided.has(key(e.tool_call_id ?? null)) && tool && src.classes.toolClass(tool) !== "harness")
         for (const [rid, rx, cls] of src.onLabels)
           if (!ids.includes(rid) && [...src.when.get(rid)!].every((x) => have.has(x))
-            && (cls === null || cls === src.classes.toolClass(tool)) && rx.test(subject))
+            && (cls === null || cls === src.classes.toolClass(tool)) && rx.search(subject, budget))
             problems.push(`${where}: ${rid} applies (the call's labels ${subject}; the run carried `
               + `${[...src.when.get(rid)!].sort(byCodePoint).join(", ")}) but the decision doesn't name it`);
       if (typeof d.caller === "string") callers.add(d.caller);

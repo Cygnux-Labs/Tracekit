@@ -527,3 +527,15 @@ test("agreement with the reference verifier (tests/test_ts_verifier.py)", { skip
   assert.equal(r.status, 0, r.stderr);
   assert.doesNotMatch(r.stderr, /skipped/);
 });
+
+test("label patterns (rx.ts): RE2's reading in linear time, within a budget that ends in Spent, never a hang", async () => {
+  const { Budget, Pattern, PolicyError, Spent } = await import("../dist/verify/rx.js");
+  const slow = new Pattern("(?:a|a)*b");   // a backtracking engine takes hours over 40 a's
+  const budget = new Budget();
+  assert.equal(slow.search("a".repeat(40), budget), false);
+  assert.ok(budget.steps - budget.left < 1000);
+  assert.equal(new Pattern("(?:^| )egress(?: |$)").search("background_spawn egress", new Budget()), true);
+  assert.throws(() => new Pattern("(?:a+)+b"), PolicyError);   // a repeat of a repeat: check_pattern refuses it
+  assert.throws(() => new Pattern("a(?=b)"), PolicyError);
+  assert.throws(() => slow.search("a".repeat(41), new Budget(10)), Spent);
+});

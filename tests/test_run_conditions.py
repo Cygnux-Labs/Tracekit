@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -1075,6 +1076,148 @@ class TestVerifier(Case):
                     rep, _ = v2.verify(os.path.join(TESTS, "golden", "v2", name),
                                        os.path.join(TESTS, "golden", "v2", "trust.json"))
                     self.assertNotIn("run labels", [c["check"] for c in rep.checks])
+
+
+# a pattern on the labels field a backtracking engine (Python's re, JavaScript's RegExp) takes hours over on 40 a's
+# when nothing matches, and a call whose labels are 40 a's after a secret read: the verifiers search it to replay T-SEND
+SLOW, LONG = "(?:a|a)*b", "a" * 40
+ECHO = ("shell", {"command": "echo hi"})
+
+
+def slow_policy(pattern):
+    return {**POL, "ask": [dict(r, pattern=pattern) if r["id"] == "T-SEND" else r for r in POL["ask"]],
+            "flag": POL["flag"] + [{"id": "T-A", "class": "shell", "field": "command", "pattern": "^echo",
+                                    "label": LONG}]}
+
+
+# the Python verifier's `run labels` line of a bundle, in a process of its own
+VERIFY = ("import json, sys; from tracekit.verify import v2; rep, _ = v2.verify(sys.argv[1], sys.argv[2]); "
+          "print(json.dumps(next(c for c in rep.checks if c['check'] == 'run labels')))")
+
+
+class TestHostileLabelPatterns(Case):
+    """L4: a bundle's own policy may hold any label pattern, and both verifiers search it to replay a run condition.
+    They search it as RE2 reads it, in linear time within a budget, never with a backtracking engine: a pattern the
+    signer would refuse fails the check, and so do searches past the budget; neither hangs."""
+
+    def lines(self, path, trust):
+        """The `run labels` line of each verifier, each run in a process of its own and given two minutes (the
+        backtracking search took hours)."""
+        out = [json.loads(subprocess.run([sys.executable, "-c", VERIFY, path, trust], capture_output=True, text=True,
+                                         timeout=120, check=True, env={**os.environ, "PYTHONPATH": ROOT}).stdout)]
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            tv._build()
+            ts = json.loads(subprocess.run(["node", tv.CLI, "verify", path, "--trust", trust, "--json"],
+                                           capture_output=True, text=True, timeout=120).stdout)
+            out.append(next(c for c in ts["checks"] if c["check"] == "run labels"))
+        return out
+
+    def slow_run(self, pol):
+        s = self.signer(pol)
+        run = s.register()
+        s.decide(run, SECRET)
+        self.assertEqual(s.decide(run, ECHO)["rule_ids"], ["T-A"])   # the signer's RE2: no match, at once
+        return bundle(s, run)
+
+    @pytest.mark.unverified_bundles   # verified in processes of their own below, which a backtracking search can't hang
+    def test_a_label_pattern_that_backtracks_for_hours_verifies_at_once(self):
+        for line in self.lines(*self.slow_run(slow_policy(SLOW))):
+            self.assertEqual(line["status"], "pass", line)
+
+    @pytest.mark.unverified_bundles
+    def test_a_label_pattern_the_signer_would_refuse_fails_the_check(self):
+        """A repeat of a repeat, which check_pattern refuses: a signer of this version never compiles it, so a bundle
+        whose policy holds one fails `run labels`, in both verifiers."""
+        with mock.patch.object(pc, "check_pattern", lambda p: None):   # a signer that compiled it anyway
+            path, trust = self.slow_run(slow_policy("(?:a+)+b"))
+        for line in self.lines(path, trust):
+            self.assertEqual(line["status"], "fail", line)
+            self.assertTrue(line["problems"][0].endswith("T-SEND reads the labels with a pattern the signer would "
+                                                         "refuse (outside the RE2 subset check_pattern accepts, or "
+                                                         "too large): not replayed"), line["problems"])
+
+    @pytest.mark.unverified_bundles
+    def test_searches_past_the_budget_fail_the_check(self):
+        from tracekit.policy2 import linear
+        path, trust = self.slow_run(slow_policy(SLOW))
+        with mock.patch.object(linear, "STEPS", 100):
+            rep, code = v2.verify(path, trust)
+        line = next(c for c in rep.checks if c["check"] == "run labels")
+        self.assertEqual((code, line["status"]), (1, "fail"))
+        self.assertEqual(line["problems"], ["the label patterns took more than 100 steps to replay: the rest of the "
+                                            "bundle's runs weren't replayed"])
+
+    def test_the_search_reads_a_pattern_as_re2_does(self):
+        """linear.Pattern against RE2 itself, the signer's engine: every label pattern of the shipped packs and the
+        RE2 subset's corners, over labels subjects and the texts where Python's re reads otherwise."""
+        re2 = pytest.importorskip("re2")
+        from tracekit.policy2 import linear
+        packs = [r["pattern"] for f in os.listdir(os.path.join(ROOT, "tracekit", "policy2", "packs"))
+                 for sec in pc.SECTIONS for r in pc.build(os.path.join(ROOT, "tracekit", "policy2", "packs", f))[0]
+                 .get(sec, []) if r.get("field") == "labels"]
+        self.assertTrue(packs)
+        patterns = packs + ["^egress$", "egress$", "^$", "a.c", "\\bx\\b", "\\Bx", "[^a-c]x", "[\\s]", "\\s", "\\w+$",
+                            "\\d{2,3}", "(?:ab|a)c", "x{0}", "(?:)*y", "\\Aa", "a|", "[]a]", "[a-]", "\\x41", "ſ", "\\v",
+                            "(?P<n>a)b", "a{2,}", "a??b", SLOW]
+        texts = ["", "egress", "background_spawn egress", "egress\n", "a\nc", "abc", "x", "ax", "xa", "a x", "\x0b",
+                 "\t", "12", "1234", "abc ac", "y", "A", "K", "s", "ac", "aab", LONG, LONG + "b", "é", " egress "]
+        for p in patterns:
+            rx, ours = re2.compile(p), linear.Pattern(p)
+            for t in texts:
+                with self.subTest(pattern=p, text=t):
+                    self.assertEqual(ours.search(t, linear.Budget()), rx.search(t) is not None)
+        for p, t in (("(?:a|a)*b", "AAB"), ("[a-c]", "B"), ("s", "ſ"), ("k", "K"), ("x", "X")):
+            with self.subTest(anycase=p):
+                self.assertEqual(linear.Pattern(p, anycase=True).search(t, linear.Budget()),
+                                 re2.compile("(?i)" + p).search(t) is not None)
+
+    def test_both_verifiers_refuse_and_read_a_pattern_alike(self):
+        """The TypeScript port (rx.ts) against linear.Pattern: what each refuses, what each finds, and the steps each
+        search spends (the budget runs out at the same search in both)."""
+        import test_ts_verifier as tv
+        if tv.SKIP:
+            self.skipTest(tv.SKIP)
+        tv._build()
+        from tracekit.policy2 import linear
+        refused = ["^(a+)+$", "a{2}{3}", "[z-a]", "(?P<1>x)", "\\Z", "(?=a)", "a**", "(?:a*)*", "x{1001}",
+                   "(?:x{100}){11}", "\\1", "a{,3}", "{1}", "*a", "(?i)a", "[[:alpha:]]", "a)", "(a", "\\", "[a", "[]",
+                   "(?P=n)", "\\u0041", "a*+", "\\b*", "^*", "[a-\\d]", "[\\d-z]", "(?P<a>x)(?P<a>y)", "[\\b]", "[\\S]",
+                   "\\é", "a{", "a{x}", "a{3,2}", "(?#c)", "\\x4"]
+        accepted = ["(?:^| )egress(?: |$)", "(?:^| )background_spawn(?: [a-z_]{1,48}){0,16} egress(?: |$)", SLOW,
+                    "^$", "a.c", "\\bx\\b", "\\Bx", "[^a-c]x", "[\\s]", "\\w+$", "\\d{2,3}", "(?:ab|a)c", "x{0}",
+                    "(?:)*y", "\\Aa", "a|", "[]a]", "[a-]", "\\x41", "ſ", "\\v", "(?P<n>a)b", "(?P<é>a)", "a{2,}",
+                    "a??b", "a}", "]", "[{(]", "\\.\\*", "(?:a{10}){100}", "(?:a?){24}a{24}", "(?:a|aa+)+",
+                    "^a|\\Ab", "\\d|a", "[aa]", "[^a]|b", ".a|.b", "a|a", "(?:ab|ac)d", "[a-c]x|[a-c]y"]
+        texts = ["", "egress", "background_spawn egress", "egress\n", "a\nc", "abc", "x", "ax", "a x", "\x0b", "12",
+                 "1234", "abc ac", "y", "A", "aab", "a}", "]", "{", ".*", LONG, LONG + "b", "é", "a" * 24]
+
+        def py(p):
+            try:
+                pat = linear.Pattern(p)
+            except pc.PolicyError:
+                return None
+            out = []
+            for t in texts:
+                b = linear.Budget()
+                out.append([pat.search(t, b), b.steps - b.left])
+            return out
+        script = ("import { pathToFileURL } from 'node:url';"
+                  "const { Pattern, Budget, PolicyError } = await import(pathToFileURL(process.argv[1]));"
+                  "const [patterns, texts] = JSON.parse(process.argv[2]);"
+                  "console.log(JSON.stringify(patterns.map((p) => { let pat; try { pat = new Pattern(p); } catch (e) {"
+                  " if (e instanceof PolicyError) return null; throw e; }"
+                  " return texts.map((t) => { const b = new Budget(); return [pat.search(t, b), b.steps - b.left]; });"
+                  " })));")
+        got = json.loads(subprocess.run(["node", "--input-type=module", "-e", script,
+                                         os.path.join(tv.TS, "dist", "verify", "rx.js"),
+                                         json.dumps([refused + accepted, texts])],
+                                        capture_output=True, text=True, check=True).stdout)
+        for p, theirs in zip(refused + accepted, got):
+            with self.subTest(p):
+                ours = py(p)
+                self.assertEqual(ours is None, p in refused)
+                self.assertEqual(theirs, ours)
 
 
 class TestDevPack(unittest.TestCase):

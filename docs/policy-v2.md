@@ -864,7 +864,10 @@ and in `dev.yaml` `TK-F037` to `TK-F041`, `TK-F044`, `TK-F046` and the held uplo
 patterns, or two kinds of one call;
 with `when` it waits for the run's labels, without it applies at once (`dev.yaml`'s `TK-Q002`: a send left running in
 the background, `launchctl submit` too). The verifiers replay such a rule from each decision's rule ids and the
-run's labels: a decision that doesn't name one its labels meet fails `run labels`. Each reading of a call the signer decides (a PowerShell line read as a shell one, text typed into a
+run's labels: a decision that doesn't name one its labels meet fails `run labels`. They search its pattern as RE2
+reads it, in linear time and within a budget for the bundle, the same in both verifiers: a bundle's own policy whose
+label pattern the signer would refuse (a repeat of a repeat, lookaround), or whose searches run past the budget, fails
+`run labels` rather than hanging the verifier. Each reading of a call the signer decides (a PowerShell line read as a shell one, text typed into a
 shell, a Hermes process write) keeps its run conditions and the labels it sets, even where it doesn't decide the
 call. A condition rule doesn't read a subject over 64 KiB; the other rules decide such a call. Lint also refuses a
 label outside the set, one named twice, and one no rule of the policy can set (`untrusted_content` always can: an
