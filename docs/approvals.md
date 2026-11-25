@@ -634,7 +634,9 @@ reviewer reads the playbook; it never widens a bound. A person's later answer to
 precedent key, the other way, flags the entry for review.
 
 **What the reviewer sees.** `approval_review` adds `ai`: the precedent key, the run's labels, each precedent (the
-answer, when, the person's reason), the playbook in force, and the run's last 10 calls (tool, decision, rules). The
+answer, when, the person's reason), the playbook in force (each entry as its id, people's answer and the precedent
+key it is about: what the agent wrote is only ever a field's value, never read into the entry's text), and the run's
+last 10 calls (tool, decision, rules). The
 reviewer reads nothing else: no file of the project, which the agent can write. It answers the view it read:
 `approval_decide` names that view's `view_digest`, and the signer takes an AI answer only to the view it served that
 reviewer for that approval, and only while what the view showed of it (its precedents, the run's labels, the

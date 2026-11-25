@@ -4497,8 +4497,9 @@ class SignerService:
     def _approver_view(self, a, copy):
         """What approval_review adds for an approval held by approval_agent's rules: the run bound's and precedent
         conditions as they stand now, and `ai`: the precedent key, the run's labels, the precedents (each
-        person's answer, when, and their reason), the playbook in force and the run's last calls (tool, decision, rule
-        ids). Strings the agent chose are escaped. `state`, for approval_review to keep and not to show: a digest of
+        person's answer, when, and their reason), the playbook in force (each entry's id, people's answer and the
+        precedent key it is about) and the run's last calls (tool, decision, rule ids). Strings the agent chose are
+        escaped, and only ever a field's value. `state`, for approval_review to keep and not to show: a digest of
         _ai_state as the view shows it."""
         ap, run = a["ai"], self.log.runs[a["run_key"]]
         state = self._ai_state(a, run)
@@ -4515,8 +4516,11 @@ class SignerService:
                 "target": _escaped(ap["key"]), "labels": carried,
                 "precedents": [{"approval_id": aid, "decision": p["decision"], "at": _iso(p["at"]),
                                 **({"reason": _escaped(p["reason"])[:1024]} if "reason" in p else {})} for aid, p in found],
-                "playbook": {**_playbook_ref(book), "entries": [{"id": k, "text": _escaped(v["text"])} for k, v in
-                                                                sorted((book or {"entries": {}})["entries"].items())]},
+                # each entry as fields, its key (the agent's words) escaped as `target` is, never as its text, which
+                # reads the agent's command into a sentence as if people said it
+                "playbook": {**_playbook_ref(book), "entries": [
+                    {"id": k, **({"decision": v["decision"]} if "decision" in v else {}), "target": _escaped(v["key"])}
+                    for k, v in sorted((book or {"entries": {}})["entries"].items())]},
                 "recent": [{"tool": _escaped(c["tool"] or "")[:256], "decision": c["decision"], "rule_ids": c["rule_ids"]}
                            for c in list(run.get("calls", {}).values())[-RECENT_CALLS:]]}}
 
