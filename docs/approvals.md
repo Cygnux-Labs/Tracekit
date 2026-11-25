@@ -509,19 +509,25 @@ answers a call in a session that read a secret (or untrusted content, when you l
 rejected, or a call any other rule also holds. A person decides those.
 
 **Installs it can answer.** A person's approval vouches for the index its line names, so the AI reviewer answers an
-install only when the line names the index and switches config files off. Otherwise a config file (`pip.conf`,
-`.npmrc`) could add another index, and a person decides:
+install only when the line names the index and switches every config file off. Otherwise a config file (`pip.conf`,
+`.npmrc`, the global one or the virtual environment's) could add another index, and a person decides:
 
 ```
-pip install --isolated --index-url https://pypi.internal/simple requests
-uv pip install --no-config --index-url https://pypi.internal/simple requests
-npm install --registry https://npm.internal/ left-pad          # unscoped packages only (pnpm, yarn the same)
+PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple requests   # alone on its line
+npm install --registry https://npm.internal/ --userconfig /dev/null --globalconfig /dev/null left-pad   # unscoped only
 ```
 
-Never: an install that reads a requirements or config file (`-r requirements.txt`, `-c`, `--config-settings`,
-`PIP_CONFIG_FILE`, npm's `--userconfig`, a `.npmrc` or `pip.conf` on the line, a working tree npm changes to), a scoped
-npm package (`@acme/x`: its registry comes from `.npmrc`), bun, poetry, cargo and gem installs, and a change to a package
-manager's config (`pip config set`). `tracekit approvals show` says which, and how to pin the line.
+pip's `--isolated` skips your user config and the `PIP_` variables but still reads the global and the virtual
+environment's `pip.conf`; `PIP_CONFIG_FILE=/dev/null`, set for pip itself (before it, on a line of that one command),
+turns them all off. npm's `--registry` doesn't turn off the user and global `.npmrc`; the two options do.
+
+Never: an install that reads a requirements or config file (`-r requirements.txt`, `-c`, `--config-settings`, a
+`PIP_CONFIG_FILE` or npm `--userconfig` other than `/dev/null`, an `npm_config_…` variable on the line, a `.npmrc` or
+`pip.conf` on the line, a working tree npm changes to), a scoped npm package (`@acme/x`: its registry comes from the
+project's `.npmrc`), uv (`--no-config` leaves `UV_INDEX`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL` and `UV_FIND_LINKS`
+on), pnpm and yarn (they read `.npmrc` and their own config files, which no option turns off), bun, poetry, cargo and gem
+installs, and a change to a package manager's config (`pip config set`). `tracekit approvals show` says which, and how
+to pin the line.
 
 **What you see.** `tracekit approvals show` and `list` say what it did, or why it won't answer:
 

@@ -562,7 +562,8 @@ def friction(events):
 
 # what each rule the AI reviewer may answer holds, in people's words (compile.APPROVER_RULES)
 RULE_WORDS = {"TK-SHELL-PARSE": "a line the policy can't read", "TK-A062": "an unmapped tool given a command line",
-              "TK-A025": "an install from a package index you chose, its line pinned (--isolated --index-url …)"}
+              "TK-A025": "an install from a package index you chose, its line pinned (PIP_CONFIG_FILE=/dev/null pip "
+                         "--isolated --index-url …, or npm --registry with its config files /dev/null)"}
 
 
 def status_lines(out):

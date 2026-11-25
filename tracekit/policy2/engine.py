@@ -242,7 +242,8 @@ class Engine:
         if not parsed:
             return "the install can't be read", None
         read = _install_reads(parsed[0], parsed[2])
-        return (f"the install reads {read}, which may name another index", None) if read else _install_pins(parsed[0])
+        return (f"the install reads {read}, which may name another index", None) if read else \
+            _install_pins(parsed[0], parsed[2], parsed[5] if len(parsed) > 5 else None)
 
     def target(self, rule_ids, tool, args):
         """{rule id: the kind of target a call of `tool` with `args` acts on, as that rule reads it}, for each rule of
@@ -1732,25 +1733,42 @@ _READ_VARIABLES = {"PIP_CONFIG_FILE": "the pip config file {} (PIP_CONFIG_FILE)"
                    "UV_CONFIG_FILE": "the uv config file {} (UV_CONFIG_FILE)",
                    "NPM_CONFIG_USERCONFIG": "the npm config file {} (NPM_CONFIG_USERCONFIG)",
                    "NPM_CONFIG_GLOBALCONFIG": "the npm config file {} (NPM_CONFIG_GLOBALCONFIG)"}
+# the config file options and variables that /dev/null turns off rather than names
+_OFF = {"--userconfig", "--globalconfig", "PIP_CONFIG_FILE", "UV_CONFIG_FILE", "NPM_CONFIG_USERCONFIG",
+        "NPM_CONFIG_GLOBALCONFIG"}
 _CONFIG_NAMES = re.compile(r"(?:^|/)(?:\.npmrc|\.yarnrc(?:\.yml)?|pip\.(?:conf|ini)|uv\.toml|bunfig\.toml)$")
 _WORKING_TREE = {"--prefix", "-C", "--cwd", "--dir"}   # npm, pnpm, yarn and bun: the tree whose .npmrc they read
 
 
 # how a line pins a package command's source (_install_pins): its index named, config files off
-_PINS = {"pip": "add --isolated --index-url … to let the AI reviewer answer it",
-         "uv": "add --no-config --index-url … (or --default-index …) to let the AI reviewer answer it",
-         "npm": "name unscoped packages with --registry … to let the AI reviewer answer it"}
-_CONFIGS = {"pip": "pip.conf", "uv": "uv.toml, pip.conf", "npm": ".npmrc", "pnpm": ".npmrc", "yarn": ".npmrc, .yarnrc",
-            "bun": "bunfig.toml, .npmrc", "poetry": "pyproject.toml, poetry's config", "cargo": ".cargo/config.toml",
-            "gem": ".gemrc"}
+_PINS = {"pip": "run it as PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url …, alone on its line, to let the "
+                "AI reviewer answer it",
+         "npm": "add --userconfig /dev/null --globalconfig /dev/null and name unscoped packages with --registry … to let "
+                "the AI reviewer answer it"}
+_CONFIGS = {"pip": "pip.conf", "uv": "uv.toml, pip.conf, UV_INDEX", "npm": ".npmrc", "pnpm": ".npmrc",
+            "yarn": ".npmrc, .yarnrc", "bun": "bunfig.toml, .npmrc", "poetry": "pyproject.toml, poetry's config",
+            "cargo": ".cargo/config.toml", "gem": ".gemrc"}
 
 
-def _install_pins(commands):
+def _pip_config_off(commands, refs, learned):
+    """Whether PIP_CONFIG_FILE=/dev/null is in the environment of the line's one command: set just before it
+    (`PIP_CONFIG_FILE=/dev/null pip …`), its last value on the line, and no shell variable the line sets on its own (a
+    line of several commands may set it for another one)."""
+    values = [w.partition("=")[2] for w in refs if w.partition("=")[0] == "PIP_CONFIG_FILE"]
+    alone = {name for name, _ in (learned or {}).get("assigned", ())}
+    return learned is not None and len(commands) == 1 and values[-1:] == ["/dev/null"] and "PIP_CONFIG_FILE" not in alone
+
+
+def _install_pins(commands, refs=(), learned=None):
     """(why, how to pin it or None) for the first package command on the line whose source isn't pinned by the line,
-    else None. Pinned: pip with --isolated (no config file or variable) and its index named (-i, --index-url); uv with
-    --no-config and --index-url or --default-index; npm, pnpm and yarn with --registry, naming packages none of which is
-    scoped (a scope's registry comes from .npmrc). bun, poetry, cargo and gem installs, a config change (pip config set,
-    npm set, gem sources), and any other line are never pinned."""
+    else None. `refs`, `learned`: the line's other words and what else its parse learned (shell.analyse). Pinned: pip
+    with --isolated (no user config file and no PIP_ variable), its index named (-i, --index-url) and PIP_CONFIG_FILE
+    set to /dev/null for it (_pip_config_off), which keeps the global and the environment's pip.conf off too; npm with
+    --registry, --userconfig /dev/null and --globalconfig /dev/null, naming packages none of which is scoped (a scope's
+    registry comes from the project's .npmrc, which no option turns off). Never pinned: uv (--no-config leaves UV_INDEX,
+    UV_DEFAULT_INDEX, UV_EXTRA_INDEX_URL and UV_FIND_LINKS on, and a later uv may read more), pnpm and yarn (they read
+    .npmrc and their own config files, which no option turns off), bun, poetry, cargo and gem installs, a config change
+    (pip config set, npm set, gem sources), and any other line."""
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -1767,18 +1785,19 @@ def _install_pins(commands):
             return f"the line changes {exe}'s config, which later installs read", None
         named = lambda *opts: any(a == o or a.startswith(o + "=") for a in args for o in opts)   # noqa: E731
         if exe == "pip" and any(a.startswith("--isol") for a in args) and (
-                named("--index-url") or any(a.startswith("-i") and not a.startswith("--") for a in args)):
+                named("--index-url") or any(a.startswith("-i") and not a.startswith("--") for a in args)) \
+                and _pip_config_off(commands, refs, learned):
             continue
-        if exe == "uv" and named("--no-config") and named("--index-url", "--default-index", "-i"):
-            continue
-        if exe in ("npm", "pnpm", "yarn") and named("--registry"):
+        given = {o: [a.partition("=")[2] if "=" in a else args[i + 1] if i + 1 < len(args) else ""
+                     for i, a in enumerate(args) if a == o or a.startswith(o + "=")][-1:]
+                 for o in ("--userconfig", "--globalconfig")}
+        if exe == "npm" and named("--registry") and all(v == ["/dev/null"] for v in given.values()):
             at = next((i for i, a in enumerate(args) if a in ("install", "i", "add")), None)
             packages = [a for i, a in enumerate(args) if at is not None and i > at and not a.startswith("-")
-                        and args[i - 1] != "--registry"]
+                        and args[i - 1] not in ("--registry", "--userconfig", "--globalconfig")]
             if packages and not any(p.startswith("@") for p in packages):
                 continue
-        return (f"the install may read a config file that names another index ({_CONFIGS[exe]})",
-                _PINS.get("npm" if exe in ("pnpm", "yarn") else exe))
+        return (f"the install may read a config file that names another index ({_CONFIGS[exe]})", _PINS.get(exe))
     return None
 
 
@@ -1787,12 +1806,15 @@ def _install_reads(commands, refs=()):
     as people read it, or None: a requirements or constraints file (pip's and uv's -r and -c), build settings
     (--config-settings), a config file an option or a variable names (npm's --userconfig, PIP_CONFIG_FILE), a config
     file named anywhere on the line (.npmrc, pip.conf), or, for npm, pnpm, yarn and bun, a working tree the line changes
-    to (cd, --prefix), whose .npmrc they read. Writes to a .npmrc or pip.conf are people's to approve (TK-A024, TK-A030);
-    a requirements file, or a config file of another name, is the agent's to write."""
+    to (cd, --prefix), whose .npmrc they read, and npm's config a variable on the line gives (npm_config_proxy, …). A
+    config file named as /dev/null is no read: it turns that file off. Writes to a .npmrc or pip.conf are people's to
+    approve (TK-A024, TK-A030); a requirements file, or a config file of another name, is the agent's to write."""
     words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
     for name, eq, value in (w.partition("=") for w in words):
-        if eq and name.upper() in _READ_VARIABLES:
+        if eq and name.upper() in _READ_VARIABLES and not (name.upper() in _OFF and value == "/dev/null"):
             return _READ_VARIABLES[name.upper()].format(value)
+        if eq and name.upper().startswith("NPM_CONFIG_") and name.upper() not in _READ_VARIABLES:
+            return f"npm's config {name} ({value})"
     moved = None
     for command in commands:
         argv = command["argv"]
@@ -1815,8 +1837,9 @@ def _install_reads(commands, refs=()):
             name, eq, value = arg.partition("=")
             if exe == "pip" and len(name) > 2 and name.startswith("--"):   # optparse's unique prefix
                 name = next((o for o in options if o.startswith(name)), name)
-            if name in options:
-                return options[name].format(value if eq else args[i + 1] if i + 1 < len(args) else "")
+            given = value if eq else args[i + 1] if i + 1 < len(args) else ""
+            if name in options and not (name in _OFF and given == "/dev/null"):
+                return options[name].format(given)
             if family in ("pip", "uv") and len(arg) > 2 and arg[:2] in ("-r", "-c") and arg[1] != "-":
                 return arg[2:]   # -rrequirements.txt
             if family == "npm" and name in _WORKING_TREE:

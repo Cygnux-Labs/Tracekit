@@ -37,7 +37,7 @@ assert not _errors, _errors
 AGENT = ts.ME   # the agent's own user: it owns the project the reviewer reads
 REVIEWER, ALICE = CallerIdentity("uid", "990299", True), CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
-INDEX = "pip install --isolated --index-url https://pypi.internal/simple {}"
+INDEX = "PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple {}"
 # a hold of a reviewed rule alone that sends nothing: after a secret read, an install (a send) is also TK-Q001's
 HELD = "$X run"
 TWO = {"answers": [{"model": "m-a", "decision": "approve"}, {"model": "m-b", "decision": "approve"}]}
@@ -400,7 +400,7 @@ class TestPrecedent(Case):
             with self.subTest(cmd):
                 _, a = self.ask(cmd)
                 self.assertFalse(a["agent"]["eligible"], a["agent"])
-        _, a = self.ask("pip install --isolated -i https://pypi.internal/simple x")   # the same option, short name
+        _, a = self.ask("PIP_CONFIG_FILE=/dev/null pip install --isolated -i https://pypi.internal/simple x")   # -i
         self.assertTrue(a["agent"]["eligible"], a["agent"])
 
     def test_a_break_glass_change_to_the_approver_needs_a_reason(self):
@@ -1064,25 +1064,39 @@ class TestReplayAndView(Case):
         self.assertNotIn(self.run["run_id"], json.dumps(view))
 
     def test_an_install_pins_its_source_on_its_line_or_people_answer_it(self):
-        """A precedent vouches for the source a line names, so the line must name it and switch config files off: pip
-        --isolated, uv --no-config, npm's --registry for unscoped packages."""
-        pip, uv = "https://pypi.internal/simple", "https://pypi.internal/simple"
-        npm = "https://npm.internal/"
+        """A precedent vouches for the source a line names, so the line must name it and switch every config file off:
+        pip --isolated with PIP_CONFIG_FILE=/dev/null (--isolated alone still reads the global and the venv's pip.conf),
+        npm's --registry for unscoped packages with --userconfig and --globalconfig /dev/null. uv (its UV_INDEX and the
+        like stay on under --no-config), pnpm and yarn have no line that turns all theirs off: people answer them."""
+        pip, npm = "https://pypi.internal/simple", "https://npm.internal/"
+        off = "--userconfig /dev/null --globalconfig /dev/null"
+        pip_hint = ("run it as PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url …, alone on its line, to let "
+                    "the AI reviewer answer it")
+        npm_hint = ("add --userconfig /dev/null --globalconfig /dev/null and name unscoped packages with --registry … to "
+                    "let the AI reviewer answer it")
+        vetted_pip, vetted_npm = f"PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url {pip} a", \
+            f"npm install --registry {npm} {off} left-pad"
         for vetted, held, why, hint in (
-                (f"pip install --isolated --index-url {pip} a", f"pip install --index-url {pip} b", "pip.conf",
-                 "add --isolated --index-url … to let the AI reviewer answer it"),
-                (f"uv pip install --no-config --index-url {uv} a", f"uv pip install --index-url {uv} b", "uv.toml, pip.conf",
-                 "add --no-config --index-url … (or --default-index …) to let the AI reviewer answer it"),
-                (f"npm install --registry {npm} left-pad", f"npm install --registry {npm} @acme/left-pad", ".npmrc",
-                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
-                (f"npm install --registry {npm} left-pad", f"npm install --registry {npm}", ".npmrc",
-                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
-                (f"pnpm add --registry {npm} left-pad", f"pnpm add --registry={npm} @acme/x", ".npmrc",
-                 "name unscoped packages with --registry … to let the AI reviewer answer it"),
+                (vetted_pip, f"pip install --index-url {pip} b", "pip.conf", pip_hint),
+                (vetted_pip, f"pip install --isolated --index-url {pip} b", "pip.conf", pip_hint),   # the venv's
+                (vetted_pip, f"PIP_CONFIG_FILE=/dev/null; pip install --isolated --index-url {pip} b", "pip.conf",
+                 pip_hint),   # a shell variable, not pip's environment
+                (vetted_pip, f"PIP_CONFIG_FILE=/dev/null true && pip install --isolated --index-url {pip} b", "pip.conf",
+                 pip_hint),   # another command's
+                (vetted_pip, f"PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url {pip} b | tee log", "pip.conf",
+                 pip_hint),
+                (vetted_npm, f"npm install --registry {npm} left-pad", ".npmrc", npm_hint),
+                (vetted_npm, f"npm install --registry {npm} --userconfig /dev/null left-pad", ".npmrc", npm_hint),
+                (vetted_npm, f"npm install --registry {npm} {off} @acme/left-pad", ".npmrc", npm_hint),
+                (vetted_npm, f"npm install --registry {npm} {off}", ".npmrc", npm_hint),
+                (f"uv pip install --no-config --index-url {pip} a", f"uv pip install --no-config --index-url {pip} b",
+                 "uv.toml, pip.conf, UV_INDEX", None),
+                (f"pnpm add --registry {npm} left-pad", f"pnpm add --registry={npm} {off} is-odd", ".npmrc", None),
+                (f"yarn add --registry {npm} left-pad", f"yarn add --registry={npm} is-odd", ".npmrc, .yarnrc", None),
                 (f"bun add --registry {npm} left-pad", f"bun add --registry {npm} left-pad", "bunfig.toml, .npmrc", None)):
             with self.subTest(held):
                 self.precedent(vetted)
-                if not vetted.startswith("bun"):   # pinned, another package: the AI may answer it
+                if vetted in (vetted_pip, vetted_npm):   # pinned, another package: the AI may answer it
                     _, a = self.ask(vetted[:-1] + "c" if vetted.endswith(" a") else vetted.replace("left-pad", "is-odd"))
                     self.assertTrue(a["agent"]["eligible"], a["agent"])
                 _, a = self.ask(held)
@@ -1096,18 +1110,27 @@ class TestReplayAndView(Case):
         """A requirements or config file can name another index, and the agent writes it: no precedent vouches for an
         install that reads one."""
         self.precedent()
-        index = "pip install --isolated --index-url https://pypi.internal/simple"
+        index = "PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple"
         for cmd, read in ((f"{index} -r requirements.txt", "requirements.txt"),
                           (f"{index} --requirement=reqs/dev.txt", "reqs/dev.txt"),
                           (f"{index} --req reqs/dev.txt", "reqs/dev.txt"),
                           (f"{index} -rrequirements.txt x", "requirements.txt"),
                           (f"{index} -c constraints.txt x", "constraints.txt"),
                           (f"{index} --config-settings editable_mode=compat x", "build settings (editable_mode=compat)"),
-                          (f"PIP_CONFIG_FILE=./my.conf {index} x", "the pip config file ./my.conf (PIP_CONFIG_FILE)"),
-                          (f"python3 -m {index} -r requirements.txt", "requirements.txt"),
+                          (f"PIP_CONFIG_FILE=./my.conf {index[26:]} x", "the pip config file ./my.conf (PIP_CONFIG_FILE)"),
+                          (f"{index.replace('/dev/null', './my.conf')} x",
+                           "the pip config file ./my.conf (PIP_CONFIG_FILE)"),
+                          (f"PIP_CONFIG_FILE=/dev/null PIP_CONFIG_FILE=./my.conf {index[26:]} x",   # the last one counts
+                           "the pip config file ./my.conf (PIP_CONFIG_FILE)"),
+                          (f"PIP_CONFIG_FILE=/dev/null python3 -m {index[26:]} -r requirements.txt", "requirements.txt"),
                           (f"{index} x && cat pip.conf", "pip.conf"),
                           ("npm install --registry https://npm.internal/ --userconfig ./ci.npmrc left-pad",
                            "the npm config file ./ci.npmrc"),
+                          ("npm install --registry https://npm.internal/ --userconfig /dev/null --globalconfig ./g "
+                           "left-pad", "the npm config file ./g"),
+                          ("npm_config_proxy=http://127.0.0.1:9 npm install --registry https://npm.internal/ "
+                           "--userconfig /dev/null --globalconfig /dev/null left-pad",
+                           "npm's config npm_config_proxy (http://127.0.0.1:9)"),
                           ("cd ../vendored && npm install --registry https://npm.internal/ left-pad",
                            "the working tree ../vendored (its .npmrc)"),
                           ("npm --prefix ../vendored install --registry https://npm.internal/ left-pad",
