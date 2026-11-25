@@ -603,12 +603,12 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 184 / 212 | 548 / 626 | 1425 / 1698 | 9.75 / 11.44 |
-| strict, RE2 / regex | 184 / 212 | 500 / 606 | 1288 / 1659 | 8.86 / 10.93 |
-| dev, RE2 / regex | 192 / 225 | 578 / 685 | 1505 / 1850 | 10.31 / 12.36 |
+| default, RE2 / regex | 180 / 212 | 546 / 641 | 1393 / 1764 | 9.95 / 12.18 |
+| strict, RE2 / regex | 182 / 211 | 503 / 595 | 1277 / 1704 | 9.16 / 11.15 |
+| dev, RE2 / regex | 189 / 224 | 572 / 696 | 1520 / 1868 | 10.38 / 12.66 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
-recorded run: per profile, held-out recall doesn't drop below its (68.6% default, 74.5% strict) and no benign set's
+recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.1%
 strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, and on 2026-11-16, with main's rules merged into the release's; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up

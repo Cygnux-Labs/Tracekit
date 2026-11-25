@@ -650,6 +650,21 @@ class ClaudeHooksDecideEveryCall(unittest.TestCase):
                    if r["id"] == "D-HOOKS-EVENT")
         self.assertEqual(got["status"], "warn")
 
+    def test_dev_mode_names_a_settings_env_that_moves_the_hook(self):
+        """The 1.8 parsing review: Claude Code gives the hooks its settings' env, and in dev mode doctor read none of
+        it, so a settings file that set HOME, XDG_DATA_HOME, TRACEKIT_PYTHON or TRACEKIT_SIGNER (sending the hook's
+        calls to another signer or Python) passed."""
+        def env_row(local):
+            self.row(local=local)
+            return next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings,
+                                                    sandbox_settings=[self.settings, self.local]) if r["id"] == "D-HOOK-ENV")
+        self.assertEqual(env_row(None)["status"], "ok")
+        self.assertEqual(env_row({"env": {"NODE_OPTIONS": "x"}})["status"], "ok")
+        for name in ("HOME", "XDG_DATA_HOME", "TRACEKIT_PYTHON", "TRACEKIT_SIGNER"):
+            got = env_row({"env": {name: "/tmp/elsewhere"}})
+            self.assertEqual(got["status"], "warn", name)
+            self.assertIn(f"{self.local} sets {name}", got["detail"])
+
     def test_dev_mode_reads_disable_all_hooks_in_the_file_init_recorded(self):
         """The dev layers left out the hooks' own file (init's record of another CLAUDE_CONFIG_DIR), so a
         disableAllHooks there passed."""

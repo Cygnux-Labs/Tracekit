@@ -99,6 +99,31 @@ class Classes(unittest.TestCase):
         for tool, args in ROUTINE:
             self.assertIsNone(failclosed.classify(tool, args), (tool, args))
 
+    def test_the_spellings_the_packs_hold_are_in_their_class(self):
+        """The 1.8 parsing review: oc (OpenShift's kubectl), a raw API path to secrets, kubectl through a distribution
+        or wrapper, a config view with --flatten, gcloud's config-helper and ECR's login password, a monorepo release
+        however its tool is run, glab's token, and gcloud's, Azure's, Postgres's and Vault's credential files were in no
+        class."""
+        for command, want in (
+                ("oc get secret db -o yaml", "secrets"), ("oc apply -f k8s/", "deploys"),
+                ("kubectl get --raw '/api/v1/secrets?limit=500'", "secrets"),
+                ("oc get --raw /api/v1/namespaces/prod/secrets#x", "secrets"), ("kubectl get secret/db -o yaml", "secrets"),
+                ("microk8s kubectl get secrets -o json", "secrets"), ("k3s kubectl config view --raw", "secrets"),
+                ("minikube kubectl -- config view --raw", "secrets"), ("kubectl config view --flatten", "secrets"),
+                ("kubectl config view --raw=true", "secrets"), ("gcloud config config-helper", "secrets"),
+                ("aws ecr get-login-password --region eu-west-1", "secrets"), ("lerna publish", "deploys"),
+                ("npx changeset publish", "deploys"), ("nx release publish", "deploys"),
+                ("yarn lerna publish", "deploys"), ("cat ~/.config/gcloud/application_default_credentials.json", "secrets"),
+                ("cat ~/.pgpass", "secrets"), ("cat ~/.vault-token", "secrets"),
+                ("cat ~/.azure/msal_token_cache.json", "secrets"), ("glab auth status -t", "secrets"),
+                ("glab config get token", "secrets")):
+            self.assertEqual(failclosed.classify("Bash", {"command": command}), want, command)
+        self.assertEqual(failclosed.classify("Read", {"file_path": "/h/.config/gcloud/credentials.db"}), "secrets")
+        self.assertEqual(failclosed.classify("Glob", {"pattern": "**/.pgpass"}), "secrets")
+        for command in ("oc get pods", "kubectl config view --raw=false", "kubectl get secret-reader-role",
+                        "nx release version", "gcloud config list", "aws ecr describe-repositories"):
+            self.assertIsNone(failclosed.classify("Bash", {"command": command}), command)
+
     def test_an_untold_subcommand_and_the_per_command_pushes(self):
         for tool, args, want in UNTOLD:
             self.assertEqual(failclosed.classify(tool, args), want, (tool, args))

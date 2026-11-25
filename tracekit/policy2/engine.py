@@ -2166,7 +2166,7 @@ _PUSH_CONFIG_ENV = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "HOME", "XDG_CONFI
 # a Git config file a push reads, in any case: a repository's (`.git/config`, a bare one's `x.git/config`, a submodule's,
 # a worktree's config.worktree), the global ones (~/.gitconfig, any XDG_CONFIG_HOME's git/config) and the system one
 # (/etc/gitconfig, Homebrew's etc/gitconfig), as TK-F048 reads a file tool's write of one
-_GIT_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:[^/\\]*\.git[/\\](?:modules[/\\](?:[^/\\]+[/\\]){1,8}|worktrees[/\\]"
+_GIT_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:[^/\\:]*\.git[/\\](?:modules[/\\](?:[^/\\]+[/\\]){1,8}|worktrees[/\\]"
                               r"[^/\\]+[/\\])?config(?:\.worktree)?|\.gitconfig|git[/\\]config|"
                               r"etc[/\\]gitconfig)$")
 # a cargo config file, in any case (a project's, a parent folder's, CARGO_HOME's: .cargo/config.toml, .cargo/config;
@@ -2688,8 +2688,8 @@ def _goreleaser(argv):
 
 # CLIs whose commands push, publish or deploy: one whose subcommand the line can't tell (an expansion it doesn't
 # resolve, `git $X origin main`; none, where xargs or parallel adds it) may be one (_verb_unknown)
-_DEPLOYERS = {"git", "hub", "gh", "npm", "pnpm", "yarn", "bun", "docker", "podman", "helm", "kubectl", "terraform",
-               "tofu", "terragrunt", "pulumi", "cargo", "gem", "twine", "uv", "poetry", "gcloud", "aws", "firebase",
+_DEPLOYERS = {"git", "hub", "gh", "npm", "pnpm", "yarn", "bun", "docker", "podman", "helm", "kubectl", "oc",
+               "terraform", "tofu", "terragrunt", "pulumi", "cargo", "gem", "twine", "uv", "poetry", "gcloud", "aws", "firebase",
                "vercel", "netlify", "fly", "flyctl", "wrangler", "railway", "serverless", "sls", "cdk", "sam",
                "nerdctl", "buildah", "docker-compose", "podman-compose", "crane", "oras", "skopeo", "goreleaser",
                "finch", "regctl", "ctr", "ko"}
@@ -2900,7 +2900,8 @@ def _gh_api(argv, replaced=None, runner=False):
     routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
     for n, endpoint in enumerate(positional):   # (gh takes one; read each of more, which gh refuses)
         found, unread, before = _gh_routes(endpoint, replaced, strict=not n)
-        routes, unknown, expanded = routes + found, unknown or unread, expanded or before
+        routes += found   # (in place: a copy each time took time quadratic in the words)
+        unknown, expanded = unknown or unread, expanded or before
     unread_method = not method or "$" in method or "`" in method
     put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
     write = unread_method or method.upper() not in ("GET", "HEAD")
@@ -2973,6 +2974,8 @@ def _pushes(commands):
     out = []
     for command, runner, replaced in _run_by(commands):
         argv = command["argv"]
+        if (p := _released(argv)) is not None:   # (a monorepo's release, however its tool is run)
+            out.append(p)
         fed = not runner.isdisjoint(_FEEDERS)
         prog, read = _push_program(argv[0]) if argv else ("", True)
         if not read:   # (no reader below takes this program: its argv, also as its base name, as they would give)
@@ -2986,7 +2989,7 @@ def _pushes(commands):
         if push is not None:
             out += push
         else:
-            dry = "DRYRUN:" * (not runner and (prog == "kubectl" and _kubectl_dry_run(argv) or
+            dry = "DRYRUN:" * (not runner and (prog in ("kubectl", "oc") and _kubectl_dry_run(argv) or
                                                prog in _PUBLISHERS and _publish_dry_run(argv)))
             # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
             # publish after any options as its program's publish: _published)
@@ -3334,7 +3337,7 @@ def _kubectl_dry_run(argv):
     is --raw (a request sent as given) or a word the line can't tell (_UNTOLD: `"$D"` may be `--` or a later
     --dry-run=none), and no --dry-run word comes right after an option that may take it as its value (_kubectl_takes:
     `--field-manager --dry-run`)."""
-    if _program(argv) != "kubectl":
+    if _program(argv) not in ("kubectl", "oc"):
         return False
     last = None
     for prev, word in zip(argv, argv[1:]):
@@ -3395,6 +3398,53 @@ def _published(argv):
             return None
         valued = w.startswith("-")
         i += 1
+    return None
+
+
+# a monorepo's release tools, by the word that runs one (a package's bin, at any version), and the subcommand that
+# publishes its packages; and the package managers that run a bin by its name, with the words that may stand before it
+_RELEASER = re.compile(r"(?:(?:[^ ]*/)?(lerna|changeset|nx)|@changesets/(cli))(?:@[^ /]*)?")
+_RELEASE_VERB = {"lerna": "publish", "changeset": "publish", "cli": "publish", "nx": "release"}
+_BIN_RUNNERS = {"npx", "bunx", "pnpx", "npm", "pnpm", "yarn", "bun"}
+_BIN_WORDS = {"run", "exec", "x", "dlx", "--", "recursive", "multi", "m"}
+
+
+def _released(argv):
+    """`PUSH:release <tool>` (lerna, changeset or nx) for a command that publishes a monorepo's packages
+    with that release tool (@changesets/cli's is changeset's), run by its own name or by a package manager's for its
+    bin (`yarn lerna publish`, `pnpm -r exec nx release publish`, `bun run changeset publish`, `yarn workspaces foreach
+    -A changeset publish`, `yarn workspace a lerna publish`), at any version (`lerna@8`), after any options of either
+    (each with a value or not, read in one pass); `nx release` with no subcommand but its version specifier publishes
+    too, unless --skip-publish, --dry-run or -d is among its words, and its version, changelog and plan don't. Else
+    None. (npx's, bunx's and the managers' exec, x and dlx are commands of their own the parser gives as well.)"""
+    i = 1 if argv and shell.base_name(argv[0]) in _BIN_RUNNERS else 0
+    valued = False
+    while 0 < i < len(argv) and not _RELEASER.fullmatch(argv[i]):   # (a manager's own words before the bin)
+        w = argv[i]
+        if argv[i:i + 2] == ["workspaces", "foreach"] or w == "workspace":
+            i, valued = i + 2, False
+            continue
+        if not (w.startswith("-") or w in _BIN_WORDS or valued):
+            return None
+        valued = w.startswith("-") and "=" not in w
+        i += 1
+    if not (m := _RELEASER.fullmatch(argv[i] if i < len(argv) else "")):
+        return None
+    tool, valued = m.group(1) or m.group(2), False
+    for k in range(i + 1, len(argv)):
+        w = argv[k]
+        if w == _RELEASE_VERB[tool]:
+            if tool != "nx":
+                return f"PUSH:release {'changeset' if tool == 'cli' else tool}"
+            rest = argv[k + 1:]
+            sub = next((x for x in rest if not x.startswith("-")), None)
+            if sub in ("version", "changelog", "plan", "plan:check") or \
+                    any(x in ("--skip-publish", "--dry-run", "-d") or x.startswith("--dry-run=") for x in rest):
+                return None
+            return "PUSH:release nx"
+        if not w.startswith("-") and not valued:
+            return None
+        valued = w.startswith("-") and "=" not in w
     return None
 
 
@@ -5680,18 +5730,35 @@ def _help_marked(command, quoted):
     return _joined(argv)
 
 
-_SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
+# (Python reads a dotted name with blanks or a line continuation on either side of a dot: `tracekit . signer`)
+_SIGNER_MODULE = re.compile(r"tracekit(?:\s|\\\r?\n)*\.(?:\s|\\\r?\n)*(?:daemon|proxy|signer)\b")
+_DOT = re.compile(r"(?<=\w)(?:\s|\\\r?\n)*\.(?:\s|\\\r?\n)*(?=\w)")
+# a `from tracekit import` statement's list: to its `)`, or its line's end unless a backslash goes on (greedy, so each
+# statement is read once)
+_FROM_TRACEKIT = re.compile(r"\bfrom\s+tracekit\s+import\s+(\([^)]*\)?|(?:[\w \t,*]|\\(?:\r\n?|\n))+)")
+
+
+def _names_signer(text):
+    """Whether `text` names Tracekit's signer, daemon or proxy module: by its dotted name, or imported from the package
+    (`from tracekit import signer`)."""
+    return bool(_SIGNER_MODULE.search(text)) or any(
+        re.search(r"\b(?:daemon|proxy|signer)\b", m.group(1)) for m in _FROM_TRACEKIT.finditer(text))
+
+
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
+# a module loaded from its file (imp's load_source and the rest, importlib's file loaders, zipimport)
+_FILE_LOADERS = (r"load_source|load_compiled|load_dynamic|load_package|load_module|SourceFileLoader|SourcelessFileLoader|"
+                 r"ExtensionFileLoader|spec_from_file_location|zipimporter")
 # a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
-# pydoc.locate, mock.patch's get_original and temp_original), reads a field of an object by its name (string.Formatter) or runs code
-# (ctypes, code.InteractiveInterpreter, doctest)
+# pydoc.locate, mock.patch's get_original and temp_original, sys.modules), reads a field of an object by its name
+# (string.Formatter) or runs code (ctypes, code.InteractiveInterpreter, doctest)
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
                         r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|"
                         r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original|temp_original|doctest|DocTestParser|"
-                        r"DocTestRunner)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
+                        r"DocTestRunner|modules)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
@@ -5751,10 +5818,14 @@ def _without_rpc_catch(code):
 def _runs_signer(code):
     """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
-    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
-    reached by its full name."""
+    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib, sys.modules …), a
+    module reached by its full name, or the signer's package itself (`import tracekit.signer`, `from tracekit import
+    signer`; a module of it loaded from its file is _reaches_sdk's). A dotted name is read as Python reads it, blanks and line continuations around its
+    dots left out, and each name of an import's list (`import os, tracekit.signer.service as s`)."""
+    code = _DOT.sub(".", code)
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
-            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code):
+            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code) or \
+            any(re.search(r"\b(?:daemon|proxy|signer)\b", m.group(1)) for m in _FROM_TRACEKIT.finditer(code)):
         return True
     code = _without_rpc_catch(code)
     aliases = {}   # a name the code gives one of the signer's modules -> that module
@@ -5770,10 +5841,15 @@ def _runs_signer(code):
                 aliases[alias or name] = name
             elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
                 return True
-    for m in re.finditer(r"\bimport\s+tracekit\.signer(?:\.(\w+))?(?:\s+as\s+(\w+))?", code):
-        if m.group(1) not in _SIGNER_READS or not m.group(2):
-            return True
-        aliases[m.group(2)] = m.group(1)
+    for m in re.finditer(r"\bimport\s+((?:[\w. \t,]|\\(?:\r\n?|\n))+)", code):   # (an import list, to its statement's end)
+        for item in re.sub(r"\\(?:\r\n?|\n)", " ", m.group(1)).split(","):
+            words = item.split()
+            if not words or not re.fullmatch(r"tracekit\.signer(?:\.\w+)?", words[0]):
+                continue
+            module = words[0][len("tracekit.signer."):] or None
+            if module not in _SIGNER_READS or words[1:2] != ["as"] or len(words) != 3:
+                return True
+            aliases[words[2]] = module
     for alias, module in aliases.items():
         uses = re.findall(r"(?<![\w.])%s\b(\.\w+)?" % re.escape(alias), code)
         if any(u and u[1:] not in _SIGNER_READS[module] for u in uses) or uses.count("") > 1:   # the import names it
@@ -5785,7 +5861,7 @@ def _runs_signer(code):
 # CLI's modules code may run it through, and the ones of its autospawn module code may use
 _SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__|run_label_clear|record_hooks_settings|"
                   r"record_hook_python)\b|\btracekit\.cli\b|\bimport\s+(?:cli|install)\b|\btracekit\.install\b|"
-                  r"\b(?:walk_packages|iter_modules|run_path)\b|['\"]\.(?:install|cli)['\"]|"
+                  r"\b(?:walk_packages|iter_modules|run_path|" + _FILE_LOADERS + r")\b|['\"]\.(?:install|cli)['\"]|"
                   r"\btracekit\b[^\n]{0,80}['\"]\s*\+\s*['\"]|run_label")
 # code an interpreter runs from its words: python's -c, node's (and nodejs') -e, --eval, -p or --print, deno eval and
 # bun's -e or --eval, after options
@@ -5879,9 +5955,11 @@ def _reaches_sdk(code, work):
     if re.search(r"\brecord_hook_python\b|\brecord_hooks_settings\b|\b(?:import|from)\s+tracekit\.install\b|"
                  r"\bfrom\s+tracekit\s+import\s+[\w\s,()]*?\binstall\b", raw + "\n" + code):
         return True
-    # tracekit run as a module whatever its argv (run_module, run_path), a package of it walked, or a submodule looked up by a
-    # relative name (`import_module('.install', package='tracekit')`)
-    if re.search(r"\btracekit\b", raw) and re.search(r"\b(?:run_module|run_path|walk_packages|iter_modules)\b", raw):
+    # tracekit run as a module whatever its argv (run_module, run_path) or a module of it loaded from its file
+    # (`imp.load_source('s', '…/tracekit/signer/service.py')`, _FILE_LOADERS), a package of it walked, or a submodule
+    # looked up by a relative name (`import_module('.install', package='tracekit')`)
+    if re.search(r"\btracekit\b", raw) and re.search(r"\b(?:run_module|run_path|walk_packages|iter_modules|" +
+                                                     _FILE_LOADERS + r")\b", raw):
         return True
     if re.search(r"\btracekit\b", raw) and re.search(r"['\"]\.(?:install|cli)['\"]", raw):
         return True
@@ -6237,8 +6315,8 @@ def _tracekit(parsed, finds, work):
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("TARGET:", targets) + tag("LIST:", listed) + tag("READ:", read) + \
         tag("DEEP:", deep) + \
-        (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or
-          _SDK.search(s) and _reaches_sdk(s, work)] if _SIGNER_MODULE.search(joined) or
+        (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _names_signer(s) and _runs_signer(s) or
+          _SDK.search(s) and _reaches_sdk(s, work)] if _names_signer(joined) or
          any(map(joined.__contains__, _SDK_LITS)) and _SDK.search(joined) else [])
 
 
@@ -6259,7 +6337,7 @@ class TracekitGate:
     the case the rules read: NFKC and casefolded). A call whose texts hold, for some alternative of each rule, no string
     of one of its sets (every part of it), reads as none: _tracekit would give no subject any rule matches. Kept out of
     it: a call that may name a path by a pattern or a bare cd (_pattern_forms), sets HOME (what ~ stands for), or may stop
-    the signer by what finds it (_kills_signer), where SIGNER_MODULE is code's reading (_SIGNER_MODULE, _SDK); and a call
+    the signer by what finds it (_kills_signer), where SIGNER_MODULE is code's reading (_names_signer, _SDK); and a call
     whose texts are long enough for a joined form to pass MAX_SUBJECT (TK-OVERSIZE). None where a rule's alternatives
     aren't all such sets: _tracekit reads every call."""
 

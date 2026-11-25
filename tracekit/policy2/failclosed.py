@@ -28,15 +28,20 @@ _COMMAND_KEYS = {*engine_mod._COMMAND_KEYS, "cli_command", "clicommand"}
 _PATH_KEYS = {"file_path", "path", "notebook_path", "paths", "filename", "file", "uri", "target"}
 _GLOB_KEYS = {"glob", "file_glob"}
 # a file that holds a credential (a .env, not its .example, .sample, .template or .dist; cloud, SSH, package registry,
-# Docker and Kubernetes credentials; a private key or certificate bundle)
+# Docker and Kubernetes credentials; gcloud's stored and application-default credentials, Azure's token cache, a
+# Postgres password file and Vault's token, as the server pack's TK-S004 names them; a private key or certificate bundle)
 _SECRET_FILE = re.compile(
     r"(?i)(?:^|[/\\])(?:\.env(?:\.(?!(?:example|sample|template|dist)$)[^/\\]+)?|\.aws[/\\](?:credentials|config)|"
     r"\.ssh[/\\]id_[^/\\]*(?<!\.pub)|[._]netrc|\.npmrc|\.pypirc|\.git-credentials|\.docker[/\\]config\.json|"
-    r"\.kube[/\\]config|credentials\.json|[^/\\]+\.(?:pem|key|p12|pfx|keystore|jks))$")
+    r"\.kube[/\\]config|credentials\.json|\.config[/\\]gcloud[/\\](?:application_default_credentials\.json|"
+    r"credentials\.db|access_tokens\.db|legacy_credentials(?:[/\\][^/\\]+)*)|\.azure[/\\](?:accesstokens\.json|"
+    r"msal_token_cache[^/\\]*)|\.pgpass|\.vault-token|[^/\\]+\.(?:pem|key|p12|pfx|keystore|jks))$")
 # files of those kinds a glob that names one matches (`.env*`, `**/.aws/*`)
 _SECRET_SAMPLES = ("/r/.env", "/r/.env.local", "/r/.env.production", "/h/.aws/credentials", "/h/.ssh/id_rsa",
                    "/h/.ssh/id_ed25519", "/h/.netrc", "/h/.npmrc", "/h/.pypirc", "/h/.git-credentials",
-                   "/h/.docker/config.json", "/h/.kube/config", "/r/credentials.json", "/r/server.key", "/r/cert.pem")
+                   "/h/.docker/config.json", "/h/.kube/config", "/r/credentials.json", "/r/server.key", "/r/cert.pem",
+                   "/h/.config/gcloud/application_default_credentials.json", "/h/.config/gcloud/credentials.db",
+                   "/h/.azure/msal_token_cache.json", "/h/.pgpass", "/h/.vault-token")
 _SECRET_NAME = re.compile(r"(?i)secret|credential|passw(?:or)?d|api[_-]?key|private[_-]?key|keychain|keyvault")
 _MONEY_NAME = re.compile(r"(?i)refund|payout|transfer|charge|capture|payment|pay[_-]?invoice|send[_-]?money|withdraw")
 _MONEY_HOST = re.compile(r"(?i)(?:^|[/@.\s\"'=])(?:api\.stripe\.com|api(?:-m)?\.paypal\.com|connect\.squareup\.com)\b")
@@ -44,14 +49,16 @@ _MONEY_HOST = re.compile(r"(?i)(?:^|[/@.\s\"'=])(?:api\.stripe\.com|api(?:-m)?\.
 # one
 _WORDS = {
     "secrets": {"aws": ("secretsmanager", "get-parameter", "get-parameters", "get-parameters-by-path",
-                        ("configure", "export-credentials")),
-                "gcloud": ("secrets", ("auth", "print-access-token"), ("auth", "print-identity-token")),
+                        ("configure", "export-credentials"), ("ecr", "get-login-password")),
+                "gcloud": ("secrets", ("auth", "print-access-token"), ("auth", "print-identity-token"),
+                           ("config", "config-helper")),
                 "az": ("keyvault",), "op": ("read", "inject", "item", "document"),
                 "bw": ("get", "export"), "vault": ("read", "kv", "unwrap"), "bao": ("read", "kv", "unwrap"),
                 "doppler": ("secrets", "run"), "infisical": ("secrets", "export", "run"), "lpass": ("show", "export"),
                 "pass": ("show",), "gopass": ("show", "cat"), "keepassxc-cli": ("show", "export"),
                 "security": ("find-generic-password", "find-internet-password", "dump-keychain", "export"),
-                "kubectl": ("secret", "secrets", ("config", "view", "--raw")), "gh": (("auth", "token"),),
+                "kubectl": ("secret", "secrets"), "gh": (("auth", "token"),),
+                "glab": (("auth", "status", "-t"), ("auth", "status", "--show-token"), ("config", "get", "token")),
                 "git": (("credential", "fill"),)},
     "deploys": {"npm": ("publish", "pu", "pub", "publ", "publi", "publis"), "pnpm": ("publish",), "yarn": ("publish",),
                 "bun": ("publish",), "docker": ("push", "--push"), "podman": ("push", "--push"),
@@ -63,6 +70,7 @@ _WORDS = {
                 "terraform": ("apply", "destroy", "import"), "tofu": ("apply", "destroy", "import"),
                 "terragrunt": ("apply", "destroy", "run-all"), "pulumi": ("up", "destroy"),
                 "kubectl": ("apply", "delete", "create", "replace", "patch", "rollout", "scale", "set", "edit"),
+                "oc": ("apply", "delete", "create", "replace", "patch", "rollout", "scale", "set", "edit"),
                 "gcloud": ("deploy", "update-traffic", "set-traffic", "migrate"),
                 "gh": (("release", "create"), ("release", "new"), ("release", "edit"), ("workflow", "run")),
                 "aws": ("deploy", "create-stack", "update-stack", "delete-stack", "update-function-code"),
@@ -74,6 +82,10 @@ _WORDS = {
     "payments": {"stripe": ("create", "capture", "confirm", "pay", "post")},
     "pushes to main": {"gh": (("pr", "merge"),), "git": (("subtree", "push"),)},
 }
+
+
+_KUBE_SECRETS = re.compile(r"(?i)(?:^|[/,=])secrets?(?:[/?#.,]|$)")
+_KUBE_RAW = re.compile(r"(?i)--(?:raw|flatten)(?:=(?:true|t|1))?")
 
 
 def classify(tool, args):
@@ -184,6 +196,11 @@ def _command(text):
         if any(_SECRET_FILE.search(w) for w in argv[1:]) or any(_MONEY_HOST.search(w) for w in argv[1:]):
             return "secrets" if any(_SECRET_FILE.search(w) for w in argv[1:]) else "payments"
         words = set(argv[1:])
+        # kubectl's or oc's secrets named as a type in a list, a TYPE/NAME or a raw API path (`get --raw
+        # /api/v1/secrets?limit=500`), and a config view that prints its credentials (--raw, --flatten)
+        if engine_mod._program(argv) in ("kubectl", "oc") and (any(_KUBE_SECRETS.search(w) for w in argv[1:]) or {
+                "config", "view"} <= words and any(_KUBE_RAW.fullmatch(w) for w in argv[1:])):
+            return "secrets"
         for cls, programs in _WORDS.items():
             for want in programs.get(engine_mod._program(argv), ()):
                 if (set(want) <= words) if isinstance(want, tuple) else want in words:
