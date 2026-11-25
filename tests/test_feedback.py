@@ -276,7 +276,8 @@ class TestFeedback(unittest.TestCase):
                 f.write("data_dir: other\n")
             with mock.patch("tracekit.sdk.autospawn.data_dir", return_value=dev):
                 for i, (source, calls) in enumerate((((), 1), (("--dev",), 1),
-                                                     (("--config", config), 2), (("--data-dir", other), 2))):
+                                                     (("--config", config), 2), (("--data-dir", other), 2),
+                                                     (("--data-dir", ""), 1))):
                     with self.subTest(source=source):
                         expected = f"Tool calls: {calls}   allow {calls}, flag 0, ask 0, deny 0"
                         code, out, err = _run(*source)

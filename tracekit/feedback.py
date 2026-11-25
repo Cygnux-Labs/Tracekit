@@ -37,16 +37,14 @@ def _hooks():
 def _week(config=None, data_dir=None):
     """tracekit report --share's 7 days from the selected store, or None when it cannot be read."""
     from . import report
-    from .signer.service import dev_data_dir, load_config
     from .storage.base import StorageCorrupt, StorageUnavailable
     try:
-        cfg = load_config(config) if config is not None else {
-            "data_dir": data_dir if data_dir is not None else dev_data_dir(create=False)}
+        cfg = report.store_config(config, data_dir)
         now = time.time()
         rep = report.build(cfg, now - 7 * 86400, now,
                            say=lambda s: print(f"tracekit feedback: {s}", file=sys.stderr, flush=True))
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-        if config is not None or data_dir is not None:
+        if config or data_dir:
             print(f"tracekit feedback: cannot read the selected signer store ({e})", file=sys.stderr)
         else:
             print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's "
@@ -140,7 +138,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.why and not a.harmless:
         ap.error("--why goes with --harmless")
-    selected = a.config is not None or a.data_dir is not None
+    selected = bool(a.config or a.data_dir)
     if a.harmless and (a.dev or selected):
         ap.error("--dev, --config and --data-dir are for weekly field reports; use --signer with --harmless")
     if not a.harmless:
