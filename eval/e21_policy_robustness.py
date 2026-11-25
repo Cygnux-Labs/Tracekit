@@ -193,7 +193,8 @@ def run(record=False):
     # +76 us p99 over main (server pack, RE2: 182 / 535 us against 172 / 459), the whole assembly 191 / 566 us; caps
     # 9.93 to 13.98 times the reference (docs/limits.md, Queue 11-24 debt row says what is left).
     # Recorded again the same day after TK-D007's reader was gated (engine.TracekitGate) and its subjects given once: p50 176 to
-    # 219 us, p99 489 to 664 us across the six rows, caps 9.13 to 12.6 times the reference.
+    # 219 us, p99 489 to 664 us across the six rows, caps 9.13 to 12.6 times the reference. And again after the pushes, the forms a pattern may make and the roots below a folder were
+    # each read once: p50 173 to 211 us, p99 463 to 638 us, caps 8.99 to 12.5.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
