@@ -20,7 +20,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from .. import privacy
 from . import classes, grammar, shell, source as source_reader
-from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical,
+from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, anycase, canonical,
                       labels_subject, literals, policy_hash, prefixes, requirements, subject_labels, translate)
 
 MAX_SUBJECT = source_reader.MAX_SUBJECT   # bytes of UTF-8; a longer subject is never cut or windowed, and the reader resolves no literal longer
@@ -159,11 +159,10 @@ class Engine:
         # the pattern's alternatives (compile.requirements). An a2a rule matches in any case, as every prefilter does:
         # the names it reads are lower-cased (classes.a2a_fields); so does a rule on the `tracekit` field, whose
         # subjects are also casefolded as a path is (_tracekit): the agent's file system may ignore case where the
-        # pattern names a folder in mixed case. A rule on LABELS_FIELD reads the policy's own labels, as written, in any
-        # class: as both verifiers search it (labels._compiled)
+        # pattern names a folder in mixed case (compile.anycase; a rule on LABELS_FIELD reads the policy's own labels as
+        # written, as both verifiers search it)
         def rx(r, key):
-            return compile_(r[key], r.get("field") != LABELS_FIELD and (r.get("class") == "a2a" or
-                                                                         r.get("field") == "tracekit"))
+            return compile_(r[key], anycase(r))
         # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
         self.shadow = frozenset(r["id"] for sec in SECTIONS for r in self.policy.get(sec, [])
                                 if r.get("mode") == "shadow")

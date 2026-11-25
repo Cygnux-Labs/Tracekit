@@ -188,6 +188,14 @@ def labels_subject(rule_ids, labels):
     return " ".join(sorted({labels[i] for i in rule_ids if i in labels}))
 
 
+def anycase(rule):
+    """Whether the engine matches a rule's pattern and unless in any case: an a2a rule's (the names it reads are
+    lower-cased, classes.a2a_fields) and one's on the `tracekit` field (casefolded as a path is), never one's on
+    LABELS_FIELD, which reads the policy's own labels as written. Lint keeps them ASCII: RE2 and the fallback engine
+    fold other letters apart."""
+    return rule.get("field") != LABELS_FIELD and (rule.get("class") == "a2a" or rule.get("field") == "tracekit")
+
+
 def translate(pattern):
     """Check the lexical subset and return the pattern for the `regex` module: `$` means end of text and `\\s`
     excludes \\v, as in RE2, and a plain group captures nothing (no match's groups are read, and the module searches
@@ -623,6 +631,9 @@ def _lint(pol, path):
                         _lint_pattern(r[key], key != "tool" and r.get("field") == LABELS_FIELD)
                         if key == "unless" and all(re.search(translate(r[key]), s, re.ASCII) for s in ("", "\0\n")):
                             errors.append(f"{where}: can never fire: unless matches every subject")
+                        if key != "tool" and anycase(r) and not r[key].isascii():
+                            errors.append(f"{where}: {key}: it is matched in any case, where RE2 and the fallback "
+                                          "engine fold letters outside ASCII apart: spell it in ASCII")
                 except PolicyError as e:
                     errors.append(f"{where}: {key}: {e}")
             cls, field = r.get("class"), r.get("field")

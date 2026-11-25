@@ -1011,7 +1011,11 @@ Patterns must mean the same to RE2 (`google-re2`, used when installed) and to th
   under a repeat (`(a|aa)+$`, 3 s on 35): telling those from linear ones (`(([^"@\\]|\\.)*@){10}`, TK-M003) needs
   to know whether a repeated class can match what follows it. The fallback engine's 1 s budget and the speed test below catch
   them ([limits](limits.md#policy));
-- an `unless` that matches every subject (`x|`, `.*`): its rule could never fire.
+- an `unless` that matches every subject (`x|`, `.*`): its rule could never fire;
+- a negated class of an escape and its complement (`[^\w\W]`), which matches nothing and the fallback reads as any
+  character, and any pattern the fallback can't compile, as written or in any case;
+- a letter outside ASCII in the pattern or `unless` of a rule the engine matches in any case (an `a2a` rule, one on
+  the `tracekit` field): RE2 and the fallback fold them apart. A rule on the `labels` field reads labels as written.
 
 `$` means end of text and `\s` excludes `\v`, as in RE2. The fallback engine backtracks, so a large subject can be
 slow where RE2 is linear, and so can a short one under a repeat of overlapping alternatives (`secret(.|\s)*key`):

@@ -156,6 +156,16 @@ class TestLint(unittest.TestCase):
                      {"field": "labels", "pattern": "\\Bx"}, {"pattern": "a\\B"}):
             with self.subTest(rule=rule):
                 self.assertTrue(self.errors(rule))
+        # a pattern the engine matches in any case is ASCII: RE2 and the fallback fold é and É, ſ and S apart
+        tools = {**POL["tools"], "send": "a2a"}
+        for key in ("pattern", "unless"):
+            errors = self.errors({"class": "a2a", "field": "receiver", key: "café"}, tools=tools)
+            with self.subTest(key=key):
+                self.assertTrue(any(e.endswith(f"{key}: it is matched in any case, where RE2 and the fallback engine "
+                                               "fold letters outside ASCII apart: spell it in ASCII") for e in errors),
+                                errors)
+        self.assertEqual(self.errors({"class": "a2a", "field": "receiver", "pattern": "cafe"}, tools=tools), [])
+        self.assertEqual(self.errors({"field": "labels", "pattern": "café"}), [])   # labels are read as written
         import regex
         real = regex.compile
 
