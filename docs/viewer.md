@@ -506,7 +506,14 @@ folder, or null), `sources` (what was read: `signed` records, steps and holds, `
 without enough data has `why`, one with it has `title`, `line` (its evidence), `from` (its sources), `saving` (`usd`
 and `minutes`, each null when not measured; the context tip adds `pct`), `math` (the arithmetic, one step a line) and
 `fix` (`text` and `copy`, the command or line to paste, or null; null when there is nothing to fix), with the chart's
-and tables' data under the tip's own keys. A run that didn't verify is said on stderr.
+and tables' data under the tip's own keys. A run that didn't verify is said on stderr. Before it places any run in
+the window, it checks every record of the store against the signer's newest checkpoint, as the
+[weekly report](#weekly-report) does: a run holding an edited record, and every run when the store fails that check
+(a checkpoint whose signature doesn't verify, fewer records than it covers, hashes that don't make its root), counts
+as one that didn't verify, whatever its times. A run is then placed in the window by its last record the checkpoint
+covers, as the report places it, and a run with no record covered yet is always checked (it fails as not covered
+yet), so an edited time can't move a run out of the window unseen. A checkpoint note that can't be read as one at all
+stops the command with an error, as before.
 
 ### A v1 bundle
 

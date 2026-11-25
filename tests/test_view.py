@@ -106,6 +106,13 @@ class Translate(unittest.TestCase):
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
         self.assertNotIn("read", other["v2"])
 
+    def test_the_source_reader_id_keeps_its_reason_in_the_view(self):
+        # an engine id is not in a policy's rules, so the viewer's own label must show, not ""
+        [call] = self.feed(v2rec(1, "policy.decision", {"tool": "browser_use:python", "decision": "deny",
+                                                       "rule_ids": ["TK-SOURCE-PARSE"]}))
+        self.assertEqual(call["v2"]["rules"],
+                         [{"id": "TK-SOURCE-PARSE", "reason": view.ENGINE_RULES["TK-SOURCE-PARSE"]}])
+
     def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
         """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
         ended the viewer's checks of every run; an item whose type is no name is no item."""
