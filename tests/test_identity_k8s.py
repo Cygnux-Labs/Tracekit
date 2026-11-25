@@ -2,6 +2,7 @@
 mode against a fake API server, both HTTPS on loopback with certificates made here. `Jwks` and `jwt` are shared with
 tests/test_http_transport.py."""
 import base64
+import gc
 import json
 import ssl
 import threading
@@ -104,6 +105,30 @@ class Jwks:
 
 def request(token, peer="127.0.0.1"):
     return types.SimpleNamespace(headers={"Authorization": f"Bearer {token}"}, client_address=(peer, 1))
+
+
+class TestHttps(unittest.TestCase):
+    def test_a_refused_request_leaves_no_connection_open(self):
+        class Refuses(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(500)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"no")
+
+            def log_message(self, *a):
+                pass
+        pki = Pki(tmpdir(self))
+        url = https_server(self, pki, Refuses)
+        def open_sockets():
+            return {id(s) for s in gc.get_objects() if isinstance(s, ssl.SSLSocket) and s.fileno() != -1}
+        before = open_sockets()   # the server's listener
+        try:
+            k8s_sa._https("GET", url, ssl.create_default_context(cafile=pki.path))
+        except ValueError as e:
+            kept = e   # unlike assertRaises, which clears the frames: a caller that logs the error keeps them alive
+        self.assertIn("HTTP 500", str(kept))
+        self.assertEqual(open_sockets() - before, set())
 
 
 class TestJwks(unittest.TestCase):

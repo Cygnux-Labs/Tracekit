@@ -376,7 +376,14 @@ def _parser():
                    help="remove hooks from the selected agent's project settings file in DIR (the working directory "
                         "when not given) instead of its user settings file")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
-    p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
+    p.add_argument("--system", action="store_true",
+                   help="as root: remove v1 system mode (init as root without --v2): its hooks, service and configs; "
+                        "with --project DIR, also the hooks in a project an init before 1.7.0 didn't record")
+    p.add_argument("--user", metavar="NAME",
+                   help="with --system: the agent user init set up (its --user); needed unless init used --managed or "
+                        "--no-hooks, and it also removes that user's client config")
+    p.add_argument("--purge", action="store_true",
+                   help="with --v2 or --system: also delete the signer's keys, log and users")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
                    help="which coding agent's hooks to remove (default: Claude Code)")
 
@@ -920,10 +927,32 @@ def _run(a):
     if a.cmd == "doctor":
         from . import doctor
         return doctor.main(a.config, a.json, a.k8s, a.manifests, a.issuer_key)
-    if a.cmd == "uninstall" and (a.v2 or a.purge):
+    if a.cmd == "uninstall" and (a.v2 or a.system or a.purge or a.user):
         from . import install
+        if a.system:
+            if a.v2 or a.agent != "claude":
+                print("tracekit: --system takes neither --v2 nor --agent", file=sys.stderr)
+                return 2
+            try:
+                removed, kept, notes = install.uninstall_system(a.purge, a.user, a.project)
+            except install.SettingsError as e:
+                print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            print(f"v1 system mode removed: {', '.join(removed)}" if removed else
+                  "v1 system mode is not installed: nothing to remove")
+            if kept and not a.purge:
+                print(f"kept {' and '.join(kept)} (--purge deletes them)")
+            for note in notes:
+                print(note)
+            if kept and a.purge:
+                print(f"tracekit: --purge could not delete {' and '.join(kept)}", file=sys.stderr)
+                return 1
+            return 0
+        if a.user:
+            print("tracekit: --user goes with --system", file=sys.stderr)
+            return 2
         if not a.v2 or a.project or a.agent != "claude":
-            print("tracekit: --purge goes with --v2, which takes neither --project nor --agent", file=sys.stderr)
+            print("tracekit: --purge goes with --v2 or --system, which take neither --project nor --agent", file=sys.stderr)
             return 2
         try:
             kept = install.uninstall_system_v2(a.purge)
@@ -978,7 +1007,9 @@ def _run(a):
                 if not pend:
                     print("no tool calls waiting for approval")
                 for x in pend:
-                    print(f"{x['id']}  run={x['run_id']}  {x['summary']}  rules={','.join(x['rule_ids'])}  expires in {x['expires_in_s']}s")
+                    # (escaped: an agent's text can't redraw the approver's line with \r or a terminal escape)
+                    print(f"{x['id']}  run={x['run_id']}  {json.dumps(x['summary'])}  "
+                          f"rules={','.join(json.dumps(r)[1:-1] for r in x['rule_ids'])}  expires in {x['expires_in_s']}s")
                 return 0
             aid = a.approval_id
             if not aid:
@@ -986,7 +1017,7 @@ def _run(a):
                     print(f"{len(pend)} pending; name one: tracekit {a.cmd} <id>", file=sys.stderr)
                     return 2
                 aid = pend[0]["id"]
-                print(f"{a.cmd}: {pend[0]['summary']}")
+                print(f"{a.cmd}: {json.dumps(pend[0]['summary'])}")
             else:
                 hits = _match_pending(pend, aid)
                 if len(hits) > 1:
@@ -1083,7 +1114,8 @@ def _run(a):
         if a.action == "backtest":
             from .policy2.engine import Engine
             from .signer import detect
-            found, other = detect.backtest(Engine(pol), a.store, a.bundle)
+            peaks = {}
+            found, other = detect.backtest(Engine(pol), a.store, a.bundle, peaks)
             if other:
                 print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
                       "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
@@ -1094,6 +1126,15 @@ def _run(a):
                                            f"{d.get('scope', {}).get('kind')}",
                         "incident.capped": f"{d.get('cap')} cap ({d.get('trigger')})"}
                 print(f"{typ:18} {tenant}/{run_id} {what.get(typ, '')}".rstrip())
+            for lim in pol.get("limits", []):
+                seen = sorted(((cur or "", p) for (i, cur), p in peaks.items() if i == lim["id"]),
+                              key=lambda x: x[0])
+                if not seen:
+                    print(f"limit {lim['id']}: no call counted (max {lim['max']} in {lim['window']}s)")
+                for cur, p in seen:
+                    print(f"limit {lim['id']}: peak {p['value']}{' ' + cur if cur else ''} of max {lim['max']} "
+                          f"(fixed {lim['window']}s window from {p['start']}), scope {p['scope']['kind']} "
+                          f"{p['scope']['id']}, run {p['tenant']}/{p['run_id']}")
             opened = sum(t == "incident.opened" for t, *_ in found)
             print(f"{opened} incident(s) would open" + ("" if detect.Detector.of(Engine(pol)) else
                                                          ": the policy has no sequences, limits or respond triggers"))
@@ -1546,7 +1587,7 @@ def _stop_lines(c, x):
     from .integrations.claude_code import approvals_cmd
     from .policy2.compile import ENGINE_REASONS
     from .policy2.engine import Engine
-    from .signer.service import dev_data_dir
+    from .signer.service import dev_data_dir, evaluate
     try:
         kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
     except FileNotFoundError:
@@ -1557,9 +1598,10 @@ def _stop_lines(c, x):
     flags = {r["id"] for r in pol.get("flag", [])}   # a flagged call runs
     engine = dict(ENGINE_REASONS)
     if "TK-SHELL-PARSE" in x["rule_ids"] and pol and x["args"] is not None:
-        # the cause the signer gave the hook (its decision's `unread`), from the same engine on the signer's copy
+        # the cause the signer gave the hook (its decision's `unread`), read as the signer reads the call (evaluate:
+        # its working directory too) by the same engine on the signer's copy
         try:
-            cause = Engine(pol).decide(x["tool"], _args(x)).get("unread")
+            cause = evaluate(Engine(pol), x["tool"], _args(x))[0].get("unread")
         except Exception:   # as the signer's _evaluate: an engine error here leaves the general reason
             cause = None
         engine["TK-SHELL-PARSE"] = ENGINE_REASONS["TK-SHELL-PARSE"]["causes"].get(cause) or engine["TK-SHELL-PARSE"]

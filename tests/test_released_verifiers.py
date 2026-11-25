@@ -22,9 +22,11 @@ from test_a2a import A2aServer, TEXT
 from test_bundle_v2 import Log, ext_bundle, trust_config
 from test_executor import InProcess
 from test_gateway import AGENT as TOKEN_AGENT, SECRET, serve   # TOKEN_AGENT: the agent the A2A gateway's token names
-from test_reviews import ANALYZER, ME, Signed
+from test_reviews import AGENT, ANALYZER, ME, Signed
 from tracekit import a2a_gateway
+from tracekit.bundle_v2 import VERSIONS
 from tracekit.deploy import files as tkfiles
+from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -32,7 +34,7 @@ from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2", "v1.5.0", "v1.5.1", "v1.5.2", "v1.5.3",
-            "v1.6.0", "v1.7.2"]   # add each release's tag
+            "v1.6.0", "v1.7.2", "v1.7.3"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 OPENSHELL = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
@@ -151,6 +153,22 @@ class Released(Signed):
         self.call(ME, "close_run", **run)
         return run
 
+    def approve_then_retry_run(self):
+        """A run whose held call a person approved and its retry, under another id, ran: the approval.consumed names
+        the retry's decision in ext.approval.decision, which a release that doesn't read it reports as not interpreted."""
+        run = self.register(AGENT)
+        call = dict(run, stream="s", tool="ipython", args_source="parsed", args={"code": "print(1)"})   # TK-A063 holds
+        self.assertEqual(self.call(AGENT, "decide", **call, client_seq=0, tool_call_id="tc-1")["decision"], "ask")
+        aid = self.call(AGENT, "approval_request", **run, tool_call_id="tc-1")["approval_id"]
+        self.call(ME, "approval_decide", approval_id=aid, decision="approve")
+        d = self.call(AGENT, "decide", **call, client_seq=1, tool_call_id="tc-2")
+        consume = {k: v for k, v in call.items() if k not in ("stream", "client_seq")}
+        self.assertTrue(self.call(AGENT, "approval_consume", **consume, tool_call_id="tc-2", approval_id_hint=aid)["ok"])
+        self.call(AGENT, "complete", **run, stream="s", client_seq=2, tool_call_id="tc-2", decision_id=d["decision_id"],
+                  args_digest=event_hash({"tool": "ipython", "args": call["args"]}), status="ok")
+        self.call(AGENT, "close_run", **run)
+        return run
+
     def test_released_verifiers_read_todays_bundles(self):
         run = self.agent_run()
         cases = {"an agent run": (self.export(run), "1.2.0")}
@@ -169,6 +187,9 @@ class Released(Signed):
         cases["a C2C transfer"] = (self.export(self.transfer_run()), "1.2.0")
         # its assurance is dev in 1.6 (approvals: self): an older verifier says it can't verify it, never witnessed
         cases["a grant the run's own user issued"] = (self.export(self.self_grant_run()), "1.6.0")
+        cases["an approved call's retry"] = (self.export(self.approve_then_retry_run()), "1.4.0")
+        # a release older than the row of an ext name reports that name on a `not interpreted` warning in its line's place
+        read_from = {"approval decision": next(v for v, row in VERSIONS.items() if "approval.decision" in row.get("ext", ()))}
         log = Log(os.path.join(self.dir, "ext"))
         self.addCleanup(log.store.close)
         cases["an ext field and record"] = ((ext_bundle(log, os.path.join(self.dir, "ext.tkb")),
@@ -185,7 +206,9 @@ class Released(Signed):
                     if v2._version(need) <= v2._version(tag[1:]):
                         self.assertEqual((old["code"], old["integrity"]), (0, "VERIFIED"), old["checks"])
                         self.assertEqual([(c["check"], c["status"]) for c in old["checks"]],
-                                         [(c["check"], c["status"]) for c in rep.checks])
+                                         [("not interpreted", "warn") if c["check"] in read_from
+                                          and v2._version(tag[1:]) < v2._version(read_from[c["check"]])
+                                          else (c["check"], c["status"]) for c in rep.checks])
                     else:
                         self.assertEqual((old["code"], old["integrity"]), (2, f"UNVERIFIABLE (needs tracekit >= {need})"))
 

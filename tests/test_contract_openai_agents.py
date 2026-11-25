@@ -27,6 +27,7 @@ try:
     from agents import (Agent, ApplyPatchTool, LocalShellTool, Model, ModelResponse, RunState, Runner, ShellTool,
                         WebSearchTool, function_tool, set_tracing_disabled)
     from agents._tool_invocation import tool_invocation_identity_and_scope   # private: tied to the pinned minor
+    from agents.editor import ApplyPatchOperation
     from agents.items import ToolCallOutputItem
     from agents.usage import Usage
     from openai.types.responses import (Response, ResponseApplyPatchToolCall, ResponseCompletedEvent,
@@ -189,6 +190,21 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
             out = self.echo(TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "open"}}))
         self.assertEqual((out["ran"], out["seen"], out["continued"]), (["echo"], "hi", True))
 
+    def test_signer_unreachable_follows_the_fail_mode_of_the_tools_class(self):
+        down = Client(os.path.join(ac.tmpdir(self), "none.sock"))
+        self.addCleanup(down.close)
+        tk = TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "closed", "shell": "open"}})
+        a = Agent(name="contract", model=StubModel(),
+                  tools=[tk.tool(t) for t in [*TOOLS, function_tool(ac.terminal, failure_error_function=None)]])
+
+        def call(name, args):
+            ac.RAN.clear()
+            with self.assertWarns(UserWarning):   # the model responses are not recorded either
+                return invoke(a, tk, json.dumps({"name": name, "args": args, "id": "c1"}))[0]
+        out = call("terminal", {"commands": "ls"})   # class shell in the default policy
+        self.assertEqual((out["ran"], out["seen"]), (["terminal"], "ran"))
+        self.refused(call("echo", {"text": "hi"}), "signer unavailable")
+
     def test_closed_run_refuses_the_call(self):
         self.client.close_run(dict(self.d.run()))
         out = self.echo(TracekitAgents(self.d.signer, {**self.d.run(), "fail_modes": {"default": "open"}}))
@@ -254,7 +270,7 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         res = Runner.run_sync(a, state, hooks=self.tk)
         self.assertEqual((self.ran, res.final_output), ([["make pay"]], "done"))
 
-    def test_apply_patch_runs_when_allowed_and_refuses_an_ask(self):
+    def test_apply_patch_runs_when_allowed(self):
         class Editor:
             def create_file(_, op):
                 self.ran.append(op.path)
@@ -263,9 +279,143 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
                                           operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
         _, res = self.go(call, ApplyPatchTool(editor=Editor()))
         self.assertEqual((self.ran, res.new_items[1].output), (["a.txt"], "created"))
-        _, res = self.go(call, ApplyPatchTool(name="pay", editor=Editor()))
+
+    def _paused_patch(self, call_id="ap-1", path="a.txt", diff="+hi", decision="approve"):
+        class Editor:
+            def create_file(_, op):
+                self.ran.append(op.path)
+                return "created"
+        call = ResponseApplyPatchToolCall(id="ap_" + call_id, call_id=call_id, type="apply_patch_call",
+                                          status="completed",
+                                          operation={"type": "create_file", "path": path, "diff": diff})
+        a, res = self.go(call, ApplyPatchTool(name="pay", editor=Editor()))
+        aid = res.context_wrapper.context["tracekit"]["approvals"][call_id]
+        self.client.approval_decide({"approval_id": aid, "decision": decision})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        return a, state
+
+    def test_a_patch_the_policy_asks_for_waits_for_a_person_and_applies_once(self):
+        """#985: an `ask` for an ApplyPatchTool pauses the run; on resume the editor finds its call in the approval
+        the person gave, and the patch is applied once, with the operation that was approved."""
+        a, state = self._paused_patch()
+        self.assertEqual(self.ran, [])                            # paused: nothing applied before the person decided
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual((self.ran, res.final_output), (["a.txt"], "done"))
+        self.assertEqual(self.tk._patch_calls, {})                # the entry was consumed with the operation it named
+        types = [e["type"] for e in self.events(self.run_)]
+        self.assertEqual((types.count("approval.consumed"), types.count("tool.result")), (1, 1))
+
+    def test_a_patch_applies_when_its_decisions_were_applied_more_than_once(self):
+        """An app polling apply_decisions until nothing waits approves the same paused call again each time."""
+        a, state = self._paused_patch()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        Runner.run_sync(a, state, hooks=self.tk)
         self.assertEqual(self.ran, ["a.txt"])
-        self.assertIn("cannot wait", res.new_items[1].output)
+
+    def test_the_signer_refuses_a_patch_the_person_did_not_approve(self):
+        """The record only names the call: an operation that changed on its way (a saved run state is not
+        authenticated) still meets approval_consume, which binds the arguments the person approved."""
+        self._paused_patch()                                      # approved: +hi
+        raw = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                         operation={"type": "create_file", "path": "a.txt", "diff": "+ho"})
+        self.tk._remember_approved_patch(raw, "ap-1")
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+
+        res = asyncio.run(self.tk._patch("pay", fn, ApplyPatchOperation(type="create_file", path="a.txt",
+                                                                       diff="+ho")))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("TK-APPROVAL-MISMATCH", res.output)   # refused by the signer, not by the record
+
+    def test_a_patch_call_with_several_operations(self):
+        """Allowed, each operation is decided and applied, as before #985; held, an approval binds one operation's
+        arguments, so none of the call's operations is applied."""
+        class Editor:
+            def create_file(_, op):
+                self.ran.append(op.path)
+                return "created"
+        ops = [{"type": "create_file", "path": p, "diff": "+hi"} for p in ("a.txt", "b.txt")]
+        call = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                          operation=ops[0], operations=ops)   # the SDK reads the list
+        self.go(call, ApplyPatchTool(editor=Editor()))
+        self.assertEqual(self.ran, ["a.txt", "b.txt"])
+        self.ran.clear()
+        a, res = self.go(call.model_copy(update={"id": "ap_2", "call_id": "ap-2"}), ApplyPatchTool(name="pay", editor=Editor()))
+        self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["ap-2"],
+                                     "decision": "approve"})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual(self.ran, [])
+        self.assertIn("several operations", _output(res))
+
+    def test_a_rejected_patch_is_not_applied(self):
+        a, state = self._paused_patch(decision="reject")
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual(self.ran, [])
+        self.assertIn("NOT APPROVED", _output(res))
+
+    def test_a_patch_that_differs_from_the_approved_one_is_refused(self):
+        """One character is enough: the approval names the patch that was shown to the person."""
+        raw = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                         operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
+        self.tk._remember_approved_patch(raw, "ap-1")
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+
+        res = asyncio.run(self.tk._patch("pay", fn, ApplyPatchOperation(type="create_file", path="a.txt",
+                                                                        diff="+ho")))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("approve the call itself", res.output)
+
+    def test_two_identical_operations_are_refused_rather_than_sharing_one_approval(self):
+        raw = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
+                                         operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
+        self.tk._remember_approved_patch(raw, "ap-1")
+        self.tk._remember_approved_patch(raw, "ap-2")             # a second approval for the same operation
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+
+        res = asyncio.run(self.tk._patch("pay", fn, ApplyPatchOperation(type="create_file", path="a.txt",
+                                                                       diff="+hi")))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("cannot be told from the other", res.output)
+
+    def test_a_tool_scoped_approval_does_not_let_a_patch_run(self):
+        """The maintainer's answer on #985: Tracekit's approval is for one call with its exact arguments, so an
+        operation with no call-scoped entry is refused even when the SDK resumed on a tool-wide approval."""
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+
+        res = asyncio.run(self.tk._patch("pay", fn, ApplyPatchOperation(type="create_file", path="a.txt",
+                                                                       diff="+hi")))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("approve the call itself, not the tool", res.output)
+
+    def test_an_operation_the_adapter_never_asked_about_is_refused(self):
+        """#985: `needs_approval` is asked only while the run holds no approval status for the call
+        (ApplyPatchAction.execute, agents 0.23.1), so on resume the editor is handed an operation this adapter has no
+        call id for — and an approval can be tool-wide rather than per call. It must refuse rather than apply: an
+        approval that does not belong to this call is not this call's."""
+        op = ApplyPatchOperation(type="create_file", path="a.txt", diff="+hi")
+        applied = []
+
+        async def fn(o):
+            applied.append(o.path)
+            return "created"
+
+        res = asyncio.run(self.tk._patch("pay", fn, op))
+        self.assertEqual((res.status, applied), ("failed", []))
+        self.assertIn("approve the call itself, not the tool", res.output)
 
     def test_an_apps_own_context_object_waits_for_an_approval_too(self):
         @dataclasses.dataclass
@@ -353,13 +503,14 @@ class TestHeldReason(unittest.TestCase):
         self.assertEqual(res.context_wrapper.context["tracekit"]["reasons"], {"sh-1": self.REASON})
         self.client.approval_decide({"approval_id": res.context_wrapper.context["tracekit"]["approvals"]["sh-1"],
                                      "decision": "reject"})
-        # call_state gives the held rules' reasons now, not the decision's: each source of the reason shows
+        # a policy reload after the decision changes no reason: call_state answers the decision's, so a resume in
+        # another process tells the model what the same process does
         self.service.policy = self.policy("the rules' reason")
-        for resumed, why in ((tk, self.REASON), (TracekitAgents(self.client, self.run_), "the rules' reason")):
+        for resumed in (tk, TracekitAgents(self.client, self.run_)):
             with self.subTest(same_process=resumed is tk):
                 told = self.told(a, res, resumed)
                 self.assertIn("[tracekit] NOT APPROVED, nothing ran (R-PAY): rejected.", told)
-                self.assertIn(f"Why: {why}\n", told)
+                self.assertIn(f"Why: {self.REASON}\n", told)
                 self.assertNotIn("approvals", told)   # the approval commands are the person's
         self.assertEqual(self.ran, [])
 
@@ -386,13 +537,14 @@ class TestHeldReason(unittest.TestCase):
 
     def test_a_tool_that_cannot_wait_tells_the_model_why_it_was_blocked(self):
         self.serve(self.REASON)
-        class Editor:
-            def create_file(_, op):
-                self.ran.append(op.path)
-        call = ResponseApplyPatchToolCall(id="ap_1", call_id="ap-1", type="apply_patch_call", status="completed",
-                                          operation={"type": "create_file", "path": "a.txt", "diff": "+hi"})
+
+        class PayShell(LocalShellTool):
+            name = "pay"   # the policy asks for `pay`
+        call = LocalShellCall(id="ls_1", call_id="ls-1", type="local_shell_call", status="completed",
+                              action={"type": "exec", "command": ["ls"], "env": {}})
         tk = TracekitAgents(self.client, self.run_)
-        a = Agent(name="held", model=StubModel(call), tools=[tk.tool(ApplyPatchTool(name="pay", editor=Editor()))])
+        a = Agent(name="held", model=StubModel(call),
+                  tools=[tk.tool(PayShell(executor=lambda req: self.ran.append(req.data.action.command) or "ok"))])
         told = _output(Runner.run_sync(a, "go", context={}, hooks=tk))
         self.assertIn("[tracekit] BLOCKED, nothing ran (R-PAY): approval required, and this tool cannot wait for one.",
                       told)

@@ -851,7 +851,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 if "TK-SHELL-PARSE" in rec["rule_ids"]:
                     unread_causes[decision["unread"]] += 1
             if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
-                rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
+                rec["text"] = call_text(tool, _shown(tool, scrub(args), _dotenv(args)))
             calls_out.append(rec)
         mine = calls_out[start:]
         if name in agents:   # an agent's second default folder: its counts add to the first's
@@ -875,7 +875,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
-        # --since's window in seconds since the epoch: --share counts each day of it from its start, never printed
+        # --since's window in seconds since the epoch: --share counts each day (or week, over 28 days) of it from its start, never printed
         "window": [since_ts, now] if since else None,
         "sessions": len({(c["agent"], c["session"]) for c in calls}),
         "agents": agents,
@@ -968,31 +968,35 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
 
 
 def _by_day(report: dict) -> list[str]:
-    """--share's day lines, with --since: the calls by decision for each 24 hours of the window, numbered from its
-    start, a day with none too, then those with no time, if any. A day number, never a date: without --since there are
-    none, as day 1 would be the first call's and say how far back the transcripts go."""
+    """--share's day or week lines, with --since: the calls by decision for each 24 hours of a window up to 28 days,
+    or each 7 days of a longer one (the last may be shorter), numbered from its start, a day or week with none too,
+    then those with no time, if any. A number, never a date: without --since there are none, as day 1 would be the
+    first call's and say how far back the transcripts go."""
     if report["window"] is None:
         return []
     start, end = report["window"]
-    # lean: one line a day however long the window (a --since of a year prints 365); fold them into weeks if people
-    # post windows that long
-    days = [collections.Counter() for _ in range(max(1, math.ceil((end - start) / 86400)))]
+    weekly = (end - start) > 28 * 86400
+    step = 7 * 86400 if weekly else 86400
+    buckets = [collections.Counter() for _ in range(max(1, math.ceil((end - start) / step)))]
     no_time = collections.Counter()
     for c in report["calls"]:
-        i = None if c["time"] is None else int((datetime.fromisoformat(c["time"]).timestamp() - start) // 86400)
-        if i is None or i >= 0:   # a call before the window is on no day
-            (no_time if i is None else days[min(i, len(days) - 1)])[c["verdict"]] += 1
-    return ["Calls by decision and day (24 hours each, day 1 from the window's start):",
-            *(f"  Day {i}: " + _counts({k: d[k] for k in DECISIONS}) for i, d in enumerate(days, 1)),
+        i = None if c["time"] is None else int((datetime.fromisoformat(c["time"]).timestamp() - start) // step)
+        if i is None or i >= 0:   # a call before the window is on no day or week
+            (no_time if i is None else buckets[min(i, len(buckets) - 1)])[c["verdict"]] += 1
+    header = ("Calls by decision and week (7 days each, week 1 from the window's start):" if weekly
+              else "Calls by decision and day (24 hours each, day 1 from the window's start):")
+    label = "Week" if weekly else "Day"
+    return [header,
+            *(f"  {label} {i}: " + _counts({k: b[k] for k in DECISIONS}) for i, b in enumerate(buckets, 1)),
             *["  No time: " + _counts({k: no_time[k] for k in DECISIONS})] * bool(no_time)]
 
 
 def share(report: dict) -> str:
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md), as tracekit report
-    --share gives them: of --since, the window's length and each day's calls by decision (_by_day); no session, path,
-    policy file, date, time, call or rule description, and no rule id but Tracekit's own (report.share_rules). A rule
-    is why its call was decided when its section is the call's decision; an engine check, which has no section, is not
-    placed."""
+    --share gives them: of --since, the window's length and each day's (or week's, over 28 days) calls by decision
+    (_by_day); no session, path, policy file, date, time, call or rule description, and no rule id but Tracekit's own
+    (report.share_rules). A rule is why its call was decided when its section is the call's decision; an engine check,
+    which has no section, is not placed."""
     n, s, secs = report["counts"], report["sessions"], report["sections"]
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])

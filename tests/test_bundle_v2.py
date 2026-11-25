@@ -18,7 +18,7 @@ import zipfile
 from unittest import mock
 
 
-from factories import damage_crc, overinflate, patch_env, rewrite_bundle, unverified_bundles
+from factories import damage_crc, overinflate, patch_env, rewrite_bundle, serial, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.demo_server import tamper
@@ -161,6 +161,29 @@ def ext_bundle(log, out, field=NOTE, record=("acme.note", {"detail": {"k": "v"}}
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
+
+
+def approval_decision_bundle(log, out, name="d1", decision_tcid="t1", decision_attempt=0, consume_tcid="t1",
+                             consume_attempt=0, after=False):
+    """Export to `out` a run whose held decision d1 (`decision_tcid`, `decision_attempt`) an approval.consumed
+    (`consume_tcid`, `consume_attempt`, `after` it or before) names in ext.approval.decision as `name`."""
+    log.epoch(KEY1)
+    log.register()
+    decision = ("policy.decision", {"tool_use_id": decision_tcid, "decision": "ask", "rule_ids": ["PAY"],
+                                    "decision_id": "d1"}, {"tool_call_id": decision_tcid, "attempt": decision_attempt})
+    consume = ("approval.consumed", {"approval_id": "apr-1"}, {"tool_call_id": consume_tcid, "attempt": consume_attempt,
+                                                               "ext": {"approval.decision": name}})
+    for typ, data, fields in ([consume, decision] if after else [decision, consume]):
+        log.add(typ, data, **fields)
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
+# the approval decision line of approval_decision_bundle's: passes as the signer writes it, else a warning
+APPROVAL_DECISIONS = {"the call's decision before it": {}, "no such decision": {"name": "d2"},
+                      "another tool call id": {"consume_tcid": "t2"}, "another attempt": {"consume_attempt": 1},
+                      "after the consume": {"after": True}, "not a string": {"name": 1}}
 
 
 class Case(unittest.TestCase):
@@ -828,6 +851,7 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         self.assert_fails(self.mutate(out, edit=lambda files, m: files.update({"policies/x.json": b"{}"})), "manifest")
 
+    @serial
     def test_a_run_of_tiny_lines_is_refused_before_it_is_parsed(self):
         _, out = self.honest()
 
@@ -1662,6 +1686,16 @@ class TestExt(Case):
                 out = ext_bundle(self.log(f"s-{random.random()}"), os.path.join(self.d, f"{random.random()}.tkb"),
                                  field, record)
                 self.assert_fails(out, "signatures")
+
+    def test_an_approval_decision_names_a_decision_of_its_call(self):
+        """ext.approval.decision (1.8.0): the consume's name is a policy.decision of its run, call id and attempt that
+        comes before it. A name the bundle doesn't hold there is a warning, not a failure (an ext name is not critical)."""
+        for name, kw in APPROVAL_DECISIONS.items():
+            with self.subTest(name):
+                rep, code = self.verify(approval_decision_bundle(self.log(f"approval-decision-{random.random()}"),
+                                                                 os.path.join(self.d, f"a{random.random()}.tkb"), **kw))
+                self.assertEqual((code, next(c["status"] for c in rep.checks if c["check"] == "approval decision")),
+                                 (0, "warn" if kw else "pass"))
 
     def test_an_ext_interpretation_adds_only_its_own_lines(self):
         """What may go in ext: every line a verifier that doesn't interpret a name prints stays true without it, so the

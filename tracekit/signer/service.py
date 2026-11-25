@@ -335,7 +335,7 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
-    provenance, public_witness, yamlmini
+    lessons, provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -371,6 +371,7 @@ APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
+HIDDEN_CODE = privacy.HIDDEN_CODE   # a held call whose approver's copy would hide code: denied (_shown)
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
@@ -468,13 +469,14 @@ EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
 EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
-# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id and
-# its text's sha256 (_observe refuses any other). On the dev signer, where lessons live, a run of nothing else (at most
-# ANSWERS_KEPT: `tracekit tips` writes one run per command) keeps its content past retention (expire_content), as the
-# Claude Code hook reads each answer back before it gives a lesson (lessons.verified)
+# a person's answer to a lesson (tracekit.lessons.PERSON): an observe whose value is only an action, a lesson's id,
+# its text's sha256 and, on a retire, the record that disproved it (`because`: RUN:SEQ) (_observe refuses any other).
+# On the dev signer, where lessons live, a run of nothing else (at most ANSWERS_KEPT: `tracekit tips` writes one run per
+# command) keeps its content past retention (expire_content), as the Claude Code hook reads each answer back before it
+# gives a lesson (lessons.verified)
 LESSON_ANSWERS = "tracekit:lessons:person"
 LESSON_ANSWER = (frozenset(("approve", "retire", "restore", "add")), re.compile(r"L-[0-9a-f]{8}"),
-                 re.compile(r"[0-9a-f]{64}"))
+                 re.compile(r"[0-9a-f]{64}"), lessons.SIGNED)
 ANSWER_RUN = frozenset(("run.registered", "run.closing", "run.final"))   # what else such a run holds
 ANSWERS_KEPT = 64
 CONTENT_SWEEP_S = 3600.0
@@ -530,6 +532,20 @@ def _stricter(a, b):
     return d
 
 
+def _in_workdir(policy, tool, args, d, untrusted):
+    """`d`, shell call `tool`'s decision, and each of its readings in the working directory it names
+    (classes.in_workdir), the strictest standing; held (TK-SHELL-PARSE) where it names more than one or one that isn't
+    text. (Each reading is a decision of its own, never looser than it reads, as `d` is: engine.decide's fallback for
+    a spent budget.)"""
+    moved = classes.in_workdir(args)
+    if moved is classes.UNREAD:
+        return _stricter(d, {"verdict": policy.policy.get("on_parse_error", "ask"), "rule_ids": ["TK-SHELL-PARSE"],
+                             "policy_hash": policy.policy_hash, "engine": policy.engine, "unread": "workdir"})
+    for reading in moved or ():
+        d = _stricter(d, policy.decide(tool, reading, untrusted=untrusted))
+    return d
+
+
 def evaluate(policy, tool, args, hint=None, untrusted=None):
     """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
     hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
@@ -541,11 +557,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
     its type), logged with its traceback, never an exception that drops the connection and lets the call run
     unrecorded; a RecursionError is the request's nesting, which call() refuses."""
     try:
+        # a shell tool's own working directory (Codex's and OpenCode's workdir, Gemini CLI's dir_path, Cursor's
+        # working_directory: classes.in_workdir) is where its command runs: the call is decided as `cd <dir> &&
+        # <command>` too, so a relative path it names is read in that folder; a call that names more than one working
+        # directory, or one that isn't text, is held, so it is read three times at most
         d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        d = _in_workdir(policy, tool, args, d, untrusted) if cls == "shell" else d
         # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+            d = _in_workdir(policy, listed, args, d, untrusted) if policy.tool_class(listed) == "shell" else d
         if tool in FILE_TOOLS and cls == "unknown":
             d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
         # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text
@@ -554,17 +576,17 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # NUL (agent_hooks.UNKNOWN), unread, and is decided without it too, so a deny the text makes stands. Text typed
         # into a running process (Hermes Agent's process_manage write or submit) is also decided as the shell line it
         # is, where that process is a shell, counting only where a deny or ask rule of the pack matches it: a line a
-        # shell can't read (a REPL's) isn't held for that
-        typed = args.get("typed_line")
-        for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
+        # shell can't read (a REPL's) isn't held for that. Both are privacy.typed_lines, which an approver's copy reads
+        # as shell lines too
+        lines = privacy.typed_lines(tool, args)
+        typed = args[privacy.TYPED_LINE] if privacy.TYPED_LINE in lines else None
+        for text in [typed, typed.replace("\x00", "")] if typed is not None else []:
             b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
             if b["verdict"] in ("ask", "deny"):
                 d = _stricter(d, b)
         flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
-        data = args.get("data")
-        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
-                isinstance(data, str):
-            b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
+        if "data" in lines and cls == "unknown":
+            b = policy.decide("Bash", {"command": args["data"]}, untrusted=untrusted)
             if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
                 d = _stricter(d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
@@ -682,10 +704,17 @@ def _digested(v):
     return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
-def _shown(args, dotenv):
-    """The approver's copy of parsed `args`: privacy.redact, and each digest under `typed_secrets` (a secret the
-    Browser Use adapter typed) hidden, since an approver could test guesses of a weak secret against it."""
-    shown = privacy.redact(args, dotenv)[0]
+def _shown(tool, args, dotenv, unclean=None, noted=True, budget=None):
+    """The approver's copy of a call of `tool` with parsed `args`: privacy.approver_copy, each shell line or argv
+    under an argument the engine reads as a command (privacy.COMMAND_KEYS, typed_lines) redacted as the shell reads
+    it, so a value hides nothing that runs after it, and, `noted`, a string redaction may have hid more than values in
+    starting with how much it hid (privacy.NOTE); and each digest under `typed_secrets` (a secret the Browser Use
+    adapter typed) hidden, since an approver could test guesses of a weak secret against it. `unclean`, a list: gets
+    True when it hides more than clean values, so a held call is denied (TK-HIDDEN-CODE). `budget`: the call's
+    privacy.Budget, which another copy of the same call reuses."""
+    shown, hides = privacy.approver_copy(args, dotenv, tool, noted, budget)
+    if hides and unclean is not None:
+        unclean.append(True)
     if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
         shown = {**shown, "typed_secrets": {n: [d if not (isinstance(d, str) and _DIGEST.fullmatch(d))
                                                 else "[REDACTED:typed_secret]" for d in v] if isinstance(v, list) else v
@@ -847,6 +876,12 @@ def _holder(gw, req):
     """Who holds a call a request decides or answers: (the gateway, the caller it names), or (None, None) for the run's
     client itself (SignerService._hold)."""
     return (subject(gw), req["caller"]) if gw else (None, None)
+
+
+def _agent(agent_id):
+    """A call's event fields for the sub-agent decide named (`agent_id`, as the harness reported it: descriptive, never
+    an identity, which the run token's caller is), spawned by the main agent; none for the main agent's own call."""
+    return {"agent_id": agent_id, "parent_id": "main"} if agent_id and agent_id != "main" else {}
 
 
 def _process_identity():
@@ -2202,16 +2237,18 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         return evaluate(self.policy, tool, args, hint, untrusted)
 
-    def _reasons(self, ids, unread=None):
+    def _reasons(self, ids, unread=None, policy=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
         INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
         fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
         for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
-        so its label is no reason it was denied or held."""
+        so its label is no reason it was denied or held. `policy`: the Engine whose rules these are (this signer's)."""
+        if HIDDEN_CODE in ids:   # its reason alone: the call can't be approved, whatever held it
+            ids = [HIDDEN_CODE]
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
-        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
+        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in (policy or self.policy).rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
@@ -2452,6 +2489,16 @@ class SignerService:
                 pass
         self._kept[policy_hash] = kept
         return kept
+
+    def _recorded_reason(self, call):
+        """The reason of decision `call` as its record gives it (replayed, pipeline.CALL_KEYS): the reasons signed with
+        it, then for a deny or ask its rules' reasons in the policy it was decided under (none when that one isn't
+        kept). What decide said from memory only is not in the record: a person's earlier no, a constraint's text (a
+        name out of the call's arguments), a containment's, the cause of a TK-SHELL-PARSE."""
+        policy = self.policy if call.get("policy_hash") in (None, self.policy.policy_hash) else \
+            self._kept_policy(call["policy_hash"])
+        rules = policy and call["decision"] in ("deny", "ask") and self._reasons(call["rule_ids"], policy=policy)
+        return "; ".join(x for x in (*(call.get("reasons") or ()), rules) if x)[:1024]
 
     def _untrusted_results(self, tool, policy_hash):
         """Whether `tool`'s results are untrusted under this signer's policy or the one its call was decided under
@@ -3116,7 +3163,17 @@ class SignerService:
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
+        aid = req.get("agent_id")
         args, digest = self._args(req)
+        # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE). One budget for the
+        # call's copies: the copy kept of a call it doesn't hold, and its noted one (an approver's) when it holds it
+        unclean, budget, copies = [], privacy.Budget(), {}
+        shown = _shown(tool, args, _dotenv(args), unclean, noted=False, budget=budget) if digest else None
+
+        def noted():   # the approver's copy: once, for the approval request and the content vault
+            if "noted" not in copies:
+                copies["noted"] = _shown(tool, args, _dotenv(args), budget=budget)
+            return copies["noted"]
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
@@ -3215,6 +3272,9 @@ class SignerService:
                 record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
                 which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
+                if verdict == "ask" and unclean:   # no person can see what they'd approve: never asked, and recorded
+                    verdict, rule_ids = "deny", rule_ids + [HIDDEN_CODE]
+                    tx.set(run["denied"], digest, True)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
                          **({"args_commitment": commitment} if commitment else {}),
@@ -3223,15 +3283,16 @@ class SignerService:
                         "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                         "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
                         "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
-                        "policy_hash": self.policy.policy_hash}
+                        "policy_hash": self.policy.policy_hash, **({"agent_id": aid} if aid else {})}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
-                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
+                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"],
+                                       "shown": noted() if digest else None}
                     if agent and rule_ids == ruled[0]["rule_ids"]:
                         call["agent"] = agent
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top, **({"ext": ext, "ts": now} if ext else {}))
+                          **top, **_agent(aid), **({"ext": ext, "ts": now} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
@@ -3267,12 +3328,13 @@ class SignerService:
                 out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
+            tx.set(run["calls"][tcid], "reason", out.get("reason", ""))   # what call_state answers
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
                 out["send_result"] = True
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
-        if written and written[-1][1]:
-            self._retain(key, *written[-1], _shown(args, _dotenv(args)))
+        if written and written[-1][1]:   # what a held call's approver read, with its note; else the copy alone
+            self._retain(key, *written[-1], noted() if out.get("decision") == "ask" else shown)
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
@@ -3343,7 +3405,7 @@ class SignerService:
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest,
                                                      **({"via": holder[0]} if gw else {})},
-                           tool_call_id=tcid, attempt=attempt, **top)
+                           tool_call_id=tcid, attempt=attempt, **top, **_agent(call.get("agent_id")))
             written.append(seq)
             latest = run["calls"].get(tcid)
             if latest and latest["attempt"] == attempt:   # what call_state answers
@@ -3386,14 +3448,18 @@ class SignerService:
     def _observe(self, identity, req):
         identity, gw = self._as_caller(identity, "observe", req)
         key, top = self._authorize(identity, req, gw), T2 if gw else {}
-        v, (actions, lid, sha) = req["value"], LESSON_ANSWER
-        if req["source"] == LESSON_ANSWERS and not (isinstance(v, dict) and set(v) == {"action", "id", "sha256"} and (
-                isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
-                and lid.fullmatch(v["id"])
-                and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"]))):
+        v, (actions, lid, sha, because) = req["value"], LESSON_ANSWER
+        if req["source"] == LESSON_ANSWERS and not (
+                isinstance(v, dict) and set(v) - {"because"} == {"action", "id", "sha256"} and (
+                    isinstance(v["action"], str) and v["action"] in actions and isinstance(v["id"], str)
+                    and lid.fullmatch(v["id"])
+                    and isinstance(v["sha256"], str) and sha.fullmatch(v["sha256"])
+                    and ("because" not in v or v["action"] == "retire" and isinstance(v["because"], str)
+                         and because.fullmatch(v["because"])))):
             raise RPCError("invalid_request", f"a {LESSON_ANSWERS} observe's value is an action "
-                                              f"({', '.join(sorted(actions))}), a lesson's id and its text's sha256, "
-                                              "and nothing else")
+                                              f"({', '.join(sorted(actions))}), a lesson's id, its text's sha256 and, "
+                                              "on a retire, the record that disproved it (because: RUN:SEQ), and "
+                                              "nothing else")
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -3715,7 +3781,8 @@ class SignerService:
                     reask = reason.startswith("reask_after_reject")
             if agent:
                 data["agent"] = agent
-            shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
+            # the copy decide made (of the parsed args, so a raw copy stays valid JSON)
+            shown = p.get("shown") or _shown(call["tool"], args, call["dotenv"])
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}
@@ -4096,8 +4163,16 @@ class SignerService:
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
-                # under this call's tool_call_id; the approval.request it names has the earlier attempt's
-                tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                # under this call's tool_call_id; the approval.request it names has the earlier attempt's. The decision
+                # the use was checked against: the current call when its arguments are the approved ones (a retry), else
+                # the decision the approval was asked for (the call under its id whose arguments changed since). It goes
+                # in the non-critical slot, so a verifier that doesn't interpret it still verifies the bundle (1.8.0)
+                data, ext = {"approval_id": aid}, None
+                if call and call.get("decision_id") and call.get("attempt") == attempt and self._same(call, digest):
+                    ext = {"approval.decision": call["decision_id"]}
+                elif isinstance(a.get("decision_id"), str) and a.get("attempt", 0) == attempt:
+                    ext = {"approval.decision": a["decision_id"]}
+                tx.emit(run, "approval.consumed", data, source="signer", **top, **({"ext": ext} if ext else {}))
                 if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
                     tx.set(call, "refused", None)
                 rec = run.get("rec")
@@ -4967,11 +5042,12 @@ class SignerService:
         return {"events": events, "next_seq": next_seq}
 
     def _call_state(self, identity, req):
-        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
-        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
-        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
-        nothing."""
+        """What the signer recorded of the latest attempt of a call of the run: its decision and the reason decide gave,
+        its approval and whether this attempt consumed it, a refused consume, and its result; {} for a call never
+        decided. The LangChain gate reads it to go on with a ToolNode's calls when the node runs again after a resume,
+        in any process. Writes nothing."""
         key, tcid = self._authorize(identity, req), req["tool_call_id"]
+        replayed = []   # the call, replayed from its record (a crash since the last snapshot)
 
         def state(tx):
             call = self.log.runs[key].get("calls", {}).get(tcid)
@@ -4980,8 +5056,10 @@ class SignerService:
             attempt = call["attempt"]
             out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
                    "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
-            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
-                out["reason"] = why
+            if call.get("reason") is None:
+                replayed.append(call)
+            elif call["reason"]:
+                out["reason"] = call["reason"]
             if call.get("tool") and self.policy.untrusted_results(call["tool"]):
                 out["send_result"] = True
             if "args_digest" in req:
@@ -4996,7 +5074,10 @@ class SignerService:
             if call.get("ended"):
                 out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
             return out
-        return self.log.write(state)
+        out = self.log.write(state)
+        if replayed and (why := self._recorded_reason(replayed[0])):   # off the writer: it may load a kept policy
+            out["reason"] = why
+        return out
 
     def _call_claim(self, identity, req):
         """The one pass of a call's node that goes on with the call after its tool paused the run itself (interrupt()),
@@ -5989,6 +6070,9 @@ def main(argv=None):
     q = sub.add_parser("serve", help="run the signer in the foreground")
     q.add_argument("--close-on-stop", metavar="FILE",
                    help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
+    q.add_argument("--log-level", choices=("warning", "info", "debug"),
+                   help="log Tracekit's lines to stderr from this level up: warning (the default), info (adds the HTTP "
+                        "request log) or debug; other libraries print only warnings and errors")
     mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
@@ -6048,6 +6132,10 @@ def main(argv=None):
     g.add_argument("--config")
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir")
     a = ap.parse_args(argv)
+    if a.cmd == "serve" and a.log_level:
+        # Tracekit's loggers only: other libraries stay at warning, as botocore's debug log prints AWS credentials
+        logging.basicConfig()
+        logging.getLogger("tracekit").setLevel(a.log_level.upper())
     if a.cmd == "serve" and a.dev:
         return _serve_dev()
     if a.cmd == "reveal":
@@ -6126,7 +6214,13 @@ def main(argv=None):
             return 2
         from tracekit.storage import postgres
         try:
-            print(f"schema version {postgres.migrate(postgres.read_dsn(cfg['storage']['postgres']))}")
+            dsn = postgres.read_dsn(cfg["storage"]["postgres"])
+            before = postgres.version(dsn)
+            print(f"schema version {postgres.migrate(dsn)}")
+            if before == 1:   # it added the content vault's tables, and granted nothing on them (a fresh store's
+                # first deploy grants all of GRANTS)
+                print("the content vault's tables are new: grant the signer's role these, or every item it keeps "
+                      "reads back not_retained:\n" + postgres.VAULT_GRANTS.format(role="<the signer's role>"))
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer migrate: {e}", file=sys.stderr)
             return 1

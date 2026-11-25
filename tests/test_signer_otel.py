@@ -203,6 +203,26 @@ class TestImport(Signer):
                          [("aaaaaaaaaaaaaaaa", "mcp:everything/echo", "T3"), ("dddddddddddddddd", "mcp:everything/echo", "T3")])
         self.assertEqual([e["data"]["ok"] for e in self.events("tool.result")], [True, False])
 
+    def test_docker_mcp_gateway_spans_import_as_tool_calls(self):
+        # what docker/mcp-gateway (v0.44.3, pkg/telemetry/telemetry.go:413-422 StartToolCallSpan,
+        # pkg/gateway/handlers.go:68-73 and pkg/gateway/tool_policy.go:71-84) emits: a CLIENT span (kind=3) named mcp.tool.call
+        call = {"mcp.tool.name": "fetch", "mcp.server.name": "curl", "mcp.server.type": "docker",
+                "mcp.server.image": "mcp/curl:latest"}
+        spans = [span("aaaaaaaaaaaaaaaa", "mcp.tool.call", call, parent=None, end=12),
+                 span("bbbbbbbbbbbbbbbb", "mcp.tool.call", call, parent=None, start=20, end=21, status=2, trace="8" * 32),
+                 span("cccccccccccccccc", "mcp.tool.call", {"mcp.tool.name": "fetch"}, parent=None, start=25, end=26, trace="a" * 32),
+                 span("dddddddddddddddd", "mcp.tool.call", {"mcp.server.name": "curl", "mcp.server.type": "docker"},
+                      parent=None, start=30, end=31, trace="9" * 32),
+                 span("eeeeeeeeeeeeeeee", "mcp.list.tools", {"mcp.list.type": "tools"}, parent=None)]
+        for sp in spans:
+            sp["kind"] = 2 if sp["name"] == "mcp.list.tools" else 3
+        status, out = self.post(self.open(), body(*spans, service="docker-mcp-gateway"))
+        self.assertEqual((status, out), (200, {}))
+        self.assertEqual([(e["span_id"], e["data"]["name"], e["tier"]) for e in self.events("tool.call")],
+                         [("aaaaaaaaaaaaaaaa", "mcp:curl/fetch", "T3"), ("bbbbbbbbbbbbbbbb", "mcp:curl/fetch", "T3"),
+                          ("cccccccccccccccc", "fetch", "T3")])
+        self.assertEqual([e["data"]["ok"] for e in self.events("tool.result")], [True, False, True])
+
     def test_span_count_cap(self):
         s = self.open(otlp={"max_spans": 1})
         status, out = self.post(s, json.dumps(agent_trace()).encode())

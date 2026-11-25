@@ -20,7 +20,7 @@ tracekit report --share --since 7d     # the week's counts, to post
 `tracekit report` does ([weekly report](viewer.md#weekly-report)) and prints its counts alone:
 
 ```text
-Tracekit 1.7.2 field report (tracekit report --share): 7 days
+Tracekit 1.7.3 field report (tracekit report --share): 7 days
 Integrity: the store verified, 31 of 31 runs verify
 Runs that verify, by agent: claude-code 27, codex 2, other 2
 Tool calls: 18,204   allow 15,733, flag 2,318, ask 61, deny 92
@@ -71,7 +71,7 @@ of the calls it matched, marked as `report --share` marks it.
 | Whether the store verifies, and how many runs do (`report`) | A run id, a session id, a user id or any identity |
 | The runs that verify, by agent: Tracekit's own names, every other as `other` (`report`); the number of sessions (`audit`) | A tool's arguments, a command, a path or a URL it touched |
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
-| With `--since`, tool calls by decision for each day of the window, numbered from its start (`Day 1`, 24 hours each), and those with no time on a `No time` line (`audit`): with the date you post it, a reader can tell which days the agent ran | A day's date, weekday or hour, or when the window starts |
+| With `--since`, tool calls by decision numbered from the window's start — for each day up to 28 days (`Day 1`, 24 hours each) or each week over 28 days (`Week 1`, 7 days each; the last week may be shorter) — and those with no time on a `No time` line (`audit`): with the date you post it, a reader can tell which days or weeks the agent ran | A day's date, weekday or hour, or when the window starts |
 | Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
 | Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many were approved (by a person or the run's own user, as on a dev signer) and how many never approved were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |

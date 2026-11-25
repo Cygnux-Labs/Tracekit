@@ -258,6 +258,11 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
     warn: "A record carries a gateway amendment where or how the signer never writes one. The record verified like "
       + "every other.",
   },
+  "approval decision": {
+    pass: "Each used approval names the decision it ran under: one of the same call and attempt, signed before the use.",
+    warn: "A used approval names a decision the bundle doesn't hold before it, of another call or attempt, or no "
+      + "decision at all: the signer never writes that. The record verified like every other.",
+  },
   "openshell policy": {
     pass: "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into the run as "
       + "OpenShell's report.",

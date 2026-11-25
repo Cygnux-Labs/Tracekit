@@ -44,7 +44,8 @@ When the signer's `status` says its content vault is on (signer.yaml `content.re
 `status` grant), each model_event also carries the exchange's `body`: the request as sent, the response as received
 (a stream: as assembled), only when it fits max_record_bytes and half a frame and is strict JSON (else no body: the
 record keeps the raw bytes' digest, as with the vault off). The signer redacts it, commits to it
-and keeps it encrypted (docs/privacy.md).
+and keeps it encrypted (docs/privacy.md). The status answer is kept for `VaultBody`'s interval (a minute) and asked
+again after that, so turning the vault on or off reaches a gateway that is already running.
 
 show_reasoning (on unless false): a request that has the model reason but hides the reasoning is sent amended to show
 it (show_reasoning(): Anthropic thinking display, OpenAI Responses reasoning summary), and its request record says so

@@ -89,6 +89,18 @@ def new_id():
     return os.urandom(16).hex()
 
 
+def subagent_id(value):
+    """`value` if the event format can hold it as a sub-agent's id, else None: a string of 1 to 200 characters that
+    encodes as UTF-8. A lone surrogate does not encode, so the request carrying it could not be sent."""
+    if not isinstance(value, str) or not 0 < len(value) <= 200:
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
+
+
 def b64e(b):
     return base64.b64encode(b).decode("ascii")
 

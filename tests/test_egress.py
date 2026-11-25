@@ -387,6 +387,23 @@ class TestExplainsLint(unittest.TestCase):
         self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.pythonhosted.org", "pypi.org", "files?.example.com",
                                                             "*.ibm.de", "*.bbc.co.uk"]}]), [])
 
+    def test_a_host_glob_over_a_public_suffix_is_too_loose_and_names_it(self):
+        for h, named in (("*.co.uk", "co.uk is a public suffix"), ("*.github.io", "github.io is a public suffix"),
+                         ("*.vercel.app", "vercel.app is a public suffix"), ("cdn*.CO.UK", "co.uk is a public suffix"),
+                         ("*.s3.amazonaws.com", "s3.amazonaws.com is a public suffix"),
+                         # `*` spans dots when an explains host is matched, so a parent covers the suffix too
+                         ("*.amazonaws.com", "amazonaws.com covers the public suffix s3.amazonaws.com")):
+            with self.subTest(h):
+                errors = " ".join(self.lint([{"tool": "x", "hosts": [h]}]))
+                self.assertIn("is too loose", errors)
+                self.assertIn(named, errors)
+        for h in ("?.co.uk", "[a-z].github.io", "*.*.co.uk", "*.github.io."):
+            with self.subTest(h):
+                self.assertIn("is too loose", " ".join(self.lint([{"tool": "x", "hosts": [h]}])))
+        self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.bbc.co.uk", "*.cdn.example.co.uk", "docs.github.io",
+                                                            "*.tracekit.github.io", "*.pythonhosted.org", "*.ibm.de"]}]),
+                         [])
+
 
 def client_hello(name):
     ctx = ssl.create_default_context()
@@ -468,6 +485,7 @@ class TestProxy(unittest.TestCase):
 
     def connect(self, authority, auth=None):
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\n".encode()
                   + (f"Proxy-Authorization: {auth or self.auth}\r\n" if auth != "" else "").encode() + b"\r\n")
         head = b""
@@ -563,6 +581,7 @@ class TestProxy(unittest.TestCase):
             t = time.monotonic()
             for i in range(4):   # SOCKS5's version byte, then nothing
                 s = socket.create_connection(self.srv.server_address[:2], 10)
+                self.addCleanup(s.close)
                 s.sendall(b"\x05")
                 held.append(s)
                 deadline = time.monotonic() + 2
@@ -572,6 +591,7 @@ class TestProxy(unittest.TestCase):
             self.assertLess(time.monotonic() - t, 3)
             who[0] = 2000
             other = socket.create_connection(self.srv.server_address[:2], 5)   # another agent's
+            self.addCleanup(other.close)
             other.sendall(b"\x05\x01\x00")
             self.assertEqual(other.recv(2), b"\x05\x00")   # attributed by its uid
             for s in held[:3]:   # none sent its greeting in time: cut, not left to the 30 s deadline
@@ -599,6 +619,7 @@ class TestProxy(unittest.TestCase):
 
     def test_plain_http_is_forwarded(self):
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"GET http://localhost:{self.up.port}/x?y=1 HTTP/1.1\r\nHost: localhost\r\n"
                   f"Proxy-Authorization: {self.auth}\r\n\r\n".encode())
         self.assertEqual(self.read(s), b"pong")
@@ -609,6 +630,7 @@ class TestProxy(unittest.TestCase):
         self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)
         for url in ("http://a!b.example/", f"http://{'a' * 254}/"):
             s = socket.create_connection(self.srv.server_address[:2], 5)
+            self.addCleanup(s.close)
             s.sendall(f"GET {url} HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n".encode())
             self.assertTrue(self.read(s).startswith(b"HTTP/1.1 400"))
         s, status = self.connect(f"{'a' * 254}:443")
@@ -622,6 +644,7 @@ class TestProxy(unittest.TestCase):
         self.assertTrue(status.startswith("HTTP/1.1 403"), status)
         self.assertIn("loopback, private or link-local address: add it to allow", self.read(s).decode())
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"GET http://localhost:{self.up.port}/ HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n"
                   .encode())
         self.assertTrue(self.read(s).startswith(b"HTTP/1.1 403"))
@@ -742,6 +765,7 @@ class TestProxy(unittest.TestCase):
         self.assertTrue(status.startswith("HTTP/1.1 407"), status)
         self.assertIn("not one this signer issued for that run: send the run token", self.read(s).decode())
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"GET http://localhost:{self.up.port}/ HTTP/1.1\r\nProxy-Authorization: {made_up}\r\n\r\n".encode())
         self.assertTrue(self.read(s).startswith(b"HTTP/1.1 407"))
         for token in ("tok mac", "t\u00f6k", "t" * 1025):   # no token a run could have: the signer isn't asked
@@ -784,6 +808,7 @@ class TestProxy(unittest.TestCase):
         threading.Thread(target=serve, daemon=True).start()
         body = os.urandom(300_000)
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"POST http://localhost:{up.getsockname()[1]}/u HTTP/1.1\r\nContent-Length: {len(body)}\r\n"
                   f"Proxy-Authorization: {self.auth}\r\n\r\n".encode())
         for i in range(0, len(body), 16384):   # as a client sends a large body: in pieces, over time
@@ -808,6 +833,7 @@ class TestProxy(unittest.TestCase):
                 c.sendall(b"HTTP/1.1 204 No Content\r\n\r\n")
         threading.Thread(target=serve, daemon=True).start()
         s = socket.create_connection(self.srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         s.sendall(f"POST http://localhost:{up.getsockname()[1]}/u HTTP/1.1\r\nContent-Length: 2000\r\n"
                   f"Proxy-Authorization: {self.auth}\r\n\r\n".encode() + b"a" * 1000)
         self.assertTrue(early.wait(5), "the proxy held the body back until all of it had arrived")
@@ -817,7 +843,9 @@ class TestProxy(unittest.TestCase):
 
     @unittest.skipUnless(sys.byteorder == "little", "the rows below are a little-endian machine's")
     def socks(self, host, **kw):
-        return socks5(self.srv.server_address[:2], host, self.up.port, **kw)
+        s, replies = socks5(self.srv.server_address[:2], host, self.up.port, **kw)
+        self.addCleanup(s.close)
+        return s, replies
 
     def test_a_socks5_address_is_reached_by_its_sni_and_its_credentials_are_the_run(self):
         s, replies = self.socks("127.0.0.1")
@@ -907,6 +935,7 @@ class TestProxy(unittest.TestCase):
         s.sendall(client_hello("localhost"))
         self.assertEqual(self.read(s), b"pong")
         s = tls.wrap_socket(socket.create_connection(self.srv.server_address[:2], 5))
+        self.addCleanup(s.close)
         s.sendall(f"CONNECT localhost:{self.up.port} HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n".encode())
         self.assertTrue(s.recv(65536).startswith(b"HTTP/1.1 200 Connection established"))
         s.close()
@@ -935,11 +964,13 @@ class TestEndToEnd(Observed):
         srv.observer.flush()
         run = self.register()
         s = socket.create_connection(srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         made_up = base64.b64encode(f"{run['run_id']}:made.up".encode()).decode()
         s.sendall(f"CONNECT localhost:{up.port} HTTP/1.1\r\nProxy-Authorization: Basic {made_up}\r\n\r\n".encode())
         self.assertTrue(s.recv(65536).startswith(b"HTTP/1.1 407"))
         self.assertEqual(up.got, [])
         s = socket.create_connection(srv.server_address[:2], 5)
+        self.addCleanup(s.close)
         auth = base64.b64encode(f"{run['run_id']}:{run['run_token']}".encode()).decode()
         s.sendall(f"CONNECT localhost:{up.port} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode())
         while not s.recv(65536).endswith(b"\r\n\r\n"):
@@ -967,8 +998,10 @@ class TestEndToEnd(Observed):
         run, other = self.register(), self.register()
         with mock.patch.object(sys, "stderr", io.StringIO()):
             s, replies = socks5(srv.server_address[:2], "127.0.0.1", up.port, creds=(run["run_id"], other["run_token"]))
+        self.addCleanup(s.close)
         self.assertEqual(replies, [b"\x05\x02", b"\x01\x01"])   # another run's token
         s, replies = socks5(srv.server_address[:2], "127.0.0.1", up.port, creds=(run["run_id"], run["run_token"]))
+        self.addCleanup(s.close)
         self.assertEqual(replies[-1], OPENED)
         s.sendall(client_hello("localhost"))
         while s.recv(65536):

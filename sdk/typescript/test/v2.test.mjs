@@ -36,7 +36,7 @@ async function pyServer(t, code) {
   t.after(() => p.kill());
   let out = "";
   for await (const d of p.stdout) if ((out += d).includes("\n")) break;
-  return JSON.parse(out);
+  return { ...JSON.parse(out), proc: p };
 }
 
 const PY_FAKE = `
@@ -355,6 +355,121 @@ test("fake: approvalConsume refuses, never rejects, when the signer is incompati
   assert.equal(warnings.filter((m) => m.startsWith("tracekit: Bash is blocked: approval_consume failed: the Tracekit signer test")).length, 1, warnings);
 });
 
+// RunHandle.transfer (docs/c2c.md#runtransfer): Python's, for a TypeScript agent. The fake allows it unless `handle` says otherwise.
+const consumeOk = (f) => f.method === "approval_consume" && { ok: true, rule_ids: [] };
+const sha = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+
+test("fake: a transfer is decided as a2a:transfer with the arguments Python sends, consumed, then completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: consumeOk });
+  const run = await client.registerRun("a");
+  const payload = Buffer.from("kv-cache bytes");
+  const out = await run.transfer("qwen2.5-7b@abc", "llama-3.2-1b@def", payload, "kv-cache",
+    { projector: "c2c-fuser@1", measured: { weights_hash: "sha256:00" } });
+  assert.deepEqual([out.decision, out.ok, out.reason], ["allow", true, undefined]);
+  const [decide, consume, complete, ...more] = frames.filter((f) => ["decide", "approval_consume", "complete"].includes(f.method));
+  assert.deepEqual([decide.method, consume.method, complete.method, more], ["decide", "approval_consume", "complete", []]);
+  assert.match(decide.tool_call_id, /^tx-[0-9a-f]{32}$/);
+  assert.equal(decide.tool, "a2a:transfer");
+  assert.deepEqual(decide.args, {
+    sender: "qwen2.5-7b@abc", receiver: "llama-3.2-1b@def", modality: "kv-cache", projector: "c2c-fuser@1",
+    claimed: ["modality", "projector", "receiver", "sender"], size: payload.length, digest: sha(payload),
+    weights_hash: "sha256:00", measured: ["digest", "size", "weights_hash"],
+  });
+  assert.deepEqual([consume.tool_call_id, consume.tool, consume.args], [decide.tool_call_id, "a2a:transfer", decide.args]);
+  assert.deepEqual([complete.tool_call_id, complete.status, complete.result, complete.args_digest],
+    [decide.tool_call_id, "ok", undefined, argsDigest("a2a:transfer", decide.args)]);   // the payload is not kept unless asked
+});
+
+test("a transfer sends the arguments Python's RunHandle.transfer sends", { skip: NO_PY }, async (t) => {
+  const cases = [   // sender, receiver, payload (hex), modality, projector, measured
+    ["qwen2.5-7b@abc", "llama-3.2-1b@def", "00ff10", "kv-cache", "c2c-fuser@1", { weights_hash: "sha256:00", layers: [1, 2] }],
+    ["a@1", "b@2", "", "text", null, null],
+    ["a@1", "b@2", Buffer.from("é😀 text").toString("hex"), "embedding", null, { note: "x" }],
+    ["a@1", "b@2", "", "text", null, { "😀": 1, "！": 2 }],   // above U+FFFF, and in U+E000..U+FFFF: listed by code point
+  ];
+  const theirs = JSON.parse(py(`
+import json, sys
+from tracekit.sdk.client import RunHandle
+class Capture(RunHandle):
+    def __init__(self): pass
+    def decide(self, tcid, tool, args, **kw):
+        self.args = args
+        return {"decision": "deny", "rule_ids": []}
+out = []
+for sender, receiver, data, modality, projector, measured in json.load(sys.stdin):
+    h = Capture()
+    h.transfer(sender, receiver, bytes.fromhex(data), modality, projector, measured)
+    out.append(h.args)
+print(json.dumps(out))`, JSON.stringify(cases)));
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide" && { decision: "deny", decision_id: "d", rule_ids: [] } });
+  const run = await client.registerRun("a");
+  for (const [sender, receiver, data, modality, projector, measured] of cases)
+    await run.transfer(sender, receiver, Buffer.from(data, "hex"), modality, { projector: projector ?? undefined, measured: measured ?? undefined });
+  assert.deepEqual(frames.filter((f) => f.method === "decide").map((f) => f.args), theirs);
+});
+
+test("fake: a transfer's ask is waited for 300 s; one left unanswered ends not ok and its approval is abandoned", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide"
+    ? { decision: "ask", decision_id: `dec-${f.tool_call_id}`, rule_ids: ["R-A2A"], run_seq: 1 }
+    : f.method === "approval_wait" && { approval_id: f.approval_id, state: "requested" } });
+  const run = await client.registerRun("a");
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.decision, out.ok, out.reason], ["ask", false, "approval requested"]);
+  assert.equal(frames.find((f) => f.method === "approval_wait").timeout_ms, 300000);
+  assert.equal(frames.find((f) => f.method === "approval_abandon").approval_id, "apr-1");
+  assert.deepEqual(frames.filter((f) => ["approval_consume", "complete"].includes(f.method)), []);
+});
+
+test("fake: a transfer the person approves is consumed with the approval's id and then completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide"
+    ? { decision: "ask", decision_id: `dec-${f.tool_call_id}`, rule_ids: [], run_seq: 1 } : consumeOk(f) });
+  const run = await client.registerRun("a");
+  assert.equal((await run.transfer("a@1", "b@2", "payload", "text")).ok, true);
+  assert.equal(frames.find((f) => f.method === "approval_consume").approval_id_hint, "apr-1");
+  assert.equal(frames.filter((f) => f.method === "complete").length, 1);
+});
+
+test("fake: a transfer the policy denies is not ok, and is neither consumed nor completed", async (t) => {
+  const { client, frames } = await fake(t, { handle: (f) => f.method === "decide" && { decision: "deny", decision_id: "d", rule_ids: ["R1"] } });
+  const run = await client.registerRun("a");
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.decision, out.ok, out.rule_ids], ["deny", false, ["R1"]]);
+  assert.deepEqual(frames.filter((f) => ["approval_consume", "complete"].includes(f.method)), []);
+});
+
+test("fake: a transfer is not ok with the signer unreachable, whatever the run's fail modes", async (t) => {
+  const { client, stop } = await fake(t, { failModes: { default: "open" } });
+  const run = await client.registerRun("a");
+  await stop();
+  const out = await run.transfer("a@1", "b@2", "payload", "text");
+  assert.deepEqual([out.decision, out.unavailable, out.ok], ["allow", true, false]);   // the fail mode is open
+  assert.match(out.reason, /^signer unavailable: /);   // turned down on the decision, not by a consume that failed
+});
+
+test("fake: a transfer's measured keys may not replace its own fields", async (t) => {
+  const { client, frames } = await fake(t);
+  const run = await client.registerRun("a");
+  for (const key of ["sender", "receiver", "modality", "projector", "size", "digest", "claimed", "measured"])
+    await assert.rejects(run.transfer("a@1", "b@2", "payload", "text", { measured: { [key]: 1 } }),
+      (e) => e instanceof Error && e.message === `measured keys replace reserved transfer fields: ${key}`);
+  assert.deepEqual(frames.filter((f) => f.method === "decide"), []);
+});
+
+test("fake: keep sends the payload as hex in the result, up to half a frame; a larger one is recorded without it", async (t) => {
+  const { client, frames } = await fake(t, { handle: consumeOk });
+  const run = await client.registerRun("a");
+  const warnings = [], seen = (w) => warnings.push(w.message);
+  process.on("warning", seen);
+  t.after(() => process.off("warning", seen));
+  assert.equal((await run.transfer("a@1", "b@2", Buffer.from("abc"), "text", { keep: true })).ok, true);
+  for (const n of [262_137, 262_138])   // {"payload":"<2n hex>"} in exactly half a frame, as Python's sendable; one byte more
+    assert.equal((await run.transfer("a@1", "b@2", Buffer.alloc(n), "text", { keep: true })).ok, true);
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result),
+    [{ payload: "616263" }, { payload: "00".repeat(262_137) }, undefined]);
+  await sleep(10);
+  assert.equal(warnings.filter((m) => /^tracekit: transfer tx-[0-9a-f]{32} is recorded but not kept/.test(m)).length, 1, warnings);
+});
+
 test("fake: the fail mode of the tool class applies only while the signer is unreachable", async (t) => {
   const { client, stop, path } = await fake(t, { failModes: { default: "closed", net: "open" } });
   const run = await client.registerRun("a");
@@ -478,6 +593,246 @@ test("HTTPS: refusals and lost connections are counted apart; a retry refused as
   await assert.rejects(decide([outage, reused]).call,
     (e) => e instanceof RPCError && e.code === "unavailable" && e.message === "unavailable: storage refused writes");
   await assert.rejects(decide([reused]).call, (e) => e instanceof RPCError && e.code === "client_seq_reused");
+});
+
+const done = { decision_id: "dec-1", args_digest: "sha256:" + "0".repeat(64) };
+
+/** The "recorded" warnings `complete()` gives, which resolves null. */
+async function warned(complete) {
+  const said = [], on = (w) => w.name === "TracekitWarning" && w.message.includes("recorded") && said.push(w.message);
+  process.on("warning", on);
+  try {
+    assert.equal(await complete(), null);
+    await new Promise(setImmediate);   // warnings are emitted on the next tick
+  } finally {
+    process.off("warning", on);
+  }
+  return said;
+}
+
+test("HTTPS: complete says whether its result was recorded", async () => {
+  const outage = { error: { code: "unavailable", message: "storage refused writes" } };
+  const reused = { error: { code: "client_seq_reused", message: "s/0" } };
+  const mismatch = { error: { code: "args_mismatch", message: "no" } };
+  const lost = await lostAfterSend();
+  const complete = (answers) => {
+    const c = https(async () => {
+      const a = answers.shift();   // "lost": a connection lost after the request went out
+      if (a === "lost") throw lost;
+      return a;
+    });
+    return warned(() => new RunHandle(c, { run_id: "r1", run_token: "t" }).complete("c1", "ok", done));
+  };
+  // the retry refused as recorded after an outage was recorded: no warning
+  assert.deepEqual(await complete([outage, reused]), []);
+  const [unknown] = await complete(["lost", "lost", "lost"]);
+  assert.match(unknown, /^tracekit: the result of c1 may not have been recorded \(lost the connection to the signer 3 times\)\. Once the run closes, its bundle has c1's tool\.result if it was, or a decided_not_completed gap if it wasn't\.$/);
+  const [refused] = await complete([mismatch]);
+  assert.match(refused, /^tracekit: the result of c1 was not recorded: args_mismatch: no\. Once the run closes, its bundle shows c1 as decided and not completed\.$/);
+});
+
+test("fake: a signer gone after reading complete may have recorded it", async (t) => {
+  const signer = await fake(t, { handle: (f) => f.method === "complete" && (signer.stop(), new Promise(() => {})) });
+  const run = await signer.client.registerRun("a");
+  const [said] = await warned(() => run.complete("c1", "ok", done));
+  assert.match(said, /^tracekit: the result of c1 may not have been recorded \(no signer answering at .*\)\. Once the run closes, its bundle has c1's tool\.result if it was, or a decided_not_completed gap if it wasn't\.$/);
+});
+
+test("fake: a retry refused as already recorded after a drop was recorded", async (t) => {
+  const seen = new Set();
+  const { client, frames } = await fake(t, { handle: (f, { sock }) => f.method === "complete" && (seen.has(f.request_id)
+    ? { error: { code: "client_seq_reused", message: "s/0" } } : (seen.add(f.request_id), sock.destroy(), new Promise(() => {}))) });
+  const run = await client.registerRun("a");
+  assert.deepEqual(await warned(() => run.complete("c1", "ok", done)), []);
+  await assert.rejects(client.call("complete", { run_id: run.runId, run_token: run.runToken, tool_call_id: "c2", status: "ok", ...done }),
+    (e) => e instanceof RPCError && e.code === "client_seq_reused" && e.recorded === true);
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => [f.tool_call_id, f.client_seq]),
+    [["c1", 0], ["c1", 0], ["c2", 1], ["c2", 1]]);
+});
+
+test("fake: a call on the connection a timeout destroyed sent nothing", async (t) => {
+  const { path } = await fake(t, { handle: (f) => f.method === "complete" && f.tool_call_id === "c1" && new Promise(() => {}) });
+  const client = new Client({ signer: path, timeoutMs: 300 });
+  const run = await client.registerRun("a");
+  const [first] = await warned(() => run.complete("c1", "ok", done));
+  assert.match(first, /^tracekit: the result of c1 may not have been recorded /);
+  const [second] = await warned(() => run.complete("c2", "ok", done));   // c2 never reached the signer
+  assert.match(second, /^tracekit: the result of c2 was not recorded: /);
+  const call = (id) => client.call("complete", { run_id: run.runId, run_token: run.runToken, tool_call_id: id, status: "ok", ...done });
+  await assert.rejects(call("c1"), (e) => e instanceof SignerUnavailable && e.recorded === null);   // times out again
+  await new Promise(setImmediate);   // the socket's close event may still be to come
+  await assert.rejects(client.registerRun("a"),   // still the destroyed socket: sent nothing
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+});
+
+test("fake: a write that times out after it went out may have been recorded", async (t) => {
+  const { path } = await fake(t, { handle: (f) => f.method === "complete" && sleep(1000).then(() => null) });
+  const client = new Client({ signer: path, timeoutMs: 300 });
+  const run = await client.registerRun("a");
+  await assert.rejects(client.call("complete", { run_id: run.runId, run_token: run.runToken, tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
+});
+
+/** A lost connection of a request that went out: the client's own ConnectionLost (not exported), taken from a
+ * refused connect's. */
+async function lostAfterSend() {
+  const e = await new Client({ signer: `https://127.0.0.1:${await closedPort()}` }).https.post({ method: "status" }, 1000)
+    .catch((e) => e);
+  return new e.constructor();
+}
+
+/** A port on this host nothing listens on. */
+async function closedPort() {
+  const srv = createServer().listen(0, "127.0.0.1");
+  await new Promise((r) => srv.once("listening", r));
+  const { port } = srv.address();
+  await new Promise((r) => srv.close(r));
+  return port;
+}
+
+test("HTTPS: a signer refusing a fresh client's hello records nothing", async () => {
+  const c = new Client({ signer: `https://127.0.0.1:${await closedPort()}`, timeoutMs: 2000 });
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+  const [said] = await warned(() => new RunHandle(c, { run_id: "r1", run_token: "t" }).complete("c1", "ok", done));
+  assert.match(said, /^tracekit: the result of c1 was not recorded: lost the connection to the signer 3 times\. /);
+});
+
+test("HTTPS: a signer gone after the hello records nothing it refused", async () => {
+  const port = await closedPort();
+  let gone = false;
+  const c = https((f) => (gone ? Object.getPrototypeOf(c.https).post.call(   // the client's own post: refused
+    { url: new URL(`https://127.0.0.1:${port}/v2/rpc`), agent: c.https.agent }, f, 1000) : {}));
+  await c.call("status", {});   // the hello is cached
+  gone = true;
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+  const [said] = await warned(() => new RunHandle(c, { run_id: "r1", run_token: "t" }).complete("c1", "ok", done));
+  assert.match(said, /^tracekit: the result of c1 was not recorded: lost the connection to the signer 3 times\. /);
+});
+
+test("HTTPS: approval_consume's reason has no unknown-outcome sentence", async () => {
+  const lost = await lostAfterSend();
+  const c = https(() => Promise.reject(lost));
+  const said = [], on = (w) => w.name === "TracekitWarning" && said.push(w.message);
+  process.on("warning", on);
+  let r;
+  try {
+    r = await new RunHandle(c, { run_id: "r1", run_token: "t" }).approvalConsume("c1", "Bash", {});
+    await new Promise(setImmediate);
+  } finally {
+    process.off("warning", on);
+  }
+  assert.deepEqual([r.ok, r.reason], [false, "approval_consume failed: lost the connection to the signer 3 times"]);
+  assert.deepEqual(said.filter((m) => /may have been recorded/.test(m)), []);
+});
+
+test("HTTPS: decide's outage path is worded as before", async () => {
+  const lost = await lostAfterSend();
+  const c = https(() => Promise.reject(lost));   // a lost connection after the request went out
+  const said = [], on = (w) => w.name === "TracekitWarning" && said.push(w.message);
+  process.on("warning", on);
+  let d;
+  try {
+    d = await new RunHandle(c, { run_id: "r1", run_token: "t", fail_modes: { default: "closed" } }).decide("c1", "Bash", {});
+    await new Promise(setImmediate);
+  } finally {
+    process.off("warning", on);
+  }
+  assert.deepEqual([d.decision, d.reason], ["deny", "signer unavailable: lost the connection to the signer 3 times"]);
+  assert.deepEqual(said.filter((m) => /may have been recorded/.test(m)), []);
+});
+
+test("HTTPS: only a write is left unknown", async () => {
+  const lost = await lostAfterSend();   // the request went out: a write's outcome would be unknown
+  const c = https(() => Promise.reject(lost));
+  await assert.rejects(c.call("status", {}),
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+});
+
+test("HTTPS: a write whose connect (TLS handshake) times out records nothing", async (t) => {
+  const srv = createServer((s) => t.after(() => s.destroy())).listen(0, "127.0.0.1");   // accepts, never speaks TLS
+  await new Promise((r) => srv.once("listening", r));
+  t.after(() => srv.close());
+  const c = https((f) => Object.getPrototypeOf(c.https).post.call(
+    { url: new URL(`https://127.0.0.1:${srv.address().port}/v2/rpc`), agent: c.https.agent }, f, 200), 2000);
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
+});
+
+/** A TLS signer from Python (keep-alive) whose handler reads each request, then runs `then`. */
+const pyTls = (then) => `
+import http.server, json, os, ssl, sys, tempfile, threading, time
+sys.path.insert(0, ${JSON.stringify(join(ROOT, "tests"))})
+from test_identity_mtls import Pki
+d = tempfile.mkdtemp()
+pki = Pki(d)
+cert, key = pki.issue("server")
+class Signer(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"]))
+${then}
+ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+ctx.load_cert_chain(cert, key)
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Signer)
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print(json.dumps({"port": srv.server_address[1], "ca": pki.path}), flush=True)
+sys.stdin.read()`;
+/** Closes without answering. */
+const PY_DROPS = pyTls("        self.close_connection = True");
+/** Answers only after 2 s. */
+const PY_LATE = pyTls(`        time.sleep(2)
+        self.send_response(200)
+        self.send_header("Content-Length", "2")
+        self.end_headers()
+        self.wfile.write(b"{}")`);
+
+test("HTTPS: a write lost after it went out may have been recorded", { skip: NO_PKI }, async (t) => {
+  const info = await pyServer(t, PY_DROPS);
+  process.env.TRACEKIT_SIGNER_CA = info.ca;
+  t.after(() => delete process.env.TRACEKIT_SIGNER_CA);
+  const c = https((f) => Object.getPrototypeOf(c.https).post.call(
+    { url: new URL(`https://127.0.0.1:${info.port}/v2/rpc`), agent: c.https.agent }, f, 1000), 3000);
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
+});
+
+test("HTTPS: a write that times out after it went out may have been recorded", { skip: NO_PKI }, async (t) => {
+  const info = await pyServer(t, PY_LATE);
+  process.env.TRACEKIT_SIGNER_CA = info.ca;
+  t.after(() => delete process.env.TRACEKIT_SIGNER_CA);
+  const c = https((f) => Object.getPrototypeOf(c.https).post.call(
+    { url: new URL(`https://127.0.0.1:${info.port}/v2/rpc`), agent: c.https.agent }, f, 500), 3000);
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === null && /may have been recorded/.test(e.message));
+});
+
+test("HTTPS: a keep-alive signer gone after the hello records nothing (Python's server)", { skip: NO_PKI }, async (t) => {
+  const info = await pyServer(t, PY_FAKE + `
+import os, tempfile
+sys.path.insert(0, ${JSON.stringify(join(ROOT, "tests"))})
+from test_identity_mtls import Pki
+from tracekit.transport import http as tk_http
+d = tempfile.mkdtemp()
+pki, token = Pki(d), os.path.join(d, "bearer")
+cert, key = pki.issue("server")
+with open(token, "w") as f:
+    f.write("t" * 40)
+_, auths, tls = tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key, "authenticators": ["token"], "token_file": token})
+srv = tk_http.HttpServer(("127.0.0.1", 0), auths, tls, handle)
+run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
+  Object.assign(process.env, { TRACEKIT_SIGNER_CA: info.ca, TRACEKIT_API_KEY: info.token });
+  t.after(() => ["TRACEKIT_SIGNER_CA", "TRACEKIT_API_KEY"].forEach((k) => delete process.env[k]));
+  const c = new Client({ signer: `https://127.0.0.1:${info.port}`, timeoutMs: 3000 });
+  assert.equal((await c.call("status")).rpc_version, RPC_VERSION);   // the hello is cached, its connection kept
+  const exited = new Promise((r) => info.proc.once("exit", r));
+  info.proc.stdin.end();   // gone: its kept connection closed, every connect refused
+  await exited;
+  await sleep(200);
+  await assert.rejects(c.call("complete", { run_id: "r1", run_token: "t", tool_call_id: "c1", status: "ok", ...done }),
+    (e) => e instanceof SignerUnavailable && e.recorded === false && !/may have been recorded/.test(e.message));
 });
 
 test("HTTPS: an event waiting behind an unanswered one gives up in time and uses its client_seq", async () => {

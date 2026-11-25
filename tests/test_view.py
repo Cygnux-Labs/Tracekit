@@ -106,6 +106,13 @@ class Translate(unittest.TestCase):
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
         self.assertNotIn("read", other["v2"])
 
+    def test_the_source_reader_id_keeps_its_reason_in_the_view(self):
+        # an engine id is not in a policy's rules, so the viewer's own label must show, not ""
+        [call] = self.feed(v2rec(1, "policy.decision", {"tool": "browser_use:python", "decision": "deny",
+                                                       "rule_ids": ["TK-SOURCE-PARSE"]}))
+        self.assertEqual(call["v2"]["rules"],
+                         [{"id": "TK-SOURCE-PARSE", "reason": view.ENGINE_RULES["TK-SOURCE-PARSE"]}])
+
     def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
         """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
         ended the viewer's checks of every run; an item whose type is no name is no item."""
@@ -476,6 +483,131 @@ class Translate(unittest.TestCase):
         self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
                          ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
 
+    def test_a_consume_that_names_its_decision_folds_exactly_that_one(self):
+        """Format 1.8's ext.approval.decision: the consume names its decision, so the other ask of the same id and
+        attempt stays a call of its own (not answered), rather than the five-condition rule folding the last ask."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        recs = [*self.HELD, self.approved(4),
+                v2rec(5, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"}),
+                v2rec(8, "tool.result", {"tool_use_id": "c1", "ok": True, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(9, "run.final", {"head_run_seq": 9})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
+                         ({"ask": 2}, 1, {"approved · ran": 1, "not answered": 1},
+                          {"approved · ran": 1, "not answered": 1}))
+
+    def test_the_page_folds_the_decision_a_consume_names(self):
+        """The page's foldsOf reads the same ext name: the named retry folds into the held call, the unnamed ask stays."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+                v2rec(2, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}}, tool_call_id="c1"),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve"}),
+                v2rec(5, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"})]
+        out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
+            const rows = {json.dumps(self.feed(*recs))};
+            foldsOf(rows, FOLDS);
+            process.stdout.write(JSON.stringify([...FOLDS].map(([a, b]) => [a.v2.run_seq, b.v2.run_seq])));"""))
+        self.assertEqual(out, [[6, 2]])
+
+    def test_a_named_decision_from_another_call_or_after_its_consume_is_not_folded(self):
+        """A hand-built consume that names a decision under another call, or one after it, is not the held call's retry:
+        the verifier warns about it, and the view stays conservative."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        held = [v2rec(2, "policy.decision", ask, tool_call_id="c1", attempt=0),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}},
+                      tool_call_id="c1", attempt=0)]
+        other = {**ask, "decision_id": "d2"}
+        self.assertEqual(import_v2.held_calls([*held, v2rec(
+            4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+            ext={"approval.decision": "d2"}), v2rec(5, "policy.decision", other, tool_call_id="c1", attempt=0)])[0], {})
+        self.assertEqual(import_v2.held_calls([*held, v2rec(
+            4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1", attempt=0,
+            ext={"approval.decision": "d2"}), v2rec(5, "policy.decision", other, tool_call_id="c1", attempt=0)])[0], {})
+        # The consume comes after the decision in both, so only the call-key guard can reject them.
+        self.assertEqual(import_v2.held_calls([*held, v2rec(
+            5, "policy.decision", other, tool_call_id="c1", attempt=0), v2rec(
+            6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+            ext={"approval.decision": "d2"})])[0], {})
+        self.assertEqual(import_v2.held_calls([*held, v2rec(
+            5, "policy.decision", other, tool_call_id="c2", attempt=0), v2rec(
+            6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+            ext={"approval.decision": "d2"})])[0], {})
+
+    def test_the_page_does_not_fold_a_name_behind_another_call_or_after_its_consume(self):
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        base = [v2rec(2, "policy.decision", ask, tool_call_id="c1", attempt=0),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}},
+                      tool_call_id="c1", attempt=0)]
+        for consume, decision in (
+                (v2rec(4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+                       ext={"approval.decision": "d2"}),
+                 v2rec(5, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1", attempt=0)),
+                (v2rec(4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1", attempt=0,
+                       ext={"approval.decision": "d2"}),
+                 v2rec(5, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1", attempt=0))):
+            with self.subTest(consume["event"]["tool_call_id"]):
+                recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), *base, consume, decision]
+                out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
+                    const rows = {json.dumps(self.feed(*recs))};
+                    foldsOf(rows, FOLDS);
+                    process.stdout.write(JSON.stringify([...FOLDS.keys()].map((a) => a.v2.run_seq)));"""))
+                self.assertEqual(out, [])
+        # The consume comes after the decision in both, so only the call-key guards can reject them.
+        for decision, consume in (
+                (v2rec(5, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1", attempt=0),
+                 v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+                       ext={"approval.decision": "d2"})),
+                (v2rec(5, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c2", attempt=0),
+                 v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2", attempt=0,
+                       ext={"approval.decision": "d2"}))):
+            with self.subTest(consume["event"]["tool_call_id"]):
+                recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), *base, decision, consume]
+                out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
+                    const rows = {json.dumps(self.feed(*recs))};
+                    foldsOf(rows, FOLDS);
+                    process.stdout.write(JSON.stringify([...FOLDS.keys()].map((a) => a.v2.run_seq)));"""))
+                self.assertEqual(out, [])
+
+    def test_a_retry_at_a_new_attempt_of_the_held_calls_id_is_that_call(self):
+        """The approval is reused for attempt 1 of the same tool call: the named decision is that call's retry, even
+        though its attempt differs from the held decision's; the page folds it too."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+                v2rec(2, "policy.decision", ask, tool_call_id="c1", attempt=0),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}},
+                      tool_call_id="c1", attempt=0),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve"}),
+                v2rec(5, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1", attempt=1),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1", attempt=1,
+                      ext={"approval.decision": "d2"}),
+                v2rec(7, "tool.result", {"tool_use_id": "c1", "ok": True, "decision_id": "d2"},
+                      tool_call_id="c1", attempt=1),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
+                         ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
+        out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
+            const rows = {json.dumps(self.feed(*recs))};
+            foldsOf(rows, FOLDS);
+            process.stdout.write(JSON.stringify([...FOLDS].map(([a, b]) => [a.v2.run_seq, b.v2.run_seq])));"""))
+        self.assertEqual(out, [[5, 2]])
+
     def test_a_refused_use_is_the_call_of_its_own_attempt(self):
         """Attempt 0 approved, attempt 1 asked with its own request, then attempt 0's approval was refused for changed
         arguments: the review filed the refusal under the id's latest call (attempt 1) while the page and HORIZON file it
@@ -757,9 +889,13 @@ class View(unittest.TestCase):
             def __getattr__(self, name):
                 return getattr(self.r, name)
 
+        me = threading.current_thread()
+
         def reader(cfg, **kw):
-            opened.append(1)
             r = real_reader(cfg, **kw)
+            if threading.current_thread() is not me:   # the feed's own threads open readers too: not this request's
+                return r
+            opened.append(1)
             return Behind(r) if len(opened) == 1 else r
         with mock.patch.object(view, "reader", side_effect=reader):
             self.assertIsNotNone(feed.rows(observe.ALL, *key))
@@ -943,9 +1079,10 @@ class View(unittest.TestCase):
         with open(path, "rb") as f:
             orig = f.read()
 
-        def put(p, data):
-            with open(p, "wb") as f:
+        def put(p, data):   # replaced whole, as the store writes its note: the feed's thread reads it meanwhile
+            with open(p + ".tmp", "wb") as f:
                 f.write(data)
+            os.replace(p + ".tmp", p)
         feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
         self.assertIsNone(feed.stopped)
@@ -1822,8 +1959,10 @@ class View(unittest.TestCase):
 
     def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
         run_id = self.finished_run()
-        seen = []
-        feed = store_feed(self, {"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        # `feed` is named before its threads start: the mirror thread can call on_run before the constructor returns
+        seen, feed = [], view.StoreFeed.__new__(view.StoreFeed)
+        feed.__init__({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        self.addCleanup(feed.close)
         self.report(feed, run_id)
         wait_for(lambda: seen, 15)
         shown, (tenant, rid, records, reasons) = seen[0]
@@ -2273,7 +2412,10 @@ class WhyLive(WhyServer):
         SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
         t.join(10)
         self.assertEqual(msgs[0]["run_id"], "remote-live")
-        self.assertGreaterEqual(len(msgs), 3)  # flushed per tool call, not only at the end
+        # announced while the run is live, not only at its end: a scan takes every batch that arrived since the last
+        # one, so how many messages a run gets depends on timing (3 or more alone, 2 under a parallel suite's load)
+        self.assertFalse(msgs[0]["finished"])
+        self.assertTrue(msgs[-1]["finished"])
         highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]
         self.assertGreaterEqual(len(highs), 1)
         self.assertEqual(len(highs), len({(a["title"], a["node"]) for a in highs}))

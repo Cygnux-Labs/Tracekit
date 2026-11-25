@@ -46,9 +46,10 @@ from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingB
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations import executor_tools, said, version_check
+from tracekit.integrations.recording_warning import recording_warning
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
-from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
+from tracekit.sdk.client import SignerUnavailable, _class_of, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -125,7 +126,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
         try:
             d = await rpc("decide", tool_call_id=tid, tool=tool, args_source="parsed", args=args)
         except SignerUnavailable as e:
-            return {} if fail_open(rpc.fail_modes) else _deny(f"signer unavailable ({e})")
+            return {} if fail_open(rpc.fail_modes, _class_of(tool)) else _deny(f"signer unavailable ({e})")
         except Exception as e:
             return _deny(f"signer error ({type(e).__name__}: {e})")
         try:
@@ -167,8 +168,11 @@ def tracekit_hooks(signer, run, mcp_servers=None):
             await rpc("complete", tool_call_id=inp.get("tool_use_id") or tool_use_id, decision_id=call[0],
                       args_digest=call[1], **out)
         except Exception as e:   # the tool ran: its result reaches the model either way
-            warnings.warn(f"tracekit: outcome of tool call {inp.get('tool_use_id') or tool_use_id} not recorded: {e}",
-                          stacklevel=2)
+            message = recording_warning(
+                f"outcome of tool call {inp.get('tool_use_id') or tool_use_id}", e
+            )
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=2)
         return {}
 
     async def end(inp, tool_use_id, ctx):
@@ -268,7 +272,9 @@ class TracekitSessionStore:
         try:
             await self._rpc.send("state_write", req)
         except (RPCError, SignerUnavailable) as e:
-            warnings.warn(f"tracekit: transcript commitment for {k} not recorded: {e}", stacklevel=3)
+            message = recording_warning(f"transcript commitment for {k}", e)
+            if message is not None:
+                warnings.warn(f"tracekit: {message}", stacklevel=3)
             if isinstance(e, SignerUnavailable):
                 self._lost[k] = req, digest
             return not isinstance(e, SignerUnavailable)

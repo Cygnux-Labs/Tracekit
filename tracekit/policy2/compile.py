@@ -12,7 +12,7 @@ import os
 import posixpath
 import re
 
-from .. import yamlmini
+from .. import privacy, yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 from ..wiki import wiki_url
 
@@ -24,9 +24,11 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
              "remedy"}
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
-RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT",
-                "TK-HOOK-BLOCKED"}   # tracekit audit's id for a call an agent's hook denies before the policy
+RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-SOURCE-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR",
+                "TK-ARGS-INVALID", "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME",
+                "TK-GRANT",
+                "TK-HOOK-BLOCKED",   # tracekit audit's id for a call an agent's hook denies before the policy
+                privacy.HIDDEN_CODE}
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -50,6 +52,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                        "remedy": "Name the program in full."},
                            "input": {"reason": "a shell or interpreter runs code from a pipe, a file or its input",
                                      "remedy": "Write out the commands it would run."},
+                           "code": {"reason": "an interpreter's program runs a command or code it makes at run time "
+                                              "(a variable, a here-doc, a computed string)",
+                                    "remedy": "Write the command into the program as plain text, or run it directly."},
                            "function": {"reason": "it defines a shell function it doesn't call, or exports one",
                                         "remedy": "Call the function on the same line, or run its commands directly."},
                            "download": {"reason": "it defines a shell function on a line that may download",
@@ -58,6 +63,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "typed": {"reason": "it is text typed into a command already running, a key, or a line "
                                                "left open, which runs with what came before or comes after it",
                                      "remedy": "Send the whole command in one call, on lines it closes."},
+                           "workdir": {"reason": "its arguments name more than one working directory, or one that "
+                                                 "isn't text",
+                                       "remedy": "Name one working directory, as text."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
@@ -86,7 +94,12 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
     "TK-SQL-PARSE": {"reason": "the policy can't read this SQL",
-                     "remedy": "Close the quote or comment so the policy can read it."}}
+                     "remedy": "Close the quote or comment so the policy can read it."},
+    "TK-SOURCE-PARSE": {"reason": "the policy can't read what this Python cell or delivery runs",
+                        "remedy": "Name each browser helper or shell command as a plain call with literal text."},
+    # a held call whose approver's copy would hide more than a clean value (privacy.approver_copy): denied, as no
+    # person can see what they would approve; the only reason given, so the agent acts on this one
+    privacy.HIDDEN_CODE: {"reason": privacy.HIDDEN_CODE_REASON, "remedy": privacy.HIDDEN_CODE_REMEDY}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
@@ -143,7 +156,8 @@ def policy_hash(pol):
 
 def translate(pattern):
     """Check the lexical subset and return the pattern for the `regex` module: `$` means end of text and `\\s`
-    excludes \\v, as in RE2. Raises PolicyError for syntax RE2 lacks or reads differently."""
+    excludes \\v, as in RE2, and a plain group captures nothing (no match's groups are read, and the module searches
+    faster without: TK-D014's 284, TK-D002's 24). Raises PolicyError for syntax RE2 lacks or reads differently."""
     out, i, n, cls = [], 0, len(pattern), None
     while i < n:
         c = pattern[i]
@@ -170,6 +184,8 @@ def translate(pattern):
             continue
         elif c == "(" and pattern.startswith("(?", i) and not pattern.startswith(("(?:", "(?P<"), i):
             raise PolicyError("only (?: and (?P< groups are allowed (no flags, lookaround or comments)")
+        elif c == "(" and not pattern.startswith("(?", i):
+            c = "(?:"
         elif c == "{" and not re.match(r"\{\d+(,\d*)?\}", pattern[i:]):
             raise PolicyError("a literal { must be escaped, and a repeat needs a lower bound")
         elif c == "$":
@@ -463,9 +479,7 @@ def _lint(pol, path):
     for x in pol.get("explains", []):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
-        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and two or more "
-                   "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
-                   if _loose_host(h)]
+        errors += [f"{path}: explains host {h!r} is too loose: {why}" for h in x["hosts"] if (why := _loose_host(h))]
     return errors + _lint_detect(pol, path)
 
 
@@ -481,14 +495,32 @@ def _lint_remedy(text, sec):
                                     "should, could or might do")) if bad]
 
 
+# lean: a short built-in list of public suffixes of two or more labels (from the Public Suffix List,
+# publicsuffix.org); vendor the full list once a policy needs a suffix that isn't here
+PUBLIC_SUFFIXES = frozenset({
+    "co.uk", "org.uk", "ac.uk", "com.au", "co.jp", "com.br", "co.in",
+    "github.io", "githubusercontent.com", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "herokuapp.com",
+    "azurewebsites.net", "cloudfront.net", "appspot.com", "s3.amazonaws.com"})
+
+
 def _loose_host(glob):
-    """Whether host glob `glob` is too loose: not an exact host, nor a dot and two or more labels after its last
-    wildcard."""
+    """Why host glob `glob` is too loose, or None: an exact host is not; a glob needs a dot and two or more labels
+    after its last wildcard, and those labels must not be a public suffix anyone can register under, nor a parent of
+    one (`*` spans dots when an explains host is matched, so `*.amazonaws.com` covers `*.s3.amazonaws.com`)."""
     if not re.search(r"[*?[]", glob):
-        return False
+        return None
     tail = re.split(r"[*?\]]", glob)[-1]
     labels = tail.split(".")[1:]
-    return not tail.startswith(".") or len(labels) < 2 or "" in labels
+    if not tail.startswith(".") or len(labels) < 2 or "" in labels:
+        return ("after its last wildcard it needs a dot and two or more labels (*.pythonhosted.org, not *.com or "
+                "*pypi.org); or name the hosts")
+    t = tail[1:].lower()
+    covered = sorted(s for s in PUBLIC_SUFFIXES if s == t or s.endswith("." + t))
+    if covered:
+        what = (f"{t} is a public suffix" if covered == [t] else
+                f"{t} covers the public suffix {', '.join(covered)}, which")
+        return f"{what} anyone can register under; name the hosts, or a suffix one owner holds (*.cdn.example.co.uk)"
+    return None
 
 
 def _int(v, lo=0, hi=float("inf")):

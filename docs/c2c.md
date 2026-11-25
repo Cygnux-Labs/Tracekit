@@ -19,6 +19,18 @@ if not out["ok"]:
 # only now hand cache_bytes to the receiver
 ```
 
+The TypeScript SDK has the same method, with `projector`, `measured` and `keep` as an options object (a `measured` key that reuses a transfer field throws):
+
+```ts
+import { Client } from "@cygnuxlabs/tracekit";
+
+const run = await new Client().registerRun("pipeline");
+const out = await run.transfer("qwen2.5-7b@<rev>", "llama-3.2-1b@<rev>", cacheBytes,
+                               "kv-cache", { projector: "c2c-fuser@<rev>" });
+if (!out.ok) throw new Error(out.reason ?? out.rule_ids.join(", "));
+// only now hand cacheBytes to the receiver
+```
+
 It decides tool `a2a:transfer`. An ask waits up to five minutes; an unanswered request is abandoned. It fails closed if the signer is unavailable, regardless of run fail modes. If `ok` is true, `tool.result` was recorded before the method returned.
 
 | Fields | Source |
@@ -78,6 +90,6 @@ It rebuilds a C2C cache from `layout` where possible. The receiver is investigat
 - `keep=True` retains only payloads that fit; otherwise `tracekit why transfer` has no payload to compare.
 - `c2c.fuse` hashes fuser weights on every call, copying tensors to CPU.
 - The comparison runs each receiver arm once, so a nondeterministic receiver produces a noisy change.
-- Transfers are Python-only while experimental; the TypeScript SDK has no `transfer` method.
+- `c2c.fuse` and `tracekit why transfer` are Python-only while experimental; the TypeScript SDK has `run.transfer` and nothing around it.
 
 See [limits](limits.md#custody-12).

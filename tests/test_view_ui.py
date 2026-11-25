@@ -3676,5 +3676,40 @@ class NothingLost(unittest.TestCase):
                 self.assertIn(mark, APPROVALS_PAGE)
 
 
+class ApprovalsPage(unittest.TestCase):
+    def test_an_approval_says_how_much_redaction_hid(self):
+        """The signer's copy starts a string with how many characters redaction hid when it may have hid more than
+        values (privacy.NOTE); the page shows it with the arguments and, at the start of their summary, in the list."""
+        needs_node(self)
+        args = {"command": "# [32 characters hidden by redaction]\nbash <<EOF\nA=[REDACTED:dotenv]\nEOF\n" + "x" * 90}
+        approval = {"approval_id": "apr-1", "state": "requested", "run_id": "r1", "tool_call_id": "c1", "attempt": 0,
+                    "tool": "Bash", "rule_ids": ["TK-A032"], "policy_hash": "sha256:" + "0" * 64, "requester": "uid:1",
+                    "expires_at": "2026-11-17T13:00:00Z", "binding_digest": "sha256:" + "1" * 64,
+                    "args_source": "parsed", "args": args}
+        script = APPROVALS_PAGE[APPROVALS_PAGE.index("<script>") + 8:APPROVALS_PAGE.index("</script>")]
+        out = subprocess.run(["node", "-"], capture_output=True, encoding="utf-8", check=True, input=f"""
+            const els = {{}}, el = () => ({{textContent: "", hidden: false, value: "", addEventListener() {{}},
+              replaceChildren(...kids) {{ this.kids = kids; }}, insertRow() {{ const r = {{cells: []}};
+                r.insertCell = () => {{ const c = el(); c.append = () => {{}}; r.cells.push(c); return c; }};
+                (this.rows ??= []).push(r); return r; }} }});
+            globalThis.document = {{getElementById: id => els[id] ??= el(), createElement: el, querySelector: () => null,
+              createTextNode: () => el()}};
+            const one = {json.dumps(approval)};
+            globalThis.fetch = async p => p === "/api/session" ? new Promise(() => {{}}) : {{ok: true, json: async () =>
+              p === "/api/approvals" ? {{approvals: [one], next_cursor: null}} : one}};
+            {script}
+            (async () => {{
+              await show("apr-1");
+              await list();
+              await new Promise(r => setTimeout(r, 50));   // the list reads each waiting approval's arguments, then again
+              process.stdout.write(JSON.stringify([els.args.textContent,
+                                                   els.list.rows.at(-1).cells.map(c => c.textContent)]));
+            }})();""")
+        shown, row = json.loads(out.stdout)
+        self.assertEqual(json.loads(shown), args)
+        self.assertIn("command: # [32 characters hidden by redaction]\nbash <<EOF\nA=[REDACTED:dotenv]\nEOF\nxxx", row[3])
+        self.assertTrue(row[3].endswith("…"))   # the summary is cut at its end, the note kept
+
+
 if __name__ == "__main__":
     unittest.main()

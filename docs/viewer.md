@@ -443,9 +443,13 @@ per project, the block a session's first prompt gets with an empty prompt and ho
 A lesson you approve is a Claude Code auto-memory note in `<dev data dir>/lessons/projects/<project>/` with its
 `MEMORY.md` index; the folder is a git repo, one commit per action, so every change can be read back and undone.
 `tracekit tips retire ID` stops giving it (a waiting one is never proposed again), `restore ID` undoes that, and
-`add TEXT` writes your own. Proposals are worked out from the records each time and never stored. How a session gets
-them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds, in
-[privacy](privacy.md).
+`add TEXT` writes your own. `retire ID --because RUN:SEQ` names the record that disproved the lesson: `tracekit tips`
+first checks that the run is in the dev store, verifies and has a record at SEQ, and says what that record is (its
+type, source and run's agent); the note keeps it as `retired_because` and the signed answer carries it. The page links
+the record only while the signed retire the note names carries the same `RUN:SEQ`, and says so when it doesn't. That
+the record disproved the lesson is your word. Proposals are worked out from the records each time and never stored.
+How a session gets them is in [coding agents](coding-agents.md#lessons-at-the-first-prompt); what the folder holds,
+in [privacy](privacy.md).
 
 #### tracekit tips
 
@@ -464,6 +468,7 @@ tracekit tips --since 24h      # 7d, 24h, 30m, or an ISO date or time (UTC unles
 tracekit tips --json           # the TIPS page's data as one JSON object, for agents and scripts
 tracekit tips approve L-3f2a91c0 [L-...]   # a person: give these waiting lessons to the next sessions
 tracekit tips retire L-3f2a91c0            # a person: stop giving one, or never propose a waiting one again
+tracekit tips retire L-3f2a91c0 --because run-7:12   # and name the record that disproved it
 tracekit tips restore L-3f2a91c0           # a person: undo a retire
 tracekit tips add "Docs build with make docs." [--name N] [--description WHEN] [--project DIR]
 tracekit tips --for-agent [--project DIR] [--prompt TEXT | --query WORDS] [--json]
@@ -501,7 +506,14 @@ folder, or null), `sources` (what was read: `signed` records, steps and holds, `
 without enough data has `why`, one with it has `title`, `line` (its evidence), `from` (its sources), `saving` (`usd`
 and `minutes`, each null when not measured; the context tip adds `pct`), `math` (the arithmetic, one step a line) and
 `fix` (`text` and `copy`, the command or line to paste, or null; null when there is nothing to fix), with the chart's
-and tables' data under the tip's own keys. A run that didn't verify is said on stderr.
+and tables' data under the tip's own keys. A run that didn't verify is said on stderr. Before it places any run in
+the window, it checks every record of the store against the signer's newest checkpoint, as the
+[weekly report](#weekly-report) does: a run holding an edited record, and every run when the store fails that check
+(a checkpoint whose signature doesn't verify, fewer records than it covers, hashes that don't make its root), counts
+as one that didn't verify, whatever its times. A run is then placed in the window by its last record the checkpoint
+covers, as the report places it, and a run with no record covered yet is always checked (it fails as not covered
+yet), so an edited time can't move a run out of the window unseen. A checkpoint note that can't be read as one at all
+stops the command with an error, as before.
 
 ### A v1 bundle
 

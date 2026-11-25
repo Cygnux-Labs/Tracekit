@@ -42,6 +42,51 @@ class SignerConfig(unittest.TestCase):
         self.assertEqual(cfg["policy"], POLICY)
         self.assertEqual(cfg["authorize"], {"uid:64102": ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]})
 
+    def test_a_rerun_keeps_the_keys_init_does_not_write(self):
+        """#463: init wrote signer.yaml anew each run, dropping `content:` (new runs then kept no content) and a hand
+        `witnesses:` list. The kept keys are read as the signer reads them (yamlmini) and load back as they were."""
+        old = (install.v2_signer_yaml(AGENT, 999, "/old/policy.yaml", "/run/s.sock", 64102, public_witness=False)
+               + 'content:\n  keep: true\n# my note\nwitnesses:\n- url: "https://w2.example"\n  class: "operator"\n'
+               + 'metrics: {"listen": "127.0.0.1:9464", "note": "rack 12\\" A, row 3"}\ncontact: 2026-01-01\n')
+        lines, kept = install.hand_keys(old)
+        self.assertEqual(kept, ["content", "witnesses", "metrics", "contact"])
+        self.assertEqual(install.yamlmini.loads(lines), {
+            "content": {"keep": True}, "witnesses": [{"url": "https://w2.example", "class": "operator"}],
+            "metrics": {"listen": "127.0.0.1:9464", "note": 'rack 12" A, row 3'}, "contact": "2026-01-01"})
+
+    def test_init_own_witness_line_is_not_kept(self):
+        """A comment after it doesn't make it a hand list either."""
+        old = (install.v2_signer_yaml(AGENT, 501, POLICY, "/run/s.sock", 64102, public_witness=True)
+               + '# keep content 30 days\ncontent: {"retain": true}\n')
+        self.assertEqual(install.hand_keys(old)[1], ["content"])
+
+    def test_a_key_init_writes_is_never_kept_however_it_is_spelled(self):
+        """Read as the signer reads it (yamlmini): a spelling it reads as init's key isn't kept, one it can't read is
+        refused; neither can be written after init's own key."""
+        for old in ('"socket": "/tmp/evil.sock"\n', "'approvals': {\"self_approval\": \"allow\"}\n",
+                    '"sock\\u0065t": "/tmp/evil.sock"\n', 'socket : "/tmp/evil.sock"\n',
+                    '!!str socket: "/tmp/evil.sock"\n', '? socket\n: "/tmp/evil.sock"\n',
+                    'x: &d {"socket": "/tmp/evil.sock"}\n<<: *d\n'):
+            with self.subTest(old=old):
+                try:
+                    self.assertEqual(install.hand_keys('data_dir: "/x"\n' + old), ("", []))
+                except ValueError:
+                    pass
+
+    def test_a_trailing_comma_in_a_kept_value_is_read_as_pyyaml_reads_it(self):
+        """It raised IndexError, a traceback instead of init's refusal."""
+        self.assertEqual(install.hand_keys('data_dir: "/x"\ncontent: {retain: true,}\n'),
+                         ('"content": {"retain": true}\n', ["content"]))
+
+    def test_a_quote_in_a_kept_plain_value_is_kept_as_text(self):
+        self.assertEqual(install.hand_keys('data_dir: "/x"\n"contact": ops, "night desk\n'),
+                         ('"contact": "ops, \\"night desk"\n', ["contact"]))
+
+    def test_a_key_that_would_not_load_back_as_it_was_is_refused(self):
+        for old, key in (('grace_s: 1.0e-5\n', "grace_s"), ('frobnicate: 1\n', "frobnicate")):
+            with self.subTest(old=old), self.assertRaisesRegex(ValueError, key):
+                install.hand_keys('data_dir: "/x"\n' + old)
+
     def test_unit_is_hardened_with_no_capabilities(self):
         unit = install.V2_UNIT_TEXT.format(user="tracekit-signer", python=install.OPT_PYTHON,
                                            config=install.V2_CONFIG, unit=install.V2_UNIT, data=install.V2_DATA)
@@ -162,11 +207,59 @@ class InstallAndUninstall(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.managed = os.path.join(self.d, "claude-code", "managed-settings.json")   # init reads it: never the host's
+        real_open_dir = install.files.open_dir   # the temp dir is the test user's, not root's
         for p in (as_root_on_linux(), mock.patch.object(install.client, "SYSTEM_CONFIG", os.path.join(self.d, "c.json")),
+                  mock.patch.object(install.files, "open_dir", lambda path, owners=None: real_open_dir(
+                      path, owners and set(owners) | {os.getuid()})),
                   mock.patch.object(install, "_write_root_file", lambda path, data: self.written.update({path: data})),
                   mock.patch.dict(install.MANAGED_SETTINGS, linux=self.managed, darwin=self.managed)):
             p.__enter__()
             self.addCleanup(p.__exit__, None, None, None)
+
+    def test_a_rerun_keeps_content_and_says_so(self):
+        with open(install.V2_CONFIG, "w") as f:
+            f.write('# old\ndata_dir: "/x"\ncontent: {"retain": true}\nmetrics: {"listen": "127.0.0.1:9464"}\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        cfg = install.yamlmini.loads(self.written[install.V2_CONFIG].decode())
+        self.assertEqual((cfg["content"], cfg["data_dir"]), ({"retain": True}, install.V2_DATA))
+        self.assertIn("kept what you added: content, metrics", out.getvalue())
+
+    def test_a_rerun_refuses_a_config_folder_it_cannot_open_safely(self):
+        real = os.path.join(self.d, "real-etc")
+        os.mkdir(real)
+        os.symlink(real, os.path.join(self.d, "etc"))
+        folder = os.path.join(self.d, "etc", "signer.yaml")
+        for name, patch in (("symlinked folder", mock.patch.object(install, "V2_CONFIG", folder)),
+                            ("wrong owner", mock.patch.object(install.files, "open_dir", side_effect=install.files.UnsafePath(
+                                "etc is owned by uid 501, expected [0]"))),
+                            ("not a folder", mock.patch.object(install.files, "open_dir", side_effect=NotADirectoryError(
+                                "etc")))):
+            with self.subTest(name), patch, contextlib.redirect_stdout(io.StringIO()), \
+                    self.assertRaisesRegex(SystemExit, "can't keep what you added to it"):
+                self.init_v2()
+            self.users.assert_not_called()
+
+    def test_a_rerun_refuses_an_old_file_it_cannot_read_safely(self):
+        target = os.path.join(self.d, "elsewhere.yaml")
+        with open(target, "w") as f:
+            f.write('data_dir: "/x"\n')
+        for name, make in (("not utf-8", lambda p: open(p, "wb").write(b'data_dir: "/x"\ncontent: "\xff"\n')),
+                           ("symlink", lambda p: os.symlink(target, p)), ("fifo", os.mkfifo)):
+            with self.subTest(name):
+                make(install.V2_CONFIG)
+                try:
+                    with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as e:
+                        self.init_v2(public_witness=False)
+                finally:
+                    os.remove(install.V2_CONFIG)
+                self.assertIn("can't keep what you added to it", str(e.exception))
+                self.assertIn("fix or move it, then run init again", str(e.exception))
+                # refused before any change: no users, no files written, no --no-witness record
+                self.users.assert_not_called()
+                self.assertEqual(self.written, {})
+                self.assertFalse(os.path.exists(install.V2_DATA))
 
     def test_without_tailer_access_init_writes_no_tailer_key(self):
         out = io.StringIO()
@@ -225,7 +318,7 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual([c.args[0] for c in run.call_args_list],
                          [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
 
-    def init_v2(self, sudo_why=None, harnesses=()):
+    def init_v2(self, sudo_why=None, harnesses=(), public_witness=None):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
               "tailer": {"user": "stale"}}
@@ -234,7 +327,7 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
                 mock.patch.object(install, "_privileges", return_value=[]), \
                 mock.patch.object(install, "_install_source", return_value=None), \
-                mock.patch.object(install, "_system_user", return_value=self.me), \
+                mock.patch.object(install, "_system_user", return_value=self.me) as self.users, \
                 mock.patch.object(install, "_install_venv") as venv, \
                 mock.patch.object(install.subprocess, "run", run), \
                 mock.patch.object(install.client, "system_config", return_value=v1), \
@@ -243,7 +336,7 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
                 mock.patch.object(install, "harness_spec", lambda spec, agent: spec), \
                 mock.patch.object(install, "install_hooks") as hooks:
-            sock, settings = install.init_system_v2("agent", harnesses=harnesses)
+            sock, settings = install.init_system_v2("agent", harnesses=harnesses, public_witness=public_witness)
         self.run = run
         self.assertEqual(sock, "/run/tracekit-signer/signer.sock")
         self.assertEqual(settings, "/home/agent/.claude/settings.json")

@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.7.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.7.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.2
-cd /usr/local/src/tracekit-1.7.2
+# v1.7.3 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.7.3 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.7.3
+cd /usr/local/src/tracekit-1.7.3
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -153,20 +153,22 @@ restart the unit. Approve from ADMIN's account with `/opt/tracekit/bin/python -I
 On the system-pip route, `sudo /usr/bin/python3 -m pip uninstall tracekit-ai` removes the system copy (pip leaves its
 dependencies); on the clone route, delete the clone.
 
-Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
-`witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
+Each init run writes its own keys in `/etc/tracekit/signer.yaml` again from its flags (`data_dir`, `socket`,
+`socket_mode`, `tenant`, `tenants`, `approvals`, `authorize`, `policy`, `harness_binding` and `witnesses`), keeps
+every other key you added, such as `content:` or `metrics:`, and says which it kept. Kept keys are written back as
+JSON, so comments in the file are not kept. A `witnesses:` list of your own is kept as it is, so add `public` to it
+yourself if you want the public witness too. Init reads the file as the signer does, before it changes anything, and
+stops with `/etc/tracekit/signer.yaml: can't keep what you added to it (<why>); fix or move it, then run init again`
+when the file isn't UTF-8 text in the YAML subset the signer reads, is a symlink or not a regular file, has a key the
+signer doesn't know, or has a value that wouldn't load back as it is (such as `1.0e-5`, which JSON writes as `1e-05`
+and the signer reads back as text). To upgrade:
 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
    Init restarts the harness helper and the egress observer itself, so they run the new version.
-2. Keep a copy of the config in root's home (`/root` on Linux, `/var/root` on macOS):
-   `sudo cp /etc/tracekit/signer.yaml ~root/signer.yaml.bak`.
-3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
+2. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
    the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
    again; no separate launchd command is needed here.
-4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
-   `sudo systemctl restart tracekit-signer`; on macOS, `sudo launchctl kickstart -k system/dev.tracekit.signer`. A run
-   that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
 can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant

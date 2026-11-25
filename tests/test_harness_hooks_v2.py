@@ -7,11 +7,13 @@ its cases name none: the hook pairs calls itself (tracekit.agent_hooks._paired_i
 distinct and never a default.
 """
 import contextlib
+import glob
 import io
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -21,8 +23,11 @@ import urllib.parse
 import warnings
 from unittest import mock
 
+import pytest
+
 import adapter_contract as ac
-from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
+from factories import TOO_DEEP_JSON, no_tomllib
+from tracekit import __version__, agent_hooks, cli, client, doctor, findings_v2, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.policy2.engine import Engine
@@ -351,6 +356,11 @@ class Mapping(HarnessCase):
     def test_opencode(self):
         self.check("opencode")
 
+    def test_kilo(self):
+        # #988: Kilo's browser_open and repo_clone are decided as fetches, kilo_memory_save as a write (built from
+        # Kilo's tool sources: kilocode/tool/browser-open.ts, tool/repo_clone.ts, kilo-memory/src/tool.ts)
+        self.check("kilo")
+
     def test_goose(self):
         self.check("goose")
 
@@ -557,6 +567,42 @@ class Mapping(HarnessCase):
                 observed = [e["data"] for e in run["events"] if e["type"] == "input.observed"]
                 self.assertEqual([(d["source"], d["trust"]) for d in observed], [("gptme:prompt", "untrusted")])
                 self.assertEqual(self.observed[-1], [prompt])
+
+    def test_opencode_2_prompts_are_untrusted_and_a_deleted_session_closes_its_run(self):
+        # #989: OpenCode 2.x's plugin sends its prompt hook (also run for a command's, a plugin's and a subagent's
+        # prompt, with nothing in it that says a person typed it) and the session.deleted event
+        for harness in ("opencode", "kilo"):
+            with self.subTest(harness=harness):
+                agent, sid, prompt = agent_hooks.AGENT_NAMES[harness], "oc2-" + harness, "keep away from prod\nls"
+                self.assertEqual(self.hook(harness, {"session_id": sid, "prompt": prompt}, "session.prompt")[:2], (0, ""))
+                state = claude_code._load(claude_code._state(sid))
+                self.assertFalse(state.get("constraints"))   # untrusted text states none
+                run = self.signer._runs[state["run_id"]]
+                self.assertEqual([(e["data"]["source"], e["data"]["trust"]) for e in run["events"]
+                                  if e["type"] == "input.observed"],
+                                 [(f"{agent}:prompt", "untrusted")])   # no trusted prompt record, not even empty
+                self.assertEqual(self.observed[-1], [prompt])
+                self.assertFalse(run.get("closed"))
+                self.assertEqual(self.hook(harness, {"session_id": sid}, "session.deleted")[:2], (0, ""))
+                self.assertTrue(run["closed"])
+
+    def test_opencode_2_prompts_leave_the_gateways_request_the_runs_intent(self):
+        # #989's review: a trusted `opencode:UserPromptSubmit` record (empty) beside each untrusted prompt made findings
+        # read the run as one whose hook records the person's prompts, so the request the LLM gateway recorded was
+        # only the agent's claim and the run had no intent; its seqs were also read as the person's task boundaries
+        from test_findings_v2 import call, records
+        prompt, ask = "keep away from prod", "Fix src/pager.py. Don't touch billing.py."
+        self.assertEqual(self.hook("opencode", {"session_id": "oc2-intent", "prompt": prompt}, "session.prompt")[0], 0)
+        run = self.signer._runs[claude_code._load(claude_code._state("oc2-intent"))["run_id"]]
+        hooked = [("input.observed", "sdk", {k: e["data"][k] for k in ("source", "trust")}, prompt)
+                  for e in run["events"] if e["type"] == "input.observed"]
+        recs, content = records(*hooked, ("model.exchange", "gateway", {"phase": "request", "exchange_id": "q1"},
+                                          {"messages": [{"role": "user", "content": ask}]}), *call("t1", "billing.py"))
+        self.assertEqual(findings_v2._Run(recs).hook_seqs, [])
+        out = findings_v2.analyze(recs, content)
+        f = next(f for f in out["findings"] if f["verdict"]["rule"] == "TK-X204")
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(out["shown"]["calls"]["t1"]["checks"]["TK-X204"], "found")
 
     def test_gptme_invalid_confirmation_blocks_before_deciding(self):
         payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
@@ -1015,6 +1061,17 @@ class Mapping(HarnessCase):
                                    "tool.execute.before")
         self.assertEqual((code, out), (2, ""))
         self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
+
+    def test_opencode_image_generate_mixing_urls_and_files_is_denied_before_the_signer(self):
+        # #988: an http(s) image is decided as a fetch and a file as a read, and a call is decided as one tool
+        code, out, err = self.hook("opencode", {"session_id": "oc-9", "hook_event_name": "tool.execute.before",
+                                                "tool_name": "experimental_image_generate", "tool_use_id": "oc-9",
+                                                "tool_input": {"prompt": "p", "images": [
+                                                    "/home/u/.ssh/id_rsa", "https://x.example/cat.png"]}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("download the image to a file first", err)
         self.assertEqual(self.sent, [])
 
     def test_signer_unreachable_is_fail_closed_by_default(self):
@@ -1633,6 +1690,57 @@ class Installer(unittest.TestCase):
                 self.assertEqual(self.cli(*command)[0], 2)
                 self.assertFalse(os.path.exists(agent_hooks.config_path("gptme")))
 
+    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawn stood in")
+    def test_opencode_2_plugin_sends_each_prompt_once_and_a_deleted_sessions_end(self):
+        # #989: OpenCode 2.x's server-plugin API has ctx.session.hook("prompt") and ctx.event.subscribe (build/plugins/
+        # server); the plugin hooked tool calls only. The prompt draft is OpenCode's to keep, and a hook that fails
+        # mustn't stop the prompt (a throw in a prompt hook fails its admission)
+        d = ac.tmpdir(self)
+        with mock.patch("os.getcwd", return_value=d):
+            self.assertEqual(self.cli("init", "--dev", "--v2", "--agent", "opencode", "--project")[0], 0)
+        shutil.copy(agent_hooks.config_path("opencode", d), os.path.join(d, "tracekit.mjs"))
+        with open(os.path.join(d, "drive.mjs"), "w") as f:
+            f.write('let fail = false;\n'
+                    'const sent = [];\n'
+                    'globalThis.Bun = { spawn: ({ cmd, stdin }) => {\n'
+                    '  if (fail) throw new Error("no python");\n'
+                    # the event is the last argument, or on Windows a quoted literal in the -c code (_literal)
+                    "  const ev = cmd.at(-1).match(/(?:^|')(session[.][a-z]+)(?:'|$)/)?.[1];\n"
+                    '  sent.push([ev, JSON.parse(new TextDecoder().decode(stdin))]);\n'
+                    '  return { stderr: "", exited: Promise.resolve(0), exitCode: 0, kill: () => {} };\n} };\n'
+                    'let subscribed, aborted = false;\n'
+                    'async function* stream({ types, signal }) {\n'
+                    '  subscribed = types;\n'
+                    '  yield { type: "session.deleted", data: { sessionID: "oc2-s" } };\n'
+                    '  await new Promise((done) => signal.addEventListener("abort", done));\n'
+                    '  aborted = true;\n}\n'
+                    'const mod = await import("./tracekit.mjs");\n'
+                    'const hooks = {}, hook = async (name, cb) => { hooks[name] = cb; };\n'
+                    'const cleanup = await mod.default.setup({ location: { directory: process.argv[2] },\n'
+                    '  tool: { hook }, session: { hook }, event: { subscribe: stream } });\n'
+                    'const draft = { sessionID: "oc2-s", messageID: "msg_1", delivery: "steer",\n'
+                    '                prompt: { text: "keep away from prod", files: [], agents: [], skills: [] } };\n'
+                    'const before = JSON.stringify(draft);\n'
+                    'await hooks.prompt(draft);\n'
+                    'await hooks.prompt(draft);   // a concurrent submission of the same id runs the hook again\n'
+                    'fail = true;\n'
+                    'await hooks.prompt({ ...draft, messageID: "msg_2" });   // resolves: the prompt goes in\n'
+                    'cleanup();\n'
+                    'await new Promise((done) => setTimeout(done, 50));\n'
+                    'process.stdout.write(JSON.stringify({ hooks: Object.keys(hooks).sort(), subscribed, aborted, sent,\n'
+                    '  unchanged: JSON.stringify(draft) === before,\n'
+                    '  v1: Object.keys(await mod.TracekitPlugin({ directory: "/w" })).sort() }));\n')
+        p = subprocess.run(["node", os.path.join(d, "drive.mjs"), d], capture_output=True, text=True, timeout=120)
+        got = json.loads(p.stdout or "null") or self.fail(p.stderr)
+        self.assertEqual(got["hooks"], ["execute.after", "execute.before", "prompt"])
+        self.assertEqual((got["subscribed"], got["aborted"], got["unchanged"]), (["session.deleted"], True, True))
+        self.assertEqual(sorted(map(tuple, got["sent"])), [
+            ("session.deleted", {"hook_event_name": "session.deleted", "session_id": "oc2-s", "cwd": d}),
+            ("session.prompt", {"hook_event_name": "session.prompt", "session_id": "oc2-s", "cwd": d,
+                                "prompt": "keep away from prod"})])
+        self.assertEqual(got["v1"], ["tool.execute.after", "tool.execute.before"])   # 1.x: tool hooks only, as before
+        self.assertIn("[tracekit] hook error (Error: no python)", p.stderr)
+
     def test_init_dev_v2_replaces_v1_and_uninstall_removes_it(self):
         d = ac.tmpdir(self)
         with mock.patch("os.getcwd", return_value=d):
@@ -1672,7 +1780,8 @@ class Installer(unittest.TestCase):
                         commands = json.loads(plugin.split("const commands = ", 1)[1].split(";\n", 1)[0])
                         self.assertEqual(commands, {ev: install._dev_hook_argv(harness_hooks.__name__, "entry",
                                                                                (harness, ev))
-                                                    for ev in ("tool.execute.before", "tool.execute.after")})
+                                                    for ev in ("tool.execute.before", "tool.execute.after",
+                                                               "session.prompt", "session.deleted")})
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
                         self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
                         code, out = self.cli("uninstall", "--agent", harness, "--project")
@@ -2027,6 +2136,24 @@ class CodexReasoningSummary(unittest.TestCase):
         agent_hooks.codex_reasoning(self.hooks)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE + 'model = "m"')
 
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the file with tomllib")
+    def test_a_config_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
+        for text in ("a = [\n", "a = " + "[" * 5000 + "]" * 5000):
+            self.write(text)
+            with self.assertRaisesRegex(install.SettingsError, "is TOML Tracekit can't add model_reasoning_summary"):
+                agent_hooks.codex_reasoning(self.hooks)
+            self.assertEqual(self.read(), text)
+
+    def test_a_hook_or_settings_file_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
+        deep = TOO_DEEP_JSON
+        with open(self.hooks, "w") as f:
+            f.write(deep)
+        with self.assertRaisesRegex(install.SettingsError, "hooks.json is not valid JSON"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", path=self.hooks, v2=True)
+        with self.assertRaisesRegex(install.SettingsError, "settings.json is not valid JSON"):
+            install._parse_settings(deep.encode(), "settings.json")
+
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib")
     def test_a_multi_line_array_stays_valid_toml(self):
         import tomllib
@@ -2253,6 +2380,14 @@ class CodexHookTrust(unittest.TestCase):
                                                         f"{self.hooks} ({self.toml}: "))
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        self.row()
+        with open(self.toml, "w") as f:
+            f.write("a = " + "[" * 5000 + "]" * 5000)
+        self.assertTrue(self.row(install=False)["detail"].startswith(
+            f"can't confirm that Codex trusts Tracekit's hooks in {self.hooks} ({self.toml}: "))
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_open_interpreter_keeps_codexs_trust_in_its_own_home(self):
         """#698: Open Interpreter, a Codex fork, runs a hook only once it is trusted, kept as Codex keeps it, in
         $INTERPRETER_HOME's config.toml (else ~/.openinterpreter's): recorded on 0.0.61, where a trusted_hash written
@@ -2395,7 +2530,7 @@ class CodexHookTrust(unittest.TestCase):
                       got[0]["detail"])
 
     def test_doctor_says_when_it_cant_tell(self):
-        with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
+        with no_tomllib():   # Python 3.9 and 3.10
             got = self.row()
         self.assertEqual(got["status"], "warn")
         self.assertRegex(got["detail"], r"^can't confirm that Codex trusts Tracekit's hooks in .+ \(Python 3\.11 or "
@@ -2639,6 +2774,69 @@ class WhatTheModelSaid(HarnessCase):
             self.assertEqual((recs.count("model.exchange") > 0, recs.count("policy.decision")), (True, 1), sid)
             self.assertEqual([t for t in recs if t.startswith("reconcile.")], [], sid)
 
+    def qwen_chat(self, *extra):
+        """A copy of a real Qwen Code 0.27.4 chat file (a scripted model: text parts only), then `extra` records."""
+        src = glob.glob(os.path.join(os.path.dirname(DATA), "audit", "qwen-code-0.27.4", "projects", "*", "chats",
+                                     "*.jsonl"))[0]
+        path = os.path.join(self.d, "chat.jsonl")
+        with open(src, "rb") as f, open(path, "wb") as out:
+            out.write(f.read() + b"".join(map(line, extra)))
+        return path
+
+    def qwen_pre(self, path, sid="q-s"):
+        return {"session_id": sid, "hook_event_name": "PreToolUse", "tool_name": "run_shell_command",
+                "tool_input": {"command": "ls"}, "tool_use_id": "call_q1", "cwd": self.d, "transcript_path": path}
+
+    def said(self, frame):
+        return [(x["kind"], x["text"]) for x in parsers.said("openai:responses", frame["body"])]
+
+    def test_qwen_thoughts_and_text_are_recorded_and_name_no_call(self):
+        self.serve()
+        thought = {"uuid": "q-thought", "type": "assistant", "model": "qwen3-coder",
+                   "message": {"role": "model", "parts": [{"text": "list the files first", "thought": True},
+                                                          {"text": "Listing."},
+                                                          {"functionCall": {"id": "call_q1", "name": "run_shell_command",
+                                                                            "args": {"command": "ls"}}}]}}
+        self.assertEqual(self.hook("qwen", self.qwen_pre(self.qwen_chat(thought)), "PreToolUse")[0], 0)
+        self.assertIn([("reasoning", "list the files first"), ("text", "Listing.")], map(self.said, self.frames))
+        self.assertIn([("text", "done")], map(self.said, self.frames))   # the real file's own text part
+        self.assertTrue(all("tool_uses" not in f for f in self.frames))
+        mine = next(f for f in self.frames if self.said(f)[0][1] == "list the files first")
+        self.assertEqual((mine["provider"], mine["model"], mine["body"]["source"]),
+                         ("unknown", "qwen3-coder", "qwen chat"))
+
+    def test_qwen_record_already_sent_is_not_sent_again(self):
+        self.serve()
+        path = self.qwen_chat()
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        sent = len(self.frames)
+        self.assertGreater(sent, 0)
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        self.assertEqual(len(self.frames), sent)
+        with open(path, "ab") as f:
+            f.write(line({"uuid": "q-new", "type": "assistant", "message": {"parts": [{"text": "Next."}]}}))
+        self.assertEqual(self.hook("qwen", self.qwen_pre(path), "PreToolUse")[0], 0)
+        self.assertEqual([self.said(f) for f in self.frames[sent:]], [[("text", "Next.")]])
+
+    def test_qwen_lines_of_another_shape_are_skipped(self):
+        self.serve()
+        path = os.path.join(self.d, "chat.jsonl")
+        with open(path, "wb") as f:
+            f.write(b"not JSON\n" + b"".join(map(line, (
+                {"uuid": "a", "type": "assistant", "message": "not an object"},
+                {"uuid": "b", "type": "assistant", "message": {"parts": "not a list"}},
+                {"uuid": "c", "type": "assistant", "message": {"parts": [7, {"text": 1}, {"functionCall": {}}]}},
+                {"uuid": "d", "type": "user", "message": {"parts": [{"text": "typed"}]}}))))
+        quiet = self.hook("qwen", self.qwen_pre(path, "q-bad"), "PreToolUse")
+        self.assertEqual(self.frames, [])
+        self.assertEqual(quiet[:2], self.hook("qwen", self.qwen_pre("", "q-bad2"), "PreToolUse")[:2])
+
+    def test_qwen_with_chat_recording_off_records_nothing(self):
+        self.serve()
+        with mock.patch.object(harness_hooks, "_read", side_effect=AssertionError("an empty path was read")):
+            self.assertEqual(self.hook("qwen", self.qwen_pre(""), "PreToolUse")[0], 0)
+        self.assertEqual(self.frames, [])
+
     def test_cursor_thinking_is_recorded(self):
         self.serve()
         out = self.hook("cursor", {"conversation_id": "cu-s", "generation_id": "g1", "model": "claude-x",
@@ -2763,6 +2961,7 @@ class SlowSignerStart(HarnessCase):
     UPLOAD = {"preToolUse": {"toolName": "run_commands",   # held by the dev pack (TK-A032)
                              "parameters": {"commands": json.dumps(["aws s3 cp build/ s3://releases/ --recursive"])}}}
 
+    @pytest.mark.serial
     def test_a_cline_hook_that_waits_for_its_signer_and_an_approval_answers_before_cline_runs_the_call(self):
         """One deadline for the whole hook: a start that takes 15 s leaves the held call's approval wait (20 s here)
         nothing, and the hook blocks the call before Cline's 30 s."""
@@ -2826,6 +3025,7 @@ class SlowSignerStart(HarnessCase):
         code, stdout, err = out[0]
         self.assertEqual((code, json.loads(stdout).get("cancel")), (0, None), err)
 
+    @pytest.mark.serial
     def test_a_cline_hook_blocks_before_cline_runs_the_call(self):
         """Cline runs a call whose hook is still running at 30 s: its hook gives up on a signer still starting within
         agent_hooks.CLINE_WAIT_S and blocks the call."""

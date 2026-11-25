@@ -351,8 +351,11 @@ def held_calls(rows, since):
         # each row as the record held_calls reads: view.Translator's rows name its call, attempt and approval
         folds, owners = import_v2.held_calls([{"event": {
             "type": r["v2"]["type"], "run_seq": r["v2"]["run_seq"], "attempt": r["v2"].get("attempt"),
+            "ext": ({"approval.decision": r["v2"]["decision_id"]}
+                    if r["v2"].get("type") == "approval.consumed" and r["v2"].get("decision_id") else {}),
             "data": {"tool_use_id": r["v2"].get("tool_use_id"), "tool": r.get("tool_name"),
-                     "decision": r["v2"].get("decision"), "approval_id": r["v2"].get("approval_id")}}} for r in recs])
+                     "decision": r["v2"].get("decision"), "decision_id": r["v2"].get("decision_id"),
+                     "approval_id": r["v2"].get("approval_id")}}} for r in recs])
         latest, answered = {}, {}   # (call id, attempt) and call id -> its latest decision; a held call -> its answer
         for r in recs:
             v = r["v2"]
@@ -991,22 +994,35 @@ class Page:
 def signed_rows(cfg, since, say=None, content=None, known=None):
     """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
     `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
-    which give no rows. `say(text)`: told how many runs are checked before the checks. `content(run_id, records)`: the
-    kept content of the records the viewer reads it for (view.wanted; view.dev_content_source, one signed
-    content.accessed record per run and CHUNK records), which the rows then carry: what lessons read. `known`: a set
-    given the store's run ids."""
+    which give no rows. Before any run is placed in time, every record of the store is checked against the signer's
+    newest checkpoint, as tracekit report checks it (report._check_store): a run holding an edited record, or every
+    client run when the store fails that check, counts in `failed`. A run is then placed by its last record the
+    checkpoint covers, as report places it, and one with no record covered yet is always checked, so an edited time
+    can't move a run out of the window unseen. `say(text)`: told how many runs are checked before the checks.
+    `content(run_id, records)`: the kept content of the records the viewer reads it for (view.wanted;
+    view.dev_content_source, one signed content.accessed record per run and CHUNK records), which the rows then carry:
+    what lessons read. `known`: a set given the store's run ids."""
+    import bisect
     import tempfile
 
     from . import view
+    from .format import checkpoint
+    from .report import _check_store
     from .signer.pipeline import SIGNER_RUN
     from .why.core import ts_seconds
     from .why.signed import EvidenceAlert
 
     def recent(run):
-        # lean: a run is placed by its last record's time as the store says it, before the check; place it by the
-        # records a checkpoint covers, as tracekit report does, if a store edited to hide a run matters here
+        # placed by its last record the checkpoint covers, as tracekit report places it: the check below found that
+        # record intact and in the checkpoint's root, so its time is signed. A record past the checkpoint isn't in the
+        # root, so an edit that rewrites its hash too goes unseen: its time places nothing. A run with no record the
+        # checkpoint covers is always checked, and fails there as not covered yet.
+        placed = bisect.bisect_left(run["seqs"], size)
+        if not placed:
+            return True
+        last = run["seqs"][placed - 1]
         try:
-            return ts_seconds(next(r.iter_range(run["seqs"][-1], run["seqs"][-1] + 1))["event"]["ts"]) >= since
+            return ts_seconds(next(r.iter_range(last, last + 1))["event"]["ts"]) >= since
         except (KeyError, TypeError, ValueError):   # a time it can't read: checked, and fails there if it must
             return True
     vkeys, _ = view.store_trust(cfg)
@@ -1017,7 +1033,23 @@ def signed_rows(cfg, since, say=None, content=None, known=None):
         r = view.reader(cfg)
         try:
             note = r.checkpoint_latest()
-            keys = [k for k, run in sorted(r.runs.items()) if note and k[1] != SIGNER_RUN[1] and recent(run)]
+            if note and note[0] > r.tree.size:   # a checkpoint written while it opened: read again, as report does
+                r.close()
+                r = view.reader(cfg)
+            problem, edited, size = None, {}, 0
+            if note:   # with no checkpoint yet nothing is checked, and no run is placed
+                try:
+                    _, size, root, _ = checkpoint.open_note(note[1], vkeys)
+                    problem, edited, _, _ = _check_store(r, size, root)
+                except checkpoint.NoteError as e:
+                    problem = f"its newest checkpoint doesn't verify against the log key it pins ({e})"
+            bad = {k for k in r.runs if k in edited or problem and k[1] != SIGNER_RUN[1]}
+            failed = len(bad)
+            if say and problem:
+                say(f"the store fails its check against the signer's checkpoint: {problem}; every run counts as one "
+                    "that didn't verify")
+            keys = [k for k, run in sorted(r.runs.items())
+                    if note and k[1] != SIGNER_RUN[1] and k not in bad and recent(run)]
             if known is not None:
                 known.update(k[1] for k in r.runs)
             if say and keys:
@@ -1097,6 +1129,10 @@ def lessons_text(L, days=7):
                 _wrap(f"Given to {_n(x['effect']['given'], 'session')} (signed). Effect: {effect_words(x)}."
                       + ("" if x["signed"]["state"] == "signed" else " " + x["signed"]["why"])),
                 f"    {x['retire']}"]
+    for x in L.get("earlier") or ():
+        if x["status"] == "retired" and x["retired_because"]:
+            out += ["", f"RETIRED · {KINDS.get(x['kind'], x['kind'])} · {x['id']} · {x['where']}", x["name"],
+                    _wrap(x["retired_because"]["why"])]
     if nope:
         out += ["", "NOT PROPOSED · " + ", ".join(f"{n} {RULES.get(r, r.replace('_', ' '))}" for r, n in L["not_proposed_by"].items())] + [_wrap(f"- {x['id']} {x['name']}: {x['why']}") for x in nope[:10]] + (
             [_wrap(f"and {L['not_proposed_n'] - 10} more (--json lists the first 40)")] if L["not_proposed_n"] > 10 else [])
@@ -1184,16 +1220,58 @@ def _vault(say):
 
 def _signer(client):
     """lessons.Folder's `sign`: a person's answer to a lesson as a signed observe (source lessons.PERSON: the action,
-    the lesson's id and its text's sha256, never the text) in one run for this command (agent `tracekit tips`),
-    through `client`, which `sign.close()` closes. -> the record's run:run_seq, which the note keeps."""
+    the lesson's id and its text's sha256, never the text, plus `because` `RUN:SEQ` when retiring with `--because`)
+    in one run for this command (agent `tracekit tips`), through `client`, which `sign.close()` closes. -> the
+    record's run:run_seq, which the note keeps."""
     run = []
 
-    def sign(action, lid, sha):
+    def sign(action, lid, sha, because=None):
         run[:] = run or [client.run(agent="tracekit tips")]
-        out = run[0].observe({"action": action, "id": lid, "sha256": sha}, lessons.PERSON, "trusted")
+        payload = {"action": action, "id": lid, "sha256": sha}
+        if because is not None:
+            payload["because"] = because
+        out = run[0].observe(payload, lessons.PERSON, "trusted")
         return f"{run[0].run_id}:{out['run_seq']}"
     sign.close = lambda: run and run[0].close()
     return sign
+
+
+def cited(data_dir, ref):
+    """`retire --because RUN:SEQ`: the record of the dev store a person says disproved a lesson, checked before
+    anything is signed: the run is in the store, verifies, and holds a record at SEQ. -> what that record is (its
+    type, source and run's agent), said before it is signed; raises lessons.Refused otherwise."""
+    import tempfile
+
+    from . import parsers, view
+    if not lessons.SIGNED.fullmatch(ref):
+        raise lessons.Refused("because", f"{ref!r} is not RUN:SEQ (a run id and a record's seq, e.g. run-123:4)")
+    run_id, seq = ref.rsplit(":", 1)
+    cfg = {"data_dir": data_dir}
+    try:
+        vkeys, _ = view.store_trust(cfg)
+    except (OSError, ValueError) as e:
+        raise lessons.Refused("because", f"cannot verify {ref} in the signer's store: {e}") from e
+    with tempfile.TemporaryDirectory(prefix="tk-because-") as tmp:
+        trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
+        r = view.reader(cfg)
+        try:
+            note = r.checkpoint_latest()
+            key = next((k for k in sorted(r.runs) if k[1] == run_id), None)
+            if key is None or note is None:
+                raise lessons.Refused("because", f"run {run_id} was not found in the signer's store")
+            _, code, _, records = view.check(r, *key, note[1], trust)
+        finally:
+            r.close()
+    if code:
+        raise lessons.Refused("because", f"run {run_id} did not verify (exit {code}): refused")
+    events = [rec.get("event") or {} for rec in records]
+    e = next((e for e in events if e.get("run_seq") == int(seq)), None)
+    if e is None:
+        raise lessons.Refused("because", f"run {run_id} has no verified record at seq {seq}")
+    agent = next((parsers._get(x, "data", "agent", "name") for x in events if x.get("type") == "run.registered"), None)
+    source = parsers._get(e, "data", "source")
+    return _escaped(f"record {seq} of run {run_id}: {e.get('type')}" + (f" from {source}" if source else "")
+                    + f", in a run of agent {agent or 'unnamed'}")
 
 
 def _scan(folder, since, say):
@@ -1228,6 +1306,9 @@ def act(argv, say):
         p.add_argument("ids", nargs="+" if name == "approve" else 1, metavar="ID")
         if name != "restore":
             p.add_argument("--since", type=when, default="7d", help="the window the lesson was found in (default: 7d)")
+        if name == "retire":
+            p.add_argument("--because", metavar="RUN:SEQ",
+                           help="verified record (RUN:SEQ) in the signer's store that disproved this lesson")
     p = sub.add_parser("add", help="your own lesson, given to the project's sessions from now on")
     p.add_argument("text")
     p.add_argument("--name", help="one line: what it is about (default: its first line)")
@@ -1245,7 +1326,11 @@ def act(argv, say):
                   "first (`tracekit up`)", file=sys.stderr)
             return 1
         sign = _signer(client)
-        folder = lessons.Folder(os.path.join(dev_data_dir(create=False), "lessons"), sign=sign)
+        data_dir = dev_data_dir(create=False)
+        folder = lessons.Folder(os.path.join(data_dir, "lessons"), sign=sign)
+        because = a.because if a.act == "retire" else None
+        if because:
+            print(f"citing {cited(data_dir, because)}")
         if a.act == "add":
             lid, note = folder.add(lessons.project_of(os.path.abspath(a.project) if a.project else _here()), a.text,
                                    a.name, a.description, a.type)
@@ -1256,8 +1341,9 @@ def act(argv, say):
             print(f"restored {a.ids[0]}" + (f" ({note})" if note else ""))
             return 0
         if a.act == "retire" and folder.find(a.ids[0]):
-            note = folder.retire(a.ids[0])
-            print(f"retired {a.ids[0]}: no session is given it from now on" + (f" ({note})" if note else ""))
+            note = folder.retire(a.ids[0], because=because)
+            print(f"retired {a.ids[0]}: no session is given it from now on"
+                  + (f" (disproved by {because})" if because else "") + (f" ({note})" if note else ""))
             return 0
         L = _scan(folder, a.since, say)
         if not L.get("ok"):
@@ -1272,7 +1358,7 @@ def act(argv, say):
                                                    "tracekit tips lists the ones that do"), file=sys.stderr)
                 code = 1
                 continue
-            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x)
+            note = folder.approve(x) if a.act == "approve" else folder.retire(lid, x, because=because)
             print(f"{a.act}d {lid}: {x['name']}" + (" (given to the next sessions of " + x["where"] + ")" if
                                                      a.act == "approve" else " (never proposed again)")
                   + (f" ({note})" if note else ""))
