@@ -176,11 +176,14 @@ arguments, all in plain text) instead of searching for one.
 
 ## Platforms
 
-The hook script is POSIX shell: macOS, Linux and WSL. On native Windows:
+The hook script is POSIX shell, which each hooks file runs under `/bin/sh`: macOS, Linux and WSL. On native Windows:
 
-- **Claude Code** runs it in Git Bash when Git for Windows is installed (untested). Without Git Bash it runs it in
-  PowerShell, which can't, so Claude Code blocks every tool call: there, don't install the plugin, and use `tracekit
-  init --dev --v2`.
+- **Claude Code** runs it in Git Bash when Git for Windows is installed. Without Git Bash it runs the same command in
+  PowerShell, which runs `scripts/tracekit-hook.ps1` instead: it picks its Python as the shell script does in dev mode
+  (once Tracekit is set up, only the one `tracekit init` recorded) and blocks a call it can't record the same way.
+  Windows has no system mode, so neither script has one there. If Group Policy sets PowerShell's execution policy,
+  that script can't start, and every tool call is blocked. If `/bin/sh` can't find the script, it exits 127, which
+  Claude Code doesn't treat as a block (only 2 blocks), so the call runs unrecorded.
 - **Copilot CLI** gets the hooks as `bash` commands only, so on Windows it runs none of them: use `tracekit init --dev
   --v2 --agent copilot`.
 - **Cursor** blocks every tool call when the pre-tool hook can't start (`failClosed`): don't install the plugin there,
@@ -188,8 +191,8 @@ The hook script is POSIX shell: macOS, Linux and WSL. On native Windows:
 - **Codex** lets a call run when a hook can't start: there, use `tracekit init --dev --v2 --agent codex` (without
   `--no-hooks`), and turn the plugin's hooks off in `/hooks`.
 
-In each case run init without `--no-hooks`, so its own hooks, which run on Windows, do the work. The setup skill does
-this when it finds itself on native Windows.
+For those three, run init without `--no-hooks`, so its own hooks, which run on Windows, do the work. The setup skill
+does this when it finds itself on native Windows.
 
 ## What hasn't been run yet
 

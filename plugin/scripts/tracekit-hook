@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hook entry point for the Tracekit plugin: `tracekit-hook EVENT [AGENT]` runs Tracekit's v2 hook for EVENT as
-# `tracekit init --v2` wires it: Claude Code's (tracekit.integrations.claude_code) with no AGENT (hooks/hooks.json),
+# `tracekit init --v2` wires it: Claude Code's (tracekit.integrations.claude_code) with no AGENT (hooks/claude.json),
 # else that of `tracekit init --agent AGENT` (tracekit.integrations.harness_hooks AGENT EVENT; hooks/<agent>.json).
 # Needs the `tracekit` package:
 #   uv tool install tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)

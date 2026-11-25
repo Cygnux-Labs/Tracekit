@@ -75,11 +75,11 @@ there; anything else, such as another `hooks/` folder, means you didn't. The plu
 not add a second set (`--no-hooks`); in Claude Code, init sees the plugin itself. Two sets would decide every call
 twice, and every approved call would be refused.
 
-On native Windows (not WSL), the plugin's hooks don't run, since they are a POSIX shell script: Copilot CLI runs none
-of them, Codex runs every call unrecorded, and Cursor blocks every call (Claude Code runs them only in Git Bash).
-There, use init's hooks: run `tracekit init --dev --v2 --agent <name>` without `--no-hooks`, and ask the person to
-turn the plugin's hooks off (Codex: `/hooks`; Cursor and Copilot CLI: turn the plugin off; Claude Code without Git
-Bash: turn the plugin off). If that can't be done, say plainly that Tracekit can't guard that agent there.
+On native Windows (not WSL), the Codex, Copilot CLI and Cursor plugin's hooks don't run, since they are a POSIX shell
+script: Copilot CLI runs none of them, Codex runs every call unrecorded, and Cursor blocks every call (Claude Code's
+run, in Git Bash or else in PowerShell). There, use init's hooks: run `tracekit init --dev --v2 --agent <name>`
+without `--no-hooks`, and ask the person to turn the plugin's hooks off (Codex: `/hooks`; Cursor and Copilot CLI: turn
+the plugin off). If that can't be done, say plainly that Tracekit can't guard that agent there.
 
 With the plugin, Tracekit starts checking calls as soon as the package is installed (in Codex, once its hooks are
 trusted), so it holds your own `tracekit init` (TK-A057). That's expected: give the person the command and wait. In
