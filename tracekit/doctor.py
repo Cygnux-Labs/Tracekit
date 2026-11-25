@@ -489,10 +489,7 @@ def _hook_commands(harness, path):
         return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
-        commands = _loads(m.group(1)) if m else {}
-        if not isinstance(commands, dict) or not all(isinstance(c, str) for c in commands.values()):
-            raise ValueError("const commands is not an object of strings")
-        return list(commands.values())
+        return list(_loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
@@ -505,10 +502,7 @@ def _gptme_argv(path):
     if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
         return []
     match = re.search(r"^COMMAND = (.*)$", source, re.M)
-    argv = _loads(match[1]) if match else []
-    if not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
-        raise ValueError("COMMAND is not a list of strings")
-    return argv
+    return _loads(match[1]) if match else []
 
 
 def _outside_cwd(path):

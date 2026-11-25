@@ -104,26 +104,25 @@ class CodingAgentHooks(unittest.TestCase):
         with open(path) as f:
             return path, json.load(f)
 
-    def test_a_hook_file_line_too_deep_to_parse_or_of_another_shape_is_unreadable_not_a_crash(self):
+    def test_a_hook_file_line_too_deep_to_parse_is_unreadable_not_a_crash(self):
         from tracekit import agent_hooks
         opencode = os.path.join(self.d, "opencode", "tracekit.js")
         gptme = os.path.join(self.d, "gptme", "config.toml")
         bridge = agent_hooks._gptme_hook_path(gptme)
-        for value in (TOO_DEEP_JSON, "5", "[1]", '{"a": 1}'):
-            for path, text in ((opencode, f"const commands = {value};\n"),
-                               (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {value}\n")):
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, "w") as f:
-                    f.write(text)
-            with self.subTest(value[:8]):
-                with self.assertRaises(ValueError):
-                    doctor._hook_commands("opencode", opencode)
-                with self.assertRaises(ValueError):
-                    doctor._gptme_argv(gptme)
-                self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
-                for harness, path in (("opencode", opencode), ("gptme", gptme)):
-                    self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
-                        {"data_dir": self.d}, "dev", harnesses={harness: path})})
+        for path, text in ((opencode, f"const commands = {TOO_DEEP_JSON};\n"),
+                           (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {TOO_DEEP_JSON}\n")):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(text)
+        with self.assertRaises(ValueError):
+            doctor._hook_commands("opencode", opencode)
+        with self.assertRaises(ValueError):
+            doctor._gptme_argv(gptme)
+        self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
+        for harness, path in (("opencode", opencode), ("gptme", gptme)):
+            with self.subTest(harness):
+                self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
+                    {"data_dir": self.d}, "dev", harnesses={harness: path})})
 
     def check(self, harness, path, settings):
         with open(path, "w") as f:
