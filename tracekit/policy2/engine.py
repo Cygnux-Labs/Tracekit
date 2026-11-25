@@ -907,7 +907,7 @@ _PIP = re.compile(r"pip[0-9.]*")
 # and gptme's front ends, which load its plugins as it does)
 _HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
                            "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent", "copilot",
-                           "codebuddy", "gptme"))
+                           "codebuddy", "gptme", "jcode", "kiro-cli", "interpreter"))
 _HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": "qwen", "opencode-ai": "opencode",
                   "hermes-agent": "hermes", "hermes-acp": "hermes", "hermes_cli": "hermes",
                   "openhands-ai": "openhands", "codebuddy-code": "codebuddy", "cbc": "codebuddy",
@@ -921,15 +921,20 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # LOCALAPPDATA (where a harness there keeps its settings), and each harness's own
 # home, config, settings or data variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG,
 # OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, COPILOT_HOME, CODEBUDDY_CONFIG_DIR, CLAUDE_CODE_SIMPLE, as
-# --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme); an option that loads other
-# settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's --profile,
-# which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only for a key
-# of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
-# model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
+# --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme; jcode v1.0.0-preview.424
+# (1jehuang/jcode@446302f1b6dc): JCODE_HOME, JCODE_HOOKS_DISABLED in crates/jcode-base/src/hooks.rs, and
+# JCODE_HOOK_PRE_TOOL / JCODE_HOOK_PRE_TOOL_TIMEOUT_MS / JCODE_HOOK_PRE_TOOL_TRANSFORM* in
+# crates/jcode-base/src/config/env_overrides.rs; Kiro CLI V3 / 3.1.0+: KIRO_HOME and KIRO_DEFAULT_SETTINGS,
+# https://kiro.dev/docs/reference/settings/#environment-variables; Open Interpreter: INTERPRETER_HOME); an option that
+# loads other settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's
+# --profile, which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only
+# for a key of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`):
+# -c model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
 _SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME|"
+                                r"JCODE_HOOKS_DISABLED|JCODE_HOOK_PRE_TOOL\w*|"
                                 r"(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|"
                                 r"AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
-                                r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
+                                r"CODEBUDDY|JCODE|KIRO|INTERPRETER)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
                                 re.I)
 _SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
