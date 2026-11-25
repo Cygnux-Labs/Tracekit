@@ -5551,18 +5551,35 @@ def _help_marked(command, quoted):
     return " ".join(argv)
 
 
-_SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
+# (Python reads a dotted name with blanks or a line continuation on either side of a dot: `tracekit . signer`)
+_SIGNER_MODULE = re.compile(r"tracekit(?:\s|\\\r?\n)*\.(?:\s|\\\r?\n)*(?:daemon|proxy|signer)\b")
+_DOT = re.compile(r"(?<=\w)(?:\s|\\\r?\n)*\.(?:\s|\\\r?\n)*(?=\w)")
+# a `from tracekit import` statement's list: to its `)`, or its line's end unless a backslash goes on (greedy, so each
+# statement is read once)
+_FROM_TRACEKIT = re.compile(r"\bfrom\s+tracekit\s+import\s+(\([^)]*\)?|(?:[\w \t,*]|\\(?:\r\n?|\n))+)")
+
+
+def _names_signer(text):
+    """Whether `text` names Tracekit's signer, daemon or proxy module: by its dotted name, or imported from the package
+    (`from tracekit import signer`)."""
+    return bool(_SIGNER_MODULE.search(text)) or any(
+        re.search(r"\b(?:daemon|proxy|signer)\b", m.group(1)) for m in _FROM_TRACEKIT.finditer(text))
+
+
 # the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
 # service's policy loader on its default policy
 _SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
                  "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
+# a module loaded from its file (imp's load_source and the rest, importlib's file loaders, zipimport)
+_FILE_LOADERS = (r"load_source|load_compiled|load_dynamic|load_package|load_module|SourceFileLoader|SourcelessFileLoader|"
+                 r"ExtensionFileLoader|spec_from_file_location|zipimporter")
 # a name that loads a module or a global by its name from a string (pickle's and marshal's opcodes, pkgutil.resolve_name,
-# pydoc.locate, mock.patch's get_original and temp_original), reads a field of an object by its name (string.Formatter) or runs code
-# (ctypes, code.InteractiveInterpreter, doctest)
+# pydoc.locate, mock.patch's get_original and temp_original, sys.modules), reads a field of an object by its name
+# (string.Formatter) or runs code (ctypes, code.InteractiveInterpreter, doctest)
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins|pickle|_pickle|dill|"
                         r"marshal|copyreg|pkgutil|resolve_name|find_class|ctypes|pydoc|locate|Formatter|get_field|"
                         r"format_map|BaseConfigurator|InteractiveInterpreter|runsource|get_original|temp_original|doctest|DocTestParser|"
-                        r"DocTestRunner)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
+                        r"DocTestRunner|modules)\b|\bmock\s*\.\s*patch\b|\bfrom\s+unittest(?:\.mock)?\s+import\b[^\n]*\b(?:mock|patch)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
@@ -5622,10 +5639,14 @@ def _without_rpc_catch(code):
 def _runs_signer(code):
     """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
     proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
-    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
-    reached by its full name."""
+    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib, sys.modules …), a
+    module reached by its full name, or the signer's package itself (`import tracekit.signer`, `from tracekit import
+    signer`; a module of it loaded from its file is _reaches_sdk's). A dotted name is read as Python reads it, blanks and line continuations around its
+    dots left out, and each name of an import's list (`import os, tracekit.signer.service as s`)."""
+    code = _DOT.sub(".", code)
     if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
-            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code):
+            re.search(r"\btracekit\.signer\.\w+\.\w", code) or _SIGNER_CODE.search(code) and _PY_REACH.search(code) or \
+            any(re.search(r"\b(?:daemon|proxy|signer)\b", m.group(1)) for m in _FROM_TRACEKIT.finditer(code)):
         return True
     code = _without_rpc_catch(code)
     aliases = {}   # a name the code gives one of the signer's modules -> that module
@@ -5641,10 +5662,15 @@ def _runs_signer(code):
                 aliases[alias or name] = name
             elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
                 return True
-    for m in re.finditer(r"\bimport\s+tracekit\.signer(?:\.(\w+))?(?:\s+as\s+(\w+))?", code):
-        if m.group(1) not in _SIGNER_READS or not m.group(2):
-            return True
-        aliases[m.group(2)] = m.group(1)
+    for m in re.finditer(r"\bimport\s+((?:[\w. \t,]|\\(?:\r\n?|\n))+)", code):   # (an import list, to its statement's end)
+        for item in re.sub(r"\\(?:\r\n?|\n)", " ", m.group(1)).split(","):
+            words = item.split()
+            if not words or not re.fullmatch(r"tracekit\.signer(?:\.\w+)?", words[0]):
+                continue
+            module = words[0][len("tracekit.signer."):] or None
+            if module not in _SIGNER_READS or words[1:2] != ["as"] or len(words) != 3:
+                return True
+            aliases[words[2]] = module
     for alias, module in aliases.items():
         uses = re.findall(r"(?<![\w.])%s\b(\.\w+)?" % re.escape(alias), code)
         if any(u and u[1:] not in _SIGNER_READS[module] for u in uses) or uses.count("") > 1:   # the import names it
@@ -5656,7 +5682,7 @@ def _runs_signer(code):
 # CLI's modules code may run it through, and the ones of its autospawn module code may use
 _SDK = re.compile(r"\b(?:autospawn|dev_data_dir|data_dir_at|run_module|__main__|run_label_clear|record_hooks_settings|"
                   r"record_hook_python)\b|\btracekit\.cli\b|\bimport\s+(?:cli|install)\b|\btracekit\.install\b|"
-                  r"\b(?:walk_packages|iter_modules|run_path)\b|['\"]\.(?:install|cli)['\"]|"
+                  r"\b(?:walk_packages|iter_modules|run_path|" + _FILE_LOADERS + r")\b|['\"]\.(?:install|cli)['\"]|"
                   r"\btracekit\b[^\n]{0,80}['\"]\s*\+\s*['\"]|run_label")
 # code an interpreter runs from its words: python's -c, node's (and nodejs') -e, --eval, -p or --print, deno eval and
 # bun's -e or --eval, after options
@@ -5750,9 +5776,11 @@ def _reaches_sdk(code, work):
     if re.search(r"\brecord_hook_python\b|\brecord_hooks_settings\b|\b(?:import|from)\s+tracekit\.install\b|"
                  r"\bfrom\s+tracekit\s+import\s+[\w\s,()]*?\binstall\b", raw + "\n" + code):
         return True
-    # tracekit run as a module whatever its argv (run_module, run_path), a package of it walked, or a submodule looked up by a
-    # relative name (`import_module('.install', package='tracekit')`)
-    if re.search(r"\btracekit\b", raw) and re.search(r"\b(?:run_module|run_path|walk_packages|iter_modules)\b", raw):
+    # tracekit run as a module whatever its argv (run_module, run_path) or a module of it loaded from its file
+    # (`imp.load_source('s', '…/tracekit/signer/service.py')`, _FILE_LOADERS), a package of it walked, or a submodule
+    # looked up by a relative name (`import_module('.install', package='tracekit')`)
+    if re.search(r"\btracekit\b", raw) and re.search(r"\b(?:run_module|run_path|walk_packages|iter_modules|" +
+                                                     _FILE_LOADERS + r")\b", raw):
         return True
     if re.search(r"\btracekit\b", raw) and re.search(r"['\"]\.(?:install|cli)['\"]", raw):
         return True
@@ -6099,8 +6127,8 @@ def _tracekit(parsed, finds, work):
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("TARGET:", targets) + tag("LIST:", listed) + tag("READ:", read) + \
         tag("DEEP:", deep) + \
-        (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or
-          _SDK.search(s) and _reaches_sdk(s, work)] if _SIGNER_MODULE.search(joined) or
+        (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _names_signer(s) and _runs_signer(s) or
+          _SDK.search(s) and _reaches_sdk(s, work)] if _names_signer(joined) or
          any(map(joined.__contains__, _SDK_LITS)) and _SDK.search(joined) else [])
 
 
@@ -6121,7 +6149,7 @@ class TracekitGate:
     the case the rules read: NFKC and casefolded). A call whose texts hold, for some alternative of each rule, no string
     of one of its sets (every part of it), reads as none: _tracekit would give no subject any rule matches. Kept out of
     it: a call that may name a path by a pattern or a bare cd (_pattern_forms), sets HOME (what ~ stands for), or may stop
-    the signer by what finds it (_kills_signer), where SIGNER_MODULE is code's reading (_SIGNER_MODULE, _SDK); and a call
+    the signer by what finds it (_kills_signer), where SIGNER_MODULE is code's reading (_names_signer, _SDK); and a call
     whose texts are long enough for a joined form to pass MAX_SUBJECT (TK-OVERSIZE). None where a rule's alternatives
     aren't all such sets: _tracekit reads every call."""
 
