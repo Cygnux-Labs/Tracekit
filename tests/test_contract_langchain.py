@@ -14,9 +14,8 @@ from unittest import mock
 
 import adapter_contract as ac
 from factories import VersionCheckCases
-from tracekit.sdk.client import Client
+from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
-from tracekit.integrations.recording_warning import recording_warning
 
 try:
     from langchain.agents import create_agent
@@ -57,6 +56,13 @@ else:
             return "stub"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def lost(recorded):
+    """The error of a write the signer's reply to was lost: `recorded` None, False or True."""
+    e = SignerUnavailable("gone")
+    e.recorded = recorded
+    return e
 
 
 def agent(signer, run, checkpointer, outer=(), inner=()):
@@ -213,6 +219,26 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         gaps = [e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"]
         self.assertEqual(gaps, ["client_counter_gap"])   # the lost write, and no state_tamper
 
+    def test_a_lost_write_says_whether_it_may_have_been_recorded(self):
+        for recorded, wording in ((None, "may not have been recorded"), (False, "not recorded")):
+            for write, what in (("complete", "outcome of tool call {}"), ("state_write", "checkpoint commitment for")):
+                with self.subTest(recorded=recorded, write=write):
+                    tcid = f"call-{write}-{recorded}"
+                    with mock.patch.object(self.d.signer, write, side_effect=lost(recorded)):
+                        with warnings.catch_warnings(record=True) as caught:
+                            warnings.simplefilter("always")
+                            self.d.call("echo", {"text": "hi"}, tcid)
+                    texts = [str(w.message) for w in caught if str(w.message).startswith("tracekit: " + what.format(tcid))]
+                    self.assertTrue(texts, [str(w.message) for w in caught])
+                    self.assertTrue(all(t.endswith(f" {wording}: gone") for t in texts), texts)
+
+    def test_a_write_the_signer_recorded_is_not_warned_about(self):
+        with mock.patch.object(self.d.signer, "complete", side_effect=lost(True)):
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                self.d.call("echo", {"text": "hi"})
+        self.assertEqual([str(w.message) for w in caught], [])
+
     def test_async_calls_commit_the_checkpoint(self):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -263,15 +289,3 @@ class TestCheckpointerMemory(unittest.TestCase):
             cp.put({"configurable": {"thread_id": f"t{i}", "checkpoint_ns": ""}}, empty_checkpoint(), {}, {})
             cp.delete_thread(f"t{i}")
         self.assertEqual((len(cp._seen), len(cp._acked), len(cp._read)), (0, 0, 0))
-
-class TestRecordingWarning(unittest.TestCase):
-    def test_warning_reflects_recording_status(self):
-        for recorded, expected in (
-            (None, "may not have been recorded"),
-            (False, "not recorded"),
-        ):
-            with self.subTest(recorded=recorded):
-                error = RuntimeError("signer unavailable")
-                error.recorded = recorded
-                message = recording_warning("checkpoint commitment", error)
-                self.assertIn(expected, message)
