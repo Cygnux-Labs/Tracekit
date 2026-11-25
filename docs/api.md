@@ -1098,6 +1098,7 @@ answer](approvals.md#who-may-answer).
 | `ai.answers` | list of objects | yes | 1 to 2 items |
 | `ai.answers[].model` | text | yes | 1 to 128 characters |
 | `ai.answers[].decision` | one of `approve`, `reject`, `escalate` | yes |  |
+| `ai.answers[].identity` | text | no | 1 to 256 characters |
 | `view_digest` | text | no | up to 71 characters; matches `^sha256:[0-9a-f]{64}(?![\s\S])` |
 
 **Answer**
