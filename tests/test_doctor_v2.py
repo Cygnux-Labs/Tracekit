@@ -2043,6 +2043,16 @@ class CodexSandbox(unittest.TestCase):
         self.assertIn('approval_policy = "never"', self.check('approval_policy = "never"\n')["detail"])
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_every_policy_that_asks_warns_with_a_model_reviewer_and_never_does_not(self):
+        for policy in ("on-failure", "untrusted"):   # an alias of on-request, and approval for every unruled command
+            got = self.check(f'approval_policy = "{policy}"\napprovals_reviewer = "auto_review"\n')
+            self.assertEqual(got["status"], "warn", policy)
+            self.assertIn(f'with approval_policy "{policy}"', got["detail"])
+            self.assertEqual(self.check(f'approval_policy = "{policy}"\napprovals_reviewer = "user"\n')["status"], "ok")
+        got = self.check('approval_policy = "never"\napprovals_reviewer = "auto_review"\n')
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))   # Codex asks nobody, so no model answers
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_the_selected_profile_wins_each_key(self):
         got = self.check('profile = "fast"\n[profiles.fast]\napprovals_reviewer = "auto_review"\n'
                          "[profiles.fast.features]\nexec_permission_approvals = true\n")

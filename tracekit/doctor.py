@@ -823,21 +823,23 @@ def _codex_sandbox(add, harnesses):
     policy, _ = setting("approval_policy")
     reviewer, reviewer_at = setting("approvals_reviewer")
     feature_on = feature is True
-    model_reviews = policy in ("on-request", None) and reviewer in ("auto_review", "guardian_subagent")   # Codex's
-    # default policy (AskForApproval's #[default], codex-rs/protocol/src/protocol.rs)
+    # AskForApproval in codex-rs/protocol/src/protocol.rs: on-request is its #[default] and on-failure an alias of it;
+    # under untrusted every command a rule doesn't allow asks for approval. The reviewer answers all of them.
+    asks = policy in ("on-request", "on-failure", "untrusted", None)
+    model_reviews = asks and reviewer in ("auto_review", "guardian_subagent")
     why, fix = [], []
     if feature_on:
         why.append(f"{feature_at}features.exec_permission_approvals is true in {toml}: Codex can then run some calls "
                    "with no hook, so Tracekit neither decides nor records them")
         fix.append("turn features.exec_permission_approvals off")
     if model_reviews:
-        why.append(f'{reviewer_at}approvals_reviewer = "{reviewer}" with approval_policy "on-request" in {toml}: a '
-                   "model, not a person, answers Codex's requests to run outside its sandbox, and Tracekit sees "
-                   "neither the request nor the answer")
+        why.append(f'{reviewer_at}approvals_reviewer = "{reviewer}" with approval_policy "{policy or "on-request"}" in '
+                   f"{toml}: a model, not a person, answers Codex's approval requests, and Tracekit sees neither the "
+                   "request nor the answer")
         fix.append('set approvals_reviewer = "user"')
     add("D-CODEX-SANDBOX", not why, "; ".join(why) or (
-        f'Codex asks a person before running outside its sandbox (approval_policy = "on-request", {toml})'
-        if policy in ("on-request", None) and reviewer in ("user", None) else
+        f'Codex asks a person for approval (approval_policy = "{policy or "on-request"}", {toml})'
+        if asks and reviewer in ("user", None) else
         f'Codex never asks to run a call outside its sandbox (approval_policy = "never", {toml})' if policy == "never"
         else f"doctor doesn't know Codex's approval settings in {toml} (approval_policy = {policy!r}, "
         f"approvals_reviewer = {reviewer!r})"),
