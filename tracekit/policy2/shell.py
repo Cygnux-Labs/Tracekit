@@ -91,6 +91,33 @@ class _Spliced(_Expanded):
     the parser reads there."""
 
 
+class _At(str):
+    """Text the line gives at `at` (its span there as written, quotes and all; in an argv, its words' indexes) and
+    stands in verbatim at `inner` (None: quotes, escapes or joining make it differ): what lets a reader of the line join
+    this parse to its own by position (analyse's `placed` and `programs`). `lit`: no expansion made its text (a
+    variable's value the line gives elsewhere: `X=reboot; $X`). An expansion's word (_Expanded) has `at`, the source
+    its text is made from, not where it is."""
+    at = inner = None
+    lit = False
+
+
+def _placed(text, at, inner, lit=True):
+    t = _At(text)
+    t.at, t.inner, t.lit = at, inner, lit
+    return t
+
+
+def _place(text):
+    """(at, inner) of code `text` in the line (_At's), or (None, None) where its text isn't the line's there: an
+    expansion made it (a value a variable the line gives elsewhere holds), or the parser did."""
+    return (text.at, text.inner) if getattr(text, "lit", False) else (None, None)
+
+
+def _literal(raw):
+    """Whether a word written `raw` holds no expansion outside '...' (\\$ and '$' are text)."""
+    return not re.search(r"[$`]", re.sub(r"\\.|'[^']*'", "", raw))
+
+
 MAX_DEPTH = 32
 # the texts a word may make as its expansions take each of their values (_Parser.ways), and the ways the words of a
 # command that make more than its uniform readings combine (simple): past it the word or command is unread
@@ -174,7 +201,11 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             # shell, or after -e, --exec or -- as the command itself (an option no table names is read both ways)
             "cmd": ((), 0), "wsl": (("-d", "--distribution", "--distribution-id", "-u", "--user", "--cd",
                                      "--shell-type"), 0),
-            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
+            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p", "-f", "--file", "-q", "--quote", "--export"), 0),
+            "catchsegv": ((), 0), "heaptrack": (("-o", "--output", "-p", "--pid"), 0),
+            "faketime": (("-p", "--date-prog"), 1),
+            "xvfb-run": (("-n", "--server-num", "-s", "--server-args", "-f", "--auth-file", "-e", "--error-file", "-w",
+                          "--wait", "-p", "--xauth-protocol"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
             "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
@@ -196,7 +227,8 @@ WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it bes
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
 _UV_FLAGS = ("-q", "--quiet", "-v", "--verbose", "--frozen", "--locked", "--no-sync", "--isolated", "--no-project",
              "--offline", "--active", "--all-extras", "--no-dev", "--exact", "--refresh", "-U", "--upgrade", "-n",
-             "--no-cache")
+             "--no-cache", "--native-tls", "--no-native-tls", "--preview", "--no-preview", "--no-progress",
+             "--no-config", "--show-settings", "--managed-python", "--no-managed-python", "--no-python-downloads")
 WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                  "xargs": ("-0", "-r", "-t", "-p", "-x", "-o", "--null", "--no-run-if-empty", "--verbose",
                            "--interactive", "--exit", "--open-tty"),
@@ -230,10 +262,12 @@ _BUN_VALUED = {"--cwd", "-r", "--preload", "--require", "--import", "--condition
                "--jsx-import-source", "--jsx-runtime", "--env-file", "--port", "--title", "--console-depth",
                "--elide-lines", "-F", "--filter", "--shell", "--install", "--unhandled-rejections", "--watch-kill-signal",
                "--fetch-preconnect", "--max-http-header-size", "--dns-result-order", "--user-agent"}
+WRAPPER_FLAGS["faketime"] = ("-m", "-f", "--exclude-monotonic", "--disable-shm")
+WRAPPER_FLAGS["xvfb-run"] = ("-a", "--auto-servernum", "-l", "--listen-tcp")
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
-# lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
-# anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
+# lean: a wrapper or runner not named here hides what it runs from the rules anchored on a command's name (TK-D001,
+# TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
 RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "conda": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0),
            "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
@@ -251,10 +285,42 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
-           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
+           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1),
+           # Tracekit's srt-proxy decider starts the program its words name, after its options or a `--`
+           "tracekit": (("srt-decider",), ("--allow-domain", "--agent"), 0),
+           # Procfile runners, secret injectors, version managers, profilers: each runs the command its words name
+           "honcho": (("run",), ("-e", "--env", "-d", "--app-root", "-f", "--procfile"), 0),
+           "foreman": (("run",), ("-e", "--env", "-d", "--root", "-f", "--procfile"), 0),
+           "chamber": (("exec",), ("-b", "--backend", "-r", "--retries", "--kms-key-alias", "--min-throttle-delay"),
+                       "--"),
+           "aws-vault": (("exec",), ("-d", "--duration", "-t", "--mfa-token", "-r", "--region", "--prompt",
+                                     "--backend", "--keychain", "--config"), 1),
+           "infisical": (("run",), ("--env", "--path", "--projectId", "--token", "--domain", "--tags"), "--"),
+           "asdf": (("exec",), (), 0), "pyenv": (("exec",), (), 0), "rbenv": (("exec",), (), 0),
+           "nodenv": (("exec",), (), 0), "volta": (("run",), ("--node", "--npm", "--pnpm", "--yarn", "--env"), 0),
+           "fnm": (("exec",), ("--using",), 0), "devbox": (("run",), ("-c", "--config", "-e", "--env", "--env-file"), 0),
+           "perf": (("stat", "record", "trace"), ("-e", "--event", "-o", "--output", "-p", "--pid", "-t", "--tid", "-C",
+                                                  "--cpu", "-c", "--count", "-F", "--freq", "-r", "--repeat", "-I",
+                                                  "--interval-print", "-G", "--cgroup", "-u", "--uid", "-m",
+                                                  "--mmap-pages", "-x", "--field-separator", "--call-graph"), 0),
+           "rr": (("record",), ("-o", "--output-trace-dir"), 0)}
 # a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
 # (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
 RUNNER_LEADS = {"hatch": ("env",)}
+# bwrap's options that take two words; a flag of its takes none, any other one word (read both ways: _bwrap)
+_BWRAP_TWO = frozenset(("--bind", "--bind-try", "--dev-bind", "--dev-bind-try", "--ro-bind", "--ro-bind-try", "--symlink",
+                        "--setenv", "--file", "--bind-data", "--ro-bind-data", "--chmod", "--bind-fd", "--ro-bind-fd"))
+_BWRAP_FLAGS = frozenset(("--unshare-all", "--share-net", "--unshare-user", "--unshare-user-try", "--unshare-ipc",
+                          "--unshare-pid", "--unshare-net", "--unshare-uts", "--unshare-cgroup", "--unshare-cgroup-try",
+                          "--die-with-parent", "--as-pid-1", "--new-session", "--clearenv", "--disable-userns",
+                          "--assert-userns-disabled", "--level-prefix"))
+# gdb's options that take a value (the program is its first word that is neither one nor its value)
+_GDB_VALUED = frozenset(("-ex", "--eval-command", "-iex", "--init-eval-command", "-x", "--command", "-ix",
+                         "--init-command", "-p", "--pid", "-c", "--core", "-d", "--directory", "-s", "--symbols", "-e",
+                         "--exec", "-se", "-cd", "-b", "-l", "-tty", "-D", "--data-directory", "-i", "--interpreter"))
+_LLDB_VALUED = frozenset(("-o", "--one-line", "-O", "--one-line-before-file", "-s", "--source", "-S",
+                          "--source-before-file", "-k", "--one-line-on-crash", "-K", "--source-on-crash", "-f", "--file",
+                          "-c", "--core", "-a", "--arch", "-p", "--attach-pid", "-n", "--attach-name"))
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -574,36 +640,52 @@ _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E"
 # 1-3 octal digits, \cX a control character (\c\\ is \c with one backslash), or any one character
 _ANSI_ESCAPE = re.compile(r"\\(x\{[0-9A-Fa-f]*\}?|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|"
                           r"c\\\\|c.|.)", re.S)
-# lean: interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
-# parentheses: perl's and ruby's `system "x"`), plus backticks in perl/ruby/php, and sed's `e` command; code that builds
-# the command at run time, and awk's `print | "cmd"` and `"cmd" | getline`, are not followed (tripwire territory)
+# interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
+# parentheses: perl's and ruby's `system "x"`), its quoted commands and pipes, and sed's commands (_sed_commands); a
+# command the code builds at run time is held (_Parser.runs, shell_calls).
+# A call is found by its name (Python's and Node's by the names the code imports them as); a runner or module taken
+# as a value is held (an object holding one: `{r: cp.execSync}`, `cp[k]`), and so is a lookup by a name made at run time
+# of the kinds _CODE_RUNS lists (JS `process[k]`, `globalThis[k]`, `x.constructor.constructor(…)`)
 _CALL = re.compile(r"\b(system|popen|execSync|execFileSync|exec|spawn\w*|run|call|check_call|check_output|Popen|getoutput|"
                    r"shell_exec|passthru|proc_open|os\.execute)(\s*\(\s*|\s+)")
 _PY_CALL = re.compile(_CALL.pattern.replace(r"(\s*\(\s*|\s+)", r"(\s*\(\s*)"))   # (Python calls with parentheses)
-# (sed addresses and s/// parts are bounded so a long script cannot make the scan quadratic; the whitespace runs stay
-# off `\n`, which is already a start, so a newline-only script is not re-scanned from each one)
-_SED_ADDR = r"(?:^|[;\n{}])[^\S\n]*(?:(?:[0-9$,~+!]|/(?:\\.|[^/\\\n]){0,200}/)[^\S\n]*){0,8}"
-_SED_E = re.compile(_SED_ADDR + r"e([^\n]*)")
-_SED_S_E = re.compile(_SED_ADDR + r"s([^\\\n])(?:\\.|(?!\1).){0,200}\1(?:\\.|(?!\1).){0,200}\1[^;\n}]{0,20}e")
 # Python's process spawners by module, read with the code's own imports (`import subprocess as sp`, `from os import
 # system`); code that looks a name up at run time can call any, and is scanned with _CALL as other languages are
 _PY_SPAWNERS = {"os": r"system|popen|exec[lv]\w*|spawn\w*|posix_spawnp?|startfile",
+                "posix": r"system|popen|exec[lv]\w*|spawn\w*|posix_spawnp?",
+                "nt": r"system|popen|exec[lv]\w*|spawn\w*|startfile",
                 "subprocess": r"run|call|check_call|check_output|Popen|getoutput|getstatusoutput",
                 "pty": r"spawn", "commands": r"getoutput|getstatusoutput",
                 "asyncio": r"create_subprocess_shell|create_subprocess_exec"}
 _PY_DYNAMIC = re.compile(r"\b(?:getattr|__import__|importlib|import_module|eval|exec|compile|globals|locals|vars|"
-                         r"builtins|__builtins__|__dict__)\b")
+                         r"builtins|__builtins__|__dict__|sys\s*\.\s*modules)\b")
 _PY_IMPORT = re.compile(r"\bimport\s+([A-Za-z_][\w.]*(?:\s+as\s+\w+)?"
                         r"(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:\s+as\s+\w+)?)*)")
-_PY_FROM = re.compile(r"\bfrom\s+(os|subprocess|pty|commands|asyncio)\s+import\s+\(?\s*([\w\s,*]+)")
+_PY_FROM = re.compile(r"\bfrom\s+(os|posix|nt|subprocess|pty|commands|asyncio)\s+import\s+\(?\s*([\w\s,*]+)")
 
 
 def _py_calls(code):
     """The pattern _Parser.scan finds Python's process-spawning calls with: each module's spawners under the names the
-    code imports it and them as; _CALL itself when the code looks names up at run time (getattr, __import__,
-    eval …), with its parentheses."""
-    if _PY_DYNAMIC.search(code):
-        return _PY_CALL
+    code imports it and them as (_py_names); _CALL itself when the code looks names up at run time (getattr,
+    __import__, eval …), with its parentheses."""
+    return _PY_CALL if _PY_DYNAMIC.search(code) else re.compile(r"(?<![\w.])(%s)(\s*\(\s*)" % "|".join(_py_names(code)))
+
+
+def _py_taken(code):
+    """Whether Python code takes a spawner as a value (`f = os.system`, `map(subprocess.run, …)`: one of _py_names not
+    called there) or a process module itself (`o = os`: one it imports, not before its attribute), outside its import
+    lines and strings."""
+    text = _BLANK_STR["'\""].sub('""', _PY_IMPORT.sub(" ", _PY_FROM.sub(" ", code)))
+    modules = sorted({(alias.strip() or mod) for m in _PY_IMPORT.finditer(code) for item in m.group(1).split(",")
+                      for mod, _, alias in [item.strip().partition(" as ")] if mod in _PY_SPAWNERS})
+    return bool(re.search(r"(?<![\w.])(?:%s)\b(?!\s*\()" % "|".join(_py_names(code)), text) or
+                modules and re.search(r"(?<![\w.])(?:%s)\b(?!\s*\.)" % "|".join(map(re.escape, modules)), text))
+
+
+@functools.lru_cache(maxsize=16)
+def _py_names(code):
+    """Each spawner of _PY_SPAWNERS as `module.name` under each name the code imports the module as (`import
+    subprocess as sp`), and each the code imports by name (`from os import system as s`), as pattern alternatives."""
     names = {m: {m} for m in _PY_SPAWNERS}
     bare = []
     for m in _PY_IMPORT.finditer(code):
@@ -616,15 +698,37 @@ def _py_calls(code):
             name, _, alias = item.strip().partition(" as ")
             if name == "*" or re.fullmatch(_PY_SPAWNERS[m.group(1)], name):
                 bare.append(_PY_SPAWNERS[m.group(1)] if name == "*" else re.escape(alias.strip() or name))
-    called = [f"(?:{'|'.join(map(re.escape, sorted(n)))})\\.(?:{_PY_SPAWNERS[m]})" for m, n in names.items()] + bare
-    return re.compile(r"(?<![\w.])(%s)(\s*\(\s*)" % "|".join(called))
+    return tuple(f"(?:{'|'.join(map(re.escape, sorted(n)))})\\.(?:{_PY_SPAWNERS[m]})"
+                 for m, n in names.items()) + tuple(bare)
 
 
 # a string literal's opening in interpreter code: Python's prefixes (r, b, u, f and their pairs) and triple quotes,
-# JS's template and Perl's, Ruby's and PHP's command backquote; Perl's q(), qq() and qw() (any bracket or mark)
+# JS's template and Perl's, Ruby's and PHP's command backquote; Perl's q(), qq() and qw() (any bracket or mark), Ruby's
+# %q(), %Q(), %w(), %W() (any mark) and %() (a bracket: after a value, % is its remainder)
 _OPEN = re.compile(r"""([rRbBuUfF]{0,2})('''|\"\"\"|['"`])""")
 _PERL_Q = re.compile(r"q([qw]?)\s*([^\w\s=,;)\]}>])")
+_RUBY_Q = re.compile(r"%(?=[qQwW][^\w\s]|[(\[{<])([qQwW]?)([^\w\s])")
 _PAIRS = {"(": ")", "[": "]", "{": "}", "<": ">"}
+
+
+def _delimited(code, k, opening):
+    """(body, end) of a quote-like operator's text from `k`, just past its opening delimiter, as Perl and Ruby read it:
+    up to the first closing delimiter no backslash escapes, a bracket ((, [, {, <) nesting; None when it never closes."""
+    close, depth = _PAIRS.get(opening, opening), 0
+    if opening == "\\":
+        end = code.find("\\", k)
+        return None if end < 0 else (code[k:end], end + 1)
+    for m in re.compile(r"\\.|[%s]" % re.escape(opening + close), re.S).finditer(code, k):
+        if m.group() == close and not depth:
+            return code[k:m.start()], m.end()
+        if len(m.group()) == 1:
+            depth += 1 if m.group() == opening else -1
+    return None
+
+
+def _quoted(body, opening):
+    """A single-quoted literal's text (Perl's q(), Ruby's %q()): a backslash takes only a backslash or its delimiter."""
+    return re.sub(r"\\([\\%s])" % re.escape(opening + _PAIRS.get(opening, opening)), r"\1", body)
 # a literal's body up to its closing quote, on its line (a template's across lines)
 _BODY = {q: re.compile(r"(?:\\.|[^\\%s\n])*%s" % (q, q), re.S) for q in "'\""}
 _BODY["`"] = re.compile(r"(?:\\.|[^\\`])*`", re.S)
@@ -640,11 +744,16 @@ _C_ESCAPE = re.compile(r"\\(x\{[0-9A-Fa-f]+\}|x[0-9A-Fa-f]{1,2}|u\{[0-9A-Fa-f]+\
                        re.S)
 _C_CONTROLS = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f", "v": "\v", "e": "\x1b", "s": " ",
                "\n": ""}
-# where a double-quoted literal takes a value made at run time: JS's ${…}, Ruby's #{…}, Perl's and PHP's $name and
-# @name (with a subscript or ->), PHP's {$…}
-_INTERPOLATE = {"node": re.compile(r"\$\{[^}]*\}"), "ruby": re.compile(r"#\{(?:[^}]*\}|.*)|#[@$][\w@]+", re.S),
-                "perl": re.compile(r"[$@]\{?[A-Za-z_:][\w:]*\}?(?:->)?(?:\[[^\]]*\]|\{[^}]*\})*"),
-                "php": re.compile(r"\{\$[^}]*\}|\$[A-Za-z_]\w*(?:->\w+|\[[^\]]*\])*")}
+# where a double-quoted literal takes a value made at run time, after an escape (\\.: `\$x` is text): JS's ${…},
+# Ruby's #{…}, #@x and #$x (any global: #$1, #$;), PHP's $name and {$…}, and each of Perl's: $ before anything
+# but its end (a name after blanks, $1, $&, ${…}, ${\ …}), @ before a name, @{…}, @$, @- or @+, each with its
+# subscripts (bounded, so the scan stays linear: `${` or `@{` alone is one when its close is further)
+_PERL_SUBSCRIPTS = r"(?:(?:->)?(?:\[[^\]\n]{0,200}\]|\{[^}\n]{0,200}\}))*"
+_INTERPOLATE = {k: re.compile(r"\\.|" + v, re.S) for k, v in {
+    "node": r"\$\{[^}]*\}", "ruby": r"#\{(?:[^}]*\}|.*)|#@@?\w+|#\$(?:\w+|-\w|[^\w\s])",
+    "perl": r"\$\s*(?:\{[^}\n]{0,200}\}|\{|\^\w|[\w:]+|[^\s\w])" + _PERL_SUBSCRIPTS +
+            r"|@(?:\{[^}\n]{0,200}\}|\{|\$[\w:]*|[\w:]+|[-+])" + _PERL_SUBSCRIPTS,
+    "php": r"\{\$[^}]*\}|\$[A-Za-z_]\w*(?:->\w+|\[[^\]]*\])*"}.items()}
 # what a value the code makes at run time reads as in shell text: a variable no line gives (_Parser reads it as any)
 UNKNOWN = "${_tk_value}"
 
@@ -678,17 +787,21 @@ def _py_value(prefix, quote, body):
 def _string_at(kind, code, k, charge):
     """(pieces, end) of the string literal at `k` in code of `kind`: its text with its escapes decoded as the language
     decodes them, and None for each value it interpolates at run time (an f-string's {…}, a template's ${…}, Ruby's
-    #{…}, Perl's and PHP's $x in double quotes); None when no literal starts there. `charge(n)`: the parse's budget,
-    spent on what a literal that never closes read."""
-    if kind == "perl" and (q := _PERL_Q.match(code, k)) and (k == 0 or not (code[k - 1].isalnum() or code[k - 1] in "_$@%")):
-        close = _PAIRS.get(q.group(2), q.group(2))
-        end = code.find(close, q.end())
-        if end < 0:
+    #{…}, Perl's and PHP's $x in double quotes, a command's output: Perl's, Ruby's and PHP's backquote); None when no
+    literal starts there. `charge(n)`: the parse's budget, spent on what a literal that never closes read."""
+    q = (kind == "perl" and (k == 0 or not (code[k - 1].isalnum() or code[k - 1] in "_$@%")) and _PERL_Q.match(code, k)
+         or kind == "ruby" and _RUBY_Q.match(code, k))
+    if q:
+        letter, opening = q.groups()
+        got = _delimited(code, q.end(), opening)
+        if got is None:
             charge(len(code) - k)
             return None
-        body = code[q.end():end]
-        return ([" ".join(body.split())] if q.group(1) == "w" else _decoded(kind, '"' if q.group(1) else "'", body),
-                end + 1)
+        body, end = got
+        if letter in ("w", "W"):   # (a word list: its words, one blank apart)
+            body = " ".join(body.split())
+        single = letter in ("", "w") if kind == "perl" else letter in ("q", "w")
+        return [_quoted(body, opening)] if single else _decoded(kind, '"', body), end
     m = _OPEN.match(code, k)
     if not m:
         return None
@@ -718,6 +831,8 @@ def _string_at(kind, code, k, charge):
         body, rest = (body[:cut.start()], True) if cut else (body, False)
         return [{"{{": "{", "}}": "}"}.get(p, None if p[:1] == "{" else _py_value(plain, quote, p))
                 for p in re.split(r"(\{\{|\}\}|\{[^{}]*\})", body) if p] + [None] * rest, after
+    if quote == "`" and kind != "node":   # (what the command prints: _Parser.quoted_runs reads the command)
+        return [None], after
     return _decoded(kind, quote, body), after
 
 
@@ -727,8 +842,9 @@ def _decoded(kind, quote, body):
         return [re.sub(r"\\([\\'])", r"\1", body)]
     rx, out, at = _INTERPOLATE.get(kind) if (quote == "`" if kind == "node" else quote != "'") else None, [], 0
     for m in rx.finditer(body) if rx else ():
-        out += [_c_unescape(kind, body[at:m.start()]), None]
-        at = m.end()
+        if m.group()[0] != "\\":
+            out += [_c_unescape(kind, body[at:m.start()]), None]
+            at = m.end()
     return out + [_c_unescape(kind, body[at:])]
 
 
@@ -737,14 +853,15 @@ def _literal_start(kind, code, i, k):
     if code[i] in "'\"`":
         return True
     return (i == k or not (code[i - 1].isalnum() or code[i - 1] == "_")) and (
-        code[i] in "rRbBuUfF" and kind == "python" or code[i] == "q" and kind == "perl")
+        code[i] in "rRbBuUfF" and kind == "python" or code[i] == "q" and kind == "perl" or
+        code[i] == "%" and kind == "ruby")
 
 
 # a run of characters at which no literal starts, and no quote or backslash, which _arg_text and _literals take in one
 # step: a prefix letter after a word character is inside a name (_literal_start; `\w` is isalnum() or `_`), and one
 # not before a quote (after at most one more: _OPEN) starts none
 _NO_LITERAL = {"python": re.compile(r"""(?:[^'"`\\rRbBuUfF]|(?<=\w)[rRbBuUfF]|[rRbBuUfF](?![rRbBuUfF]*['"`]))+"""),
-               "perl": re.compile(r"""(?:[^'"`\\q]|(?<=\w)q)+""")}
+               "perl": re.compile(r"""(?:[^'"`\\q]|(?<=\w)q)+"""), "ruby": re.compile(r"""(?:[^'"`\\%]|(?<=\w)%)+""")}
 _NO_LITERAL_OTHER = re.compile(r"""[^'"`\\]+""")
 _NESTING = re.compile(r"[()\[\]{}]")
 # a run of characters _skip_value passes over: no quote, closing bracket or comma, nor a stop (each is among `)];` and
@@ -811,7 +928,9 @@ def _arg_text(kind, code, k, end, charge):
         nonlocal fmt, saw
         text = "".join(run).strip()
         run.clear()
-        if not text or text == "+" or text == "." and kind in ("perl", "php"):
+        # (Ruby's `*%w(a b)` spreads a literal's words as arguments; Lua joins with ..)
+        if not text or text == "+" or text == "." and kind in ("perl", "php") or text == ".." and kind == "lua" or \
+                text == "*" and kind == "ruby" and not saw:
             return False
         if saw and (text[0] == "%" or text.startswith(".format(")):
             fmt = text[0] if text[0] == "%" else "{"
@@ -820,7 +939,8 @@ def _arg_text(kind, code, k, end, charge):
             pieces.append(home.group(2) or "$HOME")
             saw = True
             return False
-        if not (saw and trailing and text[0] in ".["):
+        # (a method or subscript on it; Perl's, PHP's and Lua's . or .. joins a value: `"ls " . $d`)
+        if not (saw and trailing and text[0] in ".[" and not (text[0] == "." and kind in ("perl", "php", "lua"))):
             pieces.append(None)
         return False
     while i < end:
@@ -921,7 +1041,10 @@ def _literals(kind, code, charge):
 
 
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
-_TICK = re.compile(r"`([^`]*)`")
+# a string literal to blank (a name in a string is no use of it): one that never closes runs to its line's end, so a
+# line of quotes is read once (every stop of the run is a close: no backing off), awk's double-quoted ones too
+_BLANK_STR = {"'\"": re.compile(r"""(['"])(?:\\.|\\(?=\n|$)|(?!\1)[^\\\n])*(?:\1|(?=\n)|$)"""),
+              '"': re.compile(r'"(?:\\.|\\(?=\n|$)|[^"\\\n])*(?:"|(?=\n)|$)')}
 _AWK_STRING = re.compile(r'"((?:\\.|[^"\\\n])*)"')
 
 
@@ -936,7 +1059,266 @@ def _awk_pipes(code):
             yield m.group(1), True
 
 
-_QX = re.compile(r"(?:%x|\bqx)\s*([({\[<])")
+# Perl's and Ruby's calls that run a command (_Parser.run_words: a shell line, or a program and its words; Perl's
+# `system { "prog" } LIST` takes the program from its block; each argument of Ruby's Open3.pipeline* is one)
+_RUN_NAMES = {"perl": r"system|exec|readpipe",
+              "ruby": r"system|exec|spawn|popen[23]?e?|capture[23]e?|pipeline(?:_rw|_r|_w|_start)?"}
+_RUNS = {k: re.compile(r"\b(%s)\b%s" % (v, r"|\.\s*(`)(?=\s*\()" * (k == "ruby")))
+         for k, v in _RUN_NAMES.items()}   # (and Ruby's Kernel.`(…))
+# a call that runs its argument as the program's own code: Perl's eval of a string (not of a block), Ruby's eval,
+# instance_eval, class_eval, module_eval (not a variable: `print $eval;`), Python's exec and eval (and the standard
+# library's runners of a code string: cProfile's, profile's and pdb's run, timeit's; runpy's, whose literal is read
+# as code too, a path or module name harmlessly), Node's eval, Function
+# and vm's, PHP's eval, Lua's load and loadstring; and Ruby's call of a method by its name (send, __send__, public_send)
+_EVALS = {"perl": re.compile(r"(?<![$@\w])eval\b"), "ruby": re.compile(r"\b(?:instance_|class_|module_)?eval\b"),
+          "python": re.compile(r"(?<![\w.])(?:exec|eval)\b|\b(?:cProfile|profile|pdb)\s*\.\s*run(?:eval|ctx)?\b|"
+                               r"\btimeit\s*\.\s*(?:timeit|repeat|Timer)\b|\brunpy\s*\.\s*run_(?:path|module|code)\b"),
+          "php": re.compile(r"(?<![\w>:$])eval\b"),
+          "node": re.compile(r"(?<![\w.$])(?:eval|Function)\b|\bvm\s*\.\s*(?:run\w*|compileFunction|Script)\b"),
+          "lua": re.compile(r"(?<![\w.:])(?:load|loadstring)\b")}
+# code a program runs that no eval call names: Perl's s///ee (its replacement evaluated as code, then run: _perl_ee)
+# and a pattern's code block ((?{…}), (??{…}), (*{…}); `use re "eval"`, under which a pattern made at run time may
+# hold one); Ruby's ERB template; Python's getattr, vars or __dict__ of a process module, globals() and locals(), and
+# __import__ or import_module of one or of a name made at run time, a native library ctypes or cffi loads (libc's
+# system), runpy's runs (a literal's are read as code:
+# _EVALS), the deserialisers that run code (pickle, marshal, dill, yaml.load but its safe loaders); Node's require or
+# import of a name it makes (any but a literal), process.binding, and a property computed on process, vm, globalThis,
+# global, module or require, or a constructor's constructor (Function), Deno or Bun subscripted with a value, and
+# their runners taken as values (`const c = Deno.Command`, `Bun.$` not run); Ruby's Erubi, Erubis and Tilt templates; PHP's
+# function named by a value (`$f(…)`, call_user_func, create_function), preg_replace with /e (or a pattern it makes),
+# assert of a string; Lua's _G, os or io indexed (`os[n](c)`): held, with what they may run read loose
+_CODE_RUNS = {"perl": re.compile(r"\((?:\?\??|\*)\{|\buse\s+re\b[^;\n]{0,64}\beval\b"),
+              "ruby": re.compile(r"\bERB\s*\.\s*new\b|\b(?:Erubis?|Tilt)\s*(?:::|\.)"),
+              "python": re.compile(r"\b(?:getattr|vars)\s*\(\s*(?:os|subprocess|pty|commands|asyncio|posix|nt)\b|"
+                                   r"\b(?:os|subprocess|pty|commands|asyncio|posix|nt)\s*\.\s*__dict__|"
+                                   r"\b(?:globals|locals)\s*\(\s*\)|"
+                                   r"(?:\b__import__|\bimport_module)\s*\(\s*(?!['\"](?!(?:os|subprocess|pty|commands|"
+                                   r"asyncio|posix|nt)['\"])\w+['\"])|"
+                                   r"\b(?:pickle|cPickle|_pickle|marshal|dill)\s*\.\s*(?:loads?|Unpickler)\b|"
+                                   r"\b(?:CDLL|PyDLL|WinDLL|OleDLL|LoadLibrary|dlopen)\s*\(|"
+                                   r"\bctypes\s*\.\s*(?:cdll|pydll|windll|oledll)\b|"
+                                   r"\byaml\s*\.\s*(?:unsafe_load|full_load)(?:_all)?\b|"
+                                   r"\byaml\s*\.\s*load(?:_all)?\s*\((?![^)\n]{0,200}\b(?:C?SafeLoader|BaseLoader)\b)"),
+              "node": re.compile(r"(?<![\w.$])(?:require|import)\s*\(\s*(?![\"'`][\w@./:-]*[\"'`]\s*\))|"
+                                 r"\bprocess\s*(?:\.\s*|\[\s*[\"'`])(?:binding|_linkedBinding)\b|"
+                                 r"\b(?:process|vm|globalThis|global|module|require|child_process)\s*\[\s*"
+                                 r"(?![\"'`][\w$]*[\"'`]\s*\])|\bconstructor\s*(?:\.\s*constructor\b|\[)|"
+                                 r"\b(?:Deno|Bun)\s*\[\s*(?![\"'`][\w$]*[\"'`]\s*\])|\bDeno\s*\.\s*(?:Command|run)\b(?!\s*\()|"
+                                 r"\bBun\s*\.\s*(?:spawn(?:Sync)?\b(?!\s*\()|\$(?!\s*`))"),
+              "php": re.compile(r"(?<![\w>:])\$\w+\s*\(|\b(?:call_user_func(?:_array)?|create_function)\s*\(|"
+                                r"\bpreg_replace\s*\(\s*(?:(['\"])[^'\"\n]{0,500}?[^\w\s\\'\"][a-zA-Z]*e[a-zA-Z]*\1|(?!['\"]))|"
+                                r"\bassert\s*\(\s*(?:['\"]|\$\w+\s*[,)])"),
+              "lua": re.compile(r"\b(?:_G|os|io)\s*\[")}
+_PERL_S = re.compile(r"(?<![\w$@%&*])s(?=[^\w\s]|\s+\S)")
+_SEND = re.compile(r"\b(?:__send__|public_send|send)\b")
+_SYMBOL = re.compile(r"""\s*(?::(?:(["'])(\w+[?!]?|`)\1|(\w+[?!]?|`))|(["'])(\w+[?!]?|`)\4)\s*""")
+# a command runner taken by reference, which the code may call with anything: Perl's \&CORE::system, Ruby's
+# method(:system), alias_method or alias of one
+_TAKEN = {"perl": re.compile(r"\\\s{0,8}&\s{0,8}(?:CORE::)?(?:system|exec|readpipe)\b"),
+          "ruby": re.compile(r"\b(?:(?:public_|instance_)?method\b|alias_method\b[\s(]{0,8}\S{1,64}[\s,]{1,8}|"
+                             r"alias\s{1,8}\S{1,64}\s{1,8})[\s(]{0,8}:?[\"']?(?:%s|`)(?![\w?!])" % _RUN_NAMES["ruby"])}
+# a here-doc run as a command (Perl's and Ruby's <<`EOC`)
+_HEREDOC_RUN = re.compile(r"<<[-~]?\s*`")
+# where a call's arguments start (_call_open): `name(`; else, after blanks, one that starts a value (a quote, a
+# quote-like literal, a sigil, Perl's block, a here-doc, a list; in Ruby a name the statement ends after, or that a
+# subscript, method or call follows; in Perl a function its arguments or the statement's end follow: `system join
+# "", …`, `system shift`), so a word in prose (`"file system ok"`) is no call
+_PAREN = re.compile(r"\s*\(")
+_ARG_START = {"perl": re.compile(r"""[ \t]+(?=["'`$@\\&{]|<<|q[qwx]?\s*[^\w\s=,;)\]}>]|"""
+                                 r"""[A-Za-z_]\w*(?:::\w+)*[ \t]*(?:[("'$@{;})]|$))"""),
+              "ruby": re.compile(r"""[ \t]+(?=["'`$@*%:\[]|<<|(?!(?:do|end|if|unless|while|until|then|and|or|not|"""
+                                 r"""rescue)\b)[A-Za-z_]\w*[?!]?[ \t]*(?:$|[;\n)}\].(\[]))""")}
+# Perl's open and IO::File->new; Ruby's open (read as Perl's 2-argument open's text) and IO.read and its kin, whose
+# text with a leading | runs it
+_OPENS = {"perl": re.compile(r"\b(open|IO::File\s*->\s*new)\b\s*(\(?)"),
+          "ruby": re.compile(r"\b(open|IO\s*\.\s*(?:read|readlines|foreach|write|binread|binwrite))\b(?![?!])\s*(\(?)")}
+# (Ruby's opens that may run a command: open, Kernel.open, URI.open and IO's; not File.open: the receiver before it)
+_KERNEL_OPEN = re.compile(r"(?:^|[^\w.:$@]|\b(?:Kernel|URI)\s*\.\s*)$")
+_PERL_QX = re.compile(r"(?<![\w$@])qx(?!\w)")
+# Perl's IPC modules' runners, read where the code names IPC::: the command starts after IPC::Open2's open2 and
+# IPC::Open3's open3 handles (_PERL_IPC_AT), at IPC::Cmd's `command =>`, else first (IPC::Cmd's run and run_forked,
+# IPC::Run's run, start and harness, IPC::System::Simple's capture, capturex, systemx and runx)
+_PERL_IPC = re.compile(r"\b(open2|open3|run_forked|run|start|harness|capturex?|systemx|runx)\b")
+_PERL_IPC_AT = {"open2": 2, "open3": 3}
+_IPC_COMMAND = re.compile(r"\bcommand\s*=>\s*")
+# the calls of Python's (_py_calls), Node's (_node_calls), PHP's, Lua's and awk's code that run a command (_Parser.
+# shell_calls): PHP's by name (not a method: `$pdo->exec(…)` runs SQL), Lua's os.execute and io.popen (a string after
+# the name is its argument: `os.execute"ls"`), awk's system; of Python's that code looks up at run time (_PY_CALL) the
+# ones that run a shell: os.system and popen, getoutput, create_subprocess_shell, any with shell=True
+_SHELL_CALLS = {"php": re.compile(r"(?<![\w>:$])(system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)\s*\("),
+                "lua": re.compile(r"\b(os\s*\.\s*execute|io\s*\.\s*popen)\s*(\(|(?=[\"']))"),
+                "awk": re.compile(r"\b(system)\s*\(")}
+_PY_SHELL = re.compile(r"system|popen[234]?|getoutput|getstatusoutput|create_subprocess_shell")
+_PYDOC_PAGER = re.compile(r"\bpydoc\s*\.\s*(?:pipepager|pipe|tempfilepager)\s*\(")   # (text, the shell line)
+_PHP_INCLUDE = re.compile(r"\b(?:include|require)(?:_once)?\b\s*(\(?)")
+# Deno's and Bun's process calls: Deno.Command(program, {args: […]}), Deno.run({cmd: […]}), Bun.spawn(list or {cmd: […]})
+_OPTION_RUNS = re.compile(r"\b(?:Deno\s*\.\s*(Command|run)|Bun\s*\.\s*spawn(?:Sync)?)\s*\(")
+_BUN_NAMES = re.compile(r"""(?:const|let|var)\s*\{([^}]{0,500})\}\s*=\s*Bun\b|import\s*\{([^}]{0,500})\}\s*from\s*['"]bun['"]""")
+
+
+def _option_list(code, start, end, key, charge):
+    """The items of an options object's `key: […]` in code[start:end] (Deno's and Bun's), or None: no such list."""
+    m = re.compile(r"\b%s\s*:\s*\[" % key).search(code, start, end)
+    got = m and _delimited(code, m.end(), "[")
+    return _call_args("node", got[0], 0, True, charge)[0] if got else None
+
+
+def _bun_shell(code):
+    """The pattern of Bun's shell run as a tagged template, up to its backquote: Bun.$`…`, and $ under each name the
+    code takes it as (`const { $ } = Bun`, `import { $ as sh } from "bun"`), each once."""
+    names = set()
+    for m in _BUN_NAMES.finditer(code):
+        for item in (m.group(1) or m.group(2)).split(","):
+            name, alias = (re.split(r"\s*(?::|\bas\b)\s*", item.strip(), maxsplit=1) + [""])[:2]
+            if name == "$":
+                names.add(re.escape(alias or "$"))
+    named = r"(?<![\w$.])(?:%s)" % "|".join(sorted(names)) if names else "(?!)"
+    return re.compile(r"(?:Bun\s*\.\s*\$|%s)\s*`" % named)
+# a runner PHP or Lua code takes as a value: PHP's name of one as a string (`$f = 'system'`,
+# call_user_func('exec', …)), Lua's os.execute or io.popen not called (`local f = os.execute`), or os or io itself
+# (`local o = os`)
+_SHELL_TAKEN = {"php": re.compile(r"""['"](?:system|exec|passthru|shell_exec|popen|proc_open|pcntl_exec)['"]"""),
+                "lua": re.compile(r"\b(?:os\s*\.\s*execute|io\s*\.\s*popen)\b(?!\s*[(\"'])|(?<![\w.])(?:os|io)\b(?!\s*[.\[:])")}
+_SHELL_TRUE = re.compile(r"\bshell\s*=\s*True\b")
+# Node's child_process: the module (require or import, node: too) and the names the code gives it or its functions
+_NODE_CP = r"""(?:require|import)\s*\(\s*(['"`])(?:node:)?child_process\1\s*\)"""
+_NODE_RUNNERS = r"exec|execSync|execFile|execFileSync|spawn|spawnSync|fork"
+_NODE_MODULES = (re.compile(r"(?:const|let|var)\s+([\w$]+)\s*=\s*(?:await\s+)?" + _NODE_CP.replace(r"\1", r"\2")),
+                 re.compile(r"""import\s+(?:\*\s+as\s+)?([\w$]+)\s*(?:,\s*\{[^}]{0,500}\}\s*)?from\s*(['"])"""
+                            r"(?:node:)?child_process\2"))
+_NODE_NAMES = (re.compile(r"(?:const|let|var)\s*\{([^}]{0,500})\}\s*=\s*(?:await\s+)?" +
+                          _NODE_CP.replace(r"\1", r"\2")),
+               re.compile(r"""import\s+(?:[\w$]+\s*,\s*)?\{([^}]{0,500})\}\s*from\s*(['"])(?:node:)?child_process\2"""))
+_NODE_ANY = re.compile(r"(?<![\w$])[\w$]+\s*\(")   # (any call: _node_calls past 32 names)
+
+
+@functools.lru_cache(maxsize=16)
+def _node_names(code):
+    """(the names Node code gives the child_process module, the names it gives its runners) as pattern alternatives
+    (`const cp = require("child_process")`, `import * as cp from "node:child_process"`; `const { exec: run } = …`,
+    `import { exec as run } from …`), or None for code that names no child_process."""
+    if "child_process" not in code:
+        return None
+    modules, names = {re.escape(m.group(1)) for rx in _NODE_MODULES for m in rx.finditer(code)}, set()
+    for m in (m for rx in _NODE_NAMES for m in rx.finditer(code)):
+        for item in m.group(1).split(","):   # (`exec`, `exec: run`, `exec as run`)
+            name, alias = (re.split(r"\s*(?::|\bas\b)\s*", item.strip(), maxsplit=1) + [""])[:2]
+            if re.fullmatch(_NODE_RUNNERS, name):
+                names.add(re.escape(alias or name))
+    return sorted(modules), sorted(names)
+
+
+def _node_calls(code):
+    """The pattern _Parser.shell_calls finds Node's child_process calls with: its module's runners by each name the code
+    gives the module (and `require("child_process").exec(…)`), and each runner it takes under its own name; None for
+    code that names no child_process. Past 32 names, any call: their alternation would make the scan slow.
+    lean: a program naming child_process more than 32 ways is read as if every call ran a command (held where one's
+    first argument isn't a literal); read them by name if real code ever does"""
+    if (found := _node_names(code)) is None:
+        return None
+    modules, names = found
+    if len(modules) + len(names) > 32:
+        return _NODE_ANY
+    return re.compile(r"(?:(?:%s)\s*\.\s*(?:%s)\b|(?<![\w.$])(?:%s)\b)\s*\(" % (
+        "|".join([_NODE_CP, *modules]), _NODE_RUNNERS, "|".join(names) or "(?!)"))
+
+
+def _node_taken(code):
+    """Whether Node code takes child_process or one of its runners as a value: a runner of it not called (`const f =
+    cp.execSync`, `[c].map(execSync)`: a bare name not before `(`, `:`, `,`, `}` or `as`, where a declaration names
+    it), the module itself passed on (an alias not before its attribute, `=`, `from` or `, {`), or a require of it
+    that no declaration makes; a name in a string is no use of it. Past 32 names: as _node_calls."""
+    if (found := _node_names(code)) is None:
+        return False
+    modules, names = found
+    if len(modules) + len(names) > 32:
+        return True
+    declared = sum(len(rx.findall(code)) for rx in (_NODE_MODULES[0], _NODE_NAMES[0]))
+    if len(re.findall(_NODE_CP + r"(?!\s*\.)", code)) > declared:
+        return True
+    text = _BLANK_STR["'\""].sub('""', code)
+    return bool(re.search(r"(?:%s)\s*\.\s*(?:%s)\b(?!\s*\()" % ("|".join([_NODE_CP, *modules]), _NODE_RUNNERS), code) or
+                names and re.search(r"(?<![\w.$])(?:%s)\b(?!\s*(?:[(:,}]|as\b))" % "|".join(names), text) or
+                modules and re.search(r"(?<![\w.$])(?:%s)\b(?!\s*(?:\.|=(?!=)|from\b|,\s*\{))" % "|".join(modules),
+                                      text))
+
+
+def _awk_computed_pipe(code):
+    """Whether awk code pipes out of or into a command it makes at run time (`c | getline`, `print | c`; |& too):
+    its strings read as empty (`print "a|b"` has no pipe), a print's statement up to its `;`, newline or `}`."""
+    text, end = _BLANK_STR['"'].sub('""', code), 0
+    for m in re.finditer(r"(?<!\|)\|&?(?!\|)\s*getline\b", text):
+        if not text[:m.start()].rstrip().endswith('"'):
+            return True
+    for m in re.finditer(r"\bprintf?\b", text):
+        if m.start() < end:
+            continue
+        stop = re.compile(r"[;\n}]").search(text, m.end())
+        end = stop.start() if stop else len(text)
+        pipe = re.compile(r"(?<!\|)\|&?(?!\|)").search(text, m.end(), end)
+        if pipe and not text[pipe.end():end].lstrip().startswith('"'):
+            return True
+    return False
+
+
+def _perl_ee(code, charge):
+    """Whether Perl code has an s/// that evaluates its replacement as code twice or more (`s/x/$c/ee`: the text the
+    first evaluation makes is run as code): each s and its delimiters as _delimited reads them (a bracketed pattern's
+    replacement has a bracket of its own, after blanks), then its flags."""
+    for m in _PERL_S.finditer(code):
+        k = _QX_BLANKS.match(code, m.end()).end() if code[m.end()].isspace() else m.end()
+        got = k < len(code) and _delimited(code, k + 1, code[k])
+        if got and code[k] in _PAIRS:
+            j = _QX_BLANKS.match(code, got[1]).end()
+            got = j < len(code) and _delimited(code, j + 1, code[j])
+        elif got:
+            got = _delimited(code, got[1], code[k])
+        charge((got[1] if got else len(code)) - m.start())
+        if got and re.match(r"[a-zA-Z]*", code[got[1]:got[1] + 32]).group().count("e") >= 2:
+            return True
+    return False
+_QX_BLANKS = re.compile(r"(?:\s|#[^\n]*)*")   # blanks and comments, between Perl's qx and its delimiter
+
+
+def _quoted_runs(kind, code):
+    """(where its text starts, its opening delimiter) of each quoted command in the code: Perl's qx (any delimiter,
+    after blanks and comments too, not `qx =>`), Ruby's %x (any but a letter or digit: a blank too; not after a word or
+    a quote, where % is the remainder: `"%x" % n`), and each backquote of Perl, Ruby or PHP but `$\\``, a variable
+    (which one opens a command can't be told without the whole tokenizer: each is read)."""
+    for m in _PERL_QX.finditer(code) if kind == "perl" else ():
+        k = _QX_BLANKS.match(code, m.end()).end() if code[m.end():m.end() + 1].isspace() else m.end()
+        if k < len(code) and not code.startswith("=>", k):
+            yield k + 1, code[k]
+    for m in re.finditer(r"(?<![\w'\"`])%x([^A-Za-z0-9\r])", code, re.S) if kind == "ruby" else ():
+        yield m.end(), m.group(1)
+    for m in re.finditer(r"(?<!\$)`", code) if kind in ("perl", "ruby", "php") else ():
+        yield m.end(), "`"
+
+
+def _call_open(kind, code, k):
+    """(where its arguments start, whether in parentheses) of a call whose name ends at `k`, or None where it isn't
+    one (_ARG_START)."""
+    m = _PAREN.match(code, k) or kind in _ARG_START and _ARG_START[kind].match(code, k)
+    return (m.end(), m.group().endswith("(")) if m else None
+
+
+def _pipe_opened(pieces):
+    """The command a 2-argument open's text (Perl's, Ruby's) runs: its pieces without the | in front or behind; None for
+    a file (or a mode in front: <, >, +, -); False where a value the code makes there may make it either."""
+    out = [p for p in pieces if p != ""] or [""]
+    if out[0] is None:
+        return False
+    out[0] = out[0].lstrip()
+    if out[0].startswith("|"):
+        return [out[0][1:], *out[1:]]
+    if out[0][:1] in ("<", ">", "+", "-"):
+        return None
+    if out[-1] is None:
+        return False
+    out[-1] = out[-1].rstrip()
+    return [*out[:-1], out[-1][:-1]] if out[-1].endswith("|") else None
+
+
 # a delete of a folder and all it holds, by language
 _DELETES = {"python": re.compile(r"(?<![\w.])(?:shutil\.)?rmtree\s*\(|\bos\.removedirs\s*\("),
             "node": re.compile(r"\b(?:rmSync|rmdirSync|rm|rmdir|rimraf|removeSync|remove|emptyDirSync)\s*\("),
@@ -1101,11 +1483,13 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
            "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
-           "readings": readings, "nested": set(), "aliases": {k: list(v) for k, v in (aliases or {}).items()},
-           "subscripts": [], "arith": False, "files": {}, "runs": [], "alias_used": set(), "namerefs": {},
+           "readings": readings, "nested": set(), "line": command, "placed": [], "programs": [],
+           "aliases": {k: list(v) for k, v in (aliases or {}).items()},
+           "subscripts": [], "arith": False, "files": {}, "runs": [], "code_files": {}, "alias_used": set(),
+           "namerefs": {},
            "arith_names": set(), "unread_values": set(), "code_names": [], "made_files": set(),
            "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
-           "stdin_moved": False, "more": False,
+           "stdin_moved": False, "stdin_made": False, "more": False,
            # since an expansion set a variable the parser can't follow, each command is unread (simple); each variable
            # a ${F=w} may have given its word w, and those words (dollar, ways); each value the line gives IFS (None:
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
@@ -1119,12 +1503,15 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
-    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\b(?:declare|local|typeset)\b[^\n]*\s-i\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    # (declare, local or typeset with -i after it: -i after the first one, so the line is read once)
+    arithmetic = re.compile(r"\$\(\(|\(\(|\blet\b|\$\{[A-Za-z_][A-Za-z0-9_]*\[")
+    declare = re.compile(r"\b(?:declare|local|typeset)\b")
     for line in command.replace("\\\n", "").splitlines():   # bash deletes a backslash-newline before it reads
         has_context = any(marker in line for marker in ("$((", "((", "let ", "declare ", "local ", "typeset ", "${"))
         test_open = line.find("[[")
         has_test_context = test_open >= 0 and any(line.find(op, test_open + 2) >= 0 for op in ("-eq", "-ne", "-lt", "-le", "-gt", "-ge"))
-        if (has_context and arithmetic.search(line)) or has_test_context:
+        if has_context and (arithmetic.search(line) or (d := declare.search(line)) and re.search(r"\s-i\b", line[d.end():])) \
+                or has_test_context:
             parameterized_index = _has_parameterized_index(line)
             if parameterized_index and re.search(r"\$\((?!\()|`|\$\{[^{}]*\$\}\s*\(", line):
                 raise ParseError("a parameterized arithmetic subscript on a line with a substitution is not supported")
@@ -1146,7 +1533,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                 text = literal.group(2) if hasattr(literal, "re") else literal[2]
                 if _subscript_substitution(text):
                     _substitutions(text, ctx, ["arithmetic subscript"])
-    top = _Parser(command, ctx, [])
+    top = _Parser(command, ctx, [], base=0)
     try:
         top.script()
         if _POSIX_MODE.search(command) and _BASH_ONLY.search(command):
@@ -1154,6 +1541,12 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         for *run, known in list(ctx["runs"]):   # a script the line runs, again now that a heredoc on its line is read
             top.known = known   # (what the line knew where it runs)
             top.read_file(*run)
+        done = set()   # BASH_ENV's and ENV's files, with every write to them on the line (one their code names too)
+        while todo := [key for key in ctx["code_files"] if key not in done]:
+            for name, value, via in todo:
+                done.add((name, value, via))
+                top.known = ctx["code_files"][(name, value, via)]
+                top.code_file(name, value, list(via))
         # a function the line defines and doesn't call after (a definition after its name's last call too), or
         # exports, runs where the policy doesn't see it (a later call in a shell that persists, any bash child): its
         # body is read as if it ran, and it is held
@@ -1164,7 +1557,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
                  and name not in ctx["alias_used"] for value in values]
         for name, body in held:
             first = len(ctx["cmds"])
-            p = _Parser(body, ctx, [f"{'' if name.startswith('alias ') else 'function '}{name} (defined)"])
+            p = top.parser(body, [f"{'' if name.startswith('alias ') else 'function '}{name} (defined)"])
             p.known = {}
             p.script()
             for c in ctx["cmds"][first:first + 1]:
@@ -1793,12 +2186,18 @@ def _learned(ctx):
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
     value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
     read (pieces) or the budget left them out (pieces_cut); the redirection targets it appends to (`>>`); the glob
-    options it sets (globs: _glob_options)."""
+    options it sets (globs: _glob_options); `placed`,
+    each text it read again as code: (how, at, inner, within), `how` "shell" (a line a shell runs: sh -c's script,
+    eval's words, a heredoc a shell reads) or "interp" (an interpreter's program), `at` and `inner` its _At (None, None
+    when the line doesn't hold it where the parser can name: a git alias's value, a script the line writes), `within`
+    the span of the code it was read from (None: the line); `programs`, each command's (cmd, where its program's word
+    is, within): None when the word isn't the program's text as written there (an expansion's, an alias's)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
             "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
             "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False),
-            "appended": list(ctx.get("appended", ())), "globs": ctx["globopts"]}
+            "appended": list(ctx.get("appended", ())), "globs": ctx["globopts"], "placed": ctx["placed"],
+            "programs": ctx["programs"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1809,14 +2208,15 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
            "downloads": downloads or any(_DOWNLOADS.search(a) for a in argv), "decoded": set(),
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
-           "readings": readings, "nested": set(), "aliases": {}, "subscripts": [], "arith": False, "files": {},
-           "runs": [], "alias_used": set(), "namerefs": {}, "arith_names": set(), "unread_values": set(),
+           "readings": readings, "nested": set(), "line": None, "placed": [], "programs": [], "aliases": {},
+           "subscripts": [], "arith": False, "files": {},
+           "runs": [], "code_files": {}, "alias_used": set(), "namerefs": {}, "arith_names": set(), "unread_values": set(),
            "code_names": [], "made_files": set(), "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
-           "stdin_moved": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
+           "stdin_moved": False, "stdin_made": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
            "split_values": [],
            "exports": set(), "globopts": ()}
-    words = list(argv)
-    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
+    words = [_placed(w, (k, k + 1), (k, k + 1)) for k, w in enumerate(argv)]   # each placed by its index
+    lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(words), 1, [])))
     _made_text(ctx)
     if ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
         again = analyse_argv(argv, readings, ctx["work"], downloads=True)
@@ -1933,7 +2333,7 @@ def _data_write(step, cmds):
             continue
         # sed naming it only in its script's text (a link in another note), not as a file it edits or reads, nor
         # after r, R, w or W (a file its script reads or writes)
-        script = _sed_scripts([a for a in args if a]) if name in ("sed", "gsed") else None   # (BSD's -i '')
+        script = _sed_options([a for a in args if a], False)[0] if name in ("sed", "gsed") else None   # (BSD's -i '')
         if script is not None and not c["via"] and all(w in script for w in args if mention.search(w)) and \
                 not re.search(r"[rRwW][ \t]*[^\s;]*?(?:%s)" % "|".join(map(re.escape, names)), script):
             continue
@@ -2512,6 +2912,40 @@ def _gh_order(args):
     return list(range(i, j)) + [k for k in lead if k < len(args)] + list(range(j, len(args)))
 
 
+# uv's commands, and those of them with commands of their own (`uv tool run`, `uv pip install`), as uv 0.9 names them
+_UV_COMMANDS = frozenset(("run", "init", "add", "remove", "version", "sync", "lock", "export", "tree", "format",
+                          "auth", "tool", "python", "pip", "venv", "build", "publish", "cache", "self", "help"))
+_UV_GROUPS = frozenset(("tool", "pip", "python", "cache", "self", "auth"))
+
+
+def _uv_operands(args, i):
+    """Each index from `i` on the first word of uv's `args` that is no option or option's value may be at, as _takes
+    reads each option (UV_OPTS take a value, _UV_FLAGS don't, any other is read both ways); each word read once."""
+    at, todo, seen = [], [i], set()
+    while todo:
+        k = todo.pop()
+        if k in seen or k >= len(args):
+            continue
+        seen.add(k)
+        if args[k].startswith("-") and args[k] not in ("-", "--"):
+            todo += [k + n for n in _takes(args[k], UV_OPTS, _UV_FLAGS)]
+        else:
+            at.append(k)
+    return sorted(at)
+
+
+def uv_commands(args):
+    """Each reading of uv's `args` with its options before its command left out, and those between a command with
+    commands of its own and that one (`uv --directory /tmp tool --quiet run x` as `uv tool run x`), as (where its
+    command is, where the rest starts) in `args`; none that leaves nothing out. uv takes its global options anywhere,
+    and the rules read a command from its name."""
+    for c in _uv_operands(args, 0):
+        if args[c] in _UV_COMMANDS:
+            for s in _uv_operands(args, c + 1) if args[c] in _UV_GROUPS else [c + 1]:
+                if c or s > c + 1:
+                    yield c, s
+
+
 def runner_at(name, args):
     """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
     exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
@@ -2598,6 +3032,78 @@ def _unwrap(name, args):
             k = next((k for k, w in enumerate(inner) if k and w not in ("--override", "--no-override")), len(inner))
             inner = inner[k + (inner[k:k + 1] == ["--"]):]
         yield inner
+        if name == "dotenv" and inner[:1] == ["run"]:   # and as python-dotenv's `dotenv [-f FILE] run [--override] CMD`
+            k = 1
+            while inner[k:k + 1] in (["--override"], ["--no-override"]):
+                k += 1
+            yield inner[k:]
+
+
+def _runs_of(name, args):
+    """(kind, words) for what a debugger, sandbox, watcher, secret injector or namespace runner given `args` runs:
+    ("argv", the command's words) or ("code", [the shell line it runs]). gdb: the words after --args, or its program
+    with the arguments of an -ex `run`/`start`; lldb: the words after `--`, also after its program before it; bwrap:
+    the command after its options (_bwrap); nodemon: --exec's line; infisical and doppler run: --command's line;
+    `ip netns exec NS`: the command after the namespace."""
+    out = []
+    if name == "ip":
+        return [("argv", args[3:])] if args[3:] else []
+    if name in ("infisical", "doppler", "nodemon"):
+        flags = ("--exec", "-x") if name == "nodemon" else ("--command",)
+        for i, a in enumerate(args):
+            value = args[i + 1] if a in flags and i + 1 < len(args) else a.partition("=")[2] if a.startswith(
+                tuple(f + "=" for f in flags if f.startswith("--"))) else None
+            if value is not None:
+                out.append(("code", [value]))
+        return out
+    if name == "bwrap":
+        return [("argv", w) for w in _bwrap(args)]
+    valued = _LLDB_VALUED if name == "lldb" else _GDB_VALUED
+    i, program, evals = 0, None, []
+    while i < len(args):
+        a = args[i]
+        if name != "lldb" and a == "--args" or name == "lldb" and a == "--":
+            words = args[i + 1:]
+            out += [("argv", words)] if words else []
+            if name == "lldb" and program is not None and words:
+                out.append(("argv", [program, *words]))
+            return out
+        if a in valued:
+            if a in ("-ex", "--eval-command", "-iex", "--init-eval-command", "-o", "--one-line"):
+                evals.append(args[i + 1] if i + 1 < len(args) else "")
+            i += 2
+            continue
+        if a.startswith(("--eval-command=", "--one-line=")):
+            evals.append(a.partition("=")[2])
+        elif not a.startswith("-") and program is None:
+            program = a
+        i += 1
+    for e in evals if program is not None else ():   # gdb's `run ARGS` (r, start, starti), lldb's `run`/`r`
+        if (m := re.fullmatch(r"\s*(?:run|r|start|starti|process launch(?: --)?)(?:\s+([\w\W]*))?", e)):
+            try:
+                out.append(("argv", [program, *shlex.split(m.group(1) or "")]))
+            except ValueError:
+                out.append(("code", [program + " " + (m.group(1) or "")]))
+    return out
+
+
+def _bwrap(args):
+    """Each command bwrap given `args` may run: the words after its options, one of _BWRAP_TWO taking two words, one of
+    _BWRAP_FLAGS none, any other one or none (read both ways), or after a `--`; each start read once."""
+    starts, todo, seen = [], [0], set()
+    while todo:
+        i = todo.pop()
+        if i in seen or i >= len(args):
+            continue
+        seen.add(i)
+        a = args[i]
+        if a == "--":
+            starts.append(i + 1)
+        elif a.startswith("--"):
+            todo += [i + 3] if a in _BWRAP_TWO else [i + 1] if a in _BWRAP_FLAGS else [i + 1, i + 2]
+        else:
+            starts.append(i)
+    return [args[i:] for i in sorted(set(starts)) if i < len(args)]
 
 
 def _shell_mode(args, shell=""):
@@ -2701,6 +3207,23 @@ def _foreign_runs_text(shell, args):
     return True
 
 
+def _as_node(name, args):
+    """Node's words for Deno's or Bun's run of code (`deno eval CODE`, `bun -e CODE` or --eval, --print: `-e CODE`) or of
+    its stdin (`deno run … -`, `bun run -`: `-`), so node's reading applies; None for any other (a script file, a
+    package script, a subcommand)."""
+    if name == "bun":
+        code = next((text for _, text in _code_words("node", args)), None)
+        return ["-e", code] if code is not None else ["-"] if args[:1] == ["run"] and "-" in args[1:] else None
+    sub = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
+    if sub is None or args[sub] not in ("eval", "run"):
+        return None
+    rest = args[sub + 1:]
+    if args[sub] == "run":
+        return ["-"] if "-" in rest else None
+    lines = [a for a in rest if not a.startswith("-")]   # (each word an option doesn't take: its code, read whole)
+    return ["-e", "\n".join(lines)] if lines else None
+
+
 def _npm_call(name, args):
     """The script of npx's -c/--call, or npm exec's after its own options (each place runner_at reads its subcommand:
     `npm -w a exec -c …`), among the options before the command it runs, or None."""
@@ -2715,11 +3238,12 @@ def _npm_call(name, args):
     return None
 
 
-def _ssh_command(args):
+def _ssh_words(args):
+    """The words ssh joins into the command its remote shell runs."""
     i = 0
     while i < len(args) and args[i].startswith("-"):
         i += 2 if args[i] in SSH_OPTS else 1
-    return " ".join(args[i + 1:])
+    return args[i + 1:]
 
 
 _SSH_COMMAND_OPTION = re.compile(r"(?is)\s*(?:proxy|local|knownhosts|remote)command\s*[=\s]\s*(.*)")
@@ -2792,11 +3316,10 @@ def _skip_interp_opts(args, i=0, valued=INTERP_VALUE_OPTS):
 
 
 def _code_arg(kind, args):
-    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or None."""
+    """The program text an interpreter gets on its command line (-c code, -ccode, -e code, deno eval code, ...), or
+    None; Perl and Ruby run each -e (-E) as one line of one program; sed's: _sed_options."""
     if kind == "awk":
         return _awk_program(args)
-    if kind == "sed":
-        return _sed_scripts(args)
     if kind == "deno":
         i, ended = _skip_interp_opts(args, 0, _DENO_VALUED)
         if ended or i >= len(args) or args[i] != "eval":
@@ -2804,24 +3327,39 @@ def _code_arg(kind, args):
         i, _ = _skip_interp_opts(args, i + 1, _DENO_VALUED)
         rest = args[i:]
         return "\n".join(rest) if rest and rest[0] != "-" and not _stream_name(rest[0]) else None
-    flags, long = CODE_FLAGS[kind], LONG_CODE.get(kind, ())
+    lines = [code for _, code in _code_words(kind, args)]
+    return ("\n".join(lines) if kind in ("perl", "ruby") else lines[0]) if lines else None
+
+
+def _code_words(kind, args):
+    """(the word's index, its program text) of each code option on an interpreter's command line, in order (code
+    attached to its flag, -c"..." the word -c..., is that word's); Perl's and Ruby's up to a `--` after one."""
+    flags, long, found = CODE_FLAGS[kind], LONG_CODE.get(kind, ()), False
     i = 0
     while i < len(args):
         a = args[i]
+        if a == "--" and found:
+            return
         if a in long:
-            return args[i + 1] if i + 1 < len(args) else None
+            yield from [(i + 1, args[i + 1])] if i + 1 < len(args) else []
+            return
         if a.partition("=")[0] in long:
-            return a.split("=", 1)[1]
+            yield i, a.split("=", 1)[1]
+            return
         if re.match(r"-[A-Za-z]", a):
             for j, ch in enumerate(re.match(r"-([A-Za-z]*)", a).group(1)):
-                if ch in flags:   # code attached to its flag (-c"..." is the word -c...), else the next word
-                    return a[j + 2:] or (args[i + 1] if i + 1 < len(args) else None)
+                if ch in flags:
+                    if a[j + 2:] or i + 1 < len(args):
+                        yield (i, a[j + 2:]) if a[j + 2:] else (i + 1, args[i + 1])
+                        found = True
+                    if kind not in ("perl", "ruby"):
+                        return
+                    break
                 if ch in _VALUED[kind]:   # an option whose value is the rest of the word (-Mmodule, -rlib)
                     if not a[j + 2:]:
                         i += 1
                     break
         i += 1
-    return None
 
 
 # each interpreter's options that take the rest of their word as their value
@@ -2876,26 +3414,107 @@ def _awk_program(args):
     return None
 
 
-def _sed_scripts(args):
-    scripts, i, operand = [], 0, None
+def _sed_options(args, bsd):
+    """(the script sed gets on its command line: its -e scripts joined by lines, else its first operand, None for none;
+    the files its -f names) as GNU sed reads its words (options anywhere, long ones by a prefix, -i's suffix only
+    attached, -l takes a number) or BSD sed does (bsd: options up to the first operand; -i and -I take the next word
+    as the suffix when none is attached, as `-i ''` gives it; -l takes none)."""
+    scripts, files, operands, i = [], [], [], 0
     while i < len(args):
         a = args[i]
-        if a == "--expression" or re.fullmatch(r"-[A-Za-z]*e", a):
-            scripts.append(args[i + 1] if i + 1 < len(args) else "")
-            i += 2
-            continue
-        if a.startswith("--expression="):
-            scripts.append(a.split("=", 1)[1])
-        elif re.match(r"-[A-Za-z]*e.", a) and not a.startswith("--"):
-            scripts.append(a[a.index("e") + 1:])
-        elif a in ("-f", "--file") or a.startswith("--file="):
-            return None
-        elif a in ("-l", "--line-length"):
-            i += 1
-        elif not a.startswith("-") and operand is None:
-            operand = a
         i += 1
-    return "\n".join(scripts) if scripts else operand
+        if a == "--" or a == "-" or not a.startswith("-") or bsd and operands:
+            operands += [a] if a != "--" else args[i:]
+            if a == "--":
+                break
+            continue
+        if a.startswith("--"):
+            name, eq, value = a[2:].partition("=")
+            long = next((o for o in ("expression", "file", "line-length") if name and o.startswith(name)), None)
+            if long and not eq and i < len(args):
+                value, i = args[i], i + 1
+            (scripts if long == "expression" else files if long == "file" else []).append(value)
+            continue
+        j = 1
+        while j < len(a):
+            o, j = a[j], j + 1
+            if o == "i" and not bsd:
+                break
+            if o in ("efiI" if bsd else "efl"):   # its value: the rest of the word, else the next word
+                value = a[j:]
+                if not value and i < len(args):
+                    value, i = args[i], i + 1
+                (scripts if o == "e" else files if o == "f" else []).append(value)
+                break
+    script = "\n".join(scripts) if scripts else None if files or not operands else operands[0]
+    return script, tuple(files)
+
+
+# BSD sed's bracket expression in a regular expression (compile_ccl): [^]…], with [:class:], [.x.] and [=x=] whole
+_BSD_BRACKET = re.compile(r"\[\^?\]?(?:\[([.:=])(?:(?!\1\])[^\n])*\1\]|(?!\[[.:=])[^]\n])*\]")
+
+
+def _sed_commands(script, bsd):
+    """What a sed script does outside its text, as GNU sed reads it or BSD sed does (bsd: a regular expression's [...]
+    may hold its delimiter, a label runs to the line's end, there is no e): ("w", file) for each file it writes (w,
+    W and s///w, opened even when no line reaches them), ("r", file) for each it reads (r, R) and ("e", command) for
+    each command it runs ("" for e alone and s///e, which run the pattern space). A script sed rejects is read on as
+    far as it goes; each character is read once."""
+    out, i, n = [], 0, len(script)
+
+    def eol(k):
+        k = script.find("\n", k)
+        return n if k < 0 else k
+
+    def part(k, d, brackets):   # (the index past an address's or s///'s part begun at k, whether `d` closed it)
+        while k < n and script[k] != "\n":
+            if script[k] == "\\":
+                k += 2
+            elif script[k] == d:
+                return k + 1, True
+            elif brackets and script[k] == "[":
+                m = _BSD_BRACKET.match(script, k)
+                if not m:
+                    return eol(k), False
+                k = m.end()
+            else:
+                k += 1
+        return min(k, n), False
+
+    while i < n:
+        c = script[i]
+        if c in "/\\":   # an address: /re/ or \cREc
+            i = part(i + 1 + (c == "\\"), "/" if c == "/" else script[i + 1:i + 2], bsd)[0]
+        elif c == "#":
+            i = eol(i)
+        elif c in "aic":   # text, to the first newline no \ escapes
+            i += 1
+            while i < n and script[i] != "\n":
+                i += 2 if script[i] == "\\" else 1
+        elif c in ":btTv":   # a label: GNU's ends at a blank or ;, BSD's at the line's end
+            i += 1
+            while i < n and script[i] in " \t":
+                i += 1
+            while i < n and script[i] != "\n" and (bsd or script[i] not in " \t\r\v\f;"):
+                i += 1
+        elif c in "rRwWe":   # a file or a command, to the line's end
+            end = eol(i)
+            arg, i = script[i + 1:end].strip(), end
+            if c == "e" and not bsd or c != "e" and arg:
+                out.append(("e" if c == "e" else "w" if c in "wW" else "r", arg))
+        elif c in "sy" and script[i + 1:i + 2] not in ("", "\n", "\\"):
+            d = script[i + 1]
+            i, closed = part(i + 2, d, bsd and c == "s")
+            if closed:
+                i, closed = part(i, d, False)
+            # its flags (and a w flag's file, read as the w command is)
+            while closed and c == "s" and i < n and script[i] in "gpiImMe0123456789 \t":
+                if script[i] == "e" and not bsd:
+                    out.append(("e", ""))
+                i += 1
+        else:   # an address's line number, $, a separator, a brace, !, or a command that takes nothing
+            i += 1
+    return out
 
 
 def _stream_name(path):
@@ -2904,7 +3523,7 @@ def _stream_name(path):
 
 
 def _program_files(args):
-    """The files awk's, sed's or make's -f (--file, --makefile; attached too: -f-, --file=x) names."""
+    """The files awk's or make's -f (--file, --makefile; attached too: -f-, --file=x) names."""
     out = []
     for i, a in enumerate(args):
         if a in ("-f", "--file", "--makefile") and i + 1 < len(args):
@@ -2917,8 +3536,10 @@ def _program_files(args):
 def _reads_stdin(kind, args):
     """An interpreter with no program on its command line reads it from stdin, as one given a stream for its script
     does (python3 /dev/stdin, perl -, awk -f -, sed -f /dev/fd/0)."""
-    if kind in ("awk", "sed"):
+    if kind == "awk":
         return any(_stream_name(f) for f in _program_files(args))
+    if kind == "sed":
+        return any(_stream_name(f) for bsd in (False, True) for f in _sed_options(args, bsd)[1])
     if _code_arg(kind, args) is not None:
         return False
     if kind in ("bun", "deno"):   # no script after their options and `run`: `run -`, a REPL, no operand, deno's others
@@ -3065,9 +3686,12 @@ _PIP = re.compile(r"pip[0-9.]*")
 
 
 class _Parser:
-    def __init__(self, src, ctx, via, cost=None):
-        """`cost`: what reading `src` spends of the budget (charge), its length unless given."""
+    def __init__(self, src, ctx, via, cost=None, base=None, within=None):
+        """`cost`: what reading `src` spends of the budget (charge), its length unless given. `base`: where `src` starts
+        in the line, which holds it verbatim (None: it doesn't, or the parse is an argv's); `within`: the span of the
+        line `src` was read from (None: the line itself), where what this parser can't place belongs (_learned)."""
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
+        self.base, self.within = base, within
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
@@ -3089,6 +3713,7 @@ class _Parser:
         # (unknown: unsafe's `code` reading of the word, for code bash parses again)
         self.spliced, self.expanded, self.unknown, self.joined = False, frozenset(), False, False
         self.feeding, self.crafted = False, {}   # simple(): its input may be text the line makes; each pipeline's
+        self.words_first = 0   # simple(): where in ctx["cmds"] what its words' substitutions run starts
         # the stdin a command here inherits may be one the line moved: in code bash reads again (eval, sh -c, a
         # function, a script), and (sub) in a substitution of a later pipeline stage or a compound command's (`x |
         # eval "$(cat)"`, `{ …; } < f`); `piped`: simple's command is a later pipeline stage
@@ -3098,6 +3723,36 @@ class _Parser:
 
     def charge(self, n):
         charge(self.ctx["work"], n)
+
+    def parser(self, text, via, cost=None):
+        """A parser of `text`, placed where the line holds it verbatim (_At's `inner`), and within its span."""
+        at, inner = _place(text)
+        return _Parser(text, self.ctx, via, cost, inner[0] if inner and self.ctx["line"] is not None else None,
+                       at or self.within)
+
+    def where(self, text, start, end):
+        """`text`, read from [start, end) of this parser's source, with its place in the line (_At) when the parser
+        knows it; an expansion's word gets only `at`, the source its text is made from."""
+        if self.base is None:
+            return text
+        raw, base = self.s[start:end], self.base
+        if not isinstance(text, _Expanded):
+            lit = _literal(raw)
+            inner = None if not lit else (start, end) if raw == text else (start + 1, end - 1) if len(raw) > 1 and \
+                raw[0] == raw[-1] and raw[0] in "'\"" and raw[1:-1] == text else None
+            return _placed(text, (base + start, base + end), inner and (base + inner[0], base + inner[1]), lit)
+        text.at = (base + start, base + end)
+        return text
+
+    def join_words(self, words):
+        """`words` joined as eval or ssh joins them, placed (_At) when each is a word of the line as written: `inner`
+        when the line holds the joined text as it is."""
+        text = " ".join(words)
+        if not words or not all(getattr(w, "lit", False) for w in words):   # (an expansion's text: not the line's)
+            return text
+        line, at = self.ctx["line"], (words[0].at[0], words[-1].at[1])
+        return _placed(text, at, words[0].inner if len(words) == 1 else at if line is not None and
+                       line[at[0]:at[1]] == text else None)
 
     def reading_pieces(self):
         """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
@@ -3328,6 +3983,7 @@ class _Parser:
             c.setdefault("reaches", []).append((pid, stage))
 
     def nested(self, text, via, args=(), zero=()):
+        self.ctx["placed"].append(("shell", *_place(text), self.within))
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
         # literal `args` has them as $1 to $9 and "$@", as call() gives a function's, and sh -c's literal `zero` (the word
         # after its script) as $0. Code a shell of another grammar
@@ -3347,7 +4003,7 @@ class _Parser:
             return
         self.ctx["nested"].add(key)
         self.charge(NESTED_COST)
-        p = _Parser(text, self.ctx, via)
+        p = self.parser(text, via)
         p.known = known
         p.script()
 
@@ -3361,7 +4017,7 @@ class _Parser:
                getattr(w, "glob", False) and self.ctx["files"] for w in words):   # (a pattern may name a file it made)
             cmd["opaque"] = True
         self.ctx["code_names"].append((cmd, {n for w in words if isinstance(w, _Expanded) for n in w.names}))
-        return " ".join(words)
+        return self.join_words(words)
 
     def script(self):
         self.list(None)
@@ -3521,7 +4177,7 @@ class _Parser:
         dry = _Parser(self.s, {**self.ctx, "cmds": [], "lines": [], "refs": [], "written": [], "kept": [],
                                "kept_batches": [], "always_cut": [], "cut": [], "steps": [], "nested": set(),
                                "redefined": set(self.ctx["redefined"]), "functions": dict(self.ctx["functions"]),
-                               "uncalled": {}, "calling": []}, self.via, cost=0)
+                               "uncalled": {}, "calling": [], "placed": [], "programs": []}, self.via, cost=0)
         dry.i, dry.known = start, {}
         while True:
             dry.pipeline()
@@ -3536,8 +4192,9 @@ class _Parser:
             raise ParseError("a heredoc that starts on a function body's last line is not supported")
         self.i = dry.i
         self.charge(self.i - start)
-        self.ctx["functions"].setdefault(name, []).append(self.s[start:self.i])
-        self.ctx["uncalled"].setdefault(name, []).append(self.s[start:self.i])
+        body = self.where(self.s[start:self.i], start, self.i)
+        self.ctx["functions"].setdefault(name, []).append(body)
+        self.ctx["uncalled"].setdefault(name, []).append(body)
         self.ctx["redefined"].add(name)
 
     def stable(self):
@@ -3576,7 +4233,7 @@ class _Parser:
                 key = ("function", body, tuple(via), tuple(sorted((k, tuple(v)) for k, v in known.items())))
                 if key not in self.ctx["nested"]:
                     self.ctx["nested"].add(key)
-                    p = _Parser(body, self.ctx, via + ["function " + name])
+                    p = self.parser(body, via + ["function " + name])
                     p.known = dict(known)
                     p.script()
         finally:
@@ -3618,6 +4275,7 @@ class _Parser:
         outs, ins = [], []   # the files this command's redirections write, and those they read
         into, others = [], []   # of outs, those its stdout goes to, and the rest
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = self.called = False
+        closed = None   # where the commands of a loop or group it ends start (its redirections are theirs)
         # bash reads a reserved word only where a command starts: after an assignment, a redirection or a word that
         # expands to nothing it is a program (`x= for`, `${X::0} then` run for and then), which is read too, as well as
         # the keyword; `function` there is held, and `f()` isn't a definition
@@ -3629,7 +4287,7 @@ class _Parser:
         unread = False   # a word of it (a redirection's target too) has more readings than MAX_READINGS
         # a herestring holds an expansion the parser can't read (_Spliced), or a value it can't name (unsafe's code);
         # so does a loop's header (header_spliced: the former)
-        spliced = unknown_string = header_unknown = header_spliced = header_joined = False
+        spliced = unknown_string = header_unknown = header_spliced = header_joined = header_glob = False
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
         # an assignment here runs whenever what follows it on the line does: outside compound commands but a { }
         # group, first in its list (not after && or ||, nor a pipeline stage), and no keyword but a { before it
@@ -3661,7 +4319,7 @@ class _Parser:
                 escaped = set()
                 while m:
                     raw = m.group(1)
-                    text = _ESCAPE.sub(_ESCAPED, raw) if "\\" in raw else raw
+                    text = self.where(_ESCAPE.sub(_ESCAPED, raw) if "\\" in raw else raw, m.start(1), m.end(1))
                     if raw != text:
                         escaped.add(text)
                     self.out.append(text)
@@ -3719,7 +4377,7 @@ class _Parser:
                                  "via": self.via, "cmds": [], "data": False, "step": None, "known": dict(self.known)})
                     self.heredocs.append(docs[-1])
                 elif m.group(2) == "<<<":
-                    strings.append(target[0])
+                    strings.append(self.where(target[0], start, self.i))
                     if self.ifs:   # bash doesn't split it: IFS's own characters are its text (`sh<<<"I="${IFS}rm …`)
                         strings.append(re.sub(r"\$\{IFS\}|\$IFS(?!\w)", " \t\n", target[0]))
                     spliced |= self.spliced
@@ -3799,11 +4457,13 @@ class _Parser:
                 if made is not None:
                     for piece, pattern in made:
                         header += self.header_pattern(piece) if pattern else [piece]
+                        header_glob |= pattern
                     continue
                 # a pattern, as written or with only $HOME and the variables the line gives one literal (word():
                 # given) in it, is each name it matches (header_pattern)
                 if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
                     header += self.header_pattern(text)
+                    header_glob = True
                     continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal; one
                 # with none is its text, a `$` or backquote it quotes too (`for u in 'http://…$X'`: what curl gets)
@@ -3828,6 +4488,7 @@ class _Parser:
                     self.open_block((text, [], self.list_start), (pid, stage))
                 elif text in ("fi", "done", "}") and self.blocks and self.blocks[-1][0] != "case":   # case() ends its own
                     start, at = self.close_block()
+                    closed = start if closed is None else min(closed, start)
                     self.reach(start, pid, stage)
                     self.reach(start, *at)
                 continue
@@ -3854,9 +4515,11 @@ class _Parser:
                 self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
                 if (alias := _git_env_alias(text)) is not None:
                     self.nested(alias, self.via + ["git alias"])
-                self.ctx["arith"] |= bool(m.group(1))   # bash evaluates the subscript
+                self.ctx["arith"] |= bool(m.group(1))   # bash evaluates the subscript: its names' values too
                 if m.group(1):
                     self.arith_sets(m.group(1))
+                    self.ctx["arith_names"].update(_arith_names(m.group(1)))
+                    self.made_arithmetic(first, m.group(1))
                 var, value, plus = assigns[-1]
                 if var == "IFS":   # (None: a value the parser can't read; a prefix's too: eval, . and a function use it)
                     self.ctx["ifs_values"].append(None if plus else value)
@@ -3947,6 +4610,8 @@ class _Parser:
                     text.names, text.unknown, text.glob, text.joined = self.expanded, self.unknown, bool(g), self.joined
                     text.whole = not g and bool(self.exps) and all(p.quoted and not _ALL_ITEMS.match(p)
                                                                    for p in self.exps)   # ("$@": a word each)
+                if pieces is None and not located:
+                    text = self.where(text, start, self.i)
                 words.append(text)
                 raws.append(raw)
                 dynamic |= "$" in raw or "`" in raw
@@ -3981,9 +4646,15 @@ class _Parser:
         if any(name == "IFS" for name, _, _ in assigns):
             self.known = {k: v for k, v in self.known.items() if k != "IFS"}
         # what read, mapfile or a loop is given may be text the line makes (variable_names, track_values): a
-        # herestring or heredoc, or what a substitution, process substitution or earlier stage runs makes
-        self.feeding = bool(strings or docs) or self.crafted.get(pid, False) or \
+        # herestring or heredoc, what a substitution, process substitution or earlier stage runs makes, or a file the
+        # line writes such text into (a download's too: made_files), opened here or by an exec before
+        fed = bool(ins) and ("*" in self.ctx["made_files"] or any(base_name(f) in self.ctx["made_files"] for f in ins))
+        self.feeding = bool(strings or docs) or self.crafted.get(pid, False) or fed or self.ctx["stdin_made"] or \
             not _reads_only(self.ctx["cmds"][first:], self.ctx)
+        for c in self.ctx["cmds"][closed:] if fed and closed is not None else ():   # a loop or group such a file feeds
+            if c["argv"][0] in ("read", "mapfile", "readarray"):
+                self.ctx["unread_values"].update(_read_names(c["argv"]))
+        self.words_first = first
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         if brace_unread and cmds:
             cmds[0]["opaque"] = True
@@ -4017,8 +4688,8 @@ class _Parser:
             texts = [None if v and not t or k > 5 and p else t   # None: gone
                      for t, v, p in zip(columns[k % 6], vanish, patterns)]
             kept = [i for i, t in enumerate(texts) if t is not None]
-            # (a whole word's other texts are whole too: its expansions left are as quoted as before)
-            alt = [_Whole(texts[i]) if getattr(words[i], "whole", False) and texts[i] is not words[i] and (
+            # (a whole word's other texts are whole too: its expansions left are as quoted as before; a word as written: placed)
+            alt = [words[i] if texts[i] == words[i] else _Whole(texts[i]) if getattr(words[i], "whole", False) and (
                 "$" in texts[i] or "`" in texts[i]) else texts[i] for i in kept]
             read[key] = [(idx[i], t) for i, t in enumerate(texts) if t != words[i]]
             self.ctx["more"] |= bool(read[key])
@@ -4080,6 +4751,7 @@ class _Parser:
                 alt = [f for t in texts if t is not None for f in ((t,) if isinstance(t, str) else t)]
             else:
                 kept, alt = range(len(texts)), texts
+            alt = [words[i] if f == words[i] else f for f, i in zip(alt, kept)]   # (a word as written: placed)
             # past the 4th, a literal's or a pattern's reading is the line of its values alone (flush's pieces), so a
             # loop over hundreds of words doesn't read its whole script again for each
             read = {idx[i]: " ".join(t) if isinstance(t, tuple) else t for i, t in enumerate(texts) if t != words[i]}
@@ -4127,7 +4799,7 @@ class _Parser:
         # (assignments after the time keyword alone are the shell's own, as without it: `time N=PS4`)
         bare = [] if timed and timed == len(words) else words
         self.track_values(bare, cmds, assigns, loop_header and (loop_header, header, header_unknown, header_spliced,
-                                                                header_joined, header_blank),
+                                                                header_joined, header_blank, header_glob),
                           sure and not dynamic, raws, (pid, stage))
         if not bare:   # assignments alone set the shell's own variables, not a command's environment
             self.ctx["assigned"] += assigned
@@ -4214,6 +4886,7 @@ class _Parser:
                 c.setdefault("reaches", []).append((pid, stage))
         if (stdin_redirect or strings or docs) and "exec" in words[:1] + [c["argv"][0] for c in cmds]:
             self.ctx["stdin_moved"] = True   # what reads the shell's stdin after it reads that (_reads_only)
+            self.ctx["stdin_made"] |= fed
         shell = _stdin_shell(cmds)
         # its script comes from a pipe, a file or inherited stdin; one only a second reading makes (`bash $f` read as
         # `bash`) from a pipe or a file: the script file of an ordinary `bash $f` isn't held; `bash --version` and
@@ -4310,8 +4983,10 @@ class _Parser:
                 self.ctx["opaque_values"].add(name)
             if not literal and (loop[4] or parameters and "@" in self.ctx["joined_values"]):
                 self.ctx["joined_values"].add(name)
-            for word in (rest[1:] if rest[:1] == ["in"] else [None]) if name in _CODE_VARIABLES else ():
-                self.code_variable(name, word, self.via)   # (None: a word or reply the parser can't read)
+            # (None: a word or reply the parser can't read, or a pattern, which may match any file's name: one a
+            # file the line or an earlier call made holds, `$(rm -rf ~)`, that bash expands as a prompt)
+            for word in (rest[1:] if rest[:1] == ["in"] and not loop[6] else [None]) if name in _CODE_VARIABLES else ():
+                self.code_variable(name, word, self.via)
             self.open_block((kind, [name], self.list_start), at)
             return
         # a function's or script's arguments may move or be replaced (set and shift through command or builtin too)
@@ -4400,6 +5075,8 @@ class _Parser:
         read or mapped)."""
         declares = name in ("declare", "typeset", "local", "readonly", "export")
         names = _named(name, args)
+        if name in ("read", "mapfile", "readarray") and self.feeding and not names:   # (REPLY, MAPFILE)
+            self.ctx["unread_values"].update(_read_names([name]))
         self.ctx["arith"] |= bool(names) or name in ("let", "[[")
         nameref = declares and any(re.fullmatch(r"-\w*n\w*", a) for a in args)
         compares = ("-eq", "-ne", "-lt", "-le", "-gt", "-ge")
@@ -4411,6 +5088,7 @@ class _Parser:
         # follow (arith_sets): this command and the rest of the line are unread (simple)
         operands = args if name == "let" else [o for i, c in enumerate(args) if name == "[[" and c in compares
                                                for o in args[max(i - 1, 0):i] + args[i + 1:i + 2]]
+        self.made_arithmetic(self.words_first, " ".join(operands))
         for a in operands:
             self.arith_sets(a)
         if name in ("declare", "typeset", "local") and any(re.fullmatch(r"-\w*[ni]\w*", a) for a in args):
@@ -4530,6 +5208,8 @@ class _Parser:
                 continue
             if program in SHELLS:   # (run by its path: its #! names the shell, for nested's grammar)
                 self.nested(text, via + [program] + inside[len(via):] if direct else inside, gives)
+            elif _kind(program) == "sed":   # sed's -f script
+                self.scan("sed", text, cmd["pipeline"], inside, cmd)
             else:   # read as the inline code of its interpreter (python3 -c, node -e), for what it runs and writes
                 # lean: code it can't read there (a spawner given a name) isn't held, as before; hold it if one hides
                 first, kept = len(self.ctx["cmds"]), {k: type(self.ctx[k])(self.ctx[k]) for k in
@@ -4560,7 +5240,14 @@ class _Parser:
             self.nested(value, via + [name])
             return
         self.prompt(value, via + [name], kind == "prompt")
-        for text in self.written(value) if kind == "file" else ():   # a file it names the line writes: its code
+        if kind == "file":   # read once the line is (analyse): a shell it starts later reads a write after this too
+            self.ctx["code_files"].setdefault((name, value, tuple(via)), dict(self.known))
+
+    def code_file(self, name, value, via):
+        """BASH_ENV's or ENV's file `value`: the code each write the line makes to it gives (code_variable)."""
+        texts = self.written(value)
+        self.charge(len(texts))   # each one names it again: many of both on one line spend the budget, as read_file's
+        for text in texts:
             if text is None:
                 raise ParseError(f"{name} naming a file the line writes with text it can't read is not supported")
             self.nested(text, via + [name, "file " + value])
@@ -4570,7 +5257,7 @@ class _Parser:
         a $), or a character past ASCII, which a locale that can't show it writes as \\uXXXX, an escape again."""
         if escapes and ("\\" in value or not value.isascii()):
             raise ParseError("a prompt with a \\ escape is not supported")
-        p = _Parser(value, self.ctx, via)
+        p = self.parser(value, via)
         p.known = {}
         p.dquote(None)
 
@@ -4664,10 +5351,23 @@ class _Parser:
             cmd = {"argv": [name] + args, "word": argv[0], "via": via, "pipeline": pid, "glob": glob,
                    "opaque": unreadable[0] or tainted, "stdin": [], "moved": self.inherit or bool(self.blocks)}
             self.ctx["cmds"].append(cmd)
+            # (the word as written there: a variable's value or an escaped name is not where its word is)
+            self.ctx["programs"].append((cmd, getattr(argv[0], "at", None) if getattr(argv[0], "inner", None) else None,
+                                         self.within))
             cmds.append(cmd)
             self.charge(COMMAND_COST)
+            if name in ("curl", "wget"):   # each file a download writes holds text the line doesn't give, as `curl > f`
+                for key in map(base_name, download_writes(cmd["argv"])[0]):   # (one it can't name: analyse holds it)
+                    self.ctx["files"].setdefault(key, []).append((None, False, True))
+                    self.ctx["made_files"].add(key)
             if "\\" in argv[0] and not unreadable[0]:   # and as Windows runs a path with \ (C:\x\bash is C:/x/bash)
                 windows += self.emit([argv[0].replace("\\", "/"), *argv[1:]], pid, via, glob, unreadable)
+            for c, k in uv_commands(args) if name == "uv" else ():   # and as its command alone (uv_commands)
+                self.charge(len(args) - k + 2)
+                other = [argv[0], args[c], *args[k:]]
+                if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                    self.unwrapped.add(key)
+                    cmds += self.emit(other, pid, via, glob, [unreadable[0], unreadable[c + 1], *unreadable[k + 1:]])
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
@@ -4692,6 +5392,9 @@ class _Parser:
             if name in ("make", "gmake", "npm", "yarn", "pnpm", "bun", "git") or _PIP.fullmatch(name) or \
                     _kind(name) == "python" and args[:2] == ["-m", "pip"]:
                 self.configs(name, args, via, cmd)
+            if name in ("infisical", "doppler") and args[:1] == ["run"] or name == "nodemon":
+                for _, words in _runs_of(name, args):   # the line --command or --exec runs in a shell
+                    self.nested(self.code(cmd, words), via + [name + " sh -c"])
             if name in DASH_C:
                 if _dash_c(args) is None:
                     cmd["opaque"] = True   # an interactive shell: it runs whatever its stdin holds
@@ -4699,6 +5402,13 @@ class _Parser:
                     self.nested(self.code(cmd, [_dash_c(args)]), via + [name + " -c"])
             elif name == "sg":
                 self.nested(self.code(cmd, [a for a in args[1:] if a != "-c"]), via + ["sg -c"])
+            elif name in ("gdb", "cgdb", "lldb", "bwrap") or name == "ip" and args[:2] == ["netns", "exec"]:
+                for kind, words in _runs_of(name, args):   # the command each runs (gdb's run ARGS it can't split: code)
+                    self.charge(len(words))
+                    if kind == "code":
+                        self.nested(self.code(cmd, words), via + [name + " sh -c"])
+                    else:
+                        cmds += self.emit(words, pid, via + [name])
             elif name == "watch":
                 i = 0
                 while i < len(args) and args[i].startswith("-"):
@@ -4722,6 +5432,10 @@ class _Parser:
                 self.nested(self.code(cmd, [script]), via + [name + " -c"])
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
+                continue
+            elif name in ("deno", "bun") and (node := _as_node(name, args)) is not None:   # their code: node's
+                argv, via, unreadable = ["node", *node], via + [name], [False] * (1 + len(node))
+                self.charge(len(argv))
                 continue
             elif name == "uv" and args[:2] in (["tool", "run"], ["tool", "uvx"]):   # uvx's long forms
                 argv, via, unreadable = ["uvx"] + args[2:], via + ["uv tool run"], unreadable[2:]
@@ -4997,7 +5711,7 @@ class _Parser:
                     self.nested(self.code(cmd, [value]), via + [name + " -o"])
                 if name == "ssh":
                     self.code(cmd, args)
-                    self.nested(_ssh_command(args), via + ["ssh"])
+                    self.nested(self.join_words(_ssh_words(args)), via + ["ssh"])
             elif name == "rsync":
                 for value in _rsync_shells(args):
                     self.nested(self.code(cmd, [value]), via + ["rsync -e"])
@@ -5026,8 +5740,8 @@ class _Parser:
                         k = next(j for j, a in enumerate(args) if a in ("-exec", "-execdir", "-ok", "-okdir"))
                         cmds += self.emit(["find", *args[:k], "-delete"], pid, via + ["find -exec rm"])
             elif _kind(name):
-                if _kind(name) == "python" and (run := _python_runs(args)) is not None:
-                    cmds += self.emit(run, pid, via + [name])   # Tracekit's CLI, read as the tracekit command
+                if _kind(name) == "python" and (run := _python_runs(args) or _python_tool(args)) is not None:
+                    cmds += self.emit(run, pid, via + [name])   # Tracekit's CLI or a tool's, read as that command
                 # code its other options load: perl's -M (`use X;…`), a module node imports or requires and ruby
                 # requires (a data: URL's code, a file the line writes), python's -X presite (held), each read as code
                 for what, value in _loaded(_kind(name), args):
@@ -5039,32 +5753,53 @@ class _Parser:
                         cmd["opaque"] = True
                     else:
                         self.run_file(value, via + [name], cmd)
-                code = _code_arg(_kind(name), args)
-                if code is not None:
+                if _kind(name) == "sed":   # its script and -f files as GNU sed and BSD sed read its words
+                    for script, files in dict.fromkeys(_sed_options(args, bsd) for bsd in (False, True)):
+                        if script is not None:
+                            self.scan("sed", script, pid, via + [name + " code"], cmd)
+                        for path in files:
+                            if not _stream_name(path):
+                                self.run_file(path, via + [name], cmd)
+                elif (code := _code_arg(_kind(name), args)) is not None:
                     self.scan(_kind(name), code, pid, via + [name + " code"], cmd)
                 elif _kind(name) in CODE_FLAGS and (i := _script_operand(_kind(name), args)) is not None:
                     # a script the line may write
                     self.run_file(args[i], via + [name], cmd, gives=args[i + 1:], unread=unreadable[i + 1])
+                if _kind(name) == "perl":   # a file operand `cmd|` or `|cmd` runs where <> (-n, -p) opens it
+                    code_words = {i for i, _ in _code_words("perl", args)}
+                    for i, a in enumerate(args):
+                        if i not in code_words and not a.startswith("-") and (piped := _pipe_opened([a])):
+                            self.run_text(piped, via + [name + " <>"], cmd)
             break
         return cmds + windows
 
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
-        `cmd` opaque."""
+        `cmd` opaque. What it runs belongs to the program's span (_learned's `within`)."""
+        at, inner = _place(code)
+        self.ctx["placed"].append(("interp", at, inner, self.within))
+        outer, self.within = self.within, at or self.within
+        try:
+            self.read_program(kind, code, pid, via, cmd)
+        finally:
+            self.within = outer
+
+    def read_program(self, kind, code, pid, via, cmd):
         kind = _JS_KIND.get(kind, kind)
-        if kind == "sed":
-            for m in _SED_E.finditer(code):
-                if m.group(1).strip():
-                    self.nested(m.group(1).strip(), via)
+        if kind == "sed":   # a file it writes is tee's, one it reads cat's; e runs its command
+            for what, arg in dict.fromkeys(c for bsd in (False, True) for c in _sed_commands(code, bsd)):
+                if what != "e":
+                    self.emit(["tee" if what == "w" else "cat", arg], pid, via)
+                elif arg:
+                    self.nested(arg, via)
                 elif cmd is not None:
-                    cmd["opaque"] = True   # a bare `e` runs the pattern space
-            if cmd is not None and _SED_S_E.search(code):
-                cmd["opaque"] = True
+                    cmd["opaque"] = True   # e alone and s///e run the pattern space
             return
-        calls, loose = _py_calls(code) if kind == "python" else _CALL, False
+        # (Python's and Node's calls take parentheses: `spawn } from "child_process"` is no call)
+        calls, loose = _py_calls(code) if kind == "python" else _PY_CALL if kind == "node" else _CALL, False
         for m in calls.finditer(code):
-            if kind == "python" and m.group(1) == "exec":
-                continue   # Python's exec runs Python, not a shell
+            if kind == "python" and m.group(1) == "exec" or kind in _RUNS and re.fullmatch(_RUN_NAMES[kind], m.group(1)):
+                continue   # Python's exec runs Python, not a shell; Perl's and Ruby's runners: runs()
             i = m.end()
             items, end = _call_args(kind, code, i, "(" in m.group(2), self.charge)
             self.charge(end - i)   # overlapping calls read the same text again
@@ -5081,31 +5816,17 @@ class _Parser:
                 self.argv(words, pid, via)
                 if len(words) > 2 and re.match(r"exec|spawn", m.group(1).rsplit(".", 1)[-1]):
                     self.argv(words[1:], pid, via)
-        # Perl's and Ruby's open of a pipe ("|cmd", "cmd|", or "-|" and the command's words); awk's "cmd" | getline and
-        # print | "cmd" (a shell there runs what the program prints: each of its literals); Ruby's %x() and Perl's qx()
-        for m in re.finditer(r"\bopen\s*(\(?)", code) if kind in ("perl", "ruby") else ():
-            items, end = _call_args(kind, code, m.end(), bool(m.group(1)), self.charge)
+        # Perl's and Ruby's open of a pipe ("|cmd", "cmd|", or "-|" and the command's words: open_pipe); awk's "cmd" |
+        # getline and print | "cmd" (a shell there runs what the program prints: each of its literals)
+        for m in _OPENS[kind].finditer(code) if kind in _OPENS else ():
+            items, end = _call_args(kind, code, m.end(), bool(m.group(2)), self.charge)
             self.charge(end - m.end())
-            texts = [it for it in items if isinstance(it, tuple)]
-            for n, it in enumerate(texts):
-                text = _text_of(it).strip()
-                if text in ("-|", "|-") and texts[n + 1:]:   # one word is a shell's line, more a command's words
-                    if len(texts) == n + 2:
-                        self.nested(_text_of(texts[n + 1]), via)
-                    else:
-                        self.argv(texts[n + 1:], pid, via)
-                    break
-                if text.startswith("|") or text.endswith("|"):
-                    self.nested(text.strip("|"), via)
+            self.open_pipe(kind, m, items, pid, via, cmd)
         for body, printed in _awk_pipes(code) if kind == "awk" else ():
             text = _c_unescape("awk", body)
             self.nested(text, via)
             loose |= printed and bool(w := text.split()) and base_name(w[0]) in SHELLS
-        for m in _QX.finditer(code) if kind in ("perl", "ruby") else ():
-            close = code.find(_PAIRS[m.group(1)], m.end())
-            self.charge((len(code) if close < 0 else close) - m.end())
-            if close >= 0:
-                self.nested(code[m.end():close], via)
+        loose |= self.runs(kind, code, pid, via, cmd)
         # a delete of a folder and all it holds (shutil.rmtree, fs.rmSync, File::Path's rmtree, FileUtils.rm_rf): rm -rf
         # of its first argument, so TK-D004 and the other delete rules read it
         for m in _DELETES[kind].finditer(code) if kind in _DELETES else ():
@@ -5143,8 +5864,235 @@ class _Parser:
                 if self.ctx["work"][0] > MAX_WORK or cmd is None:
                     raise
                 self.ctx["depth"], cmd["opaque"] = depth, True
-        for m in _TICK.finditer(code) if kind in ("perl", "ruby", "php") else ():
-            self.nested(m.group(1), via)
+
+    def runs(self, kind, code, pid, via, cmd):
+        """What interpreter code runs: the commands of its calls (Perl's and Ruby's _RUNS, Ruby's send of one too;
+        the others' shell_calls) and of its quoted commands (_quoted_runs: qx, %x, backquotes, PHP's too), and the code
+        of its evals (_EVALS), read again as code. A command or code the program makes at run time (an argument that
+        isn't a literal, a value interpolated into a shell line, a method named at run time, a here-doc run as a
+        command, code no eval names: _CODE_RUNS, _perl_ee) holds `cmd`; so does a runner taken by reference (_TAKEN).
+        Returns whether the code may run any of its literals so (read loose)."""
+        for k, opening in _quoted_runs(kind, code):
+            got = _delimited(code, k, opening)
+            self.charge((len(code) if got is None else got[1]) - k)
+            if got is not None:   # (one that never closes is no command: the program doesn't compile)
+                self.run_text([_quoted(got[0], "'")] if kind == "perl" and opening == "'" else
+                              _decoded(kind, '"', got[0]), via, cmd)
+        read = 0   # (an eval in another's literal is that one's code: read there, not again here)
+        for m in _EVALS[kind].finditer(code) if kind in _EVALS else ():
+            if m.start() < read:
+                continue
+            opened = _call_open(kind, code, m.end())
+            if opened and not (kind == "perl" and code[opened[0]:opened[0] + 1] == "{" and not opened[1]):   # BLOCK
+                read = self.eval_call(kind, code, *opened, pid, via, cmd)
+            elif kind == "perl" and re.match(r"\s*(?:;|\)|$)", code[m.end():m.end() + 64]):   # eval of $_
+                self.hold(cmd, "code")
+        built = kind in _CODE_RUNS and bool(_CODE_RUNS[kind].search(code)) or \
+            kind == "perl" and _perl_ee(code, self.charge)
+        if built:
+            self.hold(cmd, "code")
+        if kind not in _RUNS:
+            return self.shell_calls(kind, code, pid, via, cmd) or built
+        for m in _RUNS[kind].finditer(code):
+            if opened := _call_open(kind, code, m.end()):
+                self.run_call(kind, m.group(m.lastindex), code, *opened, pid, via, cmd)
+        for m in _SEND.finditer(code) if kind == "ruby" else ():
+            if not (opened := _call_open(kind, code, m.end())):
+                continue
+            name = _SYMBOL.match(code, opened[0])
+            after = name and code[name.end():name.end() + 1]
+            if not name or after not in (",", ")" if opened[1] else ";", "\n", ""):   # a method named at run time
+                self.hold(cmd, "code")
+                continue
+            name, start = name.group(2) or name.group(3) or name.group(5), name.end() + (after == ",")
+            if re.fullmatch(_RUN_NAMES[kind] + "|`", name):
+                self.run_call(kind, name, code, start, opened[1], pid, via, cmd)
+            elif _EVALS[kind].fullmatch(name):
+                self.eval_call(kind, code, start, opened[1], pid, via, cmd)
+        for m in _PERL_IPC.finditer(code) if kind == "perl" and "IPC::" in code else ():
+            if not (opened := _call_open(kind, code, m.end())):
+                continue
+            items, end = _call_args(kind, code, *opened, self.charge)
+            self.charge(end - opened[0])
+            if kw := _IPC_COMMAND.search(code, opened[0], end):
+                items = _call_args(kind, code, kw.end(), opened[1], self.charge)[0][:1]
+            self.run_words(items[_PERL_IPC_AT.get(m.group(1), 0):], pid, via, cmd)
+        if _HEREDOC_RUN.search(code):
+            self.hold(cmd, "code")
+        if _TAKEN[kind].search(code):
+            self.hold(cmd, "code")
+            return True
+        return built
+
+    def shell_calls(self, kind, code, pid, via, cmd):
+        """The command each of Python's, Node's, PHP's, Lua's and awk's process calls runs (_SHELL_CALLS; read as a
+        runner's arguments, run_words, where scan's _CALL reading doesn't): one the code makes at run time holds `cmd`,
+        as do awk's pipe to or from a command it makes (`c | getline`, `print | c`: _awk_computed_pipe) and a runner
+        taken as a value (_py_taken, _node_taken, _SHELL_TAKEN). Returns whether one did (read loose)."""
+        calls = _py_calls(code) if kind == "python" else _node_calls(code) if kind == "node" else _SHELL_CALLS.get(kind)
+        # (a runner taken as a value may run any of the code's literals)
+        loose = kind == "awk" and _awk_computed_pipe(code) or kind == "python" and _py_taken(code) or \
+            kind == "node" and _node_taken(code) or \
+            kind in _SHELL_TAKEN and bool(_SHELL_TAKEN[kind].search(_BLANK_STR["'\""].sub('""', code) if kind == "lua" else code))
+        if loose:
+            self.hold(cmd, "code")
+        for m in _PHP_INCLUDE.finditer(code) if kind == "php" else ():   # (a data: URL's code; a stream's or value's held)
+            items, end = _call_args(kind, code, m.end(), bool(m.group(1)), self.charge)
+            self.charge(end - m.end())
+            path = _text_of(items[0]) if items and isinstance(items[0], tuple) and None not in items[0] else None
+            if path is not None and path.startswith("data:"):
+                self.read_code(kind, _data_url(path), pid, via + ["include"], cmd)
+            elif path is None or path.startswith("php:"):
+                self.hold(cmd, "code")
+        for m in _OPTION_RUNS.finditer(code) if kind == "node" else ():
+            items, end = _call_args(kind, code, m.end(), True, self.charge)
+            self.charge(end - m.end())
+            if m.group(1) == "Command":   # (its program, then its args)
+                listed = _option_list(code, m.end(), end, "args", self.charge) or []
+                self.run_words([items[0] if items else None, *listed], pid, via, cmd, argv=True)
+            elif not (items and isinstance(items[0], list)):   # (a list first: _CALL's reading)
+                listed = _option_list(code, m.end(), end, "cmd", self.charge)
+                self.run_words([listed if listed is not None else None], pid, via, cmd)
+        for m in _bun_shell(code).finditer(code) if kind == "node" and "bun" in code.lower() else ():
+            if lit := _string_at(kind, code, m.end() - 1, self.charge):   # (Bun's shell reads its template as a line)
+                self.run_text(lit[0], via, cmd)
+        for m in _PYDOC_PAGER.finditer(code) if kind == "python" else ():   # (its command is its second argument)
+            items, end = _call_args(kind, code, m.end(), True, self.charge)
+            self.charge(end - m.end())
+            self.run_words(items[1:2] or [None], pid, via, cmd)
+        for m in calls.finditer(code) if calls else ():
+            items, end = _call_args(kind, code, m.end(), m.group().rstrip().endswith("("), self.charge)
+            self.charge(end - m.end())
+            if calls is _PY_CALL and not (_PY_SHELL.fullmatch(m.group(1)) or _SHELL_TRUE.search(code, m.end(), end)):
+                continue   # (asyncio.run(…), x.call(…): a name a lookup at run time may also give)
+            if items and (items[0] is None or isinstance(items[0], tuple) and None in items[0]):
+                self.hold(cmd, "code")
+                loose = True
+            # read here only a call scan's own reading (_CALL) doesn't find: Node's runner under a name of the code's,
+            # Lua's `os.execute"…"`
+            at = m.start() if kind == "lua" else m.start() + re.search(r"[\w$]+(?=\s*\(\s*$)", m.group()).start()
+            if kind != "python" and not _CALL.match(code, at):
+                self.run_words(items, pid, via, cmd)
+        return loose
+
+    def run_call(self, kind, name, code, start, paren, pid, via, cmd):
+        """A runner's call (_RUNS, or Ruby's Kernel#` by name) whose arguments start at `start`: its command read
+        (run_words; readpipe's and Kernel#`'s last argument: Perl's comma operator), each of Ruby's pipeline*'s
+        arguments one; Perl's `system { "prog" } LIST` runs its block's program with LIST's words after their first."""
+        block = kind == "perl" and not paren and code[start:start + 1] == "{"
+        if block:
+            got = _delimited(code, start + 1, "{")
+            if got is None:
+                return
+            self.charge(got[1] - start)
+            prog, start = _arg_text(kind, code, start + 1, got[1] - 1, self.charge) or None, got[1]
+        items, end = _call_args(kind, code, start, paren, self.charge)
+        self.charge(end - start)
+        if block:
+            words = [w for it in items for w in ([it] if isinstance(it, tuple) else it or [])]
+            self.run_words([prog, *words[1:]], pid, via, cmd, argv=True)
+        elif name.startswith("pipeline"):
+            for item in items:
+                self.run_words([item], pid, via, cmd)
+        else:
+            self.run_words(items[-1:] if name in ("readpipe", "`") else items, pid, via, cmd)
+
+    def run_words(self, items, pid, via, cmd, argv=False):
+        """Run a runner's arguments (_call_args's items): one literal is a shell line (run_text), more (or a list, or
+        `argv`) a program and its words. A program the code makes at run time holds `cmd`."""
+        if not items:
+            return
+        if items[0] is None:
+            self.hold(cmd, "code")
+            return
+        if isinstance(items[0], tuple) and not argv and len(items) == 1:
+            self.run_text(items[0], via, cmd)
+            return
+        words = [w for it in items for w in ([it] if isinstance(it, tuple) else it or [])]
+        if words:
+            self.argv(words, pid, via)
+
+    def eval_call(self, kind, code, start, paren, pid, via, cmd):
+        """An eval whose arguments start at `start`: a literal's text read as the program's own code (up to MAX_DEPTH
+        evals deep), any other argument held. Returns where its arguments end."""
+        items, end = _call_args(kind, code, start, paren, self.charge)
+        self.charge(end - start)
+        text = items[-1] if kind == "node" and items else items[0] if items else None   # (Function(a, b, code))
+        if not isinstance(text, tuple) or None in text:
+            self.hold(cmd, "code")
+            return end
+        self.read_code(kind, _text_of(text), pid, via + ["eval"], cmd)
+        return end
+
+    def read_code(self, kind, text, pid, via, cmd):
+        """`text` read as the program's own code (an eval's literal, a data: URL PHP includes), up to MAX_DEPTH deep:
+        past it `cmd` is held."""
+        if self.ctx.get("evals", 0) >= MAX_DEPTH:
+            self.hold(cmd, "code")
+            return
+        self.ctx["evals"] = self.ctx.get("evals", 0) + 1
+        try:
+            self.scan(kind, text, pid, via, cmd)
+        finally:
+            self.ctx["evals"] -= 1
+
+    def open_pipe(self, kind, m, items, pid, via, cmd):
+        """Perl's open (`m`: _OPENS's match; a filehandle, then a mode: `-|` or `|-` and the command, as a runner's
+        arguments, or a 2-argument open's text, _pipe_opened; IO::File->new's are open's after its filehandle) and
+        Ruby's (its first argument, read as a 2-argument open's text). A command or a text the code makes at run time
+        holds `cmd` for Perl's and for Ruby's open, Kernel.open, URI.open and IO.read and its kin with parentheses
+        (File.open runs no command, and a word in prose is no call)."""
+        texts = [it for it in items if isinstance(it, tuple)]
+        before = m.string[max(0, m.start() - 64):m.start()]
+        holds = kind == "perl" or bool(m.group(2)) and (m.group(1) != "open" or bool(_KERNEL_OPEN.search(before)))
+        if kind == "ruby" or m.group(1) != "open":
+            items = [None, *items[:1 if kind == "ruby" else None]]
+        for n, it in enumerate(texts):   # (each text a pipe may open, as before: a 3-argument open's file's too)
+            text = _text_of(it).strip()
+            if text in ("-|", "|-") and texts[n + 1:]:   # one word is a shell's line, more a command's words
+                if len(texts) == n + 2:
+                    self.nested(_text_of(texts[n + 1]), via)
+                else:
+                    self.argv(texts[n + 1:], pid, via)
+                break
+            if text.startswith("|") or text.endswith("|"):
+                self.nested(text.strip("|"), via)
+        if len(items) < 2:
+            return
+        mode = items[1]
+        if not isinstance(mode, tuple):
+            if mode is None and holds:
+                self.hold(cmd, "code")
+        elif len(items) > 2:
+            if _text_of(mode).strip() in ("-|", "|-"):
+                self.run_words(items[2:], pid, via, cmd)
+        elif (piped := _pipe_opened(mode)) is False:
+            if holds:
+                self.hold(cmd, "code")
+        elif piped is not None:
+            self.run_text(piped, via, cmd)
+
+    def run_text(self, pieces, via, cmd):
+        """A shell line interpreter code runs (_string_at's pieces), read as its commands; `cmd` held when the parser
+        can't read all of it: a value made at run time (one interpolated into the line may hold any shell syntax:
+        `; rm …`), or text it can't parse."""
+        if None in pieces:
+            self.hold(cmd, "code")
+        depth = self.ctx["depth"]
+        try:
+            self.nested(_text_of(pieces), via)
+        except ParseError as e:
+            if self.ctx["work"][0] > MAX_WORK or cmd is None:
+                raise
+            self.ctx["depth"] = depth
+            self.hold(cmd, e.cause)
+
+    @staticmethod
+    def hold(cmd, cause):
+        """Hold `cmd`: the parser can't read what it runs (engine._unread_cause gives `cause`, the first one found)."""
+        if cmd is None:
+            raise ParseError("interpreter code runs a command the parser can't read")
+        cmd["opaque"], cmd["unread"] = True, cmd.get("unread") or cause
 
     def argv(self, words, pid, via):
         """Run `words` (each _arg_text's pieces) as a command: its literals, or with a value the code makes at run time
@@ -5178,6 +6126,11 @@ class _Parser:
                     break
                 lines.append(line)
             body = "\n".join(lines)
+            end = max(start, at - 1)   # (before the end line's own line end)
+            if self.base is not None and s[start:end] == body:   # the line holds it as written: its expansions run
+                lit = not (d["expand"] and re.search(r"[$`\\]", body))
+                body = _placed(body, (self.base + start, self.base + end), (self.base + start, self.base + end)
+                               if lit else None, lit)
             for c in d["cmds"]:
                 c["stdin"].append(body)
             # a data heredoc's body, unless a command substitution in it runs (what it runs may read a heredoc of its
@@ -5194,9 +6147,12 @@ class _Parser:
             # later, outside the call (engine._SCHEDULED): only text the line makes is
             text = empty = body
             if d["expand"]:
-                p, parts, first = _Parser(body, self.ctx, d["via"] + ["<<"]), [], len(self.ctx["cmds"])
+                p, parts, first = self.parser(body, d["via"] + ["<<"]), [], len(self.ctx["cmds"])
                 p.known = d["known"]   # what the line knew at its command
                 text = p.dquote(None, buf=parts)
+                # as written, placed; else what its expansions make, which may be a variable's the line gives
+                # elsewhere: not placed
+                text = body if text == body else text
                 made, code = _prints(self.ctx["cmds"][first:], self.ctx), not shell or shell["argv"][0] in SHELLS
                 d["unknown"] = any(isinstance(x, _Expansion) and p.unsafe(x, made, code) for x in parts)
                 if shell and d["unknown"]:
@@ -5204,6 +6160,7 @@ class _Parser:
                 # and with each expansion as what it is when its variable is empty, as words are read again: a
                 # shell reading `$'\163${X}\165\144\157'` runs sudo
                 empty = "".join(x.empty if isinstance(x, _Expansion) else x for x in parts)
+                empty = body if empty == body else empty
             d["text"] = text   # what a file it is copied into holds (run_file)
             if shell:
                 for code in dict.fromkeys((text, empty)):
@@ -5430,7 +6387,7 @@ class _Parser:
         shell could end it elsewhere); or a backtick when the text has a double quote (bash expands "..." here its
         own way)."""
         self.enter()
-        s, start, depth = self.s, self.i, 0
+        s, start, depth, first = self.s, self.i, 0, len(self.ctx["cmds"])
         while self.i < len(s) and (s[self.i] != ")" or depth):
             c = s[self.i]
             if c == "\\":
@@ -5480,8 +6437,20 @@ class _Parser:
         if level or "\n" in body or "[" in body or parens and re.search(r"[\"'`\\]", body) or '"' in body and "`" in body:
             raise ParseError("a newline, bracket, unpaired parentheses, a parenthesis with a quote, backtick or backslash, "
                              "or a backtick with a double quote in $(( )) that has $( or a backtick is not supported")
+        self.made_arithmetic(first, body)
         self.i += 2
         self.leave()
+
+    def made_arithmetic(self, first, text):
+        """Arithmetic `text` whose substitutions (the commands from ctx["cmds"][first] on) read a file the line writes
+        (made_files: text it makes or gives, a download's; a pattern or a name it can't read may name one; $(<f) on a
+        line that writes one) is held: bash evaluates what they print, and a[$(cmd)] in it runs cmd. A program's own
+        output (`$(( $(sysctl -n hw.memsize) / 1024 ))`) is read as the command it is."""
+        made = self.ctx["made_files"]
+        if made and _LINE_SUBSTITUTION.search(text) and (_FILE_SUBSTITUTION.search(text) or any(
+                "*" in made or c["glob"] or any(base_name(w) in made for w in c["argv"][1:] + list(c.get("in", ())))
+                for c in self.ctx["cmds"][first:])):
+            raise ParseError("text the line makes, evaluated as arithmetic, is not supported")
 
 
     def dquote(self, term, in_dq=False, buf=None):
@@ -5543,7 +6512,7 @@ class _Parser:
         return "".join(buf)
 
     def dollar(self, in_dq):
-        s, start, nxt, op, pieces = self.s, self.i, self.peek(1), None, []
+        s, start, nxt, op, pieces, first = self.s, self.i, self.peek(1), None, [], len(self.ctx["cmds"])
         if self.at("$\\\n"):   # bash deletes the backslash-newline first: what follows decides what the $ starts
             j = start + 1
             while s.startswith("\\\n", j):
@@ -5637,6 +6606,7 @@ class _Parser:
             if bare[1] == "{":   # an offset's or subscript's names: bash evaluates their values
                 self.ctx["arith_names"].update(_arith_names(bare[e.end():-1]))
                 self.arith_sets(bare[e.end():-1])
+                self.made_arithmetic(first, bare[e.end():-1])
         # ${!x}: x's value names the variable, a subscript in it evaluated
         if (v := _INDIRECT.match(bare)) and \
                 v.group(1) in self.ctx["unread_values"] | self.ctx["joined_values"]:
@@ -5779,7 +6749,11 @@ class _Parser:
         start, self.i = self.i, m.end()
         self.ctx["exp"] += 1
         # bash takes \`, \\ and \$ for the character, and deletes a backslash-newline, before it reads the text
-        self.nested(re.sub(r"\\([`\\$])|\\\n", r"\1", m.group(1)), self.via + ["``"])
+        text = re.sub(r"\\([`\\$])|\\\n", r"\1", m.group(1))
+        if self.base is not None:
+            text = _placed(text, (self.base + start, self.base + self.i), (self.base + m.start(1), self.base + m.end(1))
+                           if text == m.group(1) else None)
+        self.nested(text, self.via + ["``"])
         return _Expansion(self.s[start:self.i])
 
 
@@ -5962,6 +6936,11 @@ def _lines_without(words, progs, gone):
     return _lines([words[i] for i in keep], [at[p] for p in progs if p in at])
 
 
+def _read_names(argv):
+    """The variables a read, mapfile or readarray command sets (bash's REPLY or MAPFILE for none)."""
+    return [n.split("[", 1)[0] for n in _named(argv[0], argv[1:])] or ["REPLY" if argv[0] == "read" else "MAPFILE"]
+
+
 def _named(name, args):
     """The words builtin `name` (one of _NAME_BUILTINS, or let) takes as variable names (an assignment word for
     declare and its kin, an expression for let): read's (and its -a value), mapfile's and readarray's after their
@@ -5992,14 +6971,14 @@ _TRACEKIT_MODULE = re.compile(r"tracekit(?:\.cli|\.__main__)?")
 _TRACEKIT_SCRIPT = re.compile(r"(?i)(?:.*[/\\])?tracekit(?:\.exe|[/\\](?:__main__|cli)\.py)?[/\\]?")
 
 
-def _python_runs(args, copies=frozenset()):
-    """`tracekit …` where python's `args` run Tracekit's CLI: its module (-m tracekit, tracekit.cli or tracekit.__main__,
-    -mtracekit, -Im, past options with a value: -X 'a b', -W), the one a module runner runs (runpy's first word; the
-    first word not an option after a later -m or --module: cProfile, pdb, trace --module), or a script whose path
-    names Tracekit's entry point (~/.local/bin/tracekit, a tracekit folder, its __main__.py or cli.py); else None.
-    `copies`: the names the line copies or links Tracekit's entry point to (_tracekit_copies), as a script's or a
-    module's (tk.py: -m tk) name."""
-    i, module, rest = 0, None, []
+# tools python runs by their module as their own CLI (`python3 -m uv tool run x` is `uv tool run x`)
+_PYTHON_TOOLS = frozenset(("uv", "pipx", "hatch", "pdm", "poetry", "pipenv"))
+
+
+def _python_module(args):
+    """(the module python's `args` run with -m, past python's options: -X 'a b', -W, -Im, -mX; the words after it), or
+    (None, where its first operand is) for none; None for -c's code."""
+    i = 0
     while i < len(args) and args[i].startswith("-") and args[i] not in ("-", "--"):
         m = re.fullmatch(r"-[bBdEhiIOPqsSuvVx]*([cmWX])(.*)", args[i], re.S)
         if args[i] == "--check-hash-based-pycs" or m and m.group(1) in "WX" and not m.group(2):
@@ -6007,15 +6986,17 @@ def _python_runs(args, copies=frozenset()):
         elif m and m.group(1) == "c":
             return None
         elif m and m.group(1) == "m":
-            module, rest = (m.group(2), args[i + 1:]) if m.group(2) else ((args[i + 1:i + 2] or [None])[0], args[i + 2:])
-            break
+            return (m.group(2), args[i + 1:]) if m.group(2) else ((args[i + 1:i + 2] or [None])[0], args[i + 2:])
         else:
             i += 1
-    if module is None:
-        i += args[i:i + 1] == ["--"]
-        return ["tracekit", *args[i + 1:]] if i < len(args) and (
-            _TRACEKIT_SCRIPT.fullmatch(args[i]) or _base(args[i]) in copies) else None
-    while not (_TRACEKIT_MODULE.fullmatch(module) or {module, module.rpartition(".")[2] + ".py"} & copies):
+    return None, i
+
+
+def _module_run(module, rest, done):
+    """(the module python runs, the words after it) at last through module runners: runpy's first word, or the first
+    word not an option after a later -m or --module (cProfile, pdb, trace --module); the first `done(module)` accepts,
+    else None."""
+    while not done(module):
         if module == "runpy" and rest:
             module, rest = rest[0], rest[1:]
         elif (k := next((j for j, w in enumerate(rest) if w in ("-m", "--module")), None)) is not None and \
@@ -6023,7 +7004,37 @@ def _python_runs(args, copies=frozenset()):
             module, rest = rest[j], rest[j + 1:]
         else:
             return None
-    return ["tracekit", *rest]
+    return module, rest
+
+
+def _python_tool(args):
+    """`<tool> …` where python's `args` run one of _PYTHON_TOOLS by its module (`-m uv`, `-m uv.__main__`), also through
+    a module runner (_module_run: `-m runpy uv`, `-m cProfile -m uv`), else None."""
+    found = _python_module(args)
+    if not found or found[0] is None:
+        return None
+    found = _module_run(*found, lambda m: m.removesuffix(".__main__") in _PYTHON_TOOLS)
+    return None if found is None else [found[0].removesuffix(".__main__"), *found[1]]
+
+
+def _python_runs(args, copies=frozenset()):
+    """`tracekit …` where python's `args` run Tracekit's CLI: its module (-m tracekit, tracekit.cli or tracekit.__main__,
+    -mtracekit, -Im, past options with a value: -X 'a b', -W), the one a module runner runs (runpy's first word; the
+    first word not an option after a later -m or --module: cProfile, pdb, trace --module), or a script whose path
+    names Tracekit's entry point (~/.local/bin/tracekit, a tracekit folder, its __main__.py or cli.py); else None.
+    `copies`: the names the line copies or links Tracekit's entry point to (_tracekit_copies), as a script's or a
+    module's (tk.py: -m tk) name."""
+    if (found := _python_module(args)) is None:
+        return None
+    module, rest = found
+    if module is None:
+        i = rest if isinstance(rest, int) else len(args) - len(rest) - 1
+        i += args[i:i + 1] == ["--"]
+        return ["tracekit", *args[i + 1:]] if i < len(args) and (
+            _TRACEKIT_SCRIPT.fullmatch(args[i]) or _base(args[i]) in copies) else None
+    found = _module_run(module, rest,
+                        lambda m: _TRACEKIT_MODULE.fullmatch(m) or {m, m.rpartition(".")[2] + ".py"} & copies)
+    return None if found is None else ["tracekit", *found[1]]
 
 
 def _script_operand(kind, args):

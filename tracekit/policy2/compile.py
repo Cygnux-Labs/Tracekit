@@ -13,7 +13,7 @@ import os
 import posixpath
 import re
 
-from .. import yamlmini
+from .. import privacy, yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 from ..wiki import wiki_url
 
@@ -34,9 +34,11 @@ RUN_LABELS = ("secrets_access", "untrusted_content")
 LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
-RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT",
-                "TK-HOOK-BLOCKED"}   # tracekit audit's id for a call an agent's hook denies before the policy
+RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-SOURCE-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR",
+                "TK-ARGS-INVALID", "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME",
+                "TK-GRANT",
+                "TK-HOOK-BLOCKED",   # tracekit audit's id for a call an agent's hook denies before the policy
+                privacy.HIDDEN_CODE}
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -60,6 +62,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                        "remedy": "Name the program in full."},
                            "input": {"reason": "a shell or interpreter runs code from a pipe, a file or its input",
                                      "remedy": "Write out the commands it would run."},
+                           "code": {"reason": "an interpreter's program runs a command or code it makes at run time "
+                                              "(a variable, a here-doc, a computed string)",
+                                    "remedy": "Write the command into the program as plain text, or run it directly."},
                            "function": {"reason": "it defines a shell function it doesn't call, or exports one",
                                         "remedy": "Call the function on the same line, or run its commands directly."},
                            "download": {"reason": "it defines a shell function on a line that may download",
@@ -68,6 +73,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "typed": {"reason": "it is text typed into a command already running, a key, or a line "
                                                "left open, which runs with what came before or comes after it",
                                      "remedy": "Send the whole command in one call, on lines it closes."},
+                           "workdir": {"reason": "its arguments name more than one working directory, or one that "
+                                                 "isn't text",
+                                       "remedy": "Name one working directory, as text."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
@@ -96,7 +104,12 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
     "TK-SQL-PARSE": {"reason": "the policy can't read this SQL",
-                     "remedy": "Close the quote or comment so the policy can read it."}}
+                     "remedy": "Close the quote or comment so the policy can read it."},
+    "TK-SOURCE-PARSE": {"reason": "the policy can't read what this Python cell or delivery runs",
+                        "remedy": "Name each browser helper or shell command as a plain call with literal text."},
+    # a held call whose approver's copy would hide more than a clean value (privacy.approver_copy): denied, as no
+    # person can see what they would approve; the only reason given, so the agent acts on this one
+    privacy.HIDDEN_CODE: {"reason": privacy.HIDDEN_CODE_REASON, "remedy": privacy.HIDDEN_CODE_REMEDY}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;

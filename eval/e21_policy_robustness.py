@@ -195,6 +195,8 @@ def run(record=False):
     # Recorded again the same day after TK-D007's reader was gated (engine.TracekitGate) and its subjects given once: p50 176 to
     # 219 us, p99 489 to 664 us across the six rows, caps 9.13 to 12.6 times the reference. And again after the pushes, the forms a pattern may make and the roots below a folder were
     # each read once: p50 173 to 211 us, p99 463 to 638 us, caps 8.99 to 12.5.
+    # Recorded again (--record) on 2026-11-25 after main's 1.7.3 line (its shell reading, the workdir and uv folders, #1141) was merged
+    # in: p50 190 to 239 us, p99 516 to 739 us, caps 9.5 to 13.02 times the reference, under CI's 14.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

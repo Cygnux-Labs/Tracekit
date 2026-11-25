@@ -390,8 +390,10 @@ class FalseStops(unittest.TestCase):
                          "tracekit uninstall --keep-data --help", "tracekit uninstall \"x --help\"",
                          "tracekit uninstall \"--help\"", "tracekit uninstall '--help'",
                          "xargs tracekit uninstall --help < f", "echo y | xargs tracekit uninstall --help")
-        self.assert_held("TK-A057", "tracekit init -- --help", "tracekit init --dir --help", "tracekit init \"x --help\"",
+        self.assert_held("TK-A057", "tracekit init -- --help", "tracekit init \"x --help\"",
                          "tracekit init \"--help\"", "xargs tracekit init --help < f")
+        # init's argparse takes no --help as an option's value: `init --dir --help` prints its help (1.7.3's TK-A057)
+        self.assert_open("tracekit init --dir --help")
         self.assert_held("TK-A033", "gh pr merge 42 --body --help", "gh pr merge -- --help")
 
     def test_a_git_editor_that_does_nothing_is_no_command(self):

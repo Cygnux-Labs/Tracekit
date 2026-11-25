@@ -69,7 +69,8 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
 # call_state reads `reasons` (its record's) and its policy's instead (SignerService._recorded_reason); `run_labels`: the
 # run labels that made its run condition rules apply (a retry's decision records them again)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "run_labels")
+             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "run_labels",
+             "agent_id")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 # the AI approver (approver_state): how long a person's answer counts as a precedent; the circuit breaker's agreement of
@@ -804,7 +805,8 @@ class RecordLog:
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
                         "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash"),
-                        "reasons": d.get("reasons"), "run_labels": d.get("run_labels")}
+                        "reasons": d.get("reasons"), "run_labels": d.get("run_labels"),
+                        **({"agent_id": e["agent_id"]} if e.get("agent_id", "main") != "main" else {})}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call

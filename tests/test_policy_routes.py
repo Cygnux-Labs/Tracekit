@@ -1011,6 +1011,37 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("gptme 'fix it'", "gptme --profile 'fix it'", "gptme --profile=x 'fix it'",
                               "python -m gptme x"), "allow")
 
+    def test_jcode_kiro_and_interpreter_started_with_settings_the_agent_chose_are_held(self):
+        self.expect(self.bash("JCODE_HOOKS_DISABLED=1 jcode run 'do it'", "HOME=/tmp/x jcode run hi",
+                              "JCODE_HOME=/tmp/x jcode run hi", "JCODE_HOOK_PRE_TOOL= jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL=/tmp/noop.sh jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL_TIMEOUT_MS=1 jcode run hi",
+                              "HOME=/tmp/x kiro-cli chat --no-interactive hi",
+                              "KIRO_HOME=/tmp/x kiro-cli chat --no-interactive hi",
+                              "KIRO_DEFAULT_SETTINGS=/tmp/s.json kiro-cli chat --no-interactive hi",
+                              "INTERPRETER_HOME=/tmp/x interpreter exec hi",
+                              "HOME=/tmp/x interpreter exec hi",
+                              "HOME=/tmp/x interpreter-classic exec hi",
+                              "INTERPRETER_HOME=/tmp/x interpreter-classic exec hi"), "ask", "TK-A070")
+        # the rest of jcode's lifecycle-hook family, each read in env_overrides.rs: one variable per hook, and an empty
+        # value removes that hook from the config, so a line that sets one runs jcode with a gate it chose
+        self.expect(self.bash("JCODE_HOOK_TURN_START=/tmp/h jcode run hi", "JCODE_HOOK_TURN_END=/tmp/h jcode run hi",
+                              "JCODE_HOOK_SESSION_START=/tmp/h jcode run hi",
+                              "JCODE_HOOK_SESSION_END=/tmp/h jcode run hi",
+                              "JCODE_HOOK_POST_TOOL=/tmp/h jcode run hi",
+                              "JCODE_HOOK_POST_TOOL_FEEDBACK=/tmp/h jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL_TRANSFORM=/tmp/h jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS=1 jcode run hi",
+                              "JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS=1 jcode run hi",
+                              "JCODE_HOOK_POST_TOOL= jcode run hi", "JCODE_HOOK_SESSION_START= jcode run hi",
+                              "JCODE_HOOK_TURN_END= jcode run hi"), "ask", "TK-A070")
+        self.expect(self.bash("jcode run hi", "jcode --version", "jcode --help",
+                              "kiro-cli chat", "kiro-cli --version", "kiro-cli --help",
+                              "interpreter exec hi", "interpreter --version", "interpreter --help",
+                              # not launch forms: the Python build ships no __main__, and open-interpreter is the
+                              # distribution's name rather than a command (docs/limits.md says both)
+                              "python -m interpreter exec hi", "open-interpreter --version"), "allow")
+
     def test_hermes_settings_files_are_the_harness_settings(self):
         self.expect([("Write", {"file_path": "/home/u/.hermes/config.yaml", "content": "x"})], "ask", "TK-F009")
         self.expect(self.bash("echo x >> ~/.hermes/config.yaml", "mv ~/.hermes/plugins/tracekit /tmp/",
@@ -1049,6 +1080,18 @@ class Routes(unittest.TestCase):
                     {"dev": "flag", "coding": "flag", "server": "ask", "strict": "ask"})
 
     # --- read as the program reads it: gh's options anywhere, the whole environment sent, GitHub's REST API, PowerShell
+    def test_a_publish_from_another_tool_is_held_on_the_laptop_default(self):
+        # #990: lerna, changesets and bun's `pm publish` each publish packages to a registry, and were allowed on dev
+        # while npm, pnpm, yarn, uv, cargo, gem, twine and hatch were held; the twins stay allowed
+        self.expect(self.bash("lerna publish", "lerna publish --canary", "lerna -h x publish",
+                              "npx changeset publish", "npx @changesets/cli publish", "pnpm changeset publish",
+                              "bunx changeset publish", "yarn changeset publish", "changeset publish",
+                              "bun pm publish", "bun --bun pm publish", "lerna --loglevel silly publish --yes"),
+                    "ask", "TK-A056", packs=("dev",))
+        self.expect(self.bash("lerna run build", "lerna version", "lerna list", "npx changeset status",
+                              "changeset status", "changeset version", "bun pm ls", "hatch build"),
+                    "allow", packs=("dev",))
+
     def test_gh_options_before_its_command_are_read_as_gh_reads_them(self):
         # cobra takes an option before the command word: these ran as `gh api -X PUT …` and were allowed on dev
         self.expect(self.bash("gh -X PUT api repos/o/r/contents/README.md -f message=m -f content=eA==",

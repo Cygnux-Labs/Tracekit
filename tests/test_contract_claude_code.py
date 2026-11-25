@@ -220,6 +220,37 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         self.assertEqual((types.count("policy.decision"), types.count("tool.result")), (101, 101))
         self.assertFalse([t for t in types if "gap" in t], types)
 
+    def test_a_subagents_calls_are_signed_with_its_agent_id(self):
+        """Claude Code 2.1.316's hook input: a main session's call carries no agent_id; a Task-tool subagent's carries
+        its agent_id and agent_type, on PreToolUse and PostToolUse alike. Both calls are in the session's run."""
+        sub = {"agent_id": "a272a0b95321d4c5d", "agent_type": "general-purpose"}
+        for tcid, fields in (("main-call", {}), ("sub-call", sub)):
+            args = {"command": f"echo {tcid}", "description": "Print"}
+            self.assertEqual(self.d.hook("PreToolUse", tcid, "Bash", args, **fields), (0, ""))
+            self.assertEqual(self.d.hook("PostToolUse", tcid, "Bash", args, tool_response={"stdout": tcid}, **fields),
+                             (0, ""))
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in self.events(self.d.run())
+               if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [("policy.decision", "main-call", "main", None),
+                               ("tool.result", "main-call", "main", None),
+                               ("policy.decision", "sub-call", sub["agent_id"], "main"),
+                               ("tool.result", "sub-call", sub["agent_id"], "main")])
+
+    def test_a_subagent_id_the_event_format_cannot_hold_is_signed_as_the_main_agents(self):
+        """An agent_id the signer would refuse (not a string of 1 to 200 characters) or the client could not send (a
+        lone surrogate) leaves the call decided and signed, as the main agent's, like a call with none."""
+        bad = (7, "a" * 201, "", "\ud800x")
+        for i, aid in enumerate(bad):
+            tcid, args = f"bad-{i}", {"command": f"echo {i}", "description": "Print"}
+            with self.subTest(agent_id=aid):
+                self.assertEqual(self.d.hook("PreToolUse", tcid, "Bash", args, agent_id=aid), (0, ""))
+                self.assertEqual(self.d.hook("PostToolUse", tcid, "Bash", args, tool_response={"stdout": "x"},
+                                             agent_id=aid), (0, ""))
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in self.events(self.d.run())
+               if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [(kind, f"bad-{i}", "main", None) for i in range(len(bad))
+                               for kind in ("policy.decision", "tool.result")])
+
     def test_a_refusal_blocks_even_when_the_run_fails_open(self):
         self.set_fail_modes({"default": "open"})
         for method in ("decide", "approval_consume"):

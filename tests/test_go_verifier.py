@@ -4,6 +4,9 @@ mutated copies of the real signer's bundles (test_ts_verifier.py). Each must get
 and integrity, so neither verifier accepts what the other refuses. The golden corpus goes through
 contrib/independent-go-verifier/scripts/differential_golden.py. Skipped without Go; CI's go-verifier job runs it."""
 import atexit
+import contextlib
+import hashlib
+import io
 import json
 import os
 import shutil
@@ -91,3 +94,25 @@ class SignerBundleMutations(tv.SignerBundles):
                 rep, got = v2.verify(bundle, trust)
                 self.assertEqual(got, code)
                 self.assertEqual(go_verdict(bundle, trust), (code, rep.integrity))
+
+    def test_mispinned_trust_cli_exit_and_diagnostic_match_python(self):
+        """A trust-file-only failure has the same exit, integrity, and plain diagnostic in both CLIs."""
+        stolen = tv.checkpoint.key_origin(tv.crypto.public_from_secret(hashlib.sha256(b"a").digest()))
+        mispinned = tv.checkpoint.vkey(stolen, tv.checkpoint.ED25519,
+                                       tv.crypto.public_from_secret(hashlib.sha256(b"b").digest()))
+        trust = os.path.join(self.d, "mispinned-go-parity.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [mispinned], "algs": ["ed25519"]}, f)
+        bundle = self.bundles["closed"]
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            py_code = tv.cli.main(["verify", bundle, "--trust", trust, "--json"])
+        py = json.loads(out.getvalue())
+
+        go = subprocess.run([tkverify(), "-bundle", bundle, "-trust", trust, "-json"],
+                            capture_output=True, text=True)
+        go_report = json.loads(go.stdout)
+        self.assertEqual((py_code, py["exit_code"], go.returncode, go_report["exit_code"]), (2, 2, 2, 2))
+        self.assertEqual(py["integrity"], go_report["integrity"])
+        self.assertEqual("trust config: " + py["checks"][0]["detail"], go_report["checks"][0]["detail"])

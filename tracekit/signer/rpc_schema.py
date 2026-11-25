@@ -1,16 +1,17 @@
-"""The signer RPC contract, version 28: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 29: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 28 adds the AI approver (docs/approvals.md#the-ai-
+Frozen: a change to any schema here is a new RPC_VERSION. Version 29 adds the AI approver (docs/approvals.md#the-ai-
 approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
 `ai` (an agent approver's answers) and `view_digest` (the approval_review it answers, required for an approval
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
 playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
 accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped) and an approval's `ai` (what
-people see of agent approvers on it: whether one may answer it now and why, and the latest agent answer). Version 27 adds
+people see of agent approvers on it: whether one may answer it now and why, and the latest agent answer). Version 28 adds
 `run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
 the signer records as theirs; a run's own owner, principal or requester can't (a dev signer's own, self_cleared), and
-decide's `recorded` (the rules in shadow that would hold the call). Version 26 adds register_run's `continues` (a
-later run of an
+decide's `recorded` (the rules in shadow that would hold the call). Version 27 adds decide's `agent_id` (the harness's
+id of the sub-agent that made the call, which the signer records as the agent reported it and checks nothing against).
+Version 26 adds register_run's `continues` (a later run of an
 agent session the client registered a run for before: its provenance index starts partial). Version 25 adds content_get's `type` of each record whose
 content it returns, and an input.observed's `source`: what a reader needs to know which kind of record the value is
 (tracekit.lessons.verified takes only a person's answer, never a call's arguments of the same shape). Version 24 adds `call_state` (a read under the run token):
@@ -56,7 +57,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 28
+RPC_VERSION = 29
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -150,6 +151,9 @@ _OS_REQ = ["kind", "ts", "pid", "binary"]
 _decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
                tool_call_id=ID, attempt=SEQ, tool=_str(256, minLength=1),
                tool_class_hint=_str(64),         # a hint only: the signer classifies the tool itself
+               # the sub-agent that made the call, as the harness reported it (Claude Code's subagent id): descriptive,
+               # never an identity; signed as the decision's and its result's agent_id, as the event format holds it
+               agent_id=_str(200, minLength=1),
                args_source={"enum": ["raw", "parsed", "coerced"]},
                args=ANY)                         # the raw model string when args_source is raw, else the value
 _RAW = {"if": {"properties": {"args_source": {"const": "raw"}}}, "then": {"properties": {"args": _str(MAX_RAW_ARGS)}}}
@@ -382,7 +386,7 @@ REQUESTS = {
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
                              reason=REASON,   # the agent's words: shown to the approver as such, never as the args
-                             # the agent's project folder (version 28): in an AI approver's precedent key, narrowing it
+                             # the agent's project folder (version 29): in an AI approver's precedent key, narrowing it
                              project=_str(1024, minLength=1)),
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
                             decision={"enum": ["approve", "reject", "escalate"]},   # escalate: an agent approver's
@@ -391,7 +395,7 @@ REQUESTS = {
                             asserted=_obj([], model=_str(128), version=_str(64), prompt_hash=DIGEST),
                             # its answers (two keys: two that agree for a yes): recorded, its word, on an
                             # approval_agent approval, and the view_digest of the approval_review it answers, which
-                            # the signer requires there (version 28)
+                            # the signer requires there (version 29)
                             ai=APPROVER_ANSWER, view_digest=DIGEST),
     # a chat bridge answers for the person who clicked (`approver`, slack:<team>/<user>), who `groups` (user groups of
     # the same team, slack:<team>/<group>) the bridge found them in; an `authorize` grant, never a default
@@ -414,7 +418,7 @@ REQUESTS = {
                             on_behalf=PERSON),
     # the operator's kill switch for agent approvals (an `authorize` grant, never a default)
     "approval_agents": _obj(["request_id", "enabled"], request_id=ID, enabled={"type": "boolean"}, reason=REASON),
-    # the AI approver, for people (version 28): status reads; accept and retire a playbook entry (`id`: P-…), revoke a
+    # the AI approver, for people (version 29): status reads; accept and retire a playbook entry (`id`: P-…), revoke a
     # precedent (`id`: the approval id of a person's answer), enable `rules` the circuit breaker dropped to shadow
     "approver": {**_obj(["action"], request_id=ID, action={"enum": ["status", "on", "off", "accept", "retire", "drop",
                                                                      "revoke", "enable"]},
@@ -614,7 +618,7 @@ RESPONSES = {
                                 passed={"type": "boolean"})},
                             budget={"type": "object"}, args=ANY,
                             redacted={"type": "array", "maxItems": 4096, "items": _str(4096)},
-                            ai={"type": "object"},   # an approval_agent approval's (version 28)
+                            ai={"type": "object"},   # an approval_agent approval's (version 29)
                             view_digest=DIGEST),
     "approval_revoke": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     "approval_agents": _obj(["enabled", "revoked"], enabled={"type": "boolean"},

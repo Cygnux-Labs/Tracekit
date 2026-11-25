@@ -69,7 +69,10 @@ effect, and a process without one as unexplained.
 - **Doesn't see:** whether a command ran in the sandbox: a request to leave it, Codex's answer, or a command an `allow`
   rule let run outside it. What the sandbox blocked shows only in the command's output. In current Codex, input typed
   into a running command (`write_stdin`) runs no `PreToolUse` hook; it belongs to the command Tracekit already decided.
-- **Doesn't record:** Codex's sandbox and approval settings. They aren't signed into the run, and `tracekit doctor`
-  doesn't read them (it reads only Codex's reasoning summaries setting).
+- **Doesn't record:** Codex's sandbox and approval settings. They aren't signed into the run. `tracekit doctor`
+  (`D-CODEX-SANDBOX`) reads the `config.toml` beside Tracekit's hooks and its selected profile, and warns when
+  `features.exec_permission_approvals` is on or a model (`approvals_reviewer = "auto_review"`) answers escalations; it
+  doesn't read the other layers Codex merges (a project's `.codex/config.toml`, `/etc/codex/config.toml`,
+  `managed_config.toml`, `-c` flags).
 
 [Limits](../limits.md) lists these with what to do.

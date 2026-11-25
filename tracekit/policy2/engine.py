@@ -18,15 +18,45 @@ import tokenize
 import unicodedata
 from urllib.parse import quote, unquote, urlsplit
 
-from . import classes, grammar, shell
+from .. import privacy
+from . import classes, grammar, shell, source as source_reader
 from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals,
                       policy_hash, prefixes, requirements, translate)
 
-MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
+MAX_SUBJECT = source_reader.MAX_SUBJECT   # bytes of UTF-8; a longer subject is never cut or windowed, and the reader resolves no literal longer
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
 # where a quoted value with a space looked like two words (`git -C 'my dir' push --force`); this one is no blank (\s)
 # on either engine, no word character, matched by [^ ], and one byte, so that subject is never longer than the other
 WORD_SPACE = "\x7f"
+
+
+class _Joined(str):
+    """A subject that joins argv words with spaces (after a tag, ACT:); `marked`: the same with each word's own blanks
+    as WORD_SPACE (None when no word has one), which a rule's exemption (`unless`) must match too, so a word it names
+    (`--help`) counts only as a word of its own, not as the end of a quoted value (`gh auth token 'x --help'`)."""
+    marked = None
+
+
+def _joined(words, tag=""):
+    s = tag + " ".join(words)
+    if s.count(" ") - tag.count(" ") == len(words) - 1 and not _OTHER_BLANK.search(s):   # no word has a blank
+        return s
+    s = _Joined(s)
+    s.marked = tag + " ".join(_BLANK.sub(WORD_SPACE, w) for w in words)
+    return s
+
+
+def _form(s, f):
+    """f(s), a form of subject `s` (tagged, casefolded, with `\\` as `/`), with its marked form's when it has one."""
+    if (marked := getattr(s, "marked", None)) is None:
+        return f(s)
+    out = _Joined(f(s))
+    out.marked = f(marked)
+    return out
+
+
+_BLANK = re.compile(r"\s")
+_OTHER_BLANK = re.compile(r"[^\S ]")
 # a word that is only a variable the parser doesn't know there ($x, "${x}", $_), in a third argv subject: TK-D012 reads
 # it as an action it can't read; a loop's or a literal's variable stays as written
 UNKNOWN_WORD = "$\x7f"
@@ -60,6 +90,8 @@ REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one d
 # what deciding an argument as a command (shell.hidden_commands) spends of its call's work budget beyond its parse: a
 # decision's pass of every deny rule takes about as long as parsing 128 characters of commands does (~110 us)
 DECISION_COST = 128
+# the class of each sub-call the source reader names, so a policy that maps only its own tools still decides them
+_SUB_CLASS = {"shell": "shell", "http_get": "http"}
 # the subject length from which a rule's alternatives' strings (compile.requirements) are checked before it is searched:
 # a shorter subject's search costs no more than the check (E21's calls decided 2-4% slower at p99 with every one checked)
 REQUIREMENTS_FROM = 1024
@@ -189,6 +221,7 @@ class Engine:
                                {grammar.program_of(e["command"]) for e in r["unless_cli"] if e.get("required")})
                      for _, r, *_ in self.rules if r.get("unless_cli")}
         self.flag_ids = frozenset(r["id"] for sec, r, *_ in self.rules if sec == "flag")   # signer.service.evaluate's
+        self._sections = {r["id"]: sec for sec, r, *_ in self.rules}
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
         self._names = {} if self.engine.startswith("re2@") else None
@@ -356,8 +389,6 @@ class Engine:
         it holds the call as the line read without them decides it, never looser."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
-        if cls == "shell":
-            args = classes.with_workdir(args)
         fields = classes.extract(cls, tool, args, MAX_SUBJECT)
         hits = {sec: [] for sec in SECTIONS}
         if cls == "unknown" and self.policy.get("unknown_tools") in SECTIONS:
@@ -369,6 +400,44 @@ class Engine:
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
         cause, pieces_read = None, False
         work, deadline = _budget or ([0], [REGEX_TIMEOUT_S])   # (shell.charge; _backend)
+        nondeterministic = False
+        if cls == "browser" and isinstance(tool, str) and tool in source_reader.CELLS:
+            # a 1.x cell or delivery runs code no tool call names: decide each literal helper and command call it
+            # makes on this decision's budget, at the strictest; a source the reader cannot follow waits for
+            # on_parse_error (TK-SOURCE-PARSE)
+            field, mode = source_reader.CELLS[tool]
+            text = args.get(field)
+            reading = source_reader.read(text, mode, work=work) if isinstance(text, str) else None
+            held = "text" if reading is None else reading.held
+            for sub_tool, sub_args in (() if reading is None else reading.calls):
+                work[0] += DECISION_COST
+                if work[0] > shell.MAX_WORK:
+                    held = held or "budget"
+                    break
+                try:
+                    inner = self.decide(sub_tool, sub_args, _SUB_CLASS.get(sub_tool, "browser"), untrusted,
+                                        _budget=(work, deadline))
+                except TimeoutError:
+                    nondeterministic, held = True, held or "budget"
+                    break
+                nondeterministic |= bool(inner.get("nondeterministic"))
+                if inner.get("oversize"):
+                    oversize.extend(inner["oversize"])
+                if cause is None and inner.get("unread"):
+                    cause = inner["unread"]   # a sub shell's cause says why it is held, as on a shell call
+                for rid in inner.get("rule_ids", ()):
+                    sec = self._sections.get(rid)
+                    if sec is None:
+                        sec = on_parse_error if rid in ("TK-SOURCE-PARSE", "TK-SHELL-PARSE", "TK-SQL-PARSE") \
+                            else "deny" if rid == "TK-A2A-NAME" else inner["verdict"]
+                    elif inner.get("nondeterministic") and rid not in self._deny_ids:
+                        sec = "deny"   # its match ran out of the decision's time; decide() denies that call
+                    if sec in SECTIONS and rid not in hits[sec]:
+                        hits[sec].append(rid)
+            if held is not None:
+                if "TK-SOURCE-PARSE" not in hits[on_parse_error]:
+                    hits[on_parse_error].append("TK-SOURCE-PARSE")
+                cause = cause or held
         if cls == "http" and isinstance(args.get("urls"), list) and len(args["urls"]) > MAX_URLS:
             hits["deny"].append("TK-OVERSIZE")
             oversize.append(f"the urls list (more than {MAX_URLS})")
@@ -404,7 +473,6 @@ class Engine:
                     cause = "typed"
         # the fallback's 1 s covers its regex matches alone (_backend): reading the call (the parse, the subjects) isn't
         # charged to it, and is bounded by the input size limits, as on RE2
-        nondeterministic = False
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
@@ -503,7 +571,9 @@ class Engine:
                                 self._match(rx, subject, False, deadline) for rx, strings, starts in parts
                                 if low.startswith(starts) and any(map(low.__contains__, strings)))) and (
                             cli is not None or not (unless is not None and self._match(unless, subject, False,
-                                                                                         deadline))) and (
+                                                                                         deadline) and (
+                                (marked := getattr(subject, "marked", None)) is None or
+                                self._match(unless, marked, False, deadline)))) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
                         if cli is None:
@@ -615,7 +685,7 @@ class Engine:
                         break
                 if nondeterministic or work[0] > shell.MAX_WORK:
                     break
-        if (spent or work[0] > shell.MAX_WORK or len(parsed) > 5 and parsed[5].get("unread")) and \
+        if cls == "shell" and (spent or work[0] > shell.MAX_WORK or len(parsed) > 5 and parsed[5].get("unread")) and \
                 "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
@@ -872,7 +942,7 @@ class Engine:
             urls = [t for t in _url_targets([u for w in found if ":" in w for u in _URL.findall(w)]) if t]
             bare = [t for t in _url_targets(["http://" + w for w in found if _BARE_ADDRESS.match(w)])
                     if t and _BARE_TARGET.fullmatch(t)]
-            targets = [" ".join(w) for w in words] + parsed[2] + stdin
+            targets = [_joined(w) for w in words] + parsed[2] + stdin
             return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
@@ -1154,7 +1224,7 @@ def _slashes(texts):
     """Texts of a shell call, each with a `\\` in it also read as `/`: a Windows path (Git Bash keeps a quoted or
     escaped `\\`, and C:\\x is C:/x, as classes.fs_path reads one). A second reading: it adds matches. The parser's
     texts hold a `\\` only where the shell keeps one; a line it can't read is read as written (_plain), so too."""
-    more = [t.replace("\\", "/") for t in texts if "\\" in t]
+    more = [_form(t, lambda x: x.replace("\\", "/")) for t in texts if "\\" in t]
     have = set(texts) if more else ()
     return texts + [n for n in dict.fromkeys(more) if n not in have]
 
@@ -1168,8 +1238,10 @@ def _path_forms(targets, fold_ascii=True):
                                      for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))
                          if n not in have]
     have = set(targets)
-    return targets + [f for f in dict.fromkeys(map(str.casefold, targets if fold_ascii else [
-        t for t in targets if not t.isascii()])) if f not in have]
+    folded = targets if fold_ascii else [t for t in targets if not t.isascii()]
+    folds = (_form(t, str.casefold) for t in folded) if any(type(t) is _Joined for t in folded) else \
+        map(str.casefold, folded)
+    return targets + [f for f in dict.fromkeys(folds) if f not in have]
 
 
 def commands_each(args):
@@ -1277,7 +1349,7 @@ _PIP = re.compile(r"pip[0-9.]*")
 # and gptme's front ends, which load its plugins as it does)
 _HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
                            "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent", "copilot",
-                           "codebuddy", "gptme"))
+                           "codebuddy", "gptme", "jcode", "kiro-cli", "interpreter", "interpreter-classic"))
 _HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": "qwen", "opencode-ai": "opencode",
                   "hermes-agent": "hermes", "hermes-acp": "hermes", "hermes_cli": "hermes",
                   "openhands-ai": "openhands", "codebuddy-code": "codebuddy", "cbc": "codebuddy",
@@ -1291,15 +1363,27 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # LOCALAPPDATA (where a harness there keeps its settings), and each harness's own
 # home, config, settings or data variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG,
 # OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, COPILOT_HOME, CODEBUDDY_CONFIG_DIR, CLAUDE_CODE_SIMPLE, as
-# --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme); an option that loads other
-# settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's --profile,
-# which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only for a key
-# of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
-# model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
+# --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme; jcode v1.0.0-preview.424
+# (1jehuang/jcode@446302f1b6dc): JCODE_HOME, JCODE_HOOKS_DISABLED in crates/jcode-base/src/hooks.rs, and the whole
+# lifecycle-hook family in crates/jcode-base/src/config/env_overrides.rs — JCODE_HOOK_TURN_START, _TURN_END,
+# _SESSION_START, _SESSION_END, _PRE_TOOL, _PRE_TOOL_TRANSFORM, _PRE_TOOL_TIMEOUT_MS, _PRE_TOOL_TRANSFORM_TIMEOUT_MS,
+# _POST_TOOL, _POST_TOOL_FEEDBACK, _POST_TOOL_FEEDBACK_TIMEOUT_MS — where "Lifecycle hooks. Empty env values disable
+# config-file hooks", so `JCODE_HOOK_POST_TOOL= jcode run x` runs jcode with its post-tool hook removed; Kiro CLI V3 /
+# 3.1.0+: KIRO_HOME and KIRO_DEFAULT_SETTINGS,
+# https://kiro.dev/docs/reference/settings/#environment-variables; Open Interpreter: INTERPRETER_HOME, which its
+# docs/acp.md spells out ("INTERPRETER_HOME=$HOME/.openinterpreter") as the home holding its config.toml, and its Python
+# build (the open-interpreter 0.4.3 wheel on PyPI, entry_points.txt) installs `interpreter`, `interpreter-classic`, `i`
+# and `wtf` for one entry point — `i` alone is left unread, since a person's own one-letter script is the likelier
+# reading); an option that
+# loads other settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's
+# --profile, which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only
+# for a key of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`):
+# -c model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
 _SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|APPDATA|LOCALAPPDATA|XDG_CONFIG_HOME|"
+                                r"JCODE_HOOKS_DISABLED|JCODE_HOOK_\w*|"
                                 r"(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|"
                                 r"AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
-                                r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
+                                r"CODEBUDDY|JCODE|KIRO|INTERPRETER)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
                                 re.I)
 _SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
@@ -2865,9 +2949,9 @@ def _pushes(commands):
         fed = not runner.isdisjoint(_FEEDERS)
         prog, read = _push_program(argv[0]) if argv else ("", True)
         if not read:   # (no reader below takes this program: its argv, also as its base name, as they would give)
-            out.append(" ".join(argv))
+            out.append(_joined(argv))
             if prog != argv[0]:
-                out.append(" ".join([prog, *argv[1:]]))
+                out.append(_joined([prog, *argv[1:]]))
             continue
         told = _filled(argv, runner, replaced)
         # each reader only for the programs it reads itself (_program's name: prog), each checking it again
@@ -2879,9 +2963,9 @@ def _pushes(commands):
                                                prog in _PUBLISHERS and _publish_dry_run(argv)))
             # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
             # publish after any options as its program's publish: _published)
-            out.append(dry + " ".join(argv))
+            out.append(_joined(argv, dry))
             if prog != argv[0]:
-                out.append(dry + " ".join([prog, *argv[1:]]))
+                out.append(_joined([prog, *argv[1:]], dry))
             if prog.partition("@")[0] in _PUBLISHERS and (p := _published(argv)):
                 out.append(dry + p)
             if grammar.aliased(argv[0]) and (p := grammar.canonical(command)):
@@ -3340,8 +3424,9 @@ def _kubectl_takes(word):
     return False
 
 
-# what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
-_COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
+# what a tool no pack maps is given to run (_runs): TK-S010's command arguments (the ones an approver's copy reads as
+# shell lines too) and the SQL ones, in any case
+_COMMAND_KEYS = privacy.COMMAND_KEYS
 _SQL_KEYS = {"sql", "query", "statement", "sql_query", "stmt"}
 _BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
 _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,
@@ -3652,7 +3737,7 @@ def _collect_effects(parsed, work, tags, learned):
     # && sed -i … config.yaml`); one with a pattern only as each protected path it may make (`cd ~/.cursor && cp x
     # plug?ns/y.js`), as a pattern isn't one there when the folder is a Claude Code worktree's (`cd .claude/worktrees/w
     # && rm src/*.orig`)
-    # (and what env -C runs, in its folder)
+    # (and what env -C runs, in its folder, and what uv runs in the one its --directory or --project names)
     options = learned.get("globs", ())
 
     def forms_of(kind, path):
@@ -3687,13 +3772,15 @@ def _collect_effects(parsed, work, tags, learned):
             tags += joined(base, outs + _command_effects([c], work, memo), c["argv"][0] == "find")
             if c["argv"][0] == "find":   # (its start paths, read from the folder, for the trust roots under them)
                 tags += _command_effects([dict(c, argv=_find_in(c["argv"], base))], work, memo)
-        folder, at = _env_chdir(c["argv"]) if c["argv"][0] == "env" else (None, None)
-        if folder and at:
-            for base in bases or [""]:
-                there = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
-                tags += joined(there, _command_effects([{"argv": c["argv"][at:]}], work), c["argv"][at] == "find")
-                if c["argv"][at] == "find":
-                    tags += _command_effects([{"argv": _find_in(c["argv"][at:], there)}], work)
+        moves = [_env_chdir(c["argv"])] if c["argv"][0] == "env" else _uv_chdir(c["argv"]) if c["argv"][0] in (
+            "uv", "uvx") else ()
+        for folder, at in moves:
+            if folder and at:
+                for base in bases or [""]:
+                    there = folder if folder.startswith(("/", "~", "$")) or not base else posixpath.join(base, folder)
+                    tags += joined(there, _command_effects([{"argv": c["argv"][at:]}], work), c["argv"][at] == "find")
+                    if c["argv"][at] == "find":
+                        tags += _command_effects([{"argv": _find_in(c["argv"][at:], there)}], work)
     # an upgrade of every tool takes each from the configured index: held where the line changes which index, configuration or
     # Python it uses (a variable, uv's --config-file, --directory or --project, another folder's uv.toml after a cd)
     every = [i for i, c in enumerate(parsed[0]) if c["argv"] and (   # (whatever runs it: a runner's argv holds the words too)
@@ -3968,6 +4055,23 @@ def _env_chdir(argv):
 def _may_change(path):
     """Whether _normal may read `path` as another (a `.` or `..` component, a repeated or trailing separator, a `\\`)."""
     return "/." in path or path[:1] == "." or "//" in path or path[-1:] == "/" or "\\" in path
+
+
+def _uv_chdir(argv):
+    """(a folder uv's or uvx's --directory or --project names, where in argv a command it runs starts) for each: as
+    env -C's (_env_chdir), the command `uv run`, `uv tool run` or uvx runs, each place the parser reads it may start."""
+    args = argv[1:]
+    folders = [v for a, v in zip(args, args[1:]) if a in ("--directory", "--project")] + [
+        a.partition("=")[2] for a in args if a.startswith(("--directory=", "--project="))]
+    if not folders:
+        return []
+    if argv[0] == "uvx":
+        inners = list(shell._unwrap("uvx", args))
+    else:
+        inners = [x for k in shell.runner_at("uv", args) for x in shell._unwrap("uv", args[k:])] + [
+            x for c in shell._uv_operands(args, 0) if args[c] == "tool" for k in shell._uv_operands(args, c + 1)
+            if args[k] in ("run", "uvx") for x in shell._unwrap("uvx", args[k + 1:])]
+    return [(f, len(argv) - len(x)) for f in folders for x in inners if x]
 
 
 def _normal(path):
@@ -5521,8 +5625,8 @@ def _reading(argv):
     program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
     name, args = argv[0], argv[1:]
     if name == "sed":
-        script = shell._sed_scripts(args)
-        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+        scripts = {shell._sed_options(args, bsd)[0] for bsd in (False, True)}   # (as GNU sed and BSD sed read it)
+        return "read" if "-n" in args and None not in scripts and all(map(shell._sed_prints, scripts)) and all(
             _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
     if name in ("grep", "egrep", "fgrep"):
         return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
@@ -5542,13 +5646,14 @@ _TAKES_INPUT = {"xargs", "gxargs", "parallel"}
 
 
 def _help_marked(command, quoted):
-    """A command's words as one subject. A last word `--help` that more words may follow (xargs gives its input to the
-    command; a line that quotes `--help` somewhere is not read word by word) gets UNKNOWN_WORD after it, so a rule's
-    exemption for the exact line `<program> <verb> --help` (TK-A054, TK-A057) does not cover it."""
+    """A command's words as one subject (_joined: with its words' own blanks marked). A last word `--help` that more
+    words may follow (xargs gives its input to the command; a line that quotes `--help` somewhere is not read word by
+    word) gets UNKNOWN_WORD after it, so a rule's exemption for a line ending in `--help` (TK-A054, TK-A057) does not
+    cover it."""
     argv = command["argv"]
     if argv[-1:] == ["--help"] and (quoted or any(v.split()[0] in _TAKES_INPUT for v in command["via"] if v)):
         argv = argv + [UNKNOWN_WORD]
-    return " ".join(argv)
+    return _joined(argv)
 
 
 _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
@@ -5914,19 +6019,28 @@ def _cdpath(parsed):
 
 def _bases(commands, where, work):
     """For each command, the folders its relative paths may be read from: the ones the line may be in at it (_walk's
-    `where`), and the one `env -C`, `tar -C`, `git -C` or `make -C` runs it in (a relative one also from each of those).
-    Each charged to `work` (shell.charge)."""
-    out = []
+    `where`), and the one `env -C`, `tar -C`, `git -C`, `make -C` or uv's or uvx's `--directory` or `--project` runs it in
+    (a relative one also from each of those), where it is run by an `env` or `uv` (its `via`: a shell's script, a nested
+    one's commands) the folder of the one before it. Each charged to `work` (shell.charge)."""
+    out, runs = [], {}
     for c, here in zip(commands, where):
-        argv, extra = c["argv"], []
+        argv = c["argv"]
         if argv[0] in ("env", "tar", "git", "make"):
             to = next((argv[i + 1] if a in ("-C", "--chdir", "--directory") else a.partition("=")[2] or a[2:]
                        for i, a in enumerate(argv[:-1]) if a in ("-C", "--chdir", "--directory") or
                        a.startswith(("--chdir=", "--directory=")) or a.startswith("-C") and argv[0] != "env"), None)
-            if to and to != "-":
-                extra = [to] + ([] if to.startswith(("/", "~", "$")) else [posixpath.normpath(posixpath.join(b, to))
-                                                                         for b in here])
-                shell.charge(work, sum(map(len, extra)))
+        elif argv[0] in ("uv", "uvx"):   # (what uv runs, in the folder its --directory or --project names: _uv_chdir)
+            to = next((folder for folder, _ in _uv_chdir(argv)), None)
+        else:
+            to = None
+        if argv[0] == "env" or argv[0] in ("uv", "uvx") and to:   # (a uv's own copy without the option follows it)
+            runs[argv[0]] = to
+        extra = []
+        for folder in [to, *(runs.get(v.partition(" ")[0]) for v in c.get("via", ()))]:
+            if folder and folder != "-":
+                extra += [folder] + ([] if folder.startswith(("/", "~", "$")) else [
+                    posixpath.normpath(posixpath.join(b, folder)) for b in here])
+        shell.charge(work, sum(map(len, extra)))
         out.append(tuple(dict.fromkeys([*here, *extra])))
     return out
 
@@ -6066,9 +6180,9 @@ def _tracekit(parsed, finds, work):
             if roams:
                 deep += at(named, bases)
             else:
-                act += [" ".join(words)] + at(named, bases)
+                act += [_joined(words)] + at(named, bases)
         elif kind is None:
-            act += [" ".join(words)] + at(named, bases)[len(named):]
+            act += [_joined(words)] + at(named, bases)[len(named):]
         else:
             {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(at(named, bases))
         act += [] if c.get("data_stdin") else c["stdin"]
@@ -6093,7 +6207,7 @@ def _tracekit(parsed, finds, work):
         once = {}
         for t in dict.fromkeys(texts):
             once.setdefault(t.lower() if t.isascii() else t, t)
-        return [name + s for s in _path_forms(list(once.values()), False)]
+        return [_form(s, lambda t: name + t) for s in _path_forms(list(once.values()), False)]
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
     act = [unicodedata.normalize("NFKC", s) for s in act]   # (Python reads a name so: `ｓigner` is `signer`)
     joined = "\n".join(act)
@@ -6702,7 +6816,7 @@ def _prepare(subjects, tag=0):
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT + tag:
             continue
-        texts.append(s if b is s else b.decode("utf-8"))
+        texts.append(s if b is s else _form(s, _text))
     lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 

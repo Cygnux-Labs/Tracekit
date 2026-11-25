@@ -67,7 +67,7 @@ field that a table does not list is refused, as Versioning says; the notes do no
 
 ## Versioning
 
-The contract has one version number, and this page describes version 28. A released version never changes: any change to
+The contract has one version number, and this page describes version 29. A released version never changes: any change to
 a request or an answer is a new version.
 
 A signer serves a range of versions, from 15 up to its own highest. A client sends `hello` first, which is not one of
@@ -98,8 +98,9 @@ A call or field that this page does not list below was already in version 15. Th
 | 24 | `call_state`, `call_claim` |
 | 25 | `content_get`'s `type` and `source` |
 | 26 (Tracekit 1.7) | `register_run`'s `continues`: a later run of an agent session, whose provenance index starts `partial` |
-| 27 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
-| 28 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list` |
+| 27 | `decide`'s `agent_id`: the sub-agent that made the call, as the harness reported it |
+| 28 (Tracekit 1.8) | `run_label_clear`, an operator call (on a dev signer, the run's own user's too): a person ends one of a run's labels ([run conditions](policy-v2.md#run-conditions)); `decide`'s `recorded`: the rules in shadow that would hold the call |
+| 29 (Tracekit 1.8) | the [AI approver](approvals.md#the-ai-approver): `approval_request`'s `project`; `approval_decide`'s `ai` and `view_digest`; `approval_review`'s `ai`; `approver`, for people; an approval's `ai` on `approval_get` and `approval_list` |
 
 ## Errors
 
@@ -323,6 +324,10 @@ answers `allow`, `deny` or `ask`, with the ids of the rules that matched and a `
 `ask` means a person must approve the call first: see the Approvals group. A deny or ask is remembered per call id and
 attempt, so a retry of the same attempt with the same arguments gets the same answer.
 
+`agent_id` names the sub-agent that made the call, as the harness reported it (Claude Code's subagent id). The signer
+signs it as the decision's `agent_id` and its result's, with `parent_id` `main`; a call without one is the main
+agent's. It is descriptive: the signer checks nothing against it, and the caller is still the run token's identity.
+
 **Who may call:** any caller with the default grants (a local user, or the dev token), or one whose `authorize` entry
 lists `decide`. A box's agent channel may call it too.
 
@@ -344,6 +349,7 @@ lists `decide`. A box's agent channel may call it too.
 | `attempt` | whole number | no |  |
 | `tool` | text | yes | 1 to 256 characters |
 | `tool_class_hint` | text | no | up to 64 characters |
+| `agent_id` | text | no | 1 to 200 characters |
 | `args_source` | one of `raw`, `parsed`, `coerced` | yes |  |
 | `args` | any value | yes | when `args_source` is `"raw"`: text; up to 1048576 characters |
 
@@ -1437,7 +1443,7 @@ lists `status`. A box's agent channel may call it too.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `rpc_version` | always `28` | yes |  |
+| `rpc_version` | always `29` | yes |  |
 | `signer` | object | yes |  |
 | `signer.name` | text | yes | up to 128 characters |
 | `signer.version` | text | yes | up to 64 characters |
