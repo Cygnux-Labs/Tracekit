@@ -718,6 +718,10 @@ class Lines(unittest.TestCase):
                 'helm upgrade app ./chart --set db.password=hunter2pass --set image.tag=v2',
                 'helm upgrade app ./chart --set "secrets.apiToken=abc,def"',
                 "TF_VAR_db_password=hunter2pass terraform apply",
+                # a blank in a credential option's value in its quotes (sec11 round 7)
+                "mysql -p'S3cr3t pass' app", "mysql --password='S3cr3t pass' app", "redis-cli -a 'S3cr3t pass' ping",
+                "redis-cli -h cache -a 'S3cr3t pass' --no-auth-warning ping",
+                "gh secret set API_TOKEN --body 'abcd 1234'",
                 "aws s3 cp ./build s3://team-site/ --recursive && curl -X POST "
                 "'https://api.example.com/hooks?token=abcd1234&env=prod'",
                 "DATABASE_URL='postgres://app:hunter2@db/app?sslmode=require' npm run migrate && kubectl rollout restart "   # redaction fixture: agent-flow:allow-secret
