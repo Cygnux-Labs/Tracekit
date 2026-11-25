@@ -6059,7 +6059,7 @@ class CodingPack(unittest.TestCase):
                        ("gcloud auth application-default print-access-token", "TK-A021"),
                        ("gcloud --project p auth print-access-token", "TK-A021"),
                        ("gcloud auth print-access-token --project p", "TK-A021")])
-        for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
+        for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
                         "keepassxc-cli search Github", "keepassxc-cli db-info passwords.kdbx", "keepassxc-cli --help",
@@ -6087,6 +6087,28 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
                     self.assertFalse({"TK-D020", "TK-A021"} & set(d["rule_ids"]), d)
+
+    def test_pass_and_gopass_git_are_git_to_every_rule(self):
+        """`pass git` and `gopass git` run git in the password store with every word after it (gopass's own --store and
+        a `--` first): each pack holds or denies them as it does that git line, and holds them as a store read too
+        (TK-A021: git's diff and log decrypt through pass's textconv). An alias that runs a command was allowed."""
+        order = ("allow", "flag", "ask", "deny")
+        for pack, engine, e in self.every_pack():
+            denies = {r["id"] for r in e.policy.get("deny", [])}
+            stops = denies | {r["id"] for r in e.policy.get("ask", [])}
+            for line in ("-c alias.x='!tracekit down' x", "push --force origin main", "status", "log -p"):
+                plain = e.decide("Bash", {"command": f"git {line}"})
+                for command in (f"pass git {line}", f"gopass git {line}", f"gopass git --store work {line}",
+                                f"gopass git --store=work -- {line}", f"PASSWORD_STORE_DIR=s pass git {line}"):
+                    with self.subTest(pack=pack, engine=engine, command=command):
+                        d = e.decide("Bash", {"command": command})
+                        # (a deny stands for the ask rules that read the line as typed: strict's TK-F004)
+                        self.assertLessEqual(set(plain["rule_ids"]) & (denies if d["verdict"] == "deny" else stops),
+                                             set(d["rule_ids"]), d)
+                        self.assertGreaterEqual(order.index(d["verdict"]), order.index(plain["verdict"]), d)
+                        self.assertEqual("TK-A021" in d["rule_ids"], "TK-A021" in stops, d)
+                        if pack == "dev.yaml" and line.startswith("-c"):
+                            self.assertEqual((d["verdict"], "TK-S006" in d["rule_ids"]), ("deny", True), d)
 
     def every_pack_verdicts(self, cases):
         for pack, engine, e in self.every_pack():

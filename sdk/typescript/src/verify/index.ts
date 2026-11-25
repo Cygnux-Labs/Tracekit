@@ -25,7 +25,7 @@ import {
   parseVkey, registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
 import { Detector } from "./detect.js";
-import { Sources, runLabels } from "./labels.js";
+import { Sources, byCodePoint, runLabels } from "./labels.js";
 import { Budget, Spent } from "./rx.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
@@ -161,14 +161,6 @@ const cut = (s: string, n: number) => [...s].slice(0, n).join("");
  * which a bundle of 60k records overflows. */
 const extend = <T>(to: T[], xs: Iterable<T>) => {
   for (const x of xs) to.push(x);
-};
-/** Python's order of strings, by code point (JavaScript's `<` and sort() compare UTF-16 code units, which put a
- * character above U+FFFF before one in U+E000..U+FFFF). */
-const byCodePoint = (a: string, b: string) => {
-  const unit = (u: number) => u >= 0xd800 && u < 0xe000 ? u + 0x2000 : u >= 0xe000 ? u - 0x800 : u;
-  for (let i = 0; i < Math.min(a.length, b.length); i++)
-    if (a.charCodeAt(i) !== b.charCodeAt(i)) return unit(a.charCodeAt(i)) - unit(b.charCodeAt(i));
-  return a.length - b.length;
 };
 const byKey = ([a]: [string, unknown], [b]: [string, unknown]) => byCodePoint(a, b);
 const count = (xs: string[]) => {

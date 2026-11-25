@@ -5460,6 +5460,13 @@ class _Parser:
             elif name in ("hub", "ntl"):   # git's wrapper, and the Netlify CLI's own short name: their words are git's, netlify's
                 argv, via, unreadable = ["git" if name == "hub" else "netlify", *args], via + [name], unreadable
                 continue
+            elif name in ("pass", "gopass") and args[:1] == ["git"]:   # git in the password store, with every word after
+                k = 1
+                if name == "gopass":   # but gopass's own --store and a `--` first
+                    k += 2 if args[1:2] == ["--store"] else len(args) > 1 and args[1].startswith("--store=")
+                    k += args[k:k + 1] == ["--"]
+                argv, via, unreadable = ["git", *args[k:]], via + [f"{name} git"], unreadable[k:]
+                continue
             elif (at := _kubectl_at(name, args)) is not None:   # a Kubernetes distribution's kubectl: its words are kubectl's
                 argv, via, unreadable = ["kubectl", *args[at:]], via + [name], unreadable[at:]
                 self.charge(len(argv))

@@ -819,9 +819,11 @@ line and verdict is in [verdicts](verdicts.md).
    `identity` is not the run's owner (`run.registered` `identity` as `scheme:subject`) nor another requester (`run.registered`'s `caller`, a `run.writer`'s `identity`, a decision's `caller`) unless it is `self_cleared`; a decision's `run_labels` were
    carried or are set by its own rules, and name every label of each run condition rule its `rule_ids` hold; its
    `rule_ids` hold each run condition rule on the `labels` field (no `tool`, of the call's class or none) whose `when`
-   the run's labels meet and whose pattern matches the labels of its `rule_ids` (sorted, space-joined), but for a
-   decision of a `tool_call_id` decided before or of a harness tool (`run
-   labels`); an inherited add (`inherited`) is of a label the policy reads, and signer-asserted.
+   the run's labels meet and whose pattern, and not its `unless`, matches the labels of its `rule_ids` but those of
+   run condition rules and of other rules on the `labels` field (each non-empty label once, sorted by code point,
+   space-joined; a decision none of whose rules has one is not read), but for a decision of a `tool_call_id` decided
+   before or of a harness tool (`run labels`); an inherited add (`inherited`) is of a label the policy reads, and
+   signer-asserted.
    Without one of its policies the run's labels are signer-asserted; each `policy_hash` a decision names that neither the bundle
    nor the trust config carries is a `label policies` warning, labels or none: a signer that left every label and the
    snapshot out would otherwise pass unseen.

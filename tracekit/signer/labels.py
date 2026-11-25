@@ -23,7 +23,7 @@ requesters are in its records (run.registered's caller, run.writer), so a restar
 The AI approver's run bound reads one more thing, for itself alone: a call the policy denied or held that a rule
 labelled secrets_access matched (the session tried to read a secret) gives its requesters that label for the bound and
 for whether a person's answer is a precedent, as a run label is carried (tried_state, tried_for), with no record of
-its own: it is a function of the decision's record. Run conditions read only what ran.
+its own: it is a function of the decision's record, read under the policy it names. Run conditions read only what ran.
 """
 import math
 import os
@@ -33,7 +33,7 @@ import types
 
 from tracekit.policy2 import linear
 from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
-from tracekit.policy2.compile import SECTIONS, PolicyError
+from tracekit.policy2.compile import SECTIONS, PolicyError, subject_labels
 from tracekit.signer.detect import epoch
 
 UNTRUSTED = "untrusted_content"   # of compile.RUN_LABELS
@@ -46,9 +46,10 @@ LABEL_INHERIT_S = 3600   # label_inherit_s's default: respond's cooldown_s defau
 
 
 class Sources:
-    def __init__(self, rules):
-        """`rules`: an Engine, or a detect.Rules (a verifier's, which compiles no pattern)."""
-        pol, self.rules = rules.policy, rules
+    def __init__(self, rules, kept=None):
+        """`rules`: an Engine, or a detect.Rules (a verifier's, which compiles no pattern). `kept(policy_hash)`: the
+        policy (an Engine) the signer kept of that hash, or None (tried reads a decision under the policy it names)."""
+        pol, self.rules, self.kept, self._at = rules.policy, rules, kept, {}
         # each run condition rule's labels, by id; the labels some rule's condition or the AI approver's run bound
         # names; the rules that set one
         rules = [r for sec in SECTIONS for r in pol.get(sec, [])]
@@ -56,27 +57,40 @@ class Sources:
         bound = ((pol.get("approval_agent") or {}).get("run") or {}).get("clean") or ()
         self.bound, self.tracked = frozenset(bound), frozenset().union(*self.when.values(), bound)
         self.label = {r["id"]: r["label"] for r in rules if r.get("label") in self.tracked}
-        # for the verifiers: every rule's label, and each run condition rule on the labels field (one with no tool:
-        # its class, its pattern), whose match the call's rule ids and the run's labels decide (engine.labels_subject)
+        # every rule's label (noted); for the verifiers: the labels a rule on the labels field reads
+        # (compile.subject_labels), and each run condition rule on the labels field (one with no tool: its class, its
+        # pattern and unless), whose match the call's rule ids and the run's labels decide (compile.labels_subject,
+        # Engine.condition)
         self.all_labels = {r["id"]: r["label"] for r in rules if r.get("label")}
+        self.subject_labels = subject_labels(pol)
         # compiled as the signer compiles them (_compiled); `refused`: rule id -> why its pattern can't be (a bundle's
         # policy the signer would have refused)
         self.on_labels, self.refused = [], {}
         for r in rules:
             if r.get("field") == "labels" and "when" in r and "tool" not in r:
                 try:
-                    self.on_labels.append((r["id"], _compiled(r.get("pattern"), r.get("class") == "a2a"),
-                                           r.get("class")))
+                    self.on_labels.append((r["id"], _compiled(r.get("pattern")),
+                                           _compiled(r["unless"]) if "unless" in r else None, r.get("class")))
                 except PolicyError as e:
                     self.refused[r["id"]] = str(e)
         self.window = pol.get("label_inherit_s", LABEL_INHERIT_S)
 
     @classmethod
-    def of(cls, rules):
+    def of(cls, rules, kept=None):
         """Sources when the policy reads a label (a run condition, the AI approver's run bound), else None (its runs
         carry no label)."""
-        src = cls(rules)
+        src = cls(rules, kept)
         return src if src.tracked else None
+
+    def under(self, policy_hash):
+        """The Sources of the policy `policy_hash` (a decision's): this one, else the one the signer kept, else this
+        one."""
+        if policy_hash == self.rules.policy_hash or not self.kept or not isinstance(policy_hash, str):
+            return self
+        if policy_hash not in self._at:
+            rules = self.kept(policy_hash)
+            self._at[policy_hash] = self if rules is None else Sources(rules)
+        return self._at[policy_hash]
 
     def of_call(self, tool, rule_ids):
         """The labels a call of `tool` that matched `rule_ids` sets when it runs."""
@@ -108,23 +122,26 @@ class Sources:
     def tried(self, e):
         """The labels record `e` sets for the AI approver's run bound alone: secrets_access, where the bound names it,
         when `e` is a decision that denies or holds a call (not a harness call) a rule labelled secrets_access
-        matched. The session tried to read a secret, and whether it gets to is a person's to say: the AI answers
+        matched, each read under the policy the decision names (under): a restart under another policy replays it as
+        it was written. The session tried to read a secret, and whether it gets to is a person's to say: the AI answers
         none of its holds meanwhile. Nothing that didn't run sets a run label (sets)."""
         d = e["data"]
-        if e["type"] != "policy.decision" or d.get("decision") not in ("deny", "ask") or SECRETS not in self.bound or (
-                isinstance(d.get("tool"), str) and self.rules.tool_class(d["tool"]) == "harness"):
+        if e["type"] != "policy.decision" or d.get("decision") not in ("deny", "ask"):
             return set()
-        return {SECRETS} if any(self.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
+        src = self.under(d.get("policy_hash"))
+        if SECRETS not in src.bound or isinstance(d.get("tool"), str) and src.rules.tool_class(d["tool"]) == "harness":
+            return set()
+        return {SECRETS} if any(src.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
 
 
-def _compiled(pattern, anycase=False):
+def _compiled(pattern):
     """A search of `pattern` as the signer reads it, (text, linear.Budget) -> whether it matches: linear.Pattern, RE2's
     semantics in linear time within the verification's budget, the same in the TypeScript verifier and with or without
     google-re2, so both verifiers give one verdict on any machine. PolicyError for a pattern compile.check_pattern
     refuses or one too large (a bundle's own policy may hold anything: it fails the check, never hangs it)."""
     if not isinstance(pattern, str):
         raise PolicyError("the pattern is not a string")
-    return linear.Pattern(pattern, anycase).search
+    return linear.Pattern(pattern).search
 
 
 def state(set_, run, e):

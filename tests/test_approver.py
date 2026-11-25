@@ -654,6 +654,33 @@ class TestRunBound(Case):
                     self.s.log.snapshot()   # and a snapshot drops it then
                 self.assertEqual(self.s.log.agent["tried"], {})
 
+    def test_a_restart_under_an_edited_policy_keeps_what_a_call_tried(self):
+        """A held read of a secret is replayed under the policy its decision names, not the one the signer restarts
+        under (here its rule no longer labels the read): from a snapshot taken before it, and from the records."""
+        from tracekit.storage.file import FileStorage
+        pol = laptop()
+        edited = Engine(dict(pol, ask=[{k: v for k, v in r.items() if k != "label"} if r["id"] == "TK-A021" else r
+                                       for r in pol["ask"]]))
+        for snapshot in (True, False):
+            with self.subTest(snapshot=snapshot):
+                self.s.close()
+                self.dir = ts.tmpdir(self)
+                self.s = self.open()
+                reader = self.register()
+                if snapshot:
+                    self.s.log.snapshot()
+                self.assertIsNotNone(self.ask("security find-generic-password -s x -w", run=reader)[0])
+                tried = json.loads(json.dumps(self.s.log.agent["tried"]))
+                self.assertTrue(tried)
+                with mock.patch.object(FileStorage, "snapshot_put"):   # a crash: no snapshot at close
+                    self.s.close()
+                if not snapshot:
+                    shutil.rmtree(os.path.join(self.dir, "store", "snapshots"), ignore_errors=True)
+                self.s = self.open(edited)
+                self.assertEqual(self.s.log.agent["tried"], tried)
+                _, a = self.ask(HELD, run=self.register())
+                self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (False, ["secrets_access"]))
+
     def test_a_value_only_untrusted_content_brought_sends_it_to_people(self):
         self.precedent()
         cmd = INDEX.format("from-the-page")

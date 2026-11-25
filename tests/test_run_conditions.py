@@ -143,6 +143,42 @@ class TestLint(unittest.TestCase):
             {"id": "T-Y", "class": "fs", "field": "labels", "pattern": "^x$",
              "when": {"run_has": ["untrusted_content"]}}]})[1], [])
 
+    def test_a_pattern_the_verifiers_or_an_engine_refuse_is_refused(self):
+        """What the verifiers' linear search refuses on the labels field (a program over linear.MAX_PROGRAM), what the
+        fallback engine can't compile, as written or in any case, and \\B, which RE2 finds inside a character."""
+        big = "\\w{1000}" * 25   # in the RE2 subset, 25001 instructions
+        for key in ("pattern", "unless"):
+            with self.subTest(key=key):
+                self.assertTrue(any("compiles to more than 20000 instructions" in e
+                                    for e in self.errors({"field": "labels", key: big})), self.errors({key: big}))
+                self.assertEqual(self.errors({"field": "command", "class": "shell", key: big}), [])
+        for rule in ({"class": "a2a", "field": "receiver", "pattern": "[^\\w\\W\\D]"}, {"pattern": "x[^\\d\\D]"},
+                     {"field": "labels", "pattern": "\\Bx"}, {"pattern": "a\\B"}):
+            with self.subTest(rule=rule):
+                self.assertTrue(self.errors(rule))
+        # a pattern the engine matches in any case is ASCII: RE2 and the fallback fold é and É, ſ and S apart
+        tools = {**POL["tools"], "send": "a2a"}
+        for key in ("pattern", "unless"):
+            errors = self.errors({"class": "a2a", "field": "receiver", key: "café"}, tools=tools)
+            with self.subTest(key=key):
+                self.assertTrue(any(e.endswith(f"{key}: it is matched in any case, where RE2 and the fallback engine "
+                                               "fold letters outside ASCII apart: spell it in ASCII") for e in errors),
+                                errors)
+        self.assertEqual(self.errors({"class": "a2a", "field": "receiver", "pattern": "cafe"}, tools=tools), [])
+        self.assertEqual(self.errors({"field": "labels", "pattern": "café"}), [])   # labels are read as written
+        import regex
+        real = regex.compile
+
+        def fallback(p, flags=0):
+            if "never-compiles" in p and flags & regex.IGNORECASE:
+                raise AttributeError("'AnyAll' object has no attribute 'rebuild'")
+            return real(p, flags)
+        with mock.patch.object(regex, "compile", fallback):   # (a pattern no other test lints: the check is cached)
+            errors = self.errors({"pattern": "never-compiles"})
+        self.assertEqual(len(errors), 1, errors)
+        self.assertTrue(errors[0].endswith("ask rule T-X: pattern: the fallback engine can't compile it in any case "
+                                           "(AttributeError)"), errors)
+
     def test_the_rpc_names_the_same_labels(self):
         self.assertEqual(REQUESTS["run_label_clear"]["properties"]["label"]["enum"], list(pc.RUN_LABELS))
         self.assertIn("run_label_clear", svc.OPERATOR & svc.NEVER_DEFAULT)
@@ -944,7 +980,7 @@ class TestVerifier(Case):
     def test_a_decision_whose_labels_the_run_did_not_carry_fails(self):
         s = self.signer()
         run = s.register()
-        with mock.patch.object(Engine, "condition", lambda self, d, labels=(): {
+        with mock.patch.object(Engine, "condition", lambda self, d, labels=(), cls=None: {
                 **{k: v for k, v in d.items() if k != "when"}, "verdict": "ask",
                 "rule_ids": d["rule_ids"] + list(d.get("when", ())), "run_labels": ["secrets_access"]}
                 if d.get("when") else d):
@@ -959,8 +995,8 @@ class TestVerifier(Case):
         run = s.register()
         s.decide(run, SECRET)
         real = Engine.condition
-        with mock.patch.object(Engine, "condition", lambda self, d, labels=(): {
-                k: v for k, v in real(self, d, labels).items() if k != "run_labels"}):
+        with mock.patch.object(Engine, "condition", lambda self, d, labels=(), cls=None: {
+                k: v for k, v in real(self, d, labels, cls).items() if k != "run_labels"}):
             s.decide(run, EGRESS)
         code, line = self.check(*bundle(s, run))
         self.assertEqual((code, line["status"]), (1, "fail"), line)
@@ -969,7 +1005,7 @@ class TestVerifier(Case):
     @pytest.mark.unverified_bundles
     def test_a_decision_without_a_condition_its_run_s_labels_meet_fails(self):
         # replayed from the call's rule ids and the labels the run carried: after a secret read, and after a gap
-        for name, patch in (("read", mock.patch.object(Engine, "condition", lambda self, d, labels=(): d)),
+        for name, patch in (("read", mock.patch.object(Engine, "condition", lambda self, d, labels=(), cls=None: d)),
                             ("gap", mock.patch.object(svc, "skipped", lambda run, req: False))):
             with self.subTest(name):
                 s = self.signer()
@@ -1078,6 +1114,121 @@ class TestVerifier(Case):
                     self.assertNotIn("run labels", [c["check"] for c in rep.checks])
 
 
+# run conditions on the labels field whose subject is more than the call's rule ids (TestTheLabelsSubject)
+SUBJECT = {"unknown_tools": "flag", "tools": {"read_file": "fs", "shell": "shell"},
+           "flag": [{"id": "T-SECRET", "field": "target", "pattern": "\\.env", "label": "secrets_access"},
+                    {"id": "T-EGRESS", "field": "target", "pattern": "://", "label": "egress"}]}
+SEND = {"id": "T-SEND", "field": "labels", "pattern": "(?:^| )egress(?: |$)", "when": {"run_has": ["secrets_access"]}}
+UNLESS = {**SUBJECT, "ask": [{**SEND, "unless": "(?:^| )mirror(?: |$)"}],
+          "flag": SUBJECT["flag"] + [{"id": "T-MIRROR", "field": "target", "pattern": "mirror\\.internal",
+                                      "label": "mirror"}]}
+WHEN_LABEL = {**SUBJECT, "ask": [SEND, {"id": "T-UPLOAD", "class": "shell", "pattern": "^upload ", "label": "egress",
+                                        "when": {"run_has": ["secrets_access"]}}]}
+READINGS = {"unknown_tools": "flag", "tools": {"read_file": "fs", "shell": "shell", "Bash": "shell"},
+            "ask": [{"id": "T-BOTH", "field": "labels", "pattern": "egress secrets_access",
+                     "when": {"run_has": ["secrets_access"]}}],
+            "flag": [{"id": "T-PS", "class": "unknown", "pattern": "Get-Content", "label": "egress"},
+                     {"id": "T-SECRET", "class": "shell", "field": "target", "pattern": "\\.env",
+                      "label": "secrets_access"}]}
+MIRROR, SEND_OUT = ("shell", {"command": "curl https://mirror.internal/x"}), ("shell", {"command": "curl https://x.org/"})
+PS = ("PowerShell", {"command": "Get-Content .env"})
+
+
+class TestTheLabelsSubject(Case):
+    """A run condition on the labels field reads the same subject in the signer and both verifiers: the labels of the
+    decision's rules, every reading's (a PowerShell line also read as a shell one), but a run condition rule's and
+    another labels field rule's, under its unless (compile.labels_subject, Engine.condition)."""
+
+    def decided(self, pol, *calls, backend=None):
+        s = self.signer(pol)
+        if backend:
+            s.s.close()
+            s.eng = engine(pol, backend)
+            s.open()
+        run = s.register()
+        return s, run, [s.decide(run, c) for c in calls]
+
+    def test_an_unless_on_a_labels_rule(self):
+        s, run, (_, mirror, out) = self.decided(UNLESS, SECRET, MIRROR, SEND_OUT)
+        self.assertEqual([(d["decision"], d["rule_ids"]) for d in (mirror, out)],
+                         [("allow", ["T-EGRESS", "T-MIRROR"]), ("ask", ["T-EGRESS", "T-SEND"])])
+        self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    def test_a_run_condition_rule_s_own_label_is_not_read(self):
+        s, run, (_, up) = self.decided(WHEN_LABEL, SECRET, ("shell", {"command": "upload x"}))
+        self.assertEqual((up["decision"], up["rule_ids"]), ("ask", ["T-UPLOAD"]))
+        self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    def test_another_labels_rule_s_label_is_not_read(self):
+        pol = {**SUBJECT, "ask": [{**SEND, "pattern": "zzz"}, {"id": "T-TAG", "field": "labels", "pattern": "egress",
+                                                              "label": "zzz", "mode": "shadow"}]}
+        s, run, (_, out) = self.decided(pol, SECRET, SEND_OUT)
+        self.assertEqual((out["decision"], out["rule_ids"]), ("allow", ["T-EGRESS", "T-TAG"]))
+        self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    def test_a_call_none_of_whose_rules_has_a_label_is_not_read(self):
+        s, run, (read, ls) = self.decided({**SUBJECT, "ask": [{**SEND, "class": "shell", "pattern": "^"}]}, SECRET,
+                                          ("shell", {"command": "ls"}))
+        self.assertEqual([(d["decision"], d["rule_ids"]) for d in (read, ls)],
+                         [("allow", ["T-SECRET"]), ("allow", [])])
+        self.assertEqual(s.labels(run), [("secrets_access", "add", 1)])
+        self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    def test_every_reading_s_labels_are_read_together(self):
+        for backend in ("re2", "regex"):
+            with self.subTest(backend):
+                s, run, [d] = self.decided(READINGS, PS, backend=backend)   # T-PS as PowerShell, T-SECRET as a shell
+                self.assertEqual((d["decision"], d["rule_ids"]),
+                                 ("ask", ["TK-UNKNOWN-TOOL", "T-PS", "T-SECRET", "T-BOTH"]))
+                self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    def test_the_engine_reads_it_on_the_decision_it_is_given(self):
+        e = engine(UNLESS)
+        d = {"verdict": "flag", "rule_ids": ["T-EGRESS"]}
+        self.assertEqual(e.condition(d, (), "shell")["when"], {"T-SEND": "ask"})
+        self.assertEqual(e.condition(d, {"secrets_access"}, "shell")["rule_ids"], ["T-EGRESS", "T-SEND"])
+        for rule_ids, cls in ((["T-EGRESS"], None), (["T-EGRESS"], "harness"), (["T-EGRESS", "T-MIRROR"], "shell"),
+                              ([], "shell"), (["TK-ENGINE-ERROR"], "shell")):
+            with self.subTest(rule_ids=rule_ids, cls=cls):
+                self.assertEqual(e.condition({**d, "rule_ids": rule_ids}, {"secrets_access"}, cls),
+                                 {**d, "rule_ids": rule_ids})
+        slow = engine(UNLESS, "regex")   # a match that runs out of the fallback's time denies
+        with mock.patch.object(slow, "_match", side_effect=TimeoutError("spent")):
+            self.assertEqual(slow.condition(d, (), "shell"), {"verdict": "deny", "rule_ids": ["T-EGRESS", "T-SEND"],
+                                                              "nondeterministic": True})
+
+    def test_the_labels_are_sorted_by_code_point(self):
+        # U+FF41 before U+1F600, which UTF-16 code units put first (D83D)
+        pol = {**SUBJECT, "flag": SUBJECT["flag"] + [{"id": "T-FW", "class": "shell", "pattern": "fw", "label": "ａ"},
+                                                     {"id": "T-EM", "class": "shell", "pattern": "em", "label": "😀"}],
+               "ask": [{**SEND, "pattern": "^😀"}]}
+        s, run, (_, d) = self.decided(pol, SECRET, ("shell", {"command": "fw em"}))
+        self.assertEqual(pc.labels_subject(d["rule_ids"], pc.subject_labels(s.eng.policy)), "ａ 😀")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("allow", ["T-FW", "T-EM"]))
+        self.assertEqual(self.check(*bundle(s, run))[1]["status"], "pass")
+
+    @pytest.mark.unverified_bundles
+    def test_a_decision_without_the_condition_its_subject_meets_fails(self):
+        real = Engine.condition
+        for pol, calls, subject in ((UNLESS, (SECRET, SEND_OUT), "egress"),
+                                    (WHEN_LABEL, (SECRET, SEND_OUT), "egress"),
+                                    (READINGS, (PS,), "egress secrets_access")):
+            rule = pol["ask"][0]["id"]
+            with self.subTest(rule=rule, subject=subject):
+                s = self.signer(pol)
+                run = s.register()
+                with mock.patch.object(Engine, "condition", lambda self, d, labels=(), cls=None: real(self, d, labels)
+                                       if pol is READINGS else {k: v for k, v in d.items() if k != "when"}):
+                    for c in calls:
+                        s.decide(run, c)
+                self.assertNotIn(rule, s.decisions(run)[-1]["rule_ids"])
+                code, line = self.check(*bundle(s, run))
+                self.assertEqual((code, line["status"]), (1, "fail"), line)
+                self.assertTrue(any(f"{rule} applies (the call's labels {subject}; the run carried secrets_access) "
+                                    "but the decision doesn't name it" in p for p in line["problems"]),
+                                line["problems"])
+
+
 # a pattern on the labels field a backtracking engine (Python's re, JavaScript's RegExp) takes hours over on 40 a's
 # when nothing matches, and a call whose labels are 40 a's after a secret read: the verifiers search it to replay T-SEND
 SLOW, LONG = "(?:a|a)*b", "a" * 40
@@ -1129,7 +1280,7 @@ class TestHostileLabelPatterns(Case):
     def test_a_label_pattern_the_signer_would_refuse_fails_the_check(self):
         """A repeat of a repeat, which check_pattern refuses: a signer of this version never compiles it, so a bundle
         whose policy holds one fails `run labels`, in both verifiers."""
-        with mock.patch.object(pc, "check_pattern", lambda p: None):   # a signer that compiled it anyway
+        with mock.patch.object(pc, "_lint_pattern", lambda p, labels=False: None):   # a signer that compiled it anyway
             path, trust = self.slow_run(slow_policy("(?:a+)+b"))
         for line in self.lines(path, trust):
             self.assertEqual(line["status"], "fail", line)
@@ -1157,7 +1308,7 @@ class TestHostileLabelPatterns(Case):
                  for sec in pc.SECTIONS for r in pc.build(os.path.join(ROOT, "tracekit", "policy2", "packs", f))[0]
                  .get(sec, []) if r.get("field") == "labels"]
         self.assertTrue(packs)
-        patterns = packs + ["^egress$", "egress$", "^$", "a.c", "\\bx\\b", "\\Bx", "[^a-c]x", "[\\s]", "\\s", "\\w+$",
+        patterns = packs + ["^egress$", "egress$", "^$", "a.c", "\\bx\\b", "[^a-c]x", "[\\s]", "\\s", "\\w+$",
                             "\\d{2,3}", "(?:ab|a)c", "x{0}", "(?:)*y", "\\Aa", "a|", "[]a]", "[a-]", "\\x41", "ſ", "\\v",
                             "(?P<n>a)b", "a{2,}", "a??b", SLOW]
         texts = ["", "egress", "background_spawn egress", "egress\n", "a\nc", "abc", "x", "ax", "xa", "a x", "\x0b",
@@ -1167,10 +1318,15 @@ class TestHostileLabelPatterns(Case):
             for t in texts:
                 with self.subTest(pattern=p, text=t):
                     self.assertEqual(ours.search(t, linear.Budget()), rx.search(t) is not None)
-        for p, t in (("(?:a|a)*b", "AAB"), ("[a-c]", "B"), ("s", "ſ"), ("k", "K"), ("x", "X")):
-            with self.subTest(anycase=p):
-                self.assertEqual(linear.Pattern(p, anycase=True).search(t, linear.Budget()),
-                                 re2.compile("(?i)" + p).search(t) is not None)
+        # a label is matched as written, in every class: the engine's a2a rules read their own fields in any case
+        pol = {**POL, "tools": {**POL["tools"], "send": "a2a"}, "flag": POL["flag"] + [
+            {"id": "T-UP", "class": "a2a", "field": "receiver", "pattern": ".", "label": "Upper"}],
+            "ask": POL["ask"] + [{"id": "T-LOW", "class": "a2a", "field": "labels", "pattern": "^[^u]",
+                                  "when": {"run_has": ["secrets_access"]}}]}
+        for backend in ("re2", "regex"):
+            d = svc.evaluate(engine(pol, backend), "send", {"receiver": "x"})[0]
+            self.assertEqual(d["when"], {"T-LOW": "ask"}, backend)
+        self.assertTrue(labels.Sources(engine(pol)).on_labels[-1][1]("Upper", linear.Budget()))
 
     def test_both_verifiers_refuse_and_read_a_pattern_alike(self):
         """The TypeScript port (rx.ts) against linear.Pattern: what each refuses, what each finds, and the steps each
@@ -1183,12 +1339,15 @@ class TestHostileLabelPatterns(Case):
         refused = ["^(a+)+$", "a{2}{3}", "[z-a]", "(?P<1>x)", "\\Z", "(?=a)", "a**", "(?:a*)*", "x{1001}",
                    "(?:x{100}){11}", "\\1", "a{,3}", "{1}", "*a", "(?i)a", "[[:alpha:]]", "a)", "(a", "\\", "[a", "[]",
                    "(?P=n)", "\\u0041", "a*+", "\\b*", "^*", "[a-\\d]", "[\\d-z]", "(?P<a>x)(?P<a>y)", "[\\b]", "[\\S]",
-                   "\\é", "a{", "a{x}", "a{3,2}", "(?#c)", "\\x4"]
+                   "\\é", "a{", "a{x}", "a{3,2}", "(?#c)", "\\x4", "\\Bx", "\\B", "[^\\w\\W]", "[^a\\D\\d]",
+                   "x[^\\W\\w]?"]
         accepted = ["(?:^| )egress(?: |$)", "(?:^| )background_spawn(?: [a-z_]{1,48}){0,16} egress(?: |$)", SLOW,
-                    "^$", "a.c", "\\bx\\b", "\\Bx", "[^a-c]x", "[\\s]", "\\w+$", "\\d{2,3}", "(?:ab|a)c", "x{0}",
+                    "^$", "a.c", "\\bx\\b", "[^a-c]x", "[\\s]", "\\w+$", "\\d{2,3}", "(?:ab|a)c", "x{0}",
                     "(?:)*y", "\\Aa", "a|", "[]a]", "[a-]", "\\x41", "ſ", "\\v", "(?P<n>a)b", "(?P<é>a)", "a{2,}",
                     "a??b", "a}", "]", "[{(]", "\\.\\*", "(?:a{10}){100}", "(?:a?){24}a{24}", "(?:a|aa+)+",
-                    "^a|\\Ab", "\\d|a", "[aa]", "[^a]|b", ".a|.b", "a|a", "(?:ab|ac)d", "[a-c]x|[a-c]y"]
+                    "^a|\\Ab", "\\d|a", "[aa]", "[^a]|b", ".a|.b", "a|a", "(?:ab|ac)d", "[a-c]x|[a-c]y",
+                    # sre's parse splices a group (?: that no repeat takes: one literal or class an alternative
+                    "(?:a)|b", "(?:a)|(?:[bc])", "x(?:a)|x(?:b)c", "(?:)a|(?:)b", "(?:a)*|b", "[\\w\\D]", "[^\\Wa]"]
         texts = ["", "egress", "background_spawn egress", "egress\n", "a\nc", "abc", "x", "ax", "a x", "\x0b", "12",
                  "1234", "abc ac", "y", "A", "aab", "a}", "]", "{", ".*", LONG, LONG + "b", "é", "a" * 24]
 

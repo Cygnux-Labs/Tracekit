@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec /bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse #> >$null; $LASTEXITCODE = 2; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PreToolUse; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 2 }",
+            "command": "echo `# <#`>/dev/null; [ -r \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" ] || { echo \"tracekit plugin: the hook script did not run\" >&2; exit 2; }; exec /bin/sh \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse #> >$null; $LASTEXITCODE = 2; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PreToolUse; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 2 }",
             "timeout": 600
           }
         ]

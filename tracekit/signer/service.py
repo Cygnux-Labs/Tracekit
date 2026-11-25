@@ -669,14 +669,16 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
                 d = _stricter(d, policy.decide(name, args, as_cls, untrusted))
                 d = _in_workdir(policy, name, args, d, untrusted, as_cls) if (as_cls or policy.tool_class(name)) == \
                     "shell" else d
-        d = policy.condition(d)   # a run condition rule one reading matched, whose label another reading's rule sets
+        # a run condition rule one reading matched, whose label another reading's rule sets; and one on the labels the
+        # readings' rules set together, as the verifiers replay it from the decision
+        d = policy.condition(d, cls=cls)
         if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         h = _in_workdir(policy, tool, args, h, untrusted, "shell") if hint == "shell" else h
         strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
         mismatch = cls == "unknown" or strict is not d
-        strict = policy.condition(_carry(policy, strict, h if strict is d else d))
+        strict = policy.condition(_carry(policy, strict, h if strict is d else d), cls=cls)
         return strict, mismatch, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
     except RecursionError:
         raise
@@ -1264,6 +1266,7 @@ class SignerService:
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         self._kept = {}   # policy_hash -> the policy kept in <data_dir>/policies, None if not (_kept_policy)
+        self.data_dir = data_dir   # (_kept_policy reads it as the records are replayed, labels.Sources.under)
         authorize = dict(authorize or {})
         grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
         if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
@@ -1327,7 +1330,7 @@ class SignerService:
                 raise ValueError(why)
             name = _log_origin(storage, origin, self._log_key.public)
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
-                                 detect.Detector.of(policy), labels.Sources.of(policy))
+                                 detect.Detector.of(policy), labels.Sources.of(policy, self._kept_policy))
         except BaseException:
             storage.close()
             raise
@@ -1370,7 +1373,7 @@ class SignerService:
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
-        self.approvals, self.data_dir, self.storage_config, self.oidc = approvals, data_dir, storage_config, oidc
+        self.approvals, self.storage_config, self.oidc = approvals, storage_config, oidc
         self.id_prefix = f"{route}." if route else ""
         self._harnesses, self._helper = harnesses, hb.get("helper")
         self._harness_required = {k: True for k in hb.get("required", ())}

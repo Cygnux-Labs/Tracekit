@@ -182,8 +182,9 @@ The hook script is POSIX shell, which each hooks file runs under `/bin/sh`: macO
   PowerShell, which runs `scripts/tracekit-hook.ps1` instead: it picks its Python as the shell script does in dev mode
   (once Tracekit is set up, only the one `tracekit init` recorded) and blocks a call it can't record the same way.
   Windows has no system mode, so neither script has one there. If Group Policy sets PowerShell's execution policy,
-  that script can't start, and every tool call is blocked. If `/bin/sh` can't find the script, it exits 127, which
-  Claude Code doesn't treat as a block (only 2 blocks), so the call runs unrecorded.
+  that script can't start, and every tool call is blocked. If `/bin/sh` can't read the script, the pre-tool hook exits 2,
+  which blocks the call; the other events exit 127, which Claude Code doesn't treat as a block (only 2 blocks), so
+  they go unrecorded.
 - **Copilot CLI** gets the hooks as `bash` commands only, so on Windows it runs none of them: use `tracekit init --dev
   --v2 --agent copilot`.
 - **Cursor** blocks every tool call when the pre-tool hook can't start (`failClosed`): don't install the plugin there,
