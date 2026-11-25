@@ -2139,7 +2139,7 @@ _PUSH_CONFIG_ENV = ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "HOME", "XDG_CONFI
 # a Git config file a push reads, in any case: a repository's (`.git/config`, a bare one's `x.git/config`, a submodule's,
 # a worktree's config.worktree), the global ones (~/.gitconfig, any XDG_CONFIG_HOME's git/config) and the system one
 # (/etc/gitconfig, Homebrew's etc/gitconfig), as TK-F048 reads a file tool's write of one
-_GIT_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:[^/\\]*\.git[/\\](?:modules[/\\](?:[^/\\]+[/\\]){1,8}|worktrees[/\\]"
+_GIT_CONFIG_FILE = re.compile(r"(?i)(?:^|[/\\:])(?:[^/\\:]*\.git[/\\](?:modules[/\\](?:[^/\\]+[/\\]){1,8}|worktrees[/\\]"
                               r"[^/\\]+[/\\])?config(?:\.worktree)?|\.gitconfig|git[/\\]config|"
                               r"etc[/\\]gitconfig)$")
 # a cargo config file, in any case (a project's, a parent folder's, CARGO_HOME's: .cargo/config.toml, .cargo/config;
@@ -2873,7 +2873,8 @@ def _gh_api(argv, replaced=None, runner=False):
     routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
     for n, endpoint in enumerate(positional):   # (gh takes one; read each of more, which gh refuses)
         found, unread, before = _gh_routes(endpoint, replaced, strict=not n)
-        routes, unknown, expanded = routes + found, unknown or unread, expanded or before
+        routes += found   # (in place: a copy each time took time quadratic in the words)
+        unknown, expanded = unknown or unread, expanded or before
     unread_method = not method or "$" in method or "`" in method
     put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
     write = unread_method or method.upper() not in ("GET", "HEAD")

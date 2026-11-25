@@ -1250,11 +1250,15 @@ class Speed(unittest.TestCase):
     def test_unclosed_brackets_and_many_downloads_decide_in_linear_time(self):
         """sec08 r3: the glob reader scanned to the end from each unclosed `[` (40,000 took 156 s, then allowed), and
         the data-download reader compared each download with every command (2,500 took 39 s): both read once, charged
-        to the parse budget, held as unread past it."""
+        to the parse budget, held as unread past it. The 1.8 parsing review: the push reader's Git config file
+        pattern scanned a write target to its end from each `:` (`> a:b:b…` took 4 s, and the `[:` case above near
+        2 s, its budget), so its first component ends at a `:` as at a separator; the longest input that fits in 64 KiB
+        is read, so the scan from each `:` stays far over the budget and the read far under it."""
         scale = machine_scale()
         cases = ["sed -i s/a/b/ .e" + "[" * 40000 + "*", "sed -i s/a/b/ .e*[" + "[." * 20000 + "]*",
                  "sed -i s/a/b/ .e*[" + "[:" * 20000 + "]*", "curl -so a.json u; " * 2500,
-                 "".join(f"curl -so a{i}.json u; " for i in range(2500)), "wget -qO a.json u && ls; " * 2500]
+                 "".join(f"curl -so a{i}.json u; " for i in range(2500)), "wget -qO a.json u && ls; " * 2500,
+                 "echo x > a" + ":b" * 32000]
         for backend in BACKENDS:
             e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
             for cmd in cases:
@@ -1262,6 +1266,22 @@ class Speed(unittest.TestCase):
                     start = time.perf_counter()
                     self.assertNotIn("nondeterministic", e.decide("Bash", {"command": cmd}))
                     self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
+
+    def test_a_gh_api_call_of_many_words_is_read_in_linear_time(self):
+        """The 1.8 parsing review: _gh_api copied its list of routes for each word of the call, so 64 KiB of words
+        took time quadratic in their count (1.2 s for 30,000). Four times the words now take about four times as long,
+        not sixteen (each the best of three, so a busy moment doesn't decide it)."""
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "re2" if "re2" in BACKENDS else BACKENDS[0])
+
+        def took(n):
+            cmd = "gh api repos/o/r/a" + " b" * n
+            best = float("inf")
+            for _ in range(3):
+                start = time.perf_counter()
+                e.decide("Bash", {"command": cmd})
+                best = min(best, time.perf_counter() - start)
+            return best
+        self.assertLess(took(30000), 8 * took(7500))
 
     @pytest.mark.serial
     def test_a_line_of_downloads_and_what_runs_them_is_read_in_linear_time(self):
