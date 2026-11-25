@@ -34,7 +34,7 @@ except Exception as e:
     why = 'cannot import its hook (%s: %s)' % (type(e).__name__, e)
 if why:
     import tracekit
-    print('tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: pip install tracekit-ai==1.7.2 && '
+    print('tracekit plugin: tracekit %s in %s %s, so this %s. Ask the person to run: pip install tracekit-ai==1.7.3 && '
           'tracekit init --dev --v2 --no-hooks' % (getattr(tracekit, '__version__', '?'), sys.executable, why,
                                      'call was blocked' if pre else 'event was NOT recorded'), file=sys.stderr)
     raise SystemExit(2 if pre else 1)
@@ -47,7 +47,7 @@ foreach ($py in @($env:TRACEKIT_PYTHON, 'python3', 'python')) {
     & $py -I -c "$paths; import tracekit" *> $null
     if ($LASTEXITCODE -eq 0) {
         & $py -I -c $run @args
-        Finish $LASTEXITCODE "$py could not run the tracekit hook" 'Ask the person to reinstall: pip install tracekit-ai==1.7.2'
+        Finish $LASTEXITCODE "$py could not run the tracekit hook" 'Ask the person to reinstall: pip install tracekit-ai==1.7.3'
     }
 }
 if ($env:TRACEKIT_PYTHON -or $env:TRACEKIT_SIGNER -or ($env:LOCALAPPDATA -and (Test-Path -PathType Container (Join-Path $env:LOCALAPPDATA 'tracekit')))) {
@@ -57,7 +57,7 @@ if ($env:TRACEKIT_PYTHON -or $env:TRACEKIT_SIGNER -or ($env:LOCALAPPDATA -and (T
     if ($parts.Count -ge 4 -and $parts[-4] -eq 'cache' -and $parts[-3] -and $parts[-2]) {
         $off = "turn the plugin off: /plugin disable $($parts[-2])@$($parts[-3])"
     }
-    Finish 3 'no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up' "Ask the person to install it (pip install tracekit-ai==1.7.2), set TRACEKIT_PYTHON to the Python that has it, or $off"
+    Finish 3 'no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up' "Ask the person to install it (pip install tracekit-ai==1.7.3), set TRACEKIT_PYTHON to the Python that has it, or $off"
 }
-[Console]::Error.WriteLine("tracekit plugin: the tracekit package is not installed for python3, so this $ev event was NOT recorded. Ask the person to set it up: pip install tracekit-ai==1.7.2 && tracekit init --dev --v2 --no-hooks")
+[Console]::Error.WriteLine("tracekit plugin: the tracekit package is not installed for python3, so this $ev event was NOT recorded. Ask the person to set it up: pip install tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks")
 exit 1
