@@ -3891,8 +3891,8 @@ def _protected_forms(path, options=(), work=None):
         for i, k in zip(stars, counts):
             made[i + at:i + at + 1] = ["*"] * k
             at += k - 1
-        out += _forms_of(made, options, len(path) <= 4096, bool(stars)) + (
-            ["/".join(made)] if stars and not any(map(shell._GLOB.search, made)) else [])
+        out += [*_forms_of(tuple(made), tuple(sorted(set(options))), len(path) <= 4096, bool(stars)), *(
+            ["/".join(made)] if stars and not any(map(shell._GLOB.search, made)) else [])]
     out = list(dict.fromkeys(out))
     if len(out) > _FORMS_MAX:
         raise shell.ParseError("a pattern that reads as more than %d protected paths" % _FORMS_MAX)
@@ -3900,6 +3900,7 @@ def _protected_forms(path, options=(), work=None):
     return out
 
 
+@functools.lru_cache(maxsize=4096)
 def _forms_of(parts, options, whole, named=False):
     """_protected_forms' forms of one path, as its components (`whole`: with those after the protected path; `named`:
     only a path of the Python's (_STAR_PATHS) that starts at a name the path spells out or in a home, and ends at its end or goes on from
@@ -3941,8 +3942,8 @@ def _forms_of(parts, options, whole, named=False):
             span = range(i, i + len(names))
             if span[-1] < len(parts) and any(k in tokens for k in span) and all(map(fits, span[1:], names[1:])) and (
                     not named or span[-1] + 1 == len(parts) or not shell._GLOB.search(parts[span[-1] + 1])):
-                out.append("/".join(parts[:i] + list(names) + (parts[i + len(names):] if whole else [])))
-    return out
+                out.append("/".join(parts[:i] + names + (parts[i + len(names):] if whole else ())))
+    return tuple(out)
 
 
 def _env_chdir(argv):
@@ -4079,9 +4080,10 @@ def _under_roots(path, home=False, one_part=True):
                 k > 1 or place[0][:1] == "." or in_home and one_part)]
 
 
+@functools.lru_cache(maxsize=8192)
 def _roots_below(path, home=False, one_part=True):
     """The trust roots a delete or move of `path` takes (_under_roots), each as a path."""
-    return [path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path, home, one_part)]
+    return tuple(path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path, home, one_part))
 
 
 _ROOT_TAILS = frozenset(c.casefold() for place in _ROOT_PLACES for c in place)

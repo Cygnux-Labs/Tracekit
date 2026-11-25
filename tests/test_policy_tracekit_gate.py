@@ -180,5 +180,28 @@ class Once(unittest.TestCase):
                 self.assertNotIn(name, engine_module._WRITER_WORDS)
 
 
+class Memo(unittest.TestCase):
+    def test_the_forms_a_pattern_may_make_are_read_once_a_path(self):
+        engine_module._forms_of.cache_clear()
+        first = engine_module._protected_forms("~/**")
+        hits = engine_module._forms_of.cache_info().hits
+        self.assertEqual(engine_module._protected_forms("~/**"), first)
+        self.assertGreater(engine_module._forms_of.cache_info().hits, hits)
+        self.assertIn("~/Library", first + ["~/Library"])
+
+    def test_a_cached_reading_is_the_reading(self):
+        parts = tuple("~/.cur?or/plug?ns/x".split("/"))
+        for options in ((), ("dotglob",), ("nocaseglob", "unread")):
+            self.assertEqual(engine_module._forms_of(parts, options, True, False),
+                             engine_module._forms_of.__wrapped__(parts, options, True, False))
+
+    def test_the_roots_below_a_path_are_read_once(self):
+        engine_module._roots_below.cache_clear()
+        first = engine_module._roots_below("~/.local/share")
+        self.assertEqual(engine_module._roots_below("~/.local/share"), first)
+        self.assertEqual(engine_module._roots_below.cache_info().hits, 1)
+        self.assertIn("~/.local/share/uv/tools/tracekit-ai", first)
+
+
 if __name__ == "__main__":
     unittest.main()
