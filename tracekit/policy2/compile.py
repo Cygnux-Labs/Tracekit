@@ -239,11 +239,36 @@ def literals(pattern):
     pattern has no such set. Case variants fold (`[Mm][Ee]` is "me"); a class of more than eight characters, an
     optional or repeated part and any non-ASCII character end a literal run. A string holding another of the set is
     left out: the shorter one is in every subject the longer one is."""
-    exact, req = _seq(_sre_p.parse(pattern))
+    items = _sre_p.parse(pattern)
+    exact, req = _seq(items)
     req = exact if exact is not None else req
     if not req or min(map(len, req)) < 2:
         return None
+    if (after := _after_prefix(items)) is not None and all(any(s in p for p in after[0]) for s in req):
+        req = after[1]   # (every string was the start the engine already checks: what the matches hold past it)
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
+
+
+def _after_prefix(items):
+    """(the strings every match of a pattern anchored at its start begins with, a set one string of which every match
+    holds past them: _seq's choice for each alternative of its top level, joined), or None when an alternative isn't
+    anchored (`^`) or holds nothing of two characters or more past its start."""
+    alts = items[0][1][1] if len(items) == 1 and items[0][0] == _sre_c.BRANCH else [items]
+    starts, held = set(), set()
+    for alt in alts:
+        alt = list(alt)
+        if not alt or alt[0] != (_sre_c.AT, _sre_c.AT_BEGINNING):
+            return None
+        start, k = {""}, 1
+        while k < len(alt) and (ex := _node(*alt[k])[0]) is not None and len(prod := {a + b for a in start for b in ex}) <= PREFIX_MAX:
+            start, k = prod, k + 1
+        exact, found = _found(alt[k:])
+        sets = [s for s in ([exact] if exact is not None else found) if s and min(map(len, s)) >= 2]
+        if not sets:
+            return None
+        starts |= start
+        held |= max(sets, key=lambda s: (min(map(len, s)), -len(s)))
+    return starts, held
 
 
 PREFIX_MAX = 256   # the most strings compile.prefixes gives a pattern (str.startswith reads them in one call)

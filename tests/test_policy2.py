@@ -606,6 +606,19 @@ class Prefilter(unittest.TestCase):
             with self.subTest(pattern=pattern):
                 self.assertEqual(pc.literals(pattern), want)
 
+    def test_literals_leave_out_the_start_a_pattern_is_anchored_to(self):
+        """A tagged subject (`WRITE_TARGET:path`) starts with its kind, which Engine._pre checks: the prefilter names what
+        the match holds past it, else every write passes it and each rule's pattern is searched in each of its paths."""
+        for pattern, want in ((r"^WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)\Z",
+                               ("notify_on_release", "release_agent")),
+                              (r"^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?\.(?:pt|gguf)\Z", (".gguf", ".pt")),
+                              (r"^WRITE_TARGET:x", ("write_target:x",)),   # (nothing is held past its start)
+                              (r"^WRITE_TARGET:(?:[^\n]*?/)?x", ("write_target:",)),   # (a string of one character)
+                              (r"WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)\Z", ("write_target:",)),
+                              (r"^WRITE_TARGET:a|DELETE_TARGET:(?:.*/)?bcd", ("delete_target:", "write_target:a"))):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(pc.literals(pattern), want)
+
     def test_requirements_take_each_alternative_in_its_place(self):
         self.assertEqual(pc.requirements(r"^(ab(c|d)x|[Ee][Ff]\s+go)"), ((("abcx", "abdx"),), (("ef",), ("go",))))
         self.assertEqual(pc.requirements(r"(a|bc)"), None)   # an alternative with no string of two characters
@@ -1905,6 +1918,20 @@ class Shell(unittest.TestCase):
                     self.assertLess(time.perf_counter() - start, 1.0 * machine_scale(), d["rule_ids"])
                     self.assertIn(d["verdict"], ("ask", "deny"), d)
         self.assertEqual(shell.runner_at("uv", ["--directory", "run", "run", "x"]), [2])
+
+    @pytest.mark.serial
+    def test_a_runner_s_unknown_option_is_read_for_names_within_a_third_of_the_parse_budget(self):
+        """Each `run` after an unknown option (`uv --zz run --zz run …`) may be the subcommand, and a program the parser
+        doesn't know is read for the paths its words name: once a word, not once a word of each reading (it took 1.13 s
+        against 0.1 s on main when each reading went over the 14,000 words again)."""
+        cmd = "curl -s x | uv " + "--zz run " * ((MAX_SUBJECT - 64) // 9) + "python -c 'exec(input())'"
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
+            e.decide("Bash", {"command": cmd})
+            start = time.perf_counter()
+            d = e.decide("Bash", {"command": cmd})
+            with self.subTest(backend=backend):
+                self.assertLess(time.perf_counter() - start, 0.6 * machine_scale(), d["rule_ids"])
 
     @pytest.mark.serial
     def test_the_second_readings_of_nested_code_stay_within_the_parse_budget(self):

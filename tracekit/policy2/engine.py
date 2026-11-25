@@ -482,6 +482,8 @@ class Engine:
                 # 4 of them twins): each read once
                 folded = set() if (rule.get("class") == "a2a" or rule.get("field") == "tracekit") and \
                     "from" not in rule else None
+                if parts is not None and len(texts) > 1:   # (a part whose strings the whole text lacks reads no subject)
+                    parts = [x for x in parts if any(map(joined.__contains__, x[1]))]
                 for subject, low in zip(texts, lows):
                     if folded is not None and subject.isascii():
                         if low in folded:
@@ -4892,8 +4894,8 @@ def _effects_of(command, prints, work):
         out.extend("NAMED_TARGET:" + v for v in _option_values(args, *_LOCATION_OPTIONS, "--install-dir", "--root"))
     if not _known_program(exe):   # a program the parser doesn't know: held where its words name a trust root
         text = _powershell_text(args) if exe in ("set-content", "add-content") else ()
-        out.extend("NAMED_TARGET:" + w for w in _named_words([a for i, a in enumerate(args) if i not in text]))
-        out.extend("INSIDE_TARGET:" + w for w in _assigned_words(args))
+        out.extend("NAMED_TARGET:" + w for w in _named_words([a for i, a in enumerate(args) if i not in text] if text else args))
+        out.extend("INSIDE_TARGET:" + w for w in dict.fromkeys(_assigned_words(args)))
     sides = _side_outputs(exe, args, command)
     out.extend("NAMED_TARGET:" + w for w in sides)   # (a folder along a root, a harness's path too)
     if exe not in ("awk", "gawk", "mawk", "nawk"):   # (an awk program's literals name files it may only read)
@@ -4904,25 +4906,46 @@ def _effects_of(command, prints, work):
 _NAME_VALUE = re.compile(r"(?:-D)?[A-Za-z_][A-Za-z0-9_.]*(?::[A-Za-z]+)?=")
 
 
+def _by_word(read):
+    """`read(word, *rest)` remembered for a word of at most 128 characters (a call's words are read again for each place
+    a runner's subcommand may be: `uv --zz run …` 14,000 times over; a longer one is read as it comes, so what is kept
+    stays small)."""
+    kept = functools.lru_cache(maxsize=4096)(read)
+    return lambda word, *rest: kept(word, *rest) if len(word) <= 128 else read(word, *rest)
+
+
+@_by_word
+def _named_in(a):
+    """What one word of a program's arguments adds to _named_words: None when it is an option that takes the next word
+    as its value (an install location), else the words that may be paths."""
+    if a in _LOCATION_OPTIONS:
+        return None
+    if a.startswith("--"):
+        return (a.partition("=")[2],) * ("=" in a and a.partition("=")[0] not in _LOCATION_OPTIONS)
+    if a.startswith("-") and len(a) > 2 and not _NAME_VALUE.match(a):   # an attached value (`-o~/.local/bin/x`, `-C~/x`)
+        return tuple(_pieces(a[2:].lstrip("=")))
+    if not a.startswith("-") and not _NAME_VALUE.match(a):
+        return tuple(_pieces(a))
+    return ()
+
+
 def _named_words(args):
     """The words of a program's arguments that may be a path: each word that isn't an option, and an option's `=` value (not
-    an install location's: `--prefix ~/.local` is read as `PREFIX=~/.local`, _assigned_words)."""
+    an install location's: `--prefix ~/.local` is read as `PREFIX=~/.local`, _assigned_words). Each once: a word's own
+    reading is the same wherever it stands, unless an option before it takes it as its value."""
     out, skip = [], False
-    for a in args:
+    for a in args if not _LOCATION_OPTIONS_SET.isdisjoint(args) else dict.fromkeys(args):
         if skip:
             skip = False
-        elif a in _LOCATION_OPTIONS:
+        elif (found := _named_in(a)) is None:
             skip = True
-        elif a.startswith("--"):
-            out += [a.partition("=")[2]] * ("=" in a and a.partition("=")[0] not in _LOCATION_OPTIONS)
-        elif a.startswith("-") and len(a) > 2 and not _NAME_VALUE.match(a):   # an attached value (`-o~/.local/bin/x`, `-C~/x`)
-            out += _pieces(a[2:].lstrip("="))
-        elif not a.startswith("-") and not _NAME_VALUE.match(a):
-            out += _pieces(a)
-    return out
+        else:
+            out += found
+    return list(dict.fromkeys(out))
 
 
 _LOCATION_OPTIONS = ("--prefix", "--destdir", "--libdir", "--bindir", "--exec-prefix", "--sbindir", "--sysconfdir")
+_LOCATION_OPTIONS_SET = frozenset(_LOCATION_OPTIONS)
 # the switches of PowerShell's Set-Content and Add-Content, and the common ones: a name one of them starts with takes no
 # value (any other option takes the next word, or its own after `:`)
 _PS_SWITCHES = ("passthru", "force", "nonewline", "asbytestream", "whatif", "confirm", "usetransaction", "verbose", "debug")
@@ -4962,30 +4985,48 @@ def _powershell_text(args):
 
 def _pieces(word):
     """A word and the parts of it a path may be in (`CREATE:/x`, `/a:/m`, `a=/x`, `x,y`)."""
-    return [word] + [w for w in re.split(r"[:=,]", word) if w and w != word] * bool(re.search(r"[:=,]", word))
+    if ":" not in word and "=" not in word and "," not in word:
+        return [word]
+    return [word] + [w for w in re.split(r"[:=,]", word) if w and w != word]
+
+
+@_by_word
+def _name_value(a):
+    return bool(_NAME_VALUE.match(a))
 
 
 def _assigned_words(args):
     """The values of assignment-form words (`PREFIX=…`, `DESTDIR=…`, `-DCMAKE_INSTALL_PREFIX=…`): an install location.
     One is held where it is a trust root or inside one (INSIDE_TARGET), not for a folder along one (`PREFIX=~/.local`
     is ordinary)."""
-    return [a.partition("=")[2] for a in args if _NAME_VALUE.match(a)] + _option_values(
+    return [a.partition("=")[2] for a in dict.fromkeys(args) if _name_value(a)] + _option_values(
         args, *_LOCATION_OPTIONS)
+
+
+@_by_word
+def _option_in(a, names):
+    """What one word gives _option_values: True when it is an option that takes the next word, else its attached values."""
+    if a in names:
+        return True
+    if a[:2] == "--":
+        name = a.partition("=")[0]
+        return (a[len(name) + 1:],) * ("=" in a and name in names)
+    return tuple(a[len(n):].lstrip("=") for n in names if not n.startswith("--") and len(a) > len(n) and a.startswith(n)
+                 and a[:2] == n)
 
 
 def _option_values(args, *names):
     """The values of options as `-o X`, `-oX`, `-o=X`, `--output X` and `--output=X` give them."""
+    own = {a: found for a in dict.fromkeys(args) if a[:1] == "-" and (found := _option_in(a, names))}   # (every name starts with one)
+    if not own:
+        return []
     out = []
     for i, a in enumerate(args):
-        if a[:1] != "-":   # (every name starts with one)
-            continue
-        for n in names:
-            if a == n:
+        if a in own:
+            if (found := own[a]) is True:
                 out += args[i + 1:i + 2]
-            elif n.startswith("--") and a.startswith(n + "="):
-                out.append(a[len(n) + 1:])
-            elif not n.startswith("--") and a.startswith(n) and len(a) > len(n) and a[:2] == n:
-                out.append(a[len(n):].lstrip("="))
+            else:
+                out += found
     return out
 
 
@@ -4997,6 +5038,12 @@ _SQLITE_FILE = re.compile(r"(?i)\.(?:output|once|backup|save|import|read|dump|cl
                           r"\bvacuum\s+(?:\w+\s+)?into\s+['\"]([^'\"]*)['\"]|\battach\s+(?:database\s+)?['\"]([^'\"]*)['\"]")
 
 
+_SIDE_OUTPUTS = frozenset(("mktemp", "sed", "gsed", "awk", "gawk", "mawk", "nawk", "sqlite3", "sqlite", "git", "tar", "gtar",
+                           "bsdtar", "zip", "7z", "7za", "7zr", "7zz", "7zip", "pax", "jar", "ar", "vim", "vi", "nvim", "ex",
+                           "emacs", "red", "ed", "tree", "zstd", "brotli", "unzstd", "less", "uv", "pip", "pip3", "docker",
+                           "podman"))   # (the programs _side_outputs reads)
+
+
 def _side_outputs(exe, args, command):
     """The files a known program may write by an option or a script that _command_effects doesn't read (each held as
     WRITE_TARGET, so each rule on a write reads them; an awk program's string literals as NAMED_TARGET, held where one names a
@@ -5004,6 +5051,8 @@ def _side_outputs(exe, args, command):
     .output, .backup, .trace, .log and attach and `vacuum into`, git's archive -o, bundle, format-patch -o and --output (past
     its own options), tree -o, less -o, uv export and pip compile -o, pip download -d and wheel -w, zstd's and brotli's -o,
     an archive a tar, zip, 7z, pax, jar or ar creates, an editor's `:w`, `saveas` and write-file."""
+    if exe not in _SIDE_OUTPUTS and not _PYTHON_EXE.fullmatch(exe):
+        return []
     words = [a for a in args if not a.startswith("-")]
     if exe == "mktemp":
         return words + _option_values(args, "-p", "--tmpdir")
@@ -5164,6 +5213,8 @@ def _installs(command, exe, args):
     interpreter or pip it is run by, `-m ensurepip`, `-m venv`, `uv venv`, `virtualenv`), so a trust root there is denied
     as any write to it is; and ROOT_TARGET (held) of a uv tool or pipx install, inject, runpip, upgrade or reinstall
     whose words name tracekit-ai (a name, a path, a URL), which replaces or shadows the install."""
+    if exe not in ("pip", "pip3", "uv", "pipx", "virtualenv") and not _PYTHON_EXE.fullmatch(exe):
+        return []
     word = command.get("word") or command["argv"][0]   # (the program as written: the parse leaves its file name)
     words = [a for a in args if not a.startswith("-")]
     out = []
