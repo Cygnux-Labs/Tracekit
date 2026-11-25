@@ -571,17 +571,17 @@ def _carry(policy, d, b):
                          **({"when": b["when"]} if b.get("when") else {})})
 
 
-def _in_workdir(policy, tool, args, d, untrusted):
-    """`d`, shell call `tool`'s decision, and each of its readings in the working directory it names
-    (classes.in_workdir), the strictest standing; held (TK-SHELL-PARSE) where it names more than one or one that isn't
-    text. (Each reading is a decision of its own, never looser than it reads, as `d` is: engine.decide's fallback for
-    a spent budget.)"""
+def _in_workdir(policy, tool, args, d, untrusted, cls=None):
+    """`d`, shell call `tool`'s decision (in class `cls`, when the policy maps the tool to another), and each of its
+    readings in the working directory and environment it names (classes.in_workdir), the strictest standing; held
+    (TK-SHELL-PARSE) where it names more than one, or one it can't place. (Each reading is a decision of its own, never
+    looser than it reads, as `d` is: engine.decide's fallback for a spent budget.)"""
     moved = classes.in_workdir(args)
     if moved is classes.UNREAD:
         return _stricter(d, {"verdict": policy.policy.get("on_parse_error", "ask"), "rule_ids": ["TK-SHELL-PARSE"],
                              "policy_hash": policy.policy_hash, "engine": policy.engine, "unread": "workdir"})
     for reading in moved or ():
-        d = _stricter(d, policy.decide(tool, reading, untrusted=untrusted))
+        d = _stricter(d, policy.decide(tool, reading, cls, untrusted))
     return d
 
 
@@ -655,17 +655,21 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         for mcp in mcps:
             if mcp != tool:
                 d = _stricter(d, policy.decide(mcp, args, untrusted=untrusted))
+                d = _in_workdir(policy, mcp, args, d, untrusted) if policy.tool_class(mcp) == "shell" else d
             # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
             # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
-            # be dodged by naming the call an MCP one
+            # be dodged by naming the call an MCP one; one read as a shell call, in its working directory too
             bare, of = mcp.split("/", 1)[1], policy.tool_class(mcp)
             for name in [bare] + policy.listed(bare):
-                d = _stricter(d, policy.decide(
-                    name, args, None if policy.tool_class(name) != "unknown" else of, untrusted))
+                as_cls = None if policy.tool_class(name) != "unknown" else of
+                d = _stricter(d, policy.decide(name, args, as_cls, untrusted))
+                d = _in_workdir(policy, name, args, d, untrusted, as_cls) if (as_cls or policy.tool_class(name)) == \
+                    "shell" else d
         d = policy.condition(d)   # a run condition rule one reading matched, whose label another reading's rule sets
         if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+        h = _in_workdir(policy, tool, args, h, untrusted, "shell") if hint == "shell" else h
         strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
         mismatch = cls == "unknown" or strict is not d
         strict = policy.condition(_carry(policy, strict, h if strict is d else d))

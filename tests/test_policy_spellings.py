@@ -2,6 +2,8 @@
 every shipped pack the rule is in and on both engines, beside a harmless twin that stays allowed."""
 import importlib.util
 import os
+import shutil
+import tempfile
 import unittest
 
 from tracekit.policy2 import compile as pc
@@ -60,6 +62,42 @@ class Spellings(unittest.TestCase):
             "python3 -c \"import sys; print(sys.modules['os'])\"", "python3 -c \"import imp; imp.load_source('s', 'x.py')\"",
             'python3 -c "from tracekit.signer.rpc_schema import REQUESTS; print(len(REQUESTS))"',
             'python3 -c "import os, tracekit.signer.rpc_schema as r; print(r.RPC_VERSION)"'])
+
+    def test_a_shell_call_is_read_in_its_own_working_directory_and_environment_on_every_reading(self):
+        """The signer read a shell call's working directory only under the tool's own name: an MCP server's shell tool
+        (mcp__srv__shell, read as `shell` by its bare name), a class hint of shell, and the spellings workingDirectory,
+        dir and cd were read without it; and a call's own `env` (BASH_ENV, HOME, CDPATH) not at all."""
+        live = "/var/lib/tracekit-signer"
+        held = [("Bash", {"command": "cat keys/log.key", k: live}, "TK-D007") for k in ("workingDirectory", "dir", "cd")]
+        held += [(t, {"command": "cat keys/log.key", k: live}, "TK-D007") for t, k in (
+            ("mcp__srv__shell", "cwd"), ("mcp__srv__terminal", "workdir"), ("mcp__srv__run_shell_command", "dir_path"),
+            ("mcp:srv/shell", "cwd"), ("mcp__srv_shell", "cwd"))]
+        held += [("Bash", {"command": "cat ~/keys/log.key", "env": {"HOME": live}}, "TK-D007"),
+                 ("local_shell", {"command": ["cat", "keys/log.key"], "env": {"CDPATH": live}}, "TK-D007"),
+                 ("Bash", {"command": "ls", "env": {"BASH_ENV": "/tmp/x.sh"}}, "TK-F011"),
+                 ("Bash", {"command": "ls", "env": {"BASH_FUNC_ls%%": "() { id; }"}}, "TK-SHELL-PARSE"),
+                 ("Bash", {"command": "ls", "env": ["BASH_ENV=/tmp/x.sh"]}, "TK-SHELL-PARSE")]
+        for pack, name, e in engines():
+            for tool, args, rule in held:
+                with self.subTest(pack=pack, engine=name, tool=tool, args=args):
+                    self.assertIn(rule, svc.evaluate(e, tool, args)[0]["rule_ids"])
+            with self.subTest(pack=pack, engine=name, hint="shell"):
+                d = svc.evaluate(e, "run_it", {"command": "cat keys/log.key", "cwd": live}, hint="shell")[0]
+                self.assertIn("TK-D007", d["rule_ids"])
+            for tool, args in (("Bash", {"command": "ls", "cwd": "/tmp"}), ("Bash", {"command": "ls", "env": {"X": "1"}}),
+                               ("mcp__srv__shell", {"command": "ls", "dir": "/tmp"})):
+                with self.subTest(pack=pack, engine=name, tool=tool, args=args):
+                    self.assertFalse({"TK-D007", "TK-F011", "TK-SHELL-PARSE"} & set(svc.evaluate(e, tool, args)[0]["rule_ids"]))
+        # a deployment's own shell tool by its MCP name, whose bare name its policy maps to another class
+        with tempfile.TemporaryDirectory() as d:
+            shutil.copy(os.path.join(PACKS, "coding.yaml"), d)
+            with open(os.path.join(d, "own.yaml"), "w") as f:
+                f.write("extends: coding.yaml\nversion: own-1\ntools:\n  'mcp:srv/query': shell\n  query: sql\n")
+            for name in ENGINES:
+                e = Engine(pc.build(os.path.join(d, "own.yaml"))[0], name)
+                with self.subTest(engine=name, tool="mcp__srv__query"):
+                    d2 = svc.evaluate(e, "mcp__srv__query", {"command": "cat keys/log.key", "cwd": live})[0]
+                    self.assertIn("TK-D007", d2["rule_ids"])
 
 
 if __name__ == "__main__":
