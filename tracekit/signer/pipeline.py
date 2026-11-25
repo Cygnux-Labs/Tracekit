@@ -238,11 +238,11 @@ def approver_state(set_, log, run, e, a, pop):
     person's approver.switched: {on, rules?, by, at, reason?}; none: the policy and signer.yaml decide alone); and
     `label_seqs` (each identity a run.label's run has as a requester -> the seq of the last such record, an add or a
     clear, or of a decision that set a label for the run bound alone: SignerService._ai_state's label epoch); and
-    `tried` (labels.tried_state: the labels calls that didn't run set for the run bound alone). A precedent goes bad when a person revokes it
-    (precedent.revoked), an incident opens in its run, or a why finding is written about its run; a rule is demoted
-    when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under AGREEMENT_BAR over
-    AGREEMENT_MIN pairs or more, or an answer comes from another model, version, prompt or playbook than its pin; a
-    person's approver.enabled restores it (the pin stays the answer's that changed it)."""
+    `tried` (labels.tried_state: the labels calls that didn't run set for the run bound alone). A precedent goes bad
+    when a person revokes it (precedent.revoked), an incident opens in its run, or a why finding is written about its
+    run; a rule is demoted when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under
+    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, version, prompt or playbook
+    than its pin; a person's approver.enabled restores it (the pin stays the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):

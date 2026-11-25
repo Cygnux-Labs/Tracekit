@@ -422,8 +422,9 @@ def siblings(rules, tool, args):
 def harmful(_):
     """E18.H: each held harmful call in a run of its own, put to a reviewer that approves everything with two keys, in
     three passes: no precedent, a person's precedents for a benign sibling of the same reviewed rule and for the call's
-    near-siblings (siblings), and a person's precedent for that very call (inside the bounds: counted, by class). Calls the reviewer can't decide are abandoned
-    by their run, so none waits on the pending-approvals quota and none becomes a precedent."""
+    near-siblings (siblings), and a person's precedent for that very call (inside the bounds: counted, by class). Calls
+    the reviewer can't decide are abandoned by their run, so none waits on the pending-approvals quota and none becomes
+    a precedent."""
     eng, out = laptop_policy(), {"calls": 0, "held": 0, "reviewed_rules_only": collections.Counter(),
                                  "sibling_precedents": 0,
                                  "outside_bounds_approved": [], "inside_bounds_approved": collections.Counter()}
