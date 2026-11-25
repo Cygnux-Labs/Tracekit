@@ -33,7 +33,7 @@ import types
 
 from tracekit.policy2 import linear
 from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
-from tracekit.policy2.compile import SECTIONS, PolicyError
+from tracekit.policy2.compile import SECTIONS, PolicyError, subject_labels
 from tracekit.signer.detect import epoch
 
 UNTRUSTED = "untrusted_content"   # of compile.RUN_LABELS
@@ -56,17 +56,20 @@ class Sources:
         bound = ((pol.get("approval_agent") or {}).get("run") or {}).get("clean") or ()
         self.bound, self.tracked = frozenset(bound), frozenset().union(*self.when.values(), bound)
         self.label = {r["id"]: r["label"] for r in rules if r.get("label") in self.tracked}
-        # for the verifiers: every rule's label, and each run condition rule on the labels field (one with no tool:
-        # its class, its pattern), whose match the call's rule ids and the run's labels decide (engine.labels_subject)
+        # every rule's label (noted); for the verifiers: the labels a rule on the labels field reads
+        # (compile.subject_labels), and each run condition rule on the labels field (one with no tool: its class, its
+        # pattern and unless), whose match the call's rule ids and the run's labels decide (compile.labels_subject,
+        # Engine.condition)
         self.all_labels = {r["id"]: r["label"] for r in rules if r.get("label")}
+        self.subject_labels = subject_labels(pol)
         # compiled as the signer compiles them (_compiled); `refused`: rule id -> why its pattern can't be (a bundle's
         # policy the signer would have refused)
         self.on_labels, self.refused = [], {}
         for r in rules:
             if r.get("field") == "labels" and "when" in r and "tool" not in r:
                 try:
-                    self.on_labels.append((r["id"], _compiled(r.get("pattern"), r.get("class") == "a2a"),
-                                           r.get("class")))
+                    self.on_labels.append((r["id"], _compiled(r.get("pattern")),
+                                           _compiled(r["unless"]) if "unless" in r else None, r.get("class")))
                 except PolicyError as e:
                     self.refused[r["id"]] = str(e)
         self.window = pol.get("label_inherit_s", LABEL_INHERIT_S)
@@ -117,14 +120,14 @@ class Sources:
         return {SECRETS} if any(self.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
 
 
-def _compiled(pattern, anycase=False):
+def _compiled(pattern):
     """A search of `pattern` as the signer reads it, (text, linear.Budget) -> whether it matches: linear.Pattern, RE2's
     semantics in linear time within the verification's budget, the same in the TypeScript verifier and with or without
     google-re2, so both verifiers give one verdict on any machine. PolicyError for a pattern compile.check_pattern
     refuses or one too large (a bundle's own policy may hold anything: it fails the check, never hangs it)."""
     if not isinstance(pattern, str):
         raise PolicyError("the pattern is not a string")
-    return linear.Pattern(pattern, anycase).search
+    return linear.Pattern(pattern).search
 
 
 def state(set_, run, e):

@@ -6,8 +6,8 @@ bundle's patterns end in a failure (Spent), never a hang, and the verdict is the
 verifiers (a timeout, as the signer's fallback engine has, would depend on the machine's speed).
 
 RE2's semantics, not Python's: `^` and `$` are the start and end of the text, `.` any character but a newline, \\d \\w
-\\s \\b ASCII (\\s: tab, newline, form feed, carriage return, space), and in any case (`anycase`) ASCII letters fold,
-with `ſ` read as s and `K` (the Kelvin sign) as k, as the signer's fallback engine folds them (engine._ASCII_FOLDS)."""
+\\s \\b ASCII (\\s: tab, newline, form feed, carriage return, space), and case as written: a label pattern is
+matched against the policy's own labels, never in any case."""
 from tracekit.policy2.compile import PolicyError, check_pattern
 
 try:  # Python 3.11 moved the regex parser
@@ -23,7 +23,6 @@ _CATEGORIES = {_c.CATEGORY_DIGIT: lambda ch: "0" <= ch <= "9", _c.CATEGORY_WORD:
 _CATEGORIES.update({_c.CATEGORY_NOT_DIGIT: lambda ch: not "0" <= ch <= "9",
                     _c.CATEGORY_NOT_WORD: lambda ch: ch not in _WORD,
                     _c.CATEGORY_NOT_SPACE: lambda ch: ch not in "\t\n\f\r "})
-_FOLDS = {"ſ": "sS", "K": "kK"}
 
 
 class Spent(Exception):
@@ -110,9 +109,9 @@ def _emit(items, prog):
 class Pattern:
     """A pattern compile.check_pattern accepts, compiled for search(); PolicyError for any other."""
 
-    def __init__(self, pattern, anycase=False):
+    def __init__(self, pattern):
         check_pattern(pattern)
-        self.prog, self.anycase, self.found = [], anycase, {}
+        self.prog, self.found = [], {}
         _emit(_p.parse(pattern), self.prog)
         self.prog.append(("match",))
         if len(self.prog) > MAX_PROGRAM:
@@ -123,8 +122,7 @@ class Pattern:
             return i == 0
         if kind == _c.AT_END:
             return i == len(text)
-        word = (i > 0 and text[i - 1] in _WORD) != (i < len(text) and text[i] in _WORD)
-        return word if kind == _c.AT_BOUNDARY else not word
+        return (i > 0 and text[i - 1] in _WORD) != (i < len(text) and text[i] in _WORD)   # \b
 
     def _add(self, text, i, pc, seen, ready, budget):
         """Follow the threads from `pc` at position `i` to the instructions that read a character (into `ready`);
@@ -150,12 +148,6 @@ class Pattern:
                 ready.append(pc)
         return False
 
-    def _reads(self, test, ch):
-        if not self.anycase:
-            return test(ch)
-        forms = (ch.lower(), ch.upper()) if ch.isascii() else (ch, *_FOLDS.get(ch, ""))
-        return any(test(f) for f in forms)
-
     def search(self, text, budget):
         """Whether the pattern matches somewhere in `text`, spending `budget` (Spent when it runs out); a text searched
         before is answered from then on (a run's calls carry few sets of labels)."""
@@ -173,5 +165,5 @@ class Pattern:
             if i == len(text):
                 return False
             budget.spend(len(ready))
-            threads = [pc + 1 for pc in ready if self._reads(self.prog[pc][1], text[i])]
+            threads = [pc + 1 for pc in ready if self.prog[pc][1](text[i])]
         return False

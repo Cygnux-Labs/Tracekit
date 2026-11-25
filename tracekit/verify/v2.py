@@ -1677,15 +1677,18 @@ def _run_labels(events, srcs, inherited, budget=None):
             problems += [f"{where}: run_labels names {x[:32]}, which the run didn't carry" for x in sorted(used - have)]
             problems += [f"{where}: {i} applied without run_labels naming {', '.join(sorted(src.when[i]))}"
                          for i in ids if i in src.when and not src.when[i] <= used]
-            # a run condition on the labels field, replayed from the call's rule ids and what the run carried (not
-            # for a retry the signer answers from its memo, nor a harness call, which meets no run condition)
-            subject = " ".join(sorted({src.all_labels[i] for i in ids if i in src.all_labels}))
+            # a run condition on the labels field, replayed from the call's rule ids and what the run carried, as
+            # Engine.condition matches it (not for a retry the signer answers from its memo, nor a harness call, which
+            # meets no run condition, nor a call none of whose rules has a label it reads)
+            subject = policy_compile.labels_subject(ids, src.subject_labels)
             tool = d.get("tool") if isinstance(d.get("tool"), str) else None
-            if key(e.get("tool_call_id")) not in decided and tool and src.rules.tool_class(tool) != "harness":
+            if subject and key(e.get("tool_call_id")) not in decided and tool and \
+                    src.rules.tool_class(tool) != "harness":
                 problems += [f"{where}: {rid} applies (the call's labels {subject}; the run carried "
                              f"{', '.join(sorted(src.when[rid]))}) but the decision doesn't name it"
-                             for rid, rx, cls in src.on_labels if rid not in ids and src.when[rid] <= have
-                             and cls in (None, src.rules.tool_class(tool)) and rx(subject, budget)]
+                             for rid, rx, unless, cls in src.on_labels if rid not in ids and src.when[rid] <= have
+                             and cls in (None, src.rules.tool_class(tool)) and rx(subject, budget)
+                             and not (unless and unless(subject, budget))]
             if isinstance(d.get("caller"), str):
                 callers.add(d["caller"])
             decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}

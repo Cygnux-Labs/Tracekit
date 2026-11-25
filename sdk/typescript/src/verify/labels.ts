@@ -18,7 +18,26 @@ const cut = (s: string, n: number) => [...s].slice(0, n).join("");
 const str = (v: unknown): string => v === null || v === undefined ? "None" : v === true ? "True" : v === false ? "False"
   : typeof v === "string" ? v : JSON.stringify(v);
 const key = (v: unknown) => typeof v === "string" ? v : null;   // a schema-invalid id names nothing
-const byCodePoint = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
+/** Python's order of strings, by code point (JavaScript's `<` and sort() compare UTF-16 code units, which put a
+ * character above U+FFFF before one in U+E000..U+FFFF). */
+export const byCodePoint = (a: string, b: string) => {
+  const unit = (u: number) => u >= 0xd800 && u < 0xe000 ? u + 0x2000 : u >= 0xe000 ? u - 0x800 : u;
+  for (let i = 0; i < Math.min(a.length, b.length); i++)
+    if (a.charCodeAt(i) !== b.charCodeAt(i)) return unit(a.charCodeAt(i)) - unit(b.charCodeAt(i));
+  return a.length - b.length;
+};
+
+/** tracekit/policy2/compile.py subject_labels: {rule id: label} of the rules whose labels a rule on the labels field
+ * reads, each rule's non-empty label but a run condition rule's and another labels field rule's. */
+export function subjectLabels(policy: J): Map<string, string> {
+  return new Map(SECTIONS.flatMap((sec) => policy[sec] ?? []).filter((r: J) => typeof r.label === "string" && r.label
+    && !Object.hasOwn(r, "when") && r.field !== "labels").map((r: J) => [r.id, r.label]));
+}
+
+/** tracekit/policy2/compile.py labels_subject: the labels `labels` gives `ids`, each once, sorted by code point and
+ * joined by a space; "" when none has one. */
+export const labelsSubject = (ids: string[], labels: Map<string, string>) =>
+  [...new Set(ids.filter((i) => labels.has(i)).map((i) => labels.get(i)!))].sort(byCodePoint).join(" ");
 
 /** A tool name as CrewAI's sanitize_tool_name leaves it, without its `_` (tracekit/policy2/engine.py _spelling). */
 function spelling(name: string): string {
@@ -29,8 +48,8 @@ export class Sources {
   when = new Map<string, Set<string>>();
   tracked = new Set<string>();
   label = new Map<string, string>();
-  allLabels = new Map<string, string>();
-  onLabels: [string, Pattern, string | null][] = [];
+  subjectLabels: Map<string, string>;
+  onLabels: [string, Pattern, Pattern | null, string | null][] = [];
   refused = new Map<string, string>();   // rule id -> why its labels pattern can't be compiled as the signer does
   untrusted: string[];
   tools: Record<string, string>;
@@ -43,12 +62,16 @@ export class Sources {
     for (const ls of this.when.values()) for (const x of ls) this.tracked.add(x);
     for (const x of policy.approval_agent?.run?.clean ?? []) this.tracked.add(x);   // the AI approver's run bound
     for (const r of rules) if (this.tracked.has(r.label)) this.label.set(r.id, r.label);
-    for (const r of rules) if (typeof r.label === "string") this.allLabels.set(r.id, r.label);
+    this.subjectLabels = subjectLabels(policy);
+    const compiled = (p: J) => {
+      if (typeof p !== "string") throw new PolicyError("the pattern is not a string");
+      return new Pattern(p);
+    };
     for (const r of rules)
       if (r.field === "labels" && Object.hasOwn(r, "when") && !Object.hasOwn(r, "tool")) {
         try {   // a bundle's own policy may hold any pattern: searched in linear time, as RE2 reads it (rx.ts)
-          if (typeof r.pattern !== "string") throw new PolicyError("the pattern is not a string");
-          this.onLabels.push([r.id, new Pattern(r.pattern, r.class === "a2a"), r.class ?? null]);
+          this.onLabels.push([r.id, compiled(r.pattern), Object.hasOwn(r, "unless") ? compiled(r.unless) : null,
+            r.class ?? null]);
         } catch (e) {
           if (!(e instanceof PolicyError)) throw e;
           this.refused.set(r.id, e.message);
@@ -168,14 +191,15 @@ export function runLabels(events: J[], srcs: Map<string, Sources>, inherited: [s
       for (const i of ids)
         if (src.when.has(i) && ![...src.when.get(i)!].every((x) => used.has(x)))
           problems.push(`${where}: ${i} applied without run_labels naming ${[...src.when.get(i)!].sort(byCodePoint).join(", ")}`);
-      // a run condition on the labels field, replayed from the call's rule ids (labels.py, verify/v2.py _run_labels)
-      const subject = [...new Set(ids.filter((i) => src.allLabels.has(i)).map((i) => src.allLabels.get(i)!))]
-        .sort(byCodePoint).join(" ");
+      // a run condition on the labels field, replayed from the call's rule ids as Engine.condition matches it
+      // (labels.py, verify/v2.py _run_labels)
+      const subject = labelsSubject(ids, src.subjectLabels);
       const tool = typeof d.tool === "string" ? d.tool : null;
-      if (!decided.has(key(e.tool_call_id ?? null)) && tool && src.classes.toolClass(tool) !== "harness")
-        for (const [rid, rx, cls] of src.onLabels)
+      if (subject && !decided.has(key(e.tool_call_id ?? null)) && tool && src.classes.toolClass(tool) !== "harness")
+        for (const [rid, rx, unless, cls] of src.onLabels)
           if (!ids.includes(rid) && [...src.when.get(rid)!].every((x) => have.has(x))
-            && (cls === null || cls === src.classes.toolClass(tool)) && rx.search(subject, budget))
+            && (cls === null || cls === src.classes.toolClass(tool)) && rx.search(subject, budget)
+            && !(unless && unless.search(subject, budget)))
             problems.push(`${where}: ${rid} applies (the call's labels ${subject}; the run carried `
               + `${[...src.when.get(rid)!].sort(byCodePoint).join(", ")}) but the decision doesn't name it`);
       if (typeof d.caller === "string") callers.add(d.caller);

@@ -20,8 +20,8 @@ from urllib.parse import quote, unquote, urlsplit
 
 from .. import privacy
 from . import classes, grammar, shell, source as source_reader
-from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical, literals,
-                      policy_hash, prefixes, requirements, translate)
+from .compile import (APPROVER_RULES, BOUND_TYPES, CLASSES, LABELS_FIELD, RUN_LABELS, SECTIONS, canonical,
+                      labels_subject, literals, policy_hash, prefixes, requirements, subject_labels, translate)
 
 MAX_SUBJECT = source_reader.MAX_SUBJECT   # bytes of UTF-8; a longer subject is never cut or windowed, and the reader resolves no literal longer
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -159,9 +159,11 @@ class Engine:
         # the pattern's alternatives (compile.requirements). An a2a rule matches in any case, as every prefilter does:
         # the names it reads are lower-cased (classes.a2a_fields); so does a rule on the `tracekit` field, whose
         # subjects are also casefolded as a path is (_tracekit): the agent's file system may ignore case where the
-        # pattern names a folder in mixed case
+        # pattern names a folder in mixed case. A rule on LABELS_FIELD reads the policy's own labels, as written, in any
+        # class: as both verifiers search it (labels._compiled)
         def rx(r, key):
-            return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
+            return compile_(r[key], r.get("field") != LABELS_FIELD and (r.get("class") == "a2a" or
+                                                                         r.get("field") == "tracekit"))
         # (a rule in `mode: shadow` applies as a flag: the decision records it, and the call runs)
         self.shadow = frozenset(r["id"] for sec in SECTIONS for r in self.policy.get(sec, [])
                                 if r.get("mode") == "shadow")
@@ -232,11 +234,14 @@ class Engine:
         self._spelled = spelled(self.policy)
         # run conditions (docs/policy-v2.md#run-conditions): each `when` rule's labels, by id; each rule's label, and
         # each run label a rule sets (its own label, of RUN_LABELS); the rules on the call's labels (LABELS_FIELD),
-        # read after the others, of which a call's own labels are
+        # read after the others, of which a call's own labels are, and the labels they read (subject_labels); those
+        # of them that are run conditions on no tool, read once more on a call's whole decision (condition)
         self.when = {r["id"]: frozenset(r["when"]["run_has"]) for _, r, *_ in self.rules if "when" in r}
         self.labels = {r["id"]: r["label"] for _, r, *_ in self.rules if "label" in r}
         self.run_label = {i: x for i, x in self.labels.items() if x in RUN_LABELS}
         self._on_labels = [x for x in self.rules if x[1].get("field") == LABELS_FIELD]
+        self._subject_labels = subject_labels(self.policy)
+        self._conditions = {x[1]["id"] for x in self._on_labels if "when" in x[1] and "tool" not in x[1]}
         # the rules on LABELS_FIELD each set of a call's labels matches, as the subject they read (labels_subject):
         # a policy's labels are a closed set, and a call's few, so each set is searched once
         self._label_hits = {}
@@ -703,19 +708,14 @@ class Engine:
             hits["ask"].append("TK-OVERSIZE")
         # the rules on the call's labels: those of the rules it matched (not the run condition rules held aside), as
         # one subject (labels_subject); a run condition rule's waits in `cond`, another's applies now
-        mine = labels_subject(self.labels[i] for sec in SECTIONS for i in hits[sec] if i in self.labels) \
+        mine = labels_subject((i for sec in SECTIONS for i in hits[sec]), self._subject_labels) \
             if self._on_labels and not nondeterministic and not harness else ""
-        found = self._label_hits.get(mine) if mine else ()
         try:
-            if found is None:
-                found = []
-                for x in self._on_labels:
-                    rid = x[1]["id"]
-                    if self._match(x[3], mine, False, deadline) and not (
-                            x[4] is not None and self._match(x[4], mine, False, deadline)):
-                        found.append(x)
-                if len(self._label_hits) < 4096:
-                    self._label_hits[mine] = found
+            found = self._labelled(mine, deadline) if mine else ()
+        except TimeoutError as e:   # as a match of the loop above that runs out of time: deny
+            nondeterministic, found = True, ()
+            hits["deny"].append(e.args[0])
+        try:
             for sec, rule, tool_re, *_, tool_lits in found:
                 rid = rule["id"]
                 if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low_name, deadline):
@@ -748,11 +748,43 @@ class Engine:
                 out["when"] = {**base["when"], **out.get("when", {})}
         return self.condition(out, labels)
 
-    def condition(self, d, labels=()):
+    def _labelled(self, mine, deadline):
+        """The rules on LABELS_FIELD whose pattern, and not their unless, matches labels subject `mine` (each subject is
+        searched once: a policy's labels are a closed set, and a call's few); TimeoutError naming the rule (its
+        args[0]) whose match spends `deadline` (_backend)."""
+        found = self._label_hits.get(mine)
+        if found is None:
+            found = []
+            for x in self._on_labels:
+                try:
+                    if self._match(x[3], mine, False, deadline) and not (
+                            x[4] is not None and self._match(x[4], mine, False, deadline)):
+                        found.append(x)
+                except TimeoutError:
+                    raise TimeoutError(x[1]["id"]) from None
+            if len(self._label_hits) < 4096:
+                self._label_hits[mine] = found
+        return found
+
+    def condition(self, d, labels=(), cls=None):
         """Decision `d` (of decide, or two readings _stricter joined) in a run that carries `labels`: each run condition
         rule it matched (`when`: id -> section) applies once every label the rule names is the run's, or one a rule
         the call matched sets (a command that reads a secret and sends it); `run_labels` names the labels that made
-        them apply, and `when` keeps those that still wait. It only adds rule ids: never looser."""
+        them apply, and `when` keeps those that still wait. With `cls`, the class the policy gives the call's tool
+        (evaluate passes it with the call's whole decision, every reading joined), each run condition rule on
+        LABELS_FIELD with no tool, of that class or none, whose pattern and not its unless matches the labels of `d`'s
+        rules (labels_subject) is matched too, as both verifiers replay it; none for a harness call. A match that runs
+        out of time denies. It only adds rule ids: never looser."""
+        mine = labels_subject(d["rule_ids"], self._subject_labels) if cls not in (None, "harness") and \
+            self._conditions else ""
+        try:
+            add = {rule["id"]: sec for sec, rule, *_ in (self._labelled(mine, [REGEX_TIMEOUT_S]) if mine else ())
+                   if rule["id"] in self._conditions and _reaches(rule, cls) and rule["id"] not in d["rule_ids"]}
+        except TimeoutError as e:
+            add, d = {}, {**d, "verdict": "deny", "nondeterministic": True,
+                          "rule_ids": list(dict.fromkeys([*d["rule_ids"], e.args[0]]))}
+        if add:
+            d = {**d, "when": {**add, **d.get("when", {})}}
         if not d.get("when"):
             return d
         have = set(labels) | {self.run_label[i] for i in d["rule_ids"] if i in self.run_label}
@@ -6990,12 +7022,6 @@ def _push_settings(parsed):
 def _text(s):
     """Lone surrogates (valid in JSON escapes, not in UTF-8) become \\udxxx text, the same for both engines."""
     return s.encode("utf-8", "backslashreplace").decode("utf-8")
-
-
-def labels_subject(labels):
-    """The subject a rule on LABELS_FIELD reads: a call's labels (of the rules it matched), sorted, each once, joined by
-    a space (`background_spawn egress`), so one pattern can name two of them."""
-    return " ".join(sorted(set(labels)))
 
 
 def spelled(policy):

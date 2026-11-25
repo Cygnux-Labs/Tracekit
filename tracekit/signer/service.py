@@ -669,14 +669,16 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
                 d = _stricter(d, policy.decide(name, args, as_cls, untrusted))
                 d = _in_workdir(policy, name, args, d, untrusted, as_cls) if (as_cls or policy.tool_class(name)) == \
                     "shell" else d
-        d = policy.condition(d)   # a run condition rule one reading matched, whose label another reading's rule sets
+        # a run condition rule one reading matched, whose label another reading's rule sets; and one on the labels the
+        # readings' rules set together, as the verifiers replay it from the decision
+        d = policy.condition(d, cls=cls)
         if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         h = _in_workdir(policy, tool, args, h, untrusted, "shell") if hint == "shell" else h
         strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
         mismatch = cls == "unknown" or strict is not d
-        strict = policy.condition(_carry(policy, strict, h if strict is d else d))
+        strict = policy.condition(_carry(policy, strict, h if strict is d else d), cls=cls)
         return strict, mismatch, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
     except RecursionError:
         raise

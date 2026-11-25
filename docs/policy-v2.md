@@ -874,19 +874,21 @@ from its records alone knows them.
 **The rule.** `when` goes on an `ask` or a `flag` rule; a `deny` rule applies always (a lint error). The rule is
 matched as any other and applies when the run carries its labels or a rule of the same call sets them: a command that
 reads a secret and sends it asks in a run that read none before. A rule with `when` can't carry a run label itself.
-`field: labels` reads the labels of the rules the call matched, sorted and joined by spaces (`background_spawn
-egress`), so a rule names a kind of call the labelled rules define already (`egress`: `TK-F012`, `TK-F013`, `TK-F024`,
+`field: labels` reads the labels of the rules the call matched (but run condition rules and other rules on the labels
+field), sorted and joined by spaces (`background_spawn egress`), as written in any class, so a rule names a kind of call the labelled rules define already (`egress`: `TK-F012`, `TK-F013`, `TK-F024`,
 and in `dev.yaml` `TK-F037` to `TK-F041`, `TK-F044`, `TK-F046` and the held uploads `TK-A032` and `TK-A056`;
 `dev.yaml`'s `TK-F013` leaves out a network command whose every target is this machine) without repeating their
 patterns, or two kinds of one call;
 with `when` it waits for the run's labels, without it applies at once (`dev.yaml`'s `TK-Q002`: a send left running in
-the background, `launchctl submit` too). The verifiers replay such a rule from each decision's rule ids and the
-run's labels: a decision that doesn't name one its labels meet fails `run labels`. They search its pattern as RE2
-reads it, in linear time and within a budget for the bundle, the same in both verifiers: a bundle's own policy whose
-label pattern the signer would refuse (a repeat of a repeat, lookaround), or whose searches run past the budget, fails
-`run labels` rather than hanging the verifier. Each reading of a call the signer decides (a PowerShell line read as a shell one, text typed into a
-shell, a Hermes process write) keeps its run conditions and the labels it sets, even where it doesn't decide the
-call. A condition rule doesn't read a subject over 64 KiB; the other rules decide such a call. Lint also refuses a
+the background, `launchctl submit` too). A run condition rule on the labels field with no `tool` is also read once
+on the call's whole decision, the labels of every reading's rules together. The verifiers replay such a rule from
+each decision's rule ids and the run's labels: a decision that doesn't name one its labels meet fails `run labels`.
+They search its pattern and `unless` as RE2 reads them, in linear time and within a budget for the bundle, the same in
+both verifiers: a bundle's own policy whose label pattern the signer would refuse (a repeat of a repeat, lookaround,
+or a program past the linear search's size, which lint refuses too), or whose searches run past the budget, fails
+`run labels` rather than hanging the verifier. Each reading of a call the signer decides (a PowerShell line read as a
+shell one, text typed into a shell, a Hermes process write) keeps its run conditions and the labels it sets, even
+where it doesn't decide the call. A condition rule doesn't read a subject over 64 KiB; the other rules decide such a call. Lint also refuses a
 label outside the set, one named twice, and one no rule of the policy can set (`untrusted_content` always can: an
 observed input sets it).
 
@@ -999,8 +1001,9 @@ Patterns must mean the same to RE2 (`google-re2`, used when installed) and to th
 
 - lookaround, backreferences, atomic groups, possessive repeats, `\Z`;
 - groups other than `(?:` and `(?P<name>`, so no inline flags or comments;
-- nested sets and `[: :]` classes; a letter or digit escape other than `\d \D \w \W \s \S \b \B \A \n \t \r \f \v
-  \xHH` (inside a set: `\d \D \w \W \s \n \t \r \f \v \xHH`), and non-ASCII escapes (escaped ASCII punctuation is fine);
+- nested sets and `[: :]` classes; a letter or digit escape other than `\d \D \w \W \s \S \b \A \n \t \r \f \v \xHH`
+  (inside a set: `\d \D \w \W \s \n \t \r \f \v \xHH`), and non-ASCII escapes (escaped ASCII punctuation is fine);
+  `\B` too, which RE2 also finds between the bytes of one character, where the fallback finds none;
 - a literal `{` that isn't escaped, a repeat without a lower bound, repeat counts above 1000 (nested counts
   multiplied: `(?:a{10}){101}` is 1010);
 - an unbounded repeat whose body starts with an unbounded repeat (`(a+)+`, `(.*a)*`), the classic catastrophic shape.

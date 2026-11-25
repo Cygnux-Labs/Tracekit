@@ -30,7 +30,7 @@ _FLAG = re.compile(r"--?[A-Za-z0-9][\w.-]*")
 # untrusted_content also when a tool the policy's `untrusted` list names runs or an input is observed as untrusted; a
 # person may clear one
 RUN_LABELS = ("secrets_access", "untrusted_content")
-# a rule's field: the labels of the rules the call matched, sorted and joined by a space (engine.labels_subject)
+# a rule's field: the labels of the rules the call matched, sorted and joined by a space (labels_subject)
 LABELS_FIELD = "labels"
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
@@ -156,11 +156,11 @@ for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
 WS = "\\t\\n\\f\\r "   # RE2's \s; Python's also has \v
-_ESCAPES = set("dDwWsSbBAntrfv")
+_ESCAPES = set("dDwWsSbAntrfv")   # not \B: RE2 also finds one between the bytes of a character
 _CLASS_ESCAPES = set("dDwWsntrfv")
 _OPS = {_sre_c.LITERAL, _sre_c.NOT_LITERAL, _sre_c.ANY, _sre_c.IN, _sre_c.BRANCH, _sre_c.SUBPATTERN,
         _sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT, _sre_c.AT}
-_ATS = {_sre_c.AT_BEGINNING, _sre_c.AT_END, _sre_c.AT_BOUNDARY, _sre_c.AT_NON_BOUNDARY, _sre_c.AT_BEGINNING_STRING}
+_ATS = {_sre_c.AT_BEGINNING, _sre_c.AT_END, _sre_c.AT_BOUNDARY, _sre_c.AT_BEGINNING_STRING}
 
 
 def canonical(pol):
@@ -170,6 +170,22 @@ def canonical(pol):
 
 def policy_hash(pol):
     return "sha256:" + hashlib.sha256(canonical(pol).encode("utf-8")).hexdigest()
+
+
+def subject_labels(pol):
+    """{rule id: label} of the rules whose labels a rule on LABELS_FIELD reads: each rule's non-empty label, but a run
+    condition rule's (`when`) and another LABELS_FIELD rule's, which wait on the subject or follow from it. The
+    engine and both verifiers read the subject by this (labels_subject; sdk/typescript/src/verify/labels.ts follows
+    it, docs/format-v2.md's run labels)."""
+    return {r["id"]: r["label"] for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r.get("label"), str)
+            and r["label"] and "when" not in r and r.get("field") != LABELS_FIELD}
+
+
+def labels_subject(rule_ids, labels):
+    """The subject a rule on LABELS_FIELD reads of a decision naming `rule_ids`: the labels `labels` (subject_labels')
+    gives them, each once, sorted by code point and joined by a space (`background_spawn egress`), so one pattern can
+    name two of them; "" when none has one, which no such rule reads."""
+    return " ".join(sorted({labels[i] for i in rule_ids if i in labels}))
 
 
 def translate(pattern):
@@ -228,6 +244,13 @@ def _walk(items, room=MAX_REPEAT):
         elif op == _sre_c.BRANCH:
             for b in av[1]:
                 _walk(b, room)
+        elif op == _sre_c.IN and av[:1] == [(_sre_c.NEGATE, None)] and any(
+                {(_sre_c.CATEGORY, a), (_sre_c.CATEGORY, b)} <= set(av) for a, b in _COMPLEMENTS):
+            raise PolicyError("a negated class of an escape and its complement ([^\\w\\W]) matches nothing, and the "
+                              "fallback engine reads it as any character")
+
+
+_COMPLEMENTS = ((_sre_c.CATEGORY_DIGIT, _sre_c.CATEGORY_NOT_DIGIT), (_sre_c.CATEGORY_WORD, _sre_c.CATEGORY_NOT_WORD))
 
 
 # cached: a pure check, and most of a build's time, which checks every pattern of a pack and of the packs it extends
@@ -241,6 +264,28 @@ def check_pattern(pattern):
     except re.error as e:
         raise PolicyError(f"bad regex: {e}") from e
     _walk(_sre_p.parse(pattern))
+
+
+@functools.lru_cache(maxsize=4096)
+def _lint_pattern(pattern, labels=False):
+    """check_pattern, and that the engines compile `pattern`: the fallback (the regex module, as engine._backend
+    compiles it) as written and in any case, as it raises on some RE2 and sre take (an any-case class of every
+    character, `[^\\w\\W]`: AttributeError), which would stop a signer on it; with `labels` (a rule on LABELS_FIELD),
+    the verifiers' linear search too (linear.Pattern: its program's size), so the signer refuses what they would."""
+    check_pattern(pattern)
+    try:
+        import regex
+    except ImportError:   # no fallback engine here to run it
+        regex = None
+    for flags in (0, regex.IGNORECASE) if regex else ():
+        try:
+            regex.compile(translate(pattern), regex.ASCII | regex.V0 | flags)
+        except Exception as e:
+            raise PolicyError(f"the fallback engine can't compile it{' in any case' * bool(flags)} "
+                              f"({type(e).__name__})") from None
+    if labels:
+        from . import linear
+        linear.Pattern(pattern)
 
 
 MAX_EXACT = 64   # strings an exact set of the literal walk may hold before it gives up on exactness
@@ -575,7 +620,7 @@ def _lint(pol, path):
             for key in ("pattern", "unless", "tool"):
                 try:
                     if isinstance(r.get(key), str):
-                        check_pattern(r[key])
+                        _lint_pattern(r[key], key != "tool" and r.get("field") == LABELS_FIELD)
                         if key == "unless" and all(re.search(translate(r[key]), s, re.ASCII) for s in ("", "\0\n")):
                             errors.append(f"{where}: can never fire: unless matches every subject")
                 except PolicyError as e:
@@ -671,7 +716,7 @@ def _lint_cli(rule):
         if not program_of(e["command"]):
             errors.append(f"{e['command']!r}: its first word names no program")
         try:
-            check_pattern(e["command"])
+            _lint_pattern(e["command"])
         except PolicyError as x:
             errors.append(f"{e['command']!r}: {x}")
         if "flag" in e and not (isinstance(e["flag"], str) and _FLAG.fullmatch(e["flag"])):
@@ -880,7 +925,7 @@ def _lint_agent(rule):
             try:
                 if typ is not str or not isinstance(b["pattern"], str):
                     raise PolicyError("a pattern is a string, on a string field")
-                check_pattern(b["pattern"])
+                _lint_pattern(b["pattern"])
             except PolicyError as e:
                 errors.append(f"field {name}: pattern: {e}")
     budget = a.get("budget")

@@ -11,7 +11,7 @@ export class Spent extends Error {}
 
 const MAX_REPEAT = 1000, MAX_PROGRAM = 20000;
 export const STEPS = 20_000_000;
-const ESCAPES = new Set("dDwWsSbBAntrfv"), CLASS_ESCAPES = new Set("dDwWsntrfv");
+const ESCAPES = new Set("dDwWsSbAntrfv"), CLASS_ESCAPES = new Set("dDwWsntrfv");   // compile.py's (no \B)
 const CONTROL: Record<string, string> = { n: "\n", t: "\t", r: "\r", f: "\f", v: "\v" };
 const isWord = (c: string) => /^[0-9A-Za-z_]$/.test(c);
 const SPACE = "\t\n\f\r ";
@@ -19,7 +19,6 @@ const CATS: Record<string, (c: string) => boolean> = {
   d: (c) => c >= "0" && c <= "9", D: (c) => !(c >= "0" && c <= "9"), w: isWord, W: (c) => !isWord(c),
   s: (c) => SPACE.includes(c), S: (c) => !SPACE.includes(c),
 };
-const FOLDS: Record<string, string[]> = { "ſ": ["s", "S"], "K": ["k", "K"] };
 
 export class Budget {
   left: number;
@@ -36,7 +35,7 @@ type Test = (c: string) => boolean;
 // in notin), any (ANY). Two nodes with the same key are equal in sre's parse, as its branch optimizations compare them.
 type Item = ["L", number] | ["R", number, number] | ["C", string];
 type Char = { op: "char"; kind: "lit" | "notlit" | "in" | "notin" | "any"; items: Item[] };
-type Node = Char | { op: "at"; kind: string } | { op: "group"; body: Node[] }
+type Node = Char | { op: "at"; kind: string } | { op: "group"; body: Node[]; capture: boolean }
   | { op: "branch"; alts: Node[][] } | { op: "repeat"; min: number; max: number; body: Node[] };
 
 const uniq = (items: Item[]) => [...new Map(items.map((x) => [JSON.stringify(x), x])).values()];
@@ -93,7 +92,8 @@ class Parser {
       }
       out.push(this.atom());
     }
-    return out;
+    // sre's _parse: a non-capturing group no repeat took is its nodes, in its place (`(?:a)|b` is a class)
+    return out.flatMap((n) => n.op === "group" && !n.capture ? n.body : [n]);
   }
 
   repeat(): [number, number] {
@@ -112,6 +112,7 @@ class Parser {
   atom(): Node {
     const c = this.s[this.i++];
     if (c === "(") {
+      const capture = this.s[this.i] !== "?" || this.s[this.i + 1] !== ":";
       if (this.s[this.i] === "?") {
         if (this.s[this.i + 1] === ":") this.i += 2;
         else if (this.s[this.i + 1] === "P" && this.s[this.i + 2] === "<") {
@@ -127,7 +128,7 @@ class Parser {
       }
       const body = this.alternation();
       if (this.s[this.i++] !== ")") this.fail("missing ), unterminated subpattern");
-      return { op: "group", body };
+      return { op: "group", body, capture };
     }
     if (c === ")") this.fail("unbalanced parenthesis");
     if (c === "[") return this.set();
@@ -142,8 +143,7 @@ class Parser {
     return { op: "char", kind: "lit", items: [["L", c.codePointAt(0)!]] };
   }
 
-  /** The class item an escape names; outside a class \A \b \B are the assertions "beginstr", "boundary",
-   * "nonboundary". */
+  /** The class item an escape names; outside a class \A \b are the assertions "beginstr", "boundary". */
   escape(inClass: boolean): Item | string {
     const e = this.s[this.i++];
     if (e === undefined) this.fail("bad escape (end of pattern)");
@@ -159,7 +159,6 @@ class Parser {
     if (CATS[e]) return ["C", e];
     if (e === "A") return "beginstr";
     if (e === "b") return "boundary";
-    if (e === "B") return "nonboundary";
     return ["L", e.codePointAt(0)!];   // punctuation, as itself
   }
 
@@ -185,6 +184,10 @@ class Parser {
       } else items.push(lo);
     }
     const u = uniq(items);
+    const cat = (x: string) => u.some((it) => it[0] === "C" && it[1] === x);
+    if (negate && (cat("d") && cat("D") || cat("w") && cat("W")))   // compile.py _walk's
+      this.fail("a negated class of an escape and its complement ([^\\w\\W]) matches nothing, and the fallback engine "
+        + "reads it as any character");
     return u.length === 1 && u[0][0] === "L" ? { op: "char", kind: negate ? "notlit" : "lit", items: u }
       : { op: "char", kind: negate ? "notin" : "in", items: u };
   }
@@ -256,7 +259,7 @@ export class Pattern {
   prog: Ins[];
   found = new Map<string, boolean>();
 
-  constructor(pattern: string, readonly anycase = false) {
+  constructor(pattern: string) {
     const p = new Parser([...pattern]);
     const items = p.alternation();
     if (p.i < p.s.length) p.fail("unbalanced parenthesis");
@@ -272,14 +275,7 @@ export class Pattern {
   private at(kind: string, t: string[], i: number): boolean {
     if (kind === "begin" || kind === "beginstr") return i === 0;
     if (kind === "end") return i === t.length;
-    const b = (i > 0 && isWord(t[i - 1])) !== (i < t.length && isWord(t[i]));
-    return kind === "boundary" ? b : !b;
-  }
-
-  private reads(test: Test, c: string): boolean {
-    if (!this.anycase) return test(c);
-    const forms = c.codePointAt(0)! < 128 ? [c.toLowerCase(), c.toUpperCase()] : [c, ...(FOLDS[c] ?? [])];
-    return forms.some(test);
+    return (i > 0 && isWord(t[i - 1])) !== (i < t.length && isWord(t[i]));   // \b
   }
 
   /** Whether the pattern matches somewhere in `text`, spending `budget`; a text searched before is answered again. */
@@ -309,7 +305,7 @@ export class Pattern {
       }
       if (i === t.length) return false;
       budget.spend(ready.length);
-      threads = ready.filter((pc) => this.reads((this.prog[pc] as ["char", Test])[1], t[i])).map((pc) => pc + 1);
+      threads = ready.filter((pc) => (this.prog[pc] as ["char", Test])[1](t[i])).map((pc) => pc + 1);
     }
     return false;
   }
