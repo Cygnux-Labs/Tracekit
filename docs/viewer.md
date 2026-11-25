@@ -329,9 +329,12 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 Across every why run, INFLUENCE answers first, per risky call, what led to it, graded by how each link is known
 ([why.md](why.md#influence-what-moved-a-call)): exact (the signer's provenance, in records this viewer verified,
-traced an argument to the record), measured (a replay without the source changed the call), seen (the source was in the
-model's context when it decided) and hint (text overlap, never an influence). A why log's own provenance, with no
-verified signed record behind it, is shown as "claimed by the log".
+traced an argument to the record), measured (a replay without the source changed the call, one whose replays were
+signed and verified), seen (the source was in the model's context when it decided) and hint (text overlap, never an
+influence). A why log's own provenance, with no verified signed record behind it, is shown as "claimed by the log", and
+a replay test only the log's `tests.jsonl` holds as "claimed (local replay)": the agent can write that file, its chain
+too, so it decides nothing (what the call serves, the chain, the red lines of confirmed causes). The viewer doesn't
+join signed `why.finding`s to a why log yet: a replay shows as claimed here; `tracekit graph` reads signed findings.
 
 - **The answer, first: a card per call stopped or flagged.** A call blocked, held, rejected by a person or flagged, one
   a replay without the task kept, and one the signer or a replay tied to untrusted content each get a card, worst first.

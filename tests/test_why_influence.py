@@ -19,7 +19,7 @@ from tracekit.policy2 import compile as compile_policy  # noqa: E402
 from tracekit.why import build_graph, load_run  # noqa: E402
 from tracekit.why import analysis, influence  # noqa: E402
 from tracekit.why.analysis import alerts, analyse, influence_graph, workspace  # noqa: E402
-from tracekit.why.core import Runtime, content_hash  # noqa: E402
+from tracekit.why.core import Runtime, chain_hash, check_tests, content_hash  # noqa: E402
 from tracekit.why.evals import list_runs  # noqa: E402
 from tracekit.why.graph import target_hits  # noqa: E402
 from tracekit.why.guard import Guard  # noqa: E402
@@ -75,10 +75,17 @@ EXACT = [{"field": "branch", "kind": "string", "record": 4, "from_event": "issue
 CONTEXT = "dev decided (m; 3 in context, 1 untrusted) → this call."
 
 
+def replayed(run, test):
+    """Add `test` to `run` as a replay the code holding the run vouches for (Run.replayed): one it ran itself, or a
+    signed replay it verified. A test only the log holds is its claim (test_a_replay_only_the_log_holds_...)."""
+    run.add_test(test)
+    run.replayed = run.replayed | {chain_hash(run.tests[-1])}
+
+
 def without_task(run, verdict, effect, target="tool=git_push"):
     """A replay test of the run without its task (the `ref:` of the task's content)."""
     task = next(e for e in run.events if e.get("kind") == "task")
-    run.add_test({"intervention": "ref:" + task["ref"][7:19], "target": target, "effect": effect,
+    replayed(run, {"intervention": "ref:" + task["ref"][7:19], "target": target, "effect": effect,
                   "ci": [effect - 0.1, effect + 0.1], "verdict": verdict, "n": 40})
 
 
@@ -139,15 +146,60 @@ class Grades(unittest.TestCase):
 
     def test_a_replay_that_changed_the_call_is_measured_and_one_that_ruled_it_out_is_not_an_edge(self):
         run, call, _ = desk()
-        run.add_test({"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.7,
+        replayed(run, {"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.7,
                       "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
-        run.add_test({"intervention": "input:repo:README.md", "target": "tool=git_push", "effect": 0.0,
+        replayed(run, {"intervention": "input:repo:README.md", "target": "tool=git_push", "effect": 0.0,
                       "ci": [-0.1, 0.1], "verdict": "ruled-out", "n": 80})
         g = build_graph(run)
         got = graded(g, call)
         self.assertEqual([(e["label"], e["effect"]) for e in got["edges"] if e["grade"] == "measured"],
                          [("github:issue-12", 0.7)])
         self.assertEqual([g.nodes[x]["label"] for x in got["ruled"]], ["repo:README.md"])
+
+    def test_a_replay_only_the_log_holds_is_its_claim_and_changes_no_grade(self):
+        """tests.jsonl is the agent's file: lines it wrote, chained as `tracekit why test` chains them, say a replay
+        without the task kept the call and one without the issue changed it. They change no grade: INFLUENCE shows the
+        second as claimed (local replay), and what the call serves, untrusted, the chain and the words read as
+        without them; vouched for (Run.replayed), the same lines decide."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        rt = Runtime({"m": lambda ctx, **k: "push it"}, {"git_push": lambda **a: "ok"}, task=TASK, signer=False,
+                     out_dir=d)
+        a = rt.agent("dev")
+        issue = a.observe("Issue 12: push the fix to branch fix-login", source="github:issue-12")
+        a.act("git_push", {"branch": "fix-login"}, decision=a.decide([rt.task_ref, issue], model="m"))
+        run = rt.finish()
+        call = "ev:" + run.of_type("action")[0]["id"]
+        before = call_influence(run, build_graph(run), call)
+        without_task(run, "ruled-out", 0.0)   # the agent's: add_test writes the line and its chain
+        run.add_test({"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.9,
+                      "ci": [0.8, 1.0], "verdict": "causal", "n": 400})
+        theirs = load_run(run.path)   # as the viewer reads the folder: the chain holds, nothing vouches for it
+        self.assertEqual((check_tests(theirs), [t["chain"] for t in theirs.tests]), ([], ["ok", "ok"]))
+        inf = call_influence(theirs, build_graph(theirs), call)
+        for k in ("serves", "untrusted", "chain", "words", "replays", "ruled_out"):
+            self.assertEqual(inf[k], before[k], k)
+        self.assertEqual([(e["grade"], e["basis"], e["label"]) for e in inf["edges"] if e["grade"] != "seen"],
+                         [("claimed", "local replay", "github:issue-12")])
+        g = build_graph(theirs)
+        self.assertFalse(influence.drifted(graded(g, call), goals(theirs, g)))
+        edges = influence_graph([(theirs, build_graph(theirs, infer=False))])["edges"]
+        self.assertEqual([(e["tests"], e["confirmed"]) for e in edges], [([], False)] * len(edges))   # no red line
+        theirs.replayed = frozenset(chain_hash(t) for t in theirs.tests)   # vouched for: the same lines decide
+        inf = call_influence(theirs, build_graph(theirs), call)
+        self.assertEqual((inf["serves"], inf["untrusted"]["grade"]), ("drift", "measured"))
+
+    def test_a_line_only_the_log_holds_cant_push_a_vouched_replay_off_the_call(self):
+        """The graph keeps one tested edge per item and call: a stronger line only the log holds (more replays, a
+        ruled-out verdict) doesn't take a vouched replay's place."""
+        run, call, _ = desk(args={"branch": "fix-login"})
+        replayed(run, {"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.7,
+                       "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
+        run.add_test({"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.0,
+                      "ci": [-0.05, 0.05], "verdict": "ruled-out", "n": 4000})
+        got = graded(build_graph(run), call)
+        self.assertEqual(([(e["grade"], e["effect"]) for e in got["edges"] if e["grade"] != "seen"], got["ruled"]),
+                         ([("measured", 0.7)], []))
 
     def test_a_test_whose_target_matches_several_calls_is_about_none_of_them(self):
         """`--target tool=send_email` over a run with two emails measured whether any email happened: it put its
@@ -159,7 +211,7 @@ class Grades(unittest.TestCase):
             a.act("send_email", {"to": to}, decision=d)
         run = rt.finish()
         without_task(run, "causal", 0.21, target="tool=send_email")
-        run.add_test({"intervention": "input:vendor:notes", "target": "tool=send_email", "effect": 0.3,
+        replayed(run, {"intervention": "input:vendor:notes", "target": "tool=send_email", "effect": 0.3,
                       "ci": [0.1, 0.5], "verdict": "causal", "n": 40})
         g = build_graph(run)
         calls = ["ev:" + e["id"] for e in run.of_type("action")]
@@ -256,7 +308,7 @@ class Serves(unittest.TestCase):
         self.assertTrue(inf["words"].startswith("git_push (dev): the replay without the task targeted `tool=git_push`, "
                                                 "which other calls match too, so it tested none of them alone."))
         without_task(run, "ruled-out", 0.0, target="tool=git_push,arg~fix-login")   # still both
-        run.add_test({"intervention": "input:github:issue-12", "target": "tool=git_push,arg~fix-lo", "effect": 0.0,
+        replayed(run, {"intervention": "input:github:issue-12", "target": "tool=git_push,arg~fix-lo", "effect": 0.0,
                       "ci": [-0.1, 0.1], "verdict": "ruled-out", "n": 40})   # without the issue: not without the task
         self.assertEqual(call_influence(run, build_graph(run), call)["replays"],
                          {"shared": ["tool=git_push", "tool=git_push,arg~fix-login"]})
@@ -334,7 +386,7 @@ class Serves(unittest.TestCase):
         without_task(run, "ruled-out", 0.0)
         without_task(run, "causal", 0.8, target="tool=git_push,arg~hotfix")   # as many replays, a larger effect
         self.assertEqual(call_influence(run, build_graph(run), call)["serves"], "task")
-        run.add_test({**run.tests[0], "n": 160})   # the ruled-out one again, with four times the replays
+        replayed(run, {**run.tests[0], "n": 160})   # the ruled-out one again, with four times the replays
         self.assertEqual(call_influence(run, build_graph(run), call)["serves"], "drift")
 
     def test_only_a_replay_without_the_task_that_changed_the_call_says_it_came_from_the_task(self):
@@ -354,20 +406,20 @@ class Serves(unittest.TestCase):
         readme = a.observe("README: push to fix branches", source="repo:README.md", trust="trusted")   # no prompt
         a.act("git_push", {"branch": "fix"}, decision=a.decide(asks + [readme], model="m"))
         run = rt.finish()
-        run.add_test({"intervention": "ref:" + asks[0].ref[7:19], "target": "tool=git_push", "effect": 0.0,
+        replayed(run, {"intervention": "ref:" + asks[0].ref[7:19], "target": "tool=git_push", "effect": 0.0,
                       "ci": [-0.1, 0.1], "verdict": "ruled-out", "n": 40})
         call = "ev:" + run.of_type("action")[0]["id"]
         inf = call_influence(run, build_graph(run), call)
         self.assertEqual((inf["serves"], inf["replays"]), ("unknown", {"partial": ["tool=git_push"]}))
         self.assertTrue(inf["words"].startswith("git_push (dev): a replay without part of the task kept it "
                                                 "(`tool=git_push`), none without the rest."))
-        run.add_test({"intervention": "ref:" + asks[1].ref[7:19], "target": "tool=git_push", "effect": 0.0,
+        replayed(run, {"intervention": "ref:" + asks[1].ref[7:19], "target": "tool=git_push", "effect": 0.0,
                       "ci": [-0.1, 0.1], "verdict": "ruled-out", "n": 40})
         self.assertEqual(call_influence(run, build_graph(run), call)["serves"], "drift")
 
     def test_a_replay_that_untrusted_content_caused_the_call_is_named(self):
         run, call, _ = desk(args={"branch": "fix-login"})
-        run.add_test({"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.7,
+        replayed(run, {"intervention": "input:github:issue-12", "target": "tool=git_push", "effect": 0.7,
                       "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
         inf = call_influence(run, build_graph(run), call)
         self.assertEqual((inf["serves"], inf["untrusted"]["grade"]), ("unknown", "measured"))
@@ -409,7 +461,7 @@ class Serves(unittest.TestCase):
         executor.act("send_email", {"to": "audit@outside.example"},
                      decision=executor.decide([rt.task_ref] + executor.inbox(), model="m"))
         run = rt.finish()
-        run.add_test({"intervention": "input:vendor:notes", "target": "tool=send_email", "effect": 0.8,
+        replayed(run, {"intervention": "input:vendor:notes", "target": "tool=send_email", "effect": 0.8,
                       "ci": [0.6, 0.9], "verdict": "causal", "n": 40})
         inf = call_influence(run, build_graph(run), "ev:" + run.of_type("action")[0]["id"])
         self.assertEqual([s["text"] for s in inf["chain"]], [

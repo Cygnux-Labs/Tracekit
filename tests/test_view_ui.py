@@ -2715,15 +2715,15 @@ class PlainPages(unittest.TestCase):
         measured, thin seen); only a replay without the task says a call came from it; a hint shows only when asked
         for, never as an influence; a call nothing links says "no influence found"."""
         needs_node(self)
-        from test_why_influence import EXACT, desk, without_task
+        from test_why_influence import EXACT, desk, replayed, without_task
         from tracekit.why import build_graph
         from tracekit.why.analysis import workspace
         drifted = desk(args={"branch": "fix-login"})[0]
         without_task(drifted, "ruled-out", 0.0)
         pushed = desk(EXACT, signer=True)[0]
         deployed = desk(args={"branch": "fix-login"}, tool="deploy_site")[0]
-        deployed.add_test({"intervention": "input:github:issue-12", "target": "tool=deploy_site", "effect": 0.7,
-                           "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
+        replayed(deployed, {"intervention": "input:github:issue-12", "target": "tool=deploy_site", "effect": 0.7,
+                            "ci": [0.5, 0.85], "verdict": "causal", "n": 40})
         held = desk(args={"branch": "hotfix-from-issue-12", "title": "Fix the login bug"})[0]   # hints: the issue, the task
         held.of_type("action")[-1].update(status="blocked", policy={"decision": "ask"})
         lone = desk(decide=False, args={"branch": "fix-login"})[0]
@@ -2773,6 +2773,15 @@ class PlainPages(unittest.TestCase):
         unbound = html.unescape(self.influence(S["sources"], S["edges"], S["groups"], calls=twice, cards=nodes)[0])
         self.assertIn(exact[:-1] + "; the call's arguments here are the log's, not checked against them)</div>", unbound)
         self.assertIn("claimed by the log, not checked against the signer: its `branch` from github:issue-12</div>", again)
+        # a replay only the log's tests.jsonl holds: its claim, drawn as nothing and read as no measure
+        local = json.loads(json.dumps(calls))
+        card = next(c for c in local["calls"] if c["run"] == deployed.run_id)
+        card["edges"] = [dict(e, grade="claimed", basis="local replay") if e["grade"] == "measured" else e
+                         for e in card["edges"]]
+        claimed = html.unescape(self.influence(S["sources"], S["edges"], S["groups"], calls=local, cards=nodes)[0])
+        self.assertIn("claimed (local replay): the log's own test says a replay without github:issue-12 changed it, "
+                      "effect +0.70; no signed replay this viewer verified backs it</div>", claimed)
+        self.assertNotIn("measured: a replay without github:issue-12", claimed)
         self.assertIn("seen: 3 sources in the context of the model call that asked for it (the agent&#39;s runtime recorded its context)", page)
         # the held push's branch is in the issue's text: a hint, shown only when asked for
         self.assertNotIn("hint, not an influence", page)

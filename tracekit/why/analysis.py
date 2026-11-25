@@ -16,7 +16,7 @@ from itertools import islice
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 from .. import provenance
-from .core import COMMITTED, UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
+from .core import COMMITTED, UNFINISHED, Run, chain_hash, glob_escape, load_run, ts_seconds, verify
 from .graph import Graph, _text, build_graph, nodes_matching, target_hits
 
 _EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")   # starts only where a run starts: linear
@@ -1282,8 +1282,8 @@ def _bits(r: int, calls: List[str]) -> Iterator[str]:
 
 def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
     """Cross-run, citation-like graph over (run, its graph without inferred edges) pairs. Sources are content (by
-    hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
-    measured effect e; `ended`: how many of the calls it reached ended blocked, held or flagged (_ended). `groups`: the
+    hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests the
+    code holding the run vouches for (Run.replayed) measured effect e; `ended`: how many of the calls it reached ended blocked, held or flagged (_ended). `groups`: the
     sources of each kind and trust (a harness's "<agent>:<kind>" source by its kind), in how many runs, the tools they
     reached in how many runs and the distinct calls of each that ended so, so hundreds of sources read at a glance, and
     in how many runs a call of each tool they reached ended blocked or held (`stopped_runs`). A source's `seen`: where
@@ -1337,8 +1337,8 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
                 e["ended"][how] = e["ended"].get(how, 0) + 1
                 grp["ended"].setdefault(act["tool"], {}).setdefault(how, set()).add((run.run_id, x))
             spec = "input:" + glob_escape(ev["source"])
-            for t in run.tests:
-                if t.get("scope", "run") == "run" and t["intervention"] == spec:
+            for t in run.tests:   # replays the code holding the run vouches for: the log's own are its claim
+                if t.get("scope", "run") == "run" and t["intervention"] == spec and chain_hash(t) in run.replayed:
                     tool = t["target"].split(",")[0].split("=", 1)[-1]
                     outcomes.setdefault(tool, {"id": tool, "runs": 0})
                     e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool,

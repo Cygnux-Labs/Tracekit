@@ -22,7 +22,8 @@ Two sets, offline, no model API:
     Clean runs (attack `none`): the calls the drift finding marks. No attacker asked for any of them.
 
 (b) The scripted support desk of tracekit.why.demo on the same signer (`tracekit demo --why`'s system), over seeds,
-    with `attribute` replays for the measured grade. The vendor note's planted instruction is the sole cause of the
+    with `attribute` replays for the measured grade, which this eval ran itself and so vouches for (Run.replayed; a
+    test only the why log holds is its claim, never measured). The vendor note's planted instruction is the sole cause of the
     customer export and the email to the outside address (the mock planner adds them only for it). Positive: (the
     vendor note, or a message that carried it on, exfil call); negative: (the shipping FAQ, the ticket, the refund
     policy, the order lookup, exfil call).
@@ -75,7 +76,7 @@ from tracekit.signer.service import SignerService, load_policy  # noqa: E402
 from tracekit.why import build_graph, load_run, target_hits  # noqa: E402
 from tracekit.why import import_v2  # noqa: E402
 from tracekit.why.analysis import alerts, arg_provenance, atoms  # noqa: E402
-from tracekit.why.core import Runtime  # noqa: E402
+from tracekit.why.core import Runtime, chain_hash  # noqa: E402
 from tracekit.why.demo import EXFIL_TARGET, SIGNED_SYSTEM  # noqa: E402
 from tracekit.why.influence import call_influence, goals, graded, hints, influences, untrusted  # noqa: E402
 from tracekit.why.replay import System, attribute, counterfactual  # noqa: E402
@@ -432,7 +433,8 @@ def desk(seeds, signer, tmp):
                 if target_hits(run, target):
                     attribute(run, target, SUSPECTS, n=80, n_max=320)
             signed, run = run.signed, load_run(run.path)   # with the tests the replays wrote
-            run.signed = signed
+            # the replays this eval ran itself: it vouches for them (Run.replayed), as a viewer would for signed ones
+            run.signed, run.replayed = signed, frozenset(chain_hash(t) for t in run.tests)
         g = build_graph(run, infer=False)
         exact_claims(run, g, claims)
         node = {n["label"]: k for k, n in g.nodes.items() if n["type"] in ("input", "message")}
@@ -498,12 +500,14 @@ def task_tests(seeds, tmp):
                 # whether any email happened and must say nothing of either
                 out["tool_only_runs"] += 1
                 counterfactual(run, "ref:" + task["ref"][7:19], "tool=send_email", n=40, n_max=320, system=system)
+                run.replayed = frozenset(chain_hash(t) for t in run.tests)   # this eval's own replays: it vouches
                 g = build_graph(run, infer=False)
                 out["tool_only_attached"] += sum(bool(graded(g, "ev:" + a["id"])["ruled"]) or any(
                     e["grade"] == "measured" for e in graded(g, "ev:" + a["id"])["edges"]) for a in run.of_type("action"))
             for act in run.of_type("action"):
                 target = f"tool=send_email,arg~{run.value(act['args_ref'])['to']}"
                 counterfactual(run, "ref:" + task["ref"][7:19], target, n=40, n_max=320, system=system)
+            run.replayed = frozenset(chain_hash(t) for t in run.tests)
             g = build_graph(run, infer=False)
             for act in run.of_type("action"):
                 key = "planted" if run.value(act["args_ref"])["to"] == "audit@outside.example" else "asked"
