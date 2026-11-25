@@ -878,6 +878,12 @@ def _holder(gw, req):
     return (subject(gw), req["caller"]) if gw else (None, None)
 
 
+def _agent(agent_id):
+    """A call's event fields for the sub-agent decide named (`agent_id`, as the harness reported it: descriptive, never
+    an identity, which the run token's caller is), spawned by the main agent; none for the main agent's own call."""
+    return {"agent_id": agent_id, "parent_id": "main"} if agent_id and agent_id != "main" else {}
+
+
 def _process_identity():
     return CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
@@ -3157,6 +3163,7 @@ class SignerService:
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
+        aid = req.get("agent_id")
         args, digest = self._args(req)
         # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE). One budget for the
         # call's copies: the copy kept of a call it doesn't hold, and its noted one (an approver's) when it holds it
@@ -3276,7 +3283,7 @@ class SignerService:
                         "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                         "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
                         "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid,
-                        "policy_hash": self.policy.policy_hash}
+                        "policy_hash": self.policy.policy_hash, **({"agent_id": aid} if aid else {})}
                 if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                     call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"],
                                        "shown": noted() if digest else None}
@@ -3285,7 +3292,7 @@ class SignerService:
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top, **({"ext": ext, "ts": now} if ext else {}))
+                          **top, **_agent(aid), **({"ext": ext, "ts": now} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
@@ -3398,7 +3405,7 @@ class SignerService:
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest,
                                                      **({"via": holder[0]} if gw else {})},
-                           tool_call_id=tcid, attempt=attempt, **top)
+                           tool_call_id=tcid, attempt=attempt, **top, **_agent(call.get("agent_id")))
             written.append(seq)
             latest = run["calls"].get(tcid)
             if latest and latest["attempt"] == attempt:   # what call_state answers

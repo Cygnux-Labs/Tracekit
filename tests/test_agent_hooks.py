@@ -584,6 +584,32 @@ class Harnesses(DaemonCase):
         self.assertEqual(calls, [("Bash", None), ("Edit", "src/app.py"), ("Bash", None)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
 
+    def test_codex_signs_a_call_with_an_unusable_agent_id_as_the_main_agents(self):
+        """The PR #1105 review: normalise passed any `agent_id` on, and on this hook an id the event format can't hold
+        made the signer refuse the call's tool.call, policy.decision and tool.result, so the call ran and only error
+        records were signed. Such an id is the main agent's, as a call with none is; a usable one is kept."""
+        base = {"session_id": "cx-aid", "cwd": self.d, "model": "gpt-5-codex", "turn_id": "t1",
+                "transcript_path": None, "permission_mode": "default"}
+        self.assertEqual(self.hook("codex", {**base, "hook_event_name": "SessionStart"})[0], 0)
+        ids = (7, {"x": 1}, "a" * 201, "", "\ud800x", "a1")
+        for i, aid in enumerate(ids):
+            call = {**base, "tool_name": "Bash", "tool_use_id": f"b{i}", "tool_input": {"command": "ls"},
+                    "agent_id": aid}
+            with self.subTest(agent_id=aid):
+                self.assertEqual(self.hook("codex", {**call, "hook_event_name": "PreToolUse"})[:2], (0, ""))
+                self.assertEqual(self.hook("codex", {**call, "hook_event_name": "PostToolUse",
+                                                     "tool_response": "x"})[0], 0)
+        evs = self.events("cx-aid")
+        self.assertEqual([e["type"] for e in evs if e["type"] in ("error", "capture.gap")], [])
+        signed = {}
+        for e in evs:
+            if e["type"] in ("tool.call", "policy.decision", "tool.result"):
+                signed.setdefault(e["data"].get("tool_use_id") or e["data"].get("id"), set()).add(
+                    (e["type"], e["agent_id"]))
+        want = {f"b{i}": {(t, "a1" if aid == "a1" else "main") for t in ("tool.call", "policy.decision", "tool.result")}
+                for i, aid in enumerate(ids)}
+        self.assertEqual(signed, want)
+
     def test_codex_shell_command_that_isnt_text_is_denied(self):
         """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reached the v1 policy as a
         list, whose rules matched its repr: a force push came back allow, rm -rf / only flag. The v1 hook denies a shell
@@ -960,6 +986,17 @@ class Harnesses(DaemonCase):
         call = {"tool_name": "shell", "tool_input": {"command": "ls"}, "working_dir": "/w"}
         self.assertEqual(agent_hooks.normalise("goose", {**call, "event": "PreToolUse"})["cwd"], "/w")
         self.assertIsNone(agent_hooks.normalise("codex", {**call, "hook_event_name": "PreToolUse"})["cwd"])
+
+    def test_a_sub_agents_agent_id_is_kept_for_the_signer(self):
+        """Codex and Open Interpreter send a sub-agent's calls with Claude Code's `agent_id` (docs/coding-agents.md):
+        normalise keeps it, so the v2 hook signs the call as that agent's; a main agent's call has none."""
+        call = {"session_id": "s", "tool_use_id": "t", "tool_name": "shell", "tool_input": {"command": "ls"}}
+        for harness in ("codex", "interpreter"):
+            for ev in ("PreToolUse", "PostToolUse"):
+                with self.subTest(harness=harness, event=ev):
+                    self.assertEqual(agent_hooks.normalise(harness, {**call, "hook_event_name": ev,
+                                                                     "agent_id": "a1"})["agent_id"], "a1")
+                    self.assertNotIn("agent_id", agent_hooks.normalise(harness, {**call, "hook_event_name": ev}))
 
     def test_crush_uses_claude_codes_payload_maps_tools_and_blocks_denied_calls(self):
         # Crush sends Claude Code's payload and event names, with its own lower-case tool names; PreToolUse can

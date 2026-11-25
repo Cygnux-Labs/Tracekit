@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:f9e7198cc2b7b6faf0a63456b80432609127552c9f7184e4c7eb35d8fb642a31",
+  "policy_hash": "sha256:5fba73cb7722e9b5057593561524f606852ece82143caed422c282c3bb27bbd7",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -54,8 +54,8 @@
       "fp": 0
     },
     "secrets": {
-      "deny": 46,
-      "caught": 46,
+      "deny": 48,
+      "caught": 48,
       "benign": 0,
       "fp": 0
     },
@@ -526,6 +526,8 @@
     "deny/secrets:44": "deny TK-D011 TK-D015 TK-S004 TK-F001 TK-F012 TK-F013",
     "deny/secrets:45": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
     "deny/secrets:46": "deny TK-D006 TK-D015 TK-F013",
+    "deny/secrets:47": "ask TK-A021",
+    "deny/secrets:48": "ask TK-A021",
     "deny/shell:1": "deny TK-S006",
     "deny/shell:2": "deny TK-S006",
     "deny/shell:3": "deny TK-S006",
