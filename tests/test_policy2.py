@@ -5610,7 +5610,9 @@ class HarmlessStops(unittest.TestCase):
             # the runners 1.7.3 added (and python-dotenv's -f and -q), as its tables read them
             "tracekit": "", "honcho": "-d -e -f", "foreman": "-d -e -f", "chamber": "-b -r", "aws-vault": "-d -r -t",
             "infisical": "", "asdf": "", "pyenv": "", "rbenv": "", "nodenv": "", "volta": "", "fnm": "",
-            "devbox": "-c -e", "perf": "-C -F -G -I -c -e -m -o -p -r -t -u -x", "rr": "-o"}
+            "devbox": "-c -e", "perf": "-C -F -G -I -c -e -m -o -p -r -t -u -x", "rr": "-o",
+            # and the 1.8 private follow-ups' (dotenvx's -fv and -fk are three characters)
+            "dotenvx": "-e -f -l", "teller": "-c", "tox": "-c -e -x", "nvm": ""}
         self.assertEqual(set(shell.RUNNERS) - set(short), set())
         for name, want in short.items():
             opts = shell.RUNNERS[name][1] if name in shell.RUNNERS else shell.WRAPPERS[name][0]
