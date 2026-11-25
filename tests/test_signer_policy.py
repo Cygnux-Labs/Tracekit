@@ -5165,7 +5165,11 @@ class CodingPack(unittest.TestCase):
                        ("glab config get token", "TK-A021"), ("glab config get token --host gitlab.com", "TK-A021"),
                        ("glab config get -h ghe.corp token", "TK-A021"), ("glab config get --host=gitlab.com token", "TK-A021"),
                        ("glab auth status --show-token", "TK-A021"), ("glab auth status -t", "TK-A021"),
-                       ("glab auth status -th ghe.corp", "TK-A021")])
+                       ("glab auth status -th ghe.corp", "TK-A021"),
+                       ("kubectl config view --raw", "TK-A021"), ("kubectl config view --minify --raw", "TK-A021"),
+                       ("kubectl config view --raw --minify", "TK-A021"), ("kubectl config view --raw=true", "TK-A021"),
+                       ("kubectl config view --raw -o json", "TK-A021"), ("kubectl -n prod config view --raw", "TK-A021"),
+                       ("oc config view --raw", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
@@ -5183,7 +5187,10 @@ class CodingPack(unittest.TestCase):
                         "aws configservice describe", "glab auth status", "glab auth status -h gitlab.com",
                         "glab auth login", "glab auth status --token glpat-x", "glab config get",
                         "glab config get api_protocol", "glab config get editor --host gitlab.com",
-                        "glab config set token glpat-x"):
+                        "glab config set token glpat-x", "kubectl config view", "kubectl config view -o json",
+                        "kubectl config view --minify", "kubectl config view --raw=false",
+                        "kubectl config get-contexts", "kubectl config current-context",
+                        "kubectl config use-context prod", "kubectl config set-cluster x"):
             for pack, engine, e in self.every_pack():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})

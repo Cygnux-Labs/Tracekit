@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:5fba73cb7722e9b5057593561524f606852ece82143caed422c282c3bb27bbd7",
+      "policy_hash": "sha256:de67b0e79f510880388513b859befe71c24e508a96f85ba90e5e444411eeb21c",
       "heldout": {
         "recall": 0.6928571428571428,
         "deny_recall": 0.29285714285714287,
@@ -2484,7 +2484,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:6da34878b3341859cc48173c33cca2c5d2bb9e0538fef75c8db73f81623a5cc1",
+      "policy_hash": "sha256:7aba9cffcd654eb4591f174469aaa026e4150daad76c9122e17b529cb3d550ee",
       "heldout": {
         "recall": 0.7523809523809524,
         "deny_recall": 0.38571428571428573,
@@ -5678,19 +5678,19 @@
   "gates": {
     "machine": "Darwin arm64 arm python 3.11.15",
     "min_heldout_recall": {
-      "default": 0.6833333333333333,
-      "strict": 0.7428571428571429
+      "default": 0.6928571428571428,
+      "strict": 0.7523809523809524
     },
     "max_fp_rate": {
       "default": {
         "heldout": 0.041666666666666664,
         "sessions": 0.015384615384615385,
-        "e17": 0.0010298661174047373
+        "e17": 0.0009852216748768472
       },
       "strict": {
         "heldout": 0.12962962962962962,
         "sessions": 0.15384615384615385,
-        "e17": 0.05149330587023687
+        "e17": 0.05123152709359606
       }
     },
     "max_blind_fp": {
