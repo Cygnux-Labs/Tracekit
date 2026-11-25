@@ -75,6 +75,28 @@ class Spellings(unittest.TestCase):
                               "dotenvx run -- npm test", "tox exec -e py312 -- pytest -q", "nvm exec 20 node -v",
                               "bun x -p prettier prettier --check ."])
 
+    def test_a_monorepo_release_is_read_however_its_tool_is_run(self):
+        """TK-A056 (dev) read lerna's and changesets' publish only bare or through npx, bunx, pnpx, pnpm or yarn with
+        options, and nx's release not at all: `yarn lerna publish`, a pinned `npx @changesets/cli@2 publish`, `yarn
+        workspaces foreach changeset publish`, `bun run changeset publish` and `nx release publish` through any runner
+        were allowed; and `oc apply`, OpenShift's kubectl, was read by neither TK-A056 nor TK-F004."""
+        self.held("TK-A056", "ask", [
+            "yarn lerna publish", "pnpm lerna publish --yes", "npx lerna@8 publish", "npx --yes lerna@8.1.2 publish",
+            "bun run lerna publish", "npx @changesets/cli@2 publish", "npx --yes @changesets/cli@2.27.0 publish",
+            "pnpm dlx @changesets/cli@2 publish", "yarn workspaces foreach changeset publish",
+            "yarn workspaces foreach --all run changeset publish", "yarn workspace web changeset publish",
+            "bun run changeset publish", "bun changeset publish", "nx release publish", "npx nx release publish",
+            "pnpm nx release publish", "yarn nx release publish", "bunx nx release publish", "pnpm exec nx release publish",
+            "npx --yes nx@19.8.0 release publish", "nx release --yes", "nx release minor", "oc apply -f k8s/",
+            "oc --context prod delete deploy web"], packs=("dev.yaml",))
+        self.kept("TK-A056", ["nx release --skip-publish", "nx release version", "nx release changelog",
+                              "nx release publish --dry-run", "nx run-many -t build", "lerna run test",
+                              "yarn workspaces foreach -A run build", "changeset version", "oc apply --dry-run=client -f k8s/",
+                              "oc get pods"], packs=("dev.yaml",))
+        for pack, name, e in engines(("coding.yaml", "server.yaml", "strict.yaml")):
+            with self.subTest(pack=pack, engine=name):
+                self.assertIn("TK-F004", e.decide("Bash", {"command": "oc apply -f k8s/"})["rule_ids"])
+
     def test_kubectl_through_a_distribution_or_wrapper_and_its_raw_view(self):
         """`microk8s kubectl`, `k3s kubectl`, `minikube kubectl --`, microk8s.kubectl and kubecolor ran kubectl unread
         by every kubectl rule (TK-A021, TK-A052, TK-A056); `config view` with `--flatten` (which skips the redaction

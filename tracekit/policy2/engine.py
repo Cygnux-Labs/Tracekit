@@ -2661,8 +2661,8 @@ def _goreleaser(argv):
 
 # CLIs whose commands push, publish or deploy: one whose subcommand the line can't tell (an expansion it doesn't
 # resolve, `git $X origin main`; none, where xargs or parallel adds it) may be one (_verb_unknown)
-_DEPLOYERS = {"git", "hub", "gh", "npm", "pnpm", "yarn", "bun", "docker", "podman", "helm", "kubectl", "terraform",
-               "tofu", "terragrunt", "pulumi", "cargo", "gem", "twine", "uv", "poetry", "gcloud", "aws", "firebase",
+_DEPLOYERS = {"git", "hub", "gh", "npm", "pnpm", "yarn", "bun", "docker", "podman", "helm", "kubectl", "oc",
+               "terraform", "tofu", "terragrunt", "pulumi", "cargo", "gem", "twine", "uv", "poetry", "gcloud", "aws", "firebase",
                "vercel", "netlify", "fly", "flyctl", "wrangler", "railway", "serverless", "sls", "cdk", "sam",
                "nerdctl", "buildah", "docker-compose", "podman-compose", "crane", "oras", "skopeo", "goreleaser",
                "finch", "regctl", "ctr", "ko"}
@@ -2946,6 +2946,8 @@ def _pushes(commands):
     out = []
     for command, runner, replaced in _run_by(commands):
         argv = command["argv"]
+        if (p := _released(argv)) is not None:   # (a monorepo's release, however its tool is run)
+            out.append(p)
         fed = not runner.isdisjoint(_FEEDERS)
         prog, read = _push_program(argv[0]) if argv else ("", True)
         if not read:   # (no reader below takes this program: its argv, also as its base name, as they would give)
@@ -2959,7 +2961,7 @@ def _pushes(commands):
         if push is not None:
             out += push
         else:
-            dry = "DRYRUN:" * (not runner and (prog == "kubectl" and _kubectl_dry_run(argv) or
+            dry = "DRYRUN:" * (not runner and (prog in ("kubectl", "oc") and _kubectl_dry_run(argv) or
                                                prog in _PUBLISHERS and _publish_dry_run(argv)))
             # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
             # publish after any options as its program's publish: _published)
@@ -3307,7 +3309,7 @@ def _kubectl_dry_run(argv):
     is --raw (a request sent as given) or a word the line can't tell (_UNTOLD: `"$D"` may be `--` or a later
     --dry-run=none), and no --dry-run word comes right after an option that may take it as its value (_kubectl_takes:
     `--field-manager --dry-run`)."""
-    if _program(argv) != "kubectl":
+    if _program(argv) not in ("kubectl", "oc"):
         return False
     last = None
     for prev, word in zip(argv, argv[1:]):
@@ -3368,6 +3370,53 @@ def _published(argv):
             return None
         valued = w.startswith("-")
         i += 1
+    return None
+
+
+# a monorepo's release tools, by the word that runs one (a package's bin, at any version), and the subcommand that
+# publishes its packages; and the package managers that run a bin by its name, with the words that may stand before it
+_RELEASER = re.compile(r"(?:(?:[^ ]*/)?(lerna|changeset|nx)|@changesets/(cli))(?:@[^ /]*)?")
+_RELEASE_VERB = {"lerna": "publish", "changeset": "publish", "cli": "publish", "nx": "release"}
+_BIN_RUNNERS = {"npx", "bunx", "pnpx", "npm", "pnpm", "yarn", "bun"}
+_BIN_WORDS = {"run", "exec", "x", "dlx", "--", "recursive", "multi", "m"}
+
+
+def _released(argv):
+    """`PUSH:release <tool>` (lerna, changeset or nx) for a command that publishes a monorepo's packages
+    with that release tool (@changesets/cli's is changeset's), run by its own name or by a package manager's for its
+    bin (`yarn lerna publish`, `pnpm -r exec nx release publish`, `bun run changeset publish`, `yarn workspaces foreach
+    -A changeset publish`, `yarn workspace a lerna publish`), at any version (`lerna@8`), after any options of either
+    (each with a value or not, read in one pass); `nx release` with no subcommand but its version specifier publishes
+    too, unless --skip-publish, --dry-run or -d is among its words, and its version, changelog and plan don't. Else
+    None. (npx's, bunx's and the managers' exec, x and dlx are commands of their own the parser gives as well.)"""
+    i = 1 if argv and shell.base_name(argv[0]) in _BIN_RUNNERS else 0
+    valued = False
+    while 0 < i < len(argv) and not _RELEASER.fullmatch(argv[i]):   # (a manager's own words before the bin)
+        w = argv[i]
+        if argv[i:i + 2] == ["workspaces", "foreach"] or w == "workspace":
+            i, valued = i + 2, False
+            continue
+        if not (w.startswith("-") or w in _BIN_WORDS or valued):
+            return None
+        valued = w.startswith("-") and "=" not in w
+        i += 1
+    if not (m := _RELEASER.fullmatch(argv[i] if i < len(argv) else "")):
+        return None
+    tool, valued = m.group(1) or m.group(2), False
+    for k in range(i + 1, len(argv)):
+        w = argv[k]
+        if w == _RELEASE_VERB[tool]:
+            if tool != "nx":
+                return f"PUSH:release {'changeset' if tool == 'cli' else tool}"
+            rest = argv[k + 1:]
+            sub = next((x for x in rest if not x.startswith("-")), None)
+            if sub in ("version", "changelog", "plan", "plan:check") or \
+                    any(x in ("--skip-publish", "--dry-run", "-d") or x.startswith("--dry-run=") for x in rest):
+                return None
+            return "PUSH:release nx"
+        if not w.startswith("-") and not valued:
+            return None
+        valued = w.startswith("-") and "=" not in w
     return None
 
 
