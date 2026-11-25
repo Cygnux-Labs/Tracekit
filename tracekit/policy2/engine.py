@@ -178,6 +178,7 @@ class Engine:
                     self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a), prefixes(a) or "")
                                             for a in parts]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
+        self._tracekit_gate = TracekitGate.of(self.rules)
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
         # a shell rule's unless_cli: (the programs its entries name, [(program, compiled command, flag, without,
@@ -418,6 +419,7 @@ class Engine:
             self._of[cls, "when"] = [x for x in of if x[1]["id"] in self.when]
             self._of[cls, "deny"] = [x for x in self._of[cls] if x[0] == "deny"]
 
+        gate = self._tracekit_gate
         spent = []   # why the engine's reading of the parse stopped (its budget), if it did
         in_set = {}   # (RE2) the ids of the prefilter strings each text holds: one Set search a text
         scanned = {}   # (the fallback) whether a text holds one of a set of strings two rules share, by (its number, text)
@@ -457,6 +459,8 @@ class Engine:
                 if cls == "shell" and key[0] not in args and key[0] not in _SHELL_READ:
                     # an argument the call doesn't give (_subjects: args.get, none)
                     memo[key], memo[key + ("read",)] = _NO_SUBJECTS, []
+                elif key[0] == "tracekit" and cls == "shell" and gate is not None and not gate.touches(parsed, work):
+                    memo[key], memo[key + ("read",)] = _NO_SUBJECTS, []   # (nothing it says can match: TracekitGate)
                 else:
                     try:
                         subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
@@ -1155,16 +1159,17 @@ def _slashes(texts):
     return texts + [n for n in dict.fromkeys(more) if n not in have]
 
 
-def _path_forms(targets):
+def _path_forms(targets, fold_ascii=True):
     """Targets, each also with `\\` as `/` (_slashes), as plainly written (/etc/./x, /etc//x and /etc/y/../x name
-    /etc/x) and casefolded."""
+    /etc/x) and casefolded (an ASCII one only with `fold_ascii`)."""
     targets = _slashes(targets)
     have = set(targets)
     targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
                                      for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))
                          if n not in have]
     have = set(targets)
-    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+    return targets + [f for f in dict.fromkeys(map(str.casefold, targets if fold_ascii else [
+        t for t in targets if not t.isascii()])) if f not in have]
 
 
 def commands_each(args):
@@ -5982,6 +5987,11 @@ def _asks_help(argv):
     return "srt-decider" not in rest
 
 
+# the effects that name no file the line writes (what a held line holds, a word a program only names): not TARGET subjects
+_NOT_ACTED_ON = ("ROOT_TARGET:", "SAFE_MODE_TARGET:", "INTO_TARGET:", "TREE_TARGET:", "WORKTREE_TARGET:", "NAMED_TARGET:",
+                 "INSIDE_TARGET:")
+
+
 def _tracekit(parsed, finds, work):
     """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
     runs, its words joined (but data words; none of a help request's, _asks_help), its stdin, the files redirections write, _effects' files, the other words
@@ -6029,7 +6039,7 @@ def _tracekit(parsed, finds, work):
             more += [h + m[1:] for m in [n, *more] if m[:1] == "~" for h in homes]
             more += [t + m[len(k):] for m in [n, *more] for k, t in links.items() if m.startswith(k + "/")]
             try:
-                more += [f for m in [n, *more] for f in _pattern_forms(m, work)]
+                more += [f for m in [n, *more] if shell._GLOB.search(m) for f in _pattern_forms(m, work)]
                 shell.charge(work, sum(map(len, more)))
             except shell.ParseError:   # (one that reads as too many, or the budget: the names so far stay as written, and
                 if len(parsed) > 5:    # the line is held as an unread one beside what the rules find in them)
@@ -6073,20 +6083,104 @@ def _tracekit(parsed, finds, work):
         effects = []
         if len(parsed) > 5:
             parsed[5]["unread"] = True
-    targets = at([t.partition(":")[2] for t in effects
-                  if not t.startswith(("ROOT_TARGET:", "SAFE_MODE_TARGET:", "INTO_TARGET:", "TREE_TARGET:",
-                                       "WORKTREE_TARGET:", "NAMED_TARGET:", "INSIDE_TARGET:"))])
+    targets = at([t.partition(":")[2] for t in effects if not t.startswith(_NOT_ACTED_ON)])
     act += targets
 
     def tag(name, texts):
-        return [name + s for s in _path_forms(list(dict.fromkeys(texts)))] if texts else []
+        # (a rule on this field matches in any case, so an ASCII text is read once whatever its case, and not read casefolded too)
+        once = {}
+        for t in dict.fromkeys(texts):
+            once.setdefault(t.lower() if t.isascii() else t, t)
+        return [name + s for s in _path_forms(list(once.values()), False)]
     # (neither pattern finds a text alone that it doesn't find in all of them joined: none is searched one by one)
     act = [unicodedata.normalize("NFKC", s) for s in act]   # (Python reads a name so: `ｓigner` is `signer`)
     joined = "\n".join(act)
     return tag("ACT:", act) + tag("TARGET:", targets) + tag("LIST:", listed) + tag("READ:", read) + \
         tag("DEEP:", deep) + \
         (["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s) or
-          _SDK.search(s) and _reaches_sdk(s, work)] if _SIGNER_MODULE.search(joined) or _SDK.search(joined) else [])
+          _SDK.search(s) and _reaches_sdk(s, work)] if _SIGNER_MODULE.search(joined) or
+         any(map(joined.__contains__, _SDK_LITS)) and _SDK.search(joined) else [])
+
+
+_TRACEKIT_TAGS = frozenset(("act:", "target:", "list:", "read:", "deep:", "signer_module:"))
+_KILLERS = frozenset(("kill", "pkill", "killall", "pgrep", "pidof", "ps"))   # (what _kills_signer reads)
+# the components a pattern under is read as Tracekit's names (_pattern_forms), as parts of the casefolded text; a bare cd
+# puts a word under one the line doesn't hold
+_GLOB_UNDER = ("~", "application support", "library", "share", "lib")
+_SDK_LITS = literals(_SDK.pattern)
+_SIGNER_CODE_LITS = (*_SDK_LITS, *literals(_SIGNER_MODULE.pattern))
+
+
+class TracekitGate:
+    """Whether a shell call can touch Tracekit's files, signer or approvals, decided before _tracekit reads it: the
+    rules on the `tracekit` field each need, to match a subject, the strings of their `requirements` (compile) in it, and
+    every subject is built from the call's own words, redirections, stdin, assignments, lines and effects (cut at a `/`
+    or a `\\` where a word is joined to a folder, so each part of a string a subject holds is in one of those texts, in
+    the case the rules read: NFKC and casefolded). A call whose texts hold, for some alternative of each rule, no string
+    of one of its sets (every part of it), reads as none: _tracekit would give no subject any rule matches. Kept out of
+    it: a call that may name a path by a pattern or a bare cd (_pattern_forms), sets HOME (what ~ stands for), or may stop
+    the signer by what finds it (_kills_signer), where SIGNER_MODULE is code's reading (_SIGNER_MODULE, _SDK); and a call
+    whose texts are long enough for a joined form to pass MAX_SUBJECT (TK-OVERSIZE). None where a rule's alternatives
+    aren't all such sets: _tracekit reads every call."""
+
+    def __init__(self, rules):
+        alts, self.signer = [], False
+        for rule in rules:
+            req = requirements(rule["pattern"])
+            if req is None:
+                raise ValueError(rule["id"])
+            for alt in req:
+                sets = [s for s in alt if not _TRACEKIT_TAGS.issuperset(s)]
+                if not sets:
+                    if alt != (("signer_module:",),):   # (what no code reading stands for)
+                        raise ValueError(rule["id"])
+                    self.signer = True
+                    continue
+                idx = [{} for _ in sets]   # (each member under its longest part: it is read only where that part is in the text)
+                for one, found in zip(idx, sets):
+                    for m in found:
+                        parts = tuple(dict.fromkeys(x for x in re.split(r"[/\\\s]+", m) if x))
+                        if not parts:
+                            raise ValueError(rule["id"])
+                        one.setdefault(max(parts, key=len), []).append(parts)
+                alts.append(idx)
+        self.alts = alts
+        self.keys = sorted({k for alt in alts for one in alt for k in one})
+
+    @classmethod
+    def of(cls, policy_rules):
+        """The gate of the rules on the `tracekit` field, or None when there are none or one can't be read this way."""
+        rules = [r for _, r, *_ in policy_rules if r.get("field") == "tracekit"]
+        try:
+            return cls(rules) if rules else None
+        except ValueError:
+            return None
+
+    def touches(self, parsed, work):
+        """Whether _tracekit's subjects may match one of the rules."""
+        commands = parsed[0]
+        if any(c["argv"][0] in _KILLERS for c in commands) or any(r.startswith("HOME=") for r in parsed[2]):
+            return True
+        # (the parse's lines only for a loop's words: they repeat the commands')
+        texts = [" ".join(c["argv"]) for c in commands] + parsed[2] + parsed[3] + [
+            t for t in _effects(parsed, work) if not t.startswith(_NOT_ACTED_ON)] + [
+            s for c in commands for s in c["stdin"]]
+        if any(" in " in line for line in parsed[1]):
+            texts += parsed[1]
+        blob = "\n".join(dict.fromkeys(texts))
+        if len(blob) * 8 > MAX_SUBJECT:
+            return True
+        folded = blob if blob.isascii() else unicodedata.normalize("NFKC", blob)
+        low = folded.casefold()
+        if shell._GLOB.search(low) and (any(map(low.__contains__, _GLOB_UNDER)) or
+                                        any(c["argv"][0] in _NAVIGATE for c in commands)):
+            return True
+        if self.signer and any(map(low.__contains__, _SIGNER_CODE_LITS)):   # (code that reaches the signer holds one of these: _tracekit reads it)
+            return True
+        present = [k for k in self.keys if k in low]
+        return bool(present) and any(
+            all(any(all(p in low for p in m) for k in present if k in one for m in one[k]) for one in alt)
+            for alt in self.alts)
 
 
 _VARIABLE_NAME = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
