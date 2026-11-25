@@ -1010,10 +1010,27 @@ class Routes(unittest.TestCase):
                               "KIRO_HOME=/tmp/x kiro-cli chat --no-interactive hi",
                               "KIRO_DEFAULT_SETTINGS=/tmp/s.json kiro-cli chat --no-interactive hi",
                               "INTERPRETER_HOME=/tmp/x interpreter exec hi",
-                              "HOME=/tmp/x interpreter exec hi"), "ask", "TK-A070")
+                              "HOME=/tmp/x interpreter exec hi",
+                              "HOME=/tmp/x interpreter-classic exec hi",
+                              "INTERPRETER_HOME=/tmp/x interpreter-classic exec hi"), "ask", "TK-A070")
+        # the rest of jcode's lifecycle-hook family, each read in env_overrides.rs: one variable per hook, and an empty
+        # value removes that hook from the config, so a line that sets one runs jcode with a gate it chose
+        self.expect(self.bash("JCODE_HOOK_TURN_START=/tmp/h jcode run hi", "JCODE_HOOK_TURN_END=/tmp/h jcode run hi",
+                              "JCODE_HOOK_SESSION_START=/tmp/h jcode run hi",
+                              "JCODE_HOOK_SESSION_END=/tmp/h jcode run hi",
+                              "JCODE_HOOK_POST_TOOL=/tmp/h jcode run hi",
+                              "JCODE_HOOK_POST_TOOL_FEEDBACK=/tmp/h jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL_TRANSFORM=/tmp/h jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL_TRANSFORM_TIMEOUT_MS=1 jcode run hi",
+                              "JCODE_HOOK_POST_TOOL_FEEDBACK_TIMEOUT_MS=1 jcode run hi",
+                              "JCODE_HOOK_POST_TOOL= jcode run hi", "JCODE_HOOK_SESSION_START= jcode run hi",
+                              "JCODE_HOOK_TURN_END= jcode run hi"), "ask", "TK-A070")
         self.expect(self.bash("jcode run hi", "jcode --version", "jcode --help",
                               "kiro-cli chat", "kiro-cli --version", "kiro-cli --help",
-                              "interpreter exec hi", "interpreter --version", "interpreter --help"), "allow")
+                              "interpreter exec hi", "interpreter --version", "interpreter --help",
+                              # not launch forms: the Python build ships no __main__, and open-interpreter is the
+                              # distribution's name rather than a command (docs/limits.md says both)
+                              "python -m interpreter exec hi", "open-interpreter --version"), "allow")
 
     def test_hermes_settings_files_are_the_harness_settings(self):
         self.expect([("Write", {"file_path": "/home/u/.hermes/config.yaml", "content": "x"})], "ask", "TK-F009")
