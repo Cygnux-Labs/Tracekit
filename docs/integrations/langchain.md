@@ -52,7 +52,7 @@ app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), signer, r
 ## Deep Agents filesystem tools
 
 With Deep Agents 0.7.41, Tracekit recognizes tools built by Deep Agents' `FilesystemMiddleware`.
-The signer checks them using the same names as the coding-agent hooks.
+The adapter recognizes them by their implementation and argument names and sends them to the signer as `deepagents:<name>`, which the signer decides as the matching Claude Code tool.
 
 | Deep Agents tool | Policy name |
 |---|---|
