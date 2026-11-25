@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client, constraints  # noqa: E402
 from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
-from factories import DaemonCase, ledger_records, no_tomllib, patch_env  # noqa: E402
+from factories import TOO_DEEP_JSON, DaemonCase, ledger_records, no_tomllib, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
 
@@ -2126,8 +2126,8 @@ class JcodeTools(unittest.TestCase):
         from pathlib import Path
         with tempfile.TemporaryDirectory() as directory, no_tomllib():
             path = Path(directory) / "config.toml"
-            path.write_text(f"{agent_hooks.JCODE_BEGIN}\n[hooks]\npre_tool = {'[' * 5000}{']' * 5000}\n"
-                            f"{agent_hooks.JCODE_END}\n", encoding="utf-8")
+            path.write_text(f"{agent_hooks.JCODE_BEGIN}\n[hooks]\npre_tool = {TOO_DEEP_JSON}\n{agent_hooks.JCODE_END}\n",
+                            encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "nested too deep to parse"):
                 agent_hooks.jcode_config(str(path))
 

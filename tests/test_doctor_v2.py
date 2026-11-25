@@ -22,7 +22,7 @@ from unittest import mock
 
 import pytest
 
-from factories import no_tomllib
+from factories import TOO_DEEP_JSON, no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -75,7 +75,7 @@ class E16(unittest.TestCase):
     def test_a_settings_file_too_deep_to_parse_is_a_result_not_a_crash(self):
         def deep(L):
             with open(L.settings, "w") as f:
-                f.write("[" * 5000 + "]" * 5000)
+                f.write(TOO_DEEP_JSON)
         with contextlib.redirect_stdout(io.StringIO()):
             got = {r["id"]: r["status"] for r in e16.run_case(deep)}
         self.assertIn("D-HOOKS-PRESENT", got)
@@ -104,26 +104,26 @@ class CodingAgentHooks(unittest.TestCase):
         with open(path) as f:
             return path, json.load(f)
 
-    def test_a_hook_file_line_too_deep_to_parse_is_unreadable_not_a_crash(self):
+    def test_a_hook_file_line_too_deep_to_parse_or_of_another_shape_is_unreadable_not_a_crash(self):
         from tracekit import agent_hooks
-        deep = "[" * 5000 + "]" * 5000
         opencode = os.path.join(self.d, "opencode", "tracekit.js")
         gptme = os.path.join(self.d, "gptme", "config.toml")
         bridge = agent_hooks._gptme_hook_path(gptme)
-        for path, text in ((opencode, f"const commands = {deep};\n"),
-                           (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {deep}\n")):
-            os.makedirs(os.path.dirname(path))
-            with open(path, "w") as f:
-                f.write(text)
-        with self.assertRaises(ValueError):
-            doctor._hook_commands("opencode", opencode)
-        with self.assertRaises(ValueError):
-            doctor._gptme_argv(gptme)
-        self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
-        for harness, path in (("opencode", opencode), ("gptme", gptme)):
-            with self.subTest(harness):
-                self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
-                    {"data_dir": self.d}, "dev", harnesses={harness: path})})
+        for value in (TOO_DEEP_JSON, "5", "[1]", '{"a": 1}'):
+            for path, text in ((opencode, f"const commands = {value};\n"),
+                               (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {value}\n")):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write(text)
+            with self.subTest(value[:8]):
+                with self.assertRaises(ValueError):
+                    doctor._hook_commands("opencode", opencode)
+                with self.assertRaises(ValueError):
+                    doctor._gptme_argv(gptme)
+                self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
+                for harness, path in (("opencode", opencode), ("gptme", gptme)):
+                    self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
+                        {"data_dir": self.d}, "dev", harnesses={harness: path})})
 
     def check(self, harness, path, settings):
         with open(path, "w") as f:

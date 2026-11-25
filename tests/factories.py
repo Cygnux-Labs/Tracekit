@@ -374,6 +374,10 @@ def persisted_queue(signer):
 SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
 
 
+# JSON nested past every Python's limit: json's C parser reads 5,000 levels on 3.12 and 3.13 and 20,000 on 3.14
+TOO_DEEP_JSON = "[" * 100_000 + "]" * 100_000
+
+
 @contextlib.contextmanager
 def no_tomllib():
     """Python 3.9 and 3.10: tomllib can't be imported, nor tracekit.tomlsafe, which imports it."""

@@ -26,7 +26,7 @@ from unittest import mock
 import pytest
 
 import adapter_contract as ac
-from factories import no_tomllib
+from factories import TOO_DEEP_JSON, no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, doctor, findings_v2, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
@@ -2145,7 +2145,7 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(self.read(), text)
 
     def test_a_hook_or_settings_file_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
-        deep = "[" * 5000 + "]" * 5000
+        deep = TOO_DEEP_JSON
         with open(self.hooks, "w") as f:
             f.write(deep)
         with self.assertRaisesRegex(install.SettingsError, "hooks.json is not valid JSON"), \
