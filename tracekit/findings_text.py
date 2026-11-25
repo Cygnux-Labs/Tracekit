@@ -163,7 +163,8 @@ SOURCE = frozenset((".py", ".pyi", ".pyx", ".ipynb", ".js", ".jsx", ".mjs", ".cj
                     ".go", ".rs", ".java", ".kt", ".kts", ".groovy", ".scala", ".rb", ".php", ".c", ".h", ".cc",
                     ".cpp", ".cxx", ".hh", ".hpp", ".hxx", ".m", ".mm", ".cs", ".fs", ".vb", ".swift", ".dart", ".sh",
                     ".bash", ".zsh", ".fish", ".ps1", ".psm1", ".bat", ".sql", ".tf", ".vue", ".svelte", ".lua", ".pl",
-                    ".r", ".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".clj", ".zig", ".sol"))
+                    ".r", ".jl", ".ex", ".exs", ".erl", ".hs", ".ml", ".clj", ".zig", ".sol", ".nim", ".elm", ".cr",
+                    ".nix", ".f90", ".rkt", ".coffee", ".lisp", ".scm", ".mli", ".gleam", ".odin"))
 THIRD = frozenset(("it", "they", "he", "she", "which", "who", "that", "this"))   # "so it never": what a thing does
 AUXILIARY = frozenset(("does", "do", "did", "will", "would", "can", "could", "should", "is", "was", "are", "were",
                        "now", "still", "also", "really", "just", "ever"))

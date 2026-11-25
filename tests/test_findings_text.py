@@ -747,7 +747,8 @@ class Evasions(Base):   # round-2 review: ordinary words that silenced a check, 
         self.assertEqual(found(self.analyze(t), "TK-X113"), [])
         self.assertEqual(self.rules([], "Bumped the version; no code changes."), {"TK-X113"})   # pager.py was edited
         for ext in (".cjs", ".mts", ".cts", ".pyi", ".ipynb", ".tf", ".ps1", ".bash", ".zsh", ".m", ".mm", ".cxx",
-                    ".hxx", ".r", ".jl", ".groovy", ".kts"):   # 1.4.0 review M5: source files SOURCE lacked
+                    ".hxx", ".r", ".jl", ".groovy", ".kts", ".nim", ".elm", ".cr", ".nix", ".f90", ".rkt", ".coffee",
+                    ".lisp", ".scm", ".mli", ".gleam", ".odin"):   # 1.4.0 review M5: source files SOURCE lacked
             with self.subTest(ext):
                 t = Transcript(CWD)
                 t.prompt("Bump the version in pyproject.toml.")
