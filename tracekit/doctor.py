@@ -780,6 +780,72 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
+def _codex_sandbox(add, harnesses):
+    """D-CODEX-SANDBOX: whether Codex's settings leave a person to answer its escalations. Codex's PreToolUse hook
+    sends a shell call's command alone, so a request to run outside the sandbox, and Codex's answer to it, never reach
+    Tracekit (docs/integrations/codex-sandbox.md).
+    Keys and values as codex-rs/core/config.schema.json names them in openai/codex rust-v0.172.0; a value this doesn't
+    know (such as a `granular` approval policy) gives no WARN.
+    lean: reads the config.toml beside Tracekit's hooks and its selected [profiles.<name>]; not a project's
+    .codex/config.toml, /etc/codex/config.toml, managed_config.toml or -c flags at launch, which Codex layers on top
+    (codex-rs/config/src/loader/README.md, "Layering model")"""
+    path = (harnesses or {}).get("codex")
+    if not path:
+        return
+    toml, why = os.path.join(os.path.dirname(path), "config.toml"), None
+    try:
+        import tomllib   # Python 3.11 and newer
+        cfg = tomllib.loads(install.agent_file(toml).decode("utf-8"))
+    except FileNotFoundError:   # Codex's defaults: on-request, a person reviews, the feature off
+        cfg = {}
+    except ImportError:
+        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+    except (OSError, ValueError) as e:   # unreadable, or not TOML
+        why = f"{toml}: {e}"
+    if why:
+        add("D-CODEX-SANDBOX", False, f"can't check Codex's approval settings ({why})",
+            f"keep approvals_reviewer = \"user\" and features.exec_permission_approvals off in {toml}", bad=INFO)
+        return
+    profiles = cfg.get("profiles")
+    chosen = profiles.get(cfg.get("profile")) if isinstance(profiles, dict) and isinstance(cfg.get("profile"), str) \
+        else None
+    layers = [cfg] + ([chosen] if isinstance(chosen, dict) else [])
+
+    def setting(key, table=None):   # the selected profile wins each key
+        value, where = None, None
+        for layer, name in zip(layers, ("", f"[profiles.{cfg.get('profile')}] ")):
+            src = layer.get(table) if table else layer
+            if isinstance(src, dict) and key in src:
+                value, where = src[key], name
+        return value, where or ""
+
+    feature, feature_at = setting("exec_permission_approvals", "features")
+    policy, _ = setting("approval_policy")
+    reviewer, reviewer_at = setting("approvals_reviewer")
+    feature_on = feature is True
+    # AskForApproval in codex-rs/protocol/src/protocol.rs: on-request is its #[default] and on-failure an alias of it;
+    # under untrusted every command a rule doesn't allow asks for approval. The reviewer answers all of them.
+    asks = policy in ("on-request", "on-failure", "untrusted", None)
+    model_reviews = asks and reviewer in ("auto_review", "guardian_subagent")
+    why, fix = [], []
+    if feature_on:
+        why.append(f"{feature_at}features.exec_permission_approvals is true in {toml}: Codex can then run some calls "
+                   "with no hook, so Tracekit neither decides nor records them")
+        fix.append("turn features.exec_permission_approvals off")
+    if model_reviews:
+        why.append(f'{reviewer_at}approvals_reviewer = "{reviewer}" with approval_policy "{policy or "on-request"}" in '
+                   f"{toml}: a model, not a person, answers Codex's approval requests, and Tracekit sees neither the "
+                   "request nor the answer")
+        fix.append('set approvals_reviewer = "user"')
+    add("D-CODEX-SANDBOX", not why, "; ".join(why) or (
+        f'Codex asks a person for approval (approval_policy = "{policy or "on-request"}", {toml})'
+        if asks and reviewer in ("user", None) else
+        f'Codex never asks to run a call outside its sandbox (approval_policy = "never", {toml})' if policy == "never"
+        else f"doctor doesn't know Codex's approval settings in {toml} (approval_policy = {policy!r}, "
+        f"approvals_reviewer = {reviewer!r})"),
+        f"{'; '.join(fix)} in {toml} ({wiki_url('docs/integrations/codex-sandbox.md')})" if fix else "", bad=WARN)
+
+
 def _agy_runs(add, path, home, fix):
     """D-AGY-HOOKS-RUN: whether agy runs the hooks in `path` at all. It loads and never runs them when Tracekit's
     named hook is disabled (in `path`, the user's hooks.json or this workspace's), or when it signs in with a Gemini
@@ -1731,6 +1797,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     _harness_hook_checks(add, harnesses, prod, agent and agent.pw_dir)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
+    _codex_sandbox(add, harnesses)
     # lean: dev only; system mode's hooks run the root-owned venv doctor runs from (D-HOOKS-VENV), but its running
     # signer isn't compared with it; read its hello too if /opt/tracekit gets upgraded in place under a running signer
     if not prod:
