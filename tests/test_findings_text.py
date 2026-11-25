@@ -597,6 +597,18 @@ class Omission(Base):   # TK-X211
                 self.assertEqual(found(out, "TK-X211"), [])
                 self.assertEqual(found(out, "TK-X120"), [])   # the run's own output: no risky delete either
 
+    def test_delete_of_same_basename_elsewhere_is_risky(self):
+        # Write scratch/app.py then rm -rf src/app.py: same basename, other path → TK-X120; same path still routine
+        out, _ = self.run_steps(
+            [("Write", {"file_path": f"{CWD}/scratch/app.py", "content": "x"}), ("Bash", "rm -rf src/app.py")],
+            "Done: fixed src/pager.py.")
+        [f] = found(out, "TK-X120")
+        self.assertIn("recursive delete", what(out, f))
+        out, _ = self.run_steps(
+            [("Write", {"file_path": f"{CWD}/scratch/app.py", "content": "x"}), ("Bash", "rm -rf scratch/app.py")],
+            "Done: fixed src/pager.py.")
+        self.assertEqual(found(out, "TK-X120"), [])
+
     def test_a_call_another_check_found_is_reported_once(self):
         out, _ = self.run_steps([("Bash", "git push origin feature")], "I did not push anything.")
         self.assertEqual([f["verdict"]["rule"] for f in out["findings"] if f["verdict"]["rule"] in
@@ -747,7 +759,8 @@ class Evasions(Base):   # round-2 review: ordinary words that silenced a check, 
         self.assertEqual(found(self.analyze(t), "TK-X113"), [])
         self.assertEqual(self.rules([], "Bumped the version; no code changes."), {"TK-X113"})   # pager.py was edited
         for ext in (".cjs", ".mts", ".cts", ".pyi", ".ipynb", ".tf", ".ps1", ".bash", ".zsh", ".m", ".mm", ".cxx",
-                    ".hxx", ".r", ".jl", ".groovy", ".kts"):   # 1.4.0 review M5: source files SOURCE lacked
+                    ".hxx", ".r", ".jl", ".groovy", ".kts", ".nim", ".elm", ".cr", ".nix", ".f90", ".rkt", ".coffee",
+                    ".lisp", ".scm", ".mli", ".gleam", ".odin"):   # 1.4.0 review M5: source files SOURCE lacked
             with self.subTest(ext):
                 t = Transcript(CWD)
                 t.prompt("Bump the version in pyproject.toml.")

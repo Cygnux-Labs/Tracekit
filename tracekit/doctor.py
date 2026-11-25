@@ -239,6 +239,62 @@ def collect(config=None, issuer_key=None):
 def _managed():
     return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
 
+def _dropin_folder(settings):
+    """Claude Code's `managed-settings.d/`: the drop-ins it merges with the admin-managed settings file beside them."""
+    return os.path.join(os.path.dirname(settings), "managed-settings.d")
+
+
+def _managed_dropins(settings):
+    """The drop-ins Claude Code merges with the admin-managed settings `settings`, in its order: the `*.json` files of
+    the `managed-settings.d/` folder beside it, by name. Claude Code's docs (code.claude.com/docs/en/managed-settings,
+    "Split a file-based policy across teams", read 2026-11-23): it "merges `managed-settings.json` first, then every
+    `*.json` file in the directory in alphabetical order", and "ignores hidden files and files that don't end in
+    `.json`"."""
+    folder = _dropin_folder(settings)
+    try:
+        names = sorted(os.listdir(folder))
+    except OSError:   # no folder
+        return []
+    return [os.path.join(folder, n) for n in names
+            if n.endswith(".json") and not n.startswith(".") and os.path.isfile(os.path.join(folder, n))]
+
+
+def _admin_files(settings):
+    """The file-based managed sources in the order Claude Code merges them: `managed-settings.json`, then each drop-in
+    by name."""
+    return [settings, *_managed_dropins(settings)]
+
+
+def _setting_in_order(paths, key):
+    """(the file whose value Claude Code uses for `key`, that value) over file-based managed sources in merge order.
+    Its docs: for a single value, "the later file's value replaces the earlier one", so the last file that sets the key
+    decides — and a drop-in setting it false lifts an earlier true."""
+    at, value = None, None
+    for p in paths:
+        v = _setting(p, key)
+        if v is not None:
+            at, value = p, v
+    return at, value
+
+
+def _dropins(settings, unreadable=()):
+    """(problem with the drop-ins beside the admin-managed `settings`, what the detail then says was checked). A drop-in
+    the agent's user can write is a way to set `disableAllHooks` and turn every hook off, so the folder and each file in
+    it must be trusted the way the managed file is: `trusted_file` resolves a symlink and checks every directory above
+    it, which is what Claude Code reads (its docs: "You can deploy any of these files as a symbolic link, and Claude
+    Code reads the file the link leads to"). A source the agent's user can't read is a fault too: its docs say that when
+    the OS denies the read, "every session starts without that source's policies", and `unreadable` names those. The
+    folder is checked even when it holds no drop-ins: an empty one the agent's user can write is where a
+    `99-off.json` can be added."""
+    folder, found = _dropin_folder(settings), _managed_dropins(settings)
+    if not found and not os.path.isdir(folder):
+        return None, ""
+    bad = [why for why in map(trusted_file, (folder, *found)) if why]
+    bad += [f"{p} isn't readable by the agent's user, so its Claude Code starts without that source's policies"
+            for p in (folder, *found) if p in unreadable]
+    return "; ".join(bad) or None, (f", and the {len(found)} drop-in(s) in {folder} are root-owned too" if found
+                                    else f", and {folder} is root-owned too")
+
 
 def _layers(paths, key):
     """The `key` object of each settings file in `paths` that has one, in order."""
@@ -433,7 +489,7 @@ def _hook_commands(harness, path):
         return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
-        return list(json.loads(m.group(1)).values()) if m else []
+        return list(_loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
@@ -446,7 +502,7 @@ def _gptme_argv(path):
     if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
         return []
     match = re.search(r"^COMMAND = (.*)$", source, re.M)
-    return json.loads(match[1]) if match else []
+    return _loads(match[1]) if match else []
 
 
 def _outside_cwd(path):
@@ -780,6 +836,72 @@ def _reasoning_checks(add, harnesses, vault, fix):
                 f"modelConfigs in {path} (Gemini CLI's default includes thoughts)", bad=WARN)
 
 
+def _codex_sandbox(add, harnesses):
+    """D-CODEX-SANDBOX: whether Codex's settings leave a person to answer its escalations. Codex's PreToolUse hook
+    sends a shell call's command alone, so a request to run outside the sandbox, and Codex's answer to it, never reach
+    Tracekit (docs/integrations/codex-sandbox.md).
+    Keys and values as codex-rs/core/config.schema.json names them in openai/codex rust-v0.172.0; a value this doesn't
+    know (such as a `granular` approval policy) gives no WARN.
+    lean: reads the config.toml beside Tracekit's hooks and its selected [profiles.<name>]; not a project's
+    .codex/config.toml, /etc/codex/config.toml, managed_config.toml or -c flags at launch, which Codex layers on top
+    (codex-rs/config/src/loader/README.md, "Layering model")"""
+    path = (harnesses or {}).get("codex")
+    if not path:
+        return
+    toml, why = os.path.join(os.path.dirname(path), "config.toml"), None
+    try:
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
+        cfg = tomllib.loads(install.agent_file(toml).decode("utf-8"))
+    except FileNotFoundError:   # Codex's defaults: on-request, a person reviews, the feature off
+        cfg = {}
+    except ImportError:
+        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+    except (OSError, ValueError) as e:   # unreadable, or not TOML
+        why = f"{toml}: {e}"
+    if why:
+        add("D-CODEX-SANDBOX", False, f"can't check Codex's approval settings ({why})",
+            f"keep approvals_reviewer = \"user\" and features.exec_permission_approvals off in {toml}", bad=INFO)
+        return
+    profiles = cfg.get("profiles")
+    chosen = profiles.get(cfg.get("profile")) if isinstance(profiles, dict) and isinstance(cfg.get("profile"), str) \
+        else None
+    layers = [cfg] + ([chosen] if isinstance(chosen, dict) else [])
+
+    def setting(key, table=None):   # the selected profile wins each key
+        value, where = None, None
+        for layer, name in zip(layers, ("", f"[profiles.{cfg.get('profile')}] ")):
+            src = layer.get(table) if table else layer
+            if isinstance(src, dict) and key in src:
+                value, where = src[key], name
+        return value, where or ""
+
+    feature, feature_at = setting("exec_permission_approvals", "features")
+    policy, _ = setting("approval_policy")
+    reviewer, reviewer_at = setting("approvals_reviewer")
+    feature_on = feature is True
+    # AskForApproval in codex-rs/protocol/src/protocol.rs: on-request is its #[default] and on-failure an alias of it;
+    # under untrusted every command a rule doesn't allow asks for approval. The reviewer answers all of them.
+    asks = policy in ("on-request", "on-failure", "untrusted", None)
+    model_reviews = asks and reviewer in ("auto_review", "guardian_subagent")
+    why, fix = [], []
+    if feature_on:
+        why.append(f"{feature_at}features.exec_permission_approvals is true in {toml}: Codex can then run some calls "
+                   "with no hook, so Tracekit neither decides nor records them")
+        fix.append("turn features.exec_permission_approvals off")
+    if model_reviews:
+        why.append(f'{reviewer_at}approvals_reviewer = "{reviewer}" with approval_policy "{policy or "on-request"}" in '
+                   f"{toml}: a model, not a person, answers Codex's approval requests, and Tracekit sees neither the "
+                   "request nor the answer")
+        fix.append('set approvals_reviewer = "user"')
+    add("D-CODEX-SANDBOX", not why, "; ".join(why) or (
+        f'Codex asks a person for approval (approval_policy = "{policy or "on-request"}", {toml})'
+        if asks and reviewer in ("user", None) else
+        f'Codex never asks to run a call outside its sandbox (approval_policy = "never", {toml})' if policy == "never"
+        else f"doctor doesn't know Codex's approval settings in {toml} (approval_policy = {policy!r}, "
+        f"approvals_reviewer = {reviewer!r})"),
+        f"{'; '.join(fix)} in {toml} ({wiki_url('docs/integrations/codex-sandbox.md')})" if fix else "", bad=WARN)
+
+
 def _agy_runs(add, path, home, fix):
     """D-AGY-HOOKS-RUN: whether agy runs the hooks in `path` at all. It loads and never runs them when Tracekit's
     named hook is disabled (in `path`, the user's hooks.json or this workspace's), or when it signs in with a Gemini
@@ -855,7 +977,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         return
     store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
         if not isinstance(state, dict):
             raise ValueError("hooks.state is not a table")
@@ -1138,10 +1260,13 @@ def _text(path):
         return ""
 
 
+_loads = install.agent_loads
+
+
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
     doctor)."""
-    return json.loads(install.agent_file(path))
+    return install.agent_json(path)
 
 
 _setting = install.setting   # a Claude Code settings file's key, or None
@@ -1155,12 +1280,16 @@ def _user(name):
 
 
 def _access(targets):
-    return [[p, m] for p, m in targets if os.access(p, os.R_OK if m == "read" else os.W_OK)]
+    """The targets the agent's user can reach, as [[path, mode]]. "read" asks for R_OK and "write" for W_OK; "open"
+    is for a folder, which has to be *entered*: a folder at 0744 is readable by others and cannot be listed or walked
+    into, so the files in it are unreadable to Claude Code too, and R_OK alone would call it fine."""
+    return [[p, m] for p, m in targets
+            if os.access(p, os.R_OK | os.X_OK if m == "open" else os.W_OK if m == "write" else os.R_OK)]
 
 
 def agent_access(pw, targets):
-    """The (path, "read"|"write") targets the agent's user can access, probed as that user without changing anything;
-    None when this process can't act as it (not root, not the agent)."""
+    """The (path, "read"|"write"|"open") targets the agent's user can access, probed as that user without changing
+    anything; None when this process can't act as it (not root, not the agent)."""
     if not hasattr(os, "geteuid") or os.geteuid() not in (0, pw.pw_uid):
         return None
     return files.as_user(pw, _access, targets)
@@ -1553,18 +1682,28 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     managed = settings in install.MANAGED_SETTINGS.values()   # init --managed: Claude Code's admin-managed settings
     hook_fix = REINIT if prod else "tracekit init --dev --v2"   # collect() adds --managed, as to every re-init
+    # Claude Code merges the drop-ins beside the managed file with it, in both modes: they are a settings layer
+    dropins = _managed_dropins(settings if managed else _managed())
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
-        read = agent and agent_access(agent, [[settings, "read"]])   # None: not probed (doctor isn't root)
+        folder = _dropin_folder(settings)
+        sources = list(dict.fromkeys([settings, folder, *dropins]))   # the folder whenever it exists, empty or not
+        # the files are read; the folder has to be enterable too, or Claude Code can't open the drop-ins in it either
+        probes = [(p, "open" if p == folder else "read") for p in sources]
+        read = agent and agent_access(agent, probes)   # None: not probed (doctor isn't root)
+        can = {p for p, how in (read or [])}
+        unreadable = [p for p in sources if read is not None and p not in can]
+        problem, note = _dropins(settings, unreadable)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
-                                         "it" if read == [] else None)
+                                         "it" if settings in unreadable else None) or problem
         add("D-HOOKS-MANAGED", not bad, bad or f"{settings} is root-owned and writable by root only"
-            + (f", and {agent.pw_name} can read it" if read else ""), f"sudo chown 0:0 and sudo chmod 644 "
+            + (f", and {agent.pw_name} can read it" if read else "") + note, f"sudo chown 0:0 and sudo chmod 644 "
             f"{settings}, and sudo chmod go-w the directories above it; or {hook_fix}")
-    layers = list(dict.fromkeys(sandbox_settings or [p for p in (
+    layers = list(dict.fromkeys([*(sandbox_settings or [p for p in (
         os.path.join(agent.pw_dir, ".claude", "settings.json") if agent else install.user_settings(),
-        settings, _managed()) if p]))
+        settings, _managed()) if p]), *dropins]))
     plugin_settings, plugin_key = plugin or (None, install.PLUGIN)
-    only = managed and _setting(settings, "allowManagedHooksOnly") is True   # Claude Code runs managed hooks only,
+    # Claude Code runs managed hooks only, and a drop-in can set that too: the later file's value wins
+    only = managed and _setting_in_order(_admin_files(settings), "allowManagedHooksOnly")[1] is True
     why = _plugin_idle(plugin, prod, settings)   # and in system mode only managed settings count for the plugin
     active_plugin = plugin if plugin and not why else None
     note = _plugin_note(plugin_settings, why)
@@ -1620,12 +1759,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             # what Claude Code skips: every hook (disableAllHooks, a true value in JavaScript; only managed settings can
             # turn managed hooks off), the tools a matcher other than "*", "" or none leaves out, and on POSIX a
             # PreToolUse hook that can't start and isn't wrapped to block the call
-            # lean: of the managed files, managed-settings.json only, not managed-settings.d/; read it if admins use it
+            # a drop-in is a managed source too, merged after managed-settings.json by name: for a single value the
+            # later file wins, so the last file that sets disableAllHooks decides, and a later false lifts an earlier true
             managed_hooks = managed or (not any(hooks.values()) and plugin_settings in install.MANAGED_SETTINGS.values())
-            off = [p for p in ([plugin_settings if not managed else settings] if managed_hooks
-                               else dict.fromkeys([*layers, settings]))   # the hooks' own file too
-                   if _setting(p, "disableAllHooks") not in (None, False, 0, "")] \
-                if any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ") else []
+            order = [*(([plugin_settings] if not managed else [settings]) if managed_hooks
+                       else [*layers, settings]),   # the hooks' own file too
+                     *dropins]
+            at, value = _setting_in_order(order, "disableAllHooks")
+            off = [at] if at and value not in (False, 0, "") and (
+                any(hooks.values()) or active_plugin or (why or "").startswith("disableAllHooks ")) else []
             narrowed = {ev: hs[0]["matcher"] for ev, hs in hooks.items()
                         if hs and all(h["matcher"] not in (None, "", "*") for h in hs)}
             unwrapped = os.name != "nt" and hooks["PreToolUse"] and not any(
@@ -1731,6 +1873,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     _harness_hook_checks(add, harnesses, prod, agent and agent.pw_dir)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
+    _codex_sandbox(add, harnesses)
     # lean: dev only; system mode's hooks run the root-owned venv doctor runs from (D-HOOKS-VENV), but its running
     # signer isn't compared with it; read its hello too if /opt/tracekit gets upgraded in place under a running signer
     if not prod:

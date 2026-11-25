@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:a19e6d489cc0e6d806a9ba7ae44fb3ddd23ffc2b449375619ee53d07bdcb1368",
+  "policy_hash": "sha256:600ddb91b567af0990091b75c7d4c5f3a8086374ac4a4585934295e289bada5d",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.11.15"
@@ -54,8 +54,8 @@
       "fp": 0
     },
     "secrets": {
-      "deny": 46,
-      "caught": 46,
+      "deny": 52,
+      "caught": 52,
       "benign": 0,
       "fp": 0
     },
@@ -526,6 +526,12 @@
     "deny/secrets:44": "deny TK-D011 TK-D015 TK-S004 TK-F001 TK-F012 TK-F013",
     "deny/secrets:45": "deny TK-D006 TK-D015 TK-F001 TK-F012 TK-F013",
     "deny/secrets:46": "deny TK-D006 TK-D015 TK-F013",
+    "deny/secrets:47": "ask TK-A021",
+    "deny/secrets:48": "ask TK-A021",
+    "deny/secrets:49": "ask TK-A021",
+    "deny/secrets:50": "ask TK-A021",
+    "deny/secrets:51": "ask TK-A021",
+    "deny/secrets:52": "ask TK-A021",
     "deny/shell:1": "deny TK-S006",
     "deny/shell:2": "deny TK-S006",
     "deny/shell:3": "deny TK-S006",
@@ -1044,8 +1050,8 @@
     "deny/shell:516": "deny TK-D002 TK-F001 TK-F007 TK-F012",
     "deny/shell:517": "deny TK-D002 TK-F001 TK-F012",
     "deny/shell:518": "deny TK-D002 TK-F001 TK-F012",
-    "deny/shell:519": "deny TK-D002 TK-F001 TK-F012",
-    "deny/shell:520": "deny TK-D002 TK-F001 TK-F012",
+    "deny/shell:519": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012 TK-F013",
+    "deny/shell:520": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012 TK-F013",
     "deny/shell:521": "deny TK-D002 TK-F001 TK-F012",
     "deny/shell:522": "deny TK-D002 TK-F001 TK-F012",
     "deny/shell:523": "deny TK-D002 TK-F001 TK-F012",
@@ -1058,7 +1064,7 @@
     "deny/shell:530": "deny TK-D002 TK-F001 TK-F012",
     "deny/shell:531": "deny TK-D002 TK-F001 TK-F012",
     "deny/shell:532": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012",
-    "deny/shell:533": "deny TK-D002 TK-F001 TK-F012 TK-F013",
+    "deny/shell:533": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012 TK-F013",
     "deny/shell:534": "deny TK-D002 TK-SHELL-PARSE TK-F001 TK-F012",
     "deny/shell:535": "ask TK-A054",
     "deny/shell:536": "ask TK-A054",

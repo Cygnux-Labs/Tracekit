@@ -68,7 +68,7 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
 # `reason`: the one decide gave ("" for none), which call_state answers, None for a call replayed from its record, whose
 # call_state reads `reasons` (its record's) and its policy's instead (SignerService._recorded_reason)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash")
+             "detect_ids", "via", "caller", "refused", "ended", "reason", "reasons", "policy_hash", "agent_id")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
@@ -634,7 +634,8 @@ class RecordLog:
                         "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
                         "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
                         "detect_ids": d.get("detect", {}).get("rule_ids"), "policy_hash": d.get("policy_hash"),
-                        "reasons": d.get("reasons")}
+                        "reasons": d.get("reasons"),
+                        **({"agent_id": e["agent_id"]} if e.get("agent_id", "main") != "main" else {})}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call

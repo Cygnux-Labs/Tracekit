@@ -148,7 +148,7 @@ import threading
 import urllib.parse
 
 from . import __version__, hook as H
-from .core import canon
+from .core import canon, subagent_id
 from .locking import lock_file, unlock_file
 from .policy2.classes import _CI_WORKFLOW, PATH_KEYS, first, fs_forms
 
@@ -1331,6 +1331,10 @@ def normalise(harness, p):
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
+            # a sub-agent's call, under Claude Code's field name; an id the event format can't hold stays the main
+            # agent's rather than costing the call's signed records on the v1 hook
+            if aid := subagent_id(p.get("agent_id")):
+                out["agent_id"] = aid
             out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
             if harness == "openhands":   # terminal with is_input: text typed into the command already running
                 out["later"] = p.get("tool_name") == "terminal" and out["tool_input"].get("is_input") is True
@@ -2246,12 +2250,12 @@ def _check_toml(text, path):
     # lean: Python 3.9 and 3.10 have no TOML parser, so there codex_summary's line scan alone decides; a top-level key
     # after a multi-line array line that looks like a table header gets a second one; require 3.11 to close it
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:
         return
     try:
         ok = tomllib.loads(text).get(CODEX_SUMMARY) == "auto"
-    except tomllib.TOMLDecodeError:
+    except ValueError:
         ok = False
     if not ok:
         from .install import SettingsError
@@ -2536,7 +2540,7 @@ def _gptme_config(directory, path):
     paths = f'paths = ["{standard}"]'
     enabled_hint = None
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:
         # lean: on Python 3.9/3.10 detect the table by its header or key; use a TOML parser if older interpreters
         # need to read more elaborate plugin config.
@@ -2671,7 +2675,7 @@ def _jcode_has_hooks(text, path):
     """Whether jcode's config.toml `text` has a hooks table already (a [hooks] header, or a hooks key)."""
     from .install import SettingsError
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:
         # lean: on Python 3.9/3.10 the table is found by its header or a dotted key; a TOML parser reads the rest
         return bool(re.search(r'''(?m)^\s*(?:\[\s*["']?hooks["']?\s*[\].]|["']?hooks["']?\s*[.=])''', text))
@@ -2698,7 +2702,7 @@ def _jcode_entries(lines, i, end):
     """Each `key = value` entry of a [hooks] table body (`lines[i:end]`), as (key, its first line's index, the index
     after its last line, its value): an entry runs to the line that completes its value, an array or a multi-line
     string over several. None when a line of the body is not part of an entry."""
-    import tomllib
+    from . import tomlsafe as tomllib
     entries = []
     while i < end:
         if not lines[i].strip() or lines[i].lstrip().startswith("#"):
@@ -2727,7 +2731,7 @@ def _jcode_entries(lines, i, end):
 def _jcode_line_value(line):
     """The one value `line` of a [hooks] array sets, else None: several items on it, the array's own brackets and a
     comment line are not one item."""
-    import tomllib
+    from . import tomlsafe as tomllib
     text = line.strip()
     if text.endswith(","):
         text = text[:-1].rstrip()
@@ -2752,7 +2756,7 @@ def _jcode_strip_unmarked(text):
     and 3.10): the caller then prints the lines to remove by hand. What comes out is checked with tomllib: it parses,
     every other setting is unchanged, and its [hooks] is the original's minus Tracekit's entries."""
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:   # lean: Python 3.9/3.10 have no TOML parser; the lines are printed to remove by hand
         return None
     try:
@@ -2874,11 +2878,12 @@ def jcode_config(path):
     with open(path, "rb") as f:
         text = f.read().decode("utf-8")
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:
+        from .install import agent_loads
         ours = JCODE_TABLE.search(text)
         lines = ours.group().splitlines()[2:-1] if ours else []
-        return {"hooks": {k: json.loads(v) for k, _, v in (line.partition(" = ") for line in lines)}} if ours else {}
+        return {"hooks": {k: agent_loads(v) for k, _, v in (line.partition(" = ") for line in lines)}} if ours else {}
     return tomllib.loads(text)
 
 
@@ -2887,7 +2892,7 @@ def _check_jcode_toml(text, path, hooks):
     (a file that ends inside a multi-line string or array would swallow it)."""
     from .install import SettingsError
     try:
-        import tomllib
+        from . import tomlsafe as tomllib
     except ImportError:   # lean: Python 3.9/3.10 have no TOML parser; the append is unchecked there
         return
     try:
@@ -2901,13 +2906,13 @@ def _check_jcode_toml(text, path, hooks):
 
 def _read(path):
     """(the JSON object in the hook config `path`, its text), or ({}, None) when there is no file."""
-    from .install import SettingsError
+    from .install import SettingsError, agent_loads
     if not os.path.exists(path):
         return {}, None
     try:
         with open(path, encoding="utf-8") as f:
             txt = f.read()
-        s = json.loads(txt) if txt.strip() else {}
+        s = agent_loads(txt) if txt.strip() else {}
     except (OSError, ValueError) as e:
         raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
     if not isinstance(s, dict):
@@ -3002,7 +3007,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     """Install one owned goose plugin without overwriting a plugin that is not Tracekit's. goose runs a rule with no
     matcher for every tool (a bare "*" matcher is an invalid regex goose silently skips), its timeout is in seconds,
     and only a PreToolUse action carries on_failure: block."""
-    from .install import SettingsError, _atomic_write_json, _backup_changed
+    from .install import SettingsError, _atomic_write_json, _backup_changed, agent_loads
     path = os.path.abspath(path)
     plugin_dir = os.path.dirname(os.path.dirname(path))   # <plugin>/hooks/hooks.json
     manifest = os.path.join(plugin_dir, "plugin.json")
@@ -3011,7 +3016,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     if os.path.exists(manifest):   # collision first, before changing anything
         try:
             with open(manifest, encoding="utf-8") as f:
-                owned = json.load(f)
+                owned = agent_loads(f.read())
         except (OSError, ValueError) as e:
             raise SettingsError(f"{manifest} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(owned, dict) or owned.get("name") != "tracekit":
@@ -3471,7 +3476,7 @@ def _copilot_exclude(path, project, uninstall, changed):
 def _copilot_claude_hooks(project):
     """Say when the project's Claude Code settings (the working directory's, for a user install) hold Tracekit's hook:
     Copilot CLI runs a repository's .claude hooks too."""
-    from .install import _hook_summary
+    from .install import _hook_summary, agent_loads
     root = project or os.getcwd()
     if not project and os.path.realpath(root) == os.path.realpath(os.path.expanduser("~")):   # ~/.claude: the user's
         return
@@ -3479,7 +3484,7 @@ def _copilot_claude_hooks(project):
         p = os.path.join(root, ".claude", name)
         try:
             with open(p, encoding="utf-8") as f:
-                ours = _hook_summary(json.load(f))["events"]
+                ours = _hook_summary(agent_loads(f.read()))["events"]
         except (OSError, ValueError, AttributeError, TypeError):   # absent, or not a settings object
             continue
         if ours:
@@ -3508,13 +3513,13 @@ def _devin_claude_off(s, path):
 def _droid_settings_hooks(path):
     """The hooks in the settings.json beside Droid's hooks.json `path`, which Droid reads only while that is absent;
     None without a settings.json."""
-    from .install import SettingsError
+    from .install import SettingsError, agent_loads
     settings = os.path.join(os.path.dirname(path), "settings.json")
     if not os.path.exists(settings):
         return None
     try:
         with open(settings, encoding="utf-8") as f:
-            hooks = json.load(f).get("hooks", {})
+            hooks = agent_loads(f.read()).get("hooks", {})
         if not isinstance(hooks, dict):
             raise ValueError("hooks must be an object")
     except (OSError, ValueError, AttributeError) as e:

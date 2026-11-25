@@ -374,6 +374,20 @@ def persisted_queue(signer):
 SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
 
 
+# JSON nested past every Python's limit: json's C parser reads 5,000 levels on 3.12 and 3.13 and 20,000 on 3.14
+TOO_DEEP_JSON = "[" * 100_000 + "]" * 100_000
+
+
+@contextlib.contextmanager
+def no_tomllib():
+    """Python 3.9 and 3.10: tomllib can't be imported, nor tracekit.tomlsafe, which imports it."""
+    import tracekit
+    with mock.patch.dict(sys.modules, {"tomllib": None}), mock.patch.dict(tracekit.__dict__):
+        sys.modules.pop("tracekit.tomlsafe", None)
+        tracekit.__dict__.pop("tomlsafe", None)
+        yield
+
+
 @contextlib.contextmanager
 def signer_without_fsync():
     """The signer's syncs (SIGNER_SYNCS) skipped in this process while it's open, for a test of what a signer decides

@@ -260,6 +260,36 @@ class TranscriptTamper(Stack):
 
 
 # ---------------------------------------------------------------- proxy
+class SubagentId(Stack):
+    """A payload's agent_id the event format cannot hold must not turn the call into a capture gap (#1129)."""
+
+    def test_unusable_agent_ids_are_recorded_as_the_main_agents(self):
+        bad = (7, True, ["a"], {}, "", "\ud800x", "a" * 300)
+        self.hook("SessionStart")
+        for i, aid in enumerate(bad):
+            tid = f"bad-{i}"
+            with self.subTest(agent_id=aid):
+                self.assertEqual(self.hook("PreToolUse", {"tool_name": "Bash", "tool_use_id": tid, "agent_id": aid,
+                                                          "tool_input": {"command": f"echo {i}"}})[0], 0)
+                self.assertEqual(self.hook("PostToolUse", {"tool_name": "Bash", "tool_use_id": tid, "agent_id": aid,
+                                                           "tool_input": {"command": f"echo {i}"},
+                                                           "tool_response": {"stdout": "ok"}})[0], 0)
+        events = self.events()
+        self.assertEqual([e for e in events if e["type"] == "capture.gap"], [])
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in events
+               if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [(kind, f"bad-{i}", "main", None) for i in range(len(bad))
+                               for kind in ("policy.decision", "tool.result")])
+
+    def test_a_usable_agent_id_still_names_the_subagent(self):
+        self.hook("SessionStart")
+        args = {"tool_name": "Bash", "tool_use_id": "sub-call", "agent_id": "a272a0b95321d4c5d",
+                "tool_input": {"command": "echo sub"}}
+        self.assertEqual(self.hook("PreToolUse", args)[0], 0)
+        got = [(e["agent_id"], e["parent_id"]) for e in self.of("policy.decision")]
+        self.assertEqual(got, [("a272a0b95321d4c5d", "main")])
+
+
 class FakeAnthropic(http.server.BaseHTTPRequestHandler):
     """Streams an SSE response that asks for one tool call; can also fail on demand."""
     protocol_version = "HTTP/1.1"
