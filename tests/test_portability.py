@@ -139,12 +139,13 @@ class PluginPackage(unittest.TestCase):
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
             # sh execs tracekit-hook; PowerShell (Windows without Git Bash) skips that inside <# #> and runs
-            # tracekit-hook.ps1, exiting with the failure code set first if the script never starts (#1097)
+            # tracekit-hook.ps1 in a try, exiting with the failure code if the script never starts or throws (#1097)
             fail = 2 if ev == "PreToolUse" else 1
             self.assertEqual(h["command"],
                              f'echo `# <#`>/dev/null; exec "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} #> >$null; '
-                             f'$LASTEXITCODE = {fail}; & "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook.ps1" {ev}; '
-                             'exit $LASTEXITCODE')
+                             f'$LASTEXITCODE = {fail}; try {{ & "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook.ps1" {ev}; '
+                             f'exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine("tracekit plugin: the hook script '
+                             f'did not run: $_"); exit {fail} }}')
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 

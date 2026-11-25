@@ -482,6 +482,40 @@ class PluginInPowerShell(unittest.TestCase):
         self.assertEqual(self.pre("ls", "t3")[0], 2)
 
 
+@unittest.skipUnless(shutil.which("pwsh"), "needs PowerShell 7 (pwsh)")
+class PluginPreToolUseInPwsh(unittest.TestCase):
+    """#1097: the PreToolUse command as hooks.json names it, run in pwsh as Claude Code runs it on Windows without Git
+    Bash, against a plugin root whose script is broken or fake: a hook that never runs still blocks the call."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json"), encoding="utf-8") as f:
+            command = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.command = command.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}")
+
+    def run_with(self, script, prefix=""):
+        root = os.path.join(self.d, "root")
+        if script is not None:
+            os.makedirs(os.path.join(root, "scripts"), exist_ok=True)
+            with open(os.path.join(root, "scripts", "tracekit-hook.ps1"), "w", encoding="utf-8") as f:
+                f.write(script)
+        env = dict(os.environ, CLAUDE_PLUGIN_ROOT=root)
+        return subprocess.run(["pwsh", "-NoProfile", "-Command", prefix + self.command], input="{}", env=env,
+                              capture_output=True, text=True, timeout=120).returncode
+
+    def test_a_script_that_cannot_run_blocks_the_call(self):
+        for name, script in (("parse error", "if ( {\n"), ("throw", 'throw "x"\n'), ("missing root", None)):
+            for prefix in ("", '$ErrorActionPreference="Stop"; '):
+                with self.subTest(name, stop=bool(prefix)):
+                    self.assertEqual(self.run_with(script, prefix), 2)
+
+    def test_the_scripts_own_exit_code_is_kept(self):
+        for code in (0, 2):
+            with self.subTest(code):
+                self.assertEqual(self.run_with(f"exit {code}\n"), code)
+
+
 class PruneRunState(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

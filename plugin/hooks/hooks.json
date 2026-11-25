@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse #> >$null; $LASTEXITCODE = 2; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PreToolUse; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse #> >$null; $LASTEXITCODE = 2; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PreToolUse; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 2 }",
             "timeout": 600
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUse #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PostToolUse; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUse #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PostToolUse; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUseFailure #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PostToolUseFailure; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUseFailure #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" PostToolUseFailure; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" UserPromptSubmit #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" UserPromptSubmit; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" UserPromptSubmit #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" UserPromptSubmit; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" Stop #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" Stop; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" Stop #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" Stop; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStart #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SubagentStart; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStart #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SubagentStart; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStop #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SubagentStop; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStop #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SubagentStop; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionStart #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SessionStart; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionStart #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SessionStart; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 30
           }
         ]
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionEnd #> >$null; $LASTEXITCODE = 1; & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SessionEnd; exit $LASTEXITCODE",
+            "command": "echo `# <#`>/dev/null; exec \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionEnd #> >$null; $LASTEXITCODE = 1; try { & \"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook.ps1\" SessionEnd; exit $LASTEXITCODE } catch { [Console]::Error.WriteLine(\"tracekit plugin: the hook script did not run: $_\"); exit 1 }",
             "timeout": 15
           }
         ]
