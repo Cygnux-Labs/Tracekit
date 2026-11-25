@@ -5339,6 +5339,12 @@
                   "reject",
                   "escalate"
                 ]
+              },
+              "identity": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "description": "the model's identity as its server gave it (an Ollama model's /api/show digest, else the answer's model and system_fingerprint), which the circuit breaker pins: the reviewer's word"
               }
             }
           }

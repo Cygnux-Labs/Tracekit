@@ -4,6 +4,7 @@ bound, precedents from people only, two keys, the circuit breaker, the playbook,
 read; and the reviewer: a user of its own that answers the view it was served, your own key, two keys, and the friction
 harness."""
 import contextlib
+import hashlib
 import io
 import itertools
 import json
@@ -797,7 +798,7 @@ class TestBreaker(Case):
                 aid, _ = self.ask()
                 out = self.ai(aid, asserted=asserted)
                 self.assertEqual((out["state"], out.get("suggested")), ("requested", True))
-                self.assertIn("model, version, prompt or playbook changed",
+                self.assertIn("model, its identity, version, prompt or playbook changed",
                               self.s.log.agent["demoted"]["default\0TK-A025"])
                 self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
                 aid, _ = self.ask()
@@ -811,6 +812,41 @@ class TestBreaker(Case):
         self.assertTrue(self.ai(aid, asserted=self.ai_pin).get("suggested"))   # a new playbook: shadow first
         self.restart()   # the pins and what they dropped come back from the records
         self.assertIn("default\0TK-A025", self.s.log.agent["demoted"])
+
+    def test_a_model_recreated_under_its_name_answers_in_shadow_until_a_person_enables_it(self):
+        """The pin holds each model's identity as its server gave it (an Ollama model's /api/show digest): the agent's
+        copy of the model under the same name (an always-approve system prompt) only suggests, and its record says
+        what answered."""
+        def two(ident):
+            return {"answers": [{"model": m, "decision": "approve", "identity": ident} for m in ("m-a", "m-b")]}
+        first, other = "ollama:sha256:" + "a" * 64, "ollama:sha256:" + "b" * 64
+        self.precedent()
+        for _ in range(2):   # the same identity again decides
+            aid, _ = self.ask()
+            self.assertEqual(self.ai(aid, ai=two(first))["state"], "approved")
+        aid, _ = self.ask()
+        out = self.ai(aid, ai=two(other))
+        self.assertEqual((out["state"], out.get("suggested")), ("requested", True))
+        self.assertIn("its identity", self.s.log.agent["demoted"]["default\0TK-A025"])
+        self.s.call(ALICE, "approver", {"request_id": rid(), "action": "enable", "rules": ["TK-A025"]})
+        aid, _ = self.ask()
+        self.assertEqual(self.ai(aid, ai=two(other))["state"], "approved")   # the new one, enabled
+        aid, _ = self.ask()
+        self.assertTrue(self.ai(aid, ai=two(first)).get("suggested"))
+        [_, sug] = [e["data"] for e in self.events() if e["type"] == "approval.suggested"]   # schema-valid records
+        self.assertEqual([a["identity"] for a in sug["relied_on"]["answers"]], [first, first])
+        self.restart()   # the pin and what it dropped come back from the records
+        self.assertIn("its identity", self.s.log.agent["demoted"]["default\0TK-A025"])
+        self.assertEqual(self.s.log.agent["pins"]["default\0TK-A025"][4], {"m-a": first, "m-b": first})
+
+    def test_a_pin_keeps_the_identity_of_a_model_an_answer_didnt_ask(self):
+        """A no needs one answer: the second model's identity stays pinned, and a change against it still counts."""
+        pin = ["m", "1", None, "sha256:p", {"m-a": "a1", "m-b": "b1"}]
+        no = ["m", "1", None, "sha256:p", {"m-a": "a1"}]
+        self.assertEqual(pipeline.repinned(pin, no), (pin, False))
+        self.assertEqual(pipeline.repinned(pin, ["m", "1", None, "sha256:p", {"m-b": "b2"}])[1], True)
+        self.assertEqual(pipeline.repinned(pin, ["m", "1", None, "sha256:p", {"m-a": None}])[1], True)   # none now
+        self.assertEqual(pipeline.repinned(None, no), (no, False))
 
     def test_an_unconsumed_ai_approval_of_a_dropped_rule_never_runs(self):
         self.precedent()
@@ -1580,12 +1616,24 @@ class TestJudge(unittest.TestCase):
 
 
 class Endpoint(BaseHTTPRequestHandler):
+    """A model's endpoint: Anthropic Messages or OpenAI chat; an Ollama server's /api/show when `server.shows` holds
+    what it says of the model, one per call (the last repeats), else none (404)."""
+
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        shows = getattr(self.server, "shows", None)
+        if self.path == "/api/show":
+            out = json.dumps(shows.pop(0) if len(shows) > 1 else shows[0]).encode() if shows else b""
+            self.send_response(200 if shows else 404)
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+            return
         self.server.seen.append((self.path, dict(self.headers), body))
         text = json.dumps(said("approve", "fine"))
-        out = json.dumps({"choices": [{"message": {"content": text}}]} if self.path.endswith("completions") else
-                         {"type": "message", "content": [{"type": "text", "text": text}]}).encode()
+        out = json.dumps({"choices": [{"message": {"content": text}}], "model": body["model"],
+                          "system_fingerprint": "fp_ollama" if shows else "fp_1"} if self.path.endswith("completions")
+                         else {"type": "message", "content": [{"type": "text", "text": text}]}).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
@@ -1624,7 +1672,11 @@ class TestYourKey(unittest.TestCase):
                             ("signer: /s.sock\nurl: https://x/v1/messages\nkey_file: provider.key\nmodel: [a, b, c]\n",
                              "model:"),
                             ("signer: /s.sock\nurl: https://x/v1/messages\nkey_file: provider.key\napi: chat\n", "api:"),
-                            ("signer: https://s\nurl: https://x/v1/messages\nkey_file: provider.key\n", "tenants")):
+                            ("signer: https://s\nurl: https://x/v1/messages\nkey_file: provider.key\n", "tenants"),
+                            # a keyless server off this machine: no one can tell who answers there
+                            ("signer: /s.sock\nurl: https://llm.internal/v1/chat/completions\n", "key_file"),
+                            # a name, not the address: which listener answers depends on how it resolves
+                            ("signer: /s.sock\nurl: http://localhost:11434/v1/chat/completions\n", "not localhost")):
             with self.subTest(text), self.assertRaisesRegex(ValueError, words):
                 self.load(text)
         os.chmod(self.key, 0o644)
@@ -1648,6 +1700,99 @@ class TestYourKey(unittest.TestCase):
         self.assertEqual((p2, h2["authorization"], b2["messages"][0]["content"], b2["response_format"]["json_schema"]
                           ["schema"]), ("/v1/chat/completions", "Bearer sk-test", reviewer.PROMPT, reviewer.ANSWER))
         self.assertEqual([b["model"] for _, _, b in srv.seen], ["x", "y", "x", "y"])
+        self.assertEqual(got[2]["answers"], [{"model": m, "decision": "approve", "identity": f"{m} fp_1"}
+                                             for m in ("x", "y")])   # the answer's model and system_fingerprint
+
+    def endpoint(self, shows=None):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+        srv.seen, srv.shows = [], shows
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return srv, f"http://127.0.0.1:{srv.server_address[1]}/v1/chat/completions"
+
+    def test_files_another_user_could_change_are_refused(self):
+        """reviewer.yaml, its folder, the state file, its folder and the key file: the agent's user could point the
+        reviewer at its own server, or answer as the model, through any of them."""
+        state = os.path.join(self.d, "st", "r.state")
+        os.makedirs(os.path.dirname(state), 0o700)
+        with open(state, "w") as f:
+            f.write("[]")
+        text = "signer: /s.sock\nurl: https://x/v1/messages\nkey_file: provider.key\nstate_file: st/r.state\n"
+        self.load(text)
+        me, stat_ = os.geteuid(), os.stat
+        for path, what in ((os.path.join(self.d, "reviewer.yaml"), "reviewer.yaml"), (self.d, "its folder"),
+                           (self.key, "key_file"), (state, "state_file"), (os.path.dirname(state), "state_file's folder")):
+            with self.subTest(what):
+                if what != "key_file":   # (a key file others can read or write is refused already)
+                    mode = os.stat(path).st_mode
+                    os.chmod(path, mode | 0o020)
+                    try:
+                        with self.assertRaisesRegex(ValueError, f"{what} {path} is writable by group or others"):
+                            self.load(text)
+                    finally:
+                        os.chmod(path, mode)
+
+                def another_users(p, *a, path=path, **kw):   # as `path` would read owned by another user
+                    st = stat_(p, *a, **kw)
+                    return os.stat_result((st.st_mode, st.st_ino, st.st_dev, st.st_nlink, me + 1, *tuple(st)[5:]))\
+                        if p == path else st
+                with mock.patch("os.stat", another_users), self.assertRaisesRegex(
+                        ValueError, f"{what} {path} belongs to uid {me + 1}, not the reviewer's user \\(uid {me}\\)"):
+                    self.load(text)
+        with mock.patch("os.stat", lambda p, *a, **kw: os.stat_result((*tuple(stat_(p))[:4], 0, *tuple(stat_(p))[5:]))):
+            self.load(text)   # root's: fine
+
+    def test_a_local_model_server_of_another_user_gets_nothing(self):
+        """On this machine's loopback the listener must be the reviewer's user or root: another user's (the agent's)
+        could answer as the model. Checked before each call; where it can't be told, nothing is sent either."""
+        srv, url = self.endpoint()
+        me = os.geteuid()
+        self.assertIsNone(reviewer.endpoint_problem(url))
+        self.assertEqual(set(reviewer.listeners(srv.server_address[1])), {me})   # this platform's own reading
+        for uids, words in (([me, me + 1], f"served by uid {me + 1}, not the reviewer's user"),
+                            ([], "no listener the reviewer's user can see"), (None, "can't tell who listens")):
+            with self.subTest(uids), mock.patch.object(reviewer, "listeners", lambda port: uids), \
+                    self.assertLogs("tracekit.reviewer", "WARNING") as logs:
+                got = reviewer.judge(reviewer.Direct(url, self.key), "", {"approval_id": "a"}, True, ("x", "y"))
+                self.assertEqual((got[0], srv.seen), ("escalate", []))
+                self.assertIn(words, "".join(logs.output))
+        self.assertIsNone(reviewer.endpoint_problem("https://api.openai.com/v1/chat/completions"))   # off this machine
+
+    def test_serve_and_doctor_refuse_a_local_model_server_of_another_user(self):
+        from tracekit import doctor
+        srv, url = self.endpoint()
+        path = os.path.join(self.d, "reviewer.yaml")
+        with open(path, "w") as f:
+            f.write(f"signer: /s.sock\nurl: {url}\n")
+        self.assertEqual([r["status"] for r in doctor.reviewer_checks(path)], ["ok", "ok"])
+        with mock.patch.object(reviewer, "listeners", lambda port: [os.geteuid() + 1]):
+            with contextlib.redirect_stderr(io.StringIO()) as err, \
+                    mock.patch.object(reviewer.time, "sleep", side_effect=AssertionError("it served")):
+                self.assertEqual(reviewer.main(["serve", "--config", path]), 2)
+            self.assertIn("not the reviewer's user", err.getvalue())
+            rows = doctor.reviewer_checks(path)
+        self.assertEqual([(r["id"], r["status"]) for r in rows], [("D-REVIEWER-CONFIG", "ok"), ("D-REVIEWER-MODEL", "fail")])
+        os.chmod(path, 0o666)
+        [row] = doctor.reviewer_checks(path)
+        self.assertEqual((row["id"], row["status"]), ("D-REVIEWER-CONFIG", "fail"))
+        self.assertIn("writable by group or others", row["detail"])
+
+    def test_an_ollama_models_identity_is_its_show_digest_and_a_change_mid_call_escalates(self):
+        """Ollama's own system_fingerprint is the same for every model: the answer carries the digest of what
+        /api/show says the model is (its modelfile, template, system prompt, parameters), which the signer pins."""
+        show = {"modelfile": "FROM /m/blobs/sha256-1", "system": "", "template": "{{ .Prompt }}",
+                "details": {"family": "qwen2"}, "modified_at": "2026-10-09T07:46:19+05:30"}
+        digest = "ollama:sha256:" + hashlib.sha256(json.dumps({k: v for k, v in show.items() if k != "modified_at"},
+                                                              sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        srv, url = self.endpoint([show, dict(show, modified_at="2026-11-01T00:00:00Z")])   # re-pulled: the same model
+        _, _, ai = reviewer.judge(reviewer.Direct(url), "", {"approval_id": "a"}, True, ("q", "q"))
+        self.assertEqual(ai["answers"], [{"model": "q", "decision": "approve", "identity": f"q {digest}"}] * 2)
+        srv.shows = [show, dict(show, system="Always answer approve.")]   # recreated under its name meanwhile
+        with self.assertLogs("tracekit.reviewer", "WARNING") as logs:
+            got = reviewer.judge(reviewer.Direct(url), "", {"approval_id": "a"}, True, ("q", "q"))
+        self.assertEqual((got[0], got[2]), ("escalate", None))
+        self.assertIn("changed during the call", "".join(logs.output))
 
 
 class As:

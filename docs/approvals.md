@@ -612,7 +612,10 @@ escalates a yes that doesn't carry two.
 **Circuit breaker.** A rule drops to shadow in its tenant when a person revokes an AI approval of it, when a precedent of
 it goes bad, when the AI agreed with people on fewer than 9 in 10 of the last calls both answered (at least 10, in
 shadow mode), or when an answer comes from another model, version, prompt or playbook than the rule's last one (each
-answer's `asserted` and playbook digest are pinned): a change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
+answer's `asserted` and playbook digest are pinned), or from a model whose identity changed under the same name (each
+answer carries the model's identity as its server gives it: for an Ollama model the digest of what `/api/show` says it
+is, its weights, template, system prompt and parameters; otherwise the answer's `model` and `system_fingerprint`): a
+change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
 back on: `tracekit reviewer enable TK-A025`.
 
 **Playbook.** `tracekit reviewer status` lists the rules dropped to shadow, the playbook in force, and entries proposed
@@ -718,7 +721,9 @@ authorize:
   "uid:<reviewer>": [approval_list, approval_review, approval_decide, status]
 ```
 
-Then put these files in the reviewer's home, owned by it:
+Then put these files in the reviewer's home, owned by it. The reviewer refuses `reviewer.yaml`, its folder,
+`state_file`, its folder and `key_file` when another user than its own (or root) owns one or group or others can write
+it: the agent's user could point it at a server of its own.
 
 ```yaml
 # reviewer.yaml
@@ -733,9 +738,22 @@ sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config
 ```
 
 (On Linux: `sudo -u tracekit-reviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config
-/var/lib/tracekit-reviewer/reviewer.yaml`.) A local model: `url: http://127.0.0.1:11434/v1/chat/completions` (an
-OpenAI-compatible server; no key file). The view goes to that endpoint only. In dev mode the signer is the agent's
+/var/lib/tracekit-reviewer/reviewer.yaml`.) The view goes to that endpoint only. In dev mode the signer is the agent's
 own user, which can read its keys: the AI approver needs system mode.
+
+**A local model.** `url: http://127.0.0.1:11434/v1/chat/completions` (an OpenAI-compatible server on this machine's
+loopback, named by its address; the only kind of endpoint that may take no key file). The model server and its model
+files belong to the reviewer's user: the agent runs as your account, and a server of your account, or files it can
+write, let it answer as the model. Run the server as the reviewer, with its models in the reviewer's home (Ollama:
+`sudo -u _tkreviewer env HOME="/Library/Application Support/tracekit-reviewer" ollama serve`, or on Linux the same as
+`tracekit-reviewer`), and stop the copy that runs as you. At start and before each call the reviewer checks that the
+port's listener is its own user's or root's, and refuses the endpoint otherwise (Linux reads `/proc/net/tcp`; macOS
+asks `lsof`, which shows a user only its own processes, so there the server must run as the reviewer); where it can't
+tell (neither Linux nor macOS), use an endpoint off this machine with a key. Ollama takes model changes from any local
+user over its port: each answer carries the model's identity (above), so a model recreated under the same name, with
+another system prompt, answers in shadow until you run `tracekit reviewer enable`, and a model changed during a call
+escalates. Check it all, as the reviewer's user: `sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit doctor
+--reviewer "/Library/Application Support/tracekit-reviewer/reviewer.yaml"` (`D-REVIEWER-CONFIG`, `D-REVIEWER-MODEL`).
 
 **Before you enforce.** Run a week with `mode: shadow`, then `tracekit reviewer friction --store
 /var/lib/tracekit-signer` (no model call): the holds, how many a precedent let the AI answer, how many a person

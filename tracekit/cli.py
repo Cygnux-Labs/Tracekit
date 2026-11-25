@@ -373,6 +373,8 @@ def _parser():
     p.add_argument("--manifests", metavar="DIR", help="with --k8s: check these rendered manifests instead")
     p.add_argument("--issuer-key", metavar="KEY_ID", help="the record key issuer's KMS key: the signer must not sign "
                    "with it")
+    p.add_argument("--reviewer", metavar="REVIEWER_YAML", help="run as the AI reviewer's user: check that reviewer's "
+                   "files and model server instead")
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
     p.add_argument("--project", nargs="?", const=".", metavar="DIR",
@@ -939,7 +941,7 @@ def _run(a):
         return 0
     if a.cmd == "doctor":
         from . import doctor
-        return doctor.main(a.config, a.json, a.k8s, a.manifests, a.issuer_key)
+        return doctor.main(a.config, a.json, a.k8s, a.manifests, a.issuer_key, a.reviewer)
     if a.cmd == "uninstall" and (a.v2 or a.system or a.purge or a.user):
         from . import install
         if a.system:
