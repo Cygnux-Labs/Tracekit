@@ -6715,12 +6715,11 @@ _SHELL_FIELDS = {
                                                                     parsed[5] if len(parsed) > 5 else {}),
     "gh_runs": lambda parsed, finds, work: _gh_runs(parsed[0]),
     "container_host_access": lambda parsed, finds, work: _container_host_access(parsed[0]),
-    "push": lambda parsed, finds, work: _pushes(parsed[0]) + _push_config_env(parsed) + _config_reach(parsed),
+    "push": lambda parsed, finds, work: _pushes_once(parsed, parsed[0]) + _push_settings(parsed),
     "requests": lambda parsed, finds, work: _curl_requests(parsed[0]),
     # (push's, for the commands a reader of _pushes takes)
-    "publish": lambda parsed, finds, work: _pushes([c for c in parsed[0] if c["argv"] and (
-        _push_program(c["argv"][0])[1] or c["argv"][0] in ("xargs", "gxargs", "parallel"))]) + _push_config_env(parsed)
-    + _config_reach(parsed),
+    "publish": lambda parsed, finds, work: _pushes_once(parsed, [c for c in parsed[0] if c["argv"] and (
+        _push_program(c["argv"][0])[1] or c["argv"][0] in ("xargs", "gxargs", "parallel"))]) + _push_settings(parsed),
     "code": lambda parsed, finds, work: _code(parsed, work),
 }
 # the fields _subjects reads a shell call's parse or its class fields for (any other is the raw argument of its name),
@@ -6745,6 +6744,29 @@ def _masks(rules):
                 by_id[s] = by_id.get(s, 0) | 1 << place
             out[key] = on | 1 << place, always, every | (ids if in_set else frozenset()), by_id
     return out
+
+
+def _pushes_once(parsed, commands):
+    """_pushes(commands), read once for the same commands of one parse: the push and publish fields read the same list where
+    every command is one a reader of _pushes takes."""
+    learned = parsed[5] if len(parsed) > 5 else None
+    if learned is None:
+        return _pushes(commands)
+    key = tuple(map(id, commands))
+    kept = learned.setdefault("pushes", {})
+    if key not in kept:
+        kept[key] = _pushes(commands)
+    return kept[key]
+
+
+def _push_settings(parsed):
+    """What the line sets or writes that moves where a push goes (_push_config_env, _config_reach), read once a parse."""
+    learned = parsed[5] if len(parsed) > 5 else None
+    if learned is None:
+        return _push_config_env(parsed) + _config_reach(parsed)
+    if "push_settings" not in learned:
+        learned["push_settings"] = _push_config_env(parsed) + _config_reach(parsed)
+    return learned["push_settings"]
 
 
 def _text(s):
@@ -6792,7 +6814,10 @@ _INERT_PROGRAMS = frozenset((
     "aws", "gh", "gcloud", "gsutil", "stripe", "terraform", "terragrunt", "tofu", "psql", "mysql", "mongosh", "redis-cli", "valkey-cli", "az",
     "vault", "vercel", "pulumi", "helm", "railway", "glab", "fly", "heroku", "cdk", "oc", "supabase", "journalctl", "setcap", "pytest", "crontab",
     "diskutil", "ruff", "wipefs", "usermod", "ssh-add", "mkfs.ext4", "nc", "scp", "rails", "uvicorn", "security", "mix", "npm", "pnpm", "yarn", "cargo", "go",
-    "gem", "bundle"))
+    "gem", "bundle",
+    # PowerShell's read-only cmdlets (a redirection or a pipe into a writer is another command or a `out`, which _writes_nothing reads)
+    "get-content", "get-childitem", "get-item", "get-itemproperty", "select-string", "test-path", "resolve-path", "get-location",
+    "get-process", "get-date", "get-command", "measure-object"))
 # an option of curl that writes no file and names none (the others are read by shell.download_writes)
 _CURL_INERT = frozenset(("-s", "-S", "-sS", "-f", "-L", "-k", "-v", "-I", "-i", "-G", "-X", "-H", "-d", "-u", "-A", "-e", "-m", "-4", "-6",
                          "-sSL", "-sL", "-fsSL", "-fsS", "-sf", "-LsS", "-sSf", "-g", "--silent", "--show-error", "--fail", "--location",

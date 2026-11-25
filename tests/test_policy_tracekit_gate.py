@@ -7,7 +7,7 @@ import re
 import unittest
 from unittest import mock
 
-from tracekit.policy2 import classes, compile as pc, engine as engine_module
+from tracekit.policy2 import classes, compile as pc, engine as engine_module, shell
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 
@@ -143,6 +143,41 @@ class Subjects(unittest.TestCase):
         for command in ("rm -rf ~/.LOCAL/Share/TraceKit", "rm ~/.local/bin/TRACEKIT"):
             with self.subTest(command):
                 self.assertIn("TK-D007", self.engine.decide("Bash", {"command": command})["rule_ids"])
+
+
+class Once(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
+
+    def test_pushes_are_read_once_for_a_line_both_fields_read_alike(self):
+        with mock.patch.object(engine_module, "_pushes", wraps=engine_module._pushes) as read:
+            self.engine.decide("Bash", {"command": "gh api -X DELETE repos/o/r/secrets/X"})
+            self.assertEqual(read.call_count, 1)
+
+    def test_the_push_settings_are_read_once_a_line(self):
+        with mock.patch.object(engine_module, "_push_config_env", wraps=engine_module._push_config_env) as read:
+            self.engine.decide("Bash", {"command": "git push origin feature"})
+            self.assertEqual(read.call_count, 1)
+
+    def test_the_two_fields_still_read_a_line_that_only_some_commands_of_it_are_push_programs(self):
+        d = self.engine.decide("Bash", {"command": "cd x && git push --force origin main"})
+        self.assertNotEqual(d["verdict"], "allow")
+
+    def test_a_listed_read_only_program_is_skipped_and_none_writes(self):
+        for name in ("get-content", "get-childitem", "get-item", "get-itemproperty", "select-string", "test-path",
+                     "resolve-path", "get-location", "get-process", "get-date", "get-command", "measure-object"):
+            with self.subTest(name):
+                self.assertIn(name, engine_module._INERT_PROGRAMS)
+                parsed = shell.analyse(f"{name} data.txt", work=[0])
+                self.assertTrue(engine_module._writes_nothing(parsed))
+                full = engine_module._write_effects(parsed, [0])
+                self.assertEqual([t for t in full if not t.startswith("NAMED_TARGET:")], [])
+
+    def test_no_listed_program_is_a_writer_the_reader_knows(self):
+        for name in engine_module._INERT_PROGRAMS:
+            with self.subTest(name):
+                self.assertNotIn(name, engine_module._WRITER_WORDS)
 
 
 if __name__ == "__main__":
