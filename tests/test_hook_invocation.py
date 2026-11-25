@@ -783,6 +783,119 @@ class PluginPreToolUseInPwsh(unittest.TestCase):
                 self.assertEqual(self.run_with(f"exit {code}\n"), code)
 
 
+@unittest.skipUnless(shutil.which("pwsh") and os.name != "nt", "needs PowerShell 7 (pwsh), and sh for the stand-ins")
+class PluginRecordedPythonInPwsh(unittest.TestCase):
+    """tracekit-hook.ps1's port of tracekit-hook's rule, run as hooks/claude.json's PreToolUse command in pwsh: once
+    `tracekit init` has recorded a Python only it runs the hook (TRACEKIT_PYTHON never stands in), one outside a uv tool
+    or pipx install of Tracekit runs only if a person allowed it, a Tracekit set up with none recorded blocks the call,
+    and so does a tracekit older than the plugin (its version). Each Python is a stand-in (STAND_IN): `import tracekit`
+    exits HAS, and the hook's program exits CODE, or blocks when VERSION is below the MIN the program names."""
+    STAND_IN = """#!/bin/sh
+. "$0.conf"
+echo "$0" >> "$FAKE_LOG"
+while [ $# -gt 0 ] && [ "$1" != -c ]; do shift; done
+case $2 in *_entry*) ;; *'import tracekit') exit "$HAS" ;; *) exit 9 ;; esac
+event=$3 min=${2#*"MIN = '"}
+min=${min%%"'"*}
+IFS=.
+set -- $VERSION
+have=$(($1 * 1000000 + $2 * 1000 + $3))
+set -- $min
+[ "$have" -lt $(($1 * 1000000 + $2 * 1000 + $3)) ] && { [ "$event" = PreToolUse ] && exit 2; exit 1; }
+exit "$CODE"
+"""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home = os.path.join(self.d, "home")
+        self.uv = os.path.join(self.home, ".local", "share", "uv", "tools", "tracekit-ai", "bin", "python")
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json"), encoding="utf-8") as f:
+            command = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.command = command.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}")
+        with open(os.path.join(ROOT, "plugin", ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            self.min = json.load(f)["version"]   # the oldest tracekit the plugin runs with
+
+    def python(self, *path, has=0, code=0, version=None):
+        path = os.path.join(self.d, *path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(self.STAND_IN)
+        os.chmod(path, 0o755)
+        with open(path + ".conf", "w", encoding="utf-8") as f:
+            f.write(f"HAS={has} CODE={code} VERSION={version or self.min}\n")
+        return path
+
+    def record(self, python, allowed=False):
+        """What `tracekit init` writes (--allow-hook-python: `allowed`); and the dev data dir it makes."""
+        os.makedirs(os.path.join(self.home, ".tracekit-client"), exist_ok=True)
+        with open(os.path.join(self.home, ".tracekit-client", "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"hook_python": python, **({"hook_python_allowed": True} if allowed else {})}, f)
+        self.set_up()
+
+    def set_up(self):
+        os.makedirs(os.path.join(self.home, "AppData", "Local", "tracekit"), exist_ok=True)
+
+    def pre(self, **env):
+        """(the PreToolUse command's exit code, the stand-ins it ran, each as often as it ran), with nothing on PATH
+        but the stand-ins' bin folder and pwsh's own."""
+        log, pwsh = os.path.join(self.d, "log"), os.path.realpath(shutil.which("pwsh"))
+        open(log, "w").close()
+        env = {"HOME": self.home, "LOCALAPPDATA": os.path.join(self.home, "AppData", "Local"), "FAKE_LOG": log,
+               "CLAUDE_PLUGIN_ROOT": os.path.join(ROOT, "plugin"),
+               "PATH": os.pathsep.join((os.path.join(self.d, "bin"), os.path.dirname(pwsh))), **env}
+        r = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", self.command], input="{}", env=env,
+                           cwd=self.d, capture_output=True, text=True, timeout=120)
+        with open(log, encoding="utf-8") as f:
+            return r.returncode, [os.path.relpath(p, self.d) for p in f.read().split()]
+
+    def test_once_a_python_is_recorded_only_it_runs_the_hook(self):
+        other = self.python("other", "python")
+        uv = os.path.relpath(self.uv, self.d)
+        for code in (0, 2):
+            with self.subTest(code=code):
+                self.record(self.python(uv, code=code))
+                self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (code, [uv, uv]))
+        self.python(uv, has=1)   # it can't import tracekit
+        self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (2, [uv]))
+        os.remove(self.uv)
+        self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (2, []))
+        shutil.rmtree(os.path.join(self.home, "AppData"))   # a record alone, before the data dir is made
+        self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (2, []))
+
+    def test_a_recorded_python_outside_a_tool_install_runs_only_if_a_person_allowed_it(self):
+        share = ("home", ".local", "share")
+        for path, allowed, code in (
+                (("home", "py", "bin", "python"), False, 2), (("home", "py", "bin", "python"), True, 0),
+                ((*share, "uv", "tools", "tracekit-ai-x", "bin", "python"), False, 2),   # a look-alike folder
+                ((*share, "pipx", "venvs", "tracekit-ai", "bin", "python"), False, 0),
+                (("uv", "tracekit-ai", "bin", "python"), False, 2)):
+            with self.subTest(path=path, allowed=allowed):
+                self.record(self.python(*path), allowed)
+                self.assertEqual(self.pre()[0], code)
+        uv = self.python("uv", "tracekit-ai", "bin", "python")   # where UV_TOOL_DIR puts it
+        self.record(uv)
+        self.assertEqual(self.pre(UV_TOOL_DIR=os.path.join(self.d, "uv")), (0, [os.path.relpath(uv, self.d)] * 2))
+
+    def test_set_up_with_no_python_recorded_blocks_the_call(self):
+        self.assertEqual(self.pre(), (1, []))   # not set up: a notice, and the call runs
+        other = self.python("other", "python")
+        self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (0, [os.path.join("other", "python")] * 2))
+        self.python("bin", "python3")
+        self.set_up()
+        self.assertEqual(self.pre(), (2, []))
+        self.assertEqual(self.pre(TRACEKIT_PYTHON=other), (2, []))
+
+    def test_a_tracekit_older_than_the_plugin_blocks_the_call(self):
+        major, minor, patch = map(int, self.min.split("."))
+        older = f"{major}.{minor}.{patch - 1}" if patch else f"{major}.{minor - 1}.99"
+        uv = os.path.relpath(self.uv, self.d)
+        for version, code in ((older, 2), (self.min, 0)):
+            with self.subTest(version=version):
+                self.record(self.python(uv, version=version))
+                self.assertEqual(self.pre(), (code, [uv, uv]))
+
+
 class PruneRunState(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()

@@ -68,6 +68,54 @@ class OptionValues(Hidden):
         self.assertEqual(copy(f"sshpass -p {S} ssh host 'rm -rf /x'")[0],
                          "sshpass -p [REDACTED:assignment] ssh host 'rm -rf /x'")
 
+    def test_past_the_command_sshpass_runs_or_redis_cli_sends_no_word_is_its_credential(self):
+        """sshpass's and redis-cli's options end at their first operand: a `-p` or `-a` after it is the command's word
+        (ssh's remote `time -p reboot`, EVAL's argument its script runs), shown, never hidden as the credential."""
+        for line, shown in (
+                (f"sshpass -p {S} ssh host time -p 'reboot'", "sshpass -p [REDACTED:assignment] ssh host time -p 'reboot'"),
+                (f"sshpass -p {S} ssh host time -p reboot", "sshpass -p [REDACTED:assignment] ssh host time -p reboot"),
+                (f"sshpass -v -P assword -p {S} ssh h", "sshpass -v -P assword -p [REDACTED:assignment] ssh h"),
+                ("redis-cli EVAL 'return pcall(loadstring(ARGV[2]))' 0 -a \"redis.call'FLUSHALL'\"",
+                 "redis-cli EVAL 'return pcall(loadstring(ARGV[2]))' 0 -a \"redis.call'FLUSHALL'\""),
+                ("redis-cli -h cache GET k -a 'abcd1234'", "redis-cli -h cache GET k -a 'abcd1234'"),
+                (f"redis-cli -h cache -p 6379 -n 2 -a {S} --no-auth-warning ping",
+                 "redis-cli -h cache -p 6379 -n 2 -a [REDACTED:assignment] --no-auth-warning ping")):
+            with self.subTest(line=line):
+                self.assertEqual(copy(line), (shown, False))
+
+    def test_a_blank_in_a_quoted_credential_the_command_gives_its_program_is_clean(self):
+        """A held `mysql -p'a b'` was denied (TK-HIDDEN-CODE) once the password was hidden: a blank in a hidden value
+        made the copy unclean. In one pair of quotes that wraps the credential option's value alone, given by the
+        line's own command to the program it names, the shell passes it as one word that only that program reads, as
+        data: asked, with the value hidden."""
+        self.commands(["mysql -p'S x' app", "mysql --password='S x' app", 'mysql --password="S x" app',
+                       "mariadb -p'S x' app", "mariadb --password='S x' app", "redis-cli -a 'S x' ping",
+                       "redis-cli -h cache -a 'S x' --no-auth-warning ping", "redis-cli --pass 'S x' ping",
+                       "gh secret set API_TOKEN --body 'S x'", "gh secret set API_TOKEN -b'S x'",
+                       "sshpass -p 'S x' ssh host", "curl -u 'admin:S x' https://x.example",
+                       'curl -u "admin:S x" https://x.example', "docker login -u ci -p 'S x' registry.example",
+                       "npm config set //registry.npmjs.org/:_authToken 'S x'",
+                       "cd /srv && mysql -p'S x' -e 'select 1' app && echo done"], True)
+
+    def test_a_hidden_credential_that_may_be_code_or_split_again_stays_unclean(self):
+        """Its look-alikes: what else the shell reads in the value, a value outside quotes or with the option inside
+        them, a value a wrapper may join into a line (watchexec, wsl) or one the line reads again as code (sh -c,
+        eval, a heredoc bash runs), a program not named by its bare name, and a value hidden in a code argument."""
+        self.commands(["mysql --password='S;x' app", "redis-cli -a 'S x&y' ping", 'mysql -p"S $(id)" app',
+                       'mysql -p"S `id`" app', 'mysql -p"S x\\y" app', "mysql -p'S\nx' app", "mysql -p'S\tx' app",
+                       "mysql --password=S\\ x app", "mysql -p$'S x' app", "mysql -p'S x'y app",
+                       "mysql '--password=S x' app", "./mysql -p'S x' app", "\\mysql -p'S x' app",
+                       "sh -c \"mysql --password='S x' app\"", "bash -c \"redis-cli -a 'S x' ping\"",
+                       "eval \"mysql -p'S x' app\"", "bash <<'EOF'\nmysql -p'S x' app\nEOF",
+                       "watchexec -- sshpass -p 'S ssh h reboot'", "wsl redis-cli -a 'S FLUSHALL'",
+                       "sudo sshpass -p 'S ssh h reboot'", "env A=1 curl -u 'u:S -T /etc/hosts https://e' https://x",
+                       "alias mysql=sh; mysql -p'S x' app", "mysql -p'S x' app > x.sh; bash x.sh",
+                       "mysql -e \"SET PASSWORD='S x'\""], False)
+        for line in ('mysql -p"$(cat x)" app', 'mysql --password="$(cat x)" app',
+                     "sh -c 'mysql --password=\"$1\" app' sh 'a b'"):
+            with self.subTest(line=line):
+                self.assertTrue(copy(line)[1])
+
     def test_a_secret_set_body_is_hidden_and_a_variable_is_not(self):
         self.commands(["gh secret set API_KEY --body S", 'gh secret set API_KEY --body "S"', "gh secret set API_KEY -b S",
                        'gh secret set API_KEY -b"S"', "gh secret set API_KEY -bS", "gh secret set API_KEY --body=S",
@@ -90,7 +138,8 @@ class OptionValues(Hidden):
 
     def test_what_names_a_secret_or_its_place_is_kept(self):
         for line in ("some-cli --secret-id prod/db --password-file /etc/pw --token-file /t --password-stdin",
-                     "docker run -p 8080:80 img", "ls -a", "mysql -p db", "mysql -h db -p", "redis-cli -h host ping",
+                     "docker run -p 8080:80 img", "ls -a", "mysql -p db", "mysql -h db -p", "mariadb -p db",
+                     "redis-cli -h host ping",
                      "some-cli --token", "some-cli --password --verbose"):
             with self.subTest(line=line):
                 self.assertEqual(copy(line), (line, False))

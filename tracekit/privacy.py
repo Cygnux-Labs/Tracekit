@@ -791,29 +791,46 @@ def _data_args(name, args):
 # is listed and its words lead the arguments
 _SECRET_OPTIONS = {"curl": ((), ("-u", "--user", "--proxy-user")), "sshpass": ((), ("-p",)),
                    "docker": (("login",), ("-p",)), "podman": (("login",), ("-p",)),
-                   "redis-cli": ((), ("-a", "--pass")), "mysql": ((), ("-p",)),
+                   "redis-cli": ((), ("-a", "--pass")), "mysql": ((), ("-p",)), "mariadb": ((), ("-p",)),
                    "gh": (("secret", "set"), ("-b", "--body"))}
 _OPTION_SECRET = re.compile(r"--[\w-]*(?:secret|password|passwd|token|api-?key)", re.I)
 _CONFIG_SET = ("npm", "pnpm", "yarn")   # `npm config set KEY VALUE`: the value of a key that names a secret
 # the programs and the option or subcommand words that may give one, so only a line that holds both is parsed for it
-_SECRET_PROGRAMS = re.compile(r"\b(?:curl|sshpass|mysql|redis-cli|docker|podman|gh|npm|pnpm|yarn)\b")
+_SECRET_PROGRAMS = re.compile(r"\b(?:curl|sshpass|mysql|mariadb|redis-cli|docker|podman|gh|npm|pnpm|yarn)\b")
 _SECRET_FLAGS = re.compile(r"(?<![\w-])-[upab]|--(?:user|proxy-user|pass|body)\b|\bconfig\s+set\b")
+# programs whose options end at their first operand, the command they run (sshpass: `ssh host time -p x` is ssh's) or
+# send (redis-cli: EVAL's script runs its arguments), by the options that take the next word as their value (each
+# one's usage: sshpass's getopt, redis-cli --help's short options, --user and --pass)
+_OPTIONS_END = {"sshpass": ("-f", "-d", "-p", "-P"),
+                "redis-cli": ("-h", "-p", "-t", "-s", "-a", "-u", "-r", "-i", "-n", "-X", "-d", "-D", "--user", "--pass")}
+
+
+def _options_end(name, args):
+    """How many of program `name`'s `args` (its words after its name) may be its options: all, unless _OPTIONS_END
+    lists it, then those before its first operand, or before a word an option it doesn't name may take (either)."""
+    takes, k = _OPTIONS_END.get(name), 0
+    if takes is None:
+        return len(args)
+    while k < len(args) and args[k][:1] == "-":
+        k += 2 if args[k] in takes else 1
+    return k
 
 
 def _secret_values(line, name, args):
-    """(k, start, end, data) for each credential among program `name`'s `args` (its words after its name) as `line`
-    holds them: the span of what follows the option in the word k that gives it (a quote wrapping it left out), and
-    whether it is data to its program (_SECRET_OPTIONS lists it, or a config key's value: a copy that hides it is clean)."""
+    """(k, start, end, data, quoted) for each credential among program `name`'s `args` (its words after its name, its
+    options: _options_end) as `line` holds them: the span of what follows the option in the word k that gives it (a
+    quote wrapping it left out), whether it is data to its program (_SECRET_OPTIONS lists it, or a config key's value: a
+    copy that hides it is clean), and whether one pair of quotes wraps all of it and nothing else of the word."""
     lead, opts = _SECRET_OPTIONS.get(name, ((), ()))
     listed = list(args[:len(lead)]) == list(lead) and name in _SECRET_OPTIONS
     found = []
-    for k, a in enumerate(args):
+    for k, a in enumerate(args[:_options_end(name, args)]):
         option, eq, _ = a.partition("=")
         value, skip, user, data = k, 0, False, listed   # the word the credential is in, the characters before it there
         if listed and (a in opts or eq and option in opts):
             user = name == "curl"
             value, skip = (k + 1, 0) if a in opts else (k, len(option) + 1)
-            if a in opts and name == "mysql":   # -p alone asks for it
+            if a in opts and name in ("mysql", "mariadb"):   # -p alone asks for it
                 continue
         elif listed and len(a) > 2 and a[:2] in opts and not a.startswith("--"):
             user, skip = name == "curl", 2
@@ -829,15 +846,16 @@ def _secret_values(line, name, args):
         if not at:
             continue
         a_, b_ = at
-        if skip and line.startswith(args[value][:skip], a_):   # (else it is quoted: the whole word)
-            a_ += skip
+        bare = not skip or line.startswith(args[value][:skip], a_)   # (else it is quoted: the whole word)
+        a_ += skip if skip and bare else 0
         rest = line[a_:b_]
-        if len(rest) > 1 and rest[0] in "'\"" and rest[-1] == rest[0] and rest.count(rest[0]) == 2:
+        quoted = len(rest) > 1 and rest[0] in "'\"" and rest[-1] == rest[0] and rest.count(rest[0]) == 2
+        if quoted:
             a_, b_ = a_ + 1, b_ - 1
         if user:
             a_ = line.find(":", a_, b_) + 1 or b_
         if b_ > a_:
-            found.append((value, a_, b_, data))
+            found.append((value, a_, b_, data, quoted and bare))
     return found
 
 
@@ -943,14 +961,17 @@ class _Facts:
     script file (a shell's, source's or an interpreter's: whose text it may have written there by a path the parser
     doesn't follow, cp, ln, find -exec), sets BASH_ENV or ENV, or runs one of _RUNS_LATER; `sure`, False when it can't
     read the line (ParseError, over engine.MAX_SUBJECT, past the call's Budget, its loop values' readings cut) or a
-    command runs what it can't read (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`). Readings are kept by
-    text in the call's Budget (of)."""
+    command runs what it can't read (opaque: `echo x | sh`, `$X` it can't follow, sed's `e`); `secrets`, the spans of
+    each command's credentials (_secret_values), and `quoted`, of those each that is data to a program the line runs
+    itself (reached through nothing: no wrapper, which may join its words into a line, sh -c, eval, a heredoc, a
+    substitution or a function), named by its bare name, in one pair of quotes. Readings are kept by text in the call's
+    Budget (of)."""
 
     def __init__(self, line=None, argv=None, work=None):
         self.programs, self.placed, self.args, self.sure, work = [], [], [], False, [0] if work is None else work
         text = line if line is not None else "\n".join(argv)
         self.runners, self.written, self.runs_file = [], [], bool(_SOURCES_ENV.search(text))
-        self.secrets = []
+        self.secrets, self.quoted = [], set()
         shell, engine = _policy("shell"), _policy("engine")
         if (len(line) if line is not None else sum(map(len, argv))) > engine.MAX_SUBJECT:
             return
@@ -970,10 +991,12 @@ class _Facts:
             runs = _runner_args(name, args)
             reads = name in DATA_READERS and c.get("word") == name and not renamed and not runs
             data = set(_data_args(name, args)) if name in _DATA_OPTIONS else set()
-            for k, a, b, clean in _secret_values(line, name, args) if line is not None else ():
+            for k, a, b, clean, quoted in _secret_values(line, name, args) if line is not None else ():
                 self.secrets.append((a, b))
                 if clean and c.get("word") == name and not renamed:
                     data.add(k)
+                    if quoted and not c.get("via"):
+                        self.quoted.add((a, b))
             spans = [(*a.at, reads or k in data) for k, a in enumerate(args) if getattr(a, "at", None)]
             self.args.append((name, spans))
             self.runners += [args[k].at for k in runs if getattr(args[k], "at", None)]
@@ -1420,13 +1443,14 @@ def _clean(s, r, marks, crossed, facts):
     hides only a clean value, which an approver may see a copy without: on a line the parser reads whole (_Facts.sure);
     not where the parser read a program or code it can't place in the line (a git alias's value, a variable's program:
     its `within`, None the whole line), nor in a program's or a script file's word it places; in one place
-    (_Reading.ctx) and holding nothing _SEEN there; not in an interpreter's program, nor where the reader is unsure; in
-    quotes, and when it starts a word of its own (`crossed`: `KEY: x`) anywhere, data: in a word a program of
-    DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a heredoc such a program reads, a value
-    assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV; quoted or not, not a runner option's value
-    (_runner_args) nor a value given any other name before a program (LD_PRELOAD); on a line that runs a file
-    (_Facts.runs_file), not in what it writes to a file or a pipe (a word of a command whose output goes there, a
-    herestring or a heredoc), which may be that file."""
+    (_Reading.ctx) and holding nothing _SEEN there (a blank aside in a credential in its quotes, _Facts.quoted: the
+    shell gives it to its program as one word, and nothing joins it into a line again); not in an interpreter's
+    program, nor where the reader is unsure; in quotes, and when it starts a word of its own (`crossed`: `KEY: x`)
+    anywhere, data: in a word a program of DATA_READERS gets or an option of _DATA_OPTIONS takes, a herestring or a
+    heredoc such a program reads, a value assigned where no program runs (`K='a b'`) or to a name of _DATA_ENV; quoted
+    or not, not a runner option's value (_runner_args) nor a value given any other name before a program (LD_PRELOAD);
+    on a line that runs a file (_Facts.runs_file), not in what it writes to a file or a pipe (a word of a command whose
+    output goes there, a herestring or a heredoc), which may be that file."""
     if not facts.sure:
         return False
     program, data, runner, written, loose = bytearray(len(s) + 1), bytearray(r.data), bytearray(len(s) + 1), \
@@ -1463,9 +1487,12 @@ def _clean(s, r, marks, crossed, facts):
                     _mark(runner, a, b)
     for v, e, _ in marks:   # (one that leaves its quotes, body or comment holds what ends them, which _SEEN finds)
         c = r.ctx[v]
+        seen = s[v:e] if c == CODE else _QUERY.sub("", s[v:e])
+        if (v, e) in facts.quoted:
+            seen = seen.replace(" ", "")
         if v in crossed and data.count(1, v, e) < e - v or r.unsure.find(1, v, e) >= 0 or \
                 r.interp.find(1, v, e) >= 0 or runner.find(1, v, e) >= 0 or written.find(1, v, e) >= 0 or \
-                program.find(1, v, e) >= 0 or _SEEN[c].search(s[v:e] if c == CODE else _QUERY.sub("", s[v:e])) or \
+                program.find(1, v, e) >= 0 or _SEEN[c].search(seen) or \
                 any(w is None or w[0] < e and v < w[1] for w in loose) or \
                 c in (SQ, DQ, ANSI) and data.count(1, v, e) < e - v:
             return False
