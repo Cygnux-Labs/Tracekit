@@ -205,16 +205,34 @@ def _identifier(s, a, b):
     return a, b
 
 
+# a name with a secret-looking word that names something about the secret, not the secret: a count, size, limit,
+# switch, kind or version of it by its last word (token_count, password_min_length, secret_scanning_enabled,
+# credential_type), or a maximum, minimum or number of them by its first unless its last is itself a secret word
+# (max_tokens, num_tokens; not max_tokens_secret). Its value is shown, so a held call that writes one stays approvable
+_ABOUT_LAST = frozenset(("count", "counts", "length", "len", "size", "limit", "used", "enabled", "disabled", "type", "kind",
+                         "version", "min", "max", "ttl"))
+_ABOUT_FIRST = frozenset(("max", "min", "num", "total"))
+_NAME_WORDS = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z0-9]+(?![a-z])")
+
+
+def _about_secret(name):
+    """Whether identifier `name` names something about a secret rather than one (_ABOUT_LAST, _ABOUT_FIRST)."""
+    words = [w.lower() for w in _NAME_WORDS.findall(name)]
+    return bool(words) and (words[-1] in _ABOUT_LAST or words[0] in _ABOUT_FIRST and not _SECRET_WORD.fullmatch(words[-1]))
+
+
 def _assignments(s, end=None, stop=None):
     """(start, end) of each value _redact_assignments hides in `s`: ASSIGNMENT's, found fast on large inputs (the
-    keywords with str.find, then a look around each one). `end(name_end, m)`: where the value _AFTER's match `m` found
-    after a name ending at `name_end` ends instead, or None to leave it; `stop(name_end)`: where its match may end at
-    the latest (so a value cut short is read once: linear)."""
+    keywords with str.find, then a look around each one), but a name about a secret's (_about_secret). `end(name_end,
+    m)`: where the value _AFTER's match `m` found after a name ending at `name_end` ends instead, or None to leave it;
+    `stop(name_end)`: where its match may end at the latest (so a value cut short is read once: linear)."""
     last = b = 0
     for ks, ke in _kw_hits(s):
         if ks < last or ks < b:  # ks < b: same identifier as the previous hit, already handled
             continue
         a, b = _identifier(s, ks, ke)
+        if _about_secret(s[a:b]):
+            continue
         am = _AFTER.match(s, b, stop(b) if stop else len(s))
         if am and a >= last:
             e = am.end(3) if end is None else end(am.start(1), am)
@@ -235,7 +253,7 @@ def _blocks(s):
         if ks < last or ks < b:   # (ks < b: the identifier before's)
             continue
         a, b = _identifier(s, ks, ke)
-        head = _BLOCK_HEAD.match(s, b)
+        head = not _about_secret(s[a:b]) and _BLOCK_HEAD.match(s, b)
         if not head:
             continue
         lead = s[s.rfind("\n", 0, a) + 1:a]
@@ -1347,7 +1365,8 @@ def _marks(cmd, r, dotenv, own, expands, secrets=()):
     for p in r.starts if expands else [0]:   # a word NAME=value with a secret-looking NAME (export's, declare's,
         # env's too; an argv's word is one word): all its value, to the word's end (past code in it: `T="a$(x)b"`),
         # each run of a quoted or unquoted part apart, its quotes and blanks kept as bash splits them (`T="a b"c'd e'`)
-        if not ((m := _NAME_RUN_EQ.match(cmd, p)) and _SECRET_WORD.search(cmd, p, m.end() - 1)):
+        if not ((m := _NAME_RUN_EQ.match(cmd, p)) and _SECRET_WORD.search(cmd, p, m.end() - 1)) or \
+                _about_secret(cmd[p:m.end() - 1]):   # (MAX_TOKENS=4096: a name about a secret's)
             continue
         runs, k = [], m.end()
         while k < len(cmd):

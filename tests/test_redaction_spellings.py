@@ -198,6 +198,46 @@ class PrefixedStrings(Hidden):
         self.assertEqual(shown["content"], "password = [REDACTED:assignment]\n")
 
 
+class AboutASecret(Hidden):
+    """A name with a secret-looking word that names a count, size, limit, switch, kind or version of a secret, or a
+    maximum or number of them (max_tokens, token_count, password_min_length, secret_scanning_enabled, credential_type),
+    hid its value, and a held call whose copy hid one with a blank before it (a JSON or YAML `key: value`, an
+    environment variable before a program) was denied (TK-HIDDEN-CODE): a config file write or an API request that no
+    person could approve. Their values are shown; the secrets beside them stay hidden."""
+    KEYS = {"max_tokens": "4096", "token_count": "1024", "num_tokens": "5120", "tokens_used": "1234",
+            "password_min_length": "1200", "secret_scanning_enabled": "true", "credential_type": '"service_account"',
+            "maxTokens": "4096", "tokenCount": "1024"}
+
+    def test_a_name_about_a_secret_shows_its_value_and_stays_approvable(self):
+        for k, v in self.KEYS.items():
+            raw = v.strip('"')
+            for tool, args in (("Write", {"file_path": "c.json", "content": f'{{"model": "m", "{k}": {v}}}\n'}),
+                               ("Write", {"file_path": "c.yaml", "content": f"model: m\n{k}: {raw}\n"}),
+                               ("Write", {"file_path": "c.yaml", "content": f"model: m\n{k}: >-\n  {raw}\n"}),
+                               ("http_request", {"url": "https://api.example/v1/x", "body": f'{{"{k}": {v}}}'}),
+                               ("http_request", {"url": "https://api.example/v1/x", "body": {k: json.loads(v)}}),
+                               ("Bash", {"command": f"{re.sub('(?<=[a-z])(?=[A-Z])', '_', k).upper()}={raw} python3 app.py"}),
+                               ("Bash", {"command": f"cat > c.yaml <<'EOF'\n{k}: {raw}\nEOF"}),
+                               ("Bash", {"command": f'python3 -c "{k} = {v}; print({k})"'})):
+                with self.subTest(key=k, tool=tool, args=args):
+                    shown, unclean = privacy.approver_copy(args, False, tool)
+                    self.assertNotIn("REDACTED", json.dumps(shown))
+                    self.assertFalse(unclean, shown)
+
+    def test_the_secrets_beside_them_stay_hidden(self):
+        for k, v in (("api_token", '"S"'), ("password", "1234"), ("password", '"S"'), ("max_tokens_secret", '"S"'),
+                     ("token", '"S"'), ("secret_key_base", '"S"'), ("GITHUB_TOKENS", '"S"'), ("tokens", '"S"')):
+            value = v.replace("S", S)
+            raw = value.strip('"')
+            for tool, args in (("Write", {"file_path": "c.json", "content": f'{{"{k}": {value}}}\n'}),
+                               ("Write", {"file_path": "c.yaml", "content": f"{k}: {raw}\n"}),
+                               ("Bash", {"command": f"{k.upper()}={raw} ./deploy.sh"})):
+                with self.subTest(key=k, tool=tool, args=args):
+                    shown = json.dumps(privacy.approver_copy(args, False, tool)[0])
+                    self.assertIn("REDACTED", shown)
+                    self.assertNotIn(raw, shown)
+
+
 class Runtime(unittest.TestCase):
     """What the spellings read stays linear on large adversarial input (as tests/test_redaction_runtime.py)."""
 
