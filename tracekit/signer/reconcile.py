@@ -142,14 +142,15 @@ MCP_NAMES = ("{t}",              # OpenAI Agents JS, the Vercel AI SDK, the mcp 
              "mcp_{s}__{t}")     # OpenAI Agents JS with mcpConfig.includeServerInToolNames
 
 
-def model_names(tool):
+def model_names(tool, gateway=False):
     """The names the model may have asked for decided `tool`: the name itself, the original name of a Deep Agents
-    tool tagged by the LangChain adapter, and for `mcp:<server>/<tool>` the
+    tool tagged by the LangChain adapter (the adapter's own copy of the model call; a gateway's copy sees only the
+    tagged name's wire form, never an alias the agent chose), and for `mcp:<server>/<tool>` the
     MCP_NAMES forms that parse back to exactly that server and tool. A server or tool with an edge `_` or a `__` could
     share the separator (`mcp:_prod/t` spells `mcp__prod__t`), and a tool named like a prefixed form
     (`mcp:z/mcp__prod__t`) could stand for another server's tool: those get no alias."""
     if tool in DEEP_AGENTS_TOOLS:
-        return (tool, tool.split(":", 1)[1])
+        return (tool,) if gateway else (tool, tool.split(":", 1)[1])
     if not tool.startswith("mcp:") or "/" not in tool:
         return (tool,)
     server, name = tool[4:].split("/", 1)
@@ -300,7 +301,7 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         a, b = digests.get("l2:" + tcid), digests.get("l3:" + tcid)
         if isinstance(a, dict):   # an MCP call: the signer's digest under each name the model may have used
             a = a.get(u["name"])
-        if u["name"] not in model_names(d["name"]):
+        if u["name"] not in model_names(d["name"], u["gw"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
         elif not (u["unparseable"] or d["coerced"] and not u["gw"] or u["coerced"]) and a and b and a != b:
