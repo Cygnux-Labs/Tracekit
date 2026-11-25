@@ -5165,8 +5165,10 @@ class CodingPack(unittest.TestCase):
             "mv ~/AppData/Roaming/uv /tmp/x",
             "rm -rf C:/Users/u/AppData/Roaming/uv", "rm -rf /c/Users/u/AppData", 'rm -rf "$LOCALAPPDATA/pipx"',
             'chmod -R 000 "$APPDATA/uv/tools"', "cp x ~/AppData/Roaming/u?/data/tools/tracekit-ai/Scripts/python.exe",
-            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Roaming\\uv')\"")]
-        held = [(tool, {"command": c}, "TK-A096") for tool in ("Bash", "PowerShell") for c in (
+            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Roaming\\uv')\"",
+            "node -e \"require('fs').rmSync('C:/Users/u/AppData/Roaming/uv/tools', {recursive: true})\"",
+            "perl -e 'use File::Path; rmtree(\"$ENV{LOCALAPPDATA}/pipx\")'")]
+        held =[(tool, {"command": c}, "TK-A096") for tool in ("Bash", "PowerShell") for c in (
             r"Copy-Item evil.exe $env:APPDATA\uv\data\tools\tracekit-ai\Scripts\python.exe",
             r"copy-item evil.exe ${env:APPDATA}\UV\Tools\TraceKit-AI\Scripts\python.exe",
             r"Set-Content -Path $env:APPDATA\uv\tools\tracekit-ai\Lib\site-packages\x.pth -Value 'import os'",
@@ -5191,7 +5193,8 @@ class CodingPack(unittest.TestCase):
             "ls ~/AppData/Roaming/uv/tools", 'cat "$APPDATA/uv/data/tools/tracekit-ai/uv-receipt.toml"',
             "rm -rf ~/AppData/Local/uv/cache", "rm -rf /home/u/proj/Roaming/uv", "uv tool dir",
             "find ~ -name .DS_Store -delete",   # (a `**` there stands for no whole root: engine._STAR_MOST)
-            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Local\\uv\\cache')\"")]
+            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Local\\uv\\cache')\"",
+            "node -e \"require('fs').rmSync('C:/Users/u/AppData/Local/uv/cache', {recursive: true})\"")]
         for pack, engine, e in self.every_pack():
             for tool, args, rid in denied + held:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
