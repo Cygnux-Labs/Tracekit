@@ -22,6 +22,7 @@ from unittest import mock
 
 import pytest
 
+from factories import TOO_DEEP_JSON, no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -71,6 +72,14 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(bad(shape))}
                 self.assertIn(want, got)
 
+    def test_a_settings_file_too_deep_to_parse_is_a_result_not_a_crash(self):
+        def deep(L):
+            with open(L.settings, "w") as f:
+                f.write(TOO_DEEP_JSON)
+        with contextlib.redirect_stdout(io.StringIO()):
+            got = {r["id"]: r["status"] for r in e16.run_case(deep)}
+        self.assertIn("D-HOOKS-PRESENT", got)
+
     def test_hooks_installed_before_1_2_only_need_init_again(self):
         got = {r["id"]: r["status"] for r in e16.run_case(e16._unnamed)}
         self.assertEqual((got["D-HOOKS-EVENT"], got["D-HOOKS-VENV"]), ("warn", "ok"))
@@ -94,6 +103,26 @@ class CodingAgentHooks(unittest.TestCase):
             agent_hooks.install(harness, path=path, v2=True)
         with open(path) as f:
             return path, json.load(f)
+
+    def test_a_hook_file_line_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        from tracekit import agent_hooks
+        opencode = os.path.join(self.d, "opencode", "tracekit.js")
+        gptme = os.path.join(self.d, "gptme", "config.toml")
+        bridge = agent_hooks._gptme_hook_path(gptme)
+        for path, text in ((opencode, f"const commands = {TOO_DEEP_JSON};\n"),
+                           (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {TOO_DEEP_JSON}\n")):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(text)
+        with self.assertRaises(ValueError):
+            doctor._hook_commands("opencode", opencode)
+        with self.assertRaises(ValueError):
+            doctor._gptme_argv(gptme)
+        self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
+        for harness, path in (("opencode", opencode), ("gptme", gptme)):
+            with self.subTest(harness):
+                self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
+                    {"data_dir": self.d}, "dev", harnesses={harness: path})})
 
     def check(self, harness, path, settings):
         with open(path, "w") as f:
@@ -2193,6 +2222,12 @@ class CodexSandbox(unittest.TestCase):
         self.assertEqual(self.check("[features]\nexec_permission_approvals = false\n")["status"], "ok")
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
+    def test_a_config_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        got = self.check("a = " + "[" * 5000 + "]" * 5000)
+        self.assertEqual(got["status"], "info")
+        self.assertIn("can't check Codex's approval settings", got["detail"])
+
+    @unittest.skipIf(sys.version_info < (3, 11), "tomllib reads Codex's config.toml")
     def test_a_model_reviewer_warns_and_a_person_is_ok(self):
         for reviewer in ("auto_review", "guardian_subagent"):
             got = self.check(f'approval_policy = "on-request"\napprovals_reviewer = "{reviewer}"\n')
@@ -2236,7 +2271,7 @@ class CodexSandbox(unittest.TestCase):
         self.assertIn("doesn't know", got["detail"])
 
     def test_without_tomllib_or_with_bad_toml_it_says_it_couldnt_check(self):
-        with mock.patch.dict(sys.modules, {"tomllib": None}):
+        with no_tomllib():
             got = self.check('approvals_reviewer = "auto_review"\n')
         self.assertEqual(got["status"], "info")
         self.assertIn("Python 3.11 or newer reads Codex's config.toml", got["detail"])

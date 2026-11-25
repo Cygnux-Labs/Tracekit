@@ -964,7 +964,7 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # 3.1.0+: KIRO_HOME and KIRO_DEFAULT_SETTINGS,
 # https://kiro.dev/docs/reference/settings/#environment-variables; Open Interpreter: INTERPRETER_HOME, which its
 # docs/acp.md spells out ("INTERPRETER_HOME=$HOME/.openinterpreter") as the home holding its config.toml, and its Python
-# build (endolith/open-interpreter, pyproject.toml [project.scripts]) installs `interpreter`, `interpreter-classic`, `i`
+# build (the open-interpreter 0.4.3 wheel on PyPI, entry_points.txt) installs `interpreter`, `interpreter-classic`, `i`
 # and `wtf` for one entry point — `i` alone is left unread, since a person's own one-letter script is the likelier
 # reading); an option that
 # loads other settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's

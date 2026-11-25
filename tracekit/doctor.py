@@ -489,7 +489,7 @@ def _hook_commands(harness, path):
         return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
-        return list(json.loads(m.group(1)).values()) if m else []
+        return list(_loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
@@ -502,7 +502,7 @@ def _gptme_argv(path):
     if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
         return []
     match = re.search(r"^COMMAND = (.*)$", source, re.M)
-    return json.loads(match[1]) if match else []
+    return _loads(match[1]) if match else []
 
 
 def _outside_cwd(path):
@@ -850,7 +850,7 @@ def _codex_sandbox(add, harnesses):
         return
     toml, why = os.path.join(os.path.dirname(path), "config.toml"), None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         cfg = tomllib.loads(install.agent_file(toml).decode("utf-8"))
     except FileNotFoundError:   # Codex's defaults: on-request, a person reviews, the feature off
         cfg = {}
@@ -977,7 +977,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         return
     store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
         if not isinstance(state, dict):
             raise ValueError("hooks.state is not a table")
@@ -1260,10 +1260,13 @@ def _text(path):
         return ""
 
 
+_loads = install.agent_loads
+
+
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
     doctor)."""
-    return json.loads(install.agent_file(path))
+    return install.agent_json(path)
 
 
 _setting = install.setting   # a Claude Code settings file's key, or None
