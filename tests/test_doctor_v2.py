@@ -642,7 +642,7 @@ class ManagedHooks(unittest.TestCase):
                                     signer="/run/s.sock")
 
     def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None, untrusted=None,
-             unreadable_dropins=False, settings_file=None):
+             unreadable_dropins=False, settings_file=None, retain=False):
         """Doctor's rows; `trusted`: what trusted_file says of every path, `untrusted`: a path -> the problem it reports
         for that one instead, `readable`: whether the agent's user can read them (None: not probed),
         `unreadable_dropins`: only the managed file is readable, `user`/`managed`: settings to add, `plugin`:
@@ -665,7 +665,8 @@ class ManagedHooks(unittest.TestCase):
         with mock.patch.object(doctor, "trusted_file", report), \
                 mock.patch.object(doctor, "agent_access", access):
             return {r["id"]: r for r in doctor.v2_checks(
-                {"data_dir": self.d}, "production", agent=self.agent, settings=settings_file or self.managed,
+                {"data_dir": self.d, "content": {"retain": retain}}, "production", agent=self.agent,
+                settings=settings_file or self.managed,
                 opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed],
                 plugin=plugin)}
 
@@ -815,6 +816,51 @@ class ManagedHooks(unittest.TestCase):
             with self.subTest(allowManagedHooksOnly=only):
                 got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
                 self.assertEqual((got["status"], got["detail"]), want)
+
+    def test_a_dropin_counts_as_a_settings_layer_for_the_thinking_summaries(self):
+        """A drop-in is one of Claude Code's settings layers, so a value only it sets counts. With the content vault on,
+        `showThinkingSummaries` in a drop-in is the difference between a pass and a warning: take the drop-ins out of
+        `layers` and this test fails, which is what the review asked for. (Every other verdict is unaffected by the
+        list, because `D-HOOKS-EVENT` appends the drop-ins to its own order.)"""
+        self.dropin(**{install.THINKING: True})
+        got = self.rows(retain=True)["D-THINKING-SUMMARIES"]
+        self.assertEqual(got["status"], "ok", got)
+        self.assertIn("managed-settings.d", got["detail"], "the detail names the drop-in the value came from")
+
+    def test_a_folder_the_agent_can_read_but_not_enter_is_unreadable(self):
+        """A root-owned folder at 0744 is readable by others and cannot be entered, so Claude Code can't open the
+        drop-ins in it and starts without that source's policies. `_access` asked for R_OK alone and called it fine.
+        The modes are asserted through the probe rather than by chmod, which this host's file system doesn't honour."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        real = os.access
+
+        def access(p, mode, **kw):   # what 0744 gives "other": readable, not enterable
+            if str(p) == folder:
+                return bool(mode & os.R_OK) and not bool(mode & os.X_OK)
+            return real(p, mode, **kw)
+        with mock.patch.object(doctor.os, "access", access):
+            self.assertEqual(doctor._access([(folder, "open")]), [], "a folder that can't be entered is unreachable")
+            self.assertEqual(doctor._access([(folder, "read")]), [[folder, "read"]],
+                             "which a read probe alone cannot tell")
+
+    def test_the_folder_is_probed_for_entering_and_each_dropin_for_reading(self):
+        """The folder has to be enterable and a drop-in only readable: asking for the wrong mode on either is what let
+        a 0744 folder pass. This asserts the modes the check asks for, so a change back to "read" fails here."""
+        path = self.dropin(model="claude-sonnet-5")
+        folder = os.path.dirname(path)
+        seen = []
+
+        def access(pw, targets):
+            seen.extend(targets)
+            return list(targets)
+        with mock.patch.object(doctor, "trusted_file", return_value=None), \
+                mock.patch.object(doctor, "agent_access", access):
+            doctor.v2_checks({"data_dir": self.d}, "production", agent=self.agent, settings=self.managed,
+                             opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed])
+        self.assertIn((folder, "open"), seen, f"the folder is asked for as enterable: {seen}")
+        self.assertIn((path, "read"), seen)
+        self.assertIn((self.managed, "read"), seen)
 
     def test_a_dropin_that_sets_allow_managed_hooks_only_is_read_in_merge_order(self):
         """A review item I fixed without a test: `allowManagedHooksOnly` was read from `managed-settings.json` alone, so

@@ -1211,12 +1211,16 @@ def _user(name):
 
 
 def _access(targets):
-    return [[p, m] for p, m in targets if os.access(p, os.R_OK if m == "read" else os.W_OK)]
+    """The targets the agent's user can reach, as [[path, mode]]. "read" asks for R_OK and "write" for W_OK; "open"
+    is for a folder, which has to be *entered*: a folder at 0744 is readable by others and cannot be listed or walked
+    into, so the files in it are unreadable to Claude Code too, and R_OK alone would call it fine."""
+    return [[p, m] for p, m in targets
+            if os.access(p, os.R_OK | os.X_OK if m == "open" else os.W_OK if m == "write" else os.R_OK)]
 
 
 def agent_access(pw, targets):
-    """The (path, "read"|"write") targets the agent's user can access, probed as that user without changing anything;
-    None when this process can't act as it (not root, not the agent)."""
+    """The (path, "read"|"write"|"open") targets the agent's user can access, probed as that user without changing
+    anything; None when this process can't act as it (not root, not the agent)."""
     if not hasattr(os, "geteuid") or os.geteuid() not in (0, pw.pw_uid):
         return None
     return files.as_user(pw, _access, targets)
@@ -1614,8 +1618,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     if managed:   # the hooks are for the agent: whether other users' Claude Code reads the file doesn't count
         folder = _dropin_folder(settings)
         sources = list(dict.fromkeys([settings, folder, *dropins]))   # the folder whenever it exists, empty or not
-        read = agent and agent_access(agent, [[p, "read"] for p in sources])   # None: not probed (doctor isn't root)
-        can = {p for p, how in (read or []) if how == "read"}
+        # the files are read; the folder has to be enterable too, or Claude Code can't open the drop-ins in it either
+        probes = [(p, "open" if p == folder else "read") for p in sources]
+        read = agent and agent_access(agent, probes)   # None: not probed (doctor isn't root)
+        can = {p for p, how in (read or [])}
         unreadable = [p for p in sources if read is not None and p not in can]
         problem, note = _dropins(settings, unreadable)
         bad = trusted_file(settings) or (f"{agent.pw_name} can't read {settings}, so its Claude Code starts without "
