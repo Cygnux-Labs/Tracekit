@@ -116,7 +116,6 @@ class TracekitSession(HeldCalls):
             message = recording_warning(f"MCP {kind}", e)
             if message is not None:
                 warnings.warn(f"tracekit: {message}", stacklevel=2)
-            
         return out
 
     async def _send(self, method, *a, **kw):

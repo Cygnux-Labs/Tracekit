@@ -377,6 +377,7 @@ class TracekitMiddleware(AgentMiddleware):
             if message is not None:
                 warnings.warn(f"tracekit: {message}", stacklevel=2)
         self._attempts[call["id"]] = p["attempt"] + 1
+
     # lean: wrap_tool_call's signer calls block; awrap_tool_call runs them in a worker thread (issue #680)
     def wrap_tool_call(self, request, handler):
         if _executor(request.tool):   # the executor decides it, under the model's id for the call
@@ -751,6 +752,7 @@ class TracekitCheckpointer(BaseCheckpointSaver):
             message = recording_warning(f"checkpoint commitment for {_key(config)}", e)
             if message is not None:
                 warnings.warn(f"tracekit: {message}", stacklevel=3)
+
     async def _awrote(self, config):
         try:
             n = next(self._reads)
