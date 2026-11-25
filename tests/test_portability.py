@@ -138,12 +138,15 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            # sh execs /bin/sh on tracekit-hook, so the script runs without its exec bit; PowerShell (Windows without
-            # Git Bash) skips that inside <# #> and runs tracekit-hook.ps1 in a try, exiting with the failure code if
-            # the script never starts or throws (#1097)
+            # sh execs /bin/sh on tracekit-hook, so the script runs without its exec bit, and before a tool call blocks
+            # it (2) when it can't read the script (sh's 127 or 126 doesn't block); PowerShell (Windows without Git
+            # Bash) skips that inside <# #> and runs tracekit-hook.ps1 in a try, exiting with the failure code if the
+            # script never starts or throws (#1097)
             fail = 2 if ev == "PreToolUse" else 1
+            check = ('[ -r "${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ] || { echo "tracekit plugin: the hook '
+                     'script did not run" >&2; exit 2; }; ') if ev == "PreToolUse" else ""
             self.assertEqual(h["command"],
-                             f'echo `# <#`>/dev/null; exec /bin/sh "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} '
+                             f'echo `# <#`>/dev/null; {check}exec /bin/sh "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook" {ev} '
                              f'#> >$null; $LASTEXITCODE = {fail}; '
                              f'try {{ & "${{CLAUDE_PLUGIN_ROOT}}/scripts/tracekit-hook.ps1" {ev}; '
                              f'exit $LASTEXITCODE }} catch {{ [Console]::Error.WriteLine("tracekit plugin: the hook script '
@@ -291,6 +294,40 @@ class PluginPackage(unittest.TestCase):
                                        env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root, "CODE": code})
                     with self.subTest(code=code, flags=flags):
                         self.assertEqual((r.returncode, r.stdout, r.stderr), (int(code), "", ""))
+
+    @unittest.skipIf(sys.platform == "win32", "PluginInPowerShell (test_hook_invocation.py) runs it on Windows")
+    def test_a_missing_or_unreadable_script_blocks_a_tool_call_in_every_sh(self):
+        """sh exits 127 (126) when it can't read the script, which Claude Code doesn't count as a block: the pre-tool
+        command blocks (2) first; the other events stay non-blocking."""
+        import json
+        import shutil as sh_
+        import subprocess
+        import tempfile
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json")) as f:
+            hooks = json.load(f)["hooks"]
+        shells = [s for s in ("/bin/sh", sh_.which("dash"), sh_.which("bash")) if s]
+        self.assertGreaterEqual(len(shells), 2)
+        with tempfile.TemporaryDirectory() as root:
+            os.mkdir(os.path.join(root, "scripts"))
+            hook = os.path.join(root, "scripts", "tracekit-hook")
+            for state in ("missing", "unreadable"):
+                if state == "unreadable":
+                    if hasattr(os, "geteuid") and os.geteuid() == 0:   # root reads it anyway
+                        continue
+                    with open(hook, "w") as f:
+                        f.write("exit 0\n")
+                    os.chmod(hook, 0)
+                for shell in shells:
+                    for ev in ("PreToolUse", "Stop"):
+                        r = subprocess.run([shell, "-c", hooks[ev][0]["hooks"][0]["command"]], input="{}",
+                                           capture_output=True, text=True,
+                                           env={"PATH": "/usr/bin:/bin", "CLAUDE_PLUGIN_ROOT": root})
+                        with self.subTest(state=state, shell=shell, event=ev):
+                            if ev == "PreToolUse":
+                                self.assertEqual((r.returncode, r.stderr),
+                                                 (2, "tracekit plugin: the hook script did not run\n"))
+                            else:
+                                self.assertIn(r.returncode, (126, 127), r.stderr)
 
 
 if __name__ == "__main__":
