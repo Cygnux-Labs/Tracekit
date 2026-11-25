@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client, constraints  # noqa: E402
 from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
-from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
+from factories import TOO_DEEP_JSON, DaemonCase, ledger_records, no_tomllib, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
 
@@ -584,6 +584,32 @@ class Harnesses(DaemonCase):
         self.assertEqual(calls, [("Bash", None), ("Edit", "src/app.py"), ("Bash", None)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
 
+    def test_codex_signs_a_call_with_an_unusable_agent_id_as_the_main_agents(self):
+        """The PR #1105 review: normalise passed any `agent_id` on, and on this hook an id the event format can't hold
+        made the signer refuse the call's tool.call, policy.decision and tool.result, so the call ran and only error
+        records were signed. Such an id is the main agent's, as a call with none is; a usable one is kept."""
+        base = {"session_id": "cx-aid", "cwd": self.d, "model": "gpt-5-codex", "turn_id": "t1",
+                "transcript_path": None, "permission_mode": "default"}
+        self.assertEqual(self.hook("codex", {**base, "hook_event_name": "SessionStart"})[0], 0)
+        ids = (7, {"x": 1}, "a" * 201, "", "\ud800x", "a1")
+        for i, aid in enumerate(ids):
+            call = {**base, "tool_name": "Bash", "tool_use_id": f"b{i}", "tool_input": {"command": "ls"},
+                    "agent_id": aid}
+            with self.subTest(agent_id=aid):
+                self.assertEqual(self.hook("codex", {**call, "hook_event_name": "PreToolUse"})[:2], (0, ""))
+                self.assertEqual(self.hook("codex", {**call, "hook_event_name": "PostToolUse",
+                                                     "tool_response": "x"})[0], 0)
+        evs = self.events("cx-aid")
+        self.assertEqual([e["type"] for e in evs if e["type"] in ("error", "capture.gap")], [])
+        signed = {}
+        for e in evs:
+            if e["type"] in ("tool.call", "policy.decision", "tool.result"):
+                signed.setdefault(e["data"].get("tool_use_id") or e["data"].get("id"), set()).add(
+                    (e["type"], e["agent_id"]))
+        want = {f"b{i}": {(t, "a1" if aid == "a1" else "main") for t in ("tool.call", "policy.decision", "tool.result")}
+                for i, aid in enumerate(ids)}
+        self.assertEqual(signed, want)
+
     def test_codex_shell_command_that_isnt_text_is_denied(self):
         """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reached the v1 policy as a
         list, whose rules matched its repr: a force push came back allow, rm -rf / only flag. The v1 hook denies a shell
@@ -960,6 +986,17 @@ class Harnesses(DaemonCase):
         call = {"tool_name": "shell", "tool_input": {"command": "ls"}, "working_dir": "/w"}
         self.assertEqual(agent_hooks.normalise("goose", {**call, "event": "PreToolUse"})["cwd"], "/w")
         self.assertIsNone(agent_hooks.normalise("codex", {**call, "hook_event_name": "PreToolUse"})["cwd"])
+
+    def test_a_sub_agents_agent_id_is_kept_for_the_signer(self):
+        """Codex and Open Interpreter send a sub-agent's calls with Claude Code's `agent_id` (docs/coding-agents.md):
+        normalise keeps it, so the v2 hook signs the call as that agent's; a main agent's call has none."""
+        call = {"session_id": "s", "tool_use_id": "t", "tool_name": "shell", "tool_input": {"command": "ls"}}
+        for harness in ("codex", "interpreter"):
+            for ev in ("PreToolUse", "PostToolUse"):
+                with self.subTest(harness=harness, event=ev):
+                    self.assertEqual(agent_hooks.normalise(harness, {**call, "hook_event_name": ev,
+                                                                     "agent_id": "a1"})["agent_id"], "a1")
+                    self.assertNotIn("agent_id", agent_hooks.normalise(harness, {**call, "hook_event_name": ev}))
 
     def test_crush_uses_claude_codes_payload_maps_tools_and_blocks_denied_calls(self):
         # Crush sends Claude Code's payload and event names, with its own lower-case tool names; PreToolUse can
@@ -1625,7 +1662,7 @@ class GptmeTools(unittest.TestCase):
     def test_gptme_legacy_installer_only_prints_enabled_hint_for_plugin_key(self):
         from pathlib import Path
 
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(sys.modules, {"tomllib": None}):
+        with tempfile.TemporaryDirectory() as directory, no_tomllib():
             path = Path(directory) / "config.toml"
             for extra, expect_hint in (("", False), ('\n[other]\nenabled = ["x"]\n', False),
                                        ('enabled = ["x"]\n', True)):
@@ -2077,12 +2114,22 @@ class JcodeTools(unittest.TestCase):
         from tracekit.install import SettingsError
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            for original, why in ((b'model = "x\n', "not valid TOML"), (b'[x]\ny = 1\n[x]\n', "not valid TOML")):
+            for original, why in ((b'model = "x\n', "not valid TOML"), (b'[x]\ny = 1\n[x]\n', "not valid TOML"),
+                                  (b"a = " + b"[" * 5000 + b"]" * 5000, "not valid TOML")):
                 with self.subTest(original=original):
                     path.write_bytes(original)
                     with self.assertRaisesRegex(SettingsError, why):
                         self.install(path, v2=True)
                     self.assertEqual(path.read_bytes(), original)
+
+    def test_without_a_toml_parser_a_table_value_too_deep_to_parse_is_a_value_error(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as directory, no_tomllib():
+            path = Path(directory) / "config.toml"
+            path.write_text(f"{agent_hooks.JCODE_BEGIN}\n[hooks]\npre_tool = {TOO_DEEP_JSON}\n{agent_hooks.JCODE_END}\n",
+                            encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "nested too deep to parse"):
+                agent_hooks.jcode_config(str(path))
 
     def test_install_creates_a_missing_config(self):
         from pathlib import Path
@@ -4320,6 +4367,86 @@ class Installer(unittest.TestCase):
                 for shown in (summary, err.getvalue(), cli._gist(c, "apr-1")):
                     for w in want:
                         self.assertIn(w, shown)
+
+    def test_a_v1_approver_sees_what_a_held_command_runs_after_a_value(self):
+        """The v1 hook asks its approver about the call as its record keeps it (privacy.tool_input), which hid a
+        secret-looking name's value to its next blank, across `;`, and the lines after a heredoc's first as .env
+        content: `TOKEN=abcd;rm ...` was asked about as `Bash command=TOKEN=[REDACTED:assignment]`; a connection string
+        to its next blank, and a value in a heredoc a shell runs to its line's end. Each is hidden to where the shell
+        ends it, a .env value after a heredoc's first line too."""
+        from tracekit import hook, privacy
+        for command, runs in (("TOKEN=abcd;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("cat > .env <<EOF\nK=abcd\nEOF\nA=1; rm -rf ~/w", "\nEOF\nA=[REDACTED:dotenv]; rm -rf ~/w"),
+                              # a fake connection string, a redaction fixture: agent-flow:allow-secret
+                              ("psql postgres://u:abcd@h/db;rm${IFS}-rf${IFS}~/w", ";rm${IFS}-rf${IFS}~/w"),
+                              ("bash -s <<EOF\nTOKEN=abcd;rm -rf ~/w\nEOF", ";rm -rf ~/w\nEOF")):
+            with self.subTest(command=command):
+                seen = []
+                call = {"run_id": "r", "agent_id": "a",   # as the hook records it, reading its command for a hold
+                        "data": {"name": "Bash", "tool_use_id": "t",
+                                 "input": privacy.tool_input("Bash", {"command": command}, unclean=[])}}
+                with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                        {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else {"decision": "timeout"})), \
+                        mock.patch.object(hook, "APPROVAL_CAP_S", 1), contextlib.redirect_stderr(io.StringIO()):
+                    hook.wait_for_approval(call, {"rule_ids": ["R"], "reasons": ["r"]}, {"approval_timeout_s": 1})
+                summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                self.assertIn(runs, summary)
+                self.assertNotIn("abcd", summary)
+
+    def test_a_v1_hold_whose_record_would_hide_code_is_denied(self):
+        """v1's approver reads the call as its record keeps it: a hold whose record would hide more than clean values in
+        the command (a value with a ; or a blank in it, a key) is denied with TK-HIDDEN-CODE's reason, recorded so, and
+        never asked; one that hides only clean values is asked, the summary saying how much it hid when that's more
+        than a few values. So is a hold whose summary its approver would get cut (past privacy.SUMMARY_CHARS): what
+        follows the cut was never shown."""
+        from tracekit import hook, policy as policy_mod, privacy
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        pol = {**policy_mod.load()[0], "deny": [], "flag": [], "ask": [{"id": "T-HOLD", "tool": "Bash", "pattern": "."}]}
+        many = "\n".join(f"K{i}={'v' * 100}" for i in range(3))   # 300 characters of plain values
+        fits = f"echo {'x' * (privacy.SUMMARY_CHARS - len('Bash command=echo ; rm -rf ~/w'))}; rm -rf ~/w"
+        long = "echo x" + fits[len("echo "):]   # a summary one character longer than its approver is sent
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}):
+            for i, (command, decision, reason) in enumerate((
+                    ("cat > .env <<EOF\nDB_PASS=p@ss;word\nEOF\nmake", "deny", privacy.HIDDEN_CODE_REASON),
+                    ("cat > .env <<EOF\nDB_PASS=hunter2\nEOF\nmake", "ask", None),
+                    (f"cat > db.conf <<EOF\n{many}\nEOF\nmake # .env", "ask", None),
+                    ("TOKEN=abcd;make", "ask", None),
+                    ("echo 'TOKEN=abcd;rm -rf ~/w' | sh", "deny", privacy.HIDDEN_CODE_REASON),
+                    (long, "deny", privacy.LONG_REASON), (fits, "ask", None))):
+                with self.subTest(command=command):
+                    evs, d = hook.build_events({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                                "tool_name": "Bash", "tool_use_id": f"t{i}",
+                                                "tool_input": {"command": command}}, pol)
+                    [rec] = [e for e in evs if e["type"] == "policy.decision"]
+                    self.assertEqual((d["decision"], rec["data"]["decision"]), (decision, decision))
+                    self.assertEqual(d["rule_ids"][-1], "TK-HIDDEN-CODE" if decision == "deny" else "T-HOLD")
+                    if reason:
+                        self.assertTrue(d["reasons"][-1].startswith(reason + ". Instead: "), d["reasons"])
+                    if decision == "ask":
+                        seen = []
+                        call = next(e for e in evs if e["type"] == "tool.call")
+                        with mock.patch.object(hook.client, "rpc", lambda req, timeout=None: seen.append(req) or (
+                                {"ok": True, "approval_id": "a1"} if req["op"] == "approval_request" else
+                                {"decision": "timeout"})), mock.patch.object(hook, "APPROVAL_CAP_S", 1), \
+                                contextlib.redirect_stderr(io.StringIO()):
+                            hook.wait_for_approval(call, d, {"approval_timeout_s": 1})
+                        summary = next(r["summary"] for r in seen if r["op"] == "approval_request")
+                        self.assertEqual(summary.startswith("Bash # [300 characters hidden by redaction]\n"), i == 2)
+                        self.assertEqual(summary == f"Bash command={fits}", command == fits)   # whole
+        for command, said in (("TOKEN='ab;cd' make", "this command puts code behind text that looks like a secret, so a "
+                               "person can't see what they'd approve; rewrite it without inline secrets (read them from "
+                               "the environment or a file the command names)"),
+                              (long, f"this call is too long for its approval request ({privacy.SUMMARY_CHARS} "
+                               "characters), so a person can't see what they'd approve; split it into shorter calls")):
+            err = io.StringIO()
+            with self.subTest(command=command), mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home}), \
+                    mock.patch.object(hook.policy_mod, "load", lambda: (pol, "")), \
+                    mock.patch.object(hook.client, "send", lambda *a, **k: {"ok": True}), contextlib.redirect_stderr(err):
+                code = hook.main(raw=json.dumps({"hook_event_name": "PreToolUse", "session_id": "s", "cwd": home,
+                                                 "tool_name": "Bash", "tool_use_id": "t9",
+                                                 "tool_input": {"command": command}}))
+                self.assertEqual((code, err.getvalue().strip()), (2, f"Blocked by Tracekit: {said} (TK-HIDDEN-CODE)"))
 
     def test_cline_caps_the_approval_wait_as_the_hook_reads_it(self):
         # the extension runs a call whose hook takes over 30 s: every value float() reads above the cap is capped

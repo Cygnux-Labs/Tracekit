@@ -7,7 +7,7 @@ import re
 import unittest
 from unittest import mock
 
-from tracekit.policy2 import classes, compile as pc, engine as engine_module, shell
+from tracekit.policy2 import compile as pc, engine as engine_module, shell
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 
@@ -16,7 +16,7 @@ DATA = os.path.join(os.path.dirname(__file__), "data", "policy")
 
 
 def parse(engine, command):
-    return engine._parse(classes.with_workdir({"command": command}), command, [0])[0]
+    return engine._parse({"command": command}, command, [0])[0]
 
 
 class Gate(unittest.TestCase):

@@ -379,6 +379,23 @@ class PolicyEdges(unittest.TestCase):
             self.assertIn(policy.evaluate(pol, "Write", ti, "/tmp")["decision"], ("allow", "flag", "deny", "ask"))
         self.assertEqual(policy.evaluate(pol, "Write", {"file_path": "a\x00b"}, "/tmp")["decision"], "flag")
 
+    def test_a_shell_call_is_decided_in_its_working_directory(self):
+        """v1 decided a Bash call as typed, though Codex's `workdir`, Gemini CLI's `dir_path` … name where it runs:
+        `rm -f ledger.jsonl` with `workdir` Tracekit's data dir was allowed. It is now also decided as `cd <dir> &&
+        <command>` (each of a `commands` list's entries too); a call that names more than one working directory, or
+        one that isn't text, matches every rule, as a subject too large to read does."""
+        pol = policy.load()[0]
+        data = "/var/lib/tracekit"
+        for ti in ({"command": "rm -f ledger.jsonl", "workdir": data}, {"command": "rm -f ledger.jsonl", "Dir_Path": data},
+                   {"commands": ["cd /tmp", "rm -f ledger.jsonl"], "workdir": data},
+                   {"command": "ls", "workdir": "/tmp/a", "cwd": "/tmp/b"}, {"command": "ls", "workdir": ["/tmp/a"]}):
+            with self.subTest(ti=ti):
+                self.assertEqual(policy.evaluate(pol, "Bash", ti, "/w")["decision"], "deny")
+        for ti in ({"command": "rm -f ledger.jsonl", "workdir": "/tmp/project"}, {"command": "ls", "workdir": ""}):
+            with self.subTest(ti=ti):   # (in an ordinary folder, as the command alone)
+                self.assertEqual(policy.evaluate(pol, "Bash", ti, "/w"),
+                                 policy.evaluate(pol, "Bash", {"command": ti["command"]}, "/w"))
+
 
 class HookEdges(unittest.TestCase):
     def test_transcript_mark_matches_naive_hashing_for_every_ack(self):

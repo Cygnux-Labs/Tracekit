@@ -66,16 +66,89 @@ and provenance holds only what a page alone brought in ([policy](../policy-v2.md
 | after the delivery ran | `complete` | `status` `ok`, or `error` when the expression raised |
 
 On 1.0, the `python` cell is a tool like the others: its decide names it `browser_use:python` and reads the cell's
-source (`code`), not the browser calls the cell makes when it runs. A cell that raises is completed as `error`: Browser
-Use hands the traceback to the model as the cell's text, so the completion carries the text and the error status. The
-`finish_from_repl` delivery is an output tool, which Pydantic AI runs without the tool hook above: it is decided and
-completed at `Repl.call`, which is where its expression runs. `Repl.call` gates both ops it runs. The `python` cell's
-`exec` is the one the tool hook just decided: it marks that cell's code in a context variable, and the `exec` runs
-without a second decision. An `exec` from anywhere else, which a later release could add, is decided as
-`browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the REPL and the run's state but no
-browser session, so no page is observed and `page_url` is always `""`. The shipped packs allow every cell and every
-delivery until a source reader lands: to hold one, write your own rule for `browser_use:python` or
-`browser_use:finish_from_repl`.
+source (`code`) with `ast.parse` only, never running it; `finish_from_repl` is read the same way from its `expression`.
+The reader follows a small subset of Python. Each literal browser-helper or shell call is decided as the action it
+stands for, on the pack's own rules (`goto_url` as a navigation, `js` as evaluate, and so on), and the cell takes the
+strictest of those decisions. A literal argv list is decided as the shell command it runs, for `subprocess.run`/`Popen`
+and for `asyncio.create_subprocess_exec`, `os.exec*` and `spawn*`, `posix_spawn*` and `pty.spawn` (the program path must
+be literal too). A call in a binding target, an annotation, a default or a PEP 695 bound is read too, and so is a call
+in a part of an expression that may not run (the right of `and`/`or`, an arm of `x if c else y`): it is decided as if
+it runs. Inside a branch or a loop's body a name holds what was last assigned to it there; after a branch, loop, `with`
+or `try`, a name bound in a part that may not have run, or run more than once, holds a value the reader can't follow.
+
+What the reader leaves to the cell, unread:
+
+- a builtin called directly, except those listed below;
+- a call into `json`, `re`, `math`, `cmath`, `time`, `datetime`, `itertools`, `collections`, `string`, `textwrap`,
+  `unicodedata`, `decimal` or `os.path`: a public function or class the module defines itself, one level down
+  (`json.loads`, `datetime.datetime`), a classmethod of such a class (`datetime.datetime.now`), or a path function
+  under `os.path`. The list is in `tracekit/policy2/source.py`; it leaves out `time`'s clock and time zone setters,
+  `decimal.setcontext` and `localcontext`, `json.dump` and `json.load`, and `re.purge`. A class a package exports from
+  a submodule of its own (`json.JSONDecodeError`) may be named only in an `except` clause or `isinstance`;
+- a method of plain data the cell built: a `str`, `bytes`, list, dict, set, tuple, `int`, `float`, `re` match or
+  pattern, `datetime`, `date`, `time`, `timedelta`, `timezone` or `Decimal` from a literal, a comprehension, one of the
+  calls above or an operation on plain data, through that type's own methods (`items.append(x)`, `data.get("k")`,
+  `d.isoformat()`). A container's items are plain too when it was built from plain data only (what `json.loads`,
+  `str.split` or a `re` call returns, a literal of such values) and nothing in the whole cell puts any other value into
+  any container: `for item in data["items"]: item.get("n")`. A cell that stores or appends a value the reader can't
+  follow anywhere is read with no container's items plain. A data attribute (`d.tzinfo`, `m.lastindex`) is plain only
+  when its value holds plain data only; a match's `string` and a pattern's `pattern` are what was passed in, and wait.
+  `x or y` and `x if c else y` are one of their operands: plain only when each operand holds plain data only;
+- a builtin type's own function (`str.join`, `dict.fromkeys`);
+- a function, lambda or plain class the cell defines, called by its name: its body is read where it is defined. A plain
+  class has no base but `object`, no keyword, decorator or type parameter, and a body of `def`s without decorators; the
+  dunder methods it defines (`__init__`, `__call__`, `__new__`) are read like any other method. A function keeps that
+  standing under `property`, `classmethod` or `staticmethod` only: `@d` is `f = d(f)`, so after any other decorator
+  the name holds what `d` returned, and calling it waits.
+
+These wait for `on_parse_error` (`TK-SOURCE-PARSE`):
+
+- binding, in any form, a builtin, a name the harness binds (`goto_url`, `json`, `os` and the rest), a name an import
+  in the cell binds, or `__builtins__`; an import may bind a harness name only to what it already is (`import os`). A
+  function's parameters and a comprehension's targets are exempt: they bind in their own scope, where the reader
+  trusts no name;
+- a dunder name or attribute, `builtins` and `__builtins__` (a plain class's own dunder methods are exempt);
+- `:=` anywhere; `exec`, `eval`, `compile`, `breakpoint`, `help`, `input`, `exit` and `quit` wherever they are named,
+  called or not;
+- an import outside the list above, standard library included; and an import outside a function that binds a command
+  or helper under the cell's own name (`from os import system`, `from browser_harness.helpers import goto_url as g`),
+  since the name stays bound for later cells. A command a cell function returns or yields (`h = f()` where `f`
+  imports and returns `system`) stays bound for later cells too, but no cell can call it unread: a call through a
+  call's result, or through a name the cell didn't bind, waits;
+- a decorator that is a function, lambda or class the cell defines; any other decorator but `property`, `classmethod`
+  and `staticmethod` is read as the call it is (`@goto_url` reads as `goto_url(f)`, whose argument isn't literal text,
+  so it waits);
+- any other class: a base, a metaclass, a decorator or a body of anything but `def`s runs code the reader does not;
+- a store into anything but plain data, and any attribute store;
+- a helper, builtin, module or module function used as anything but a direct call (`map(goto_url, ...)`, `key=len`,
+  `print(len)`, `f = os.system`); a value the reader can't follow where the callee calls what it is handed (`map`, a
+  `key`, `re.sub`'s replacement, `textwrap.indent`'s predicate); a second name for a value the reader can't follow
+  (`y = x`, `y = x or z`);
+- a method of anything but plain data the cell built: a helper's result (`js(...).strip()`), an item of a container
+  whose items aren't plain, a harness object (`bu.click(...)`), a file;
+- a call or attribute through a name the cell didn't bind: the REPL keeps its names from cell to cell, so it is an
+  earlier cell's value;
+- in a function, lambda or generator body, which runs later: a call through any name the cell binds, or through a
+  module (`def f(): return json.loads(s)`);
+- `open` with any mode but a literal read mode, `print(..., file=...)`, `globals`/`locals`/`vars`,
+  `setattr`/`delattr`, `__import__`, and a computed `getattr`;
+- a callee or required argument that isn't literal text, an unknown bare callee (raw CDP such as `cdp(...)` and
+  `_`-prefixed helpers), over 256 calls, or over 64 KiB.
+
+What the reader does not see: it trusts names, not what a held cell a person approved left in them. Approving a held
+cell that rebinds a name it trusts (`import pickle as json`, `goto_url = ...`) lets later cells call that name unread,
+as if it were still the harness's or the module's own. Nor does it read what a function it leaves unread does with an
+argument an earlier approved cell made: `json.loads` calls its argument's `startswith`, `datetime` calls a time zone's
+`utcoffset`. Approve a cell that rebinds a trusted name only if you would approve every later cell that uses it.
+
+A
+cell that raises is completed as `error`: Browser Use hands the traceback to the model as the cell's text, so the
+completion carries the text and the error status. The `finish_from_repl` delivery is an output tool, which Pydantic AI
+runs without the tool hook above: it is decided and completed at `Repl.call`, which is where its expression runs.
+`Repl.call` gates both ops it runs. The `python` cell's `exec` is the one the tool hook just decided: it marks that
+cell's code in a context variable, and the `exec` runs without a second decision. An `exec` from anywhere else, which a
+later release could add, is decided as `browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the
+REPL and the run's state but no browser session, so no page is observed and `page_url` is always `""`.
 
 The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none,
 when Browser Use doesn't say within 2 s, or on 1.0, whose `Session` has no browser session (an allowlist rule never
@@ -230,6 +303,11 @@ carries no model call id, so they are not linked to the actions. Which framework
 - What the page itself does (scripts, redirects after a click) is not an action and is not seen.
 - A link's target the model never read (an `href` Browser Use doesn't show it) enters the provenance index only once
   the agent is on that page (its URL is in the next step's browser state).
-- On 1.0, no page is observed and `page_url` is empty, and a `python` cell's browser calls run inside the cell, not as
-  actions: Tracekit decides the cell's source and records its outcome, not each call it makes. The same goes for the
-  `finish_from_repl` expression: its source is decided, not the calls it makes.
+- On 1.0, no page is observed and `page_url` is empty. A `python` cell's browser calls run inside the cell, not as
+  actions: Tracekit reads the cell's source as a small subset of Python and decides each literal helper or shell call
+  as the action it stands for, with the cell at the strictest; the same goes for the `finish_from_repl` expression.
+  Left unread are builtins called directly, the inert modules' own functions, plain data's own methods and the cell's
+  own functions and plain classes (their bodies read where defined); anything outside the subset is held as
+  `TK-SOURCE-PARSE` (the list is under [What is recorded](#what-is-recorded)), and approving a held cell that rebinds
+  a name the reader trusts lets later cells use that name unread. A decision is a statement about the calls the source names: what the cell computes
+  with plain data is left to it.

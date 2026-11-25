@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-107'
+version: '2026.11-v2-108'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -470,14 +470,16 @@ ask:
   - id: TK-A057
     class: shell
     # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
-    # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings)
-    # `--help` right after `init` prints help; anywhere else (after `--`, a quoted value ending in ` --help`, the value
-    # of another option) init still runs, so only that exact line is exempt (as in TK-A054)
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
-    unless: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)? init --help$'
-    reason: running Tracekit's setup from the agent's session
-    remedy: Have a person run tracekit init from their own terminal; it changes Tracekit's hooks.
-    rationale: Init rewrites the hooks that record the agent; a person confirms it, as for removing Tracekit (TK-A054).
+    # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings),
+    # and Tracekit's MCP gateway (`mcp-gateway`, `-m tracekit.mcp_gateway`), which starts the programs its
+    # configuration names, a file the agent may write. `init … --help` only prints its help (`unless`: --help a word of its own, which the engine matches only where it
+    # is argv's own, so a quoted value ending in ` --help` is no help; argparse takes no --help as an option's value);
+    # after a `--`, or where xargs may add words after it (engine._help_marked), init still runs
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (init|mcp-gateway)( |$)|^(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit\.mcp_gateway( |$)'
+    unless: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (init|mcp-gateway)(?: (?:[^- ][^ ]*|-|-[^- ][^ ]*|--[^ ]+))* --help$|^(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit\.mcp_gateway(?: (?:[^- ][^ ]*|-|-[^- ][^ ]*|--[^ ]+))* --help$'
+    reason: running Tracekit's setup, or its MCP gateway, from the agent's session
+    remedy: Have a person run tracekit init, or start the MCP gateway, from their own terminal; init changes Tracekit's hooks, and the gateway runs the programs its configuration names.
+    rationale: Init rewrites the hooks that record the agent, and the MCP gateway starts what its configuration names, which the agent may have written; a person confirms either, as for removing Tracekit (TK-A054).
   - id: TK-A020
     class: fs
     tool: Read|Grep
@@ -505,8 +507,13 @@ ask:
     # `aws configure get` prints the stored secret access key or session/security token outright, by its name
     # alone, `PROFILE.name` or `profile.PROFILE.name`; other fields (region, aws_access_key_id) name no secret, so
     # only a get of the secret fields is held.
+    # glab has no `auth token` (upstream declined it), but `glab config get token` and `glab auth status` with
+    # `-t`/`--show-token` print the stored GitLab token. `kubectl`/`oc config view` redacts the credential fields
+    # unless `--raw` is given, so a view carrying it (or its `=true` spellings) is held, `--raw=false` and a plain
+    # view aside. `gcloud auth print-access-token` and `print-identity-token` (the application-default forms too)
+    # print a live token minted from the stored credentials; `auth login`, `list` and `revoke` don't print one.
     # Paths in lower case: the target is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b)|git-credential\s+get\b)|^aws( -[^ ]+( [^- ][^ ]*)?){0,8} configure( -[^ ]+( [^- ][^ ]*)?){0,8} get( -[^ ]+( [^- ][^ ]*)?){0,8} ([^ .]+\.){0,2}(aws_secret_access_key|aws_session_token|aws_security_token)\b|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^(pass|gopass)\s+\S|^gh\s+auth\s+(token\b|status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b)|git-credential\s+get\b)|^glab( -[^ ]+( [^- ][^ ]*)?){0,8} (auth\s+status\b[\w\W]*?(--show-token\b| -[a-z]*t[a-z]*\b)|config( -[^ ]+( [^- ][^ ]*)?){0,8} get( -[^ ]+( [^- ][^ ]*)?){0,8} token\b)|^aws( -[^ ]+( [^- ][^ ]*)?){0,8} configure( -[^ ]+( [^- ][^ ]*)?){0,8} get( -[^ ]+( [^- ][^ ]*)?){0,8} ([^ .]+\.){0,2}(aws_secret_access_key|aws_session_token|aws_security_token)\b|^(kubectl|oc)( -[^ ]+( [^- ][^ ]*)?){0,8} config( -[^ ]+( [^- ][^ ]*)?){0,8} view( -[^ ]+( [^- ][^ ]*)?){0,16} --raw(=(true|t|T|1|TRUE|True))?( |$)|^gcloud( -[^ ]+( [^- ][^ ]*)?){0,8} auth( -[^ ]+( [^- ][^ ]*)?){0,4} (application-default( -[^ ]+( [^- ][^ ]*)?){0,4} )?print-(access|identity)-token\b|^(git( -[^ ]+( [^- ][^ ]*)?){0,8} credential|git-credential)(-[^ ]+)?( -[^ ]+( [^- ][^ ]*)?){0,8} (fill|get)\b|^keepassxc-cli(\.exe)?(\s+-\S+){0,8}\s+(show|clip|attachment-export)\b|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge|vivaldi)/[^/]+/(?:login data|cookies|web data|network/cookies)|\.config/opera/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge|vivaldi|arc/user data)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/com\.operasoftware\.opera(?:gx)?/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser|vivaldi|arc)/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/packages/[^/]+/localcache/local/arc/user data/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/roaming/opera software/opera (?:gx )?stable/(?:[^/]+/)?(?:login data|cookies|web data|network/cookies))'
     unless: '^pass (init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)( |$)|^gopass (init|ls|list|grep|insert|add|generate|create|rm|remove|delete|mv|move|rename|cp|copy|git|sync|clone|mount|mounts|config|setup|history|hist|templates?|completion|update|help|version|--help|--version)( |$)|^gh auth (token|status)(?: (?:-[at]{1,2}|--show-token|--active|(?:-h|--hostname|-u|--user) [^- ][^ ]*|--(?:hostname|user)=[^ ]*)){0,4} --help$'
     reason: reading credentials from an operating-system, browser or CLI store, or listing an SSH agent's keys
     label: secrets_access
@@ -1616,7 +1623,7 @@ flag:
     field: line
     # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
     # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, npm's pu, pub, publ, publi or publis, which
-    # it runs as publish, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # it runs as publish, pip of any version, uv (after up to eight of its options, before its command and tool's or pip's, a value only after one that takes it: uv --cache-dir c tool -q install, not uv -q run sync.py), pipx, poetry, conda, cargo, gem,
     # bundle, go, brew, apt, dnf, yum, apk, twine; a publish, npm's pu to publis too, also after up to eight options, as
     # TK-A056 reads one: npm --dry-run publish as npm publish --dry-run, and an npm, pnpm, yarn or bun install too: npm
     # --prefix x install), a docker or podman run or push (container run, image push, after up to eight options),
@@ -1624,7 +1631,7 @@ flag:
     # eight options). A release created or published, an image built or set with a push, a subtree push, a push
     # setting written and a publishing CLI's command the line can't tell are TK-F030's, read per command. The strict
     # pack holds both, so their lists are what "every install" means there
-    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(l(is?)?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|npm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add|pu(b(l(is?)?)?)?)|(pnpm|yarn|bun)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(publish|install|i|ci|add)|(uv|poetry|cargo)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){1,8}?\s+publish|pip[0-9.]*\s+install|uv(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+(add|sync|publish|(tool|pip)(\s+--(cache-dir|python-preference|python-fetch|color|allow-insecure-host|trusted-host|directory|project|config-file|preview-features?)\s+[^\s]+|\s+-[^\s]+){0,8}?\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # A call that names a secrets file; its label is secrets_file: the run label secrets_access is a read's

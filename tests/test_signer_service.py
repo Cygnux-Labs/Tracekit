@@ -222,6 +222,57 @@ class TestService(unittest.TestCase):
         out = s.decide(self.ev(run, 1, tool_call_id="tc2", tool="t", args_source="parsed", args={}))
         self.assertEqual(out["run_seq"], 2)   # no gap from the refused client_seq values 5, 7
 
+    def test_a_subagents_call_is_signed_with_its_agent_id(self):
+        """decide's agent_id (what the harness reported: Claude Code's subagent id) is signed on the call's decision
+        and, copied from that decision, on its result; a call without one stays the main agent's."""
+        s = self.open()
+        run = self.register(s)
+        sub = s.decide(self.ev(run, 0, tool_call_id="sub", tool="t", args_source="parsed", args={},
+                               agent_id="a272a0b95321d4c5d"))
+        s.complete(self.ev(run, 1, tool_call_id="sub", decision_id=sub["decision_id"], status="ok", result="x",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        main = s.decide(self.ev(run, 2, tool_call_id="main", tool="t", args_source="parsed", args={}))
+        s.complete(self.ev(run, 3, tool_call_id="main", decision_id=main["decision_id"], status="ok", result="x",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        s.close()
+        got = [(e["type"], e["data"]["tool_use_id"], e["agent_id"], e["parent_id"]) for e in
+               (r["event"] for r in records(self.dir)) if e["type"] in ("policy.decision", "tool.result")]
+        self.assertEqual(got, [("policy.decision", "sub", "a272a0b95321d4c5d", "main"),
+                               ("tool.result", "sub", "a272a0b95321d4c5d", "main"),
+                               ("policy.decision", "main", "main", None), ("tool.result", "main", "main", None)])
+
+    def test_a_result_after_a_restart_keeps_its_decisions_agent_id(self):
+        def open_signer(snapshot):   # Disk opens without a snapshot key, so it never reads one: the default storage
+            if not snapshot:
+                return self.open()
+            s = svc.SignerService(self.dir, policy=PAY_ASKS)
+            self.addCleanup(s.close)
+            return s
+        for snapshot in (False, True):   # the open call rebuilt from the log alone, or from a snapshot of the run state
+            with self.subTest(snapshot=snapshot):
+                self.dir = tmpdir(self)
+                s = open_signer(snapshot)
+                run = self.register(s)
+                d = s.decide(self.ev(run, 0, tool_call_id="sub", tool="t", args_source="parsed", args={},
+                                     agent_id="a1"))
+                if snapshot:
+                    s.log.snapshot()
+                    self.assertTrue(os.listdir(os.path.join(self.dir, "store", "snapshots")))
+                s.close()
+                s = open_signer(snapshot)
+                s.complete(self.ev(run, 1, tool_call_id="sub", decision_id=d["decision_id"], status="ok", result="x",
+                                   args_digest=event_hash({"tool": "t", "args": {}})))
+                s.close()
+                [res] = [r["event"] for r in records(self.dir) if r["event"]["type"] == "tool.result"]
+                self.assertEqual((res["agent_id"], res["parent_id"]), ("a1", "main"))
+
+    def test_an_agent_id_the_event_format_cannot_hold_is_refused(self):
+        s = self.open()
+        run = self.register(s)
+        for bad in ("", "a" * 201, 7):
+            self.refused("invalid_request", s, "decide", self.ev(run, 0, tool_call_id="t", tool="t",
+                                                                 args_source="parsed", args={}, agent_id=bad))
+
     def test_a_refused_item_inside_a_batch_leaves_the_rest(self):
         s = self.open()
         run = self.register(s)

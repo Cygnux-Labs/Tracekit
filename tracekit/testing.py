@@ -211,7 +211,7 @@ class FakeSigner:
             from tracekit.signer.service import _dotenv, _shown
             args = _digest(call)[0]
             dotenv = _dotenv(args)
-            shown = _shown(args, dotenv)
+            shown = _shown(call["tool"], args, dotenv)
             if call["args_source"] == "raw":
                 shown = call["args"] if shown == args else rfc8785.dumps(shown).decode()
             a = self._approvals[approval_id] = {

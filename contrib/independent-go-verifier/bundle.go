@@ -15,6 +15,8 @@ import (
 	"strings"
 )
 
+var keyOriginPattern = regexp.MustCompile(`^tracekit\.local/k([0-9a-f]{64})(/|$)`)
+
 // Inspection contains foundational cryptographic counts, not a verdict.
 type Inspection struct {
 	Files      int
@@ -364,6 +366,12 @@ func loadTrust(raw []byte) (VKey, []VKey, int, bool, error) {
 	}
 	if err != nil {
 		return VKey{}, nil, 0, false, notVKey(str, err)
+	}
+	if m := keyOriginPattern.FindStringSubmatch(log.Name); m != nil {
+		sum := sha256.Sum256(log.Pub)
+		if hex.EncodeToString(sum[:]) != m[1] {
+			return VKey{}, nil, 0, false, errors.New("pinned log key " + log.Name + " is named after another key: a key-derived origin is tracekit.local/k + the SHA-256 of the key it names")
+		}
 	}
 	var witnesses []VKey
 	var classes, vkeys []string
