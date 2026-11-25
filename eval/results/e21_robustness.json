@@ -1968,46 +1968,46 @@
   },
   "by_form": {
     "bash-c": {
-      "contained": 712,
+      "contained": 714,
       "missed": 0,
       "rate": 1.0,
-      "total": 712
+      "total": 714
     },
     "cd-dot-and": {
-      "contained": 729,
+      "contained": 731,
       "missed": 0,
       "rate": 1.0,
-      "total": 729
+      "total": 731
     },
     "command-prefix": {
-      "contained": 546,
+      "contained": 548,
       "missed": 0,
       "rate": 1.0,
-      "total": 546
+      "total": 548
     },
     "env-bash-c": {
-      "contained": 712,
+      "contained": 714,
       "missed": 0,
       "rate": 1.0,
-      "total": 712
+      "total": 714
     },
     "original": {
-      "contained": 1065,
+      "contained": 1067,
       "missed": 0,
       "rate": 1.0,
-      "total": 1065
+      "total": 1067
     },
     "true-semi": {
-      "contained": 729,
+      "contained": 731,
       "missed": 0,
       "rate": 1.0,
-      "total": 729
+      "total": 731
     }
   },
   "engine_mismatches": [],
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.9.29"
+    "regex@2026.11.15"
   ],
   "excluded_rewrites": [
     {
@@ -2228,14 +2228,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 13,
+        "contained": 15,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 13,
+        "covered_by_rule_or_parse": 15,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 13,
+        "same_rule": 15,
         "same_rule_rate": 1.0,
-        "total": 13
+        "total": 15
       },
       "TK-A023": {
         "contained": 2,
@@ -2900,14 +2900,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 13,
+        "contained": 15,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 13,
+        "covered_by_rule_or_parse": 15,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 13,
+        "same_rule": 15,
         "same_rule_rate": 1.0,
-        "total": 13
+        "total": 15
       },
       "TK-A023": {
         "contained": 2,
@@ -3572,14 +3572,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 13,
+        "contained": 15,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 13,
+        "covered_by_rule_or_parse": 15,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 13,
+        "same_rule": 15,
         "same_rule_rate": 1.0,
-        "total": 13
+        "total": 15
       },
       "TK-A023": {
         "contained": 2,
@@ -4104,14 +4104,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 13,
+        "contained": 15,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 13,
+        "covered_by_rule_or_parse": 15,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 13,
+        "same_rule": 15,
         "same_rule_rate": 1.0,
-        "total": 13
+        "total": 15
       },
       "TK-A023": {
         "contained": 2,
@@ -4776,14 +4776,14 @@
         "total": 2
       },
       "TK-A021": {
-        "contained": 13,
+        "contained": 15,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 13,
+        "covered_by_rule_or_parse": 15,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 13,
+        "same_rule": 15,
         "same_rule_rate": 1.0,
-        "total": 13
+        "total": 15
       },
       "TK-A023": {
         "contained": 2,
@@ -5377,12 +5377,12 @@
       }
     }
   },
-  "policy_hash": "sha256:5fba73cb7722e9b5057593561524f606852ece82143caed422c282c3bb27bbd7",
+  "policy_hash": "sha256:de67b0e79f510880388513b859befe71c24e508a96f85ba90e5e444411eeb21c",
   "regressions": [],
   "rewrite_missed": [],
-  "rewritten_cases": 729,
+  "rewritten_cases": 731,
   "rule_missed": [],
-  "source_cases": 1065,
+  "source_cases": 1067,
   "source_missed": [],
   "transformations": {
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",
