@@ -1345,12 +1345,14 @@ class TestTheViewItAnswers(Case):
 
 class TestWhatTheKeyShows(Case):
     def test_no_dotenv_value_or_index_path_and_no_target_once_unclean(self):
-        _, a = self.ask("$X\nAPI_PIN=correct-horse-battery-staple # from .env")   # TK-SHELL-PARSE alone: clean
-        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X\nAPI_PIN=[REDACTED:dotenv]"]})
+        # a line that mentions .env beside a value the copy would redact hides what it runs from a person: denied
+        # (TK-HIDDEN-CODE), never asked, so no key is made
+        for hidden in ("$X\nAPI_PIN=correct-horse-battery-staple # from .env",
+                       "$X --env-file .env\nDB_HOST_PIN=correct-horse-battery-staple"):
+            _, d = self.ask(hidden)
+            self.assertEqual((d["decision"], "TK-HIDDEN-CODE" in d["rule_ids"]), ("deny", True), hidden)
         _, a = self.ask("pip install --index-url https://dl.cloudsmith.io/AbCdEf0123456789/acme/simple/ x")
         self.assertEqual(a["ai"]["key"]["target"], {"TK-A025": ["pip --index-url https://dl.cloudsmith.io/…"]})
-        _, a = self.ask("$X --env-file .env\nDB_HOST_PIN=correct-horse-battery-staple")   # names .env, reads nothing
-        self.assertEqual(a["ai"]["key"]["target"], {"TK-SHELL-PARSE": ["$X --env-file .env\nDB_HOST_PIN=[REDACTED:dotenv]"]})
         self.ask("cat .env")   # a secret read
         _, a = self.ask(HELD)   # and the requester's next call
         self.assertEqual((a["ai"]["clean"], a["ai"]["key"]["target"]), (False, {}))

@@ -5428,7 +5428,7 @@ class CodingPack(unittest.TestCase):
                                      & set(svc.evaluate(e, tool, args)[0]["rule_ids"]))
 
     def test_plugin_review_7_the_folder_stack_and_tar_words_and_workdirs(self):
-        from tracekit.policy2 import classes, engine as eng, shell as sh
+        from tracekit.policy2 import engine as eng, shell as sh
 
         def walk(line):
             where, held = eng._walk(sh.analyse(line, work=[0]), [0])

@@ -99,7 +99,7 @@ CALLS = {
 }
 # twins a rule rightly lets through: argparse fails an option given --help as its value, so the command doesn't run
 # (TestHelpRequests)
-NOT_TWINS = {("TK-D007", "another option's value")}
+NOT_TWINS = {("TK-D007", "another option's value"), ("TK-A057", "another option's value")}
 ALIASES = {"file_path": "path", "path": "file_path"}   # another argument the class reads for the same field
 TOOLS = {"TK-M005": {"issue_refund": "payment"}}   # a deployment's own tool, mapped as the rule expects
 

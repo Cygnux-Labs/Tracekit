@@ -2675,7 +2675,7 @@ _VALUED_OPTIONS = {
              "--reporter", "--loglevel", "--workspace-concurrency"},
     "yarn": {"--cwd", "--mutex", "--cache-folder", "--modules-folder", "--global-folder", "--link-folder",
              "--network-timeout", "--network-concurrency", "--registry", "--use-yarnrc", "--preferred-cache-folder"},
-    "bun": set(),   # (bun finds its command as the first word that isn't an option: no option takes a value there)
+    "bun": {"-e", "--eval", "-p", "--print"},   # (bun finds its command as the first word that isn't an option, or the code those two take)
     "podman": {"--connection", "-c", "--url", "--identity", "--log-level", "--root", "--runroot", "--storage-driver",
                "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--network-cmd-path",
                "--network-config-dir", "--runtime", "--runtime-flag", "--tmpdir", "--volumepath", "--imagestore",
@@ -5141,7 +5141,6 @@ def _option_values(args, *names):
     return out
 
 
-_SED_WRITE = re.compile(r"(?:^|[\s;{}/])[wW]\s*([^\s;}]+)")
 # the files an editor is told to write: vim's and ex's :w, :write, :saveas, :sav, :wq, :x, :up (past a !), emacs's write-file
 _EDITOR_WRITE = re.compile(r"(?:^|[\s:|;'\"])(?:w(?:rite)?|sav(?:eas)?|wq|x|up(?:date)?|f(?:ile)?|r(?:ead)?)!?\s+([^\s|;'\"]+)|"
                            r"write-file\s+\"([^\"]+)\"|set-visited-file-name\s+\"([^\"]+)\"")
@@ -5149,7 +5148,7 @@ _SQLITE_FILE = re.compile(r"(?i)\.(?:output|once|backup|save|import|read|dump|cl
                           r"\bvacuum\s+(?:\w+\s+)?into\s+['\"]([^'\"]*)['\"]|\battach\s+(?:database\s+)?['\"]([^'\"]*)['\"]")
 
 
-_SIDE_OUTPUTS = frozenset(("mktemp", "sed", "gsed", "awk", "gawk", "mawk", "nawk", "sqlite3", "sqlite", "git", "tar", "gtar",
+_SIDE_OUTPUTS = frozenset(("mktemp", "awk", "gawk", "mawk", "nawk", "sqlite3", "sqlite", "git", "tar", "gtar",
                            "bsdtar", "zip", "7z", "7za", "7zr", "7zz", "7zip", "pax", "jar", "ar", "vim", "vi", "nvim", "ex",
                            "emacs", "red", "ed", "tree", "zstd", "brotli", "unzstd", "less", "uv", "pip", "pip3", "docker",
                            "podman"))   # (the programs _side_outputs reads)
@@ -5158,7 +5157,7 @@ _SIDE_OUTPUTS = frozenset(("mktemp", "sed", "gsed", "awk", "gawk", "mawk", "nawk
 def _side_outputs(exe, args, command):
     """The files a known program may write by an option or a script that _command_effects doesn't read (each held as
     WRITE_TARGET, so each rule on a write reads them; an awk program's string literals as NAMED_TARGET, held where one names a
-    trust root): mktemp's template and -p, sed's `w` and `W`, awk's string literals, sqlite3's
+    trust root): mktemp's template and -p, awk's string literals, sqlite3's
     .output, .backup, .trace, .log and attach and `vacuum into`, git's archive -o, bundle, format-patch -o and --output (past
     its own options), tree -o, less -o, uv export and pip compile -o, pip download -d and wheel -w, zstd's and brotli's -o,
     an archive a tar, zip, 7z, pax, jar or ar creates, an editor's `:w`, `saveas` and write-file."""
@@ -5167,8 +5166,6 @@ def _side_outputs(exe, args, command):
     words = [a for a in args if not a.startswith("-")]
     if exe == "mktemp":
         return words + _option_values(args, "-p", "--tmpdir")
-    if exe in ("sed", "gsed"):
-        return [m.group(1) for a in words for m in _SED_WRITE.finditer(a)]
     if exe in ("awk", "gawk", "mawk", "nawk"):
         program = shell._awk_program(args) or ""
         return re.findall(r"\"([^\"\n]*)\"", program)
