@@ -641,9 +641,12 @@ class ManagedHooks(unittest.TestCase):
             install.install_managed(None, False, self.managed, install.OPT_PYTHON, module=install.V2_HOOK,
                                     signer="/run/s.sock")
 
-    def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None):
-        """Doctor's rows; `trusted`: what trusted_file says of the managed file, `readable`: whether the agent's user
-        can read it (None: not probed), `user`/`managed`: settings to add, `plugin`: install.plugin_enabled's."""
+    def rows(self, trusted=None, readable=True, user=None, managed=None, plugin=None, untrusted=None,
+             unreadable_dropins=False, settings_file=None, retain=False):
+        """Doctor's rows; `trusted`: what trusted_file says of every path, `untrusted`: a path -> the problem it reports
+        for that one instead, `readable`: whether the agent's user can read them (None: not probed),
+        `unreadable_dropins`: only the managed file is readable, `user`/`managed`: settings to add, `plugin`:
+        install.plugin_enabled's, `settings_file`: the file doctor is told about — the agent's own for a dev install."""
         for path, extra in ((self.user, user or {}), (self.managed, managed or {})):
             s = {}
             if os.path.exists(path):
@@ -651,12 +654,21 @@ class ManagedHooks(unittest.TestCase):
                     s = json.load(f)
             with open(path, "w") as f:
                 json.dump({**s, **extra}, f)
-        with mock.patch.object(doctor, "trusted_file", return_value=trusted), \
-                mock.patch.object(doctor, "agent_access",
-                                  return_value={True: [[self.managed, "read"]], False: []}.get(readable)):
+
+        def report(path):
+            return (untrusted or {}).get(str(path), trusted)
+
+        def access(pw, targets):   # the (path, "read") targets the agent's user can read
+            if readable is None:
+                return None
+            return [t for t in targets if t[0] == self.managed] if unreadable_dropins else (targets if readable else [])
+        with mock.patch.object(doctor, "trusted_file", report), \
+                mock.patch.object(doctor, "agent_access", access):
             return {r["id"]: r for r in doctor.v2_checks(
-                {"data_dir": self.d}, "production", agent=self.agent, settings=self.managed, opt=install.OPT,
-                signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed], plugin=plugin)}
+                {"data_dir": self.d, "content": {"retain": retain}}, "production", agent=self.agent,
+                settings=settings_file or self.managed,
+                opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed, self.managed],
+                plugin=plugin)}
 
     def test_managed_hooks_are_inits_and_only_root_can_change_them(self):
         got = self.rows()
@@ -692,6 +704,90 @@ class ManagedHooks(unittest.TestCase):
         got = self.rows(managed={"disableAllHooks": True})["D-HOOKS-EVENT"]
         self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {self.managed}'))
 
+    def dropin(self, name="50-team.json", **settings):
+        """A `managed-settings.d/` drop-in beside the managed file, as an admin of the machine writes one."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w") as f:
+            json.dump(settings, f)
+        return path
+
+    def test_a_dropin_that_turns_every_hook_off_fails_and_names_it(self):
+        """Claude Code merges the `managed-settings.d/` drop-ins with the managed file, so a `disableAllHooks` an admin
+        puts in a drop-in turns the managed hooks off. Doctor read `managed-settings.json` alone and passed."""
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
+        path = self.dropin(disableAllHooks=True)
+        got = self.rows()["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
+
+    def test_a_dropin_with_other_keys_leaves_the_hooks_on(self):
+        """Setting other keys is what the folder is for: doctor passes and says it read the drop-in."""
+        self.dropin(model="claude-sonnet-5", permissions={"deny": ["Bash(rm -rf *)"]})
+        got = self.rows()
+        self.assertEqual(got["D-HOOKS-EVENT"]["status"], "ok", got["D-HOOKS-EVENT"])
+        self.assertEqual(got["D-HOOKS-MANAGED"]["status"], "ok", got["D-HOOKS-MANAGED"])
+        self.assertIn("drop-in(s) in", got["D-HOOKS-MANAGED"]["detail"])
+
+    def test_the_later_dropin_wins_because_claude_code_replaces_a_single_value(self):
+        """Claude Code's docs: "the later file's value replaces the earlier one". So `10-a.json` true then `20-b.json`
+        false is on, and the other way round is off and names `20-b.json` — doctor failed on either order, and on a
+        hidden file too, which Claude Code ignores."""
+        early, late = self.dropin("10-a.json", disableAllHooks=True), self.dropin("20-b.json", disableAllHooks=False)
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")   # false in the later file wins
+        with open(late, "w") as f:
+            json.dump({"disableAllHooks": True}, f)
+        with open(early, "w") as f:
+            json.dump({"disableAllHooks": False}, f)
+        got = self.rows()["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {late}'))
+
+    def test_hidden_and_non_json_files_are_not_sources(self):
+        """Its docs: Claude Code "ignores hidden files and files that don't end in `.json`", so a `.old.json` or a
+        `notes.txt` that sets disableAllHooks turns nothing off. Doctor read them and failed."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        for name in (".old.json", "notes.txt"):
+            with open(os.path.join(folder, name), "w") as f:
+                json.dump({"disableAllHooks": True}, f)
+        self.assertEqual(self.rows()["D-HOOKS-EVENT"]["status"], "ok")
+
+    def test_an_empty_dropin_folder_the_agent_can_write_fails(self):
+        """An empty folder is where the agent puts its own `99-off.json`: an admin's folder with no files still has to be
+        root-owned, and doctor returned before checking it."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder)
+        got = self.rows(untrusted={folder: f"{folder} is group- or world-writable"})["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{folder} is group- or world-writable", got["detail"])
+
+    def test_a_dropin_or_folder_not_owned_by_root_fails(self):
+        """The folder and each drop-in are checked the way the managed file is, so a drop-in the agent's user owns is a
+        fault however the folder looks."""
+        path = self.dropin(model="claude-sonnet-5")
+        got = self.rows(untrusted={path: f"{path} is not owned by root"})["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn(f"{path} is not owned by root", got["detail"])
+
+    def test_a_source_the_agent_cannot_read_fails(self):
+        """Its docs: when the OS denies the read, "every session starts without that source's policies" — and the
+        file-based source is the managed file and the drop-ins together, so a root-owned 0700 folder is a fault."""
+        self.dropin(model="claude-sonnet-5")
+        got = self.rows(unreadable_dropins=True)["D-HOOKS-MANAGED"]
+        self.assertEqual(got["status"], "fail")
+        self.assertIn("isn't readable by the agent's user", got["detail"])
+
+    def test_without_managed_a_dropin_still_counts(self):
+        """`init --dev --v2` leaves the hooks in the agent's own file, and Claude Code still merges the machine's
+        drop-ins: a `disableAllHooks` there turns them off in dev mode too. Doctor passed, because its drop-ins were an
+        empty list unless the hooks were in the managed file."""
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(self.user, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        self.assertEqual(self.rows(settings_file=self.user)["D-HOOKS-EVENT"]["status"], "ok")
+        path = self.dropin(disableAllHooks=True)
+        got = self.rows(settings_file=self.user)["D-HOOKS-EVENT"]
+        self.assertEqual((got["status"], got["fix"]), ("fail", f'remove "disableAllHooks" from {path}'))
+
     def test_inits_hooks_also_in_the_agents_own_settings_are_decided_twice(self):
         """With the managed file in use, init's v2 hooks left in the agent's own settings ran too, deciding every call
         twice, and doctor said nothing."""
@@ -720,6 +816,74 @@ class ManagedHooks(unittest.TestCase):
             with self.subTest(allowManagedHooksOnly=only):
                 got = self.rows(managed={"allowManagedHooksOnly": only})["D-HOOKS-PRESENT"]
                 self.assertEqual((got["status"], got["detail"]), want)
+
+    def test_a_dropin_counts_as_a_settings_layer_for_the_thinking_summaries(self):
+        """A drop-in is one of Claude Code's settings layers, so a value only it sets counts. With the content vault on,
+        `showThinkingSummaries` in a drop-in is the difference between a pass and a warning: take the drop-ins out of
+        `layers` and this test fails, which is what the review asked for. (Every other verdict is unaffected by the
+        list, because `D-HOOKS-EVENT` appends the drop-ins to its own order.)"""
+        self.dropin(**{install.THINKING: True})
+        got = self.rows(retain=True)["D-THINKING-SUMMARIES"]
+        self.assertEqual(got["status"], "ok", got)
+        self.assertIn("managed-settings.d", got["detail"], "the detail names the drop-in the value came from")
+
+    def test_a_folder_the_agent_can_read_but_not_enter_is_unreadable(self):
+        """A root-owned folder at 0744 is readable by others and cannot be entered, so Claude Code can't open the
+        drop-ins in it and starts without that source's policies. `_access` asked for R_OK alone and called it fine.
+        The modes are asserted through the probe rather than by chmod, which this host's file system doesn't honour."""
+        folder = os.path.join(self.d, "managed-settings.d")
+        os.makedirs(folder, exist_ok=True)
+        real = os.access
+
+        def access(p, mode, **kw):   # what 0744 gives "other": readable, not enterable
+            if str(p) == folder:
+                return bool(mode & os.R_OK) and not bool(mode & os.X_OK)
+            return real(p, mode, **kw)
+        with mock.patch.object(doctor.os, "access", access):
+            self.assertEqual(doctor._access([(folder, "open")]), [], "a folder that can't be entered is unreachable")
+            self.assertEqual(doctor._access([(folder, "read")]), [[folder, "read"]],
+                             "which a read probe alone cannot tell")
+
+    def test_the_folder_is_probed_for_entering_and_each_dropin_for_reading(self):
+        """The folder has to be enterable and a drop-in only readable: asking for the wrong mode on either is what let
+        a 0744 folder pass. This asserts the modes the check asks for, so a change back to "read" fails here."""
+        path = self.dropin(model="claude-sonnet-5")
+        folder = os.path.dirname(path)
+        seen = []
+
+        def access(pw, targets):
+            seen.extend(targets)
+            return list(targets)
+        with mock.patch.object(doctor, "trusted_file", return_value=None), \
+                mock.patch.object(doctor, "agent_access", access):
+            doctor.v2_checks({"data_dir": self.d}, "production", agent=self.agent, settings=self.managed,
+                             opt=install.OPT, signer="/run/s.sock", sandbox_settings=[self.user, self.managed])
+        self.assertIn((folder, "open"), seen, f"the folder is asked for as enterable: {seen}")
+        self.assertIn((path, "read"), seen)
+        self.assertIn((self.managed, "read"), seen)
+
+    def test_a_dropin_that_sets_allow_managed_hooks_only_is_read_in_merge_order(self):
+        """A review item I fixed without a test: `allowManagedHooksOnly` was read from `managed-settings.json` alone, so
+        a drop-in that set it differently was not seen. It is a single value, so the later file wins — a drop-in's true
+        stops the agent's own hooks running, and a later false lifts the managed file's true."""
+        self.agent = types.SimpleNamespace(**dict(vars(self.agent), pw_dir=self.d))
+        own = os.path.join(self.d, ".claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(own, python=install.OPT_PYTHON, module=install.V2_HOOK, signer="/run/s.sock")
+        both, unused = (("warn", f"v2 hooks in {self.managed}, and in {own} too: Claude Code runs both, so every call "
+                                 "is decided twice"),
+                        ("ok", f"v2 hooks in {self.managed}; those in {own} don't run (allowManagedHooksOnly)"))
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "the control: off in the managed file, nothing else set")
+        later = self.dropin("20-security.json", allowManagedHooksOnly=True)   # after managed-settings.json
+        got = self.rows(managed={"allowManagedHooksOnly": False})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), unused, "a drop-in's true is read")
+        self.assertTrue(os.path.exists(later))
+        os.unlink(later)
+        early = self.dropin("10-telemetry.json", allowManagedHooksOnly=False)   # the managed file's true, then a false
+        got = self.rows(managed={"allowManagedHooksOnly": True})["D-HOOKS-PRESENT"]
+        self.assertEqual((got["status"], got["detail"]), both, "a later false lifts the managed file's true")
+        self.assertTrue(os.path.exists(early))
 
     def test_the_plugin_beside_managed_hooks_counts_only_where_claude_code_runs_it(self):
         """D-HOOKS-PRESENT failed "every call is decided twice" on an init --managed host when only the agent's own
