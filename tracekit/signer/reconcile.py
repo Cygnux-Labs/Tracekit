@@ -51,6 +51,8 @@ the signer never decided is a signed
 
 import fnmatch
 
+from tracekit.policy2.classes import DEEP_AGENTS_TOOLS
+
 LAYERS = {"state.write": "L1", "policy.decision": "L2", "tool.result": "L2", "model.exchange": "L3"}
 NAMES = {"sdk": "adapter"}   # a record source as the coverage matrix names its layer
 # lean: each provider's public API host; a model endpoint elsewhere (Bedrock, Azure, a self-hosted one) is explained by
@@ -141,10 +143,13 @@ MCP_NAMES = ("{t}",              # OpenAI Agents JS, the Vercel AI SDK, the mcp 
 
 
 def model_names(tool):
-    """The names the model may have asked for decided `tool`: the name itself, and for `mcp:<server>/<tool>` the
+    """The names the model may have asked for decided `tool`: the name itself, the original name of a Deep Agents
+    tool tagged by the LangChain adapter, and for `mcp:<server>/<tool>` the
     MCP_NAMES forms that parse back to exactly that server and tool. A server or tool with an edge `_` or a `__` could
     share the separator (`mcp:_prod/t` spells `mcp__prod__t`), and a tool named like a prefixed form
     (`mcp:z/mcp__prod__t`) could stand for another server's tool: those get no alias."""
+    if tool in DEEP_AGENTS_TOOLS:
+        return (tool, tool.split(":", 1)[1])
     if not tool.startswith("mcp:") or "/" not in tool:
         return (tool,)
     server, name = tool[4:].split("/", 1)

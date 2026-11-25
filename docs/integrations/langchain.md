@@ -49,6 +49,33 @@ graph.add_edge("tools", "model")
 app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), signer, run))
 ```
 
+## Deep Agents filesystem tools
+
+With Deep Agents 0.7.41, Tracekit recognizes tools built by Deep Agents' `FilesystemMiddleware`.
+The signer checks them using the same names as the coding-agent hooks.
+
+| Deep Agents tool | Policy name |
+|---|---|
+| `read_file` | `Read` |
+| `write_file` | `Write` |
+| `edit_file` | `Edit` |
+| `ls` | `LS` |
+| `glob` | `Glob` |
+| `grep` | `Grep` |
+| `execute` with a string `command` and its declared arguments | `Bash` |
+
+A URL in the text of a `write_file` call is treated as file content. The policy still checks the destination path.
+Decisions are recorded with names such as `deepagents:write_file`, so the signer can reconcile them with the original
+model call. The tool receives the original arguments. Custom tools keep their own names and policy behavior.
+`LS` follows the active pack's treatment of `LS`, which the shipped packs leave unclassified.
+
+To run the Deep Agents regression tests in a separate Python 3.11 or newer environment, use:
+
+```bash
+python -m pip install -e . pytest "deepagents==0.7.41" "langgraph>=1.2.24,<1.3"
+python -m pytest -q tests/test_deepagents.py
+```
+
 ## What is recorded
 
 | When | RPC | Sent |

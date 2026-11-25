@@ -556,6 +556,7 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
     gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
     its type), logged with its traceback, never an exception that drops the connection and lets the call run
     unrecorded; a RecursionError is the request's nesting, which call() refuses."""
+    tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
     try:
         # a shell tool's own working directory (Codex's and OpenCode's workdir, Gemini CLI's dir_path, Cursor's
         # working_directory: classes.in_workdir) is where its command runs: the call is decided as `cd <dir> &&
@@ -3163,29 +3164,31 @@ class SignerService:
         key, top, holder = self._authorize(identity, req, gw), T2 if gw else {}, _holder(gw, req)
         self.quotas.take_event(identity, gw)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
+        policy_tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
         aid = req.get("agent_id")
         args, digest = self._args(req)
         # the approver's copy would hide more than clean values: a hold denies (TK-HIDDEN-CODE). One budget for the
         # call's copies: the copy kept of a call it doesn't hold, and its noted one (an approver's) when it holds it
         unclean, budget, copies = [], privacy.Budget(), {}
-        shown = _shown(tool, args, _dotenv(args), unclean, noted=False, budget=budget) if digest else None
+        shown = _shown(policy_tool, args, _dotenv(args), unclean, noted=False, budget=budget) if digest else None
 
         def noted():   # the approver's copy: once, for the approval request and the content vault
             if "noted" not in copies:
-                copies["noted"] = _shown(tool, args, _dotenv(args), budget=budget)
+                copies["noted"] = _shown(policy_tool, args, _dotenv(args), budget=budget)
             return copies["noted"]
         untrusted, prov = self._provenance(key, args, req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
         prov = prov()
-        sums, unreadable = self.log.detector.prepare(tool, args, ruled[2]) if self.log.detector and ruled else ({}, False)
+        sums, unreadable = self.log.detector.prepare(policy_tool, args, ruled[2]) if self.log.detector and ruled \
+            else ({}, False)
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
-        cls = self.policy.tool_class(tool)
+        cls = self.policy.tool_class(policy_tool)
         # read only where the engine read these arguments without failing (a host matters to no deny)
         host = classes.extract(cls, tool, args).get("host") if ruled and "error" not in ruled[0] and cls in (
             "http", "browser") and isinstance(args, dict) else None
-        facts = self._facts(key, tool, args, cls) if digest else None   # what a live constraint looks at
+        facts = self._facts(key, policy_tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
@@ -3234,7 +3237,7 @@ class SignerService:
                     data["nondeterministic"] = True
                 if mismatch:
                     gaps.append(("class_mismatch", f"class hint {hint!r} disagrees with the policy's class "
-                                                   f"{self.policy.tool_class(tool)!r}; the stricter decision applies"))
+                                                       f"{cls!r}; the stricter decision applies"))
                 # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged; keep it in the
                 # run's snapshot if runs often span restarts
                 if verdict == "deny":
@@ -3242,7 +3245,7 @@ class SignerService:
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
             f = facts if facts is not None or not (digest and run.get("constraints")) else \
-                self._facts(key, tool, args, cls, run)   # the run's first constraint came meanwhile
+                self._facts(key, policy_tool, args, cls, run)   # the run's first constraint came meanwhile
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
@@ -3261,7 +3264,7 @@ class SignerService:
                 data["reasons"] = [grant_why[:4096]]
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
-            names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
+            names = reconcile.model_names(tool)   # its digest under each name the model may have used
             seen = reconcile.compared(tool, args) if (run.get("rec") or {}).get("claude_code") else args
             l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
                 digest if seen is args else event_hash({"tool": tool, "args": seen})
