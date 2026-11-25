@@ -3954,19 +3954,38 @@ def _collect_effects(parsed, work, tags, learned):
 
 
 # where the Python the plugin's hook runs and a harness's hooks folder that no whole-folder rule keeps live, in full
-# under a home: deleting, moving or changing the mode of a folder along one takes it too (_under_roots)
-# lean: a UV_TOOL_DIR, PIPX_HOME or XDG_DATA_HOME elsewhere isn't read; list a place when a rule protects it
+# under a home: deleting, moving or changing the mode of a folder along one takes it too (_under_roots). On Windows uv
+# keeps its tools in %APPDATA%\uv\data\tools where %APPDATA%\uv\data is, else %APPDATA%\uv\tools, and pipx its venvs
+# in %LOCALAPPDATA%\pipx\pipx (install.tool_venvs)
+# lean: a UV_TOOL_DIR, PIPX_HOME or XDG_DATA_HOME elsewhere isn't read, nor pipx's ~\pipx on Windows as a folder along
+# (pipx/venvs/tracekit-ai, a path the rules protect whole, would no longer be read inside one: _SETTINGS_CHAINS); list a
+# place when a rule protects it
 _ROOT_PLACES = tuple(tuple(p.split("/")) for p in (
     ".local/bin/tracekit", ".local/share/uv/tools/tracekit-ai", ".local/share/pipx/venvs/tracekit-ai",
-    ".local/pipx/venvs/tracekit-ai", "Library/Application Support/pipx/venvs/tracekit-ai", "Documents/Cline/Hooks"))
+    ".local/pipx/venvs/tracekit-ai", "Library/Application Support/pipx/venvs/tracekit-ai", "Documents/Cline/Hooks",
+    "AppData/Roaming/uv/tools/tracekit-ai", "AppData/Roaming/uv/data/tools/tracekit-ai",
+    "AppData/Local/pipx/pipx/venvs/tracekit-ai"))
+# a path's first part that names one of Windows' user folders by its variable (bash's $APPDATA, PowerShell's
+# $env:APPDATA, cmd's %APPDATA%), read as that folder under ~ where a root is looked for
+_WINDOWS_FOLDER = re.compile(r"(?:\$\{?(?:env:)?(LOCALAPPDATA|APPDATA|USERPROFILE)\}?|%(LOCALAPPDATA|APPDATA|USERPROFILE)%)(?=/|$)",
+                             re.I)
+_WINDOWS_HOME = {"appdata": "~/AppData/Roaming", "localappdata": "~/AppData/Local", "userprofile": "~"}
+_DRIVE = re.compile(r"[A-Za-z]:/")
+
+
+def _windows_home(path):
+    """`path` (_normal's) with a first part that is one of Windows' user folders by its variable as that folder under ~."""
+    m = _WINDOWS_FOLDER.match(path)
+    return _WINDOWS_HOME[(m[1] or m[2]).casefold()] + path[m.end():] if m else path
 
 
 # a command that says where Tracekit's Python lives, run in a substitution: read from the first `$(` or backquote of a
 # line on, a plain search of the rest (a lazy match from each of many would take quadratic time)
 _WHERE_ROOT = re.compile(r"(?:command\s+-v|which|type\s+-p|whereis)\s+tracekit|\buv\s+(?:tool|python)\s+(?:dir|list)|"
-                         r"\bpipx\s+(?:environment|list)|\.local/share/(?:uv|pipx)|uv/tools|pipx/venvs|uv/python|\.local/bin")
+                         r"\bpipx\s+(?:environment|list)|\.local/share/(?:uv|pipx)|uv/(?:data/)?tools|pipx/venvs|"
+                         r"uv/(?:data/)?python|\.local/bin|AppData/(?:Roaming/uv|Local/pipx)")
 # an unresolved expansion followed by the name of a trust root's own folder or file
-_ROOT_NAME = re.compile(r"tracekit-ai|uv/python|\.local/bin/tracekit")
+_ROOT_NAME = re.compile(r"tracekit-ai|uv/(?:data/)?python|\.local/bin/tracekit")
 _EXPANSION_AT = re.compile(r"\$[\w({@*#?!$-]|`")   # (a `$` that ends a pattern, `\.py$`, is no expansion)
 _SUBSTITUTION_AT = re.compile(r"\$\(|`")
 
@@ -4012,10 +4031,15 @@ _PROTECTED_PATHS = tuple(tuple(p.split("/")) for p in (
     ".github/copilot/settings.json", ".github/copilot/settings.local.json", "etc/github-copilot", ".agents/hooks.json",
     ".agents/plugins", ".agents/recipes", ".agents/agents", ".agents/skills", ".goose/recipes", ".goose/agents",
     ".config/opencode", ".config/kilo", ".config/goose", ".config/crush", ".config/devin", ".config/gptme",
-    ".local/bin/tracekit", "uv/tools/tracekit-ai", "pipx/venvs/tracekit-ai")) + tuple(
+    ".local/bin/tracekit", "uv/tools/tracekit-ai", "uv/data/tools/tracekit-ai", "pipx/venvs/tracekit-ai")) + tuple(
     place[:k] for place in _ROOT_PLACES for k in range(1, len(place) + 1))   # (and the folders along each trust root)
 _LONGEST = max(map(len, _PROTECTED_PATHS))
-_HOME_FOLDERS = ("Documents", "Library")   # (the first folders of _ROOT_PLACES that only a home has)
+# a `**` is read as none to four folders: those along a trust root of five parts, never a root of five parts whole, so a
+# name a find deletes under a home (`find ~ -name .DS_Store -delete`) isn't read as one inside a root
+# lean: the folders along a root of six parts (AppData/Roaming/uv/data/tools/tracekit-ai) aren't made by one `**`; its
+# twin there of five parts (uv/tools) is, and the rules on it read uv/data/tools too
+_STAR_MOST = 5
+_HOME_FOLDERS = ("Documents", "Library", "AppData")   # (the first folders of _ROOT_PLACES that only a home has)
 # the paths a `**` under a home may stand for the folders of: the Python's (its trust roots and the folders along them)
 # and those that start with a dot, which a `**` can't make, so the path spells them out
 _STAR_PATHS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES if place[0] != "Documents"
@@ -4039,7 +4063,7 @@ def _protected_forms(path, options=(), work=None):
     .cursor/plugins, `.*/plugins` is too, `*/plugins` isn't), unless the line's glob `options` (shell._glob_options)
     hold dotglob (`*/plugins` is then too, where a home or the folder the line starts in may hold it) or nocaseglob
     (`.CUR?OR` is .cursor); "unread" ones read as both. A component `**` is zero or more folders (zsh's, and bash's
-    with globstar) under a home: each of none to _LONGEST - 1 of them, `~/.local/**/bin` is also ~/.local/bin. Read around its
+    with globstar) under a home: each of none to _STAR_MOST - 1 of them, `~/.local/**/bin` is also ~/.local/bin. Read around its
     first _PATTERNED_MAX patterned components; at most two `**` and _FORMS_MAX forms, else unread (ParseError); the
     forms are charged to `work` (shell.charge).
     lean: an option a profile, the environment or an earlier call sets isn't read; a path over 4 KiB gets each form only
@@ -4050,7 +4074,7 @@ def _protected_forms(path, options=(), work=None):
     if len(stars) > 2:
         raise shell.ParseError("a path with more than two ** components is not supported")
     out = []
-    for counts in itertools.product(range(_LONGEST), repeat=len(stars)):
+    for counts in itertools.product(range(_STAR_MOST), repeat=len(stars)):
         made, at = list(parts), 0
         for i, k in zip(stars, counts):
             made[i + at:i + at + 1] = ["*"] * k
@@ -4237,25 +4261,26 @@ def _zip_moves(args):
 
 
 # the folders under a home a find's `**` may stand for that the rules protect, so a protected name it tests is read in
-# each (`find ~ -name config` finds ~/.ssh/config), when it searches a home (or all of /)
-_HOME_START = re.compile(r"~[^/]*|\$\{?HOME\}?|/|/root|/(?:home|Users)/[^/]+|[A-Za-z]:[/\\]Users[/\\][^/\\]+", re.I)
+# each (`find ~ -name config` finds ~/.ssh/config), when it searches a home (or all of /; a drive's C:\Users\<u> and
+# Git Bash's /c/Users/<u> are homes too)
+_HOME_START = re.compile(r"~[^/]*|\$\{?HOME\}?|/|/root|/(?:[a-z]/)?(?:home|Users)/[^/]+|[A-Za-z]:[/\\]Users[/\\][^/\\]+", re.I)
 _FIND_FOLDERS = (".ssh", ".aws", ".git", ".claude", ".codex", ".gemini", ".hermes", ".config")
 
 def _under_roots(path, home=False, one_part=True):
     """Each trust root `path` is a folder along, as the parts of the root below `path` (`~/.local/share/uv` holds
     uv/tools/tracekit-ai): where its last parts are the first of one of _ROOT_PLACES (a dot folder alone, else two or
     more, so a project's `uv` or `library` is none), or, with `home`, `path` is a home, which holds them whole. A path
-    that is neither absolute nor under ~ or $ is read as written only (a relative one may be anywhere; a cd's is
-    joined)."""
-    if path[:1] not in ("/", "~", "$"):
+    that is neither absolute (a drive's too) nor under ~, $ or Windows' %VAR% is read as written only (a relative one may
+    be anywhere; a cd's is joined); one under a Windows user folder's variable as under that folder (_windows_home)."""
+    if path[:1] not in ("/", "~", "$", "%") and not _DRIVE.match(path.replace("\\", "/")):
         return []
-    path = _normal(path).rstrip("/") or "/"
+    path = _windows_home(_normal(path).rstrip("/") or "/")
     parts = path.casefold().split("/")
     at_home = home and _HOME_START.fullmatch(path)
     if not at_home and parts[-1] not in _ROOT_TAILS:   # (a place is matched by its last parts: its own last name ends the path)
         return []
     in_home = len(parts) > 1 and bool(_HOME_START.fullmatch("/".join(path.split("/")[:-1]) or "/"))   # (~/Library, not a project's)
-    tail = tuple(parts[-4:])
+    tail = tuple(parts[1 - _ROOT_LONGEST:])
     return [place[k:] for place, folded in zip(_ROOT_PLACES, _ROOT_FOLDED) for k in range(len(place) - 1, -1, -1)
             if k == 0 and at_home or k and tail[-k:] == folded[:k] and (
                 k > 1 or place[0][:1] == "." or in_home and one_part)]
@@ -4267,6 +4292,7 @@ def _roots_below(path, home=False, one_part=True):
     return tuple(path.rstrip("/") + "/" + "/".join(rest) for rest in _under_roots(path, home, one_part))
 
 
+_ROOT_LONGEST = max(map(len, _ROOT_PLACES))
 _ROOT_TAILS = frozenset(c.casefold() for place in _ROOT_PLACES for c in place)
 _ROOT_WORD = re.compile("|".join(re.escape(n) for n in sorted(_ROOT_TAILS)))
 _ROOT_CHAINS = frozenset(tuple(c.casefold() for c in place[:k]) for place in _ROOT_PLACES for k in range(1, len(place) + 1))
@@ -4311,9 +4337,10 @@ def _expanded_settings(path):
 def _names_root(path, along=True):
     """Whether `path` is a trust root, is under one, or (`along`) is a folder along one (`~/.local/share/uv`,
     `~/.local/bin`). A bare home is none: what is written in it is the member or path that names a root."""
-    if path[:1] not in ("/", "~", "$") or not _ROOT_WORD.search(path.casefold()):
+    if path[:1] not in ("/", "~", "$", "%") and not _DRIVE.match(path.replace("\\", "/")) or \
+            not _ROOT_WORD.search(path.casefold()):
         return False
-    path = _normal(path).rstrip("/") or "/"
+    path = _windows_home(_normal(path).rstrip("/") or "/")
     parts = tuple(path.casefold().split("/"))
     return along and bool(_under_roots(path)) or any(
         parts[i:i + len(place)] == place for place in _ROOT_FOLDED for i in range(len(parts) - len(place) + 1))

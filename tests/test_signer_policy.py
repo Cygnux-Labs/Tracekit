@@ -5140,6 +5140,71 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-F009", "TK-F015", "TK-D007", "TK-D013", "TK-A054"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_the_hooks_python_in_uvs_and_pipxs_windows_folders_is_kept_from_the_agent(self):
+        """install.tool_venvs trusts uv's and pipx's Windows folders (uv's %APPDATA%\\uv\\tools, or uv\\data\\tools where
+        %APPDATA%\\uv\\data is; pipx's %LOCALAPPDATA%\\pipx\\pipx\\venvs and ~\\pipx\\venvs), so the agent's writes there,
+        and to the interpreters uv keeps beside them, are denied or held in every Windows spelling: `\\` or `/`, a drive
+        (C:\\ and Git Bash's /c/), $APPDATA, $env:APPDATA or %APPDATA%, any case; by the file tools, bash and PowerShell
+        (also as Claude Code's PowerShell tool). Before, only ~/.local/share's were, and %APPDATA%\\uv\\data wasn't."""
+        uv = r"C:\Users\u\AppData\Roaming\uv\data\tools\tracekit-ai\Scripts\python.exe"
+        denied = [(tool, {"file_path": p, **args}, "TK-D013") for p in (
+            uv, uv.replace("\\", "/"), uv.upper(), r"C:\Users\u\AppData\Roaming\uv\tools\tracekit-ai\Lib\site.py",
+            r"C:\Users\u\AppData\Roaming\uv\python\cpython-3.12-windows-x86_64-none\python.exe",
+            r"c:\users\u\appdata\roaming\UV\DATA\PYTHON\cpython-3.12\Lib\site.py", r"%APPDATA%\uv\data\python\x.py",
+            r"C:\Users\u\AppData\Local\pipx\pipx\venvs\tracekit-ai\Scripts\python.exe",
+            r"C:\Users\u\pipx\venvs\tracekit-ai\Scripts\python.exe", r"C:\Users\u\.local\bin\tracekit.exe")
+            for tool, args in (("Write", {"content": "x"}), ("Edit", {"old_string": "a", "new_string": "b"}))]
+        denied += [("Bash", {"command": c}, "TK-D007") for c in (
+            f"cp evil.exe '{uv}'", f"cp evil.exe {uv.replace(chr(92), '/')}", "cp evil.exe /c/Users/u/AppData/Roaming/uv/data/tools/"
+            "tracekit-ai/Scripts/python.exe", 'cp evil.exe "$APPDATA/uv/data/tools/tracekit-ai/Scripts/python.exe"',
+            'cp evil.exe "$APPDATA\\uv\\tools\\tracekit-ai\\Scripts\\python.exe"',
+            'ln -sf /tmp/evil "$APPDATA/uv/tools/tracekit-ai/Scripts/python.exe"',
+            'cp evil "${APPDATA}/uv/python/cpython-3.12/Lib/site.py"', "cp evil.exe ~/.local/bin/tracekit.exe",
+            'cp evil.exe "$LOCALAPPDATA/pipx/pipx/venvs/tracekit-ai/Scripts/python.exe"',
+            'rm -rf "$APPDATA/uv"', 'rm -rf "$APPDATA"', 'rm -rf "$APPDATA/uv/data/tools"', "rm -rf ~/AppData/Roaming/uv/data",
+            "mv ~/AppData/Roaming/uv /tmp/x",
+            "rm -rf C:/Users/u/AppData/Roaming/uv", "rm -rf /c/Users/u/AppData", 'rm -rf "$LOCALAPPDATA/pipx"',
+            'chmod -R 000 "$APPDATA/uv/tools"', "cp x ~/AppData/Roaming/u?/data/tools/tracekit-ai/Scripts/python.exe",
+            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Roaming\\uv')\"")]
+        held = [(tool, {"command": c}, "TK-A096") for tool in ("Bash", "PowerShell") for c in (
+            r"Copy-Item evil.exe $env:APPDATA\uv\data\tools\tracekit-ai\Scripts\python.exe",
+            r"copy-item evil.exe ${env:APPDATA}\UV\Tools\TraceKit-AI\Scripts\python.exe",
+            r"Set-Content -Path $env:APPDATA\uv\tools\tracekit-ai\Lib\site-packages\x.pth -Value 'import os'",
+            r"Remove-Item -Recurse -Force $env:APPDATA\uv", r"Remove-Item -Recurse $env:APPDATA\uv\tools\*",
+            r"Copy-Item evil $env:APPDATA\uv\python\cpython-3.12\Lib\site.py",
+            r"cmd /c copy evil.exe %APPDATA%\uv\data\tools\tracekit-ai\Scripts\python.exe",
+            r"Copy-Item evil.exe C:\Users\u\AppData\Roaming\uv\data\tools\tracekit-ai\Scripts\python.exe",
+            r"Remove-Item -Recurse $env:LOCALAPPDATA\pipx", r"Copy-Item evil.exe $HOME\pipx\venvs\tracekit-ai\Scripts\python.exe",
+            r"rmdir /s /q C:\Users\u\pipx", r"Copy-Item evil.exe $env:USERPROFILE\.local\bin\tracekit.exe",
+            r"Get-ChildItem $env:APPDATA\uv\tools | Remove-Item -Recurse",
+            "[IO.File]::WriteAllText(\"$env:APPDATA\\uv\\tools\\tracekit-ai\\Lib\\site-packages\\x.pth\", 'import os')")]
+        benign = [(tool, {"file_path": p, **args}) for p in (
+            r"C:\Users\u\AppData\Roaming\uv\tools\ruff\x", r"C:\Users\u\AppData\Local\uv\cache\x",
+            r"C:\Users\u\AppData\Roaming\uv\data\tools\tracekit-ai-x\y", r"C:\Users\u\proj\uv\data\notes.md",
+            r"C:\Users\u\proj\myappdata\uv\python\x.py") for tool, args in (("Write", {"content": "x"}),)]
+        benign += [(tool, {"command": c}) for tool in ("Bash", "PowerShell") for c in (
+            r"Get-Content $env:APPDATA\uv\data\tools\tracekit-ai\uv-receipt.toml", r"gci $env:APPDATA\uv\tools",
+            r"dir %APPDATA%\uv\data\tools", r"Remove-Item -Recurse -Force $env:LOCALAPPDATA\uv",
+            r"Remove-Item -Recurse $env:APPDATA\uv\tools\ruff", r"Copy-Item x $env:APPDATA\uv\tools\tracekit-ai-x\y",
+            r"Copy-Item ruff.exe $HOME\.local\bin\ruff.exe")]
+        benign += [("Bash", {"command": c}) for c in (
+            "ls ~/AppData/Roaming/uv/tools", 'cat "$APPDATA/uv/data/tools/tracekit-ai/uv-receipt.toml"',
+            "rm -rf ~/AppData/Local/uv/cache", "rm -rf /home/u/proj/Roaming/uv", "uv tool dir",
+            "find ~ -name .DS_Store -delete",   # (a `**` there stands for no whole root: engine._STAR_MOST)
+            "python3 -c \"import shutil; shutil.rmtree(r'C:\\Users\\u\\AppData\\Local\\uv\\cache')\"")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in denied + held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = svc.evaluate(e, tool, args)[0]
+                    self.assertIn(rid, d["rule_ids"])
+                    self.assertIn(d["verdict"], ("ask", "deny"))
+                    if pack == "dev.yaml":
+                        self.assertEqual(d["verdict"], "deny" if rid.startswith("TK-D") else "ask")
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F015", "TK-D007", "TK-D013", "TK-A096"}
+                                     & set(svc.evaluate(e, tool, args)[0]["rule_ids"]))
+
     def test_plugin_review_3_brackets_holding_a_bracket_case_and_other_plugins(self):
         """The plugin's third review: the reader's quick check split a pattern with a regex that reads a bracket
         holding `[` (a POSIX class, an equivalence class, `[[x]`) unlike bash, so those made a protected path unread;
