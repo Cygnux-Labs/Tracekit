@@ -197,6 +197,10 @@ def run(record=False):
     # each read once: p50 173 to 211 us, p99 463 to 638 us, caps 8.99 to 12.5.
     # Recorded again (--record) on 2026-11-25 after main's 1.7.3 line (its shell reading, the workdir and uv folders, #1141) was merged
     # in: p50 184 to 225 us, p99 500 to 685 us, caps 9.55 to 12.98 times the reference, under CI's 14.
+    # Recorded again (--record) on 2026-11-26 for uv's and pipx's Windows folders: three more trust roots are read below a
+    # deleted home or / (`find ~ -delete` 452 to 762 us on the fallback engine), about +5% at p99 and none at p50 beside
+    # the assembly measured the same way (dev/regex p99 694 to 735 us); p50 180 to 230 us, p99 523 to 753 us, caps 9.97
+    # to 13.84 times the reference.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

@@ -603,14 +603,14 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 184 / 213 | 547 / 637 | 1433 / 1721 | 9.71 / 11.23 |
-| strict, RE2 / regex | 188 / 215 | 510 / 624 | 1304 / 1793 | 9.01 / 10.89 |
-| dev, RE2 / regex | 194 / 227 | 583 / 693 | 1562 / 1887 | 10.31 / 12.34 |
+| default, RE2 / regex | 180 / 215 | 559 / 697 | 1398 / 1780 | 10.56 / 12.72 |
+| strict, RE2 / regex | 185 / 216 | 523 / 656 | 1309 / 1734 | 9.39 / 11.44 |
+| dev, RE2 / regex | 195 / 230 | 599 / 753 | 1584 / 1926 | 10.54 / 13.07 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.10% default; 13.0%, 15.4%, 5.1%
-strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, and on 2026-11-16, with main's rules merged into the release's; re-measured once before failing; another machine,
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-14, when a closer reading of shell lines, downloads, the environment and loop values added about 13-20% at p99 against main measured beside it, on 2026-11-16, with main's rules merged into the release's, and on 2026-11-26, when three more trust roots (uv's and pipx's Windows folders) read below a deleted home added about 5% at p99 on the fallback engine; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
