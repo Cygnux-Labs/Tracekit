@@ -192,6 +192,8 @@ def run(record=False):
     # Recorded again (--record) on 2026-11-24 for 1.8: the plugin-everywhere reading of what a line writes costs +10 us p50 and
     # +76 us p99 over main (server pack, RE2: 182 / 535 us against 172 / 459), the whole assembly 191 / 566 us; caps
     # 9.93 to 13.98 times the reference (docs/limits.md, Queue 11-24 debt row says what is left).
+    # Recorded again the same day after TK-D007's reader was gated (engine.TracekitGate) and its subjects given once: p50 176 to
+    # 219 us, p99 489 to 664 us across the six rows, caps 9.13 to 12.6 times the reference.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
