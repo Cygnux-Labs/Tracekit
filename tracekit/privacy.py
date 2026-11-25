@@ -798,16 +798,33 @@ _CONFIG_SET = ("npm", "pnpm", "yarn")   # `npm config set KEY VALUE`: the value 
 # the programs and the option or subcommand words that may give one, so only a line that holds both is parsed for it
 _SECRET_PROGRAMS = re.compile(r"\b(?:curl|sshpass|mysql|redis-cli|docker|podman|gh|npm|pnpm|yarn)\b")
 _SECRET_FLAGS = re.compile(r"(?<![\w-])-[upab]|--(?:user|proxy-user|pass|body)\b|\bconfig\s+set\b")
+# programs whose options end at their first operand, the command they run (sshpass: `ssh host time -p x` is ssh's) or
+# send (redis-cli: EVAL's script runs its arguments), by the options that take the next word as their value (each
+# one's usage: sshpass's getopt, redis-cli --help's short options, --user and --pass)
+_OPTIONS_END = {"sshpass": ("-f", "-d", "-p", "-P"),
+                "redis-cli": ("-h", "-p", "-t", "-s", "-a", "-u", "-r", "-i", "-n", "-X", "-d", "-D", "--user", "--pass")}
+
+
+def _options_end(name, args):
+    """How many of program `name`'s `args` (its words after its name) may be its options: all, unless _OPTIONS_END
+    lists it, then those before its first operand, or before a word an option it doesn't name may take (either)."""
+    takes, k = _OPTIONS_END.get(name), 0
+    if takes is None:
+        return len(args)
+    while k < len(args) and args[k][:1] == "-" and args[k] != "--":
+        k += 2 if args[k] in takes else 1
+    return k
 
 
 def _secret_values(line, name, args):
-    """(k, start, end, data) for each credential among program `name`'s `args` (its words after its name) as `line`
-    holds them: the span of what follows the option in the word k that gives it (a quote wrapping it left out), and
-    whether it is data to its program (_SECRET_OPTIONS lists it, or a config key's value: a copy that hides it is clean)."""
+    """(k, start, end, data) for each credential among program `name`'s `args` (its words after its name, its options:
+    _options_end) as `line` holds them: the span of what follows the option in the word k that gives it (a quote
+    wrapping it left out), and whether it is data to its program (_SECRET_OPTIONS lists it, or a config key's value: a
+    copy that hides it is clean)."""
     lead, opts = _SECRET_OPTIONS.get(name, ((), ()))
     listed = list(args[:len(lead)]) == list(lead) and name in _SECRET_OPTIONS
     found = []
-    for k, a in enumerate(args):
+    for k, a in enumerate(args[:_options_end(name, args)]):
         option, eq, _ = a.partition("=")
         value, skip, user, data = k, 0, False, listed   # the word the credential is in, the characters before it there
         if listed and (a in opts or eq and option in opts):
