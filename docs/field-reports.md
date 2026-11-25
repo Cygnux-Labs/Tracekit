@@ -95,8 +95,8 @@ record to your store.
 3. Name the agent or framework and the kind of work. Anything else you'd like to tell us is optional.
 
 `tracekit feedback` prints that form's link pre-filled
-(your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts)
-and shows exactly what the link holds. It sends nothing. `--open` opens the link in your browser. For one
+(your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts when the dev
+signer has a store) and exactly what the link holds; it sends nothing, and `--open` opens it in your browser. For one
 false alarm, `tracekit feedback --harmless <approval-id> [--why "one line"]` fills in the held call's rule ids, tool
 name, policy hash and verdict, and your Tracekit, OS, Python and hook names, never its command, arguments or paths;
 it prints all of it before anything is submitted (`tracekit approvals show` prints the line).
@@ -106,6 +106,8 @@ To send a report as a pull request instead, so it stays in the repository and yo
 
 Both the link and `--file` read the dev signer's store by default (`--dev`). Use `--config signer.yaml` for a
 configured signer's store or `--data-dir DIR` for a file-backed signer's data directory. Pick one source.
+A signer whose store is on another host can't be read; run `tracekit report --share --since 7d` there and paste
+its block.
 
 ```bash
 tracekit feedback --config signer.yaml
