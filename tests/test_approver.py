@@ -624,6 +624,9 @@ class TestRunBound(Case):
                 with self.an_hour_on():   # past it
                     _, a = self.ask(HELD, run=self.register())
                 self.assertEqual((a["agent"]["eligible"], a["ai"]["labels"]), (True, []))
+                with mock.patch.object(time, "time", lambda now=time.time(): now + 3601):
+                    self.s.log.snapshot()   # and a snapshot drops it then
+                self.assertEqual(self.s.log.agent["tried"], {})
 
     def test_a_value_only_untrusted_content_brought_sends_it_to_people(self):
         self.precedent()

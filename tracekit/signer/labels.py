@@ -248,14 +248,16 @@ def join(set_, log, run, who):
 
 
 def prune(log, now):
-    """Drop the entries past the window from every requester's labels (on the writer: no answer changes)."""
+    """Drop the entries past the window from every requester's labels, and from those the run bound alone reads
+    (tried_state) (on the writer: no answer changes)."""
     window = log.labels.window if log.labels else LABEL_INHERIT_S
-    for who in list(log.carry):
-        held = _live(log.carry[who], window, now)
-        if held:
-            log.carry[who] = held
-        else:
-            del log.carry[who]
+    for store in (log.carry, log.agent["tried"]):
+        for who in list(store):
+            held = _live(store[who], window, now)
+            if held:
+                store[who] = held
+            else:
+                del store[who]
 
 
 def labels_for(log, run, now=None):
@@ -279,8 +281,8 @@ def tried_state(set_, log, run, e):
     """Follow record `e` of `run` in `log.agent["tried"]`, laid out as `log.carry` is: {requester: {label: {tenant and
     run id joined by a NUL: [the run_seq of the decision that set it (Sources.tried), the ts the run ended or None while
     it is open]}}}. Each of requesters(run) takes it, a run.writer's writer takes the run's own, and a run.closing ends
-    it; entries past the window go as their requester's key changes. No clear ends one: it lasts while its run is open
-    and for label_inherit_s after. `set_`: as pipeline.agent_state's."""
+    it; entries past the window go as their requester's key changes, and all of them at a snapshot (prune). No clear
+    ends one: it lasts while its run is open and for label_inherit_s after. `set_`: as pipeline.agent_state's."""
     typ, d, store = e["type"], e["data"], log.agent["tried"]
     me = f"{e['tenant']}\0{e['run_id']}"
     if typ == "run.writer":
