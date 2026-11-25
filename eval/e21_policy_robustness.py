@@ -139,9 +139,11 @@ def run(record=False):
     pools = {os.path.basename(p)[:-len(".jsonl")]: load(p) for p in sorted(glob.glob(os.path.join(BLIND, "*.jsonl")))}
     blind = [{**c, "pool": n} for n, cases in pools.items() for c in cases] or None
     sessions = load(SESSIONS)
-    e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p)]
+    # a case naming another pack alone ("packs": ["dev"]) is that pack's to decide, not a server or strict case here
+    server_case = lambda c: "server" in c.get("packs", ["server"])
+    e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p) if server_case(c)]
     calls = e17 + [(c["tool"], c["args"]) for c in (heldout or []) + sessions]
-    e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p)]
+    e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p) if server_case(c)]
     out = {"machine": machine(), "heldout_cases": len(heldout) if heldout is not None else None,
            "blind_cases": {n: len(cases) for n, cases in pools.items()},
            "session_calls": len(sessions), "profiles": {}, "latency": {}, "engine_mismatches": []}
