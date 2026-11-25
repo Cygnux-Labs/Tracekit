@@ -578,7 +578,8 @@ from a chosen index. Lint errors name what is never eligible: a deny rule, a `fr
 secret read (`TK-A020`, `TK-A021`, `TK-A035` to `TK-A038`, `TK-A052`, `TK-A053`), a payment rule, Tracekit's own
 guardrails, a push or merge to main or master (`TK-A033`, `TK-A056`), a passkey rule, a rule with an `approval.agent`
 of its own, and `TK-SHELL-PARSE` where `on_parse_error` denies. A call also held by any other rule (flags aside) is a
-person's. On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
+person's, and so is one that sets a label of the run bound itself when it runs, by any rule it matched, flags too (a
+line the policy can't read that also reads `.env`: `TK-F034`'s flag). On a laptop the signer also refuses to start with an `approval.agent` on a payment rule without
 `executor: t2` (a warning on a server).
 
 **The run.** While the run carries a label `run.clean` names, people answer every hold. These are the run labels of
@@ -588,7 +589,11 @@ since what they did is unknown; the policy records them whenever its run bound n
 requesters (its client, each identity it was delegated to, a gateway's caller) and to the identity that asks for the
 approval (counted even when it never wrote the run) across all of their runs, in any tenant and under any principal, while the run that took one is open and for `label_inherit_s` after it ends (an hour
 by default, at most a day), so a run the agent registers afresh or is handed is no way around them. A run that continues an earlier run of its session, whose calls it can't see, carries every label of the
-bound. The bound is as wide as the rules that set a label: a script that opens a secret file itself labels nothing
+bound. For this bound alone, a call the policy denied or held that a rule labelled `secrets_access` matched sets
+`secrets_access` too, carried the same way (the session tried to read a secret; whether it may is a person's to say),
+and the AI's reasons say "the session tried to read a secret"; no run condition counts it, as nothing ran. No
+`clear-label` ends this one: it lasts while the run that tried is open and for `label_inherit_s` after. The bound is as
+wide as the rules that set a label: a script that opens a secret file itself labels nothing
 ([limits](limits.md#approvals)).
 
 **Precedent.** The AI approves only a call like one a person approved: the same rules, the same tool, the same target,
@@ -599,7 +604,8 @@ any package, and a source that isn't an http(s) URL (a path the agent can write)
 `TK-SHELL-PARSE`, the same call, exactly: every argument as sent, so SQL with other literals or identifiers, another
 database, host or working folder, a run in the background, a sandbox escalation or another program of the same name is
 another call (Claude Code's Bash `description` too). The person's answer counts when the run was clean both when the
-call was asked and when they answered (`run_clean` in their record), in the last 30 days. With no such answer, people answer
+call was asked and when they answered (`run_clean` in their record), in the last 30 days; under a policy without
+`approval_agent` (a restart under another) it is no precedent, and an AI approval not yet used doesn't run. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people
 answer it. Only people's own answers count: never an agent's, a self-approval or a break-glass answer. A precedent
 stops counting when a person revokes it (`tracekit reviewer revoke apr-… --reason reverted`), when an incident opens in

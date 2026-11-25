@@ -628,7 +628,9 @@ no target when the run isn't clean; and the project), the key's digest over
 what was read in full as a commitment under the tenant's own salt (equal keys match; what redaction or the cut left
 out can't be confirmed by a guess), the run's labels, whether the run met the run bound (`clean`), the precedents
 (approval ids of people's answers) that counted, and `asserted: [project]` when the agent's client named the project.
-A person's `approval` of one carries `run_clean`: whether the run still met the run bound when they answered. Each AI
+Its run's labels and `clean` count, for the run bound alone, a read of a secret the policy denied or held (no
+`run.label` record says so: it is the decision's). A person's `approval` of one carries `run_clean`: whether the run
+still met the run bound when they answered. Each AI
 answer to one carries `relied_on`: the precedents and the playbook's version and digest as the signer read them when
 it answered, the policy hash, the run's labels, `view` (a commitment to the `view_digest` of the review it answered),
 `mode` (enforce: it decided; shadow: a suggestion, with `demoted` when the circuit breaker made it so), and the

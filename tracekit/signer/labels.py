@@ -19,17 +19,24 @@ to another tenant, principal or delegated run keeps a label. A person clears one
 its client's ended runs in that tenant (an open run that carries it in its own state still passes it on, until it is
 cleared there; a dev signer's self-clear is of that run alone); nothing a client sends sets or clears one. A run's
 requesters are in its records (run.registered's caller, run.writer), so a restart from the records knows them.
+
+The AI approver's run bound reads one more thing, for itself alone: a call the policy denied or held that a rule
+labelled secrets_access matched (the session tried to read a secret) gives its requesters that label for the bound and
+for whether a person's answer is a precedent, as a run label is carried (tried_state, tried_for), with no record of
+its own: it is a function of the decision's record. Run conditions read only what ran.
 """
 import math
 import os
 import re
 import time
+import types
 
 from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
 from tracekit.policy2.compile import SECTIONS
 from tracekit.signer.detect import epoch
 
 UNTRUSTED = "untrusted_content"   # of compile.RUN_LABELS
+SECRETS = "secrets_access"   # of compile.RUN_LABELS: the one a call that didn't run sets, for the run bound alone
 UNREAD = "TK-OVERSIZE"   # a call the policy couldn't read: it may have done what any rule reads
 # the gaps of calls the signer never decided (events it never got, a signer that was down, a tailer or an observer that
 # went silent): they may have done what any rule reads, as reconcile.hook_missing's call did
@@ -46,7 +53,7 @@ class Sources:
         rules = [r for sec in SECTIONS for r in pol.get(sec, [])]
         self.when = {r["id"]: frozenset(r["when"]["run_has"]) for r in rules if "when" in r}
         bound = ((pol.get("approval_agent") or {}).get("run") or {}).get("clean") or ()
-        self.tracked = frozenset().union(*self.when.values(), bound)
+        self.bound, self.tracked = frozenset(bound), frozenset().union(*self.when.values(), bound)
         self.label = {r["id"]: r["label"] for r in rules if r.get("label") in self.tracked}
         # for the verifiers: every rule's label, and each run condition rule on the labels field (one with no tool:
         # its class, its pattern), whose match the call's rule ids and the run's labels decide (engine.labels_subject)
@@ -88,6 +95,17 @@ class Sources:
         if t == "capture.gap" and d.get("kind") in LOST or t == "reconcile.hook_missing":   # calls never decided
             return set(self.tracked)
         return set()
+
+    def tried(self, e):
+        """The labels record `e` sets for the AI approver's run bound alone: secrets_access, where the bound names it,
+        when `e` is a decision that denies or holds a call (not a harness call) a rule labelled secrets_access
+        matched. The session tried to read a secret, and whether it gets to is a person's to say: the AI answers
+        none of its holds meanwhile. Nothing that didn't run sets a run label (sets)."""
+        d = e["data"]
+        if e["type"] != "policy.decision" or d.get("decision") not in ("deny", "ask") or SECRETS not in self.bound or (
+                isinstance(d.get("tool"), str) and self.rules.tool_class(d["tool"]) == "harness"):
+            return set()
+        return {SECRETS} if any(self.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
 
 
 def _compiled(pattern):
@@ -255,6 +273,46 @@ def labels_of(log, identity, now=None):
     """The labels `identity` (scheme:subject, pipeline.owner's or pipeline.writer's form: an approval's requester)
     carries from any run of its, as labels_for reads them for a run's requesters."""
     return _carried(log, {_who(identity.removesuffix(" through a gateway"))}, now)
+
+
+def tried_state(set_, log, run, e):
+    """Follow record `e` of `run` in `log.agent["tried"]`, laid out as `log.carry` is: {requester: {label: {tenant and
+    run id joined by a NUL: [the run_seq of the decision that set it (Sources.tried), the ts the run ended or None while
+    it is open]}}}. Each of requesters(run) takes it, a run.writer's writer takes the run's own, and a run.closing ends
+    it; entries past the window go as their requester's key changes. No clear ends one: it lasts while its run is open
+    and for label_inherit_s after. `set_`: as pipeline.agent_state's."""
+    typ, d, store = e["type"], e["data"], log.agent["tried"]
+    me = f"{e['tenant']}\0{e['run_id']}"
+    if typ == "run.writer":
+        who = _who(d["identity"].removesuffix(" through a gateway"))
+        own = {x: runs[me] for held in store.values() for x, runs in held.items() if me in runs}
+        held = store.get(who) or {}
+        if own and any(me not in held.get(x, {}) for x in own):
+            set_(store, who, {**held, **{x: {**held.get(x, {}), me: v} for x, v in own.items()}})
+        return
+    new = log.labels.tried(e) if typ == "policy.decision" else set()
+    if not (new or typ == "run.closing") or not run.get("owner"):
+        return
+    now = epoch(e["ts"])
+    for who in sorted(requesters(run)):
+        held = store.get(who) or {}
+        if typ == "run.closing":
+            out = {x: {r: [v[0], e["ts"]] if r == me and v[1] is None else v for r, v in runs.items()}
+                   for x, runs in held.items()}
+        else:
+            out = _live(held, log.labels.window, now)
+            for x in new:
+                out[x] = {**out.get(x, {}), me: [e["run_seq"], e["ts"] if run.get("closed") else None]}
+        if out != held:
+            set_(store, who, out)
+
+
+def tried_for(log, run, requester, now=None):
+    """The labels a call of `run` that `requester` asks about carries for the AI approver's run bound alone, from calls
+    that didn't run (tried_state): those of the run's requesters and of `requester`, while the run that tried is open
+    and for label_inherit_s after it ends, as labels_for reads them: {label: [run_id, run_seq]}."""
+    return _carried(types.SimpleNamespace(carry=log.agent["tried"], labels=log.labels),
+                    requesters(run) | {_who(requester.removesuffix(" through a gateway"))}, now)
 
 
 def _carried(log, whos, now):
