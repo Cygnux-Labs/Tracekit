@@ -58,6 +58,7 @@ _WORDS = {
                 "pass": ("show",), "gopass": ("show", "cat"), "keepassxc-cli": ("show", "export"),
                 "security": ("find-generic-password", "find-internet-password", "dump-keychain", "export"),
                 "kubectl": ("secret", "secrets"), "gh": (("auth", "token"),),
+                "glab": (("auth", "status", "-t"), ("auth", "status", "--show-token"), ("config", "get", "token")),
                 "git": (("credential", "fill"),)},
     "deploys": {"npm": ("publish", "pu", "pub", "publ", "publi", "publis"), "pnpm": ("publish",), "yarn": ("publish",),
                 "bun": ("publish",), "docker": ("push", "--push"), "podman": ("push", "--push"),
