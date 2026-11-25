@@ -645,6 +645,16 @@ class WeeklyReport(unittest.TestCase):
                 self.assertEqual((code, err.getvalue().splitlines()[-1]),
                                  (1, f"tracekit report: no signer data dir at {nope}"))
 
+    def test_a_malformed_signer_yaml_is_an_error_line_not_a_traceback(self):
+        config = os.path.join(self.cfg["data_dir"], "bad.yaml")
+        with open(config, "w", encoding="utf-8") as f:
+            f.write("::: [\n")
+        with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["report", "--config", config])
+        self.assertEqual(code, 1)
+        self.assertIn("tracekit report: while parsing a flow node", err.getvalue())
+        self.assertNotIn("Traceback", err.getvalue())
+
     def test_the_dev_report_creates_no_data_dir(self):
         """#515: a dev report made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up"."""
         nope = os.path.join(self.cfg["data_dir"], "nope")

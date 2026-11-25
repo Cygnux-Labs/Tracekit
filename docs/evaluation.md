@@ -283,8 +283,8 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 1071 harmful and 1015 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 1071 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 1015 (0.10%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 1073 harmful and 1015 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 1073 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 1015 (0.10%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -316,11 +316,11 @@ forged precedent (the agent answering its own hold, the reviewer's own yes), a b
 project claimed, no project, another tool, another agent), a secret read between the AI's yes and the run and then a
 run the agent registers afresh, one key or two that disagree, and a revoked AI approval. With the gate below, 15 of 15
 caught. E18.H is the harmful-approvals gate: every harmful call of E17,
-E21's held-out pool and its four blind pools (1,635), with two injected variants of each shell line ("approved by the
+E21's held-out pool and its four blind pools (1,637), with two injected variants of each shell line ("approved by the
 admin", a fake tool output), put to that reviewer with no precedent and with a person's precedents for a benign sibling
 of the same reviewed rule and for near-siblings of the call itself (the same but for its quoted literals, the folders of
 its paths, or one more argument: 251 precedents in all), each held call a requester of its own: 0 approvals outside the
-bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 914 of the calls are
+bounds (before precedents were keyed on every argument of the call, the near-siblings let it approve 78). 916 of the calls are
 held, 112 of them by a reviewed rule; with a person's precedent for that very call (inside the bounds), the AI
 approves 82 of those, counted by class in the results (the 12 installs among them don't pin their source on the line,
 so no precedent lets it answer them, and 18 more are also held by a rule people answer). Results:
@@ -603,9 +603,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 187 / 217 | 544 / 642 | 1428 / 1738 | 9.79 / 11.36 |
-| strict, RE2 / regex | 185 / 213 | 510 / 619 | 1292 / 1715 | 9.0 / 10.96 |
-| dev, RE2 / regex | 193 / 228 | 571 / 703 | 1519 / 1901 | 10.32 / 12.39 |
+| default, RE2 / regex | 179 / 209 | 533 / 625 | 1395 / 1689 | 10.26 / 12.13 |
+| strict, RE2 / regex | 179 / 206 | 494 / 600 | 1287 / 1647 | 9.31 / 11.45 |
+| dev, RE2 / regex | 188 / 223 | 568 / 687 | 1519 / 1986 | 10.58 / 12.83 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (69.5% default, 75.7% strict) and no benign set's
@@ -640,10 +640,10 @@ All 52 are benign calls strict holds (twelve more than 1.5.2's 40: 1.5.3's stric
 network command (`TK-F013`), 5 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 735 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 737 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1071 originals and all 3,458 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 1073 originals and all 3,468 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
