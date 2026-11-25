@@ -1149,6 +1149,18 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
         if harness == "codebuddy":
+            off = _codebuddy_off(home)
+            add("D-HOOKS-EVENT", not off,
+                f"disableAllHooks is set in {off}: CodeBuddy Code runs none of its hooks, so every call runs "
+                "undecided and unrecorded" if off else "no CodeBuddy Code settings file turns its hooks off",
+                f'remove "disableAllHooks" from {off}' if off else fix, bad=FAIL if prod else WARN)
+            moved = (os.environ.get("CODEBUDDY_CONFIG_DIR") or "").strip()
+            here = os.path.dirname(path)
+            if moved and os.path.realpath(os.path.expanduser(moved)) != os.path.realpath(here):
+                add("D-HOOKS-EVENT", False,
+                    f"CODEBUDDY_CONFIG_DIR names {moved}, but Tracekit's hooks are in {path}: a CodeBuddy Code started "
+                    "with that variable reads another settings file, so these hooks don't run",
+                    f"unset CODEBUDDY_CONFIG_DIR, or re-run init where it names {here}", bad=WARN)
             later = _codebuddy_later(home)
             add("D-HOOKS-ORDER", not later,
                 f"a CodeBuddy Code PreToolUse hook in {' and '.join(later)} runs after Tracekit's, and CodeBuddy takes "
@@ -1223,6 +1235,26 @@ def _opencode_loads(add, path, fix, bad):
         "call runs undecided and unrecorded (its log says \"failed to load plugin\")" if two else
         f"Tracekit's plugin {path} has no default export: OpenCode 2.x can't load it, so after an upgrade every call "
         "would run undecided and unrecorded", fix, bad=bad if two else WARN)
+
+
+def _codebuddy_off(home=None):
+    """The CodeBuddy Code settings file whose `disableAllHooks` is in force, or None. CodeBuddy's bundle
+    (`@tencent-ai/codebuddy-code` 2.183.0, dist/codebuddy.js, `settingsDisableAllHooks`) reads
+    `<home>/settings.json`, the project's `.codebuddy/settings.json` and `settings.local.json` beside it, keeps the
+    last one that sets the key (`eA?.disableAllHooks !== void 0 && (el = eA.disableAllHooks)`) and returns
+    `true === el`: a later file's `false` lifts an earlier file's `true`, as Claude Code's drop-ins do.
+    lean: `allowManagedHooksOnly` turns the hooks off too ("hooks modules are turned off here (disableAllHooks,
+    allowManagedHooksOnly or a policy)"), but CodeBuddy reads it only from its managed settings documents
+    (`parseManagedModSettings`), which doctor can't see"""
+    from . import agent_hooks
+    user = agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy")
+    project = agent_hooks.config_path("codebuddy", os.getcwd())
+    at = None
+    for f in dict.fromkeys([user, project, os.path.join(os.path.dirname(project), "settings.local.json")]):
+        v = _setting(f, "disableAllHooks")
+        if v is not None:
+            at = None if v is False or v == 0 or v == "" else f
+    return at
 
 
 def _codebuddy_later(home=None):
