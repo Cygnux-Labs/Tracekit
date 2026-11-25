@@ -5169,7 +5169,11 @@ class CodingPack(unittest.TestCase):
                        ("kubectl config view --raw", "TK-A021"), ("kubectl config view --minify --raw", "TK-A021"),
                        ("kubectl config view --raw --minify", "TK-A021"), ("kubectl config view --raw=true", "TK-A021"),
                        ("kubectl config view --raw -o json", "TK-A021"), ("kubectl -n prod config view --raw", "TK-A021"),
-                       ("oc config view --raw", "TK-A021")])
+                       ("oc config view --raw", "TK-A021"),
+                       ("gcloud auth print-access-token", "TK-A021"), ("gcloud auth print-identity-token", "TK-A021"),
+                       ("gcloud auth application-default print-access-token", "TK-A021"),
+                       ("gcloud --project p auth print-access-token", "TK-A021"),
+                       ("gcloud auth print-access-token --project p", "TK-A021")])
         for command in ("ssh-add -l", "pass", "pass ls", "pass find exa", "pass insert example/new", "pass git log",
                         "gopass", "gopass ls", "gopass insert email/new", "gopass sync", "gopass clone store.git",
                         "gopass mounts", "gopass config", "keepassxc-cli", "keepassxc-cli ls passwords.kdbx",
@@ -5190,7 +5194,10 @@ class CodingPack(unittest.TestCase):
                         "glab config set token glpat-x", "kubectl config view", "kubectl config view -o json",
                         "kubectl config view --minify", "kubectl config view --raw=false",
                         "kubectl config get-contexts", "kubectl config current-context",
-                        "kubectl config use-context prod", "kubectl config set-cluster x"):
+                        "kubectl config use-context prod", "kubectl config set-cluster x",
+                        "gcloud auth login", "gcloud auth list", "gcloud auth revoke",
+                        "gcloud auth application-default login", "gcloud config list",
+                        "gcloud compute instances list", "gcloud auth print-access-tokens"):
             for pack, engine, e in self.every_pack():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})
