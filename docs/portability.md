@@ -9,7 +9,7 @@
 | Process-tree check for approvals | `/proc` | `ps(1)` | none: approvals are refused |
 | Harness binding (`init --harness`) | system mode | not available | not available |
 | Managed Claude Code settings | `/etc/claude-code/` | `/Library/Application Support/ClaudeCode/` | not wired up |
-| Hooks via the Claude Code plugin | supported | supported | no (the wrapper is POSIX shell) |
+| Hooks via the Claude Code plugin | supported | supported | supported (Git Bash, or PowerShell without it) |
 
 ## What "tested" means here
 
