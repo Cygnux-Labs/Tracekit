@@ -240,6 +240,20 @@ class TestTargets(unittest.TestCase):
                     "command": {"TK-A025": INDEX.format("x"), "TK-A062": "make", "TK-SHELL-PARSE": "$X"}[rule]}))
         self.assertEqual(self.e.target(["TK-A032"], "Bash", {"command": "gsutil cp x gs://b"}), {})
 
+    def test_the_bash_description_alone_is_left_out(self):
+        """Claude Code's Bash `description` is a caption the model rewords on almost every retry, never run: calls that
+        differ in it alone share a key; any other argument, and another tool's `description`, still sets them apart."""
+        call = {"command": "$X run", "description": "Run X"}
+        key = self.e.target(["TK-SHELL-PARSE"], "Bash", call)
+        self.assertEqual(key, {"TK-SHELL-PARSE": ['{"command":"$X run"}']})
+        self.assertEqual(self.e.target(["TK-SHELL-PARSE"], "Bash", {**call, "description": "Run X again"}), key)
+        for other in ({"run_in_background": True}, {"workdir": "/etc"}, {"timeout": 60},
+                      {"dangerouslyDisableSandbox": True}, {"descriptions": "Run X"}):
+            with self.subTest(other):
+                self.assertNotEqual(self.e.target(["TK-SHELL-PARSE"], "Bash", {**call, **other}), key)
+        self.assertNotEqual(*(self.e.target(["TK-A062"], "run_tool", {"command": "make", "description": d})
+                              for d in ("a", "b")))
+
     def test_a_claimed_project_only_narrows_a_match(self):
         """The project is the agent's process's word: keys that match with their projects match without them."""
         tools, targets = ("Bash", "run_tool"), ({"TK-A025": ["https://a/"]}, {"TK-A025": ["https://b/"]},
@@ -489,6 +503,17 @@ class TestTheSameCallExactly(Case):
                 aid, a = self.ask(**precedent)   # the same call again: the AI may answer it
                 self.assertEqual((a["agent"]["eligible"], a["ai"]["precedents"]["approve"]), (True, [p]))
                 self.assertEqual(self.ai(aid)["state"], "approved")
+
+    def test_a_reworded_bash_description_is_the_same_call(self):
+        call = {"command": HELD, "description": "Run the held tool"}
+        p = self.precedent(HELD, args=call)
+        for other in ({"run_in_background": True}, {"workdir": "/etc"}, {"timeout": 60}):
+            with self.subTest(other):
+                _, a = self.ask(HELD, args={**call, "description": "Run it again", **other})
+                self.assertEqual((a["agent"]["eligible"], a["ai"]["precedents"]["approve"]), (False, []))
+        aid, a = self.ask(HELD, args={**call, "description": "Run it again"})   # the caption alone differs
+        self.assertEqual((a["agent"]["eligible"], a["ai"]["precedents"]["approve"]), (True, [p]))
+        self.assertEqual(self.ai(aid)["state"], "approved")
 
 
 class TestRunBound(Case):

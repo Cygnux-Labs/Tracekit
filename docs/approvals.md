@@ -609,7 +609,9 @@ own), the default index too when the line names it (pypi.org as an extra index a
 any package, and a source that isn't an http(s) URL (a path the agent can write) is people's; for `TK-A062` and
 `TK-SHELL-PARSE`, the same call, exactly: every argument as sent, so SQL with other literals or identifiers, another
 database, host or working folder, a run in the background, a sandbox escalation or another program of the same name is
-another call (Claude Code's Bash `description` too). The person's answer counts when the run was clean both when the
+another call. The one argument left out is the Bash tool's `description`: a caption Claude Code's model rewords on
+almost every retry and nothing runs, so a call that differs from a precedent in its description alone is the same call
+(another tool's `description` still counts). The person's answer counts when the run was clean both when the
 call was asked and when they answered (`run_clean` in their record), in the last 30 days; under a policy without
 `approval_agent` (a restart under another) it is no precedent, and an AI approval not yet used doesn't run. With no such answer, people answer
 it. A person's rejection of a call like it lets the AI reject, never approve; when people answered both ways, people

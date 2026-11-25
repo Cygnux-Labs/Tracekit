@@ -283,22 +283,24 @@ class Engine:
         `rule_ids` the AI approver may answer (compile.APPROVER_RULES): what its precedents are matched by
         (docs/approvals.md#precedent). TK-A025: each package source the line selects, as how it was selected (the
         program and option, config key or variable) and the source as scheme://host[:port]/path without a user or
-        password, sorted; TK-A062 and TK-SHELL-PARSE: the call exactly, every argument as sent (canonical JSON), since
-        what their rule reads of it (_runs blanks SQL literals and reads no host, folder or flag) is no measure of what
-        it does. None when a target can't be read (TK-A062: the tool is given no command or SQL to run; TK-SHELL-PARSE:
-        no shell command), or when a source is no http(s) URL _source reads (a path or file:// URL: its content is the
-        agent's to write)."""
+        password, sorted; TK-A062 and TK-SHELL-PARSE: the call exactly, every argument as sent (canonical JSON) but
+        the Bash tool's `description` (a caption the model rewords on almost every retry, never run), since what their
+        rule reads of it (_runs blanks SQL literals and reads no host, folder or flag) is no measure of what it does.
+        None when a target can't be read (TK-A062: the tool is given no command or SQL to run; TK-SHELL-PARSE: no shell
+        command), or when a source is no http(s) URL _source reads (a path or file:// URL: its content is the agent's to
+        write)."""
         args = args if isinstance(args, dict) else {"value": args}
+        call = canonical({k: v for k, v in args.items() if not (tool == "Bash" and k == "description")})
         out = {}
         for rid in sorted(set(rule_ids) & set(APPROVER_RULES)):
             if rid == "TK-A062":
-                kind = [canonical(args)] if _runs(args, tool) else []
+                kind = [call] if _runs(args, tool) else []
             else:
                 command = classes.extract("shell", tool, args, MAX_SUBJECT).get("command")
                 if not isinstance(command, str):
                     return None
                 if rid == "TK-SHELL-PARSE":
-                    kind = [canonical(args)]
+                    kind = [call]
                 else:
                     parsed, _ = self._parse(args, command, [0], fallback=False)
                     pairs = [(how, _source(v)) for how, v in (
