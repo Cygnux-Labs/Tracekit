@@ -456,6 +456,53 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([line for line in audit._by_day(report) if "Day " in line],
                          ["  Day 1: allow 0, flag 0, ask 0, deny 0", "  Day 2: allow 1, flag 0, ask 0, deny 0"])
 
+    def test_share_folds_into_weeks_over_28_days(self):
+        """#1123: over 28 days, --share folds day lines into 7-day weeks from the window's start (last week may be
+        shorter), clamping clock-ahead calls and dropping pre-window ones."""
+        def week(n, allow=0, ask=0, deny=0):
+            return f"  Week {n}: allow {allow}, flag 0, ask {ask}, deny {deny}"
+        _write_jsonl(self.root / "s.jsonl", [
+            _call("Bash", {"command": "rm -rf /"}, days_ago=52.5),   # day 8 from window start -> Week 2
+            _call("Bash", {"command": "ls"}, days_ago=52.5),
+            _call("Bash", {"command": "ls"}, days_ago=0.5),   # in the 4-day 9th week -> Week 9
+            _call("Bash", {"command": "ls"}, days_ago=65),   # before the window -> no week
+            _call("Bash", {"command": "ls"}, days_ago=-1)])   # a clock ahead -> clamps to Week 9
+        report = audit.audit(str(self.root), since="60d")
+        lines = audit.share(report).splitlines()
+        self.assertIn("Calls by decision and week (7 days each, week 1 from the window's start):", lines)
+        self.assertEqual([line for line in lines if "Day " in line], [])
+        self.assertEqual([line for line in lines if "Week " in line], [
+            week(1), week(2, allow=1, deny=1), week(3), week(4), week(5), week(6), week(7), week(8), week(9, allow=2)])
+        before = datetime.fromtimestamp(report["window"][0] - 3600, timezone.utc).isoformat()
+        ahead = datetime.fromtimestamp(report["window"][1] + 5 * 86400, timezone.utc).isoformat()
+        report["calls"].extend([{**report["calls"][0], "verdict": "deny", "time": before},
+                                {**report["calls"][0], "verdict": "ask", "time": ahead}])
+        self.assertEqual([line for line in audit._by_day(report) if "Week " in line], [
+            week(1), week(2, allow=1, deny=1), week(3), week(4), week(5), week(6), week(7), week(8),
+            week(9, allow=2, ask=1)])
+
+    def test_share_weekly_no_time_follows_last_week(self):
+        """#1123: in a weekly --share window, calls with no time print immediately after the last Week line."""
+        def week(n, deny=0):
+            return f"  Week {n}: allow 0, flag 0, ask 0, deny {deny}"
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, days_ago=50),
+                                                 {"tool": "Bash", "args": {"command": "ls"}}])
+        page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl"), since="60d")).splitlines()
+        self.assertEqual(page[3:14], [
+            "Calls by decision and week (7 days each, week 1 from the window's start):",
+            week(1), week(2, deny=1), week(3), week(4), week(5), week(6), week(7), week(8), week(9),
+            "  No time: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_share_at_28_days_keeps_daily_lines(self):
+        """#1123: 28 days is still daily, never folded into weeks."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=0.5)])
+        lines = audit.share(audit.audit(str(self.root), since="28d")).splitlines()
+        self.assertIn("Calls by decision and day (24 hours each, day 1 from the window's start):", lines)
+        self.assertEqual([line for line in lines if "Week " in line], [])
+        self.assertEqual([line for line in lines if "Day " in line], [
+            *[f"  Day {d}: allow 0, flag 0, ask 0, deny 0" for d in range(1, 28)],
+            "  Day 28: allow 1, flag 0, ask 0, deny 0"])
+
     def test_share_has_no_day_lines_without_since(self):
         """Without --since a window starts at the first call: day lines would show how far back the transcripts go."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=3),
