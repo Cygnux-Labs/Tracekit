@@ -221,7 +221,11 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                            "--ignore", "-d", "--debounce", "--delay-run", "-s", "--signal", "--stop-signal",
                            "--stop-timeout", "--shell", "-E", "--env", "--workdir", "--on-busy-update",
                            "--emit-events-to", "--project-origin", "--filter-file", "--ignore-file", "--poll",
-                           "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0)}
+                           "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0),
+            # npm's environment setters: cross-env's NAME=value words, env-cmd's file of them, envchain's keychain
+            # namespace, before the command they run
+            "cross-env": ((), 0), "env-cmd": (("-f", "--file", "-e", "--environments", "-r", "--rc-file"), 0),
+            "envchain": ((), 1)}
 WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it beside macOS's own
 # wrapper or runner -> options known to take no value (_unwrap reads an option neither table names both ways), a
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
@@ -303,7 +307,15 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
                                                   "--cpu", "-c", "--count", "-F", "--freq", "-r", "--repeat", "-I",
                                                   "--interval-print", "-G", "--cgroup", "-u", "--uid", "-m",
                                                   "--mmap-pages", "-x", "--field-separator", "--call-graph"), 0),
-           "rr": (("record",), ("-o", "--output-trace-dir"), 0)}
+           "rr": (("record",), ("-o", "--output-trace-dir"), 0),
+           "dotenvx": (("run",), ("-f", "--env-file", "-fv", "--env-vault-file", "-fk", "--env-keys-file", "-e", "--env",
+                                  "--convention", "-l", "--log-level"), 0),
+           "teller": (("run",), ("-c", "--config"), 0), "tox": (("exec",), ("-e", "-c", "--conf", "--root",
+                                                                           "--workdir", "-x", "--override"), "--"),
+           # nvm's exec runs its command with the node version its first word names
+           # lean: `nvm exec CMD`, the version left to .nvmrc, is read as a version and its arguments; read both when
+           # an agent uses it
+           "nvm": (("exec",), (), 1)}
 # a runner whose subcommand that runs a command is more than one word: the words before the one named in RUNNERS
 # (`hatch env run a-command` runs it as `hatch run` does, in a named environment; `hatch env show` runs nothing)
 RUNNER_LEADS = {"hatch": ("env",)}
@@ -3207,6 +3219,21 @@ def _foreign_runs_text(shell, args):
     return True
 
 
+def _kubectl_at(name, args):
+    """Where kubectl's words start in `args` (program `name`'s words after its name) when `name` runs kubectl with them:
+    microk8s's, k3s's and k0s's `kubectl` (k0s's `kc` too), the snap's microk8s.kubectl, kubecolor, and minikube's
+    `kubectl` after its own options, its words after a `--` (minikube reads any option before it as its own); else
+    None."""
+    if name in ("microk8s.kubectl", "kubecolor"):
+        return 0
+    if name in ("microk8s", "k3s", "k0s") and args[:1] in (["kubectl"], ["kc"] if name == "k0s" else []):
+        return 1
+    if name == "minikube" and "kubectl" in args:
+        k = args.index("kubectl") + 1
+        return args.index("--", k) + 1 if "--" in args[k:] else k
+    return None
+
+
 def _as_node(name, args):
     """Node's words for Deno's or Bun's run of code (`deno eval CODE`, `bun -e CODE` or --eval, --print: `-e CODE`) or of
     its stdin (`deno run … -`, `bun run -`: `-`), so node's reading applies; None for any other (a script file, a
@@ -5433,7 +5460,17 @@ class _Parser:
             elif name == "hub":   # git's wrapper: its words are git's
                 argv, via, unreadable = ["git", *args], via + ["hub"], unreadable
                 continue
+            elif (at := _kubectl_at(name, args)) is not None:   # a Kubernetes distribution's kubectl: its words are kubectl's
+                argv, via, unreadable = ["kubectl", *args[at:]], via + [name], unreadable[at:]
+                self.charge(len(argv))
+                continue
             elif name in ("deno", "bun") and (node := _as_node(name, args)) is not None:   # their code: node's
+                for k in runner_at("bun", args) if name == "bun" else ():   # and bunx's run, its options its own
+                    for other in _unwrap("bun", args[k:]):   # (`bun x -p pkg cmd`: -p is bunx's --package)
+                        if (key := (pid, name, tuple(other))) not in self.unwrapped:
+                            self.unwrapped.add(key)
+                            self.charge(len(other))
+                            cmds += self.emit(other, pid, via + [name], glob, unreadable[len(argv) - len(other):])
                 argv, via, unreadable = ["node", *node], via + [name], [False] * (1 + len(node))
                 self.charge(len(argv))
                 continue
