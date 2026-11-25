@@ -20,10 +20,9 @@ import subprocess
 import sys
 import time
 
-from .core import read_text
 from . import client, privacy
 from . import policy as policy_mod
-from .core import now_ts
+from .core import now_ts, read_text, subagent_id
 from .locking import lock_file, unlock_file
 
 AGENT_NAME = "claude-code"
@@ -54,7 +53,7 @@ def _as_dict(v):
 
 
 def _base(p):
-    aid = p.get("agent_id")
+    aid = subagent_id(p.get("agent_id"))
     return {"run_id": p["session_id"], "agent_id": aid or "main",
             "parent_id": "main" if aid else None, "source": "hook", "ts": now_ts()}
 
@@ -144,7 +143,7 @@ def transcript_path_for(p):
     path = p.get("transcript_path")
     if not path:
         return None
-    aid, sid = p.get("agent_id"), p.get("session_id")
+    aid, sid = subagent_id(p.get("agent_id")), p.get("session_id")
     if aid and _path_part(sid) and _path_part(f"agent-{aid}.jsonl"):
         sub = os.path.join(os.path.dirname(path), sid, "subagents", f"agent-{aid}.jsonl")
         if os.path.exists(sub):

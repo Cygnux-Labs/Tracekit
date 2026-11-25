@@ -258,6 +258,28 @@ class TranscriptTamper(Stack):
         self.assertEqual(self.of("trace.tamper"), [])
         self.assertEqual(len([e for e in self.events() if e["type"] == "policy.decision"]), 3)   # t1's, p1's, p0's
 
+    def test_unusable_subagent_id_records_as_main_without_gap(self):
+        """#1129: a payload whose agent_id core.subagent_id rejects is recorded as main's, with no capture.gap."""
+        self.start()
+        bad = (7, True, ["a"], {}, "", "\ud800", "x" * 300)
+        for i, aid in enumerate(bad):
+            tid = f"bad-{i}"
+            extra = {"tool_name": "Bash", "tool_use_id": tid, "tool_input": {"command": f"echo {i}"}, "agent_id": aid}
+            self.assertEqual(self.hook("PreToolUse", extra)[0], 0)
+            self.assertEqual(self.hook("PostToolUse", {**extra, "tool_response": {"stdout": "ok"}})[0], 0)
+
+        self.assertEqual(self.of("capture.gap"), [])
+        for i in range(len(bad)):
+            tid = f"bad-{i}"
+            dec = [e for e in self.events() if e["type"] == "policy.decision" and e["data"].get("tool_use_id") == tid]
+            res = [e for e in self.events() if e["type"] == "tool.result" and e["data"].get("tool_use_id") == tid]
+            self.assertEqual(len(dec), 1, f"Missing policy.decision for {tid}")
+            self.assertEqual(len(res), 1, f"Missing tool.result for {tid}")
+            self.assertEqual(dec[0]["agent_id"], "main")
+            self.assertIsNone(dec[0].get("parent_id"))
+            self.assertEqual(res[0]["agent_id"], "main")
+            self.assertIsNone(res[0].get("parent_id"))
+
 
 # ---------------------------------------------------------------- proxy
 class FakeAnthropic(http.server.BaseHTTPRequestHandler):
