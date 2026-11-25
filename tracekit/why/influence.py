@@ -6,7 +6,10 @@
               log's own `provenance` field is `claimed`: shown as the log's word, never used for a finding, the chain
               or the order of the answers
     measured  a replay without the source changed whether the call happened (a run test, verdict causal, whose target
-              matches only this call in the run: graph._attach_tests)
+              matches only this call in the run: graph._attach_tests), one the code holding the run vouches for
+              (Run.replayed: replays it ran itself, or signed replay runs it verified). A test only the why log holds
+              (its tests.jsonl, which its agent can write, chain and all) is `claimed` (basis `local replay`): shown as
+              the log's word, never measured, and kept out of what the call serves, untrusted, drift and the chain
     seen      the source was in the context of the model call that asked for the call: `recorded` by the agent's
               runtime, `gateway` (the LLM gateway's record of the request sent it: tool_results_sent) or
               `reconstructed` (an import's "everything the run observed before the model call")
@@ -37,7 +40,7 @@ import os
 from typing import Any, Callable, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from .analysis import _committed, _ended, _short, arg_provenance, atoms, chosen, is_sensitive, only_untrusted
-from .core import OWNER, Run
+from .core import OWNER, Run, chain_hash
 from .graph import Graph, nodes_matching, target_hits
 
 MAX_CHAIN = 12      # steps of a chain kept; a longer one starts with "…"
@@ -115,7 +118,9 @@ def _by_call(signed: FrozenSet[Tuple[str, Any, Any, Any, str]]) -> Dict[str, Lis
 def graded(g: Graph, nid: str, seen: bool = True) -> Dict[str, Any]:
     """{"edges": the exact, claimed, measured and (with `seen`) seen edges into call `nid`, "ruled": the sources a
     replay tested and ruled out}. Exact: the run's signed edges (Run.signed); claimed: a `provenance` entry of the why
-    log that no signed edge backs. A finding reads no seen edge: it asks for none."""
+    log that no signed edge backs, and a replay that changed the call which only the log holds (basis `local
+    replay`); measured and ruled: replays the code holding the run vouches for (Run.replayed). A finding reads no seen
+    edge: it asks for none."""
     ev = g.nodes[nid]["event"]
     mine = _by_call(g.run.signed).get(nid, [])
     out: List[Dict[str, Any]] = [{"src": s, "grade": "exact", "basis": "provenance", "field": f, "kind": k,
@@ -128,9 +133,10 @@ def graded(g: Graph, nid: str, seen: bool = True) -> Dict[str, Any]:
     ruled = []
     for e in g.in_edges(nid, ("tested",)):
         if e.get("verdict") == "causal":
-            out.append({"src": e["src"], "grade": "measured", "basis": "replay", "effect": e.get("effect"),
+            out.append({"src": e["src"], "grade": "measured" if e.get("replayed") else "claimed",
+                        "basis": "replay" if e.get("replayed") else "local replay", "effect": e.get("effect"),
                         "ci": e.get("ci"), "n": e.get("n"), "target": e.get("target")})
-        elif e.get("verdict") == "ruled-out":
+        elif e.get("verdict") == "ruled-out" and e.get("replayed"):
             ruled.append(e["src"])
     _describe(g, out)
     dec = _decision(g, ev)
@@ -329,10 +335,12 @@ def _replays(run: Run, g: Graph, nid: str, gs: Set[str]) -> Dict[str, List[str]]
     """The replays without the goal (or part of it) whose target matches call `nid` and that left what it serves
     unknown, by target: `shared`, a target other calls match too, which measured whether any of them happened and so
     says nothing of this one (graph._attach_tests); `partial`, one that ruled it out without part of the goal (the
-    rest untested); `inconclusive`, one that did neither."""
+    rest untested); `inconclusive`, one that did neither. Only replays the code holding the run vouches for
+    (Run.replayed): the log's own tests say nothing here."""
     out: Dict[str, List[str]] = {"shared": [], "partial": [], "inconclusive": []}
     for t in run.tests:
-        if t.get("group") or t.get("scope") == "decision" or not gs & set(nodes_matching(g, t["intervention"])):
+        if chain_hash(t) not in run.replayed or t.get("group") or t.get("scope") == "decision" \
+                or not gs & set(nodes_matching(g, t["intervention"])):
             continue
         try:
             hits = ["ev:" + h["id"] for h in target_hits(run, t["target"])]

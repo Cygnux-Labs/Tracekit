@@ -13,8 +13,10 @@ reviewer.yaml (relative paths are from this file):
     gateway: https://gateway.internal:8080   # the LLM gateway (docs/gateway.md), in front of Anthropic; `api: chat`
                                               # for an OpenAI-compatible upstream (a local model)
     url: https://api.anthropic.com/v1/messages   # or, in place of gateway: the model's endpoint itself, Anthropic
-                                              # Messages or OpenAI chat (/v1/chat/completions: OpenAI, a local server)
-    key_file: anthropic.key                   # with url: your own API key, readable by the reviewer's user alone
+                                              # Messages or OpenAI chat (/v1/chat/completions: OpenAI, a local server
+                                              # on this machine's loopback, named by its address: 127.0.0.1 or [::1])
+    key_file: anthropic.key                   # with url: your own API key, readable by the reviewer's user alone;
+                                              # only a server on this machine's loopback may take none
     model: claude-opus-5-5                    # default DEFAULT_MODEL; or two names, [a, b]: the two keys of a yes
     poll_s: 5
     timeout_s: 120                            # one model call; past it the reviewer escalates
@@ -42,15 +44,25 @@ Without `state_file` the answered approval ids live in memory: after a restart a
 listed, is judged and suggested again. With it they are written there (a JSON list, replaced whole) and read back at
 start; a missing, unreadable or malformed file starts empty, and a symlink or anything but a regular file is neither
 read nor written.
+
+What decides its answers belongs to the reviewer's user (or root), never to another (the agent's): reviewer.yaml, its
+folder, `state_file`, its folder and `key_file` must be that user's and not writable by group or others (else load
+refuses them); a model server on this machine's loopback must listen as that user or root, which the reviewer checks
+at start and before each call (endpoint_problem). Each answer carries the model's identity as its server gives it
+(identity: an Ollama model's /api/show digest, else the answer's `model` and `system_fingerprint`), which the signer's
+circuit breaker pins with the model's name: a model recreated under the same name answers in shadow until a person
+enables its rules again.
 """
 import argparse
 import datetime
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import stat
 import statistics
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -88,9 +100,90 @@ ANSWER = {"type": "object", "additionalProperties": False, "required": ["decisio
 log = logging.getLogger(__name__)
 
 
+def mine(path, what):
+    """Why the reviewer can't trust `path` (`what` it is), or None: it must belong to the reviewer's user or root and
+    not be writable by group or others, else another user (the agent's) could point the reviewer elsewhere. Windows
+    controls access with ACLs, which this doesn't read."""
+    if os.name != "posix":
+        return None
+    st, me = os.stat(path), os.geteuid()
+    if st.st_uid not in (me, 0):
+        return f"{what} {path} belongs to uid {st.st_uid}, not the reviewer's user (uid {me}) or root"
+    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"{what} {path} is writable by group or others"
+    return None
+
+
+def loopback(url):
+    """Whether `url` names this machine's loopback by its address (127.0.0.0/8, ::1)."""
+    try:
+        return ipaddress.ip_address(urllib.parse.urlsplit(url).hostname or "").is_loopback
+    except ValueError:
+        return False
+
+
+def listeners(port):
+    """The uids of the sockets that listen on TCP `port` of this machine, any address, as far as this user can see
+    them; None where that can't be told. Linux: /proc/net/tcp and tcp6 (each LISTEN row's uid). macOS: lsof, which
+    shows a user other than root only its own processes' sockets; the kernel refuses another user's bind of a port a
+    socket listens on (as Linux does), so a listener of the reviewer's user that lsof sees holds the port."""
+    if sys.platform.startswith("linux"):
+        uids = []
+        for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+            try:
+                with open(name, encoding="ascii") as f:
+                    rows = f.read().splitlines()[1:]
+            except FileNotFoundError:   # tcp6: no IPv6 here
+                if name.endswith("6"):
+                    continue
+                return None
+            except OSError:
+                return None
+            for row in rows:   # sl local_address rem_address st ... uid timeout inode
+                cols = row.split()
+                if len(cols) > 9 and cols[3] == "0A" and int(cols[1].rpartition(":")[2], 16) == port:
+                    uids.append(int(cols[7]))
+        return uids
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["/usr/sbin/lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fu"], capture_output=True,
+                                 text=True, timeout=10, stdin=subprocess.DEVNULL).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return [int(x[1:]) for x in out.splitlines() if x[:1] == "u" and x[1:].isdigit()]
+    return None
+
+
+def endpoint_problem(url):
+    """Why the reviewer won't call `url` now, or None. A server on this machine's loopback must listen as the
+    reviewer's user or root: a port another user's process (the agent's) holds would answer as the model, and would
+    get the key. Checked at start and before each call (post)."""
+    if not loopback(url):
+        return None
+    u = urllib.parse.urlsplit(url)
+    port = u.port or (443 if u.scheme == "https" else 80)
+    uids = listeners(port)
+    if uids is None:
+        return (f"can't tell who listens on {u.netloc} on this platform, so another user's process could answer as the "
+                "model: give the reviewer a model endpoint off this machine with a key (key_file)")
+    me = os.geteuid()
+    if not uids:
+        return (f"no listener the reviewer's user can see is on {u.netloc}: run the model server as the reviewer's user "
+                f"(uid {me}), and start it before the reviewer")
+    other = sorted(set(uids) - {me, 0})
+    if other:
+        return (f"{u.netloc} is served by uid {other[0]}, not the reviewer's user (uid {me}) or root: another user's "
+                "process could answer as the model; run the model server as the reviewer's user")
+    return None
+
+
 def load(path):
     """reviewer.yaml as a dict with absolute paths and `models` (two names: the keys of a yes); ValueError says what is
     wrong."""
+    for p, what in ((path, "reviewer.yaml"), (os.path.dirname(os.path.abspath(path)), "its folder")):
+        why = mine(p, what)
+        if why:
+            raise ValueError(f"{path}: {why}: chown it to the reviewer's user and chmod go-w it")
     with open(path, encoding="utf-8") as f:
         cfg = yamlmini.load_any(f.read()) or {}
     if not (isinstance(cfg, dict) and "signer" in cfg and set(cfg) <= KEYS and ("gateway" in cfg) != ("url" in cfg)):
@@ -116,14 +209,15 @@ def load(path):
     err = remote_url_error(target) if isinstance(target, str) else "not a URL"
     if not err and not gateway and not urllib.parse.urlsplit(target).path.rstrip("/").endswith(tuple(APIS.values())):
         err = "an endpoint ending /v1/messages (Anthropic Messages) or /v1/chat/completions (OpenAI chat)"
+    if not err and urllib.parse.urlsplit(target).hostname == "localhost":
+        err = "name the loopback address itself (127.0.0.1 or [::1]), not localhost: the reviewer checks who listens there"
     if err:
         raise ValueError(f"{path}: {'gateway' if gateway else 'url'}: {err}: the reviewer sends credentials there")
     if cfg.get("api", "messages") not in APIS or "api" in cfg and not gateway:
         raise ValueError(f"{path}: api: messages or chat, with gateway")
-    if ("key_file" in cfg) == gateway and (gateway or urllib.parse.urlsplit(target).hostname in (
-            "api.anthropic.com", "api.openai.com")):
-        raise ValueError(f"{path}: key_file: your API key's file, with url (a local server may need none); the gateway "
-                         "holds its own")
+    if ("key_file" in cfg) == gateway and (gateway or not loopback(target)):
+        raise ValueError(f"{path}: key_file: your API key's file, with url: only a server on this machine's loopback, "
+                         "which the reviewer checks listens as its user, may take none (the gateway holds its own)")
     models = [cfg.get("model", DEFAULT_MODEL)] if isinstance(cfg.get("model", DEFAULT_MODEL), str) else cfg["model"]
     if not (isinstance(models, list) and len(models) in (1, 2)
             and not any(rpc_schema.validate(rpc_schema._NAME, m) for m in models)):
@@ -138,10 +232,17 @@ def load(path):
         if os.name == "posix" and mode & (stat.S_IRWXG | stat.S_IRWXO):
             raise ValueError(f"{path}: key_file {cfg['key_file']}: readable by others: `chmod 600` it, owned by the "
                              "user the reviewer runs as")
+        why = mine(cfg["key_file"], "key_file")
+        if why:
+            raise ValueError(f"{path}: {why}: chown it to the reviewer's user")
     if "state_file" in cfg:
         if not (isinstance(cfg["state_file"], str) and cfg["state_file"]):
             raise ValueError(f"{path}: state_file: a file name")
         cfg["state_file"] = os.path.join(base, cfg["state_file"])
+        for p, what in ((cfg["state_file"], "state_file"), (os.path.dirname(cfg["state_file"]), "state_file's folder")):
+            why = os.path.exists(p) and mine(p, what)   # the file is made at the first answer, in its folder
+            if why:
+                raise ValueError(f"{path}: {why}: chown it to the reviewer's user and chmod go-w it")
     return cfg
 
 
@@ -165,23 +266,34 @@ def answer(resp):
     return out["decision"], out["reason"]
 
 
+def identity(resp):
+    """What a model's answer says the model is, as its server gives it: its `model` and `system_fingerprint` (OpenAI;
+    Direct puts an Ollama model's /api/show digest there), printable characters only, or None without either."""
+    said = " ".join(v for v in (resp.get("model"), resp.get("system_fingerprint")) if isinstance(v, str) and v) \
+        if isinstance(resp, dict) else ""
+    return "".join(c for c in said if c.isprintable())[:256] or None
+
+
 def judge(ask, tenant, view, eligible, models=(DEFAULT_MODEL, DEFAULT_MODEL)):
     """(decision, reason, ai) for `view`: escalate without a model call unless `eligible`. Else the first model;
     the second (`models`[1]) only when the first approves: a yes needs both (two keys), a no or an escalation one. An
-    error, a timeout, a refusal or a malformed answer escalates. `ai`: the answers so far, or None. Never raises."""
+    error, a timeout, a refusal or a malformed answer escalates. `ai`: the answers so far, each with the model's
+    identity where its answer gives one, or None. Never raises."""
     if not eligible:
         return "escalate", "a condition of approval_review did not pass: people answer it", None
     answers = []
     for model in models:
         try:
-            decision, reason = answer(ask(tenant, view, model))
+            resp = ask(tenant, view, model)
+            decision, reason = answer(resp)
+            said = identity(resp)
         except Exception as e:   # error, timeout, refusal, malformed output: people decide
             log.warning("tracekit reviewer: no usable model answer for %s, escalated (%s: %s): check the gateway URL "
                         "or endpoint, the run token or key file, and the model", view.get("approval_id"),
                         type(e).__name__, e)
             return "escalate", f"no usable model answer ({type(e).__name__}): people answer it", \
                 {"answers": answers} if answers else None
-        answers.append({"model": model, "decision": decision})
+        answers.append({"model": model, "decision": decision, **({"identity": said} if said else {})})
         if decision != "approve":
             return decision, reason, {"answers": answers}
     return "approve", reason, {"answers": answers}
@@ -221,11 +333,27 @@ class Gateway:
 class Direct:
     """ask(tenant, view, model): one model call to `url`, an Anthropic Messages or OpenAI chat endpoint (a local model
     server's too), with the key in `key_file` (None: a local server that takes none). The data goes to that endpoint
-    only."""
+    only. On this machine's loopback it reads the model's identity from the server before and after the call (show):
+    a model changed meanwhile escalates, and the answer carries the identity as its system_fingerprint (an Ollama
+    server's own is always fp_ollama)."""
 
     def __init__(self, url, key_file=None, timeout=TIMEOUT_S):
         self.url, self.key_file, self.timeout = url, key_file, timeout
         self.api = "messages" if urllib.parse.urlsplit(url).path.rstrip("/").endswith(APIS["messages"]) else "chat"
+
+    def show(self, model):
+        """The digest of what an Ollama server at the endpoint's origin says `model` is (/api/show: its weights, template,
+        system prompt and parameters, all but modified_at), or None from a server that answers no such thing."""
+        u = urllib.parse.urlsplit(self.url)
+        try:
+            got = post(f"{u.scheme}://{u.netloc}/api/show", {"model": model}, {}, self.timeout)
+        except (OSError, ValueError):   # urllib's HTTPError is an OSError: not an Ollama server, or not now
+            return None
+        if not isinstance(got, dict) or not got:
+            return None
+        got.pop("modified_at", None)
+        return "ollama:sha256:" + hashlib.sha256(json.dumps(got, sort_keys=True, separators=(",", ":"))
+                                                 .encode("utf-8", "surrogatepass")).hexdigest()
 
     def __call__(self, tenant, view, model):
         headers = {"anthropic-version": "2023-06-01"} if self.api == "messages" else {}
@@ -233,12 +361,20 @@ class Direct:
             with open(self.key_file, encoding="utf-8") as f:
                 key = f.read().strip()
             headers.update({"x-api-key": key} if self.api == "messages" else {"Authorization": f"Bearer {key}"})
-        return post(self.url, body(self.api, model, view), headers, self.timeout)
+        local = loopback(self.url)
+        before = self.show(model) if local else None
+        resp = post(self.url, body(self.api, model, view), headers, self.timeout)
+        if local and self.show(model) != before:
+            raise ValueError(f"the model {model} at {self.url} changed during the call")
+        return dict(resp, system_fingerprint=before) if before and isinstance(resp, dict) else resp
 
 
 def post(url, body, headers, timeout):
     """One model call: POST `body` as JSON with `headers`, never following a redirect (they carry credentials); the
-    answer's JSON."""
+    answer's JSON. ValueError, sending nothing, when endpoint_problem refuses `url` now."""
+    why = endpoint_problem(url)
+    if why:
+        raise ValueError(why)
     req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
                                  headers={"Content-Type": "application/json", **headers})
     with no_redirect_opener().open(req, timeout=timeout) as r:
@@ -426,7 +562,8 @@ def friction(events):
 
 # what each rule the AI reviewer may answer holds, in people's words (compile.APPROVER_RULES)
 RULE_WORDS = {"TK-SHELL-PARSE": "a line the policy can't read", "TK-A062": "an unmapped tool given a command line",
-              "TK-A025": "an install from a package index you chose, its line pinned (--isolated --index-url …)"}
+              "TK-A025": "an install from a package index you chose, its line pinned (PIP_CONFIG_FILE=/dev/null pip "
+                         "--isolated --index-url …, or npm --registry with its config files /dev/null)"}
 
 
 def status_lines(out):
@@ -562,6 +699,9 @@ def main(argv=None):
     from tracekit.sdk.client import Client
     try:
         cfg = load(a.config)
+        why = endpoint_problem(cfg.get("url") or cfg["gateway"])
+        if why:
+            raise ValueError(f"{cfg.get('url') or cfg['gateway']}: {why}")
     except (OSError, ValueError) as e:
         print(f"tracekit reviewer: {e}", file=sys.stderr)
         return 2

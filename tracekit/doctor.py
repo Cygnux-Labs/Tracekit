@@ -4,7 +4,8 @@ It detects the setup: v1 system mode (/etc/tracekit/client.json names a socket),
 the v2 dev signer (no system config), or the signer.yaml given with --config. Every check has a stable id and gives
 ok, warn or fail; docs/doctor.md lists them. Exit 1 when any fails, else 0: a warning is advice, not a failure.
 Run it as root for system mode: it then probes the files as the agent's user, in a forked child that dropped to it.
-`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead.
+`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead; `--reviewer reviewer.yaml`, run
+as the AI reviewer's user, checks that reviewer (reviewer_checks).
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
@@ -123,7 +124,32 @@ def _google_re2_wheel_expected():
     return True
 
 
-def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
+def reviewer_checks(path):
+    """The AI reviewer's own checks of its reviewer.yaml `path`, as the user doctor runs as (the reviewer's: docs/
+    approvals.md#the-ai-approver): D-REVIEWER-CONFIG, it loads, and it, its folder, `state_file` and `key_file` are that
+    user's or root's and not writable by group or others (reviewer.load); D-REVIEWER-MODEL, a model server on this
+    machine's loopback listens as that user or root (reviewer.endpoint_problem)."""
+    from . import reviewer
+    try:
+        cfg = reviewer.load(path)
+    except (OSError, ValueError) as e:
+        return [result("D-REVIEWER-CONFIG", FAIL, str(e), "run doctor as the reviewer's user (sudo -u <reviewer> "
+                       "/opt/tracekit/bin/python -m tracekit doctor --reviewer PATH); give reviewer.yaml, its folder, "
+                       "state_file and key_file to that user and chmod go-w them")]
+    target = cfg.get("url") or cfg["gateway"]
+    why = reviewer.endpoint_problem(target)
+    return [result("D-REVIEWER-CONFIG", OK, f"{path} loads, and it and the files it names are this user's or root's, "
+                   "not writable by group or others"),
+            result("D-REVIEWER-MODEL", OK if not why else FAIL, why or (
+                f"{target} listens as this user or root" if reviewer.loopback(target) else
+                f"{target} is off this machine, called over https with a key or token"),
+                "run the model server as the reviewer's user, its model files owned by that user; or use an endpoint "
+                "off this machine with a key")]
+
+
+def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None, reviewer=None):
+    if reviewer:
+        return report(reviewer_checks(reviewer), as_json)
     if not (k8s or manifests):
         rows = collect(config, issuer_key)
         code = report(rows, as_json)

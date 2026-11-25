@@ -31,8 +31,9 @@ import re
 import time
 import types
 
+from tracekit.policy2 import linear
 from tracekit.policy2.classes import PATH_KEYS, SHELL_KEYS
-from tracekit.policy2.compile import SECTIONS
+from tracekit.policy2.compile import SECTIONS, PolicyError
 from tracekit.signer.detect import epoch
 
 UNTRUSTED = "untrusted_content"   # of compile.RUN_LABELS
@@ -58,8 +59,16 @@ class Sources:
         # for the verifiers: every rule's label, and each run condition rule on the labels field (one with no tool:
         # its class, its pattern), whose match the call's rule ids and the run's labels decide (engine.labels_subject)
         self.all_labels = {r["id"]: r["label"] for r in rules if r.get("label")}
-        self.on_labels = [(r["id"], rx, r.get("class")) for r in rules if r.get("field") == "labels" and "when" in r
-                          and "tool" not in r and (rx := _compiled(r["pattern"]))]
+        # compiled as the signer compiles them (_compiled); `refused`: rule id -> why its pattern can't be (a bundle's
+        # policy the signer would have refused)
+        self.on_labels, self.refused = [], {}
+        for r in rules:
+            if r.get("field") == "labels" and "when" in r and "tool" not in r:
+                try:
+                    self.on_labels.append((r["id"], _compiled(r.get("pattern"), r.get("class") == "a2a"),
+                                           r.get("class")))
+                except PolicyError as e:
+                    self.refused[r["id"]] = str(e)
         self.window = pol.get("label_inherit_s", LABEL_INHERIT_S)
 
     @classmethod
@@ -108,12 +117,14 @@ class Sources:
         return {SECRETS} if any(self.label.get(i) == SECRETS for i in d.get("rule_ids", ())) else set()
 
 
-def _compiled(pattern):
-    """`pattern` compiled by Python's re, or None where it reads it otherwise than RE2 (the verifiers skip that rule)."""
-    try:
-        return re.compile(pattern)
-    except re.error:
-        return None
+def _compiled(pattern, anycase=False):
+    """A search of `pattern` as the signer reads it, (text, linear.Budget) -> whether it matches: linear.Pattern, RE2's
+    semantics in linear time within the verification's budget, the same in the TypeScript verifier and with or without
+    google-re2, so both verifiers give one verdict on any machine. PolicyError for a pattern compile.check_pattern
+    refuses or one too large (a bundle's own policy may hold anything: it fails the check, never hangs it)."""
+    if not isinstance(pattern, str):
+        raise PolicyError("the pattern is not a string")
+    return linear.Pattern(pattern, anycase).search
 
 
 def state(set_, run, e):

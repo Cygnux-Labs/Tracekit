@@ -354,9 +354,9 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (AGREEMENT_MIN, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
+from tracekit.signer.pipeline import (AGREEMENT_MIN, CHANGED, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
                                       approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
-                                      person_only_keys, pinned, ran, salt_label, skipped, subject, writer)
+                                      person_only_keys, pinned, ran, repinned, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -4454,10 +4454,9 @@ class SignerService:
                     raise RPCError("conflict", f"{aid}: what approval_review showed you is not what holds now: read "
                                                "it again and answer that")
                 prec, carried, book, _ = state
-                pin = pinned({**data, "relied_on": {"playbook": book}})
-                demoted = demoted or next((
-                    "the reviewer's model, version, prompt or playbook changed since its last answer" for r in
-                    ap["key"]["rules"] if self.log.agent["pins"].get(f"{run['tenant']}\0{r}", pin) != pin), None)
+                pin = pinned({**data, "relied_on": {**given, "playbook": book}})
+                demoted = demoted or next((CHANGED for r in ap["key"]["rules"] if repinned(
+                    self.log.agent["pins"].get(f"{run['tenant']}\0{r}"), pin)[1]), None)
                 ext = {"relied_on": {   # the reviewer's word first: the signer's own keys are never its
                     **given, "precedents": prec, "playbook": book,
                     "view": self._commit(f"approval.view:{aid}", served[0]), "policy_hash": a["policy_hash"],

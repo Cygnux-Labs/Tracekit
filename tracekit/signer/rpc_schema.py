@@ -2,7 +2,8 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 29 adds the AI approver (docs/approvals.md#the-ai-
 approver): approval_request's `project` (the folder the agent works in, as its client names it), approval_decide's
-`ai` (an agent approver's answers) and `view_digest` (the approval_review it answers, required for an approval
+`ai` (an agent approver's answers, each with its model's identity where the model's server gave one) and
+`view_digest` (the approval_review it answers, required for an approval
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
 playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
 accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped) and an approval's `ai` (what
@@ -247,9 +248,12 @@ REVIEW = _obj(["reviewer", "verdict", "cites"], reviewer=_str(128, minLength=1, 
 # commits `object` (a file name) and holds a later call that breaks it for a person's approval, never lowering a decision
 CONSTRAINT_KINDS = ["keep_away", "only_change", "read_only", "no_push", "no_network"]
 # an agent approver's answers to an approval_agent approval (approval_decide `ai`): each answer's model and
-# decision (one, or two independent ones: a yes needs two that agree)
+# decision (one, or two independent ones: a yes needs two that agree), and the model's identity where its server gave
+# one (an Ollama model's /api/show digest, else the answer's model and system_fingerprint), which the circuit breaker
+# pins
 APPROVER_ANSWER = _obj(["answers"], answers={"type": "array", "minItems": 1, "maxItems": 2, "items": _obj(
-    ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]})})
+    ["model", "decision"], model=_str(128, minLength=1), decision={"enum": ["approve", "reject", "escalate"]},
+    identity=_str(256, minLength=1))})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),

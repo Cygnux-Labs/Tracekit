@@ -119,6 +119,12 @@ class Run:
     # what that check of the log against the signer's records found wrong (import_v2.check's alerts), as a merge puts
     # them on an import
     join_alerts: List[Dict[str, Any]] = field(default_factory=list)
+    # the chain_hash of each test whose replays the code holding this Run vouches for: replays it ran itself, or signed
+    # replay runs (`replay_of`) it verified; never read from the run's own files, whose tests.jsonl its agent can write.
+    # Only these are measured influence (influence.graded); any other test is the log's claim.
+    # lean: tracekit view vouches for none yet (it joins no signed why.finding to a why run), so its INFLUENCE shows a
+    # log's replays as claimed; join the findings whose replay runs it verified when signed attribution reaches it
+    replayed: FrozenSet[str] = frozenset()
 
     @property
     def start(self) -> Dict[str, Any]:

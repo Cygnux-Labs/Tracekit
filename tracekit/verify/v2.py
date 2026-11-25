@@ -75,8 +75,10 @@ it, its approval was consumed, or it ran against its decision; an input observed
 run.label before the run's next decision or consume, and each add cites a record that sets it and wasn't carried; an
 add a run inherits from another run of its requester (`inherited`) is of a label its policy reads (the run it names
 is another bundle's: signer-asserted); a clear is of a carried label and not by the run's owner; a decision's
-run_labels were carried or set by its own rules, and cover each run condition rule it names. Fails `run labels`;
-without the snapshot they are signer-asserted. Every policy a decision names that neither the bundle nor the trust
+run_labels were carried or set by its own rules, and cover each run condition rule it names. A rule on the labels
+field is searched as RE2 reads it, in linear time within one budget for the bundle (tracekit.policy2.linear): a pattern
+the signer would refuse (outside compile.check_pattern) or searches past the budget fail the check, never hang it.
+Fails `run labels`; without the snapshot they are signer-asserted. Every policy a decision names that neither the bundle nor the trust
 config (`policies`) carries is a `label policies` warning: a signer that left a label out of such a run would pass
 unseen.
 Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others, and each
@@ -1549,9 +1551,13 @@ def _labels(rep, runs, policies):
     policies the bundle (or the trust config) carries for the policy_hashes its decisions name, each record under its
     own (_policies_at); signer-asserted when one is missing, and so is each label a run inherits (the run it names is
     another bundle's). A `label policies` warning names each policy a run was decided under that neither carries: its
-    labels, or one a signer left out, can't be replayed."""
+    labels, or one a signer left out, can't be replayed. A run condition rule on the labels field is searched as the
+    signer compiles it (labels._compiled), within one budget for the bundle (linear.Budget): a pattern the signer
+    would have refused, or searches past the budget, fail the check."""
+    from tracekit.policy2 import linear
     from tracekit.signer import detect, labels
-    problems, checked, asserted, unbundled, inherited = [], 0, 0, set(), []
+    problems, checked, asserted, unbundled, inherited, budget = [], 0, 0, set(), [], linear.Budget()
+    refused = set()
     for rs in runs.values():
         events = [r["event"] for r in rs if isinstance(r["event"].get("data"), dict)]
         marked = any(e.get("type") == "run.label" or e.get("type") == "policy.decision" and "run_labels" in e["data"]
@@ -1563,9 +1569,16 @@ def _labels(rep, runs, policies):
             asserted += marked
             continue
         srcs = {h: labels.Sources(detect.Rules(loads_strict(policies[h]))) for h in sorted(hashes)}
+        refused |= {(h[:80], str(rid)[:64]) for h, src in srcs.items() for rid in src.refused}
         if marked or any(src.tracked for src in srcs.values()):
             checked += 1
-            problems += _run_labels(events, srcs, inherited)
+            try:
+                problems += _run_labels(events, srcs, inherited, budget)
+            except linear.Spent as e:
+                problems.append(f"{e}: the rest of the bundle's runs weren't replayed")
+                break
+    problems = [f"policy {h}: {rid} reads the labels with a pattern the signer would refuse (outside the RE2 subset "
+                "check_pattern accepts, or too large): not replayed" for h, rid in sorted(refused)] + problems
     if checked or asserted:
         rep.check("run labels", not problems, _found(problems, f"{checked} run(s) replayed under their policies, "
                                                                f"{asserted} signer-asserted (under a policy not in "
@@ -1602,14 +1615,17 @@ def _policies_at(events, srcs):
     return out
 
 
-def _run_labels(events, srcs, inherited):
+def _run_labels(events, srcs, inherited, budget=None):
     """The problems of one run's labels under labels.Sources `srcs` (policy_hash -> Sources), each record replayed under
     its policy (_policies_at): a label a record sets that no run.label adds before the run's next decision or consume
     (or its end), where a record replayed under two policies owes only what both set and may add what either does; an
     add the record it cites doesn't set, or of a label carried; an inherited add of a label no run condition reads; a
     clear of a label not carried, or by the run's owner; a decision whose run_labels the run didn't carry (nor its own
     rules set) or that don't cover each run condition rule it names. Each inherited add of a label its policy reads goes
-    to `inherited`, (where, label, the add it cites)."""
+    to `inherited`, (where, label, the add it cites). A label pattern's searches spend `budget` (linear.Budget; a fresh
+    one without), raising linear.Spent when it runs out."""
+    from tracekit.policy2 import linear
+    budget = budget or linear.Budget()
     problems, carried, owed, may, asked, decided, owner, seqs, callers = [], set(), {}, {}, {}, {}, None, {}, set()
     key = lambda x: x if isinstance(x, str) else None   # noqa: E731 (a schema-invalid id names nothing)
     for e, cands in zip(events, _policies_at(events, srcs)):
@@ -1669,7 +1685,7 @@ def _run_labels(events, srcs, inherited):
                 problems += [f"{where}: {rid} applies (the call's labels {subject}; the run carried "
                              f"{', '.join(sorted(src.when[rid]))}) but the decision doesn't name it"
                              for rid, rx, cls in src.on_labels if rid not in ids and src.when[rid] <= have
-                             and cls in (None, src.rules.tool_class(tool)) and rx.search(subject)]
+                             and cls in (None, src.rules.tool_class(tool)) and rx(subject, budget)]
             if isinstance(d.get("caller"), str):
                 callers.add(d["caller"])
             decided[key(e.get("tool_call_id"))] = {"tool": d.get("tool"), "rule_ids": ids}

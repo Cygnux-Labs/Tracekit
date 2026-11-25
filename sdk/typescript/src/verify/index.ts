@@ -26,6 +26,7 @@ import {
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { Sources, runLabels } from "./labels.js";
+import { Budget, Spent } from "./rx.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 import VERSIONS_JSON from "./versions.json" with { type: "json" };
@@ -1674,7 +1675,9 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
  * policy_hashes its decisions name (the bundle's or the trust config's), each record under its own; an inherited one
  * signer-asserted; a `label policies` warning for each policy a decision names that neither carries. */
 function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
-  const problems: string[] = [], unbundled = new Set<string>(), inherited: [string, string, J][] = [];
+  let problems: string[] = [];
+  const unbundled = new Set<string>(), inherited: [string, string, J][] = [], budget = new Budget();
+  const refused = new Map<string, [string, string]>();   // what verify/v2.py's _labels refuses, by policy and rule
   let checked = 0, asserted = 0;
   for (const rs of runs.values()) {
     const events = rs.map((r) => r.event).filter((e) => isObj(e) && isObj(e.data));
@@ -1688,11 +1691,22 @@ function checkLabels(rep: Report, runs: Map<string, J[]>, policies: Map<string, 
       continue;
     }
     const srcs = new Map([...hashes].sort(byCodePoint).map((h) => [h, new Sources(strictParseBytes(policies.get(h)!, floats))]));
+    for (const [h, src] of srcs)
+      for (const rid of src.refused.keys()) refused.set(JSON.stringify([cut(h, 80), cut(str(rid), 64)]), [cut(h, 80), cut(str(rid), 64)]);
     if (marked || [...srcs.values()].some((src) => src.tracked.size)) {
       checked++;
-      extend(problems, runLabels(events, srcs, inherited));
+      try {
+        extend(problems, runLabels(events, srcs, inherited, budget));
+      } catch (e) {
+        if (!(e instanceof Spent)) throw e;
+        problems.push(`${e.message}: the rest of the bundle's runs weren't replayed`);
+        break;
+      }
     }
   }
+  problems = [...refused.values()].sort(([a, b], [c, d]) => byCodePoint(a, c) || byCodePoint(b, d))
+    .map(([h, rid]) => `policy ${h}: ${rid} reads the labels with a pattern the signer would refuse (outside the RE2 `
+      + "subset check_pattern accepts, or too large): not replayed").concat(problems);
   if (checked || asserted)
     rep.check("run labels", !problems.length, found(problems, `${checked} run(s) replayed under their policies, `
       + `${asserted} signer-asserted (under a policy not in the bundle)`

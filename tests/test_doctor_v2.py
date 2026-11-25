@@ -2010,8 +2010,10 @@ class Report(unittest.TestCase):
         with mock.patch.object(doctor, "main", return_value=2) as main:
             self.assertEqual(cli.main(["doctor", "--json", "--config", "/etc/x.yaml"]), 2)
             cli.main(["doctor", "--k8s", "--manifests", "/m", "--issuer-key", "alias/ca"])
-        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None),
-                                               mock.call(None, False, True, "/m", "alias/ca")])
+            cli.main(["doctor", "--reviewer", "/r/reviewer.yaml"])
+        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None, None),
+                                               mock.call(None, False, True, "/m", "alias/ca", None),
+                                               mock.call(None, False, False, None, None, "/r/reviewer.yaml")])
 
 
 class Detect(unittest.TestCase):

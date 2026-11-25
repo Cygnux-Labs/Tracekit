@@ -77,6 +77,7 @@ RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a 
 # AI suggestions with people's answers, over the last AGREEMENT_PAIRS, read once there are AGREEMENT_MIN
 PRECEDENT_S = 30 * 86400
 AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
+CHANGED = "the reviewer's model, its identity, version, prompt or playbook changed since its last answer"   # repinned
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
 
@@ -235,15 +236,16 @@ def approver_state(set_, log, run, e, a, pop):
     PRECEDENT_S; `key`, its precedent key as shown; `by`, the person); keyed by tenant and rule (joined by a NUL),
     `demoted` (why the circuit breaker dropped the rule to shadow), `pairs` (the last AGREEMENT_PAIRS agreements of
     an AI suggestion with the person's answer) and `pins` (the model, version, prompt hash and playbook digest of
-    the AI's last answer); and `playbook` (tenant -> {version, entries: {id: {text, key}}}); `switch` (tenant -> a
-    person's approver.switched: {on, rules?, by, at, reason?}; none: the policy and signer.yaml decide alone); and
+    the AI's last answer, and each model's identity as its answers gave it: repinned); and `playbook` (tenant ->
+    {version, entries: {id: {text, key}}}); `switch` (tenant -> a person's approver.switched: {on, rules?, by, at,
+    reason?}; none: the policy and signer.yaml decide alone); and
     `label_seqs` (each identity a run.label's run has as a requester -> the seq of the last such record, an add or a
     clear, or of a decision that set a label for the run bound alone: SignerService._ai_state's label epoch); and
     `tried` (labels.tried_state: the labels calls that didn't run set for the run bound alone). A precedent goes bad
     when a person revokes it (precedent.revoked), an incident opens in its run, or a why finding is written about its
     run; a rule is demoted when a person revokes an AI approval of it, a precedent of it goes bad, agreement falls under
-    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, version, prompt or playbook
-    than its pin; a person's approver.enabled restores it (the pin stays the answer's that changed it)."""
+    AGREEMENT_BAR over AGREEMENT_MIN pairs or more, or an answer comes from another model, identity, version, prompt or
+    playbook than its pin; a person's approver.enabled restores it (the pin stays the answer's that changed it)."""
     typ, d, ag, tenant = e["type"], e["data"], log.agent, e["tenant"]
 
     def demote(rules, why):
@@ -266,11 +268,12 @@ def approver_state(set_, log, run, e, a, pop):
         set_(ag, "label_seqs", {**ag.get("label_seqs", {}), **dict.fromkeys(labels.requesters(run), e["seq"])})
     if typ in ("approval", "approval.suggested") and ap and d.get("approver_kind") == "agent" and "relied_on" in d:
         for r in ap["key"]["rules"]:   # what answered: a change of it runs in shadow until a person enables the rule
-            k, now = f"{tenant}\0{r}", pinned(d)
-            if ag["pins"].get(k, now) != now:
-                demote([r], "the reviewer's model, version, prompt or playbook changed since its last answer")
-            if ag["pins"].get(k) != now:
-                set_(ag["pins"], k, now)
+            k = f"{tenant}\0{r}"
+            pin, changed = repinned(ag["pins"].get(k), pinned(d))
+            if changed:
+                demote([r], CHANGED)
+            if ag["pins"].get(k) != pin:
+                set_(ag["pins"], k, pin)
     if typ == "run.registered" and d.get("analyzes"):   # a findings run: its why findings are about that run
         set_(run, "analyzes", d["analyzes"])
     elif typ == "approval.suggested" and ap and d["decision"] in ("approve", "reject"):
@@ -357,10 +360,24 @@ def lesson(set_, ag, tenant, a, d, e, did):
 
 
 def pinned(d):
-    """[model, version, prompt hash, playbook digest] of an AI answer's record: what its circuit breaker pins."""
+    """[model, version, prompt hash, playbook digest, {model name: its identity}] of an AI answer's record: what its
+    circuit breaker pins. The identities are the reviewer's answers' (relied_on.answers), None for a model whose answer
+    gave none."""
     asserted = d.get("asserted") or {}
     return [asserted.get("model"), asserted.get("version"), asserted.get("prompt_hash"),
-            d["relied_on"]["playbook"]["digest"]]
+            d["relied_on"]["playbook"]["digest"],
+            {a["model"]: a.get("identity") for a in d["relied_on"].get("answers") or ()}]
+
+
+def repinned(old, new):
+    """(the pin after answer pin `new`, whether it changed pin `old`): another model, version, prompt or playbook, or
+    another identity of a model both name. A model the answer didn't ask (a no needs one answer) keeps its identity."""
+    if old is None:
+        return new, False
+    ids = old[4] if len(old) > 4 else {}
+    if old[:4] != new[:4] or any(m in ids and ids[m] != i for m, i in new[4].items()):
+        return new, True
+    return old[:4] + [{**ids, **new[4]}], False
 
 
 def new_contain():

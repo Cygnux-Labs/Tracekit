@@ -509,19 +509,25 @@ answers a call in a session that read a secret (or untrusted content, when you l
 rejected, or a call any other rule also holds. A person decides those.
 
 **Installs it can answer.** A person's approval vouches for the index its line names, so the AI reviewer answers an
-install only when the line names the index and switches config files off. Otherwise a config file (`pip.conf`,
-`.npmrc`) could add another index, and a person decides:
+install only when the line names the index and switches every config file off. Otherwise a config file (`pip.conf`,
+`.npmrc`, the global one or the virtual environment's) could add another index, and a person decides:
 
 ```
-pip install --isolated --index-url https://pypi.internal/simple requests
-uv pip install --no-config --index-url https://pypi.internal/simple requests
-npm install --registry https://npm.internal/ left-pad          # unscoped packages only (pnpm, yarn the same)
+PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple requests   # alone on its line
+npm install --registry https://npm.internal/ --userconfig /dev/null --globalconfig /dev/null left-pad   # unscoped only
 ```
 
-Never: an install that reads a requirements or config file (`-r requirements.txt`, `-c`, `--config-settings`,
-`PIP_CONFIG_FILE`, npm's `--userconfig`, a `.npmrc` or `pip.conf` on the line, a working tree npm changes to), a scoped
-npm package (`@acme/x`: its registry comes from `.npmrc`), bun, poetry, cargo and gem installs, and a change to a package
-manager's config (`pip config set`). `tracekit approvals show` says which, and how to pin the line.
+pip's `--isolated` skips your user config and the `PIP_` variables but still reads the global and the virtual
+environment's `pip.conf`; `PIP_CONFIG_FILE=/dev/null`, set for pip itself (before it, on a line of that one command),
+turns them all off. npm's `--registry` doesn't turn off the user and global `.npmrc`; the two options do.
+
+Never: an install that reads a requirements or config file (`-r requirements.txt`, `-c`, `--config-settings`, a
+`PIP_CONFIG_FILE` or npm `--userconfig` other than `/dev/null`, an `npm_config_…` variable on the line, a `.npmrc` or
+`pip.conf` on the line, a working tree npm changes to), a scoped npm package (`@acme/x`: its registry comes from the
+project's `.npmrc`), uv (`--no-config` leaves `UV_INDEX`, `UV_DEFAULT_INDEX`, `UV_EXTRA_INDEX_URL` and `UV_FIND_LINKS`
+on), pnpm and yarn (they read `.npmrc` and their own config files, which no option turns off), bun, poetry, cargo and gem
+installs, and a change to a package manager's config (`pip config set`). `tracekit approvals show` says which, and how
+to pin the line.
 
 **What you see.** `tracekit approvals show` and `list` say what it did, or why it won't answer:
 
@@ -620,7 +626,10 @@ escalates a yes that doesn't carry two.
 **Circuit breaker.** A rule drops to shadow in its tenant when a person revokes an AI approval of it, when a precedent of
 it goes bad, when the AI agreed with people on fewer than 9 in 10 of the last calls both answered (at least 10, in
 shadow mode), or when an answer comes from another model, version, prompt or playbook than the rule's last one (each
-answer's `asserted` and playbook digest are pinned): a change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
+answer's `asserted` and playbook digest are pinned), or from a model whose identity changed under the same name (each
+answer carries the model's identity as its server gives it: for an Ollama model the digest of what `/api/show` says it
+is, its weights, template, system prompt and parameters; otherwise the answer's `model` and `system_fingerprint`): a
+change runs in shadow before it decides. Its AI answers are then suggestions, and an AI approval of it not yet run never runs. A person turns it
 back on: `tracekit reviewer enable TK-A025`.
 
 **Playbook.** `tracekit reviewer status` lists the rules dropped to shadow, the playbook in force, and entries proposed
@@ -729,7 +738,9 @@ authorize:
   "uid:<reviewer>": [approval_list, approval_review, approval_decide, status]
 ```
 
-Then put these files in the reviewer's home, owned by it:
+Then put these files in the reviewer's home, owned by it. The reviewer refuses `reviewer.yaml`, its folder,
+`state_file`, its folder and `key_file` when another user than its own (or root) owns one or group or others can write
+it: the agent's user could point it at a server of its own.
 
 ```yaml
 # reviewer.yaml
@@ -744,9 +755,22 @@ sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config
 ```
 
 (On Linux: `sudo -u tracekit-reviewer /opt/tracekit/bin/python -m tracekit reviewer serve --config
-/var/lib/tracekit-reviewer/reviewer.yaml`.) A local model: `url: http://127.0.0.1:11434/v1/chat/completions` (an
-OpenAI-compatible server; no key file). The view goes to that endpoint only. In dev mode the signer is the agent's
+/var/lib/tracekit-reviewer/reviewer.yaml`.) The view goes to that endpoint only. In dev mode the signer is the agent's
 own user, which can read its keys: the AI approver needs system mode.
+
+**A local model.** `url: http://127.0.0.1:11434/v1/chat/completions` (an OpenAI-compatible server on this machine's
+loopback, named by its address; the only kind of endpoint that may take no key file). The model server and its model
+files belong to the reviewer's user: the agent runs as your account, and a server of your account, or files it can
+write, let it answer as the model. Run the server as the reviewer, with its models in the reviewer's home (Ollama:
+`sudo -u _tkreviewer env HOME="/Library/Application Support/tracekit-reviewer" ollama serve`, or on Linux the same as
+`tracekit-reviewer`), and stop the copy that runs as you. At start and before each call the reviewer checks that the
+port's listener is its own user's or root's, and refuses the endpoint otherwise (Linux reads `/proc/net/tcp`; macOS
+asks `lsof`, which shows a user only its own processes, so there the server must run as the reviewer); where it can't
+tell (neither Linux nor macOS), use an endpoint off this machine with a key. Ollama takes model changes from any local
+user over its port: each answer carries the model's identity (above), so a model recreated under the same name, with
+another system prompt, answers in shadow until you run `tracekit reviewer enable`, and a model changed during a call
+escalates. Check it all, as the reviewer's user: `sudo -u _tkreviewer /opt/tracekit/bin/python -m tracekit doctor
+--reviewer "/Library/Application Support/tracekit-reviewer/reviewer.yaml"` (`D-REVIEWER-CONFIG`, `D-REVIEWER-MODEL`).
 
 **Before you enforce.** Run a week with `mode: shadow`, then `tracekit reviewer friction --store
 /var/lib/tracekit-signer` (no model call): the holds, how many a precedent let the AI answer, how many a person

