@@ -1004,12 +1004,16 @@ class Routes(unittest.TestCase):
     def test_jcode_kiro_and_interpreter_started_with_settings_the_agent_chose_are_held(self):
         self.expect(self.bash("JCODE_HOOKS_DISABLED=1 jcode run 'do it'", "HOME=/tmp/x jcode run hi",
                               "JCODE_HOME=/tmp/x jcode run hi", "JCODE_HOOK_PRE_TOOL= jcode run hi",
+                              "JCODE_HOOK_PRE_TOOL=/tmp/noop.sh jcode run hi",
                               "JCODE_HOOK_PRE_TOOL_TIMEOUT_MS=1 jcode run hi",
                               "HOME=/tmp/x kiro-cli chat --no-interactive hi",
                               "KIRO_HOME=/tmp/x kiro-cli chat --no-interactive hi",
+                              "KIRO_DEFAULT_SETTINGS=/tmp/s.json kiro-cli chat --no-interactive hi",
                               "INTERPRETER_HOME=/tmp/x interpreter exec hi",
                               "HOME=/tmp/x interpreter exec hi"), "ask", "TK-A070")
-        self.expect(self.bash("jcode run hi", "kiro-cli chat", "interpreter exec hi"), "allow")
+        self.expect(self.bash("jcode run hi", "jcode --version", "jcode --help",
+                              "kiro-cli chat", "kiro-cli --version", "kiro-cli --help",
+                              "interpreter exec hi", "interpreter --version", "interpreter --help"), "allow")
 
     def test_hermes_settings_files_are_the_harness_settings(self):
         self.expect([("Write", {"file_path": "/home/u/.hermes/config.yaml", "content": "x"})], "ask", "TK-F009")
