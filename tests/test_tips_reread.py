@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -125,6 +126,11 @@ class Reread(unittest.TestCase):
         self.assertEqual(calls["toolu_4"]["agent"], next(k for k in agents if k.endswith("s1")))
         self.assertEqual((files, unreadable), (3, []))
 
+    def test_a_read_without_a_cache_reads_no_usage_of_a_message_an_earlier_file_counted(self):
+        with mock.patch.object(tips, "_usage", wraps=tips._usage) as usage:
+            self.fresh()
+        self.assertEqual(usage.call_count, 5)   # m1's two lines, m2, m3 and m4: not the resumed file's copy of m1
+
     def test_a_file_that_shrank_or_was_replaced_is_read_again_from_its_start(self):
         def shrink():
             write_jsonl(self.main, [prompt(T0), *m1()])
@@ -221,22 +227,58 @@ class Reread(unittest.TestCase):
                 self.assertEqual(got, self.fresh(root=root))
                 self.assertEqual(n, sum(map(os.path.getsize, (self.main, self.sub, self.resumed))) if read else 0)
 
-    def test_refreshes_at_once_read_the_new_lines_once_and_each_answers_as_a_fresh_read(self):
-        self.read()
-        grew = append(self.main, [cc_result("toolu_2", T0 + 21), cc_assistant("m5", T0 + 30, read=1500, write=100)])
-        Counted.n = 0
-        go, got = threading.Barrier(8), []
+    def slow(self):   # each open waits a little, so that reads started at once overlap
+        patch = mock.patch.object(tips, "_safe_open", lambda path: (time.sleep(0.02), counted(path))[1])
+        patch.start()
+        self.addCleanup(patch.stop)
 
-        def refresh():
+    def at_once(self, read, n=8):
+        go, got = threading.Barrier(n), []
+
+        def run():
             go.wait()
-            got.append(tips.read_transcripts(self.root, T0 - 1, self.cache))
-        threads = [threading.Thread(target=refresh) for _ in range(8)]
+            got.append(read())
+        threads = [threading.Thread(target=run) for _ in range(n)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
+        return got
+
+    def test_reads_at_once_on_one_cache_each_answer_as_a_fresh_read(self):
+        self.read()
+        append(self.main, [cc_result("toolu_2", T0 + 21), cc_assistant("m5", T0 + 30, read=1500, write=100)])
+        self.slow()
+        self.assertEqual(self.at_once(lambda: tips.read_transcripts(self.root, T0 - 1, self.cache)), [self.fresh()] * 8)
+        self.assertEqual(self.read(), (self.fresh(), 0))
+
+    def test_page_refreshes_at_once_read_the_new_lines_once(self):
+        t = time.time() - 3600
+        path = write_jsonl(os.path.join(tmp(self), "p", "s.jsonl"), [cc_assistant("m0", t, write=100)])
+        page = tips.Page(lambda: [], os.path.dirname(os.path.dirname(path)))
+        page()
+        grew = append(path, [cc_assistant("m1", t + 1, write=100)])
+        self.slow()
+        Counted.n = 0
+        got = self.at_once(lambda: page(fresh=True))
         self.assertEqual(Counted.n, grew)
-        self.assertEqual(got, [self.fresh()] * 8)
+        self.assertEqual({json.loads(b)["sources"]["transcripts"]["steps"] for b in got}, {2})
+
+    def test_a_file_cut_back_short_of_where_the_last_read_stopped_is_read_again_from_its_start(self):
+        grew = append(self.main, [cc_assistant("m6", T0 + 50, read=1300, write=70)])
+        ino, real = os.stat(self.main).st_ino, os.fstat
+
+        def before_it_grew(fd):   # the stat taken as the read began, before the lines it went on to read were written
+            st = real(fd)
+            return st if st.st_ino != ino else types.SimpleNamespace(
+                **{k: getattr(st, k) - (grew if k == "st_size" else 0) for k in dir(st) if k.startswith("st_")})
+        with mock.patch.object(tips.os, "fstat", before_it_grew):
+            self.read()
+        with open(self.main, "r+b") as f:   # larger than that stat, short of where the read stopped
+            f.truncate(os.path.getsize(self.main) - grew // 2)
+        got, n = self.read()
+        self.assertEqual(n, os.path.getsize(self.main) + grew - grew // 2)   # from its start; the cut line read twice
+        self.assertEqual(got, self.fresh())
 
     def test_the_page_reads_only_what_was_added_between_its_refreshes(self):
         t = time.time() - 3600   # the page's window is the last week
