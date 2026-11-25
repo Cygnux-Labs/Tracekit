@@ -307,6 +307,17 @@ class TestFeedback(unittest.TestCase):
                     self.assertIn("cannot read the selected signer store", err)
             self.assertFalse(os.path.exists(path))
 
+    def test_a_malformed_signer_yaml_is_an_error_line_and_writes_no_file(self):
+        with tempfile.TemporaryDirectory() as root:
+            config, path = os.path.join(root, "signer.yaml"), os.path.join(root, "report.md")
+            with open(config, "w", encoding="utf-8") as f:
+                f.write("::: [\n")
+            code, out, err = _run("--file", path, "--config", config)
+            self.assertEqual((code, out), (1, ""))
+            self.assertIn("cannot read the selected signer store", err)
+            self.assertNotIn("Traceback", err)
+            self.assertFalse(os.path.exists(path))
+
     def test_counts_name_only_what_share_prints(self):
         """An agent, an outcome or a rule --share never prints (a script's name, a command, a policy's own rule id)
         is no count line; a FreeBSD release is an OS feedback._os gives."""
