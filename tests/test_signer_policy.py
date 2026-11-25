@@ -6826,7 +6826,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             "jj git push -r @", "jj git push -r@", "jj git push --revisions=@", "jj git push --revision @-",
             "jj git push -b feature -r @", "jj --no-pager git push -r main",
             "git town ship", "jj git push", "jj git push -b main", "jj git push --bookmark=master", "jj git push --all",
-            "jj git push --tracked")], "ask", "TK-A056")
+            "jj git push --tracked", "lerna publish", "lerna publish --canary", "changeset publish",
+            "npx changeset publish", "npx @changesets/cli publish", "pnpm changeset publish",
+            "bunx changeset publish", "bun pm publish")], "ask", "TK-A056")
         # a forced update of main through the API is TK-D003's deny (#664 reads the force field); TK-A056 holds it too
         for rule in ("TK-D003", "TK-A056"):
             self.verdicts([("Bash", {"command": "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc -F force=true"})],
