@@ -26,6 +26,7 @@ from unittest import mock
 import pytest
 
 import adapter_contract as ac
+from factories import no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, doctor, findings_v2, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
@@ -2136,6 +2137,24 @@ class CodexReasoningSummary(unittest.TestCase):
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE + 'model = "m"')
 
     @unittest.skipIf(sys.version_info < (3, 11), "tomllib")
+    @unittest.skipIf(sys.version_info < (3, 11), "checks the file with tomllib")
+    def test_a_config_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
+        for text in ("a = [\n", "a = " + "[" * 5000 + "]" * 5000):
+            self.write(text)
+            with self.assertRaisesRegex(install.SettingsError, "is TOML Tracekit can't add model_reasoning_summary"):
+                agent_hooks.codex_reasoning(self.hooks)
+            self.assertEqual(self.read(), text)
+
+    def test_a_hook_or_settings_file_too_deep_to_parse_is_refused_as_a_malformed_one_is(self):
+        deep = "[" * 5000 + "]" * 5000
+        with open(self.hooks, "w") as f:
+            f.write(deep)
+        with self.assertRaisesRegex(install.SettingsError, "hooks.json is not valid JSON"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codex", path=self.hooks, v2=True)
+        with self.assertRaisesRegex(install.SettingsError, "settings.json is not valid JSON"):
+            install._parse_settings(deep.encode(), "settings.json")
+
     def test_a_multi_line_array_stays_valid_toml(self):
         import tomllib
         text = 'notify = [\n["x"],\n["a", "b"]\n]\nmodel = "m"\n[profiles.fast]\nmodel = "f"\n'   # a line like a table
@@ -2511,7 +2530,7 @@ class CodexHookTrust(unittest.TestCase):
                       got[0]["detail"])
 
     def test_doctor_says_when_it_cant_tell(self):
-        with mock.patch.dict(sys.modules, {"tomllib": None}):   # Python 3.9 and 3.10
+        with no_tomllib():   # Python 3.9 and 3.10
             got = self.row()
         self.assertEqual(got["status"], "warn")
         self.assertRegex(got["detail"], r"^can't confirm that Codex trusts Tracekit's hooks in .+ \(Python 3\.11 or "

@@ -515,6 +515,20 @@ def agent_file(path):
     return data
 
 
+def agent_loads(text):
+    """JSON text from a file the agent's user controls, parsed; one nested too deep to parse is a ValueError, as a
+    malformed one is."""
+    try:
+        return json.loads(text)
+    except RecursionError as e:
+        raise ValueError(str(e)) from e
+
+
+def agent_json(path):
+    """A JSON file the agent's user controls, parsed (agent_file's limits)."""
+    return agent_loads(agent_file(path))
+
+
 def plugin_enabled(user=None, project=None):
     """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
     or None. Reads `user` (default user_settings_all()), the project's (default: the working directory) project and
@@ -529,7 +543,7 @@ def plugin_enabled(user=None, project=None):
     for p in (*users, *(os.path.join(root, f) for f in ("settings.json", "settings.local.json")),
               managed):
         try:
-            enabled = json.loads(agent_file(p)).get("enabledPlugins", {})
+            enabled = agent_json(p).get("enabledPlugins", {})
         except (OSError, ValueError, AttributeError):   # missing, or not a settings file
             continue
         if not isinstance(enabled, dict):
@@ -569,20 +583,20 @@ def _installed_tracekit_plugin(plugin_id, settings_path, project=None):
     marketplace = plugin_id.rpartition("@")[2]
     for config_dir in _plugin_config_dirs(settings_path, project):
         try:
-            installed = json.loads(agent_file(os.path.join(config_dir, "plugins", "installed_plugins.json")))
+            installed = agent_json(os.path.join(config_dir, "plugins", "installed_plugins.json"))
             records = installed.get("plugins", {}).get(plugin_id)
             records = records if isinstance(records, list) else [records]
             if not any(isinstance(record, dict) and isinstance(record.get("installPath"), str)
                        and record.get("installPath")
                        for record in records):
                 continue
-            known = json.loads(agent_file(os.path.join(config_dir, "plugins", "known_marketplaces.json")))
+            known = agent_json(os.path.join(config_dir, "plugins", "known_marketplaces.json"))
             market = known.get(marketplace)
             location = market.get("installLocation") if isinstance(market, dict) else None
             location = location if isinstance(location, str) and os.path.isabs(location) else None
             source = market.get("source") if isinstance(market, dict) else None
             manifest_path = os.path.join(location, ".claude-plugin", "marketplace.json") if location else None
-            manifest = json.loads(agent_file(manifest_path)) if manifest_path else {}
+            manifest = agent_json(manifest_path) if manifest_path else {}
         except (OSError, ValueError, AttributeError, TypeError):
             continue
         plugins = manifest.get("plugins", ()) if isinstance(manifest, dict) else ()
@@ -635,7 +649,7 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
 def _parse_settings(raw, settings_path):
     """The settings object in a file's bytes `raw` ({} for no file or an empty one); SettingsError if it isn't one."""
     try:
-        s = json.loads(raw.decode("utf-8")) if raw and raw.strip() else {}
+        s = agent_loads(raw.decode("utf-8")) if raw and raw.strip() else {}
     except ValueError as e:
         raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
                             "Tracekit did not change it.") from e
@@ -1480,7 +1494,7 @@ def setting(path, key):
     """A Claude Code settings file's `key`, or None when the file or the key is missing or unreadable (read as
     agent_file reads: a FIFO or a device can't hang or flood the reader)."""
     try:
-        s = json.loads(agent_file(path))
+        s = agent_json(path)
     except (OSError, ValueError):
         return None
     return s.get(key) if isinstance(s, dict) else None
@@ -1873,7 +1887,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
 def _v2_hooks_in(path):
     """Whether the Claude Code settings file `path` has Tracekit's v2 hooks (not when it's missing or unreadable)."""
     try:
-        return "v2" in _hook_summary(json.loads(agent_file(path)))["versions"]
+        return "v2" in _hook_summary(agent_json(path))["versions"]
     except (OSError, ValueError, AttributeError, TypeError):
         return False
 
@@ -1882,7 +1896,7 @@ def _v1_hooks_in(path, python=None):
     """Whether the Claude Code settings file `path` has a Tracekit v1 hook (with python: one that runs that Python, as
     system mode's run /opt/tracekit's); not when it's missing or unreadable."""
     try:
-        cmds = [h.get("command") for gs in json.loads(agent_file(path)).get("hooks", {}).values() for g in gs
+        cmds = [h.get("command") for gs in agent_json(path).get("hooks", {}).values() for g in gs
                 if isinstance(g, dict) for h in g.get("hooks") or () if isinstance(h, dict)]
         return any(_cmd_version(c) == "v1" and (python is None or python in c) for c in cmds)
     except (OSError, ValueError, AttributeError, TypeError):

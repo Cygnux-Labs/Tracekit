@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import agent_hooks, client, constraints  # noqa: E402
 from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
-from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
+from factories import DaemonCase, ledger_records, no_tomllib, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
 
@@ -1662,7 +1662,7 @@ class GptmeTools(unittest.TestCase):
     def test_gptme_legacy_installer_only_prints_enabled_hint_for_plugin_key(self):
         from pathlib import Path
 
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(sys.modules, {"tomllib": None}):
+        with tempfile.TemporaryDirectory() as directory, no_tomllib():
             path = Path(directory) / "config.toml"
             for extra, expect_hint in (("", False), ('\n[other]\nenabled = ["x"]\n', False),
                                        ('enabled = ["x"]\n', True)):
@@ -2114,7 +2114,8 @@ class JcodeTools(unittest.TestCase):
         from tracekit.install import SettingsError
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.toml"
-            for original, why in ((b'model = "x\n', "not valid TOML"), (b'[x]\ny = 1\n[x]\n', "not valid TOML")):
+            for original, why in ((b'model = "x\n', "not valid TOML"), (b'[x]\ny = 1\n[x]\n', "not valid TOML"),
+                                  (b"a = " + b"[" * 5000 + b"]" * 5000, "not valid TOML")):
                 with self.subTest(original=original):
                     path.write_bytes(original)
                     with self.assertRaisesRegex(SettingsError, why):

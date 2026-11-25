@@ -22,6 +22,7 @@ from unittest import mock
 
 import pytest
 
+from factories import no_tomllib
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
 from tracekit.format import checkpoint
 from tracekit.locking import lock_file
@@ -102,6 +103,27 @@ class CodingAgentHooks(unittest.TestCase):
             agent_hooks.install(harness, path=path, v2=True)
         with open(path) as f:
             return path, json.load(f)
+
+    def test_a_hook_file_line_too_deep_to_parse_is_unreadable_not_a_crash(self):
+        from tracekit import agent_hooks
+        deep = "[" * 5000 + "]" * 5000
+        opencode = os.path.join(self.d, "opencode", "tracekit.js")
+        gptme = os.path.join(self.d, "gptme", "config.toml")
+        bridge = agent_hooks._gptme_hook_path(gptme)
+        for path, text in ((opencode, f"const commands = {deep};\n"),
+                           (bridge, agent_hooks.GPTME_MARKER + f"\nCOMMAND = {deep}\n")):
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(text)
+        with self.assertRaises(ValueError):
+            doctor._hook_commands("opencode", opencode)
+        with self.assertRaises(ValueError):
+            doctor._gptme_argv(gptme)
+        self.assertEqual(doctor._gptme_load_check(gptme)[0], False)
+        for harness, path in (("opencode", opencode), ("gptme", gptme)):
+            with self.subTest(harness):
+                self.assertIn("D-VERSIONS", {r["id"] for r in doctor.v2_checks(
+                    {"data_dir": self.d}, "dev", harnesses={harness: path})})
 
     def check(self, harness, path, settings):
         with open(path, "w") as f:
@@ -2250,7 +2272,7 @@ class CodexSandbox(unittest.TestCase):
         self.assertIn("doesn't know", got["detail"])
 
     def test_without_tomllib_or_with_bad_toml_it_says_it_couldnt_check(self):
-        with mock.patch.dict(sys.modules, {"tomllib": None}):
+        with no_tomllib():
             got = self.check('approvals_reviewer = "auto_review"\n')
         self.assertEqual(got["status"], "info")
         self.assertIn("Python 3.11 or newer reads Codex's config.toml", got["detail"])

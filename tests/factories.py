@@ -375,6 +375,16 @@ SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.de
 
 
 @contextlib.contextmanager
+def no_tomllib():
+    """Python 3.9 and 3.10: tomllib can't be imported, nor tracekit.tomlsafe, which imports it."""
+    import tracekit
+    with mock.patch.dict(sys.modules, {"tomllib": None}), mock.patch.dict(tracekit.__dict__):
+        sys.modules.pop("tracekit.tomlsafe", None)
+        tracekit.__dict__.pop("tomlsafe", None)
+        yield
+
+
+@contextlib.contextmanager
 def signer_without_fsync():
     """The signer's syncs (SIGNER_SYNCS) skipped in this process while it's open, for a test of what a signer decides
     and records, not of its durability, which has tests of its own (test_storage_file's test_durability_modes and

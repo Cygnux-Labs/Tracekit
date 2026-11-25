@@ -489,7 +489,7 @@ def _hook_commands(harness, path):
         return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
-        return list(json.loads(m.group(1)).values()) if m else []
+        return list(_loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _config(harness, path))
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
@@ -502,7 +502,7 @@ def _gptme_argv(path):
     if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
         return []
     match = re.search(r"^COMMAND = (.*)$", source, re.M)
-    return json.loads(match[1]) if match else []
+    return _loads(match[1]) if match else []
 
 
 def _outside_cwd(path):
@@ -850,13 +850,13 @@ def _codex_sandbox(add, harnesses):
         return
     toml, why = os.path.join(os.path.dirname(path), "config.toml"), None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         cfg = tomllib.loads(install.agent_file(toml).decode("utf-8"))
     except FileNotFoundError:   # Codex's defaults: on-request, a person reviews, the feature off
         cfg = {}
     except ImportError:
         why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
-    except (OSError, ValueError, RecursionError) as e:   # unreadable, not TOML, or nested too deep to parse
+    except (OSError, ValueError) as e:   # unreadable, or not TOML
         why = f"{toml}: {e}"
     if why:
         add("D-CODEX-SANDBOX", False, f"can't check Codex's approval settings ({why})",
@@ -977,7 +977,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         return
     store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
-        import tomllib   # Python 3.11 and newer
+        from . import tomlsafe as tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
         if not isinstance(state, dict):
             raise ValueError("hooks.state is not a table")
@@ -985,7 +985,7 @@ def _codex_trust(add, path, hooks, home, bad, harness="codex"):
         pass
     except ImportError:
         why = f"Python 3.11 or newer reads {name}'s config.toml, this is " + sys.version.split()[0]
-    except (OSError, ValueError, AttributeError, RecursionError) as e:   # unreadable, not TOML (or too deep), not tables
+    except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
         why = f"{store}: {e}"
     entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
     untrusted = sorted({keys[k][0] for k, s in entry.items() if not s.get("trusted_hash")})
@@ -1260,13 +1260,13 @@ def _text(path):
         return ""
 
 
+_loads = install.agent_loads
+
+
 def _json(path):
     """A settings file the agent's user controls, parsed (install.agent_file: a FIFO or a device can't hang or flood
-    doctor; one nested too deep to parse is a ValueError, as a malformed one is)."""
-    try:
-        return json.loads(install.agent_file(path))
-    except RecursionError as e:
-        raise ValueError(str(e)) from e
+    doctor)."""
+    return install.agent_json(path)
 
 
 _setting = install.setting   # a Claude Code settings file's key, or None
