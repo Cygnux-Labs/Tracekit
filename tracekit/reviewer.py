@@ -566,21 +566,40 @@ RULE_WORDS = {"TK-SHELL-PARSE": "a line the policy can't read", "TK-A062": "an u
                          "--isolated --index-url …, or npm --registry with its config files /dev/null)"}
 
 
+# the run bound's labels (approval_agent.run.clean), as `status` says what the AI reviewer never answers
+LABEL_NEVER = {"secrets_access": "a call in a session that read a secret",
+               "untrusted_content": "a call in a session that read untrusted content (a web page, an email or a "
+                                    "download)"}
+
+
 def status_lines(out):
     """What `tracekit reviewer status` says first, in plain words: whether the AI reviewer is on and who switched it,
-    what it may answer and what it never answers, and how often people agreed with it per rule, with a suggestion
-    when they agreed enough to let it answer a rule it only suggests for."""
+    what it may answer now (nothing while it is off; the switch's rules only; a rule the circuit breaker dropped only
+    suggests) and what it never answers (the policy's run bound among it), and how often people agreed with it per
+    rule, with a suggestion when they agreed enough to let it answer a rule it only suggests for."""
     from tracekit.signer.pipeline import AGREEMENT_BAR, AGREEMENT_MIN
     sw, demoted = out["switch"], {x["rule"] for x in out["demoted"]}
+    off = [r for r in out["rules"] if sw and (not sw["on"] or sw.get("rules") and r not in sw["rules"])]
+    may = [r for r in out["rules"] if r not in off]
     lines = [("the AI reviewer is " + ("on" + (f" for {', '.join(sw['rules'])} only" if sw.get("rules") else "")
                                        if sw["on"] else "off")
               + f": {sw.get('person') or sw['by']} switched it {'on' if sw['on'] else 'off'} at {sw['at'][:16].replace('T', ' ')} UTC"
               + (f" ({sw['reason']})" if sw.get("reason") else "")) if sw else
-             "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)",
-             ("it may answer" if out["mode"] == "enforce" else "it only suggests (the policy's mode is shadow) for")
-             + ":"] + [f"  {r}: {RULE_WORDS.get(r, r)}" for r in out["rules"]] + [
-        "it never answers: a call in a session that read a secret, a call like one a person rejected, a call another "
-        "rule holds too, and never a deny, a credential read, a payment or a push to main",
+             "the AI reviewer answers as the policy and signer.yaml say (no one switched it on or off)"]
+    if may:
+        lines += [("it may answer" if out["mode"] == "enforce" else "it only suggests (the policy's mode is shadow) for")
+                  + ":"] + [f"  {r}: {RULE_WORDS.get(r, r)}" + (" (it only suggests now: the circuit breaker)"
+                                                                 if r in demoted and out["mode"] == "enforce" else "")
+                            for r in may]
+    if off:
+        lines += [("it answers nothing while it is off; " if not may else "") + "a person decides these rules of the "
+                  "policy, which the switch leaves out:"] + [f"  {r}: {RULE_WORDS.get(r, r)}" for r in off]
+    lines += [
+        "it never answers: " + ", ".join([LABEL_NEVER.get(x, f"a call in a session labelled {x}")
+                                          for x in out.get("clean", ["secrets_access"])]
+                                         + ["a call like one a person rejected", "a call an accepted lesson says a "
+                                            "person decides", "a call another rule holds too"])
+        + ", and never a deny, a credential read, a payment or a push to main",
         "how often people agreed with it (its answers and suggestions, against the person's answer to the same call):"]
     for x in out["agreement"]:
         good = x["of"] >= AGREEMENT_MIN and x["agreed"] >= AGREEMENT_BAR * x["of"]

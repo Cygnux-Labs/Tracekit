@@ -2350,6 +2350,44 @@ class TestReviewerOnTheSigner(Case):
         self.assertIn("the AI reviewer is on for TK-A025 (signed record", run("on", "--rules", "TK-A025"))
         self.assertIn("the AI reviewer is on for TK-A025 only:", run("status"))
 
+    def test_status_says_what_it_may_answer_now(self):
+        """Off: it may answer nothing; on for some rules: those only; a rule the breaker dropped only suggests; and
+        what it never answers names each label of the policy's run bound (the acceptance test's status said "it may
+        answer" after off, listed TK-SHELL-PARSE after on --rules TK-A062, and left out untrusted content)."""
+        self.s.close()
+        self.policy = {"run": {"clean": ["untrusted_content", "secrets_access"]}}
+        self.s = self.open()
+        cli = mock.patch("tracekit.sdk.client.Client", lambda signer=None: As(self, ALICE))
+
+        def status(*change):
+            with cli, contextlib.redirect_stdout(io.StringIO()) as out:
+                if change:
+                    self.assertEqual(reviewer.main(list(change)), 0)
+                self.assertEqual(reviewer.main(["status"]), 0)
+            text = out.getvalue()
+            may = text.split("it may answer:\n")[1].split("\n")[0] if "it may answer:\n" in text else None
+            return text, may
+        self.run, self.seq = self.register()
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})   # the breaker drops TK-A025
+        text, _ = status()
+        self.assertIn("it never answers: a call in a session that read untrusted content (a web page, an email or a "
+                      "download), a call in a session that read a secret, a call like one a person rejected, a call an "
+                      "accepted lesson says a person decides, a call another rule holds too", text)
+        self.assertIn("  TK-A025: an install from a package index you chose, its line pinned (PIP_CONFIG_FILE=/dev/null "
+                      "pip --isolated --index-url …, or npm --registry with its config files /dev/null) (it only "
+                      "suggests now: the circuit breaker)\n", text)
+        text, may = status("off")
+        self.assertIsNone(may)
+        self.assertIn("it answers nothing while it is off; a person decides these rules of the policy, which the "
+                      "switch leaves out:\n  TK-SHELL-PARSE: ", text)
+        text, may = status("on", "--rules", "TK-A062")
+        self.assertEqual(may, "  TK-A062: an unmapped tool given a command line")
+        self.assertIn("a person decides these rules of the policy, which the switch leaves out:\n  TK-SHELL-PARSE: a "
+                      "line the policy can't read\n  TK-A025: ", text)
+
     def test_people_run_the_approver_from_the_cli(self):
         for _ in range(svc.PLAYBOOK_MIN):
             self.precedent()
