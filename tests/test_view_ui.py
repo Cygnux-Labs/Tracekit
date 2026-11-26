@@ -1298,7 +1298,7 @@ class WaterfallHonesty(unittest.TestCase):
             const a = mk("h", { start: 110, v2: ask, flags: ["held_for_approval"], approvals: [{ tk_seq: 4, ts: 110.1, v2: { approval: "requested" } }] });
             const seen = {};
             const look = tag => { const r = rowOf(a), h = wfRowHtml(r, 100); seen[tag] = { running: r.running, state: r.state, bars: r.bars, badge: r.badges.map(b => b[1]).join("|"), live: h.includes("tn-live"),
-              dot: /class="dot (\\w+)"/.exec(h)[1], total: /Total<\\/span>.*?class="pv">([^<]+)/.exec(wfDrawerHtml(r, "timing", 100))[1], pill: pill(r) }; };
+              dot: /class="dot (\\w+)"/.exec(h)[1], total: /Total<\\/span>.*?class="pv[^"]*"[^>]*>([^<]*)/.exec(wfDrawerHtml(r, "timing", 100))[1], pill: pill(r) }; };
             look("days later"); NOW += 86400; look("a day more");
             RUNS.get("r1").state = "open"; S.sessions.get("r1").end = null; NOW = 160; look("open");
             process.stdout.write(JSON.stringify(seen));"""))
@@ -1315,7 +1315,7 @@ class WaterfallHonesty(unittest.TestCase):
             const a = mk("c1", { start: 150, tool: "Bash", target: "sleep 99" }), d = mk("c2", { start: 151, denied: true, flags: ["denied"], v2: { decision: "deny", rules: [] } });
             const strip = h => h.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " ").trim();
             process.stdout.write(JSON.stringify([a, d].map(x => { const r = rowOf(x), t = wfDrawerHtml(r, "timing", 100); return { words: r.words[1], dur: r.dur, pill: pill(r), phases: wfPhases(r).map(p => p[0]),
-              total: /Total<\\/span>.*?class="pv">([^<]+)/.exec(t)[1], text: strip(t) }; })));"""))
+              total: /Total<\\/span>.*?class="pv[^"]*"[^>]*>([^<]*)/.exec(t)[1], text: strip(t) }; })));"""))
         noresult, denied = out
         self.assertEqual((noresult["words"], noresult["dur"], noresult["pill"]), ("NO RESULT", None, ["none", "No result"]))
         self.assertEqual(noresult["phases"], ["Decided by the policy", "No result recorded"])
@@ -1401,6 +1401,39 @@ class WaterfallHonesty(unittest.TestCase):
         self.assertIn("ran anyway", ran_denied)
         self.assertIn("denied: it never ran", never_ran)   # one that did not run keeps its marker
         self.assertEqual(noresult, "")                      # nothing ran that the records show
+
+    def test_an_approved_hold_with_no_result_has_a_ran_bar_only_while_the_run_is_open(self):
+        """The approval is a record; 'ran' needs a result, an end, or a run (or a replay's playhead) still going."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM.replace('const RUNS = new Map([["r1", { state: "open", verdict: "pending" }]]);', 'const RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);') + """
+            fresh(true); const ask = { decision: "ask", rules: [{ id: "TK-A001", reason: "a push" }] }, out = {};
+            const a = addCall(2, { v2: ask, flags: ["held_for_approval"], end: null, post: null, approvals: [{ tk_seq: 4, ts: 102.1, v2: { approval: "requested" } }, { tk_seq: 5, ts: 103, v2: { approval: "approve", approver: "uid:maya" } }] });
+            const look = () => { const r = wfToolRow(a, 0); return [r.bars, [...wfBarHtml(r, 100).matchAll(/class="b (\\w+)"/g)].map(m => m[1]), wfPhases(r).map(p => p[0])]; };
+            out.over = look();
+            RUNS.get("r1").state = "open"; S.sessions.get("r1").end = null; out.open = look();
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(out["over"], [[["wait", 102, 103]], ["wait"], ["Decided by the policy", "Held for a person", "No result recorded"]])
+        self.assertEqual(out["open"][0], [["wait", 102, 103], ["ok", 103, None]])   # still going: the growing bar
+        self.assertEqual(out["open"][1], ["wait", "ok"])
+
+    def test_a_tick_on_an_open_timing_tab_changes_text_not_the_drawer(self):
+        """A running call's Timing changes every second: the drawer was rebuilt and focus set again each time (a screen reader may re-announce it,
+        and its scroll jumps). Only the .tn-dlive numbers and the drawer's variables change."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const a = addCall(3, { tool: "Bash", target: "npm test", end: null, post: null }); selected = a; WFTAB = "timing";
+            const drawer = $("tndrawer"), vars = [], live = []; drawer.style.setProperty = (k, v) => vars.push([k, String(v)]);
+            drawer.querySelector = sel => sel === ".phs" ? { dataset: { lo: String(/data-lo="([^"]+)"/.exec(drawer._h)[1]), hi: String(/data-hi="([^"]+)"/.exec(drawer._h)[1]), open: "1" } } : { focus() { focused.push("tab"); } };
+            drawer.querySelectorAll = () => live;
+            NOW = 110; renderWaterfall();
+            for (const m of drawer._h.matchAll(/class="pv tn-dlive" data-pre="" data-from="([^"]+)"/g)) live.push({ dataset: { pre: "", from: m[1] }, textContent: "" });
+            document.activeElement = { dataset: { wft: "timing" } }; drawer.contains = e => e === document.activeElement;
+            const w0 = writes.filter(w => w[1] === "tndrawer").length; focused.length = 0; const seen = [];
+            for (let k = 0; k < 5; k++) { NOW += 1; vars.length = 0; renderWaterfall(); seen.push([live.map(e => e.textContent), vars.map(v => v[0])]); }
+            process.stdout.write(JSON.stringify({ redraws: writes.filter(w => w[1] === "tndrawer").length - w0, focus: focused.length, n: live.length, seen }));"""))
+        self.assertEqual((out["redraws"], out["focus"], out["n"]), (0, 0, 2))   # the running phase and the Total
+        self.assertEqual([s[0] for s in out["seen"]], [["8.0s", "8.0s"], ["9.0s", "9.0s"], ["10s", "10s"], ["11s", "11s"], ["12s", "12s"]])
+        self.assertEqual(out["seen"][0][1], ["--dlo", "--dsp", "--dnow"])
 
     def test_a_drawer_with_focus_inside_is_redrawn_when_its_call_changes_and_focus_goes_back_to_the_same_control(self):
         """N2: opening the drawer puts focus in it, and it was not redrawn while focus stayed: an approved call that ran still said 'Held' and 'No result yet'."""
@@ -1625,7 +1658,7 @@ class WaterfallHonesty(unittest.TestCase):
         htmls = [w for w in out if w[0] == "html"]
         self.assertGreater(len(htmls), 40)
         allowed = {"div", "span", "b", "i", "em", "small", "pre", "code", "p", "button", "svg", "path", "circle", "rect", "ellipse", "header", "a"}
-        styles = [re.compile(r"^(--[a-z0-9]+:(-?[0-9.]+|var\(--now\));?)+$"), re.compile(r"^color:var\(--[a-z]+\)$"), re.compile(r"^left:-?[0-9.]+%(;width:[0-9.]+%)?$")]
+        styles = [re.compile(r"^(--[a-z0-9]+:(-?[0-9.]+|var\(--d?now\));?)+$"), re.compile(r"^color:var\(--[a-z]+\)$"), re.compile(r"^left:-?[0-9.]+%(;width:[0-9.]+%)?$")]
         bad = []
 
         class Scan(html.parser.HTMLParser):

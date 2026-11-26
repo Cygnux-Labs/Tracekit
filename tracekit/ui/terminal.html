@@ -2200,6 +2200,8 @@
       position: absolute;
       top: 2px;
       bottom: 2px;
+      left: calc((var(--a) - var(--dlo)) / var(--dsp) * 100%);
+      width: max(1.2%, calc((var(--e) - var(--a)) / var(--dsp) * 100%));
       border-radius: 5px;
       background: color-mix(in srgb, var(--t-tool) 25%, var(--panel));
       border: 1px solid color-mix(in srgb, var(--t-tool) 55%, transparent)
@@ -2222,6 +2224,7 @@
 
     #wf .pm {
       position: absolute;
+      left: calc((var(--a) - var(--dlo)) / var(--dsp) * 100%);
       top: 6px;
       width: 6px;
       height: 6px;
@@ -6808,7 +6811,7 @@
       if (a.v2?.decision !== "ask" || a.retryOf) return [run(a.start)];
       const ans = a.approvals.filter(x => x.v2.approval in ANSWER).pop();
       if (!ans) return a.post ? [["deny", a.start, ranTo]] : [["wait", a.start, wfOpen(a) ? null : wfStop(a)]];
-      if (ans.v2.approval === "approve") return [["wait", a.start, ans.ts], ...a.ranBy ? [] : [run(ans.ts)]];
+      if (ans.v2.approval === "approve") return [["wait", a.start, ans.ts], ...a.ranBy || !a.post && a.end == null && !wfOpen(a) ? [] : [run(ans.ts)]];   // a ran bar needs a result, an end, or a run still going
       return [["wait", a.start, ans.ts], a.post ? ["deny", ans.ts, ranTo] : ["deny", ans.ts, ans.ts]];
     }
     const wfDur = d => { if (d == null) return "–"; if (d < 1) return Math.round(d * 1000) + "ms"; if (d < 10) return d.toFixed(1) + "s"; const s = Math.round(d); return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s"; };
@@ -7030,18 +7033,21 @@
       if (done) out.push(["Result recorded", `seq ${lseq(done)} · ${a.error ? "failed" : "ok"}`, done.ts, null]);
       return out;
     }
+    // the Timing tab. Its bars sit on CSS variables (--a, --e from the run's first record; --dlo, --dsp, --dnow set on the drawer) and what still
+    // runs is a .tn-dlive span: a tick changes their text and the variables, never the drawer
     function wfTimingHtml(r, base) {
-      const ph = wfPhases(r), now = nowTs(), lo = Math.min(...ph.map(p => p[2])), hi = Math.max(lo + .001, ...ph.map(p => p[3] ?? p[2]), ...ph.filter(p => p[4] && p[3] == null).map(() => now));
+      const ph = wfPhases(r), lo = Math.min(...ph.map(p => p[2])), openNow = ph.some(p => p[4] && p[3] == null), fin = Math.max(lo + .001, ...ph.map(p => p[3] ?? p[2])), rel = t => +(t - base).toFixed(3);
       const first = r.kind === "llm" ? r.real ? "The gateway recorded this exchange's request and its response: the span between them is the model's." : "A model turn has no recorded start time: its bar runs from the agent's previous record to the turn, so it holds the model's time and the harness's." : "";
-      const pos = t => ((t - lo) / (hi - lo) * 100).toFixed(2);
+      const dlive = from => `<span class="pv tn-dlive" data-pre="" data-from="${esc(rel(from))}"></span>`;
       const rows = ph.map(([l, what, f, t, open]) => {
-        const to = t ?? (open ? now : null), bar = to != null && to > f ? `<i class="pb ${/^Held/.test(l) ? "wait" : r.kind === "llm" ? "llm" : r.bad && /^Ran/.test(l) ? "fail" : "ok"}" style="left:${esc(pos(f))}%;width:${esc(Math.max(1.2, +pos(to) - +pos(f)).toFixed(2))}%"></i>` : `<i class="pm" style="left:${esc(pos(f))}%"></i>`;
-        return `<div class="ph"><span class="pl">${esc(l)}<small>${esc(what)}</small></span><span class="pt">` + (bar) + `</span><span class="pv">` + (to != null && to > f ? esc(wfDur(to - f)) : "at +" + esc(wfDur(f - base))) + `</span></div>`;
+        const going = open && t == null, spans = going || t != null && t > f;
+        const bar = spans ? `<i class="pb ${esc(/^Held/.test(l) ? "wait" : r.kind === "llm" ? "llm" : r.bad && /^Ran/.test(l) ? "fail" : "ok")}" style="--a:${esc(rel(f))};--e:${esc(going ? "var(--dnow)" : rel(t))}"></i>` : `<i class="pm" style="--a:${esc(rel(f))}"></i>`;
+        return `<div class="ph"><span class="pl">${esc(l)}<small>${esc(what)}</small></span><span class="pt">` + bar + `</span>` + (going ? dlive(f) : `<span class="pv">${esc(spans ? wfDur(t - f) : "at +" + wfDur(f - base))}</span>`) + `</div>`;
       }).join("");
       const when = r.kind === "llm" ? r.real ? ", at the exchange's request" : ", at the agent's previous record" : ", as the policy's decision was signed";
-      const spans = ph.some(p => p[3] != null || p[4]), total = r.kind === "llm" ? r.dur : spans ? (ph.some(p => p[4]) ? now : hi) - lo : null;
-      return `<p class="mu">${r.kind === "llm" && !r.real ? "Its bar starts" : "Started"} at +${esc(wfDur(lo - base))} into the run${esc(when)}</p>${first ? `<p class="mu">${esc(first)}</p>` : ""}<div class="phs">` + (rows) + `</div>`
-        + `<div class="ph tot"><span class="pl">Total</span><span class="pt mu">${esc(r.sizeText)}</span><span class="pv">${esc(r.kind === "llm" && total == null ? "not known" : wfDur(total))}</span></div>`;
+      const total = r.kind === "llm" ? r.dur : ph.some(p => p[3] != null || p[4]) ? fin - lo : null;
+      return `<p class="mu">${r.kind === "llm" && !r.real ? "Its bar starts" : "Started"} at +${esc(wfDur(lo - base))} into the run${esc(when)}</p>${first ? `<p class="mu">${esc(first)}</p>` : ""}<div class="phs" data-lo="${esc(rel(lo))}" data-hi="${esc(rel(fin))}"${openNow ? ' data-open="1"' : ""}>` + rows + `</div>`
+        + `<div class="ph tot"><span class="pl">Total</span><span class="pt mu">${esc(r.sizeText)}</span>` + (openNow && r.kind !== "llm" ? dlive(lo) : `<span class="pv">${esc(r.kind === "llm" && total == null ? "not known" : wfDur(total))}</span>`) + `</div>`;
     }
     function wfDecisionHtml(r) {
       const a = r.x, v = a.v2 || {};
@@ -7178,6 +7184,12 @@
         put("tndrawer", next);
         if (changed && was) dr.querySelector?.(`[data-${was === "wft" ? "wft" : was === "wfx" ? "wfx" : was === "rv" ? "rv" : "tkseq"}="${CSS.escape(a.dataset[was])}"]`)?.focus();
       }
+      const phs = sr && dr.querySelector?.(".phs");
+      if (phs?.dataset) {
+        const dlo = +phs.dataset.lo, dsp = Math.max(.001, Math.max(+phs.dataset.hi, phs.dataset.open ? m.now : 0) - dlo);
+        dr.style.setProperty("--dlo", dlo); dr.style.setProperty("--dsp", +dsp.toFixed(3)); dr.style.setProperty("--dnow", +m.now.toFixed(3));
+      }
+      dr.querySelectorAll?.(".tn-dlive").forEach(e => { e.textContent = e.dataset.pre + wfDur(m.now - +e.dataset.from); });
       dr.classList.toggle("open", open); dr.setAttribute("aria-hidden", open ? "false" : "true");
       if (open && !WF.open) { dr.inert = false; dr.querySelector?.(".tabs .on")?.focus(); }   // it opens with focus inside
       if (!open && WF.open && (held || !document.activeElement || document.activeElement === document.body)) rowsEl.querySelector(`[data-k="${CSS.escape(WF.last ?? "")}"]`)?.focus();   // and closes with it back on the row
