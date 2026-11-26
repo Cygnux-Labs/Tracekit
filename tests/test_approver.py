@@ -2504,6 +2504,49 @@ class TestWhatPeopleSee(Case):
         self.assertEqual(self.get(aid)["ai"]["answer"]["view"], yes["event"]["data"]["relied_on"]["view"])
         self.assertIn("(its record's commitment: the signer no longer holds that view)", self.tk("show", aid))
 
+    def test_a_finished_runs_approvals_say_what_the_ai_did_for_a_day(self):
+        """The acceptance test: once its run ended, `approvals show` of the AI's answer gave unknown_approval and `list
+        --all` was empty. The signer keeps the approvals of a final run for people to read for a day, across a restart
+        (snapshot or log), never for an agent approver; then show says where its records are."""
+        self.precedent()
+        aid, _ = self.ask()
+        self.ai(aid)
+        self.assertTrue(self.consume(aid)["ok"])
+        self.s.call(AGENT, "close_run", {"request_id": rid(), **self.run})
+        self.s.sweep(time.monotonic() + svc.GRACE_S + 1)
+        self.assertNotIn(aid, self.s.log.approvals)   # its run is final
+
+        def readable():
+            show = self.tk("show", aid)
+            self.assertIn(f"approval    {aid} (consumed)", show)
+            self.assertIn("ai          approved by the AI reviewer: it matched the call alice approved on ", show)
+            self.assertIn('details     answers "m-a" approve, "m-b" approve; ', show)
+            self.assertIn(f"{aid}  consumed", self.tk("list", "--all"))
+            self.assertEqual({k: v for k, v in self.get(aid)["ai"].items() if k != "answer"},
+                             {"mode": None, "reason": "its run ended: no answer counts now"})
+            self.assertNotIn(aid, [x["approval_id"] for x in self.s.call(REVIEWER, "approval_list", {})["approvals"]])
+        readable()
+        self.restart()   # from its snapshot
+        readable()
+        self.s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))   # from the log alone
+        self.s = self.open()
+        readable()
+        self.s.sweep(wall=time.time() + pipeline.ENDED_S + 1)
+        self.assertNotIn(aid, self.s.log.ended)
+        err, case = io.StringIO(), self
+
+        class Client(As):   # the default signer
+            signer = None
+
+            def __init__(self, signer=None):
+                super().__init__(case, ALICE)
+        with mock.patch("tracekit.sdk.client.Client", Client), contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["approvals", "show", aid]), 1)
+        self.assertIn(f"unknown_approval: {aid}: the signer shows an approval to its run's owner and to those who may "
+                      "answer it, until a day after its run ended; an older one is in its run's records: `tracekit "
+                      f"view --approval {aid}`", err.getvalue())
+
     def test_a_person_takes_back_an_ai_yes_from_the_cli(self):
         """The acceptance test's veto window: `approvals reject` answered approval_not_pending and `reviewer revoke`
         said no precedent. `approvals revoke` takes the AI's yes back, `reject` of it does the same, and show and list

@@ -100,7 +100,7 @@ import warnings
 from collections import deque
 
 from tracekit import __version__, constraints, model_receipt, privacy
-from tracekit.client import system_config
+from tracekit.client import SystemConfigError, system_config
 from tracekit.core import subagent_id
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -242,24 +242,43 @@ def _block(msg):
     return 2
 
 
-def approvals_cmd(signer, use_interpreter=False):
-    """`tracekit approvals`, for a person to run, naming `signer` when there is one: a named signer (system mode's,
-    $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
-    Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
-    a quote (PowerShell's curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left
-    for the person to fill in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have
-    `tracekit` on PATH) with `-I`: the person runs it in the agent's working folder, where `-m` would first import a
-    `tracekit` package found there; on Windows Codex runs it under PowerShell, which runs a quoted program only through
-    `&`, so a path that needs no quotes goes bare, as agent_hooks does for Codex's hook command."""
+def system_signer(signer):
+    """Whether `signer` is system mode's own: the one the root-owned client config names."""
+    try:
+        return bool(signer) and signer == (system_config() or {}).get("signer")
+    except SystemConfigError:   # the hook refuses to run then; a person's command still names the signer
+        return False
+
+
+def person_cmd(signer, use_interpreter=False):
+    """(how a person runs Tracekit, the ` --signer ADDR` its commands name, or ""), for `signer`. System mode's own
+    signer (the root-owned client config's) is the person's default, and init puts no `tracekit` on PATH there: the
+    root-owned venv's Python, `-I -m tracekit`, as the docs say. Another named signer ($TRACEKIT_SIGNER's, a remote
+    one) may not be the person's default: named, quoted, as the agent may have set it. On Windows (cmd.exe reads no
+    single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for a quote (PowerShell's
+    curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left for the person to fill
+    in. `use_interpreter`: run through the Python running the hook (Codex's `!` may not have `tracekit` on PATH) with
+    `-I`: the person runs it in the agent's working folder, where `-m` would first import a `tracekit` package found
+    there; on Windows Codex runs it under PowerShell, which runs a quoted program only through `&`, so a path that needs
+    no quotes goes bare, as agent_hooks does for Codex's hook command."""
+    if system_signer(signer):
+        from tracekit.install import OPT_PYTHON
+        return f"{OPT_PYTHON} -I -m tracekit", ""
     unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
     named = signer and (shlex.quote(signer) if os.name != "nt" else
                         "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
-    command = "tracekit approvals" + (f" --signer {named}" if named else "")
+    command = "tracekit"
     if use_interpreter:
         exe = (shlex.quote(sys.executable) if os.name != "nt" else sys.executable
                if re.fullmatch(r"[A-Za-z0-9_.:\\-]+", sys.executable) else f'& "{sys.executable}"')
         command = f"{exe} -I -m {command}"
-    return command
+    return command, f" --signer {named}" if named else ""
+
+
+def approvals_cmd(signer, use_interpreter=False):
+    """`tracekit approvals`, for a person to run, as person_cmd says to run it against `signer`."""
+    program, named = person_cmd(signer, use_interpreter)
+    return f"{program} approvals{named}"
 
 
 def _utc(ts):

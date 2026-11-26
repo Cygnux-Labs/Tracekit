@@ -78,7 +78,21 @@ RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a 
 PRECEDENT_S = 30 * 86400
 AGREEMENT_PAIRS, AGREEMENT_MIN, AGREEMENT_BAR = 20, 10, 0.9
 CHANGED = "the reviewer's model, its identity, version or prompt changed since its last answer"   # repinned
+# the approvals of runs gone final that approval_get and approval_list still answer (RecordLog.ended): a day, the
+# newest ENDED_MAX
+ENDED_S, ENDED_MAX = 86400, 10000
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
+
+
+def prune_ended(pop, ended, now):
+    """Drop from `ended` (approval id -> an approval of a final run, with `ended`: when its run went final) those past
+    ENDED_S and the oldest past ENDED_MAX. `pop(d, k)`: the writer's undoable pop, or dict.pop."""
+    # lean: insertion order is the order runs went final, so only the oldest go; a signer that ends more than
+    # ENDED_MAX approvals a day keeps less than a day of them: raise ENDED_MAX if one does
+    for aid, a in list(ended.items()):
+        if a["ended"] >= now - ENDED_S and len(ended) <= ENDED_MAX:
+            break
+        pop(ended, aid)
 
 
 def final_run(run):
@@ -688,6 +702,7 @@ class RecordLog:
         return {"log_id": self.log_id, "closed": self.head["closed"], "runs": runs, "tenants": sorted(self.tenants),
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
+                "ended": self.ended,
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
                 "keys": self.keys, "agent": self.agent, "contain": self.contain, "carry": self.carry,
                 **({"detect": self.det} if self.detector else {})}
@@ -712,7 +727,7 @@ class RecordLog:
         s = self.storage
         tail = s.tail_state()
         size = tail["tree_size"]
-        runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
+        runs, prev, leaves, approvals, index, tenants, closed, ended = {}, ZERO_HASH, {}, {}, {}, set(), False, {}
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
         unsnapped = set()   # the runs the snapshot doesn't hold: registered since it (all of them without one)
         agent, contain, carry = new_agent(), new_contain(), {}
@@ -756,6 +771,7 @@ class RecordLog:
                             outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
+            ended = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st.get("ended", {}).items()}   # 1.8
             agent, contain, carry = {**agent, **st.get("agent", {})}, st.get("contain", contain), st.get("carry", carry)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
@@ -828,6 +844,7 @@ class RecordLog:
                     del index[(*key, a["tool_call_id"], a["attempt"])]
                     if a.get("used_by"):
                         del index[(*key, *ran(a)[:2])]
+                    ended[aid] = dict(a, ended=epoch(e["ts"]))
             elif e["type"] == "policy.decision":
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
@@ -917,6 +934,8 @@ class RecordLog:
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
+        self.ended = ended   # approval_id -> the state of an approval of a final run, for people to read (prune_ended)
+        prune_ended(dict.pop, self.ended, time.time())
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         keep, missing = {}, {}   # keep: past it, leaves of records a power loss lost (none under a note); set aside
         for tenant in sorted(set(leaves) | set(tail["registry"])):

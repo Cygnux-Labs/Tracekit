@@ -1077,6 +1077,38 @@ class TestFirstDayCli(unittest.TestCase):
         answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))
         self.assertTrue(answer.endswith("; in the agent's Claude Code session, with a leading `! `"), answer)
 
+    def test_system_modes_show_reads_the_policy_signer_yaml_names(self):
+        """The acceptance test: in system mode `approvals show` said "why: not on this machine" though the policy file
+        signer.yaml names is local and readable. It reads it, and prints the commands as the person runs Tracekit
+        there (the root-owned venv's Python, no --signer)."""
+        from tracekit.install import OPT_PYTHON
+        from tracekit.integrations import claude_code
+        from tracekit.policy2 import compile as pc
+        d = os.path.join(self.run_dir, "etc")
+        os.mkdir(d)
+        os.symlink(os.path.join(ts.ROOT, "tracekit", "policy2", "packs"), os.path.join(d, "packs"))
+        with open(os.path.join(d, "policy.yaml"), "w") as f:
+            f.write("version: 'mine-1'\nextends: packs/dev.yaml\n")
+        with open(os.path.join(d, "signer.yaml"), "w") as f:
+            f.write('data_dir: "/var/lib/tracekit-signer"\npolicy: "policy.yaml"\n')
+        pol, errors = pc.build(os.path.join(d, "policy.yaml"))
+        self.assertEqual(errors, [])
+        sock = "/run/tracekit-signer/signer.sock"
+        x = {"approval_id": "apr-" + "1" * 32, "state": "requested", "run_id": "run-1", "tool": "Bash",
+             "rule_ids": ["TK-A032"], "policy_hash": pc.policy_hash(pol), "args_source": "parsed",
+             "args": {"command": "git push --force"}, "expires_at": "2026-11-26T06:43:59.878264Z"}
+        self.assertTrue(cli._stop_lines(mock.Mock(signer=sock), x)[0].startswith("why         not on this machine"))
+        with mock.patch.object(claude_code, "system_config", lambda: {"signer": sock}), \
+                mock.patch("tracekit.install.V2_CONFIG", os.path.join(d, "signer.yaml")):
+            lines = cli._stop_lines(mock.Mock(signer=sock), x)
+        self.assertRegex(lines[0], r"^why         .+ \(TK-A032\)$")
+        self.assertNotIn("not on this machine", lines[0])
+        answer = next(line for line in lines if line.startswith("answer"))
+        self.assertEqual(answer, f"answer      `{OPT_PYTHON} -I -m tracekit approvals approve {x['approval_id']}` to "
+                                 f"allow it once, `{OPT_PYTHON} -I -m tracekit approvals reject {x['approval_id']}` to "
+                                 "refuse it")
+        self.assertEqual(lines[-1], f"a false alarm? {OPT_PYTHON} -I -m tracekit feedback --harmless {x['approval_id']}")
+
     def test_pending_without_a_v1_signer_lists_the_v2_signers_held_calls(self):
         from tracekit import client
         with mock.patch.object(client, "DEFAULT_SOCKET", os.path.join(self.run_dir, "no-tracekitd.sock")), \

@@ -2394,6 +2394,23 @@ class HoldLine(unittest.TestCase):
         self.assertIn(f"; allow once with `tracekit approvals --signer {named} approve apr-1`;", lines[-2])
         self.assertNotIn("`! ", "\n".join(lines))
 
+    def test_system_modes_commands_run_as_the_person_runs_tracekit_there(self):
+        """The acceptance test: in system mode the hook printed `tracekit approvals --signer … approve`, but init puts
+        no `tracekit` on the person's PATH, and the system signer is their default anyway: the root-owned venv's
+        Python, `-I -m tracekit`, as the docs say, with no --signer and no `!`."""
+        from tracekit.install import OPT_PYTHON
+        sock = "/run/tracekit-signer/signer.sock"
+        with mock.patch.object(claude_code, "system_config", lambda: {"signer": sock}):
+            code, lines, _ = self.pre("x", signer=sock, wait="")
+            self.assertEqual(code, 2)
+            self.assertIn(f"Person: look with `{OPT_PYTHON} -I -m tracekit approvals show apr-1`; allow once with "
+                          f"`{OPT_PYTHON} -I -m tracekit approvals approve apr-1`; refuse with `{OPT_PYTHON} -I -m "
+                          "tracekit approvals reject apr-1`.", lines)
+            self.assertNotIn("--signer", "\n".join(lines))
+            self.assertNotIn("`! ", "\n".join(lines))
+            self.assertEqual(claude_code.approvals_cmd(sock), f"{OPT_PYTHON} -I -m tracekit approvals")
+            self.assertEqual(claude_code.approvals_cmd("/elsewhere.sock"), "tracekit approvals --signer /elsewhere.sock")
+
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")
         self.assertEqual(code, 2)

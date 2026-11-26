@@ -537,6 +537,10 @@ ai          approved by the AI reviewer: it matched the call alice approved on 1
 ai          the AI reviewer won't answer this: the session read a secret: a person decides
 ```
 
+They still say it for a day after the agent's session ends (the signer keeps the approvals of a finished run that
+long, across a restart; `list --all` lists them). After that the run's records have it: `tracekit view --approval
+apr-…`, run where the signer's data dir can be read.
+
 **On and off.** A person switches it: `tracekit reviewer on` (or `on --rules TK-A025` for some rules only) and
 `tracekit reviewer off`, each a signed record that names them. `off` withdraws its approvals not yet used and hands its
 waiting calls to people at once. With no switch, the policy and `signer.yaml` decide alone; `tracekit init` sets up no

@@ -654,10 +654,10 @@ session. Codex's command names the Python interpreter running the hook (`<python
 relying on `tracekit` being on `PATH`; `-I` keeps the working folder off Python's path, so a `tracekit` package there is
 never imported (on Windows, a path that needs quotes runs through PowerShell's `&`). Elsewhere, run the command from another
 terminal without the `!`, which a shell would read as "not" (`tracekit approvals list` shows every held call). Then
-ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
-`tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
-the approver's account as `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the
-PATH). On your default signer,
+ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one
+(`tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode the command
+is `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the PATH, and the system
+signer is every account's default, so it names none): run it from the approver's account. On your default signer,
 `tracekit approve apr-…` and `tracekit reject apr-…` work too. `tracekit view --dev` lists
 the run's constraints at the top of its review. The grammar reads instructions, not descriptions: "add a read-only mode
 to client.py", "don't change the public API of client.py, just fix the timeout bug in it", "don't push to main" and

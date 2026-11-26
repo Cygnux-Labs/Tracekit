@@ -356,7 +356,8 @@ from tracekit.signer import detect, labels, logkey, metrics, reconcile, rpc_sche
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (AGREEMENT_MIN, CHANGED, EXPIRED, LOST, PRECEDENT_S, RESULTS_PER_CALL, RecordLog,
                                       approval, constraint_state, cooldown_key, degrade, epoch, final_run, owner,
-                                      person_only_keys, pinned, ran, repinned, salt_label, skipped, subject, writer)
+                                      person_only_keys, pinned, prune_ended, ran, repinned, salt_label, skipped,
+                                      subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -2087,12 +2088,13 @@ class SignerService:
                                    **({"paired_by_args": paired} if paired else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
-        for aid in aids:   # all ended now: nothing can use them
+        for aid in aids:   # all ended now: nothing can use them; people still read them for a while (ENDED_S)
             a = self.log.approvals[aid]
             tx.pop(self.log.approval_index, (*key, a["tool_call_id"], a["attempt"]))
             if a.get("used_by"):
                 tx.pop(self.log.approval_index, (*key, *ran(a)[:2]))
             tx.pop(self.log.approvals, aid)
+            tx.set(self.log.ended, aid, dict(a, ended=time.time()))
         return expired
 
     def sweep(self, now=None, wall=None):
@@ -2107,6 +2109,7 @@ class SignerService:
             self._swept = max(self._swept, t)
             w = time.time() if wall is None else wall
             expired, mine, deadline = [], self._approvals_by_run(), _iso(w)
+            prune_ended(tx.pop, self.log.ended, w)
             for aid, u in list(self.log.agent["uses"].items()):   # past every budget's window
                 if max(u["requested"], u["approved"] or 0) < w - policy_compile.MAX_WINDOW_S:
                     tx.pop(self.log.agent["uses"], aid)
@@ -2361,24 +2364,39 @@ class SignerService:
             self._in(self._approvers, identity) or self._in(self._break_glass, identity)
             or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity)))
 
+    def _may_read_ended(self, identity, a):
+        """Whether `identity` reads approval `a` of a run gone final (RecordLog.ended): as it saw it live, but never an
+        agent approver, which has nothing left to answer."""
+        return not self._is_agent(identity) and self._may_see(identity, a)
+
+    def _ended_views(self, approval_id, a):
+        """_agent_views of approval `a` of a run gone final: no agent's answer counts any more (`mode` null), and people
+        still read what the agent approvers said of it."""
+        return {"agent_mode": None, "people_ai": self._ai(approval_id, a, ended=True) if a.get("agent") else None}
+
     def _agent_views(self, approval_id, a):
         """(on the writer: they read the run's labels) What approval `a`'s summary shows of agent approvers: `agent_mode`
         (_agent_mode) and `people_ai` (_ai, or None when its request didn't weigh them)."""
         return {"agent_mode": self._agent_mode(a), "people_ai": self._ai(approval_id, a) if a.get("agent") else None}
 
-    def _ai(self, approval_id, a):
+    def _ai(self, approval_id, a, ended=False):
         """People's view of agent approvers on approval `a`, whose request weighed them (its `agent`): `mode`, how an
-        agent's answer counts now (_agent_mode), and `reason`, why (its eligibility, or why it is refused now); and
-        `answer`, the latest agent answer (pipeline.agent_state's agent_answer), its `view` the view_digest it answered
-        while the signer holds the view it served that approver, else its record's commitment to it, and `matched`, the
-        person's approval its yes named (who, when, what it was of, while the signer holds it as a precedent). A rule
-        the circuit breaker dropped says why, and how a person turns it back on."""
-        ans, mode, demoted = a.get("agent_answer"), self._agent_mode(a), self._demoted(a)
-        rules = " ".join((a.get("ai") or {"key": {"rules": ()}})["key"]["rules"])
-        out = {"mode": mode, "reason": (
-            f"{demoted}, so it only suggests until a person runs `tracekit reviewer enable {rules}`" if mode == "shadow"
-            and demoted else "the policy runs it in shadow mode: it suggests, a person decides" if mode == "shadow"
-            else a["agent"]["eligible"] and self._agent_refusal(a) or a["agent"]["reason"])}
+        agent's answer counts now (_agent_mode), and `reason`, why (its eligibility, or why it is refused now; `ended`:
+        its run went final, so none counts); and `answer`, the latest agent answer (pipeline.agent_state's
+        agent_answer), its `view` the view_digest it answered while the signer holds the view it served that approver,
+        else its record's commitment to it, and `matched`, the person's approval its yes named (who, when, what it was
+        of, while the signer holds it as a precedent). A rule the circuit breaker dropped says why, and how a person
+        turns it back on."""
+        ans = a.get("agent_answer")
+        if ended:
+            out = {"mode": None, "reason": "its run ended: no answer counts now"}
+        else:
+            mode, demoted = self._agent_mode(a), self._demoted(a)
+            rules = " ".join((a.get("ai") or {"key": {"rules": ()}})["key"]["rules"])
+            out = {"mode": mode, "reason": (
+                f"{demoted}, so it only suggests until a person runs `tracekit reviewer enable {rules}`"
+                if mode == "shadow" and demoted else "the policy runs it in shadow mode: it suggests, a person decides"
+                if mode == "shadow" else a["agent"]["eligible"] and self._agent_refusal(a) or a["agent"]["reason"])}
         if ans:
             served = (a.get("viewed") or {}).get(ans["by"])
             out["answer"] = {k: v for k, v in ans.items() if k not in ("precedent", "record")}
@@ -4971,8 +4989,13 @@ class SignerService:
 
     def _approval_get(self, identity, req):
         identity, aid = self._on_behalf(identity, req), req["approval_id"]
-        a = self.log.write(lambda tx: {**self._visible(identity, aid),   # committed state only
-                                       **self._agent_views(aid, self.log.approvals[aid])})
+
+        def read(tx):   # committed state only; an approval of a run gone final for ENDED_S
+            ended = self.log.ended.get(aid)
+            if aid not in self.log.approvals and ended and self._may_read_ended(identity, ended):
+                return {**ended, **self._ended_views(aid, ended)}
+            return {**self._visible(identity, aid), **self._agent_views(aid, self.log.approvals[aid])}
+        a = self.log.write(read)
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         copy.pop("spend", None)
@@ -4983,8 +5006,11 @@ class SignerService:
         agent_view, people = self._is_agent(identity), self._a_person(identity)
         if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
             raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
-        # copied on the writer, so only committed states are listed
+        # copied on the writer, so only committed states are listed: the approvals of runs gone final (ENDED_S) first,
+        # in the order their runs ended, then the live ones
         items = iter(self.log.write(lambda tx: [
+            (aid, {**a, "run_closing": False, **self._ended_views(aid, a)}) for aid, a in self.log.ended.items()
+            if self._may_read_ended(identity, a)] + [
             (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"],
                    **self._agent_views(aid, a)})
             for aid, a in self.log.approvals.items()]))
