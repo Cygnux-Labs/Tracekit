@@ -4,6 +4,7 @@
 """
 import contextlib
 import html
+import html.parser
 import io
 import json
 import os
@@ -81,7 +82,7 @@ class DeepLinks(unittest.TestCase):
         """The URL said nothing of what was open: a run could be linked (#run=) but not its view or record, and Back
         left the page."""
         needs_node(self)
-        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
+        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "WF", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
             let WFR = null, WFTAB = "request"; let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
             const V2 = true, RUNS = new Map([["r 1&x", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const location = { hash: "#seq=7&view=graph&run=r+1%26x", pathname: "/" };
@@ -115,7 +116,7 @@ class DeepLinks(unittest.TestCase):
         """#587: nothing linked a hold to the page, which had no link by approval id: #approval=apr-… opens the held
         call's run and its hold's record; an approval the page has no record of leaves it on DESK."""
         needs_node(self)
-        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
+        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "WF", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
             let WFR = null, WFTAB = "request"; let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
             const V2 = true, RUNS = new Map([["r1", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const ALL = [{ session_id: "r1", event: "PreToolUse", tool_use_id: "t1", tk_seq: 5, v2: { decision: "ask" } },
@@ -1056,11 +1057,12 @@ CALLS_JS = """
 # the TIMELINE BY CALL's rows: a run of 100 s to 180 s with a call in each state and a model turn (see Waterfall)
 WF_NAMES = ["esc", "plural", "lseq", "short", "j", "ANSWER", "lastAnswer", "ended", "used", "FILE_TOOLS", "category", "callState", "heldCall",
             "wfBars", "wfDur", "wfRel", "wfBytes", "wfTok", "wfTitleCase", "wfAgent", "wfHashed", "wfSize", "wfFailWord", "wfAnswer", "wfToolRow",
-            "wfLlmRow", "WFMAX", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfNew", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
+            "wfLlmRow", "WFMAX", "wfOpen", "wfStop", "wfPill", "wfGrown", "wfRowKey", "wfIn", "wfRows", "WFCMP", "tickStep", "wfModel", "wfRangeKey", "wfPhases", "wfTimingHtml", "wfRule", "wfCode",
             "wfDecisionHtml", "WFI", "wfSvg", "wfIconOf", "WFMODELS", "wfModelMark", "wfIconBox", "wfEvidenceHtml", "wfRetriesHtml", "WFTABS", "wfDrawerHtml", "wfLive"]
 WF_RUN = """
-    const V2 = true, R = null, mode = "replay", ENDED = false, STOPPED = "", scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
+    const V2 = true, R = null, mode = "replay", ENDED = false, STOPPED = "", SOURCE = "", BOOT = null, scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
     let WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFR = null, WFTAB = "request", selected = null;
+    const document = { URL: "http://127.0.0.1:7791/", activeElement: null };
     const F = {}, nowTs = () => 200, fmtT = ts => "t" + ts, agentMatch = () => true, actMatch = a => !a.hide && (!F.tool || a.tool === F.tool), chainState = { ok: true, n: 5 };
     const main = { session: "r1", id: "main", sub: false, name: "Coder", type: "main" };
     const S = { firstTs: 100, sessions: new Map([["r1", { end: 190 }]]), byId: new Map(), actList: [], llm: [] };
@@ -1089,7 +1091,8 @@ class Waterfall(unittest.TestCase):
 
     def test_each_call_is_bars_by_its_outcome_and_a_hold_waits_until_its_answer(self):
         needs_node(self)
-        out = json.loads(page_js(["ANSWER", "ended", "wfBars"], CALLS_JS + """
+        out = json.loads(page_js(["ANSWER", "ended", "wfOpen", "wfStop", "wfLive", "wfBars"], CALLS_JS + """
+            const V2 = false, mode = "live", ENDED = "", SOURCE = "", document = { URL: "http://127.0.0.1:7791/" };
             process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(C).map(([k, a]) => [k, wfBars(a)]))));"""))
         self.assertEqual(out, {
             "ok": [["ok", 1, 2]], "failed": [["deny", 2, 2.5]], "blocked": [["deny", 3, 3]], "flagged": [["flag", 4, 5]],
@@ -1220,104 +1223,353 @@ class Waterfall(unittest.TestCase):
         self.assertIn('<span class="ic llm" role="cell"><svg', out[2])   # an unknown model keeps the sparkle
         self.assertIn('<span class="ic tool" role="cell"><svg', out[3])  # tools keep their glyphs
 
-    def test_rows_that_arrive_below_the_scroll_are_counted_for_the_new_pill(self):
-        needs_node(self)
-        out = json.loads(page_js(["wfNew"], """
-            const seen = new Set(["a1", "a2"]), rows = [{ key: "a1" }, { key: "a2" }, { key: "a3" }, { key: "m0" }];
-            process.stdout.write(JSON.stringify([wfNew(seen, rows), wfNew(new Set(rows.map(r => r.key)), rows)]));"""))
-        self.assertEqual(out, [2, 0])
-        # the pill's words, its click (to the newest, clearing the count) and the scroll that clears it
-        self.assertIn("`↓ ${WF.unseen} new`", PAGE)
-        self.assertIn("if (t.dataset.wfnew !== undefined) { const el = $(\"tnrows\"); WF.unseen = 0; el.scrollTop = el.scrollHeight;", PAGE)
-        self.assertIn("else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live) WF.unseen += fresh;", PAGE)   # a closed run opens at the top; only a live one follows
 
-    def test_a_row_is_opened_by_click_and_enter_and_the_headers_say_how_they_sort(self):
-        self.assertIn("if (t.dataset.wf) return select(S.actList[+t.dataset.wf]);", PAGE)
-        self.assertIn("if (t.dataset.wfl) return select(S.llm[+t.dataset.wfl].rec);", PAGE)
-        self.assertIn("if (t.dataset.wfby) { WFBY = t.dataset.wfby; return schedule(); }", PAGE)
-        self.assertIn("[data-wf][tabindex],[data-wfl][tabindex]", PAGE)   # Enter opens a row reached with Tab
-        self.assertIn('aria-sort="${esc(WFSORT.k === k ?', PAGE)
-        self.assertIn('role="row" tabindex="0" data-k=', PAGE)
-        self.assertIn("aria-label=\"${esc(wfLabel(r, base))}\"", PAGE)   # the bars' facts, in words
+WF_RENDER = WF_NAMES + ["wfTokens", "wfLabel", "wfMark", "wfBarHtml", "wfRowHtml", "wfSortWord", "wfHeadHtml", "wfChipsHtml", "wfStripHtml",
+                        "wfSeal", "wfFoot", "wfSelected", "WF", "wfReset", "renderWaterfall", "llmTurn"]
+# a run that is over (opened days later) with calls that ran when they should not have, waited for nobody, or left no result
+WF_ENDED = """
+    const V2 = true, R = null, mode = "live", ENDED = "", STOPPED = "", SOURCE = "", BOOT = null, scope = "r1", RUNS = new Map([["r1", { state: "final", verdict: "verified" }]]);
+    let WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFR = null, WFTAB = "request", selected = null, NOW = 100 + 3 * 86400;
+    const F = {}, nowTs = () => NOW, fmtT = ts => "t" + ts, agentMatch = () => true, actMatch = a => true, chainState = { ok: true, n: 5 };
+    const document = { URL: "http://127.0.0.1:7791/", activeElement: null };
+    const main = { session: "r1", id: "main", sub: false, name: "Coder", type: "main" };
+    const S = { firstTs: 100, lastTs: 130, sessions: new Map([["r1", { end: 130 }]]), byId: new Map(), actList: [], llm: [] };
+    const ask = { decision: "ask", rules: [{ id: "TK-A001", reason: "a push" }] }, post = { tk_seq: 9, ts: 130, tool_response: { output: "pushed" } };
+    const mk = (id, more) => { const a = { id, tool: "git", target: "push origin main", input: {}, agent: main, flags: [], approvals: [], post: null, end: null, reasons: [], error: false, denied: false, start: 120,
+      pre: { tk_seq: 3, ts: 120, v2: { tool_use_id: id } }, v2: { decision: "allow", rules: [] }, ...more }; S.actList.push(a); S.byId.set(id, [a]); return a; };
+    const rowOf = a => wfToolRow(a, S.actList.indexOf(a)), pill = r => /class="pill (\\w+)">([^<]+)</.exec(wfDrawerHtml(r, "timing", 100)).slice(1);
+"""
+# the page's own parts, with a mock of the elements it writes to
+WF_DOM = """
+    let V2 = true, R = null, mode = "live", ENDED = "", STOPPED = "", SOURCE = "", BOOT = null, scope = "r1", PAGE = "run", RV = "waterfall", WFBY = "call", CALLSLOG = false;
+    let WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFR = null, WFTAB = "request", selected = null, NOW = 1000, chainState = { ok: null, n: 0 };
+    const RUNS = new Map([["r1", { state: "open", verdict: "pending" }]]);
+    const F = {}, nowTs = () => NOW, fmtT = ts => "t" + ts, agentMatch = () => true, actMatch = a => !F.find || a.tool.toLowerCase().includes(F.find), CSS = { escape: s => String(s) };
+    const writes = [], focused = [], attrs = [];
+    const mkEl = id => ({ id, style: { setProperty(k, v) { writes.push(["css", id, k, String(v)]); } }, dataset: {}, classList: { toggle() {}, add() {}, remove() {} }, setAttribute(k, v) { attrs.push([id, k, v]); },
+      contains() { return false; }, clientWidth: 1200, clientHeight: 400, scrollTop: 0, scrollHeight: 4000, value: "", textContent: "", hidden: false, querySelector() { return null; },
+      querySelectorAll() { return []; }, focus() { focused.push(id); }, scrollIntoView() {} });
+    let el = {};
+    const $ = id => el[id] ??= mkEl(id);
+    const put = (id, h) => { const e = $(id); if (e._h !== h) { e.innerHTML = h; e._h = h; writes.push(["html", id, h]); } };
+    const document = { URL: "http://127.0.0.1:7791/", activeElement: null, querySelectorAll: () => [] };
+    const main = { session: "r1", id: "main", sub: false, name: "Coder", type: "main" };
+    let S;
+    const fresh = (done = false, firstTs = 100) => { S = { firstTs, lastTs: firstTs, sessions: new Map([["r1", done ? { end: firstTs + 5000 } : {}]]), byId: new Map(), actList: [], llm: [] }; };
+    const addCall = (i, more = {}) => { const a = { id: "c" + i, tool: i % 2 ? "Bash" : "Read", target: "t" + i, input: {}, agent: main, flags: [], approvals: [], reasons: [], error: false, denied: false, start: 100 + i, end: 100 + i + .5,
+      post: { tk_seq: 2 * i + 1, ts: 100 + i + .5, tool_response: { output: "ok" } }, pre: { tk_seq: 2 * i, ts: 100 + i, v2: { tool_use_id: "c" + i } }, v2: { decision: "allow", rules: [] }, ...more };
+      S.actList.push(a); S.byId.set(a.id, [a]); S.lastTs = Math.max(S.lastTs, a.end ?? a.start); return a; };
+    const addTurn = j => S.llm.push({ ts: 100.2 + j, from: 100 + j, agent: main, model: "claude-x", tin: 10, tout: 5, cr: 0, cw: 0, rec: { tk_seq: 9000 + j, ts: 100.2 + j, v2: { tool_ids: ["c" + j] } } });
+    const html = id => $(id)._h;
+    fresh();
+"""
 
-    def test_a_render_of_the_lanes_reads_each_call_once_and_each_colour_once_and_only_when_they_changed(self):
-        """Each lane read every call of the live view, and each call asked the page's style for its colour: DESK spent
-        1.8 s in 30 s drawing its lanes (agents x calls), and the page took 23% of a core while a run was written. And
-        every render drew every call again, each second and each record: unchanged lanes are not drawn again, and
-        records arriving are drawn at most once a second."""
-        needs_node(self)
-        out = json.loads(page_js(["CAT_COLOR", "fmtT", "tickStep", "tickText", "label", "renderLanes"], """
-            const V2 = true, R = null, rpos = 0, mode = "live", drawn = [], asked = [];
-            let selected = null;
-            const ctx = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeRect() {},
-                          fillRect: (x, y, w, h) => drawn.push(y), fillText() {}, measureText: t => ({ width: t.length * 6.6 }) };
-            const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 400, scrollTop: 0 };
-            const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => (asked.push(n), n);
-            let matched = 0;
-            const agentMatch = () => true, actMatch = () => ++matched, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
-            let laneHits = [], laneKey = [], laneAt = 0, walked = 0, clock = 0;
-            const S = { agents: new Map(), actList: [], recs: [], firstTs: 0, lastTs: 100 }, F = {};
-            const performance = { now: () => clock };
-            S.actList[Symbol.iterator] = function* () { for (let i = 0; i < this.length; i++) { walked++; yield this[i]; } };
-            for (let i = 0; i < 20; i++) {
-              const a = { session: "r" + i, sub: false, first: 0, last: 100, name: "coder", actions: 10, status: "done" };
-              S.agents.set(a.session + "|main", a);
-              for (let k = 0; k < 10; k++) S.actList.push({ agent: a, start: k * 9, end: k * 9 + 1, flags: [], denied: false });
-            }
-            renderLanes();
-            const colour = asked.filter(n => n === CAT_COLOR.read).length;
-            const once = { walked, matched, colour, hits: laneHits.length };
-            // drawn again: nothing changed (the live tick) no; a record a moment later not yet; a second later yes; a
-            // new selection at once
-            const draws = [];
-            for (const step of [() => {}, () => { S.recs.push({}); clock += 300; }, () => { clock += 800; },
-                                () => { selected = S.actList[0]; }]) {
-              step(); drawn.length = 0; renderLanes(); draws.push(drawn.length > 0);
-            }
-            process.stdout.write(JSON.stringify({ ...once, draws }));"""))
-        # two passes over the calls (the time scale, then the lanes), not one a lane (4,200)
-        self.assertEqual(out, {"walked": 400, "matched": 200, "colour": 1, "hits": 200,
-                               "draws": [False, False, True, True]})
 
-    def test_every_run_has_a_lane_busy_ones_first_and_the_panel_scrolls_to_the_rest(self):
-        """DESK's 140px timeline drew 8 of 12 lanes: runs with calls fell off its bottom, unreachable, while empty runs
-        kept lanes; a lane's id (coder·7372) was not the run's id the rest of the page shows (00cb7f43); the axis' last
-        word ran past the panel's edge."""
+class WaterfallHonesty(unittest.TestCase):
+    """Review of the TIMELINE: the page shows only what the records hold."""
+
+    def test_a_call_that_ran_after_a_deny_a_reject_or_no_answer_is_drawn_ran_anyway(self):
+        """H1: it has a result, so it ran: drawn running in red to its result, badged, and its pill says what the page says."""
         needs_node(self)
-        out = json.loads(page_js(["CAT_COLOR", "fmtT", "tickStep", "tickText", "label", "renderLanes"], """
-            const V2 = true, R = null, rpos = 0, mode = "live", selected = null, texts = [], rects = [];
-            const ctx = { setTransform() {}, clearRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, strokeRect() {},
-                          fillRect: (x, y, w, h) => rects.push([x, y, w, h]), fillText: (t, x, y) => texts.push([t, x, y]),
-                          measureText: t => ({ width: t.length * 6.6 }) };
-            const cv = { width: 0, height: 0, style: {}, getContext: () => ctx }, wrap = { clientWidth: 1600, clientHeight: 110, scrollTop: 0 };
-            const $ = id => ({ lanes: cv, lanewrap: wrap })[id], window = {}, css = n => n;
-            const agentMatch = () => true, actMatch = () => true, category = () => "read", callState = () => ["", ""], nowTs = () => 100;
-            let laneHits = [], laneKey = [], laneAt = 0;
-            const S = { agents: new Map(), actList: [], recs: [], firstTs: 0, lastTs: 100 }, F = {};
-            // 4 runs with no calls whose ids sort first, then 8 with calls
-            for (let i = 0; i < 12; i++) {
-              const busy = i >= 4, id = (busy ? "b" : "0") + i.toString(16) + "c0ffee".repeat(5), a = { session: id, sub: false, first: 0, last: 100,
-                name: busy ? "coder" : "agent-a", actions: busy ? 2 : 0, status: "done" };
-              S.agents.set(id + "|main", a);
-              if (busy) S.actList.push({ agent: a, start: i * 8, end: i * 8 + 1, flags: [], denied: false }, { agent: a, start: 100, end: 100, flags: [], denied: false });
-            }
-            const lanes = () => texts.filter(([t, x]) => x === 6 && !t.startsWith("▾")).map(([t, , y]) => [t, y]), cue = () => texts.filter(([t]) => t.startsWith("▾")).map(([t]) => t);
-            renderLanes();
-            const first = { lanes: lanes(), cue: cue(), cssHeight: cv.style.height, height: cv.height, ticks: texts.filter(([, x]) => x > 6) };
-            texts.length = 0; wrap.scrollTop = 54; renderLanes();   // scrolled to the bottom
-            process.stdout.write(JSON.stringify({ ...first, scrolled: texts.filter(([, x]) => x > 6).map(([, , y]) => y), strip: rects.some(r => r[1] === 54), cueEnd: cue() }));"""))
-        lanes = out["lanes"]
-        self.assertEqual(len(lanes), 12)
-        self.assertTrue(all(y < out["height"] for _, y in lanes), (lanes, out["height"]))   # every lane is on the canvas
-        self.assertEqual(out["cssHeight"], f"{out['height']}px")                            # ...which is taller: it scrolls
-        self.assertEqual([t.split("·")[0] for t, _ in lanes], ["coder"] * 8 + ["agent-a"] * 4)
-        self.assertEqual(lanes[0][0], "coder·b4c0ffee")                                     # the run's own 8-character id
-        self.assertTrue(out["ticks"])
-        self.assertTrue(all(x + len(t) * 6.6 <= 1600 for t, x, _ in out["ticks"]), out["ticks"])
-        self.assertEqual(out["cue"], ["▾ 5 more"])                                         # the lanes below say so
-        self.assertEqual(set(out["scrolled"]), {61})                                        # the axis' words stay in view
-        self.assertTrue(out["strip"])
-        self.assertEqual(out["cueEnd"], [])
+        out = json.loads(page_js(WF_NAMES, WF_ENDED + """
+            const d = mk("d", { denied: true, flags: ["denied"], v2: { decision: "deny", rules: [{ id: "TK-S010", reason: "push to main" }] }, post, end: 130 });
+            const r = mk("r", { v2: ask, flags: ["held_for_approval"], post, end: 130, approvals: [{ tk_seq: 4, ts: 120.1, v2: { approval: "requested" } }, { tk_seq: 5, ts: 125, v2: { approval: "reject", approver: "uid:maya" } }] });
+            const n = mk("n", { v2: ask, flags: ["held_for_approval"], post, end: 130, approvals: [{ tk_seq: 4, ts: 120.1, v2: { approval: "requested" } }] });
+            process.stdout.write(JSON.stringify([d, r, n].map(a => { const row = rowOf(a); return { words: row.words[1], badges: row.badges.map(b => b[1]), state: row.state, bars: row.bars, dur: row.dur,
+              phases: wfPhases(row).map(p => p[0]), pill: pill(row) }; })));"""))
+        denied, rejected, unanswered = out
+        for row in out:
+            self.assertIn("RAN ANYWAY", row["words"])
+            self.assertIn("RAN ANYWAY", row["badges"])
+            self.assertEqual(row["state"], "fail")
+            self.assertEqual(row["bars"][-1][0:1] + [row["bars"][-1][2]], ["deny", 130])   # a red bar to its result
+            self.assertIn("ran anyway", row["pill"][1].lower())
+            self.assertEqual(row["pill"][0], "bad")
+            self.assertEqual(row["phases"][-2:], ["Ran anyway", "Result recorded"])
+        self.assertEqual(rejected["pill"][1], "Rejected · ran anyway")   # never "Approved"
+        self.assertEqual(denied["pill"][1], "Blocked · ran anyway")
+        self.assertEqual(denied["bars"], [["deny", 120, 120], ["deny", 120, 130]])
+        self.assertEqual(rejected["bars"], [["wait", 120, 125], ["deny", 125, 125], ["deny", 125, 130]])
+
+    def test_a_hold_nobody_answered_ends_with_its_run_and_only_an_open_run_counts_it_up(self):
+        """M1: a finished run's unanswered hold counted up to 'HELD 4319m' with a pulsing dot and a Total that grew with the clock."""
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES + ["wfRowHtml", "wfBarHtml", "wfMark", "wfLabel"], WF_ENDED + """
+            const a = mk("h", { start: 110, v2: ask, flags: ["held_for_approval"], approvals: [{ tk_seq: 4, ts: 110.1, v2: { approval: "requested" } }] });
+            const seen = {};
+            const look = tag => { const r = rowOf(a), h = wfRowHtml(r, 100); seen[tag] = { running: r.running, state: r.state, bars: r.bars, badge: r.badges.map(b => b[1]).join("|"), live: h.includes("tn-live"),
+              dot: /class="dot (\\w+)"/.exec(h)[1], total: /Total<\\/span>.*?class="pv">([^<]+)/.exec(wfDrawerHtml(r, "timing", 100))[1], pill: pill(r) }; };
+            look("days later"); NOW += 86400; look("a day more");
+            RUNS.get("r1").state = "open"; S.sessions.get("r1").end = null; NOW = 160; look("open");
+            process.stdout.write(JSON.stringify(seen));"""))
+        later = out["days later"]
+        self.assertEqual(out["a day more"], later)   # nothing counts up
+        self.assertEqual((later["running"], later["dot"], later["live"], later["bars"], later["badge"], later["total"]), (False, "retry", False, [["wait", 110, 130]], "HELD 20s", "20s"))
+        self.assertEqual(later["pill"], ["held", "Not answered"])
+        self.assertEqual((out["open"]["running"], out["open"]["dot"], out["open"]["live"], out["open"]["bars"]), (True, "run", True, [["wait", 110, None]]))
+
+    def test_a_call_with_no_result_in_a_finished_run_is_not_given_a_run_or_a_duration(self):
+        """M2: 'Ran at +50s', 'Done', '0ms' and 'Total 1ms' were drawn for a call whose result was never signed, and a denied call's Total was 1ms."""
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_ENDED + """
+            const a = mk("c1", { start: 150, tool: "Bash", target: "sleep 99" }), d = mk("c2", { start: 151, denied: true, flags: ["denied"], v2: { decision: "deny", rules: [] } });
+            const strip = h => h.replace(/<[^>]+>/g, " ").replace(/\\s+/g, " ").trim();
+            process.stdout.write(JSON.stringify([a, d].map(x => { const r = rowOf(x), t = wfDrawerHtml(r, "timing", 100); return { words: r.words[1], dur: r.dur, pill: pill(r), phases: wfPhases(r).map(p => p[0]),
+              total: /Total<\\/span>.*?class="pv">([^<]+)/.exec(t)[1], text: strip(t) }; })));"""))
+        noresult, denied = out
+        self.assertEqual((noresult["words"], noresult["dur"], noresult["pill"]), ("NO RESULT", None, ["none", "No result"]))
+        self.assertEqual(noresult["phases"], ["Decided by the policy", "No result recorded"])
+        self.assertNotIn("Ran", noresult["text"].replace("Ran anyway", ""))
+        self.assertEqual((noresult["total"], denied["total"]), ("–", "–"))
+        self.assertEqual(denied["phases"], ["Decided by the policy", "Did not run"])
+
+    def test_the_seal_is_for_a_final_run_that_verified_and_a_file_or_a_replay_is_never_live(self):
+        """M3: 'Verified' for a closing run, for a replay page that checked no signature, and 'Live' for a bundle."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "WFI", "wfSvg", "wfSeal", "wfLive", "ended"], """
+            let V2, scope, RUNS, STOPPED, chainState, mode, ENDED, SOURCE, BOOT, url;
+            const document = { get URL() { return url; } };
+            const seal = h => (/class="seal (\\w*)"[^>]*>(?:<svg.*?<\\/svg>)?(?:<i><\\/i>)?([^<]*)/.exec(h) || [, "none", ""]).slice(1).join(": ").trim();
+            const run = o => { ({ V2 = false, scope = null, RUNS = new Map(), STOPPED = "", chainState = { ok: null, n: 0 }, mode = "live", ENDED = "", SOURCE = "", BOOT = null, url = "http://127.0.0.1:7791/" } = o);
+              return seal(wfSeal({ live: wfLive() })); };
+            const v2 = (r, more = {}) => run({ V2: true, scope: "r1", RUNS: new Map([["r1", r]]), ...more }), ok = { ok: true, n: 40 };
+            process.stdout.write(JSON.stringify({
+              final: v2({ state: "final", verdict: "verified" }), closing: v2({ state: "closing", verdict: "verified" }), pending: v2({ state: "final", verdict: "pending" }),
+              error: v2({ state: "final", verdict: "error" }), failed: v2({ state: "final", verdict: "failed", label: "x" }), open: v2({ state: "open", verdict: "verified" }),
+              stopped: v2({ state: "final", verdict: "verified" }, { STOPPED: "stopped" }), ended: v2({ state: "final", verdict: "verified" }, { ENDED: "restarted" }), nostate: v2({ verdict: "verified" }),
+              replay: run({ mode: "replay", BOOT: { x: 1 }, chainState: ok }), ledger: run({ chainState: ok }), ledgerEnded: run({ ENDED: "restarted", chainState: ok }),
+              bundle: run({ SOURCE: "bundle", chainState: ok }), file: run({ url: "file:///x/report.html", chainState: ok }) }));"""))
+        self.assertEqual(out, {"final": "ok: Verified", "closing": ": Closing", "pending": ": Checking…", "error": ": Not checked", "failed": "bad: Run failed its check", "open": "live: Live",
+                               "stopped": ": Verified earlier · checks stopped", "ended": "none:", "nostate": "none:", "replay": ": Chain ✓ (signatures not checked)", "ledger": "live: Live",
+                               "ledgerEnded": "none:", "bundle": "ok: Verified", "file": ": Chain ✓ (signatures not checked)"})
+
+    def test_a_crafted_window_cannot_hang_the_tab_or_leave_the_run_and_a_left_edge_drag_links_back(self):
+        """M4: range=1e17-(1e17+16) hung the tick loop; a window dragged from before the first record wrote a negative start that did not read back."""
+        needs_node(self)
+        out = json.loads(page_js(["PAGES", "RVIEWS", "WFTABS", "WF", "show", "linkOf", "syncLink", "heldAt", "followLink", "esc", "WFI", "wfSvg", "tickStep", "wfRel", "wfSortWord", "wfHeadHtml", "wfStripHtml"], """
+            let WFR = null, WFTAB = "request", WFSORT = { k: "start", dir: 1 }; let scope = "r1", PAGE = "run", RV = "waterfall", CALLSLOG = false, selected = null, R = null, linked = true, following = false, wvKey = "x";
+            const V2 = true, RUNS = new Map([["r1", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {}, setScope = id => { scope = id; }, openSeq = () => {};
+            const location = { hash: "", pathname: "/" }, history = { pushState: (_, __, h) => { seen.push(["push", h]); location.hash = h; }, replaceState: (_, __, h) => { seen.push(["replace", h]); location.hash = h; } };
+            const $ = () => ({ clientWidth: 1200 }), out = {};
+            for (const h of ["#run=r1&view=waterfall&range=100000000000000000-100000000000000016", "#run=r1&view=waterfall&range=-0.3-12.5", "#run=r1&view=waterfall&range=1e309-NaN", "#run=r1&view=waterfall&range=3-9"]) {
+              location.hash = h; followLink(); out[h.slice(-30)] = WFR; }
+            const t0 = Date.now();
+            out.head = wfHeadHtml({ t0: 1e17, span: 16 }).length > 0; out.strip = wfStripHtml({ o0: 1e17, os: 16 }).length >= 0; out.fast = Date.now() - t0 < 1000;
+            WFR = [-0.3, 12.5]; location.hash = ""; syncLink(); out.leftEdge = location.hash;
+            WF.drag = { moved: true }; seen.length = 0; for (let x = 1; x <= 20; x++) { WFR = [10, 10 + x]; syncLink(); } out.dragEntries = [seen.filter(s => s[0] === "push").length, seen.filter(s => s[0] === "replace").length];
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(list(out.values())[:4], [None, None, None, [3, 9]])
+        self.assertEqual((out["head"], out["fast"]), (True, True))
+        self.assertIn("range=0-12.5", out["leftEdge"])
+        self.assertEqual(out["dragEntries"], [0, 20])   # a drag replaces its entry: Back does not step through 20 windows
+
+    def test_the_new_pill_counts_arrivals_not_what_a_filter_shows_and_points_where_they_are(self):
+        """M5: clearing FIND or a window read as new rows; a closed run opened scrolled down; the arrow was down for a newest-first sort."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const pill = () => [$("tnnew").hidden, $("tnnew").textContent], out = {};
+            for (let i = 0; i < 40; i++) addCall(i);
+            renderWaterfall(); out.first = pill();
+            $("tnrows").scrollTop = 0;   // the person scrolls up to read
+            F.find = "bash"; renderWaterfall(); out.filtered = pill(); F.find = null; renderWaterfall(); out.cleared = pill();
+            WFR = [0, 5]; renderWaterfall(); WFR = null; renderWaterfall(); out.windowCleared = pill();
+            addCall(40); renderWaterfall(); out.arrived = pill();
+            WF.unseen = 0; WFSORT = { k: "start", dir: -1 }; renderWaterfall(); $("tnrows").scrollTop = 900; addCall(41); renderWaterfall(); out.newestFirst = pill();
+            // switch to a closed run: a reset, then it opens at its first call
+            WFSORT = { k: "start", dir: 1 }; wfReset(); fresh(true); RUNS.get("r1").state = "final"; for (let i = 0; i < 25; i++) addCall(i);
+            $("tnrows").scrollTop = 1234; renderWaterfall(); out.closed = [pill(), $("tnrows").scrollTop];
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(out["first"][0], True)
+        for k in ("filtered", "cleared", "windowCleared"):
+            self.assertEqual(out[k][0], True, k)
+        self.assertEqual(out["arrived"], [False, "↓ 1 new"])
+        self.assertEqual(out["newestFirst"], [False, "↑ 1 new"])
+        self.assertEqual(out["closed"], [[True, "↓ 0 new"], 0])
+
+    def test_one_row_is_tabbable_the_arrows_and_enter_work_and_focus_goes_into_the_drawer_and_back(self):
+        """M6: every row was a tab stop, a tick redrew the chips under focus, the drawer took no focus, and a sort button was role=columnheader."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const out = {};
+            for (let i = 0; i < 3; i++) addCall(i);
+            const rows = [0, 1, 2].map(i => ({ dataset: { k: "a" + i }, tag: i, focus() { focused.push("row" + i); }, click() { out.clicked = i; }, closest() { return this; } }));
+            const rowEl = { dataset: {}, setAttribute(k, v) { attrs.push(["row0", k, v]); }, focus() { focused.push("row0"); } };
+            $("tnrows").querySelector = sel => sel === ".tn-r" ? rowEl : null;
+            renderWaterfall(); out.html = html("tnin"); out.tab = attrs.filter(a => a[0] === "row0");
+            // the keys, as the rows' keydown handler runs them
+            const key = (k, from) => { const e = { key: k, target: rows[from], prevented: 0, stopped: 0, preventDefault() { this.prevented++; }, stopPropagation() { this.stopped++; } }; wfRowKey(e, rows); return e; };
+            focused.length = 0; key("ArrowDown", 0); key("ArrowUp", 2); key("End", 0); key("Home", 2); out.moved = focused.slice();
+            const enter = key("Enter", 1); out.enter = [out.clicked, enter.prevented, enter.stopped];
+            // the drawer: focus goes in when it opens, and back to the row when it closes
+            const tabBtn = { focus() { focused.push("tab"); } }, drawer = $("tndrawer"); drawer.querySelector = () => tabBtn;
+            $("tnrows").querySelector = sel => /data-k/.test(sel) ? { classList: { add() {}, remove() {} }, scrollIntoView() {}, focus() { focused.push("row"); }, setAttribute() {} } : null;
+            focused.length = 0; selected = S.actList[1]; renderWaterfall(); out.opened = focused.slice();
+            document.activeElement = tabBtn; drawer.contains = a => a === tabBtn; focused.length = 0; selected = null; renderWaterfall(); out.closed = focused.slice();
+            // a tick with focus on a chip rewrites no chip: the numbers only
+            const chip = { id: "chip" }, nEls = Array.from({ length: 7 }, () => ({ textContent: "" })); document.activeElement = chip; $("tnchips").contains = a => a === chip; $("tnchips").querySelectorAll = () => nEls;
+            writes.length = 0; addCall(3); renderWaterfall(); out.chips = [writes.filter(w => w[1] === "tnchips").length, nEls.map(n => n.textContent).join(",")];
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertEqual(len(re.findall(r'role="row" tabindex="-1" data-k=', out["html"])), 3)
+        self.assertNotIn('tabindex="0"', out["html"])
+        self.assertEqual(out["tab"], [["row0", "tabindex", "0"]])   # exactly one row can be tabbed to
+        self.assertEqual(out["moved"], ["row1", "row1", "row2", "row0"])
+        self.assertEqual(out["enter"], [1, 1, 1])
+        self.assertEqual(out["opened"], ["tab"])
+        self.assertEqual(out["closed"], ["row"])
+        self.assertEqual(out["chips"], [0, "4,0,4,0,0,0,0"])
+
+    def test_the_sort_buttons_sit_inside_their_columnheaders_and_say_how_they_sort(self):
+        needs_node(self)
+        out = json.loads(page_js(["esc", "WFI", "wfSvg", "tickStep", "wfRel", "wfSortWord", "wfHeadHtml"], """
+            let WFSORT = { k: "start", dir: 1 }; const V2 = true, $ = () => ({ clientWidth: 1200 }), seen = [];
+            seen.push(wfHeadHtml({ t0: 0, span: 80 })); WFSORT = { k: "time", dir: -1 }; seen.push(wfHeadHtml({ t0: 0, span: 80 }));
+            process.stdout.write(JSON.stringify(seen));"""))
+        for h in out:
+            self.assertNotIn('<button type="button" class="th" role="columnheader"', h)
+            self.assertEqual(len(re.findall(r'<span class="thc [^"]*" role="columnheader" aria-sort="\w+"><button type="button" class="th" data-wfs="\w+">', h)), 5)
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"', out[0]), ["none", "none", "none", "none", "ascending"])
+        self.assertEqual(re.findall(r'aria-sort="(\w+)"', out[1]), ["none", "none", "none", "descending", "none"])
+
+    def test_a_results_size_is_worked_out_once_not_on_every_tick(self):
+        """M7: JSON.stringify and TextEncoder per call per tick cost 83 ms a tick at 600 calls of 100 KB."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const big = "x".repeat(100000); let n = 0; const stringify = JSON.stringify; JSON.stringify = (...a) => (n++, stringify(...a));
+            for (let i = 0; i < 50; i++) addCall(i, { post: { tk_seq: i, ts: 101 + i, tool_response: { output: big } } });
+            renderWaterfall(); const first = n; n = 0; NOW += 1; renderWaterfall(); NOW += 1; renderWaterfall();
+            process.stdout.write(JSON.stringify([first, n, wfSize(S.actList[3])]));"""))
+        self.assertEqual(out, [50, 0, 100013])
+
+    def test_the_footer_and_the_not_drawn_note_count_calls_and_model_turns_apart(self):
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            const out = {}, foot = () => [...html("tnfoot").matchAll(/<span>([^<]*)<\\/span>/g)].map(m => m[1]).join(" | ");
+            for (let i = 0; i < 23; i++) addCall(i); for (let j = 0; j < 8; j++) addTurn(j);
+            renderWaterfall(); out.foot = foot(); WFCHIP = "llm"; renderWaterfall(); out.llm = foot(); WFCHIP = "all";
+            fresh(); for (let i = 0; i < 605; i++) addCall(i); wfReset(); renderWaterfall();
+            out.rows = (html("tnin").match(/class="tn-r"/g) || []).length; out.note = /tn-more">([^<]*)/.exec(html("tnin"))[1];
+            fresh(); for (let i = 0; i < 590; i++) addCall(i); for (let j = 0; j < 20; j++) addTurn(j); wfReset(); renderWaterfall(); out.mixed = /tn-more">([^<]*)/.exec(html("tnin"))[1];
+            fresh(); wfReset(); renderWaterfall(); out.none = /tn-empty">([^<]*)/.exec(html("tnin"))[1];
+            addCall(0); F.find = "nothing like it"; renderWaterfall(); out.filtered = /tn-empty">([^<]*)/.exec(html("tnin"))[1];
+            process.stdout.write(JSON.stringify(out));"""))
+        self.assertTrue(out["foot"].startswith("23 calls · 8 model turns | 0 failed"), out["foot"])
+        self.assertTrue(out["llm"].startswith("0/23 calls · 8 model turns"), out["llm"])
+        self.assertEqual(out["rows"], 600)
+        self.assertEqual(out["note"], "5 calls are not drawn: the earlier ones, past the 600 that are. Narrow them with AGT, TOOL, FIND or FLAG.")
+        self.assertRegex(out["mixed"], r"^\d+ calls? and \d+ model turns? are not drawn")
+        self.assertEqual(out["none"], "No calls yet.")
+        self.assertEqual(out["filtered"], "No call matches the filters.")
+
+    def test_a_model_turns_span_is_marked_approximate_unless_its_request_was_recorded(self):
+        """L2: a turn's span from the agent's previous record read as its duration; the gateway's request, when recorded, is its real start."""
+        needs_node(self)
+        out = json.loads(page_js(WF_RENDER, WF_DOM + """
+            addTurn(0); S.llm[0].ts = 104; S.llm[0].from = 100; S.llm.push({ ...S.llm[0], started: 100.5, ts: 103.5, rec: { tk_seq: 9100, ts: 103.5, v2: { tool_ids: [] } } });
+            const [approx, real] = S.llm.map((l, j) => wfLlmRow(l, j));
+            const cell = r => /class="tm"[^>]*>([^<]*)</.exec(wfRowHtml(r, 100))[1], title = r => /class="tm"([^>]*)>/.exec(wfRowHtml(r, 100))[1];
+            process.stdout.write(JSON.stringify({ a: [cell(approx), title(approx), wfLabel(approx, 100), wfBarHtml(approx, 100), wfDrawerHtml(approx, "timing", 100).includes("no recorded start time")],
+              r: [cell(real), title(real), wfLabel(real, 100), wfBarHtml(real, 100), wfPhases(real).map(p => p[0]), real.start, real.dur] }));"""))
+        a, r = out["a"], out["r"]
+        self.assertEqual(a[0], "~4.0s")
+        self.assertIn("since the agent's previous record", a[1])
+        self.assertIn("about 4.0s since the previous record", a[2])
+        self.assertIn("about 4.0s, since the agent", html.unescape(a[3]))
+        self.assertTrue(a[4])
+        self.assertEqual(r[0], "3.0s")   # the gateway's request to its response: a duration
+        self.assertNotIn("title=", r[1])
+        self.assertNotIn("about", r[2])
+        self.assertNotIn("about", r[3])
+        self.assertEqual((r[4], r[5], r[6]), (["Model exchange", "Turn recorded"], 100.5, 3))
+
+    def test_the_pill_says_timed_out_revoked_and_refused_in_the_pages_words(self):
+        """L3: only approved, failed and denied had words of their own."""
+        needs_node(self)
+        out = json.loads(page_js(["wfPill"], """
+            const w = (cls, t) => wfPill({ kind: "tool", words: [cls, t] });
+            process.stdout.write(JSON.stringify(["OK", "⚑ OK", "FAILED", "RUNNING", "TO ANSWER", "TIMED OUT", "REVOKED", "SELF-APPROVAL REFUSED", "APPROVED · RAN", "REJECTED · RAN ANYWAY", "NO RESULT"].map(t =>
+              w(t === "APPROVED · RAN" || t === "OK" || t === "⚑ OK" ? "s-ok" : t === "FAILED" || /ANYWAY/.test(t) ? "s-err" : t === "RUNNING" ? "s-run" : t === "TO ANSWER" ? "s-flag" : t === "NO RESULT" ? "dim" : "s-deny", t))));"""))
+        self.assertEqual(out, [["Done", "ok"], ["Done", "ok"], ["Failed", "bad"], ["Running", "run"], ["Held", "held"], ["Timed out", "bad"], ["Revoked", "bad"],
+                               ["Self-approval refused", "bad"], ["Approved · ran", "ok"], ["Rejected · ran anyway", "bad"], ["No result", "none"]])
+
+    def test_the_evidence_tab_says_who_checked_a_v1_ledger_or_a_replay(self):
+        """L4: the check on a live v1 ledger is the server's, signatures included; a replay page chains hashes only."""
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_ENDED.replace("V2 = true", "V2 = false").replace("BOOT = null", "BOOT = null") + """
+            const a = mk("c1", { end: 121, post }), r = rowOf(a), seen = [];
+            seen.push(wfDrawerHtml(r, "evidence", 100));
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertIn("The viewer's server checked this ledger, signatures included", out[0])
+        self.assertNotIn("page's own", out[0])
+        needs_node(self)
+        out = json.loads(page_js(WF_NAMES, WF_ENDED.replace("V2 = true", "V2 = false").replace("BOOT = null", "BOOT = { x: 1 }") + """
+            const a = mk("c1", { end: 121, post }); process.stdout.write(JSON.stringify(wfDrawerHtml(rowOf(a), "evidence", 100)));"""))
+        self.assertIn("chained the records' hashes itself; it checked no signature", out)
+
+    def test_a_theme_from_a_link_is_not_kept_and_long_badges_do_not_cross_into_the_next_column(self):
+        """L5."""
+        needs_node(self)
+        out = json.loads(page_js(["THEMES", "setTheme"], """
+            const el = {}, $ = id => el[id] ??= {}, document = { documentElement: { dataset: {} } }, schedule = () => {}, kept = [];
+            const localStorage = { setItem(k, v) { kept.push([k, v]); } };
+            setTheme("dark", false); setTheme("light"); process.stdout.write(JSON.stringify([kept, document.documentElement.dataset.theme]));"""))
+        self.assertEqual(out, [[["tracekit-theme", "light"]], "light"])
+        self.assertIn('if (linked) setTheme(linked, false);', PAGE)
+        css = PAGE[PAGE.index("#wf .nm {"):PAGE.index("#wf .ag {")]
+        self.assertIn("overflow: hidden", css.split("#wf .ar")[0])   # the name cell clips; the argument gives way first (flex: 1 1 0)
+        self.assertIn("text-overflow: ellipsis", css.split("#wf .bd {")[1].split("}")[0])
+
+    def test_hostile_record_values_reach_the_timeline_only_as_text(self):
+        """Run renderWaterfall and every drawer tab on records full of markup, and parse what it writes: no tag outside the allowlist, no on* attribute,
+        no href but '#', no style but the known shapes, no payload unescaped."""
+        needs_node(self)
+        P = {"img": '<img src=x onerror=alert(1)>', "svg": '"><svg onload=alert(2)>', "js": "javascript:alert(3)", "style": "</style><img src=x onerror=alert(4)>",
+             "css": "1;}*{background:url(//evil)};--a:", "tpl": "${alert(6)}`<img src=x onerror=alert(6)>", "sq": "'><img src=x onerror=alert(7)>"}
+        allp = " ".join(P.values())
+        out = json.loads(page_js(WF_RENDER, WF_DOM.replace('mode = "live"', 'mode = "replay"') + """
+            const P = %s, ALLP = %s; RUNS.set("r1", { state: "final", verdict: ALLP, label: ALLP });
+            const evil = { session: "r1", id: P.img, sub: true, name: ALLP, desc: ALLP, type: ALLP }, rec = (seq, ts, more) => ({ tk_seq: seq, ts, hash: ALLP, ...more });
+            const act = (id, tool, start, more) => addCall(0, { id, tool, target: ALLP, input: { cmd: P.style, url: P.js, k: P.tpl, [P.img]: P.svg }, flags: [P.img, "network"], reasons: [ALLP], start, end: start + 1,
+              pre: rec(1, start, { v2: { tool_use_id: ALLP } }), v2: { decision: ALLP, rules: [{ id: P.img, reason: P.svg, remedy: P.style }], policy_hash: ALLP, args_commitment: ALLP }, post: rec(2, start + 1, { tool_response: { output: ALLP, error: ALLP } }), ...more });
+            act("c0", P.img, 105, { input: {} }); act("c2", P.svg, 120, { error: true, agent: evil, post: rec(3, 125, { tool_response: { exit_code: ALLP, status: ALLP, error: P.img + "\\n" + P.svg } }) });
+            act("c3", P.style, 130, { denied: true, end: null, post: null });
+            const ask = { decision: "ask", rules: [{ id: P.img, reason: ALLP, remedy: ALLP }], policy_hash: ALLP };
+            const first = act("tf", P.css, 140, { end: 180, v2: ask, approvals: [rec(5, 140.2, { v2: { approval: "requested" } }), rec(6, 178, { v2: { approval: "approve", approver: ALLP } }), rec(7, 178.3, { v2: { approval: "consumed" } })] });
+            act("gh", P.tpl, 150, { v2: ask, end: null, post: null, approvals: [rec(8, 150.2, { v2: { approval: "requested" } }), rec(9, 160, { v2: { approval: "reject", approver: ALLP } })] });
+            act("tf2", P.sq, 178.2, { v2: ask, retryOf: { ...first, pre: { v2: { tool_use_id: ALLP } } } });
+            for (const m of ["claude" + ALLP, ALLP, "anthropic/" + P.svg]) S.llm.push({ ts: 135, from: 128, started: 129, agent: main, model: m, tin: 3, tout: 1, cr: 1, cw: 1, rec: rec(10, 135, { event: "tk_model", v2: { tool_ids: [ALLP], exchange_id: ALLP } }) });
+            renderWaterfall();
+            for (const sel of [...S.actList, ...S.llm.map(l => l.rec)]) for (const t of WFTABS) { selected = sel; WFTAB = t; renderWaterfall(); }
+            for (const k of ["name", "agent", "size", "time", "start"]) { WFSORT = { k, dir: -1 }; renderWaterfall(); }
+            for (const [c] of WFCHIPS) { WFCHIP = c; renderWaterfall(); }
+            WFR = [10, 50]; renderWaterfall();
+            process.stdout.write(JSON.stringify(writes));""" % (json.dumps(P), json.dumps(allp))))
+        htmls = [w for w in out if w[0] == "html"]
+        self.assertGreater(len(htmls), 40)
+        allowed = {"div", "span", "b", "i", "em", "small", "pre", "code", "p", "button", "svg", "path", "circle", "rect", "ellipse", "header", "a"}
+        styles = [re.compile(r"^(--[a-z0-9]+:(-?[0-9.]+|var\(--now\));?)+$"), re.compile(r"^color:var\(--[a-z]+\)$"), re.compile(r"^left:-?[0-9.]+%(;width:[0-9.]+%)?$")]
+        bad = []
+
+        class Scan(html.parser.HTMLParser):
+            def handle_starttag(self, tag, attrs):
+                if tag not in allowed:
+                    bad.append(("tag", tag))
+                for k, v in attrs:
+                    if k.startswith("on"):
+                        bad.append(("attr", tag, k))
+                    if k == "href" and v != "#":
+                        bad.append(("href", v))
+                    if k in ("src", "xlink:href", "action", "formaction"):
+                        bad.append((k, v))
+                    if k == "style" and not any(r.match(v) for r in styles):
+                        bad.append(("style", v))
+        for _, id_, h in htmls:
+            scan = Scan()
+            scan.feed(h)
+            scan.close()
+            bad += [(id_, "raw payload", n) for n, p in P.items() if p in h and re.search(r"[<>\"'&]", p)]
+        self.assertEqual(bad, [])
+        for _, id_, k, v in [w for w in out if w[0] == "css"]:   # the variables the page sets are numbers or var(--now)
+            self.assertRegex(v, r"^(-?[0-9.]+(e[+-]?\d+)?|var\(--now\))$", (k, v))
 
 
 SIGNED ={"evidence": [{"seq": 4, "hash": "sha256:4", "type": "tool.result"}]}

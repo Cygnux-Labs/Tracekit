@@ -1488,6 +1488,23 @@
       font-size: 13px
     }
 
+    #wf .tn-tbl {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column
+    }
+
+    #wf .thc {
+      display: flex;
+      min-width: 0
+    }
+
+    #wf .thc.sz,
+    #wf .thc.tm {
+      justify-content: flex-end
+    }
+
     #wf .th {
       border: 0;
       background: none;
@@ -1519,11 +1536,6 @@
 
     #wf .th .ar2.dn {
       transform: none
-    }
-
-    #wf .th.sz,
-    #wf .th.tm {
-      justify-self: end
     }
 
     #wf .wh {
@@ -1657,6 +1669,7 @@
       align-items: center;
       gap: 7px;
       min-width: 0;
+      overflow: hidden;
       white-space: nowrap
     }
 
@@ -1677,7 +1690,10 @@
     }
 
     #wf .bd {
-      flex: none;
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
       padding: 1px 7px;
       border-radius: 6px;
       font-size: 11.5px;
@@ -1994,6 +2010,11 @@
       color: var(--amber)
     }
 
+    #wf .pill.none {
+      background: var(--t-soft);
+      color: var(--muted)
+    }
+
     #wf .pill.run {
       background: color-mix(in srgb, var(--blue) 13%, transparent);
       color: var(--blue)
@@ -2238,8 +2259,7 @@
         grid-template-columns: 14px 28px minmax(100px, 1fr) 56px var(--wfw)
       }
 
-      #wf .ag,
-      #wf .th.ag {
+      #wf .ag {
         display: none
       }
 
@@ -4500,8 +4520,10 @@
             <div id="tnticks"></div><div id="tnsegs"></div><div class="tn-sel" id="tnsel" hidden></div><i class="tn-nowo"></i><div class="tn-rl" id="tnrl" hidden></div>
           </div>
           <div class="tn-main">
-            <div class="tn-th" id="tnth" role="row"></div>
-            <div class="tn-rows" id="tnrows" role="table" aria-label="Calls of this run, in the order and window chosen"><div class="tn-in" id="tnin"></div></div>
+            <div class="tn-tbl" role="table" aria-label="Calls of this run, in the order and window chosen">
+              <div class="tn-th" id="tnth" role="row"></div>
+              <div class="tn-rows" id="tnrows" role="rowgroup"><div class="tn-in" id="tnin"></div></div>
+            </div>
             <button type="button" class="tn-new" id="tnnew" data-wfnew hidden></button>
             <aside class="tn-drawer" id="tndrawer" aria-label="Details of the selected call" aria-hidden="true"></aside>
           </div>
@@ -4860,7 +4882,7 @@
     }
 
     // a model turn, for the TIMELINE: from the agent's previous record to this one (a turn records no start of its own)
-    const llmTurn = (a, r, tin, tout) => ({ ts: r.ts, from: a.before, agent: a, model: r.model, tin, tout, cr: r.usage?.cache_read_input_tokens || 0, cw: r.usage?.cache_creation_input_tokens || 0, rec: r });
+    const llmTurn = (a, r, tin, tout) => ({ ts: r.ts, from: a.before, agent: a, model: r.model, tin, tout, cr: r.usage?.cache_read_input_tokens || 0, cw: r.usage?.cache_creation_input_tokens || 0, started: r.started, rec: r });
     function ingest(r) {
       S.recs.push(r);
       if (S.firstTs === null) S.firstTs = r.ts;
@@ -6215,14 +6237,14 @@
       if (PAGE === "run") p.set("view", CALLSLOG ? "timeline" : RV);
       if (seq != null) p.set("seq", seq);
       if (PAGE === "run" && RV === "waterfall" && !CALLSLOG) {
-        if (WFR) p.set("range", WFR.map(x => +x.toFixed(1)).join("-"));
+        if (WFR) p.set("range", WFR.map(x => +Math.max(0, x).toFixed(1)).join("-"));
         if (seq != null && WFTAB !== "request") p.set("tab", WFTAB);
       }
       return p.toString() ? "#" + p : "";
     }
     // a step of a replay, or a link just followed (whose record may open as the row before it), replaces the entry
     function syncLink() {
-      const h = linkOf(), replace = R || following;
+      const h = linkOf(), replace = R || following || WF.drag?.moved;
       if (!linked) return;
       following = false;
       if (h !== location.hash) history[replace ? "replaceState" : "pushState"](null, "", h || location.pathname);
@@ -6245,7 +6267,7 @@
       wvKey = "";
       selected = null;
       const rg = (p.get("range") || "").split("-").map(Number);
-      WFR = rg.length === 2 && rg.every(Number.isFinite) && rg[1] > rg[0] ? rg : null; WFTAB = WFTABS.includes(p.get("tab")) ? p.get("tab") : "request";
+      WFR = rg.length === 2 && rg.every(x => Number.isFinite(x) && x >= 0 && x < 1e7) && rg[1] > rg[0] ? rg : null; WFTAB = WFTABS.includes(p.get("tab")) ? p.get("tab") : "request";
       if (seq != null && seq !== "") openSeq(+seq);
       schedule();
     }
@@ -6770,17 +6792,22 @@
     let WFBY = "call", WFCHIP = "all", WFSORT = { k: "start", dir: 1 }, WFTAB = "request", WFR = null;   // WFR: the window selected, [from, to] in seconds from the run's first record
     const WFMAX = 600, WFCHIPS = [["all", "All"], ["llm", "LLM"], ["tool", "Tools"], ["held", "Held"], ["deny", "Denied"], ["err", "Errors"], ["retry", "Retries"]];
     const WFTABS = ["request", "response", "timing", "decision", "evidence", "retries"];
-    const WF = { keys: new Set(), unseen: 0, ov: { o0: 0, os: 1 }, drag: null, sel: "" };
-    // a call's bars, [kind, from, to]; to null: still waiting or running, so to the axis' right edge. A hold waits (hatched)
-    // from its decision to its answer, then runs if it was approved; a refused one ends there, red. A call whose retry ran
-    // under its approval waits only (the retry's row runs), and the retry runs at once
+    const WF = { keys: new Set(), unseen: 0, n: null, ov: { o0: 0, os: 1 }, drag: null, sel: "", last: null, cur: null, open: false };
+    // a call's bars, [kind, from, to]; to null: still waiting or running (only while its run is open), so to the axis' right edge.
+    // A hold waits (hatched) from its decision to its answer, then runs if it was approved; a refused one ends there, red. A call
+    // that ran with no approval (denied, rejected, unanswered) is drawn running in red to its result: it ran anyway. A call whose
+    // retry ran under its approval waits only (the retry's row runs), and the retry runs at once. A run that is not open ends every wait
+    const wfOpen = a => wfLive() && !ended(a);
+    const wfStop = a => S.sessions.get(a.agent.session)?.end ?? S.lastTs ?? a.start;
     function wfBars(a) {
-      if (a.denied) return [["deny", a.start, a.start]];
-      const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (ended(a) ? from : null)];
+      const ranTo = a.post ? a.end ?? a.post.ts : null;
+      if (a.denied) return [["deny", a.start, a.start], ...a.post ? [["deny", a.start, ranTo]] : []];
+      const kind = a.error ? "deny" : a.flags.some(f => f !== "held_for_approval") ? "flag" : "ok", run = from => [kind, from, a.end ?? (wfOpen(a) ? null : from)];
       if (a.v2?.decision !== "ask" || a.retryOf) return [run(a.start)];
       const ans = a.approvals.filter(x => x.v2.approval in ANSWER).pop();
-      if (!ans) return [["wait", a.start, null]];
-      return [["wait", a.start, ans.ts], ...a.ranBy ? [] : [ans.v2.approval === "approve" ? run(ans.ts) : ["deny", ans.ts, ans.ts]]];
+      if (!ans) return a.post ? [["deny", a.start, ranTo]] : [["wait", a.start, wfOpen(a) ? null : wfStop(a)]];
+      if (ans.v2.approval === "approve") return [["wait", a.start, ans.ts], ...a.ranBy ? [] : [run(ans.ts)]];
+      return [["wait", a.start, ans.ts], ["deny", ans.ts, ans.ts], ...a.post ? [["deny", ans.ts, ranTo]] : []];
     }
     const wfDur = d => { if (d == null) return "–"; if (d < 1) return Math.round(d * 1000) + "ms"; if (d < 10) return d.toFixed(1) + "s"; const s = Math.round(d); return s < 60 ? s + "s" : Math.floor(s / 60) + "m " + String(s % 60).padStart(2, "0") + "s"; };
     const wfRel = (s, step) => { if (step < 1) return +s.toFixed(3) + "s"; s = Math.round(s); return s < 60 ? s + "s" : Math.floor(s / 60) + "m" + (s % 60 ? " " + s % 60 + "s" : ""); };
@@ -6790,15 +6817,20 @@
     // an agent's name for a person: the run's agent, or a sub-agent by its description, its id when that is a word, else its type
     const wfAgent = a => a.signer ? "signer" : !a.sub ? (V2 && a.name ? a.name : "main") : /^[a-z][a-z _-]{0,23}$/i.test(a.id) ? wfTitleCase(a.id) : a.desc ? a.desc.split(/\s+/).slice(0, 3).join(" ").slice(0, 28) : wfTitleCase(a.type);
     // a mark of 3 x 3 squares, mirrored left to right, from the agent's name
-    const wfMark = name => {
+    function wfMark(name) {
       let h = 2166136261; for (const c of name) h = Math.imul(h ^ c.charCodeAt(0), 16777619);
       const on = [0, 1, 2].flatMap(y => [0, 1, 2].map(x => (h >>> (y * 2 + Math.min(x, 2 - x))) & 1 || (x === 1 && y === 1)));
       return { on, hue: ["--magenta", "--green", "--amber", "--blue", "--cyan", "--red"][(h >>> 9) % 6] };
-    };
+    }
     // a v2 result the viewer holds only as a commitment reads "[hashed · N bytes]": N is its size
     const wfHashed = a => /^\[hashed · (\d+) bytes\]$/.exec(a.post?.tool_response?.output);
-    const wfSize = a => { const r = a.post?.tool_response, h = wfHashed(a); return h ? +h[1] : r == null || typeof r === "object" && !Object.keys(r).length ? null : new TextEncoder().encode(typeof r === "string" ? r : JSON.stringify(r)).length; };
-    const wfLive = () => mode === "live" && !ENDED && (V2 ? (scope && RUNS.get(scope)?.state === "open") : true);
+    // a result's size, worked out once: a tick draws every call again
+    function wfSize(a) {
+      if (a._szFor !== a.post) { const r = a.post?.tool_response, h = wfHashed(a); a._szFor = a.post; a._sz = h ? +h[1] : r == null || typeof r === "object" && !Object.keys(r).length ? null : new TextEncoder().encode(typeof r === "string" ? r : JSON.stringify(r)).length; }
+      return a._sz;
+    }
+    // live: the page follows a log that is still being written. A file (a bundle, a saved report) never is
+    const wfLive = () => mode === "live" && !ENDED && SOURCE !== "bundle" && !document.URL.startsWith("file:") && (V2 ? (scope && RUNS.get(scope)?.state === "open") : true);
     // a failed call's short word: its exit code or HTTP status when its result holds one
     function wfFailWord(a) {
       const r = a.post?.tool_response || {}, code = r.exit_code ?? r.exitCode, http = r.status ?? r.status_code;
@@ -6807,28 +6839,35 @@
     // the answer to a held call: [the record, who]
     const wfAnswer = a => { const h = a.retryOf || a, r = h.approvals.filter(x => x.v2.approval in ANSWER).pop(); return r && { rec: r, word: ANSWER[r.v2.approval].toLowerCase(), who: r.v2.approver || "" }; };
     function wfToolRow(a, i) {
-      const [cls, words] = callState(a), bars = wfBars(a), held = heldCall(a), ans = held && wfAnswer(a), badges = [];
-      const wait = bars.find(b => b[0] === "wait"), run = bars.find(b => b[0] !== "wait" && b[2] !== b[1]);
-      const waitDur = wait ? (wait[2] ?? null) : null, last = bars[bars.length - 1], end = last[2];
+      let [cls, words] = callState(a);
+      const bars = wfBars(a), held = heldCall(a), ans = held && wfAnswer(a), badges = [], open = wfOpen(a);
+      if (!open && words === "RUNNING") [cls, words] = ["dim", "NO RESULT"];
+      else if (!open && words === "TO ANSWER") [cls, words] = ["s-flag", "NOT ANSWERED"];
+      const anyway = /RAN ANYWAY/.test(words), wait = bars.find(b => b[0] === "wait"), run = bars.find(b => b[0] !== "wait" && b[2] !== b[1]);
+      const waitDur = wait ? (wait[2] ?? null) : null, last = bars[bars.length - 1], end = last[2], size = wfSize(a);
       const attempts = (S.byId?.get(a.id) || []).length, flags = a.flags.filter(f => f !== "denied" && f !== "error" && f !== "held_for_approval");
       if (a.denied) badges.push(["deny", "DENIED", a.reasons.join("; ") || "refused by the signer's policy"]);
       if (held) {
         badges.push(["held", "HELD " + (wait && waitDur != null ? wfDur(waitDur - wait[1]) : ""), "held for a person", wait && waitDur == null ? wait[1] : null]);
         if (ans) badges.push([ans.word === "approved" ? "ok" : "deny", ans.word, ans.who ? ans.word + " by " + ans.who : ans.word]);
       }
+      if (anyway) badges.push(["deny", "RAN ANYWAY", "it has a result though the policy or the person did not let it run"]);
       if (a.error && !a.denied) badges.push(["deny", wfFailWord(a), "the call failed"]);
       if (a.retryOf) badges.push(["retry", "RETRY", "the agent's retry of " + a.retryOf.pre.v2.tool_use_id + ", under that call's approval"]);
       else if (attempts > 1) badges.push(["retry", "×" + attempts, attempts + " attempts under this call's id"]);
       if (flags.length) badges.push(["flag", "⚑ " + flags[0].replace(/_/g, " ") + (flags.length > 1 ? " +" + (flags.length - 1) : ""), "flagged: " + flags.join(", ")]);
-      const failed = a.denied || a.error || cls === "s-deny", running = bars.some(b => b[2] == null);
-      return { key: "a" + i, kind: "tool", x: a, i, agent: a.agent, start: a.start, end, bars, name: a.tool, arg: a.target, badges, held: !!held, denied: !!a.denied, failed: !!a.error,
-        retry: !!(a.retryOf || attempts > 1), running, state: failed ? "fail" : running ? "run" : held || a.retryOf || attempts > 1 ? "retry" : "done", words: [cls, words],
-        size: wfSize(a), sizeText: wfSize(a) == null ? "–" : wfBytes(wfSize(a)), dur: running ? null : run ? run[2] - run[1] : wait && waitDur != null ? waitDur - wait[1] : a.denied ? null : end - a.start, durFrom: running ? (run || wait)[1] : null, bad: failed };
+      const failed = a.denied || a.error || cls === "s-deny" || anyway, running = bars.some(b => b[2] == null), noResult = !a.post && a.end == null && !held && !a.denied && !running;
+      return { key: "a" + i, kind: "tool", x: a, i, agent: a.agent, start: a.start, end, bars, name: a.tool, arg: a.target, badges, held: !!held, denied: !!a.denied, failed: !!a.error || anyway,
+        retry: !!(a.retryOf || attempts > 1), running, noResult, state: failed ? "fail" : running ? "run" : held || a.retryOf || attempts > 1 ? "retry" : "done", words: [cls, words],
+        size, sizeText: size == null ? "–" : wfBytes(size),
+        dur: running || noResult ? null : run ? run[2] - run[1] : wait && waitDur != null ? waitDur - wait[1] : a.denied ? null : end - a.start, durFrom: running ? (run || wait)[1] : null, bad: failed };
     }
+    // a model turn records no start: its bar runs from the agent's previous record (approx), unless the gateway's request was recorded (started)
     function wfLlmRow(l, j) {
-      const n = l.rec.v2?.tool_ids?.length, from = l.from < l.ts ? l.from : null;
+      const n = l.rec.v2?.tool_ids?.length, real = l.started != null && l.started < l.ts, from = real ? l.started : l.from < l.ts ? l.from : null;
       return { key: "m" + j, kind: "llm", x: l, j, agent: l.agent, start: from ?? l.ts, end: l.ts, bars: [["llm", from ?? l.ts, l.ts]], name: l.model || "model", arg: n == null ? "" : n ? "→ " + plural(n, "tool call") : "no tool calls",
-        badges: [], held: false, denied: false, failed: false, retry: false, running: false, state: "done", words: ["dim", "MODEL TURN"], size: l.tin + l.tout, sizeText: wfTok(l.tin + l.tout), dur: from == null ? null : l.ts - from, durFrom: null, bad: false };
+        badges: [], held: false, denied: false, failed: false, retry: false, running: false, noResult: false, state: "done", words: ["dim", "MODEL TURN"], size: l.tin + l.tout, sizeText: wfTok(l.tin + l.tout),
+        dur: from == null ? null : l.ts - from, approx: !real && from != null, real, durFrom: null, bad: false };
     }
     const wfIn = (r, c) => c === "all" || c === "llm" && r.kind === "llm" || c === "tool" && r.kind === "tool" || c === "held" && r.held || c === "deny" && r.denied || c === "err" && r.failed || c === "retry" && r.retry;
     function wfRows() {
@@ -6849,7 +6888,8 @@
       if (!R) for (const r of all) for (const [, f, t] of r.bars) { lo = Math.min(lo, f); hi = Math.max(hi, t ?? (live ? now : f)); }
       if (lo > hi) { lo = hi = base; }
       const pad = Math.max(hi - lo, .01) * .02, o0 = lo - pad - base, os = hi - lo + 2 * pad;
-      const win = WFR && [base + WFR[0], base + WFR[1]], t0 = (win ? win[0] : lo - pad) - base, span = win ? win[1] - win[0] : os;
+      const wlo = WFR ? Math.max(WFR[0], o0) : 0, whi = WFR ? Math.min(WFR[1], o0 + os) : 0, win = WFR && whi > wlo ? [base + wlo, base + whi] : null;   // a link's window is clamped into the run
+      const t0 = (win ? win[0] : lo - pad) - base, span = win ? win[1] - win[0] : os;
       const rows = all.filter(r => wfIn(r, WFCHIP) && (!win || r.start <= win[1] && (r.end ?? Infinity) >= win[0])).sort((x, y) => WFSORT.dir * (WFCMP[WFSORT.k](x, y) || x.start - y.start));
       // the overview's segments in a few lanes, each in the first lane free at its start
       const free = [], segs = [];
@@ -6859,11 +6899,11 @@
         free[ln] = Math.max(to - base, f - base + os * .004);
         segs.push({ k: r.kind === "llm" ? "llm" : k === "deny" ? "bad" : k === "wait" ? "wait" : "tool", a: f - base, e: t == null ? null : t - base, lane: ln, key: r.key });
       }
-      return { all, rows, counts, segs, base, now: now - base, live, win: !!win, t0, span, o0, os, hi: hi - base, lo: lo - base };
+      return { all, rows, counts, segs, base, now: now - base, live, win: !!win, wr: win && [wlo, whi], t0, span, o0, os, hi: hi - base, lo: lo - base };
     }
     const wfTokens = rows => rows.reduce((n, r) => n + (r.kind === "llm" ? r.size : 0), 0);
     // what a row says to a screen reader, as the bars say it
-    const wfLabel = (r, base) => [wfAgent(r.agent), r.kind === "llm" ? "model turn " + r.name : r.name + (r.arg ? " " + r.arg : ""), r.words[1].toLowerCase(), ...r.badges.map(b => b[1]), r.dur == null ? "" : wfDur(r.dur), "at +" + wfDur(r.start - base)].filter(Boolean).join(", ");
+    const wfLabel = (r, base) => [wfAgent(r.agent), r.kind === "llm" ? "model turn " + r.name : r.name + (r.arg ? " " + r.arg : ""), r.words[1].toLowerCase(), ...r.badges.map(b => b[1]), r.dur == null ? "" : r.approx ? "about " + wfDur(r.dur) + " since the previous record" : wfDur(r.dur), "at +" + wfDur(r.start - base)].filter(Boolean).join(", ");
     const WFI = {
       terminal: '<path d="M5 8l4.5 4L5 16M12 17h7"/>', file: '<path d="M7 3.5h7l4 4V20H7z"/><path d="M14 3.5v4h4"/>', pencil: '<path d="M4.5 19.5l1-4.2L16 4.8l3.2 3.2L8.7 18.5z"/><path d="M14 7l3 3"/>',
       globe: '<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c3 3 3 14 0 17M12 3.5c-3 3-3 14 0 17"/>', plug: '<path d="M9 4v4M15 4v4M6.5 8h11v3a5.5 5.5 0 01-11 0zM12 16.5V20"/>',
@@ -6895,36 +6935,36 @@
       if (r.x.retryOf) { const f = r.x.retryOf.start; h += `<i class="mk tick" style="${esc(at(f, f))}" title="the first try: held"></i><i class="dash" style="${esc(at(f, r.start))}"></i>`; }
       for (const [k, f, t] of r.bars) {
         const dur = t == null ? "still going" : wfDur(t - f);
-        if (r.kind === "llm") h += `<i class="b llm" style="${esc(at(f, t))}" title="${esc(r.x.from < r.x.ts ? "model turn · " + dur + " since the agent's previous record" : "model turn")}"></i>`;
+        if (r.kind === "llm") h += `<i class="b llm" style="${esc(at(f, t))}" title="${esc(r.approx ? "model turn · about " + dur + ", since the agent's previous record" : "model turn · " + dur)}"></i>`;
         else if (k === "wait") h += `<i class="b wait" style="${esc(at(f, t))}" title="held for a person · ${esc(dur)}"></i>`;
         else if (k === "deny" && t === f) h += `<i class="mk" style="${esc(at(f, f))}" title="${esc(r.denied ? "denied: it never ran" : r.x.error ? "failed" : "refused: it never ran")}"></i>`;
-        else h += `<i class="b ${k === "deny" ? "fail" : "ok"}${k === "flag" ? " flag" : ""}" style="${esc(at(f, t))}" title="${esc((k === "deny" ? "failed" : "ran") + " · " + dur)}"></i>`;
+        else h += `<i class="b ${k === "deny" ? "fail" : "ok"}${k === "flag" ? " flag" : ""}" style="${esc(at(f, t))}" title="${esc((k === "deny" ? /RAN ANYWAY/.test(r.words[1]) ? "ran anyway" : "failed" : "ran") + " · " + dur)}"></i>`;
       }
       return h;
     }
     function wfRowHtml(r, base) {
       const m = wfMark(wfAgent(r.agent)), name = wfAgent(r.agent);
       const badges = r.badges.map(([c, t, title, from]) => `<span class="bd ${esc(c)}${from != null ? " tn-live" : ""}" title="${esc(title)}"${from != null ? ` data-pre="HELD " data-from="${esc(+(from - base).toFixed(3))}"` : ""}>${esc(t)}</span>`).join("");
-      return `<div class="tn-r" role="row" tabindex="0" data-k="${esc(r.key)}" ${r.kind === "llm" ? `data-wfl="${esc(r.j)}"` : `data-wf="${esc(r.i)}"`} aria-label="${esc(wfLabel(r, base))}">`
+      return `<div class="tn-r" role="row" tabindex="-1" data-k="${esc(r.key)}" ${r.kind === "llm" ? `data-wfl="${esc(r.j)}"` : `data-wf="${esc(r.i)}"`} aria-label="${esc(wfLabel(r, base))}">`
         + `<span class="dot ${esc(r.state)}" role="cell" title="${esc(r.words[1].toLowerCase())}"></span>` + wfIconBox(r, 15, true)
         + `<span class="nm" role="cell"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}` + (badges) + `</span>`
         + `<span class="ag" role="cell"><svg viewBox="0 0 11 11" width="11" height="11" aria-hidden="true" style="color:var(${esc(m.hue)})">` + (m.on.map((o, i) => o ? `<rect x="${esc((i % 3) * 4)}" y="${esc(Math.floor(i / 3) * 4)}" width="3" height="3" rx=".6" fill="currentColor"/>` : "").join("")) + `</svg><span>${esc(name)}</span></span>`
-        + `<span class="sz" role="cell">${esc(r.sizeText)}</span><span class="tm${r.bad ? " bad" : ""}${r.durFrom != null ? " tn-live" : ""}" role="cell"${r.durFrom != null ? ` data-pre="" data-from="${esc(+(r.durFrom - base).toFixed(3))}"` : ""}>${esc(r.durFrom != null ? "" : wfDur(r.dur))}</span>`
+        + `<span class="sz" role="cell">${esc(r.sizeText)}</span><span class="tm${r.bad ? " bad" : ""}${r.durFrom != null ? " tn-live" : ""}" role="cell"${r.approx ? ' title="since the agent\'s previous record: the model\'s time and the harness\'s"' : ""}${r.durFrom != null ? ` data-pre="" data-from="${esc(+(r.durFrom - base).toFixed(3))}"` : ""}>${esc(r.durFrom != null ? "" : (r.approx ? "~" : "") + wfDur(r.dur))}</span>`
         + `<span class="wf" role="cell">` + (wfBarHtml(r, base)) + `</span></div>`;
     }
     const wfSortWord = k => ({ name: "Name", agent: "Agent", size: "Size", time: "Time", start: "Waterfall" })[k];
     function wfHeadHtml(m) {
       const cell = (k, cls) => {
         const arrow = WFSORT.k === k ? '<span class="ar2' + (WFSORT.dir < 0 ? " dn" : "") + '">' + wfSvg("chev", 10) + "</span>" : "";
-        return `<button type="button" class="th ${esc(cls)}" role="columnheader" data-wfs="${esc(k)}" aria-sort="${esc(WFSORT.k === k ? (WFSORT.dir > 0 ? "ascending" : "descending") : "none")}">${esc(wfSortWord(k))}` + arrow + `</button>`;
+        return `<span class="thc ${esc(cls)}" role="columnheader" aria-sort="${esc(WFSORT.k === k ? (WFSORT.dir > 0 ? "ascending" : "descending") : "none")}"><button type="button" class="th" data-wfs="${esc(k)}">${esc(wfSortWord(k))}` + arrow + `</button></span>`;
       };
       const step = tickStep(m.span, 4), cw = Math.min(560, Math.max(200, .36 * ($("wf").clientWidth - 2)));
       let ticks = "";
-      for (let t = Math.ceil((m.t0 + .0001) / step) * step; t < m.t0 + m.span; t += step) {
+      for (let t = Math.ceil((m.t0 + .0001) / step) * step, k = 0; t < m.t0 + m.span && k < 40; t += step, k++) {   // a count bounds the loop: a huge window must not hang the tab
         const w = wfRel(t, step).length * 6.4 + 10, x = (t - m.t0) / m.span * cw;
         if (x - w / 2 >= 100 && x + w / 2 <= cw - 2) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}">${esc(wfRel(t, step))}</span>`;   // whole, and clear of "Waterfall"
       }
-      return `<span></span><span></span>` + (cell("name", "nm")) + `` + (cell("agent", "ag")) + `` + (cell("size", "sz")) + `` + (cell("time", "tm")) + `<span class="wf wh">` + (cell("start", "wfb")) + `<span class="tks">` + (ticks) + `</span></span>`;
+      return `<span></span><span></span>` + cell("name", "nm") + cell("agent", "ag") + cell("size", "sz") + cell("time", "tm") + `<span class="wf wh">` + cell("start", "wfb") + `<span class="tks">` + ticks + `</span></span>`;
     }
     function wfChipsHtml(m) {
       return WFCHIPS.map(([c, w]) => `<button type="button" class="chip2${WFCHIP === c ? " on" : ""}" data-wfc="${esc(c)}" aria-pressed="${esc(WFCHIP === c)}">${esc(w)} <span class="n">${esc(m.counts[c])}</span></button>`).join("");
@@ -6932,53 +6972,71 @@
     function wfStripHtml(m) {
       const step = tickStep(m.os, 7), width = $("tnov").clientWidth || 800;
       let ticks = "";
-      for (let t = Math.ceil((m.o0 + .0001) / step) * step; t < m.o0 + m.os; t += step) if ((t - m.o0) / m.os * width + 8 + wfRel(t, step).length * 6.4 <= width) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}"><em>${esc(wfRel(t, step))}</em></span>`;
+      for (let t = Math.ceil((m.o0 + .0001) / step) * step, k = 0; t < m.o0 + m.os && k < 40; t += step, k++) if ((t - m.o0) / m.os * width + 8 + wfRel(t, step).length * 6.4 <= width) ticks += `<span class="tk" style="--a:${esc(+t.toFixed(3))}"><em>${esc(wfRel(t, step))}</em></span>`;
       return ticks;
     }
+    // what the page may say of a run's check: v2: its run's own verdict, and only a final run's; v1: a file the server verified, a page
+    // whose records the browser chained (signatures not checked), or a live ledger
+    function wfSeal(m) {
+      const run = V2 && scope && RUNS.get(scope), seal = (c, t, title) => `<span class="seal ${esc(c)}"${title ? ` title="${esc(title)}"` : ""}>` + t + `</span>`, tick = wfSvg("check", 13);
+      if (run) {
+        if (run.state === "open") return m.live ? seal("live", "<i></i>Live") : "";
+        if (run.state !== "final") return run.state === "closing" ? seal("", "Closing") : "";
+        if (ENDED) return "";
+        if (run.verdict === "failed") return seal("bad", wfSvg("fail", 13) + "Run failed its check", run.label);
+        if (run.verdict === "verified") return STOPPED ? seal("", "Verified earlier · checks stopped", STOPPED) : seal("ok", "Verified " + tick, "the viewer's verifier passed this run's bundle");
+        return seal("", run.verdict === "pending" ? "Checking…" : "Not checked", run.label);
+      }
+      if (V2 || ENDED) return "";
+      if (BOOT || document.URL.startsWith("file:")) return chainState.ok === true && chainState.n > 0 ? seal("", "Chain ✓ (signatures not checked)", "this page chained the records' hashes itself; it checked no signature") : "";
+      if (SOURCE === "bundle") return chainState.ok === true && chainState.n > 0 ? seal("ok", "Verified " + tick, "the server verified the bundle before it opened it") : "";
+      return m.live ? seal("live", "<i></i>Live") : "";
+    }
     function wfFoot(m) {
-      const rows = m.rows, run = V2 && scope && RUNS.get(scope), final = run ? run.state !== "open" : !m.live;
-      const ok = run ? run.verdict === "verified" && !STOPPED : chainState.ok === true && chainState.n > 0;
-      const item = (ic, t, cls = "") => `<span class="fi ${esc(cls)}">` + (wfSvg(ic, 14)) + `<span>${esc(t)}</span></span>`;
+      const rows = m.rows, item = (ic, t, cls = "") => `<span class="fi ${esc(cls)}">` + wfSvg(ic, 14) + `<span>${esc(t)}</span></span>`;
       const tok = wfTokens(rows), nf = rows.filter(r => r.failed).length, nh = rows.filter(r => r.held).length, nd = rows.filter(r => r.denied).length;
-      const seal = final && run && run.verdict === "failed" ? `<span class="seal bad" title="${esc(run.label || "")}">` + (wfSvg("fail", 13)) + `Run failed its check</span>`
-        : final && ok ? `<span class="seal ok" title="${esc(run ? "the viewer's verifier passed this run's bundle" : "the records' hash chain checks out")}">Verified ` + (wfSvg("check", 13)) + `</span>`
-        : !final ? `<span class="seal live"><i></i>Live</span>` : "";
-      return `<div class="fl">` + (item("swap", rows.length === m.all.length ? plural(m.all.length, "call") : `${rows.length}/${m.all.length} calls`)) + `` + (item("fail", nf + " failed", nf ? "bad" : "")) + ``
+      const calls = rows.filter(r => r.kind === "tool").length, allCalls = m.all.filter(r => r.kind === "tool").length, turns = rows.length - calls, allTurns = m.all.length - allCalls;
+      const said = (c, t, a, at) => (c === a ? plural(c, "call") : `${c}/${a} calls`) + (at ? " · " + (t === at ? plural(t, "model turn") : `${t}/${at} model turns`) : "");
+      return `<div class="fl">` + item("swap", said(calls, turns, allCalls, allTurns)) + item("fail", nf + " failed", nf ? "bad" : "")
         + (m.counts.held ? item("pause", nh + " held", nh ? "held" : "") : "") + (m.counts.deny ? item("stop", nd + " denied", nd ? "bad" : "") : "")
-        + (wfTokens(m.all) ? item("db", (tok >= 1000 ? +(tok / 1000).toFixed(1) + "K" : tok) + " tokens") : "") + item("clock", wfDur(Math.max(0, m.hi - m.lo)), "dur") + `</div>` + (seal) + ``;
+        + (wfTokens(m.all) ? item("db", (tok >= 1000 ? +(tok / 1000).toFixed(1) + "K" : tok) + " tokens") : "") + item("clock", wfDur(Math.max(0, m.hi - m.lo)), "dur") + `</div>` + wfSeal(m);
     }
     // the drawer's tab bodies
     const wfRule = x => `<div class="rl"><b>${esc(x.id)}</b> ${esc(x.reason || "(not in a policy this viewer has)")}${x.remedy ? `<div class="rm">what to do: ${esc(x.remedy)}</div>` : ""}</div>`;
     const wfCode = (v, cls = "") => `<pre class="cb ${esc(cls)}">${esc(j(v).slice(0, 6000))}</pre>`;
-    // a call's phases, each only if its records hold it: [label, what, from, to (null: a moment)]
+    // a call's phases, each only if its records hold it: [label, what, from, to (null: a moment), to now while it still waits or runs]
     function wfPhases(r) {
       const a = r.x, out = [];
       if (r.kind === "llm") {
-        out.push(a.from < a.ts ? ["Since the agent's previous record", "the model's time and the harness's", a.from, a.ts] : ["No earlier record of this agent", "so the span before the turn is not known", a.ts, null]);
+        if (r.real) out.push(["Model exchange", "the gateway's request to its response, as recorded", a.started, a.ts]);
+        else out.push(a.from < a.ts ? ["Since the agent's previous record", "the model's time and the harness's", a.from, a.ts] : ["No earlier record of this agent", "so the span before the turn is not known", a.ts, null]);
         out.push(["Turn recorded", `seq ${lseq(a.rec)}`, a.ts, null]);
         return out;
       }
-      const v = a.v2 || {}, ans = wfAnswer(a), held = heldCall(a), done = a.post || a.ranBy?.post, ran = a.ranBy || a;
+      const v = a.v2 || {}, ans = wfAnswer(a), held = heldCall(a), done = a.post || a.ranBy?.post, ran = a.ranBy || a, open = wfOpen(a), stop = wfStop(a);
+      const nothing = open ? ["Running", "no result yet", a.start, null, true] : ["No result recorded", "the run ended before one was signed", a.start, null];
       out.push(["Decided by the policy", (V2 ? String(v.decision || "").toUpperCase() : a.denied ? "DENY" : "ALLOW") + (v.rules?.length ? " · " + v.rules.map(x => x.id).join(", ") : ""), a.start, null]);
       if (held) {
-        out.push(["Held for a person", ans ? `${ans.word}${ans.who ? " by " + ans.who : ""} at ${fmtT(ans.rec.ts)}` : "no answer recorded", a.start, ans?.rec.ts ?? null, !ans]);
-        if (ans?.rec.v2.approval === "approve" && done) out.push([a.ranBy ? `Ran, as the agent's retry ${a.ranBy.pre.v2.tool_use_id}` : "Ran", "with the approved arguments", a.ranBy ? ran.start : ans.rec.ts, ran.end]);
+        out.push(["Held for a person", ans ? `${ans.word}${ans.who ? " by " + ans.who : ""} at ${fmtT(ans.rec.ts)}` : open ? "no answer recorded yet" : "no answer recorded before the run ended", a.start, ans?.rec.ts ?? (open ? null : stop), !ans && open]);
+        if (ans?.rec.v2.approval === "approve") out.push(done ? [a.ranBy ? `Ran, as the agent's retry ${a.ranBy.pre.v2.tool_use_id}` : "Ran", "with the approved arguments", a.ranBy ? ran.start : ans.rec.ts, ran.end] : [nothing[0], nothing[1], ans.rec.ts, null, nothing[4]]);
+        else if (done) out.push(["Ran anyway", ans ? `though it was ${ans.word}` : "with no answer to its hold", ans?.rec.ts ?? a.start, a.end]);
         else if (ans) out.push(["Did not run", "no result is recorded for it", ans.rec.ts, null]);
-      } else if (a.denied && !a.post) out.push(["Did not run", "a denied call is not run", a.start, null]);
-      else out.push([a.denied ? "Ran anyway" : "Ran", a.denied ? "though denied: its result is recorded" : a.error ? "failed" : "", a.start, a.end]);
+      } else if (a.denied) out.push(a.post ? ["Ran anyway", "though denied: its result is recorded", a.start, a.end] : ["Did not run", "a denied call is not run", a.start, null]);
+      else out.push(a.post || a.end != null ? ["Ran", a.error ? "failed" : "", a.start, a.end] : nothing);
       if (done) out.push(["Result recorded", `seq ${lseq(done)} · ${a.error ? "failed" : "ok"}`, done.ts, null]);
       return out;
     }
     function wfTimingHtml(r, base) {
       const ph = wfPhases(r), now = nowTs(), lo = Math.min(...ph.map(p => p[2])), hi = Math.max(lo + .001, ...ph.map(p => p[3] ?? p[2]), ...ph.filter(p => p[4] && p[3] == null).map(() => now));
-      const first = r.kind === "llm" ? "A model turn has no recorded start time: its bar runs from the agent's previous record to the turn, so it holds the model's time and the harness's." : "";
+      const first = r.kind === "llm" ? r.real ? "The gateway recorded this exchange's request and its response: the span between them is the model's." : "A model turn has no recorded start time: its bar runs from the agent's previous record to the turn, so it holds the model's time and the harness's." : "";
       const pos = t => ((t - lo) / (hi - lo) * 100).toFixed(2);
       const rows = ph.map(([l, what, f, t, open]) => {
         const to = t ?? (open ? now : null), bar = to != null && to > f ? `<i class="pb ${/^Held/.test(l) ? "wait" : r.kind === "llm" ? "llm" : r.bad && /^Ran/.test(l) ? "fail" : "ok"}" style="left:${esc(pos(f))}%;width:${esc(Math.max(1.2, +pos(to) - +pos(f)).toFixed(2))}%"></i>` : `<i class="pm" style="left:${esc(pos(f))}%"></i>`;
         return `<div class="ph"><span class="pl">${esc(l)}<small>${esc(what)}</small></span><span class="pt">` + (bar) + `</span><span class="pv">` + (to != null && to > f ? esc(wfDur(to - f)) : "at +" + esc(wfDur(f - base))) + `</span></div>`;
       }).join("");
-      const total = r.kind === "llm" ? r.dur : (ph.some(p => p[4]) ? now : hi) - lo;
-      return `<p class="mu">${r.kind === "llm" ? "Its bar starts" : "Started"} at +${esc(wfDur(lo - base))} into the run${r.kind === "llm" ? ", at the agent's previous record" : ", as the policy's decision was signed"}</p>${first ? `<p class="mu">${esc(first)}</p>` : ""}<div class="phs">` + (rows) + `</div>`
+      const when = r.kind === "llm" ? r.real ? ", at the exchange's request" : ", at the agent's previous record" : ", as the policy's decision was signed";
+      const spans = ph.some(p => p[3] != null || p[4]), total = r.kind === "llm" ? r.dur : spans ? (ph.some(p => p[4]) ? now : hi) - lo : null;
+      return `<p class="mu">${r.kind === "llm" && !r.real ? "Its bar starts" : "Started"} at +${esc(wfDur(lo - base))} into the run${esc(when)}</p>${first ? `<p class="mu">${esc(first)}</p>` : ""}<div class="phs">` + (rows) + `</div>`
         + `<div class="ph tot"><span class="pl">Total</span><span class="pt mu">${esc(r.sizeText)}</span><span class="pv">${esc(r.kind === "llm" && total == null ? "not known" : wfDur(total))}</span></div>`;
     }
     function wfDecisionHtml(r) {
@@ -6988,19 +7046,25 @@
       return `<div class="kv2"><span>Verdict</span><b class="${esc(a.denied ? "deny" : v.decision === "ask" ? "held" : "ok")}">${esc(V2 ? String(v.decision).toUpperCase() : a.denied ? "DENY" : "ALLOW")}</b><span>Outcome</span><b>${esc(r.words[1])}</b>`
         + (ans ? `<span>Answered</span><b>${esc(ans.word + (ans.who ? " by " + ans.who : "") + " · " + fmtT(ans.rec.ts))}</b>` : "") + (a.flags.length ? `<span>Flags</span><b>${esc(a.flags.join(", "))}</b>` : "")
         + (v.policy_hash ? `<span>Policy</span><b title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</b>` : "") + `</div>`
-        + (v.rules?.length ? `<div class="sec2">Rules that matched</div>` + (v.rules.map(wfRule).join("")) + `` : a.reasons.length ? `<div class="sec2">Reasons</div>` + (a.reasons.map(x => `<div class="rl">${esc(x)}</div>`).join("")) + `` : `<p class="mu">No rule matched: the call was allowed.</p>`);
+        + (v.rules?.length ? `<div class="sec2">Rules that matched</div>` + (v.rules.map(wfRule).join("")) : a.reasons.length ? `<div class="sec2">Reasons</div>` + (a.reasons.map(x => `<div class="rl">${esc(x)}</div>`).join("")) : `<p class="mu">No rule matched: the call was allowed.</p>`);
     }
     function wfEvidenceHtml(r) {
       const recs = r.kind === "llm" ? [["model turn", r.x.rec]] : [["decision", r.x.pre], ...r.x.approvals.map(x => ["approval · " + (x.v2.approval || ""), x]), ...r.x.post ? [["result", r.x.post]] : [], ...r.x.ranBy?.post ? [["retry's result", r.x.ranBy.post]] : []];
       const run = V2 && scope && RUNS.get(scope), who = r.x.pre || r.x.rec;
       return `<div class="kv2">` + recs.map(([w, x]) => `<span>${esc(w)}</span><b><a href="#" data-tkseq="${esc(lseq(x))}">seq ${esc(lseq(x))}</a> <code title="${esc(x.hash || "")}">${esc(String(x.hash || "").replace(/^sha256:/, "").slice(0, 12))}</code></b>`).join("") + `</div>`
-        + `<div class="sec2">Does it check out</div><p class="mu">` + (run ? esc(run.verdict === "verified" ? "Yes: the viewer's verifier passed this run (signatures, hash chain, checkpoint). That check is the server's; this page checks nothing itself." : `The run is ${run.verdict}: ${run.label || ""}`) : chainState.ok === true ? "The page's own hash-chain check passed." : "Not checked yet.") + `</p>`
+        + `<div class="sec2">Does it check out</div><p class="mu">` + (run ? esc(run.verdict === "verified" ? "Yes: the viewer's verifier passed this run (signatures, hash chain, checkpoint). That check is the server's; this page checks nothing itself." : `The run is ${run.verdict}: ${run.label || ""}`) : chainState.ok === true ? BOOT ? "This page chained the records' hashes itself; it checked no signature." : "The viewer's server checked this ledger, signatures included; this page checks nothing itself." : "Not checked yet.") + `</p>`
         + `<button type="button" class="lk" data-rv="evidence">Open the run's evidence view</button>`;
     }
     function wfRetriesHtml(r) {
       const a = r.x;
       return a.retryOf ? `<p>The agent's retry of ${esc(a.retryOf.pre.v2.tool_use_id)}, run under that call's approval.</p>` : a.ranBy ? `<p>The agent sent this call again as ${esc(a.ranBy.pre.v2.tool_use_id)}, which ran with the approved arguments.</p>`
         : `<p>${esc(plural((S.byId?.get(a.id) || []).length, "attempt"))} under this call's id.</p>`;
+    }
+    // the pill: the page's own words for the call's state (callState), and how they colour
+    function wfPill(r) {
+      if (r.kind === "llm") return ["Done", "ok"];
+      const [cls, w] = r.words, t = w.replace(/^⚑ /, "");
+      return [{ OK: "Done", RUNNING: "Running", "TO ANSWER": "Held" }[t] || t[0] + t.slice(1).toLowerCase(), { "s-ok": "ok", "s-err": "bad", "s-deny": "bad", "s-flag": "held", "s-run": "run" }[cls] || "none"];
     }
     function wfDrawerHtml(r, tab, base) {
       const a = r.x, llm = r.kind === "llm", tabs = llm ? ["request", "response", "timing", "evidence"] : WFTABS.filter(t => t !== "retries" || r.retry);
@@ -7019,9 +7083,9 @@
       else if (T === "decision") body = wfDecisionHtml(r);
       else if (T === "evidence") body = wfEvidenceHtml(r);
       else body = wfRetriesHtml(r);
-      const word = r.denied ? "Denied" : r.failed ? "Failed" : r.state === "fail" ? "Rejected" : r.running ? (r.held ? "Held" : "Running") : r.held ? "Approved" : "Done", pc = r.state === "fail" ? "bad" : r.state === "run" ? "run" : r.held ? "held" : "ok";
+      const [word, pc] = wfPill(r);
       return `<header>` + wfIconBox(r, 16, false) + `<div class="hd"><div class="t"><b>${esc(r.name)}</b>${r.arg ? `<span class="ar">${esc(r.arg)}</span>` : ""}</div>`
-        + `<div class="s">${esc([llm ? "Model turn" : "Tool call", wfAgent(r.agent), llm || /^(⚑ )?ok$/i.test(r.words[1]) ? "" : r.words[1].toLowerCase(), r.dur == null ? "" : wfDur(r.dur)].filter(Boolean).join(" · "))}</div></div>`
+        + `<div class="s">${esc([llm ? "Model turn" : "Tool call", wfAgent(r.agent), llm || /^(⚑ )?ok$/i.test(r.words[1]) ? "" : r.words[1].toLowerCase(), r.dur == null ? "" : r.approx ? "~" + wfDur(r.dur) + " since the previous record" : wfDur(r.dur)].filter(Boolean).join(" · "))}</div></div>`
         + `<span class="pill ${esc(pc)}">${esc(word)}</span><button type="button" class="x" data-wfx aria-label="Close the details">` + (wfSvg("x", 16)) + `</button></header>`
         + `<div class="tabs" role="tablist">` + (tabs.map(t => `<button type="button" role="tab" class="${t === T ? "on" : ""}" aria-selected="${esc(t === T)}" data-wft="${esc(t)}">${esc(t[0].toUpperCase() + t.slice(1))}</button>`).join("")) + `</div><div class="pn" role="tabpanel">` + (body) + `</div>`;
     }
@@ -7031,8 +7095,19 @@
       if (selected.pre) { const i = S.actList.indexOf(selected); return i < 0 ? null : wfToolRow(selected, i); }
       const j = S.llm.findIndex(l => l.rec === selected); return j < 0 ? null : wfLlmRow(S.llm[j], j);
     }
-    // rows not seen at the last draw
-    const wfNew = (seen, rows) => rows.reduce((n, r) => n + !seen.has(r.key), 0);
+    // a run's page starts afresh: nothing unseen, and the table opens at its first call
+    function wfReset() {
+      WF.keys = new Set(); WF.unseen = 0; WF.n = null; WF.cur = WF.last = WF.sel = null; $("tnin")._h = "";
+    }
+    // arrivals since the last draw: the calls and model turns the run grew by (a filter or a window clearing is none)
+    const wfGrown = (before, now) => before == null ? 0 : Math.max(0, now - before);
+    // a row's key: arrows, Home, End and the pages move between rows (one row is tabbable); Enter and Space open it
+    function wfRowKey(e, rows) {
+      const r = e.target.closest?.(".tn-r"); if (!r) return;
+      const i = rows.indexOf(r), to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: rows.length - 1, PageDown: i + 8, PageUp: i - 8 }[e.key];
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation?.(); r.click(); }
+      else if (to !== undefined) { e.preventDefault(); rows[Math.min(rows.length - 1, Math.max(0, to))]?.focus(); }
+    }
     // the window's keys: arrows move it, Shift and arrows resize it, Escape clears it; null without a window starts one in the middle
     function wfRangeKey(win, [o0, os], key, shift) {
       if (key === "Escape" || key === "Delete" || key === "Backspace") return null;
@@ -7041,7 +7116,7 @@
       const d = key === "ArrowLeft" ? -step : key === "ArrowRight" ? step : 0;
       let lo = shift ? a : a + d, hi = b + d;
       if (shift && hi - lo < step / 2) hi = lo + step / 2;
-      return [Math.max(o0, lo), Math.min(o0 + os, hi)].sort((x, y) => x - y);
+      return [Math.max(o0, 0, lo), Math.min(o0 + os, hi)].sort((x, y) => x - y);
     }
     function renderWaterfall() {
       const on = PAGE === "run" && RV === "waterfall", by = on && WFBY === "call", wf = $("wf");
@@ -7049,39 +7124,56 @@
       $("lanetitle").textContent = by ? "TIMELINE · ONE ROW PER CALL" : "TIMELINE · ONE LANE PER AGENT";
       document.querySelectorAll("[data-wfby]").forEach(b => b.classList.toggle("on", b.dataset.wfby === WFBY));
       if (!by) return;
-      const m = wfModel(), base = S.firstTs ?? 0, rowsEl = $("tnrows");
-      const shown = m.rows.slice(WFSORT.k === "start" && WFSORT.dir > 0 ? -WFMAX : 0, WFSORT.k === "start" && WFSORT.dir > 0 ? undefined : WFMAX), more = m.rows.length - shown.length;
+      const m = wfModel(), base = S.firstTs ?? 0, rowsEl = $("tnrows"), byStart = WFSORT.k === "start", newestFirst = byStart && WFSORT.dir < 0;
+      const shown = m.rows.slice(byStart && WFSORT.dir > 0 ? -WFMAX : 0, byStart && WFSORT.dir > 0 ? undefined : WFMAX), more = m.rows.length - shown.length;
       wf.style.setProperty("--t0", +m.t0.toFixed(3)); wf.style.setProperty("--span", +m.span.toFixed(3)); wf.style.setProperty("--now", +m.now.toFixed(3));
       wf.style.setProperty("--o0", +m.o0.toFixed(3)); wf.style.setProperty("--os", +m.os.toFixed(3));
       wf.dataset.live = m.live ? "1" : "";
       wf.dataset.empty = m.all.length ? "" : "1";
-      put("tnchips", wfChipsHtml(m)); put("tnth", wfHeadHtml(m)); put("tnticks", wfStripHtml(m)); put("tnfoot", wfFoot(m));
+      // focus inside the chips, the header or the drawer is not taken away by a tick: while it stays, only their changing numbers are written
+      const inside = id => { const a = document.activeElement; return !!a && !!$(id).contains?.(a); };
+      if (inside("tnchips") && $("tnchips")._k === WFCHIP) $("tnchips").querySelectorAll(".n").forEach((n, i) => { n.textContent = m.counts[WFCHIPS[i][0]]; });
+      else { put("tnchips", wfChipsHtml(m)); $("tnchips")._k = WFCHIP; }
+      const hk = WFSORT.k + WFSORT.dir;
+      if (!(inside("tnth") && $("tnth")._k === hk)) { put("tnth", wfHeadHtml(m)); $("tnth")._k = hk; }
+      put("tnticks", wfStripHtml(m)); put("tnfoot", wfFoot(m));
       WF.ov = { o0: m.o0, os: m.os };
       put("tnsegs", m.segs.map(s => `<i class="s ${esc(s.k)}" style="--a:${esc(+s.a.toFixed(3))};--e:${esc(s.e == null ? "var(--now)" : +s.e.toFixed(3))};--l:${esc(s.lane)}"></i>`).join(""));
       const sel = $("tnsel"), rl = $("tnrl");
-      sel.hidden = rl.hidden = !WFR;
-      if (WFR) { sel.style.setProperty("--a", WFR[0]); sel.style.setProperty("--e", WFR[1]); put("tnrl", `<span>${esc(wfRel(WFR[0], 1) + " – " + wfRel(WFR[1], 1))}</span><button type="button" data-wfclr aria-label="Clear the selected window">Clear ×</button>`); }
+      sel.hidden = rl.hidden = !m.wr;
+      if (m.wr) { sel.style.setProperty("--a", +m.wr[0].toFixed(3)); sel.style.setProperty("--e", +m.wr[1].toFixed(3)); put("tnrl", `<span>${esc(wfRel(m.wr[0], 1) + " – " + wfRel(m.wr[1], 1))}</span><button type="button" data-wfclr aria-label="Clear the selected window">Clear ×</button>`); }
       if (document.activeElement !== $("tnq") && $("tnq").value !== (F.find || "")) $("tnq").value = F.find || "";
-      const empty = m.all.length ? (shown.length ? "" : `<div class="tn-empty">No call matches the filters${WFR ? " in this window" : ""}.</div>`) : `<div class="tn-empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`;
-      const inEl = $("tnin"), stick = m.live && (!inEl._h || rowsEl.scrollTop + rowsEl.clientHeight >= rowsEl.scrollHeight - 24), fk = document.activeElement?.dataset?.k, was = inEl._h;
-      put("tnin", (more ? `<div class="tn-more">${esc(`${more} ${WFSORT.k === "start" && WFSORT.dir > 0 ? "earlier " : ""}${more === 1 ? "call is" : "calls are"} not drawn: ${WFSORT.k === "start" && WFSORT.dir > 0 ? "the newest" : "the first"} ${WFMAX} are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
+      const calls = m.rows.length - shown.length ? m.rows.filter(r => !shown.includes(r)) : [], nc = calls.filter(r => r.kind === "tool").length, nt = calls.length - nc;
+      const hid = [nc ? plural(nc, "call") : "", nt ? plural(nt, "model turn") : ""].filter(Boolean).join(" and ");
+      const empty = m.all.length ? (shown.length ? "" : `<div class="tn-empty">No call matches the filters${m.win ? " in this window" : ""}.</div>`) : `<div class="tn-empty">${esc(S.actList.length ? "No call matches the filters." : "No calls yet.")}</div>`;
+      const inEl = $("tnin"), atEnd = newestFirst ? rowsEl.scrollTop <= 24 : rowsEl.scrollTop + rowsEl.clientHeight >= rowsEl.scrollHeight - 24;
+      const follow = m.live && byStart && (!inEl._h || atEnd), fk = document.activeElement?.dataset?.k, was = inEl._h, total = S.actList.length + S.llm.length, grown = wfGrown(WF.n, total);
+      WF.n = total;
+      put("tnin", (more ? `<div class="tn-more">${esc(`${hid} ${more === 1 ? "is" : "are"} not drawn: the ${byStart && WFSORT.dir > 0 ? "earlier ones" : "later ones"}, past the ${WFMAX} that are. Narrow them with AGT, TOOL, FIND or FLAG.`)}</div>` : "")
         + shown.map(r => wfRowHtml(r, base)).join("") + empty + `<i class="tn-now"></i>`);
       if (inEl._h !== was) {
-        const fresh = wfNew(WF.keys, shown), first = !WF.keys.size;
-        if (fk) rowsEl.querySelector(`[data-k="${CSS.escape(fk)}"]`)?.focus({ preventScroll: true });
-        if (stick) { rowsEl.scrollTop = rowsEl.scrollHeight; WF.unseen = 0; } else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live) WF.unseen += fresh;
+        const first = !WF.keys.size;
+        if (follow) { rowsEl.scrollTop = newestFirst ? 0 : rowsEl.scrollHeight; WF.unseen = 0; } else if (first && !m.live) rowsEl.scrollTop = 0; else if (!first && m.live && byStart) WF.unseen += grown;
         WF.keys = new Set(shown.map(r => r.key));
+        const cur = rowsEl.querySelector(`.tn-r[data-k="${CSS.escape(fk ?? WF.cur ?? "")}"]`) || rowsEl.querySelector(".tn-r");   // one row is tabbable
+        cur?.setAttribute("tabindex", "0");
+        if (fk) cur?.focus({ preventScroll: true });
       }
-      const nb = $("tnnew"); nb.hidden = !WF.unseen; nb.textContent = `↓ ${WF.unseen} new`;
+      if (!m.live || !byStart) WF.unseen = 0;
+      const nb = $("tnnew"); nb.hidden = !WF.unseen; nb.textContent = `${newestFirst ? "↑" : "↓"} ${WF.unseen} new`;
       rowsEl.querySelector(".tn-r.on")?.classList.remove("on");
       const sr = wfSelected(), srow = sr && rowsEl.querySelector(`[data-k="${CSS.escape(sr.key)}"]`);
       srow?.classList.add("on");
+      if (sr) WF.last = sr.key;
       if (sr?.key !== WF.sel) { WF.sel = sr?.key; srow?.scrollIntoView({ block: "nearest" }); }
       // a live tick moves the bars by the axis' variables above; the counts of what still runs are the only words that change
       rowsEl.querySelectorAll(".tn-live").forEach(e => { e.textContent = e.dataset.pre + wfDur(m.now - +e.dataset.from); });
-      const dr = $("tndrawer"), open = !!sr;
-      if (sr) put("tndrawer", wfDrawerHtml(sr, WFTAB, base));
-      dr.classList.toggle("open", open); dr.setAttribute("aria-hidden", open ? "false" : "true"); dr.inert = !open;
+      const dr = $("tndrawer"), open = !!sr, held = inside("tndrawer"), dk = sr ? sr.key + "|" + WFTAB : "";
+      if (sr && !(held && dr._k === dk)) { put("tndrawer", wfDrawerHtml(sr, WFTAB, base)); dr._k = dk; }
+      dr.classList.toggle("open", open); dr.setAttribute("aria-hidden", open ? "false" : "true");
+      if (open && !WF.open) { dr.inert = false; dr.querySelector?.(".tabs .on")?.focus(); }   // it opens with focus inside
+      if (!open && WF.open && (held || !document.activeElement || document.activeElement === document.body)) rowsEl.querySelector(`[data-k="${CSS.escape(WF.last ?? "")}"]`)?.focus();   // and closes with it back on the row
+      dr.inert = !open; WF.open = open;
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
@@ -7486,7 +7578,7 @@
     $("lanewrap").addEventListener("scroll", renderLanes);   // the axis' words follow the scroll
     // TIMELINE BY CALL: a window of time dragged on the overview (or moved with its keys), the search box (FIND), rows by arrow keys
     {
-      const ov = $("tnov"), at = e => { const b = ov.getBoundingClientRect(); return WF.ov.o0 + Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * WF.ov.os; };
+      const ov = $("tnov"), at = e => { const b = ov.getBoundingClientRect(); return Math.max(0, WF.ov.o0 + Math.min(1, Math.max(0, (e.clientX - b.left) / b.width)) * WF.ov.os); };
       ov.addEventListener("pointerdown", e => {
         if (e.target.closest("[data-wfclr]")) return;
         ov.setPointerCapture(e.pointerId); WF.drag = { x: e.clientX, t: at(e), moved: false };
@@ -7506,12 +7598,11 @@
       $("tnq").addEventListener("input", e => { F.find = e.target.value.trim() || null; schedule(); });
       $("tnq").addEventListener("keydown", e => { if (e.key === "Escape") e.target.blur(); });
       const rows = $("tnrows");
-      rows.addEventListener("scroll", () => { if (rows.scrollTop + rows.clientHeight >= rows.scrollHeight - 24 && WF.unseen) { WF.unseen = 0; schedule(); } });
-      rows.addEventListener("keydown", e => {
+      rows.addEventListener("scroll", () => { if ((WFSORT.k === "start" && WFSORT.dir < 0 ? rows.scrollTop <= 24 : rows.scrollTop + rows.clientHeight >= rows.scrollHeight - 24) && WF.unseen) { WF.unseen = 0; schedule(); } });
+      rows.addEventListener("keydown", e => wfRowKey(e, [...rows.querySelectorAll(".tn-r")]));
+      rows.addEventListener("focusin", e => {
         const r = e.target.closest(".tn-r"); if (!r) return;
-        const list = [...rows.querySelectorAll(".tn-r")], i = list.indexOf(r), to = { ArrowDown: i + 1, ArrowUp: i - 1, Home: 0, End: list.length - 1, PageDown: i + 8, PageUp: i - 8 }[e.key];
-        if (e.key === " ") { e.preventDefault(); r.click(); }
-        else if (to !== undefined) { e.preventDefault(); list[Math.min(list.length - 1, Math.max(0, to))]?.focus(); }
+        rows.querySelector('.tn-r[tabindex="0"]')?.setAttribute("tabindex", "-1"); r.setAttribute("tabindex", "0"); WF.cur = r.dataset.k;
       });
     }
     // record n's row; a record with no row of its own (a call's decision, a checkpoint): the row before it; never a row the viewer made
@@ -7563,11 +7654,11 @@
     $("help").addEventListener("click", e => { if (e.target.id === "help") $("help").hidden = true; });
     /* ---------------- theme: auto (this computer's setting), light or dark, kept in this browser ---------------- */
     const THEMES = ["auto", "light", "dark"];
-    function setTheme(t) {
+    function setTheme(t, keep = true) {
       t = THEMES.includes(t) ? t : "auto";
       if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
       $("theme").textContent = "THEME " + t.toUpperCase();
-      try { localStorage.setItem("tracekit-theme", t); } catch { }   // storage refused (a private window): the theme still applies
+      try { if (keep) localStorage.setItem("tracekit-theme", t); } catch { }   // storage refused (a private window): the theme still applies
       schedule();   // the lanes are drawn on a canvas, in the theme's colours
     }
     $("theme").addEventListener("click", () => setTheme(THEMES[(THEMES.indexOf(document.documentElement.dataset.theme || "auto") + 1) % THEMES.length]));
@@ -7744,7 +7835,7 @@
       if (R) stopRun(true);
       // the why views follow the run selected here, from the start of its own graph
       if (id !== scope) { WRUN = WPICK = WNODE = null; GV.focus = null; wvKey = ""; tapeMax = TAPE_PAGE; }
-      if (id !== scope) { WFR = null; WFTAB = "request"; }
+      if (id !== scope) { WFR = null; WFTAB = "request"; wfReset(); }
       scope = id; selected = null; rebuild(); loadRun(id); updRp(); schedule();
     }
     function updRp() {
@@ -8460,9 +8551,9 @@
       if (t.dataset.wfs) { WFSORT = WFSORT.k === t.dataset.wfs ? { k: WFSORT.k, dir: -WFSORT.dir } : { k: t.dataset.wfs, dir: ["start", "name", "agent"].includes(t.dataset.wfs) ? 1 : -1 }; return schedule(); }
       if (t.dataset.wfc) { WFCHIP = t.dataset.wfc; WF.keys = new Set(); return schedule(); }
       if (t.dataset.wft) { WFTAB = t.dataset.wft; return schedule(); }
-      if (t.dataset.wfx) { const k = $("tnrows").querySelector(".tn-r.on")?.dataset.k; selected = null; schedule(); if (k) requestAnimationFrame(() => $("tnrows").querySelector(`[data-k="${CSS.escape(k)}"]`)?.focus()); return; }
+      if (t.dataset.wfx) { selected = null; return schedule(); }
       if (t.dataset.wfclr !== undefined) { WFR = null; return schedule(); }
-      if (t.dataset.wfnew !== undefined) { const el = $("tnrows"); WF.unseen = 0; el.scrollTop = el.scrollHeight; return schedule(); }
+      if (t.dataset.wfnew !== undefined) { const el = $("tnrows"); WF.unseen = 0; el.scrollTop = WFSORT.k === "start" && WFSORT.dir < 0 ? 0 : el.scrollHeight; return schedule(); }
       if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
       if (t.dataset.wgo) { WRUN = t.dataset.wgo; show("overview"); return schedule(); }
       if (t.dataset.wpick) { WPICK = t.dataset.wpick; return schedule(); }
@@ -8526,7 +8617,7 @@
     });
 
     reset();
-    try { setTheme(new URLSearchParams(location.hash.slice(1)).get("theme") || localStorage.getItem("tracekit-theme")); } catch { setTheme("auto"); }
+    try { const linked = new URLSearchParams(location.hash.slice(1)).get("theme"); if (linked) setTheme(linked, false); else setTheme(localStorage.getItem("tracekit-theme")); } catch { setTheme("auto"); }
     if (BOOT) startReplay(); else startLive();
     schedule();
   </script>

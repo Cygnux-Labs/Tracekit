@@ -231,6 +231,19 @@ class Translate(unittest.TestCase):
                          {"bytes_out": 128, "bytes_in": 256, "connections": 1,
                           "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z"})
 
+    def test_a_model_turn_carries_the_time_its_request_was_signed_when_the_gateway_recorded_one(self):
+        """The LLM gateway signs a request and its response under one exchange id: the turn's start is recorded, so the TIMELINE need not guess it."""
+        usage = {"input_tokens": 5, "output_tokens": 2}
+        later = v2rec(2, "model.exchange", {"phase": "response", "exchange_id": "x1", "model": "m", "usage": usage})
+        later["event"]["ts"] = "2026-01-01T00:00:03.500000Z"
+        request = v2rec(1, "model.exchange", {"phase": "request", "exchange_id": "x1", "model": "m"})
+        request["event"]["ts"] = "2026-01-01T00:00:01.000000Z"
+        tr = view.Translator(SERVER)
+        self.assertEqual(tr.feed(request), [])
+        [row] = [r for r in tr.feed(later) if r["event"] == "tk_model"]
+        self.assertEqual(row["ts"] - row["started"], 2.5)
+        self.assertNotIn("started", [r for r in view.Translator(SERVER).feed(later) if r["event"] == "tk_model"][0])   # no request seen: no start
+
     def test_holds_and_approvals_are_their_own_rows_in_words(self):
         rows = self.feed(
             v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",

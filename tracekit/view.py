@@ -408,6 +408,7 @@ class Translator(observe.Translator):
         self.approvers = observe._Bounded(observe.MAX_RUNS_KEPT)   # approval_id -> who approved it
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
+        self.requested = observe._Bounded(observe.MAX_RUNS_KEPT)   # (run, exchange id) -> when a model request was signed, until its response
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
         self.grants = observe._Bounded(observe.MAX_RUNS_KEPT)   # grant id -> its intent.grant record's data
@@ -777,8 +778,13 @@ class Translator(observe.Translator):
         # a transcript's thinking or text line has neither, unless it is its message's last: the tailer signs usage there
         out = super().feed(rec) if d.get("tool_uses") or d.get("usage") else []
         x = {"exchange_id": d.get("exchange_id"), "tool_ids": [u["id"] for u in d.get("tool_uses") or ()]}
+        key = (e["run_id"], d.get("exchange_id"))
+        if d.get("phase") == "request" and d.get("exchange_id"):   # the gateway signs a request and its response: the turn's real start
+            self.requested[key] = observe._epoch(e.get("ts"))
         for r in out:
             r["v2"] = x
+            if r["event"] == "tk_model" and key in self.requested:
+                r["started"] = self.requested.pop(key)
         if d.get("phase") == "request":
             prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
             return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
