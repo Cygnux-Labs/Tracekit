@@ -27,7 +27,7 @@ retry of the same call after a person approved it ([approve, then retry](#approv
 
    ```sh
    tracekit approvals list                 # those you may see: waiting ones first, newest first, with what each runs
-   tracekit approvals list --all           # the expired ones too
+   tracekit approvals list --all           # the expired ones too, and those of runs that ended in the last day
    tracekit approvals show apr-…           # why, what to do instead, the answer commands, the arguments in full
    tracekit view --approval apr-…          # the link that opens the held call in the viewer
    tracekit approvals list --json          # all pages as one JSON array, every approval; [] when empty
