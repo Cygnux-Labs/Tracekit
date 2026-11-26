@@ -13,7 +13,7 @@ from unittest import mock
 
 import yaml
 
-from tracekit import agent_hooks, cli, install, privacy
+from tracekit import agent_hooks, cli, install, privacy, report
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as pc
@@ -183,6 +183,13 @@ class DocCommands(unittest.TestCase):
         self.assertEqual({"codex", *re.findall(r"`([a-z]+)`", readme.group(1))}, set(agent_hooks.HARNESSES))
         self.assertEqual(set(re.findall(r"`([a-z]+)`", deploy.group(1))), set(agent_hooks.HARNESSES))
         self.assertEqual({"codex", *re.findall(r"[a-z]+", v1.group(1))}, set(agent_hooks.HARNESSES))
+
+    def test_field_reports_md_names_every_agent_a_shared_report_prints(self):
+        # what `audit --share` reveals: the page once listed 12 of the 22 names report.AGENTS prints
+        text = read(os.path.join(ROOT, "docs", "field-reports.md"))
+        listed = re.search(r"An agent name is printed only when it is one Tracekit's own hooks and tools give a run \((.*?)\)",
+                           text, re.S)
+        self.assertEqual(set(re.findall(r"`([a-z-]+)`", listed.group(1))), report.AGENTS)
 
     def test_privacy_md_names_every_tool_call_field_kept_in_clear(self):
         # it once left out `commands`, `paths` and `urls`

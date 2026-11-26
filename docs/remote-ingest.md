@@ -180,7 +180,7 @@ another identity's runs, forge signer records (gaps, tamper, checkpoints, approv
 
 ## Migrating from `tracekit ingest`
 
-`tracekit ingest` (the v1 ingest gateway) is deprecated and is removed in tracekit 0.5; it prints a warning when run.
+`tracekit ingest` (the v1 ingest gateway) is deprecated; it prints a warning when run.
 
 | v1 | v2 |
 |---|---|

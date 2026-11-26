@@ -162,12 +162,15 @@ What each version added:
 | 1.2.0 | Agent approvers, containment (incidents, holds, quarantine, suspensions), `effect.observed`, the coverage matrix, more gap kinds |
 | 1.3.0 | `reconcile.result_mismatch` and the `result_unchecked` gap ([verified tool results](custody.md#the-llm-gateway)) |
 | 1.4.0 | `constraint.added` and the `constraint_refused` gap (live constraints), `review` records with `cites` (signed findings), kernel sensor and OpenShell fields on `effect.observed` and `capture.gap`, `said_only` on model exchanges, the `ext` slot, and a run exported in parts (past 64 MiB of records) |
+| 1.6.0 | Intent grants (`intent.grant`, `intent.revoked`, `grant`), a Tracekit Box run's `box` label, `self_approved` |
+| 1.8.0 | `approval.decision`: the decision an approval was used for |
 
 **The `ext` slot.** From format 1.4.0, an addition an older verifier can leave unread doesn't need a new version. Any
 record may carry `ext`, an object of names to strict JSON values, and a record of type `ext` holds `data: {name, ...}`.
 They are signed, chained and included like every other record, so editing one still fails verification. A verifier
-from 1.4.0 interprets the names it knows (today `amended`, the fields an LLM gateway changed in a request, and
-`openshell.policy`, OpenShell's sandbox policy changes); for any other it prints a `not interpreted` warning, and the
+from 1.4.0 interprets the names it knows (today `amended`, the fields an LLM gateway changed in a request,
+`openshell.policy`, OpenShell's sandbox policy changes, `box`, `approval.decision` and the intent-grant names
+`intent.grant`, `intent.revoked` and `grant`); for any other it prints a `not interpreted` warning, and the
 bundle stays `VERIFIED`. A name may go in `ext` only if every line an older verifier prints stays true without it;
 anything a verifier must read to judge a run stays critical. The full table:
 [format v2 §9](../format-v2.md#9-bundle-layout).

@@ -5,7 +5,7 @@ bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20,
 Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
-and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
+and a Linux system-mode signer; v1 and, in `eval/e8_insider_v2.py`, the v2 signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
 socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients) run on Linux. So do E1,
 E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
 gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new

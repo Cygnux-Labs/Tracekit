@@ -44,7 +44,7 @@ ALLOWED_OPS = {"append", "status"}
 OTLP_EXTRA_TYPES = {"model.exchange"}  # application-reported (source=sdk); never cross-checked as proxy evidence
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")   # no ':', so remote:<client>:<run> names one client
-DEPRECATION = ("tracekit ingest is deprecated and is removed in tracekit 0.5: serve remote clients from the v2 signer's "
+DEPRECATION = ("tracekit ingest is deprecated: serve remote clients from the v2 signer's "
                "HTTPS transport instead (`tracekit signer token add`, `tracekit init --remote URL --v2`; "
                f"{wiki_url('docs/remote-ingest.md')})")
 RATE_PER_S, BURST = 100.0, 300.0

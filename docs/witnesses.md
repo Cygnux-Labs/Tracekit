@@ -22,14 +22,14 @@ Signed with the same key as the records (over the canonical form without `sig`).
 | git repo without a remote | The signer's user on this machine | Same, locally | Root (A4) can rewrite it with the ledger. In system mode it protects against the agent's user (A1–A3); in dev mode the agent's user owns it and can rewrite it too. Not off-machine |
 | file | Whoever can write the file | Checkpoint lines | Anyone who can write the file; use storage the host cannot rewrite (WORM, another machine's mount) |
 | Rekor (experimental) | Sigstore's public log | Retains each signed checkpoint publicly and permanently | Append-only and not controlled by the host, but publishing reveals activity timing to everyone; off by default |
-| v1 witness log (HTTP, `https://` spec) | Whoever runs it | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection, for a reader that pins the witness key and keeps a `state=` file. Tracekit no longer ships this server: new deployments use the v2 C2SP witness below |
+| v1 witness log (HTTP, `https://` spec) | Whoever runs it | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection, for a reader that pins the witness key and keeps a `state=` file. Tracekit still ships its server (`tracekit witness serve`) for v1 ledgers; new deployments use the v2 C2SP witness below |
 
 ## v1 witness logs
 
 `tracekit verify run.tkb --witness 'https://witness.example:8444#key=witness.pub&state=~/.tkw-sth.json'` still reads an
 existing v1 witness log: every entry needs an inclusion proof against a tree head signed by the pinned key, and with
-`state=` each new tree head must be consistent with the last one seen. The v1 witness server itself is gone; the v2
-signer's witness is a C2SP tlog-witness (below), and the compose stack ships one (docs/deploy-compose.md).
+`state=` each new tree head must be consistent with the last one seen. The v1 witness server (`tracekit witness serve`) is kept for v1
+ledgers; the v2 signer's witness is a C2SP tlog-witness (below), and the compose stack ships one (docs/deploy-compose.md).
 
 ## Kinds
 
