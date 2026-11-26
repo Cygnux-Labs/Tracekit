@@ -54,13 +54,18 @@ if ($parts.Count -ge 4 -and $parts[-4] -eq 'cache' -and $parts[-3] -and $parts[-
 
 # As tracekit-hook: once `tracekit init` has recorded its Python (hook_python in ~\.tracekit-client\config.json, a folder
 # TK-D007 keeps from the agent), that one runs the hook and no other: not TRACEKIT_PYTHON, PATH or a default folder. It
-# must be the Python of a uv tool or pipx install of Tracekit (install.tool_venvs' folders), unless init recorded that a
-# person allowed it. A record that can't run the hook, or a Tracekit that is set up with none recorded, blocks the call.
+# must be the Python of a uv tool or pipx install of Tracekit (install.tool_venvs' folders, Windows' too: uv's
+# %APPDATA%\uv\tools and %APPDATA%\uv\data\tools, pipx's %LOCALAPPDATA%\pipx\pipx\venvs and ~\pipx\venvs), unless init
+# recorded that a person allowed it. A record that can't run the hook, or a Tracekit that is set up with none recorded,
+# blocks the call.
 $share = if ($env:XDG_DATA_HOME) { $env:XDG_DATA_HOME } else { Join-Path $HOME '.local\share' }
-$uvTools = if ($env:UV_TOOL_DIR) { $env:UV_TOOL_DIR } else { Join-Path $share 'uv\tools' }
-$pipx = if ($env:PIPX_HOME) { $env:PIPX_HOME } else { Join-Path $share 'pipx' }
-$venvs = @($uvTools, (Join-Path $pipx 'venvs'), (Join-Path $HOME '.local\pipx\venvs'),
-           (Join-Path $HOME 'Library\Application Support\pipx\venvs'))
+$roaming = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME 'AppData\Roaming' }
+$localData = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { Join-Path $HOME 'AppData\Local' }
+$uvTools = if ($env:UV_TOOL_DIR) { @($env:UV_TOOL_DIR) } else {
+    @((Join-Path $share 'uv\tools'), (Join-Path $roaming 'uv\tools'), (Join-Path $roaming 'uv\data\tools')) }
+$pipxHomes = if ($env:PIPX_HOME) { @($env:PIPX_HOME) } else { @((Join-Path $share 'pipx'), (Join-Path $localData 'pipx\pipx')) }
+$venvs = $uvTools + @($pipxHomes | ForEach-Object { Join-Path $_ 'venvs' }) + @((Join-Path $HOME '.local\pipx\venvs'),
+           (Join-Path $HOME 'Library\Application Support\pipx\venvs'), (Join-Path $HOME 'pipx\venvs'))
 $cfg = Join-Path $HOME '.tracekit-client\config.json'
 $recorded = if (Test-Path -LiteralPath $cfg -PathType Leaf) { Get-Content -LiteralPath $cfg -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
 $rec = if ($recorded) { [string]$recorded.hook_python } else { '' }

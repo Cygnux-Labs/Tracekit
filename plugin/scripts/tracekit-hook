@@ -41,19 +41,20 @@ case $AGENT in copilot|cursor) RUNS=0 ;; *) RUNS=1 ;; esac
 
 # finish STATUS WHAT FIX [open]: the hook exited STATUS. A pre-tool call it blocked (2) stays blocked, and one it could
 # not finish is blocked too (with "open": runs, with the error shown). Any other event's failure is 1; the hook's own
-# message (status 1 or 2) comes first, else WHAT and FIX are said here.
+# message (status 1 or 2) comes first, else WHAT and FIX are said here, as written (printf: dash's echo, and macOS sh's,
+# would read a Windows path's \c or \t as an escape).
 finish() {
   [ "$1" = 0 ] && exit 0
   if [ -n "$PRE" ]; then
     [ "$1" = 2 ] && exit 2
     if [ "${4:-}" = open ]; then
-      echo "tracekit plugin: $2, so this call was NOT recorded (fail_mode open). $3" >&2
+      printf '%s\n' "tracekit plugin: $2, so this call was NOT recorded (fail_mode open). $3" >&2
       exit $RUNS
     fi
-    echo "tracekit plugin: $2, so this call was blocked (fail-closed). $3" >&2
+    printf '%s\n' "tracekit plugin: $2, so this call was blocked (fail-closed). $3" >&2
     exit 2
   fi
-  [ "$1" = 1 ] || [ "$1" = 2 ] || echo "tracekit plugin: $2, so this $EV event was NOT recorded. $3" >&2
+  [ "$1" = 1 ] || [ "$1" = 2 ] || printf '%s\n' "tracekit plugin: $2, so this $EV event was NOT recorded. $3" >&2
   exit 1
 }
 
@@ -157,6 +158,15 @@ if [ -n "$rec" ] || [ -n "$bad" ]; then
            "$HOME/Library/Application Support/pipx/venvs"; do
     case $rec in "$v/tracekit-ai/"*) inside=1 ;; esac
   done
+  case $rec in [A-Za-z]:\\*)   # recorded on Windows, where Git Bash runs this: uv's and pipx's folders there as Windows
+    # writes them (install.tool_venvs): uv's %APPDATA%\uv\tools or uv\data\tools, pipx's %LOCALAPPDATA%\pipx\pipx\venvs,
+    # ~\pipx\venvs or ~\.local\pipx\venvs
+    roaming=${APPDATA:-"${USERPROFILE:-}\\AppData\\Roaming"} localdata=${LOCALAPPDATA:-"${USERPROFILE:-}\\AppData\\Local"}
+    for v in "${UV_TOOL_DIR:-$roaming\\uv\\tools}" "${UV_TOOL_DIR:-$roaming\\uv\\data\\tools}" \
+             "${PIPX_HOME:-$localdata\\pipx\\pipx}\\venvs" "${USERPROFILE:-}\\pipx\\venvs" "${USERPROFILE:-}\\.local\\pipx\\venvs"; do
+      case $rec in "$v\\tracekit-ai\\"*) inside=1 ;; esac
+    done ;;
+  esac
   if [ -n "$bad" ] || { [ -z "$inside" ] && [ -z "$allowed" ]; }; then
     finish 3 "the Python tracekit init recorded for this hook (${rec:-one with a unicode escape}) is not one of a uv tool or pipx install of Tracekit" \
       "Ask the person to run: uv tool install --reinstall tracekit-ai==1.7.3 && tracekit init --dev --v2 --no-hooks"

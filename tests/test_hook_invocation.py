@@ -251,7 +251,7 @@ class PluginShim(unittest.TestCase):
             version = json.load(f)["version"]
         for name in ("scripts/tracekit-hook", "scripts/tracekit-hook.ps1", "README.md"):
             with open(os.path.join(ROOT, "plugin", name), encoding="utf-8") as f:
-                pins = re.findall(r"tracekit-ai(?!/)([^\s)'\"]*)", f.read())   # (not a venv's folder: uv/tools/…)
+                pins = re.findall(r"tracekit-ai(?![/\\])([^\s)'\"]*)", f.read())   # (not a venv's folder: uv/tools/…)
             with self.subTest(file=name):
                 self.assertTrue(pins)
                 self.assertEqual(set(pins), {"==" + version})
@@ -347,6 +347,31 @@ class PluginShim(unittest.TestCase):
         self.assertEqual(self.hook("PreToolUse")[0], 0)
         self.assertIn(f"{tool} -I -c", self.calls())
         self.assertEqual(self.hook("PreToolUse", UV_TOOL_DIR=os.path.join(self.d, "other"))[0], 2)   # (as this process sees it)
+
+    def test_a_python_init_recorded_on_windows_is_one_of_a_tool_install_in_uvs_and_pipxs_folders_there(self):
+        """Git Bash runs this script on Windows, where init records a Python in uv's or pipx's Windows folders
+        (install.tool_venvs) as Windows writes it: one there runs (here it can't, so the call stops as it can't import
+        tracekit), a folder named like one is refused, as before init recorded these."""
+        windows = {"APPDATA": r"C:\Users\u\AppData\Roaming", "LOCALAPPDATA": r"C:\Users\u\AppData\Local",
+                   "USERPROFILE": r"C:\Users\u"}
+        for python, env, inside in (
+                (r"C:\Users\u\AppData\Roaming\uv\tools\tracekit-ai\Scripts\python.exe", {}, True),
+                (r"C:\Users\u\AppData\Roaming\uv\data\tools\tracekit-ai\Scripts\python.exe", {}, True),
+                (r"C:\Users\u\AppData\Local\pipx\pipx\venvs\tracekit-ai\Scripts\python.exe", {}, True),
+                (r"C:\Users\u\pipx\venvs\tracekit-ai\Scripts\python.exe", {}, True),
+                (r"C:\Users\u\.local\pipx\venvs\tracekit-ai\Scripts\python.exe", {}, True),
+                (r"D:\tools\tracekit-ai\Scripts\python.exe", {"UV_TOOL_DIR": r"D:\tools"}, True),
+                (r"C:\Users\u\AppData\Roaming\uv\tools\tracekit-ai\Scripts\python.exe", {"UV_TOOL_DIR": r"D:\tools"}, False),
+                (r"D:\px\venvs\tracekit-ai\Scripts\python.exe", {"PIPX_HOME": r"D:\px"}, True),
+                (r"C:\Users\u\AppData\Roaming\uv\tools\tracekit-ai-x\Scripts\python.exe", {}, False),   # a look-alike
+                (r"C:\Users\u\AppData\Roaming\uv\data\python\cpython-3.12\python.exe", {}, False),
+                (r"C:\Users\u\proj\.venv\Scripts\python.exe", {}, False)):
+            with self.subTest(python=python, env=env):
+                self.record_python(python, allowed=False)
+                code, err = self.hook("PreToolUse", **windows, **env)
+                self.assertEqual(code, 2, err)
+                self.assertEqual("cannot import tracekit" in err, inside, err)
+                self.assertEqual("is not one of a uv tool or pipx install of Tracekit" in err, not inside, err)
 
     def test_the_record_is_read_as_json_so_quotes_backslashes_and_non_ascii_paths_work(self):
         self.install_tracekit("def _entry(event=None):\n    return 0\n", __version__)
@@ -894,6 +919,66 @@ exit "$CODE"
             with self.subTest(version=version):
                 self.record(self.python(uv, version=version))
                 self.assertEqual(self.pre(), (code, [uv, uv]))
+
+
+@unittest.skipUnless(shutil.which("pwsh") and os.name != "nt", "needs PowerShell 7 (pwsh), and sh for the stand-in")
+class PluginWindowsToolFoldersInPwsh(unittest.TestCase):
+    """tracekit-hook.ps1, run as hooks/claude.json's PreToolUse command in pwsh as Claude Code runs it on Windows without
+    Git Bash: a Python init recorded in uv's or pipx's Windows folders (install.tool_venvs: %APPDATA%\\uv\\tools,
+    %APPDATA%\\uv\\data\\tools, %LOCALAPPDATA%\\pipx\\pipx\\venvs, ~\\pipx\\venvs) runs the hook with no person's allowance,
+    whatever its case, and a folder named like one is refused. Before, only ~/.local/share's were, so on Windows init
+    recorded none and the hook blocked every call. The Python is a stand-in that logs each run and exits 0."""
+    STAND_IN = '#!/bin/sh\necho "$0" >> "$FAKE_LOG"\n'
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home = os.path.join(self.d, "home")
+        self.roaming, self.local = (os.path.join(self.home, "AppData", n) for n in ("Roaming", "Local"))
+        with open(os.path.join(ROOT, "plugin", "hooks", "claude.json"), encoding="utf-8") as f:
+            command = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        self.command = command.replace("${CLAUDE_PLUGIN_ROOT}", "${env:CLAUDE_PLUGIN_ROOT}")
+
+    def pre(self, python, record=None, **env):
+        """(exit code, the stand-in's runs, stderr) of the PreToolUse command, the stand-in at `python` and `record`
+        (else `python`) what `tracekit init` recorded, with no allowance."""
+        os.makedirs(os.path.dirname(python), exist_ok=True)
+        with open(python, "w", encoding="utf-8") as f:
+            f.write(self.STAND_IN)
+        os.chmod(python, 0o755)
+        os.makedirs(os.path.join(self.home, ".tracekit-client"), exist_ok=True)
+        with open(os.path.join(self.home, ".tracekit-client", "config.json"), "w", encoding="utf-8") as f:
+            json.dump({"hook_python": record or python}, f)
+        log, pwsh = os.path.join(self.d, "log"), os.path.realpath(shutil.which("pwsh"))
+        open(log, "w").close()
+        env = {"HOME": self.home, "APPDATA": self.roaming, "LOCALAPPDATA": self.local, "FAKE_LOG": log,
+               "CLAUDE_PLUGIN_ROOT": os.path.join(ROOT, "plugin"), "PATH": os.path.dirname(pwsh), **env}
+        r = subprocess.run([pwsh, "-NoProfile", "-NonInteractive", "-Command", self.command], input="{}", env=env,
+                           cwd=self.d, capture_output=True, text=True, timeout=120)
+        with open(log, encoding="utf-8") as f:
+            return r.returncode, len(f.read().split()), r.stderr
+
+    def test_a_python_in_uvs_or_pipxs_windows_folders_runs_the_hook(self):
+        for folder in (os.path.join(self.roaming, "uv", "tools"), os.path.join(self.roaming, "uv", "data", "tools"),
+                       os.path.join(self.local, "pipx", "pipx", "venvs"), os.path.join(self.home, "pipx", "venvs")):
+            with self.subTest(folder=folder):
+                code, runs, err = self.pre(os.path.join(folder, "tracekit-ai", "Scripts", "python.exe"))
+                self.assertEqual((code, runs), (0, 2), err)   # (its import of tracekit, then the hook)
+
+    def test_one_in_any_case_is_one_of_them_and_a_look_alike_is_refused(self):
+        python = os.path.join(self.roaming, "uv", "data", "tools", "tracekit-ai", "Scripts", "python.exe")
+        record = python.replace(os.path.join("data", "tools", "tracekit-ai"), os.path.join("DATA", "Tools", "TraceKit-AI"))
+        code, runs, err = self.pre(python, record=record)
+        # (accepted, as Windows matches any case: it runs where this file system finds it so, else can't import tracekit)
+        self.assertEqual((code, runs), (0, 2) if os.path.exists(record) else (2, 0), err)
+        self.assertNotIn("is not one of a uv tool or pipx install of Tracekit", err)
+        for python, env in ((os.path.join(self.roaming, "uv", "data", "tools", "tracekit-ai-x", "Scripts", "python.exe"), {}),
+                            (os.path.join(self.roaming, "uv", "data", "python", "cpython-3.12", "python.exe"), {}),
+                            (python, {"UV_TOOL_DIR": os.path.join(self.d, "tools")})):   # (as this process sees it)
+            with self.subTest(python=python, env=env):
+                code, runs, err = self.pre(python, **env)
+                self.assertEqual((code, runs), (2, 0), err)
+                self.assertIn("is not one of a uv tool or pipx install of Tracekit", err)
 
 
 class PruneRunState(unittest.TestCase):

@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-114'
+version: '2026.11-v2-115'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -271,16 +271,21 @@ deny:
     # `tracekit report`'s `tracekit signer trust -o trust.json`); trust's -o is a write target of its own, denied under
     # Tracekit's dirs. Also what a command writes, links, deletes or changes the mode of (TARGET: its _effects, not its
     # words, so `readlink` or `du` of them reads) at the Python the plugin's hook runs: the `tracekit` command a uv tool
-    # or pipx install puts in ~/.local/bin, and that install's venv (uv/tools/tracekit-ai, pipx/venvs/tracekit-ai),
-    # whose bin/python a link there would replace, and the interpreters uv keeps (~/.local/share/uv/python) that
-    # venv's python links to. Deleting or moving a folder that holds one of these (~/.local/bin, ~/.local/share/uv,
-    # the pipx venvs folder) counts as touching it (engine._roots_below), and so does a chmod of such a folder.
+    # or pipx install puts in ~/.local/bin (tracekit.exe on Windows), and that install's venv (uv/tools/tracekit-ai,
+    # pipx/venvs/tracekit-ai; on Windows uv's %APPDATA%\uv\tools or, where %APPDATA%\uv\data is, uv\data\tools, and
+    # pipx's %LOCALAPPDATA%\pipx\pipx\venvs or ~\pipx\venvs: install.tool_venvs), whose bin/python a link there would
+    # replace, and the interpreters uv keeps (~/.local/share/uv/python; %APPDATA%\uv\python or uv\data\python, by
+    # AppData\Roaming or the variable: $APPDATA, $env:APPDATA, %APPDATA%) that venv's python runs. Deleting or moving a
+    # folder that holds one of these (~/.local/bin, ~/.local/share/uv, the pipx venvs folder, %APPDATA%\uv) counts as
+    # touching it (engine._roots_below, which reads a drive's path and a Windows user folder's variable too), and so does
+    # a chmod of such a folder.
     # Code an interpreter (python, perl, ruby, node, php, lua, osascript) is given that names one of these paths or a
-    # folder along one (~/.local/share/uv, uv/tools, pipx/venvs, ~/.local/bin) acts, read or write: what its calls write isn't
-    # read from the code. Any other program the parser doesn't read the writes of is held (TK-F015) when a word of it names one
-    # (engine._known_program).
+    # folder along one (~/.local/share/uv, uv/tools, pipx/venvs, ~/.local/bin, %APPDATA%\uv, %LOCALAPPDATA%\pipx) acts,
+    # read or write: what its calls write isn't read from the code. Any other program the parser doesn't read the writes
+    # of is held (TK-F015) when a word of it names one (engine._known_program); PowerShell's and cmd's `\` forms are
+    # TK-A096's.
     # lean: a UV_TOOL_DIR, PIPX_HOME, UV_PYTHON_INSTALL_DIR or XDG_DATA_HOME elsewhere isn't read
-    pattern: '^ACT:[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|\btracekit\s+signer\b|-m ?tracekit\.(daemon|proxy|signer)\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit)|^ACT:(?:(?:pyw?|pypy|pythonw?)[0-9.]*t?|perl|ruby|node|nodejs|php|lua|osascript) [\w\W]*?(?:\.local[/\\]bin[/\\]tracekit\b|(?:uv[/\\]tools|pipx[/\\]venvs)[/\\]tracekit-ai|\.local[/\\]share[/\\]uv[/\\]python|\.local[/\\]share[/\\](?:uv|pipx)(?:[/\\](?:tools|venvs))?\b|\.local[/\\]pipx(?:[/\\]venvs)?\b|Application Support[/\\]pipx\b|\.local[/\\]bin[/\\]?(?:[^\w/\\.-]|$))|^(?:READ|DEEP):[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client)|^LIST:[\w\W]*?(?:/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|\.tracekit-signer|\.tracekit-client|(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit)[^\s]*?key)|^SIGNER_MODULE:|^TARGET:(?:[^\n]*?[/\\])?(?:\.local[/\\]bin[/\\]tracekit|(?:uv[/\\]tools|pipx[/\\]venvs)[/\\]tracekit-ai(?:[/\\][^\s]*)?|\.local[/\\]share[/\\]uv[/\\]python(?:[/\\][^\s]*)?)$'
+    pattern: '^ACT:[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|\btracekit\s+signer\b|-m ?tracekit\.(daemon|proxy|signer)\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit)|^ACT:(?:(?:pyw?|pypy|pythonw?)[0-9.]*t?|perl|ruby|node|nodejs|php|lua|osascript) [\w\W]*?(?:\.local[/\\]bin[/\\]tracekit\b|(?:uv[/\\](?:data[/\\])?tools|pipx[/\\]venvs)[/\\]tracekit-ai|\.local[/\\]share[/\\]uv[/\\]python|[^a-z]appdata(?:[/\\]roaming|[%}])?[/\\]uv\b|(?:appdata[/\\]local|localappdata[%}]?)[/\\]pipx\b|\.local[/\\]share[/\\](?:uv|pipx)(?:[/\\](?:tools|venvs))?\b|\.local[/\\]pipx(?:[/\\]venvs)?\b|Application Support[/\\]pipx\b|\.local[/\\]bin[/\\]?(?:[^\w/\\.-]|$))|^(?:READ|DEEP):[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client)|^LIST:[\w\W]*?(?:/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+([^0-9A-Za-z]|$)|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|\.tracekit-signer|\.tracekit-client|(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit)[^\s]*?key)|^SIGNER_MODULE:|^TARGET:(?:[^\n]*?[/\\])?(?:\.local[/\\]bin[/\\]tracekit(?:\.exe)?|(?:uv[/\\](?:data[/\\])?tools|pipx[/\\]venvs)[/\\]tracekit-ai(?:[/\\][^\s]*)?|\.local[/\\]share[/\\]uv[/\\]python(?:[/\\][^\s]*)?)$|^TARGET:(?:[^\n]*?[^a-z])?appdata(?:[/\\]roaming|[%}])?[/\\]uv[/\\](?:data[/\\])?python(?:[/\\][^\s]*)?$'
     unless: '^ACT:(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [a-z][a-z0-9_-]*)* --help$|^ACT:tracekit --version$|^ACT:(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit) signer (?:vkey|trust)(?: [^ ]+)*$|^READ:(?:[^\s]*(?:site|dist)-packages[/\\]tracekit(?:[/\\][^\s]*)?|(?:/private)?/etc/tracekit[/\\](?:client\.json|policy[\w.-]*\.ya?ml))$|^DEEP:[^\s]*(?:site|dist)-packages[/\\]tracekit(?:[/\\][^\s]*)?$'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
@@ -289,7 +294,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+([-.][0-9a-f]+){0,2}|(site|dist)-packages/tracekit|(uv/tools|pipx/venvs)/tracekit-ai|\.local/share/uv/python)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)|(^|/)\.local/bin/tracekit$'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+([-.][0-9a-f]+){0,2}|(site|dist)-packages/tracekit|(uv/(data/)?tools|pipx/venvs)/tracekit-ai|\.local/share/uv/python)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)|(^|/)\.local/bin/tracekit(\.exe)?$|(^|[^a-z])appdata(/roaming|[%}])?/uv/(data/)?python(/|$)'
     reason: writing Tracekit's own files, signer state or policy
     remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store, the installed package the code that decides and signs.
@@ -1528,6 +1533,31 @@ ask:
     reason: changing the agent harness's settings, hooks or plugins
     remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
     rationale: TK-F015 for PowerShell's cmdlets.
+  - id: TK-A096
+    class: shell
+    field: command
+    # TK-D007's trust roots on Windows in PowerShell's or cmd's form, read off the command as typed: bash drops an
+    # unquoted `\` (Copy-Item x $env:APPDATA\uv\tools\tracekit-ai\… reaches the argv as $env:APPDATAuvtools…), so
+    # neither its effects nor its words name the path, and a line it can't parse ([IO.File]::WriteAllText(…)) has
+    # none. The path, in any case, with one or more `\` between its parts: a uv tool's or pipx's venv of tracekit-ai
+    # (uv\tools\tracekit-ai, uv\data\tools\tracekit-ai, pipx\venvs\tracekit-ai) after anything, the tracekit
+    # command a tool install puts in .local\bin and that folder; uv's folder under %APPDATA% (Roaming, or $APPDATA,
+    # $env:APPDATA, ${env:APPDATA}, %APPDATA%: a `$`, `:`, `{` or `%` before it, so LOCALAPPDATA's isn't it), its data
+    # and tools folders and the interpreters it keeps there (python, data\python), which the venv's python runs;
+    # pipx's under %LOCALAPPDATA% (AppData\Local, $env:LOCALAPPDATA …: pipx, pipx\pipx, pipx\pipx\venvs); and pipx's
+    # ~\pipx (through ~, $HOME, $env:USERPROFILE, %USERPROFILE% or C:\Users\<u>). A folder along a root counts only as
+    # the path's end (a `\` or `\*` after it too), so another tool's folder beside it (uv\tools\ruff) and uv's own
+    # files there (uv\uv.toml) aren't it. The `unless`: a line that is one read (Get-Content, gc, cat, type,
+    # Get-ChildItem, gci, ls, dir, Get-Item, gi, Test-Path, Resolve-Path, Select-String, sls, Get-FileHash, more, head,
+    # tail) with no `;`, `&`, `|`, redirection, backquote, parenthesis or brace, as TK-D007 lets bash's reads of a root
+    # be. bash's `/` form is TK-D007's (TARGET) and TK-F015's.
+    # lean: a pattern in the root's own name (uv\tools\trace*) and a path a variable or a call builds aren't read
+    pattern: '\\[Uu][Vv]\\+(?:[Dd][Aa][Tt][Aa]\\+)?[Tt][Oo][Oo][Ll][Ss]\\+[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]-[Aa][Ii](?:[^\w.-]|$)|\\[Pp][Ii][Pp][Xx]\\+[Vv][Ee][Nn][Vv][Ss]\\+[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]-[Aa][Ii](?:[^\w.-]|$)|\\\.[Ll][Oo][Cc][Aa][Ll]\\+[Bb][Ii][Nn](?:\\+[Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt](?:\.[Ee][Xx][Ee])?)?\\*(?:[^\w.\\-]|$)|(?:[Rr][Oo][Aa][Mm][Ii][Nn][Gg]|[$:{%][Aa][Pp][Pp][Dd][Aa][Tt][Aa][%}]?)\\+(?:[Uu][Vv](?:\\+[Dd][Aa][Tt][Aa])?\\+[Pp][Yy][Tt][Hh][Oo][Nn](?:[^\w.-]|$)|[Uu][Vv](?:\\+[Dd][Aa][Tt][Aa])?(?:\\+[Tt][Oo][Oo][Ll][Ss])?\\*(?:[^\w.\\-]|$))|(?:[Aa][Pp][Pp][Dd][Aa][Tt][Aa]\\+[Ll][Oo][Cc][Aa][Ll]|[$:{%][Ll][Oo][Cc][Aa][Ll][Aa][Pp][Pp][Dd][Aa][Tt][Aa][%}]?)\\+[Pp][Ii][Pp][Xx](?:\\+[Pp][Ii][Pp][Xx](?:\\+[Vv][Ee][Nn][Vv][Ss])?)?\\*(?:[^\w.\\-]|$)|(?:~|[Hh][Oo][Mm][Ee]\}?|[Uu][Ss][Ee][Rr][Pp][Rr][Oo][Ff][Ii][Ll][Ee][%}]?|[Uu][Ss][Ee][Rr][Ss]\\+[^\\/\s\"'';|&]+)\\+[Pp][Ii][Pp][Xx](?:\\+[Vv][Ee][Nn][Vv][Ss])?\\*(?:[^\w.\\-]|$)'
+    unless: '^[ \t]*(?:[Gg][Ee][Tt]-[Cc][Oo][Nn][Tt][Ee][Nn][Tt]|[Gg][Cc]|[Cc][Aa][Tt]|[Tt][Yy][Pp][Ee]|[Gg][Ee][Tt]-[Cc][Hh][Ii][Ll][Dd][Ii][Tt][Ee][Mm]|[Gg][Cc][Ii]|[Ll][Ss]|[Dd][Ii][Rr]|[Gg][Ee][Tt]-[Ii][Tt][Ee][Mm]|[Gg][Ii]|[Tt][Ee][Ss][Tt]-[Pp][Aa][Tt][Hh]|[Rr][Ee][Ss][Oo][Ll][Vv][Ee]-[Pp][Aa][Tt][Hh]|[Ss][Ee][Ll][Ee][Cc][Tt]-[Ss][Tt][Rr][Ii][Nn][Gg]|[Ss][Ll][Ss]|[Gg][Ee][Tt]-[Ff][Ii][Ll][Ee][Hh][Aa][Ss][Hh]|[Mm][Oo][Rr][Ee]|[Hh][Ee][Aa][Dd]|[Tt][Aa][Ii][Ll])[ \t][^;&|<>\n\r`(){}]*$'
+    label: harness_config
+    reason: changing what may take the place of the Python the Tracekit plugin's hook runs
+    remedy: Have a person approve the held call; a person reinstalls Tracekit with uv tool install or pipx.
+    rationale: TK-F015 for PowerShell's and cmd's paths of the hook's Python on Windows.
   - id: TK-A079
     class: shell
     # Wiping a disk or a filesystem (#748, #998): dd whose of= is a block device, mkfs (and mkfs.<type>, mke2fs,

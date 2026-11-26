@@ -122,6 +122,36 @@ class HookPythonRecord(unittest.TestCase):
         with mock.patch.object(sys, "executable", os.path.join(self.share, "uv", "tools", "tracekit-ai-evil", "bin", "python")):
             self.assertIn("not recorded", install.record_hook_python())   # (a folder named like it isn't it)
 
+    def test_on_windows_uv_and_pipx_put_it_in_appdata_and_their_overrides_replace_the_defaults(self):
+        """uv keeps its tools in %APPDATA%\\uv\\data\\tools where %APPDATA%\\uv\\data is, else %APPDATA%\\uv\\tools; pipx its
+        venvs in %LOCALAPPDATA%\\pipx\\pipx, or ~\\pipx where that is. Without them tracekit init on Windows recorded no
+        Python, and the plugin's hook then blocked every call."""
+        roaming, local = os.path.join(self.d, "AppData", "Roaming"), os.path.join(self.d, "AppData", "Local")
+        windows = [os.path.join(roaming, "uv", "tools", "tracekit-ai"), os.path.join(roaming, "uv", "data", "tools", "tracekit-ai"),
+                   os.path.join(local, "pipx", "pipx", "venvs", "tracekit-ai"), os.path.join(self.d, "pipx", "venvs", "tracekit-ai")]
+        self.assertFalse(set(windows) & set(install.tool_venvs()))   # (not on Linux or macOS)
+        with mock.patch.dict(os.environ, {"APPDATA": roaming, "LOCALAPPDATA": local}), \
+                mock.patch.object(install.os, "name", "nt"):
+            self.assertLessEqual(set(windows), set(install.tool_venvs()))
+            self.assertIn(os.path.join(self.share, "uv", "tools", "tracekit-ai"), install.tool_venvs())   # (the others stay)
+            with mock.patch.dict(os.environ, {"UV_TOOL_DIR": os.path.join(self.d, "tools"), "PIPX_HOME": os.path.join(self.d, "px")}):
+                venvs = install.tool_venvs()
+            self.assertEqual(set(windows) & set(venvs), {windows[3]})   # (pipx's ~\pipx is a fallback, not its default)
+            self.assertLessEqual({os.path.join(self.d, "tools", "tracekit-ai"), os.path.join(self.d, "px", "venvs", "tracekit-ai")},
+                                 set(venvs))
+            for k in ("APPDATA", "LOCALAPPDATA"):   # (as uv and pipx read them: else the home's AppData)
+                os.environ.pop(k)
+            self.assertLessEqual(set(windows), set(install.tool_venvs()))
+            tools = install.tool_venvs()
+        for python, inside in ((os.path.join(windows[1], "Scripts", "python.exe"), True),
+                               (os.path.join(roaming, "uv", "data", "tools", "tracekit-ai-x", "Scripts", "python.exe"), False),
+                               (os.path.join(roaming, "uv", "data", "python", "python.exe"), False)):
+            with self.subTest(python=python), mock.patch.object(install, "tool_venvs", lambda: tools), \
+                    mock.patch.object(sys, "executable", python):
+                self.assertEqual(install.record_hook_python() is None, inside)
+                if inside:
+                    self.assertEqual(install.read_json(self.config), {"hook_python": python})
+
 
 class Settings(_Sentinel, unittest.TestCase):
     def setUp(self):

@@ -500,12 +500,21 @@ def record_hooks_settings(path):
 
 def tool_venvs():
     """The folders a uv tool or pipx install of tracekit-ai lives in, where uv (UV_TOOL_DIR) and pipx (PIPX_HOME) put it
-    as this process sees them, else by default: the plugin's hook (plugin/scripts/tracekit-hook) reads the same."""
+    as this process sees them, else by default: the plugin's hooks (plugin/scripts/tracekit-hook, and tracekit-hook.ps1
+    on Windows) read the same. On Windows uv keeps its tools in %APPDATA%\\uv\\data\\tools where %APPDATA%\\uv\\data is,
+    else %APPDATA%\\uv\\tools (uv-state's StateStore), and pipx its venvs in platformdirs' %LOCALAPPDATA%\\pipx\\pipx, or
+    ~\\pipx where that is (pipx's paths.py); each is a folder the policy keeps the agent from writing (TK-D007, TK-D013,
+    TK-A096)."""
     home, share = os.path.expanduser("~"), os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
-    return [os.path.join(v, "tracekit-ai") for v in (
-        os.environ.get("UV_TOOL_DIR") or os.path.join(share, "uv", "tools"),
-        os.path.join(os.environ.get("PIPX_HOME") or os.path.join(share, "pipx"), "venvs"),
-        os.path.join(home, ".local", "pipx", "venvs"), os.path.join(home, "Library", "Application Support", "pipx", "venvs"))]
+    uv, pipx = os.environ.get("UV_TOOL_DIR"), os.environ.get("PIPX_HOME")
+    folders = [uv or os.path.join(share, "uv", "tools"), os.path.join(pipx or os.path.join(share, "pipx"), "venvs"),
+               os.path.join(home, ".local", "pipx", "venvs"), os.path.join(home, "Library", "Application Support", "pipx", "venvs")]
+    if os.name == "nt":
+        roaming = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
+        local = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+        folders += [] if uv else [os.path.join(roaming, "uv", "tools"), os.path.join(roaming, "uv", "data", "tools")]
+        folders += ([] if pipx else [os.path.join(local, "pipx", "pipx", "venvs")]) + [os.path.join(home, "pipx", "venvs")]
+    return [os.path.join(v, "tracekit-ai") for v in folders]
 
 
 def record_hook_python(allow=False):
