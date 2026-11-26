@@ -390,3 +390,8 @@
 {"tool": "Bash", "args": {"command": "lerna version"}, "expect": "allow", "note": "dev-only benign twin: versioning publishes nothing", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "npx changeset status"}, "expect": "allow", "note": "dev-only benign twin: reading the changeset status publishes nothing", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "bun pm pack"}, "expect": "allow", "note": "dev-only benign twin: packing a tarball publishes nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gsutil cp gs://b/a.csv ."}, "expect": "allow", "note": "dev-only benign twin: downloading from a bucket uploads nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 sync s3://b/backups ./restore"}, "expect": "allow", "note": "dev-only benign twin: syncing down from a bucket uploads nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 --profile p cp s3://b/k f"}, "expect": "allow", "note": "dev-only benign twin: a download with a profile uploads nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gcloud storage --project=p ls gs://b"}, "expect": "allow", "note": "dev-only benign twin: listing a bucket uploads nothing", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gsutil ls gs://b"}, "expect": "allow", "note": "dev-only benign twin: listing a bucket uploads nothing", "packs": ["dev"]}

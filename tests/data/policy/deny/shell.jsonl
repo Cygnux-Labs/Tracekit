@@ -577,3 +577,8 @@
 {"tool": "Bash", "args": {"command": "npx changeset publish"}, "expect": "ask", "note": "dev-only: changeset publish releases the versioned packages", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "bun pm publish"}, "expect": "ask", "note": "dev-only: bun pm publish releases the package", "packs": ["dev"]}
 {"tool": "Bash", "args": {"command": "changeset publish"}, "expect": "ask", "note": "dev-only: changeset publish releases the versioned packages", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 cp /srv/data s3://b/ --recursive --acl public-read"}, "expect": "ask", "note": "dev-only: recursive upload to a bucket, publicly readable (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "aws s3 sync ./site s3://b/"}, "expect": "ask", "note": "dev-only: syncing a tree up to a bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gsutil -m cp -r ./assets/images gs://prod-assets/products/"}, "expect": "ask", "note": "dev-only: recursive upload to a cloud bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "gcloud storage cp report.csv gs://b/"}, "expect": "ask", "note": "dev-only: uploading a file to a cloud bucket (TK-A032)", "packs": ["dev"]}
+{"tool": "Bash", "args": {"command": "az storage blob upload -f a.zip -c c -n a.zip"}, "expect": "ask", "note": "dev-only: uploading a blob to Azure storage (TK-A032)", "packs": ["dev"]}
