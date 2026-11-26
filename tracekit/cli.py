@@ -846,8 +846,7 @@ def _run(a):
                 try:
                     autospawn.runtime_dir()   # the check every hook makes: init refuses what would block each call
                 except autospawn.SignerUnavailable as e:
-                    print(f"tracekit: {e}. Run: chmod 700 {str(e).split(' must be ')[0]} (or point TRACEKIT_RUNTIME_DIR at a folder you own)",
-                          file=sys.stderr)
+                    print(f"tracekit: {e}", file=sys.stderr)
                     return 2
                 except OSError as e:
                     print(f"tracekit: cannot use the runtime dir: {e}", file=sys.stderr)
