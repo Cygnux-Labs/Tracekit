@@ -6056,6 +6056,19 @@ class ServerCorpora(unittest.TestCase):
                     else:
                         self.assertNotIn(d_dev["verdict"], ("deny", "ask"), d_dev)
 
+    def test_a_two_pack_benign_case_counts_its_false_positive_once(self):
+        # the review of #1139: a benign case naming two packs is one case in its class row, so its false alarm is
+        # one however many of the packs hold it; each pack's own row counts it against that pack's decisions
+        benign = {"tool": "Bash", "args": {"command": "aws configure get aws_secret_access_key"},
+                  "expect": "allow", "note": "synthetic", "packs": ["server", "dev"]}
+        deny = {"tool": "Bash", "args": {"command": "sudo id"}, "expect": "deny", "note": "synthetic"}
+        out = e17.run({"deny": {"shell": [deny]}, "benign": {"shell": [benign]}})
+        self.assertEqual(len(out["false_positives"]), 1, out["false_positives"])
+        self.assertEqual(out["classes"]["shell"]["fp"], 1)
+        self.assertEqual(out["packs"]["server"]["fp"], 1)
+        self.assertEqual(out["packs"]["dev"]["fp"], 1)
+        self.assertEqual(out["false_positives"][0]["packs"], ["server", "dev"])
+
     def test_e17_decisions_are_the_recorded_ones(self):
         """Every case gets the verdict and rule ids eval/results/e17_policy_corpus.json records, from both engines (E17
         holds them equal): the prefilter, the shared subjects and the linear rewrites of patterns change no decision.

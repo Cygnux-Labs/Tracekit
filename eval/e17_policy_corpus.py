@@ -41,8 +41,9 @@ def build_engines(pack):
     return [Engine(pol, "re2"), Engine(pol, "regex")]
 
 
-def run():
-    cases_by_kind = {kind: load(kind) for kind in ("deny", "benign")}
+def run(cases_by_kind=None):
+    if cases_by_kind is None:
+        cases_by_kind = {kind: load(kind) for kind in ("deny", "benign")}
     pack_names = {"server"}
     for kind in ("deny", "benign"):
         for cases in cases_by_kind[kind].values():
@@ -79,13 +80,19 @@ def run():
                     elif re2["verdict"] in ("deny", "ask"):
                         prow["fp"] += 1
                         fps.append({**case, **got, **extra})
-                # a deny case is caught when every pack it names decides its expect; a benign case is a false
-                # positive on each pack that holds it
+                # a deny case is caught when every pack it names decides its expect; a benign case is one false
+                # positive however many of its packs hold it (its class row counts the case once), with the packs
+                # holding it named in the entry; a pack's own row counts it against that pack, as the row counts
+                # each of the pack's decisions
                 if kind == "deny" and not missed:
                     row["caught"] += 1
                 out["missed"].extend(missed)
-                row["fp"] += len(fps)
-                out["false_positives"].extend(fps)
+                if fps:
+                    row["fp"] += 1
+                    entry = fps[0]
+                    if len(fps) > 1 or len(packs) > 1:
+                        entry = {**entry, "packs": [f.get("pack", "server") for f in fps]}
+                    out["false_positives"].append(entry)
     n_deny = sum(r["deny"] for r in out["classes"].values())
     n_benign = sum(r["benign"] for r in out["classes"].values())
     out["deny_recall"] = (n_deny - len(out["missed"])) / n_deny
