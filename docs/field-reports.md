@@ -104,6 +104,16 @@ To send a report as a pull request instead, so it stays in the repository and yo
 `tracekit feedback --file report.md` writes one to fill in
 ([docs/field-reports](https://github.com/Cygnux-Labs/Tracekit/tree/main/docs/field-reports) says where it goes).
 
+Both the link and `--file` read the dev signer's store by default (`--dev`). Use `--config signer.yaml` for a
+configured signer's store or `--data-dir DIR` for a file-backed signer's data directory. Pick one source.
+A signer whose store is on another host can't be read; run `tracekit report --share --since 7d` there and paste
+its block.
+
+```bash
+tracekit feedback --config signer.yaml
+tracekit feedback --file report.md --data-dir /path/to/signer/data
+```
+
 A way an agent could get a call past the policy is a security problem: report it privately, as
 [SECURITY.md](../SECURITY.md) says, not in a field report.
 

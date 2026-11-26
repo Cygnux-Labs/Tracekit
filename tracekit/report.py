@@ -602,6 +602,11 @@ def share(rep):
     return "\n".join(_escaped(line) for line in out)
 
 
+def store_config(config, data_dir):
+    """The signer config the report reads: --config's file, else --data-dir's directory, else the dev signer's."""
+    return load_config(config) if config else {"data_dir": data_dir or dev_data_dir(create=False)}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit report", description="what the agents did in a window, on one page, "
                                  "from the v2 signer's store (read as tracekit view reads it, while the signer runs): "
@@ -625,7 +630,7 @@ def main(argv=None):
     if a.since >= (time.time() if a.until is None else a.until):
         ap.error("--since must be before --until (default: now)")
     try:
-        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
+        cfg = store_config(a.config, a.data_dir)
         dev, notes = not (a.config or a.data_dir), []
         rep = build(cfg, a.since, time.time() if a.until is None else a.until, a.tenant, a.log_vkey,
                     # --share shows no call, so it reads none: each read is a signed content.accessed record

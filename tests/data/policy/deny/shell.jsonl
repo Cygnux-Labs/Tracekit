@@ -571,3 +571,5 @@
 {"tool": "Bash", "args": {"command": "cat <<EOF | setcap - ./x\n$(echo cap_setuid)+ep\nEOF"}, "expect": "ask", "note": "a heredoc holding a substitution piped into setcap - reads as every capability (#1030)"}
 {"tool": "Bash", "args": {"command": "setcap - ./x <<EOF\n$CAPS\nEOF"}, "expect": "ask", "note": "setcap's own heredoc holding a variable reads as every capability (#1030)"}
 {"tool": "Bash", "args": {"command": "setcap - ./x <<< \"$CAPS\""}, "expect": "ask", "note": "setcap's own herestring holding a variable reads as every capability (#1030)"}
+{"tool": "Bash", "args": {"command": "wrangler delete"}, "expect": "ask", "note": "wrangler delete destroys the deployed Worker"}
+{"tool": "Bash", "args": {"command": "wrangler pages project delete myproj --yes"}, "expect": "ask", "note": "wrangler pages project delete destroys the deployed Pages project"}

@@ -94,8 +94,12 @@ verifying. Details: [migrating](https://github.com/Cygnux-Labs/Tracekit/wiki/Mig
 
 ## Platforms
 
-The hook script is POSIX shell: macOS, Linux and WSL. On native Windows, Claude Code runs it in Git Bash when Git for
-Windows is installed (untested). Without Git Bash it runs it in PowerShell, which can't, so Claude Code blocks every
-tool call: there, don't install the plugin, and use `tracekit init --dev --v2`.
+Each hook's command runs `scripts/tracekit-hook` (POSIX shell) under `sh`: macOS, Linux, WSL, and native Windows with
+Git for Windows, where Claude Code runs hooks in Git Bash. On native Windows without Git Bash, Claude Code runs the
+same command in PowerShell, which runs `scripts/tracekit-hook.ps1` instead: it picks its Python and blocks a call it
+can't record the same way. Windows has no system mode, so neither script has one there. If Group Policy sets
+PowerShell's execution policy, that script can't start, and every tool call is blocked. If `sh` can't find the script
+or it isn't executable, it exits 127 or 126, which Claude Code doesn't treat as a block (only 2 blocks), so the call
+runs unrecorded.
 
 See the main [README](https://github.com/Cygnux-Labs/Tracekit#readme) for what Tracekit proves and what it does not.
