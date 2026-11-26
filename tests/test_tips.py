@@ -1353,7 +1353,7 @@ class Page(unittest.TestCase):
         ex = lambda seq, x: v2rec(seq, "model.exchange", {"exchange_id": x, "phase": "response", "model": "m",  # noqa: E731
                                                           "upstream": "anthropic", "usage": usage})
         got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                   "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER",
                                   "DECIDED", "decided"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1386,7 +1386,7 @@ class Page(unittest.TestCase):
         for recs, want in ((tailer + gateway, [1100 + 1513, 407 + 50]), (gateway + tailer, [1100 + 1513, 407 + 50]),
                            (twins + twins_gw, [2 * 1513, 2 * 60]), (twins_gw + twins, [2 * 1513, 2 * 60])):
             got = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest",
+                                      "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "llmTurn", "ingest",
                                       "joinEgress", "whyRef", "netEffects", "effectHow", "dict", "esc", "plural",
                                       "ANSWER", "DECIDED", "decided"], f"""
                 let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();

@@ -259,13 +259,7 @@ class Engine:
         return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("structured_output", ()))
 
     def tool_class(self, tool):
-        tool = classes.DEEP_AGENTS_TOOLS.get(tool, tool)
-        tools = self.policy.get("tools", {})
-        if tool in tools:
-            return tools[tool]
-        # the most specific glob wins (most characters that are not * or ?), so mcp:postgres/* beats mcp:*/*
-        hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
-        return tools[hits[0][1]] if hits else "unknown"
+        return classes.tool_class(self.policy.get("tools", {}), tool)
 
     def listed(self, tool):
         """The names `tools:` lists that `tool` spells with case, spaces and punctuation ignored (every one, when two

@@ -2944,6 +2944,21 @@ class SlowSignerStart(HarnessCase):
             c.call("status")
         self.assertLess(time.monotonic() - begun, 3)
 
+    def test_a_hook_whose_signer_is_unreachable_classes_its_tool_without_compiling_the_policy(self):
+        """What a hook does once its deadline has passed is the fail mode of the tool's class: reading the class compiled
+        every rule of the dev pack (4 s on a loaded Python 3.9 runner), past the deadline. It reads the pack's `tools:`."""
+        engine = load_policy()
+        claude_code._tool_class.cache_clear()
+        self.addCleanup(claude_code._tool_class.cache_clear)
+        with mock.patch.object(Engine, "__init__", side_effect=AssertionError("the policy was compiled")), \
+                mock.patch.object(claude_code.HookClient, "call", side_effect=SignerUnavailable("down")), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = claude_code.handle({"hook_event_name": "PreToolUse", "session_id": "s-cls", "tool_use_id": "t1",
+                                       "tool_name": "Bash", "tool_input": {"command": "ls"}})
+            classes = {t: claude_code._tool_class(t) for t in ("Bash", "Read", "mcp__s__t", "deepagents:write_file", "Other")}
+        self.assertEqual(code, 2, err.getvalue())
+        self.assertEqual(classes, {t: engine.tool_class(t) for t in classes})
+
     def slow_signer(self, seconds):
         """The dev signer the hooks start from now on takes `seconds` to start once it holds signer.lock."""
         os.environ.pop("TRACEKIT_SIGNER", None)
@@ -2974,6 +2989,7 @@ class SlowSignerStart(HarnessCase):
         self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
         self.assertIn("HELD", json.loads(out)["errorMessage"])
 
+    @pytest.mark.serial
     def test_a_pre_tool_hook_whose_signer_starts_past_its_deadline_blocks_by_it(self):
         """As a Claude Code hook with its numbers scaled down: a 6 s budget, a signer that takes 9 s to start."""
         self.slow_signer(9)
