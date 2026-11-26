@@ -2443,27 +2443,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.000980392156862745,
+        "fp_rate": 0.0009765625,
         "totals": {
-          "benign": 1020,
+          "benign": 1024,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 1
             }
           }
@@ -5150,27 +5150,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.050980392156862744,
+        "fp_rate": 0.05078125,
         "totals": {
-          "benign": 1020,
+          "benign": 1024,
           "fp": 52
         },
         "by": {
           "category": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           },
           "severity": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           },
           "evasion": {
             "none": {
-              "benign": 1020,
+              "benign": 1024,
               "fp": 52
             }
           }
@@ -5632,46 +5632,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 670,
-      "p99_us": 1855,
-      "max_us": 4791,
-      "calls": 3085,
+      "p50_us": 672,
+      "p99_us": 1816,
+      "max_us": 4870,
+      "calls": 3095,
       "p99_ref": 8.61
     },
     "default/regex": {
-      "p50_us": 745,
-      "p99_us": 2086,
-      "max_us": 5498,
-      "calls": 3085,
-      "p99_ref": 9.75
+      "p50_us": 749,
+      "p99_us": 2062,
+      "max_us": 5737,
+      "calls": 3095,
+      "p99_ref": 9.72
     },
     "strict/re2": {
-      "p50_us": 672,
-      "p99_us": 1710,
-      "max_us": 4500,
-      "calls": 3085,
-      "p99_ref": 7.97
+      "p50_us": 670,
+      "p99_us": 1730,
+      "max_us": 4493,
+      "calls": 3095,
+      "p99_ref": 8.3
     },
     "strict/regex": {
-      "p50_us": 754,
-      "p99_us": 1932,
-      "max_us": 5651,
-      "calls": 3085,
-      "p99_ref": 9.11
+      "p50_us": 747,
+      "p99_us": 1933,
+      "max_us": 5442,
+      "calls": 3095,
+      "p99_ref": 9.13
     },
     "dev/re2": {
-      "p50_us": 696,
-      "p99_us": 2004,
-      "max_us": 5255,
-      "calls": 3085,
-      "p99_ref": 9.31
+      "p50_us": 704,
+      "p99_us": 1984,
+      "max_us": 5340,
+      "calls": 3095,
+      "p99_ref": 9.29
     },
     "dev/regex": {
-      "p50_us": 791,
-      "p99_us": 2162,
-      "max_us": 5795,
-      "calls": 3085,
-      "p99_ref": 10.26
+      "p50_us": 793,
+      "p99_us": 2173,
+      "max_us": 6004,
+      "calls": 3095,
+      "p99_ref": 10.31
     }
   },
   "engine_mismatches": [],
@@ -5722,7 +5722,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.29% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.10% over the 5% target"
+    "strict e17 false positives 5.08% over the 5% target"
   ],
   "failed": [],
   "ok": true
