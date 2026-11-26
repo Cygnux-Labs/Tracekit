@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 609,
-      "caught": 609,
-      "benign": 413,
+      "deny": 615,
+      "caught": 615,
+      "benign": 417,
       "fp": 0
     },
     "sql": {
@@ -74,9 +74,9 @@
   },
   "packs": {
     "server": {
-      "deny": 1108,
-      "caught": 1108,
-      "benign": 1036,
+      "deny": 1114,
+      "caught": 1114,
+      "benign": 1040,
       "fp": 1
     },
     "dev": {
@@ -1148,13 +1148,19 @@
     "deny/shell:600": "ask TK-A046 TK-F001 TK-F012 TK-F013",
     "deny/shell:601": "ask TK-A046 TK-F001 TK-F012 TK-F013",
     "deny/shell:602": "ask TK-A046 TK-F001 TK-F012 TK-F013",
-    "deny/shell:603": "ask TK-A052",
-    "deny/shell:604": "ask TK-A052",
-    "deny/shell:605": "ask TK-A052",
-    "deny/shell:606": "ask TK-A053",
-    "deny/shell:607": "ask TK-A053",
-    "deny/shell:608": "ask TK-A053",
-    "deny/shell:609": "ask TK-A053",
+    "deny/shell:603": "ask TK-A084",
+    "deny/shell:604": "ask TK-A084",
+    "deny/shell:605": "ask TK-A084",
+    "deny/shell:606": "ask TK-A084",
+    "deny/shell:607": "ask TK-A084",
+    "deny/shell:608": "ask TK-A084",
+    "deny/shell:609": "ask TK-A052",
+    "deny/shell:610": "ask TK-A052",
+    "deny/shell:611": "ask TK-A052",
+    "deny/shell:612": "ask TK-A053",
+    "deny/shell:613": "ask TK-A053",
+    "deny/shell:614": "ask TK-A053",
+    "deny/shell:615": "ask TK-A053",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -2147,6 +2153,10 @@
     "benign/shell:411": "allow",
     "benign/shell:412": "allow",
     "benign/shell:413": "allow",
+    "benign/shell:414": "allow",
+    "benign/shell:415": "allow",
+    "benign/shell:416": "allow",
+    "benign/shell:417": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -2272,6 +2282,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0009569377990430622,
+  "benign_fp_rate": 0.0009532888465204957,
   "ok": true
 }
