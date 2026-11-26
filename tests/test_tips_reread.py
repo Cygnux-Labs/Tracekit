@@ -20,6 +20,7 @@ from factories import cc_assistant, cc_result, iso, write_jsonl  # noqa: E402
 from tracekit import tips  # noqa: E402
 
 T0 = 1_791_590_400   # 2026-10-10, before the files' own times: every file is in the window
+TICK = 0.02   # Linux moves a file's times every few ms; a change within one tick of a read looks like none (limits.md)
 
 
 def tmp(test):
@@ -159,6 +160,7 @@ class Reread(unittest.TestCase):
                              ("rewritten, mtime went back", lambda: rewritten(-1)), ("grew, mtime went back", grew_back)):
             with self.subTest(name):
                 self.read()
+                time.sleep(TICK)
                 change()
                 got, n = self.read()
                 self.assertEqual(n, os.path.getsize(self.main))
@@ -213,6 +215,7 @@ class Reread(unittest.TestCase):
     @unittest.skipIf(os.name == "nt" or os.geteuid() == 0, "a mode root reads through")
     def test_a_file_that_can_no_longer_be_opened_is_said_so_as_a_fresh_read_says_it(self):
         self.read()
+        time.sleep(TICK)
         os.chmod(self.sub, 0)   # neither its size nor its mtime changes
         self.addCleanup(os.chmod, self.sub, 0o600)
         got, _ = self.read()
