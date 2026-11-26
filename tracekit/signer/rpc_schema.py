@@ -6,8 +6,9 @@ approver): approval_request's `project` (the folder the agent works in, as its c
 `view_digest` (the approval_review it answers, required for an approval
 held by the policy's approval_agent rules), approval_review's `ai` (the precedent key, run labels, precedents,
 playbook and recent calls of such an approval), `approver` (people: the circuit breaker's state and the playbook,
-accept or retire a playbook entry, revoke a precedent, enable rules the breaker dropped) and an approval's `ai` (what
-people see of agent approvers on it: whether one may answer it now and why, and the latest agent answer). Version 28 adds
+each entry with whether it binds, accept or retire a playbook entry, revoke a precedent, enable rules the breaker
+dropped) and an approval's `ai` (what people see of agent approvers on it: whether one may answer it now and why, and
+the latest agent answer, with the models' answers and who took a yes back). Version 28 adds
 `run_label_clear`, an operator call: a person ends one of a run's labels (docs/policy-v2.md#run-conditions), which
 the signer records as theirs; a run's own owner, principal or requester can't (a dev signer's own, self_cleared), and
 decide's `recorded` (the rules in shadow that would hold the call). Version 27 adds decide's `agent_id` (the harness's

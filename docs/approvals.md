@@ -587,7 +587,7 @@ people agreed with it per rule, over its recent answers too, so you can see whet
 
 The rest of this section is the precise version: the bounds, the run labels, precedents, two keys, the circuit
 breaker, the view the reviewer answers, the records and what the verifiers check. The AI reviewer is an agent approver
-as above (format 1.8, RPC 28) with these bounds added.
+as above (format 1.8, RPC 29) with these bounds added.
 
 **Rules: an allowlist you opt into.** Your policy lists the rules it may answer:
 
