@@ -2984,6 +2984,7 @@ class SlowSignerStart(HarnessCase):
         self.assertLess(time.monotonic() - begun, 8)
         self.assertEqual(code, 2)
 
+    @pytest.mark.serial
     def test_a_harness_hooks_deadline_starts_before_what_was_said(self):
         """A Codex hook records what the model said first, on a connection of its own: that wait counts against the
         hook's deadline too (scaled down: a 12 s budget, a signer that takes 30 s to start)."""
