@@ -782,6 +782,30 @@ class RecordLog:
         self.metrics.ack_seconds.observe(time.monotonic() - start)
         return out
 
+    def cached(self, identity, method, req):
+        """Return an existing request-ID response, or indicate that it is not cached."""
+        digest = hashlib.sha256(
+            json.dumps([method, req], sort_keys=True, default=repr).encode()
+        ).hexdigest()
+
+        rid = (identity.scheme, identity.subject, req["request_id"])
+
+        def fn(tx):
+            item = self.done.get(rid)
+
+            if item is None:
+                return False, None
+
+            if item[0] != digest:
+                raise RPCError(
+                    "conflict",
+                    f"request_id {rid[2]} was used with another payload"
+                )
+
+            return True, copy.deepcopy(self.done[rid][1])
+
+        return self.write(fn)
+
     def write(self, fn):
         """Run `fn(tx)` on the writer: the signer's own records, which no refuse_writes holds back."""
         return self._wait(fn)

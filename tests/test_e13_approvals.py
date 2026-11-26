@@ -59,9 +59,22 @@ class Signer(unittest.TestCase):
         n = uuid.uuid4().hex
         run = self.s.register_run({"request_id": f"reg{n}", "agent": {"name": "a"}})
         self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
-        self.s.decide({"request_id": f"d{n}", **self.run, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
+        decision = self.s.decide({"request_id": f"d{n}", **self.run, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
                        "tool": tool, "args_source": "raw", "args": raw})
-        return self.s.approval_request({"request_id": f"a{n}", **self.run, "tool_call_id": "tc-1"})["approval_id"]
+
+        # The policy must require approval
+        self.assertEqual(
+            decision["decision"],
+            "ask",
+            decision
+        )
+        # Create the approval request.
+        approval = self.s.approval_request({
+            "request_id": f"a{n}",
+            **self.run,
+            "tool_call_id": "tc-1"
+            })
+        return approval["approval_id"]
 
     def decide(self, aid, who=APPROVER, decision="approve", **kw):
         return self.s.call(who, "approval_decide", {"request_id": f"h{uuid.uuid4().hex}", "approval_id": aid,
@@ -546,6 +559,56 @@ class TestWeb(Signer):
         with self.assertRaisesRegex(RPCError, "is suspended"):
             self.s.call(BRIDGE, "approval_decide", {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE,
                                                     "decision": "approve"})
+
+    def test_retry_of_approval_after_run_final_returns_cached_response(self):
+        aid = self.pending("mail")
+
+        req = {
+            "request_id": "approval-retry-after-final",
+            "approval_id": aid,
+            "decision": "approve",
+        }
+
+        # First approval succeeds.
+        first = self.s.call(APPROVER, "approval_decide", req)
+        self.assertEqual(first["state"], "approved")
+
+        # Close the run and make it final.
+        self.s.close_run({"request_id": "close", **self.run})
+        self.s.sweep(now=time.monotonic() + svc.GRACE_S + 1)
+
+
+        # Retrying the exact same request must return the cached response.
+        second = self.s.call(APPROVER, "approval_decide", req)
+
+        self.assertEqual(second, first)
+
+    def test_approval_retry_with_different_payload_returns_conflict(self):
+        aid = self.pending("mail")
+
+        req = {
+            "request_id": "approval-retry-conflict",
+            "approval_id": aid,
+            "decision": "approve",
+            }
+
+        first = self.s.call(APPROVER, "approval_decide", req)
+        self.assertEqual(first["state"], "approved")
+
+        changed_req = {
+            **req,
+            "decision": "reject",
+        }
+
+        self.refused(
+            "conflict",
+            self.s.call,
+            APPROVER,
+            "approval_decide",
+            changed_req,
+        )
+
+
 
     def test_a_bridge_granted_through_a_group_sees_its_tenants_approvals(self):
         aid = self.pending("mail")
