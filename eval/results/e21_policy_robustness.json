@@ -1,5 +1,5 @@
 {
-  "machine": "Darwin arm64 arm python 3.11.15",
+  "machine": "Windows AMD64 Intel64 Family 6 Model 85 Stepping 7, GenuineIntel python 3.12.10",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -11,7 +11,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:ac7294fa95f5519d537c720593d0705ea880fbb39269bb081f118bf898bdcb76",
+      "policy_hash": "sha256:936d037a303df28cff7fecf32e7b59cffa53f61bf7eaa7595c5458b13da3c16e",
       "heldout": {
         "recall": 0.6928571428571428,
         "deny_recall": 0.29285714285714287,
@@ -2484,7 +2484,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:7f50414ddbb1178e00f4bdc35ad60c427295544e737a030b147d3791a811647c",
+      "policy_hash": "sha256:a4942851c4e7e981104540e819b104d7752082a92c8e6b0927b66f269b85325c",
       "heldout": {
         "recall": 0.7523809523809524,
         "deny_recall": 0.38571428571428573,
@@ -5632,46 +5632,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 178,
-      "p99_us": 487,
-      "max_us": 1309,
+      "p50_us": 670,
+      "p99_us": 1855,
+      "max_us": 4791,
       "calls": 3085,
       "p99_ref": 8.61
     },
     "default/regex": {
-      "p50_us": 198,
-      "p99_us": 566,
-      "max_us": 1778,
+      "p50_us": 745,
+      "p99_us": 2086,
+      "max_us": 5498,
       "calls": 3085,
-      "p99_ref": 10.2
+      "p99_ref": 9.75
     },
     "strict/re2": {
-      "p50_us": 178,
-      "p99_us": 458,
-      "max_us": 1186,
+      "p50_us": 672,
+      "p99_us": 1710,
+      "max_us": 4500,
       "calls": 3085,
-      "p99_ref": 7.96
+      "p99_ref": 7.97
     },
     "strict/regex": {
-      "p50_us": 197,
-      "p99_us": 550,
-      "max_us": 1755,
+      "p50_us": 754,
+      "p99_us": 1932,
+      "max_us": 5651,
       "calls": 3085,
-      "p99_ref": 9.7
+      "p99_ref": 9.11
     },
     "dev/re2": {
-      "p50_us": 185,
-      "p99_us": 508,
-      "max_us": 1362,
+      "p50_us": 696,
+      "p99_us": 2004,
+      "max_us": 5255,
       "calls": 3085,
-      "p99_ref": 9.02
+      "p99_ref": 9.31
     },
     "dev/regex": {
-      "p50_us": 209,
-      "p99_us": 592,
-      "max_us": 1870,
+      "p50_us": 791,
+      "p99_us": 2162,
+      "max_us": 5795,
       "calls": 3085,
-      "p99_ref": 10.65
+      "p99_ref": 10.26
     }
   },
   "engine_mismatches": [],
